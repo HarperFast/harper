@@ -284,10 +284,14 @@ class KeyLockHandle implements RecordLockHandle {
 		clearTimeout(this.#timer);
 		// A granted cluster round may not be extended locally: peers bound the hold from the request
 		// they saw, and a longer local lease is exactly the two-holder window this protocol removes.
-		const extended = Date.now() + lease;
-		this.expiresAt = this.clusterTsR === undefined ? extended : Math.min(extended, this.expiresAt);
-		const remaining = this.expiresAt - Date.now();
-		this.#deadlineMono = performance.now() + remaining;
+		// Clamped on the monotonic deadline, not on expiresAt, so a backward wall-clock step cannot
+		// turn the upgrade into the extension this is here to refuse.
+		const now = performance.now();
+		const extended = now + lease;
+		const deadline = this.clusterTsR === undefined ? extended : Math.min(extended, this.#deadlineMono ?? extended);
+		const remaining = deadline - now;
+		this.#deadlineMono = deadline;
+		this.expiresAt = Date.now() + remaining;
 		this.#timer = setTimeout(() => this.#onLeaseExpire(), remaining).unref();
 		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
 		// enclosing transaction commits) gets acquiredAt+MIN_STEP rather than acquiredAt again
