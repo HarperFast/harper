@@ -87,10 +87,10 @@ describe('resolveRocksMemoryConfig', function () {
 	});
 
 	describe('costToCache and allowStall', function () {
-		it('both default to true when the WBM is enabled', function () {
+		it('default costToCache to true and allowStall to false when the WBM is enabled', function () {
 			const config = resolve({});
 			assert.strictEqual(config.writeBufferManagerCostToCache, true);
-			assert.strictEqual(config.writeBufferManagerAllowStall, true);
+			assert.strictEqual(config.writeBufferManagerAllowStall, false);
 		});
 
 		it('honor explicit false values', function () {
@@ -99,10 +99,17 @@ describe('resolveRocksMemoryConfig', function () {
 			assert.strictEqual(config.writeBufferManagerAllowStall, false);
 		});
 
-		it('fall back to true for non-boolean values', function () {
-			const config = resolve({ configuredCostToCache: 'yes', configuredAllowStall: 1 });
+		it('honor explicit true values', function () {
+			const config = resolve({ configuredCostToCache: true, configuredAllowStall: true });
 			assert.strictEqual(config.writeBufferManagerCostToCache, true);
 			assert.strictEqual(config.writeBufferManagerAllowStall, true);
+		});
+
+		it('fall back to their defaults for non-boolean values', function () {
+			const config = resolve({ configuredCostToCache: 'yes', configuredAllowStall: 1 });
+			assert.strictEqual(config.writeBufferManagerCostToCache, true);
+			assert.strictEqual(config.writeBufferManagerAllowStall, false);
+			assert.strictEqual(resolve({ configuredAllowStall: 'true' }).writeBufferManagerAllowStall, false);
 		});
 	});
 });
