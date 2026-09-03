@@ -116,10 +116,10 @@ export function getReportThresholdMs(): number {
  * the main thread only; a per-thread sweep would report each handle once per worker.
  */
 export function runLongLivedTransactionSweep(): void {
-	const thresholdMs = getReportThresholdMs();
-	rebaseIfThresholdChanged(thresholdMs);
-	if (thresholdMs === 0 || !registryStatusFn) return;
 	try {
+		const thresholdMs = getReportThresholdMs();
+		rebaseIfThresholdChanged(thresholdMs);
+		if (thresholdMs === 0 || !registryStatusFn) return;
 		const status = registryStatusFn();
 		const seen = new Set<string>();
 		const due: { path: string | undefined; id: number; ageMs: number; state: ReportState }[] = [];
@@ -256,8 +256,9 @@ export function describeHolderCandidates(
 ): string {
 	// Honors the disable value for the same reason the other two surfaces do: an operator who set the
 	// threshold to 0 asked for no reporting, and this surface is reached from the write path.
-	if (!databasePath || !registryStatusFn || getReportThresholdMs() === 0) return '';
+	if (!databasePath || !registryStatusFn) return '';
 	try {
+		if (getReportThresholdMs() === 0) return '';
 		const target = resolve(databasePath);
 		const candidates: { id: number; ageMs: number; sameDatabase: boolean; path: string | undefined }[] = [];
 		let targetSeen = false;
