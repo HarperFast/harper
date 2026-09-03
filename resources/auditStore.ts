@@ -446,6 +446,16 @@ export const ACTION_32_BIT = 14;
 export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
 export const REMOTE_SEQUENCE_UPDATE = 11;
+/**
+ * Cluster record-lock coordination (harper#483 Phase 1). These replicate — unlike the reload marker
+ * they are NOT `LOCAL_ONLY` — and carry a control payload rather than a record, so they are written
+ * with `recordId: null`: an entry sharing a real record's `(version, tableId, recordId, nodeId)`
+ * would be returned by `RocksTransactionLogStore.getSync` ahead of that record's own audit entry and
+ * make `_writeUpdate`'s keyed dedup drop the holder's write. 13 is spare; 14/15 are the width flags.
+ */
+export const LOCK_REQUEST = 9;
+export const LOCK_GRANT = 10;
+export const LOCK_RELEASE = 12;
 export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
 export const HAS_ORIGINATING_OPERATION = 2048;
@@ -481,7 +491,24 @@ const EVENT_TYPES = {
 	[RELOAD]: 'reload',
 	remoteSequenceUpdate: REMOTE_SEQUENCE_UPDATE,
 	[REMOTE_SEQUENCE_UPDATE]: 'remoteSequenceUpdate',
+	lockRequest: LOCK_REQUEST | HAS_RECORD,
+	[LOCK_REQUEST]: 'lockRequest',
+	lockGrant: LOCK_GRANT | HAS_RECORD,
+	[LOCK_GRANT]: 'lockGrant',
+	lockRelease: LOCK_RELEASE | HAS_RECORD,
+	[LOCK_RELEASE]: 'lockRelease',
 };
+
+const LOCK_CONTROL_TYPES = new Set(['lockRequest', 'lockGrant', 'lockRelease']);
+
+/**
+ * Cluster lock coordination entries. They ride the replicated audit stream but describe no record,
+ * so every consumer that surfaces audit entries as record activity — subscriber fan-out, the
+ * `startTime` replay, the `previousCount` backfill, the replicated-event sink — must exclude them.
+ */
+export function isLockControlType(type: unknown): boolean {
+	return typeof type === 'string' && LOCK_CONTROL_TYPES.has(type);
+}
 const ORIGINATING_OPERATIONS = {
 	insert: 1,
 	update: 2,

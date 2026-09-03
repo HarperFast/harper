@@ -114,6 +114,22 @@ export class UpdateAttributesLockTimeoutError extends ServerError {
 	}
 }
 
+/**
+ * A cluster-scoped `lock()` could not establish the guarantee it promises — a peer cannot
+ * participate, the participant set is unknown, or this worker does not own lock coordination.
+ * Fail-closed: never downgrade silently to a node-local lock, which would hand two nodes one key.
+ */
+export class LockUnavailableError extends ServerError {
+	code: string;
+	retryable: boolean;
+	constructor(message: string) {
+		super(message, 503);
+		this.name = 'LockUnavailableError';
+		this.code = 'LOCK_UNAVAILABLE';
+		this.retryable = true;
+	}
+}
+
 /** One structured validation failure. `path` is dot-scoped (`body.price`, `query.sort`, `params.id`). */
 export interface ValidationIssue {
 	/** Where the failure occurred, e.g. `body.price`, `query.expand`, `params.id`. */

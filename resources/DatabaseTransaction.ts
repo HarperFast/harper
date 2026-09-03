@@ -728,9 +728,9 @@ export class DatabaseTransaction implements Transaction {
 		if (!storeMap) return undefined;
 		const h = storeMap.get(keyId);
 		if (!h) return undefined;
-		if (!h.released) return h;
-		// Prune released handles so they don't accumulate; an expired handle checking re-entrancy
-		// would otherwise be seen as the holder and incorrectly granted access.
+		if (!h.isExpired()) return h;
+		// Prune released/expired handles so they don't accumulate; a handle past its deadline checking
+		// re-entrancy would otherwise be seen as the holder and incorrectly granted access.
 		storeMap.delete(keyId);
 		return undefined;
 	}
@@ -941,7 +941,10 @@ export class DatabaseTransaction implements Transaction {
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
 		// Guard: a write staged through an expired or released lock handle must not land.
 		// The handle's lease timer already unlocked the native key; another holder may have taken it.
-		if (operation.lockHandle && (operation.lockHandle.expired || operation.lockHandle.released)) {
+		// isExpired() re-evaluates the deadline here rather than trusting the timer to have run: a
+		// holder whose event loop stalled past its lease would otherwise commit in the window between
+		// the deadline and its own timer callback, after peers had already granted the key onward.
+		if (operation.lockHandle?.isExpired()) {
 			// Remove the operation from the staged set so subsequent writes on this context do not
 			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
 			const failedIdx = this.writes.indexOf(operation);
@@ -1180,6 +1183,18 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
+							// Re-fence immediately before submitting. save() checks the lease when a write is
+							// staged, but the loop above skips operations already marked saved, so a holder that
+							// stalled between staging and commit would otherwise submit a batch whose lock every
+							// participant has already written off. The retry/replay path re-saves every operation,
+							// so it is fenced by save() itself.
+							const expired = this.writes.find((write) => write.lockHandle?.isExpired());
+							if (expired) {
+								try {
+									transaction.abort();
+								} catch {}
+								throw new ClientError('Record lock lease expired', 409);
+							}
 							// The transaction was created with coordinatedRetry:true (see
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed

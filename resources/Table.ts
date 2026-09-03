@@ -49,7 +49,9 @@ import {
 	resolveLockOptions,
 	type RecordLockHandle,
 	type RecordLockOptions,
+	type ResolvedRecordLockOptions,
 } from './recordLock.ts';
+import { getThisNodeName } from '../server/nodeName.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
 import {
@@ -59,6 +61,7 @@ import {
 	AccessViolation,
 	ValidationError,
 	UpdateAttributesLockTimeoutError,
+	LockUnavailableError,
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -80,7 +83,16 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericT
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
+import { HAS_BLOBS, auditRetention, removeAuditEntry, isLockControlType } from './auditStore.ts';
+import {
+	decodeLockControlPayload,
+	encodeLockControlPayload,
+	getClusterLockTransport,
+	isClusterLockRequired,
+	setLockCoordinatorResolver,
+	LockCoordinator,
+	type LockControlEntry,
+} from './recordLockCoordinator.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -492,6 +504,20 @@ function contextArgument(context: unknown): any {
 }
 
 /** Distinguishes bare lock options from a record target (id, URL, {id:...}). */
+/**
+ * A transaction that already holds this key node-scoped cannot serve a cluster-scoped lock from the
+ * same handle: the cluster round never ran, so no peer ever deferred to it. Refuse rather than hand
+ * back the weaker guarantee under the stronger name.
+ */
+function assertScopeSatisfied(handle: RecordLockHandle, resolved: ResolvedRecordLockOptions, databaseName: string) {
+	if (resolved.scope !== 'cluster' || handle.clusterTsR !== undefined) return;
+	if (!getClusterLockTransport(databaseName)) return;
+	throw new ClientError(
+		'This transaction already holds a node-scoped lock on this record, so a cluster-scoped lock cannot be taken on top of it',
+		409
+	);
+}
+
 function isPlainOptions(value: unknown): boolean {
 	return (
 		typeof value === 'object' &&
@@ -501,6 +527,12 @@ function isPlainOptions(value: unknown): boolean {
 		(value as any).id === undefined
 	);
 }
+
+// Lets a transport push a received control entry straight to the right coordinator without
+// importing Table (which would be a cycle through databases.ts).
+setLockCoordinatorResolver(
+	(database: string, tableName: string) => (databases as any)[database]?.[tableName]?.lockCoordinator
+);
 
 export function makeTable(options) {
 	const {
@@ -532,6 +564,9 @@ export function makeTable(options) {
 	if (!attributes) attributes = [];
 	if (!properties) properties = projectAttributesToProperties(attributes);
 	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
+	// Created on first cluster-scoped lock() or first arriving control entry, and only while a
+	// transport is registered for this database.
+	let lockCoordinator: LockCoordinator | undefined;
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
@@ -733,7 +768,7 @@ export function makeTable(options) {
 			// Off-key writes through the same resource instance are ordinary; only guard the
 			// exact key the lock was acquired for.
 			if (handle.keyId !== writeKeyId(id)) return;
-			if (handle.expired || handle.released) {
+			if (handle.isExpired()) {
 				throw lockNotHeldError(handle);
 			}
 		}
@@ -831,8 +866,22 @@ export function makeTable(options) {
 			(async () => {
 				let userRoleUpdate = false;
 				let lastSequenceId;
+				/**
+				 * Cluster lock coordination entries (harper#483 Phase 1) describe no record: they never
+				 * reach _writeUpdate, and their payload is validated before it can touch coordinator state.
+				 */
+				const applyLockControlEvent = (event) => {
+					const entry = decodeLockControlPayload(event.type, event.value);
+					if (!entry) {
+						logger.warn?.('discarding a malformed record lock control entry from', event.nodeId, event.type);
+						return;
+					}
+					const target = event.table ? databases[databaseName]?.[event.table] : TableResource;
+					target?.lockCoordinator?.applyEntry(entry);
+				};
 				// perform the write of an individual write event
 				const writeUpdate = async (event, context) => {
+					if (isLockControlType(event.type)) return applyLockControlEvent(event);
 					const value = event.value;
 					const Table = event.table ? databases[databaseName][event.table] : TableResource;
 					if (
@@ -888,6 +937,9 @@ export function makeTable(options) {
 
 				/** Keeps the writes to any one key in arrival order; see DESIGN.md (harper#2211). */
 				const stageWrite = (event, context) => {
+					// Control entries stage no record, so ordering them behind writes to the same key would
+					// only delay a grant behind whatever that key is doing.
+					if (isLockControlType(event.type)) return writeUpdate(event, context);
 					let chainKey: string | undefined;
 					try {
 						const Table = event.table ? databases[databaseName][event.table] : TableResource;
@@ -2082,7 +2134,7 @@ export function makeTable(options) {
 				// released between lock acquisition and this save(), throw 409 rather than silently
 				// committing stale data. Every lock-writable instance carries its own handle.
 				const saveHandle = this.#lockHandle!;
-				if (saveHandle.expired || saveHandle.released) {
+				if (saveHandle.isExpired()) {
 					throw lockNotHeldError(saveHandle);
 				}
 				const changes = this.#changes;
@@ -2481,8 +2533,9 @@ export function makeTable(options) {
 			const link = txnForContext(context);
 			const keyId = writeKeyId(id);
 			const held = this.#lockHandle;
-			if (held && !held.released && !held.expired && held.keyId === keyId) {
+			if (held && !held.isExpired() && held.keyId === keyId) {
 				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
+				assertScopeSatisfied(held, resolved, databaseName);
 				if (resolved.hold && !held.hold) {
 					held.upgradeToHold(resolved.lease);
 					// The scoped phase eagerly staged a TransactionWrite (see #reloadLocked); hold
@@ -2496,7 +2549,8 @@ export function makeTable(options) {
 				return Promise.resolve(this.#reloadLocked(id, undefined, true));
 			}
 			const scoped = link.recordLockFor(primaryStore, keyId);
-			if (scoped && !scoped.released && !scoped.expired) {
+			if (scoped && !scoped.isExpired()) {
+				assertScopeSatisfied(scoped, resolved, databaseName);
 				if (resolved.hold && !scoped.hold) {
 					// Upgrade scoped → hold: flip the existing handle object to hold mode so every
 					// instance that already references this handle stays valid.  Retiring and creating a
@@ -2509,6 +2563,19 @@ export function makeTable(options) {
 				// Already held with the same type: re-entrant return. Preserve any staged changes.
 				return Promise.resolve(this.#reloadLocked(id, scoped, true));
 			}
+			// Cluster scope needs a registered transport. An EXPLICIT { scope: 'cluster' } without one is
+			// a caller asking for a guarantee this node cannot make, so it fails closed rather than
+			// silently returning the node-local lock; the default keeps Phase 0 behavior, which is what
+			// a build with no replication has anyway.
+			const coordinator = resolved.scope === 'node' ? undefined : TableResource.lockCoordinator;
+			if (
+				!coordinator &&
+				resolved.scope === 'cluster' &&
+				(resolved.scopeRequested || isClusterLockRequired(databaseName))
+			)
+				throw new LockUnavailableError(
+					`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
+				);
 			const key = lockAttemptKey(tableId, id);
 			// Coalesce concurrent lock() calls for the same key inside one link so they don't
 			// self-block: Promise.all([T.lock(id), T.lock(id)]) would otherwise have both calls
@@ -2541,7 +2608,10 @@ export function makeTable(options) {
 					() => {
 						clearTimeout(followerTimer);
 						const acquired = link.recordLockFor(primaryStore, keyId);
-						if (acquired && !acquired.released && !acquired.expired) {
+						if (acquired && !acquired.isExpired()) {
+							// A coalesced follower inherits the leader's handle, so it must not inherit a
+							// weaker scope than it asked for.
+							assertScopeSatisfied(acquired, resolved, databaseName);
 							if (resolved.hold && !acquired.hold) {
 								detachScopedUpgradeWrite(link, keyId, acquired);
 								acquired.upgradeToHold(resolved.lease);
@@ -2567,13 +2637,34 @@ export function makeTable(options) {
 				resolved.hold
 			);
 			link.registerPendingLock(primaryStore, keyId, pendingPromise);
+			const clusterStart = Date.now();
 			return pendingPromise.then(
-				(handle) => {
+				async (handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
-					if (link.open === TRANSACTION_STATE.CLOSED && !link.saveCommits) {
+					const closedWhileWaiting = () => link.open === TRANSACTION_STATE.CLOSED && !link.saveCommits;
+					if (closedWhileWaiting()) {
 						// The transaction was aborted while this call waited; nothing would ever release the handle.
 						handle.release();
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
+					}
+					// The native key is held, so this node has exactly one round in flight for this key.
+					// Anything that goes wrong from here must give the key back rather than leave a lock
+					// this caller does not know it owns.
+					if (coordinator) {
+						try {
+							const remaining = resolved.timeout - (Date.now() - clusterStart);
+							if (remaining <= 0) throw new ClientError('Record is locked and was not released in time', 423);
+							const tsR = await coordinator.acquire(id, resolved.lease, remaining);
+							if (!handle.joinClusterRound(tsR, resolved.lease, () => coordinator.release(id)))
+								throw new ClientError('Record lock was granted after its lease had elapsed', 423);
+						} catch (error) {
+							handle.release();
+							throw error;
+						}
+						if (closedWhileWaiting()) {
+							handle.release();
+							throw new ServerError('Transaction was closed while waiting for a record lock', 500);
+						}
 					}
 					link.registerRecordLock(handle);
 					if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
@@ -4738,6 +4829,10 @@ export function makeTable(options) {
 					if (dropDuringReplay) return;
 					try {
 						let type = auditRecord.type;
+						// Lock coordination entries are internal protocol traffic that happens to share the
+						// log, not table activity. Skipped ahead of the rawEvents branch, which forwards
+						// every type verbatim.
+						if (isLockControlType(type)) return;
 						let value;
 						if (type === 'message' || request.rawEvents) {
 							// we only send the full message, this are individual messages that can be sent out of order
@@ -4830,6 +4925,9 @@ export function makeTable(options) {
 									if (!isActive()) return;
 								}
 								if (auditRecord.tableId !== tableId) continue;
+								// Same exclusion as the live listener: replay must not surface protocol traffic
+								// that the real-time path filters out.
+								if (isLockControlType(auditRecord.type)) continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
@@ -4867,6 +4965,7 @@ export function makeTable(options) {
 							}
 							try {
 								if (auditRecord.tableId !== tableId) continue;
+								if (isLockControlType(auditRecord.type)) continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									// Bound entries INSPECTED for THIS scope, independent of `count` (entries
@@ -5276,6 +5375,77 @@ export function makeTable(options) {
 					},
 				});
 			});
+		}
+		/**
+		 * Write one cluster record-lock control entry (harper#483 Phase 1) into this table's own
+		 * transaction log, in its own transaction, and NOT local-only — replicating it IS the send.
+		 *
+		 * `recordId` is null and the locked key rides in the payload. A control entry carrying the key
+		 * would share `(version, tableId, recordId, nodeId)` with the holder's own first write, which is
+		 * stamped at exactly `ts_R`; `RocksTransactionLogStore.getSync` returns the FIRST entry matching
+		 * a timestamp and key, so `_writeUpdate`'s keyed dedup would find this one and drop the holder's
+		 * write. The payload is packed by the coordinator's own structure-free packer and handed over as
+		 * bytes rather than through `recordUpdater`, so it never meets schema projection or the table's
+		 * shared structure dictionary.
+		 */
+		static writeLockControlEntry(entry: LockControlEntry): Promise<void> {
+			const encodedRecord = encodeLockControlPayload(entry);
+			const nodeId = getThisNodeId(auditStore) ?? 0;
+			return Promise.resolve(
+				transaction({ timestamp: entry.tsR } as any, (txn: any) => {
+					const tableTxn = txnForContext({ transaction: txn } as any);
+					tableTxn.addWrite({
+						key: null,
+						store: primaryStore,
+						skipReplicationConfirmation: true,
+						commit: (txnTime: number, _existingEntry: any, _retry: any, nativeTransaction: any) =>
+							auditStore[isRocksDB ? 'putSync' : 'put'](
+								null,
+								{
+									version: txnTime,
+									tableId,
+									recordId: null,
+									nodeId,
+									type: entry.type,
+									encodedRecord,
+									extendedType: 0,
+									structureVersion:
+										primaryStore.encoder.structures.length + (primaryStore.encoder.typedStructs?.length ?? 0),
+								},
+								{ instructedWrite: true, transaction: nativeTransaction, nodeId, viaNodeId: nodeId }
+							),
+					});
+				})
+			).then(() => undefined);
+		}
+		/**
+		 * This table's cluster lock coordinator, created on first use and only while a transport is
+		 * registered for the database. Nothing is allocated on the Phase 0 path.
+		 */
+		static get lockCoordinator(): LockCoordinator | undefined {
+			const transport = getClusterLockTransport(databaseName);
+			if (!transport) {
+				lockCoordinator?.close();
+				lockCoordinator = undefined;
+				return undefined;
+			}
+			if (lockCoordinator?.transport !== transport) {
+				lockCoordinator?.close();
+				lockCoordinator = new LockCoordinator({
+					database: databaseName,
+					table: tableName,
+					nodeId: getThisNodeName(),
+					transport,
+					// Writing to the local transaction log IS the send, so a transport that only computes
+					// the participant set gets core's writer.
+					writeControl: transport.writeControl
+						? (entry: LockControlEntry) => transport.writeControl!(tableName, entry)
+						: (entry: LockControlEntry) => TableResource.writeLockControlEntry(entry),
+					keyIdOf: writeKeyId,
+					nextTimestamp: () => (primaryStore as any).getMonotonicTimestamp(),
+				});
+			}
+			return lockCoordinator;
 		}
 		// #section: validation
 		validate(record: any, patch?: boolean) {
@@ -5975,7 +6145,7 @@ export function makeTable(options) {
 				end: endTime,
 			})) {
 				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId) continue;
+				if (auditRecord.tableId !== tableId || isLockControlType(auditRecord.type)) continue;
 				yield {
 					id: auditRecord.recordId,
 					localTime: auditRecord.version,
@@ -6002,7 +6172,11 @@ export function makeTable(options) {
 				let highestPreviousVersion = 0;
 				const start = nextVersion - auditWindow;
 				for (const auditRecord of auditStore.getRange({ start, end: nextVersion + 0.001 })) {
-					if (auditRecord.tableId === tableId && compareKeys(auditRecord.recordId, id) === 0) {
+					if (
+						auditRecord.tableId === tableId &&
+						!isLockControlType(auditRecord.type) &&
+						compareKeys(auditRecord.recordId, id) === 0
+					) {
 						history.splice(insertionPoint, 0, {
 							id: auditRecord.recordId,
 							localTime: auditRecord.version,
