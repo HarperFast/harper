@@ -2474,8 +2474,17 @@ export function makeTable(options) {
 				// Wait for the in-flight acquisition, then take the re-entrant path as if
 				// recordLockFor had found it.  If the first attempt timed out, re-enter so
 				// the second caller gets its own timeout.
-				return pending.then(
+				// The follower waits on the leader's acquisition, but only for its own timeout.
+				let followerTimer: ReturnType<typeof setTimeout> | undefined;
+				const followerDeadline = new Promise<never>((_, reject) => {
+					followerTimer = setTimeout(
+						() => reject(new ClientError(`Record is locked and was not released in time`, 423)),
+						resolved.timeout
+					).unref();
+				});
+				return Promise.race([pending, followerDeadline]).then(
 					() => {
+						clearTimeout(followerTimer);
 						const acquired = link.recordLockFor(primaryStore, keyId);
 						if (acquired && !acquired.released && !acquired.expired) {
 							if (resolved.hold && !acquired.hold) acquired.upgradeToHold(resolved.lease);
@@ -2483,7 +2492,11 @@ export function makeTable(options) {
 						}
 						return this.lock(target, options) as Promise<any>;
 					},
-					() => this.lock(target, options) as Promise<any>
+					(error) => {
+						clearTimeout(followerTimer);
+						if (error?.statusCode === 423) throw error;
+						return this.lock(target, options) as Promise<any>;
+					}
 				);
 			}
 			const pendingPromise = acquireRecordKey(
@@ -2499,6 +2512,11 @@ export function makeTable(options) {
 			return pendingPromise.then(
 				(handle) => {
 					link.unregisterPendingLock(primaryStore, keyId);
+					if (link.open === TRANSACTION_STATE.CLOSED && !link.saveCommits) {
+						// The transaction was aborted while this call waited; nothing would ever release the handle.
+						handle.release();
+						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
+					}
 					link.registerRecordLock(handle);
 					if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
 						// Explicit transaction() (not ImmediateTransaction): pin the clock to
