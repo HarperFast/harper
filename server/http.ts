@@ -18,7 +18,13 @@ import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage, validateHeaderName, validateHeaderValue } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { Request, BunRequest, UwsRequest, isBun } from './serverHelpers/Request.ts';
-import { appendHeader, Headers, toWriteHeadHeaders } from './serverHelpers/Headers.ts';
+import {
+	appendHeader,
+	bridgeChainHeadersToNodeResponse,
+	Headers,
+	mergeChainHeadersIntoFallback,
+	toWriteHeadHeaders,
+} from './serverHelpers/Headers.ts';
 import {
 	decodeProxyHeader,
 	applyProxyHeader,
@@ -34,7 +40,7 @@ import { server, type ServerOptions, type HttpOptions, type UpgradeOptions, Upgr
 import { setPortServerMap, SERVERS, socketOptionDefaults } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { throttle } from './throttle.ts';
-import { makeCallbackChain as buildCallbackChain, describeChains } from './middlewareChain.ts';
+import { makeCallbackChain as buildCallbackChain, describeChains, type HttpEntry } from './middlewareChain.ts';
 import { WebSocketServer } from 'ws';
 
 const { errorToString, errorForLog } = harperLogger;
@@ -490,7 +496,7 @@ export function httpServer(listener, options) {
 			httpResponders[options?.runFirst ? 'unshift' : 'push'](entry);
 		} else if (isBun) {
 			// On Bun, store non-function listeners (e.g. Fastify's http.Server) for fallback delegation
-			fallbackServers[port] = listener;
+			registerFallbackServer(port, listener);
 		} else if ((httpServers[port] as any)?.uws) {
 			// uWS HTTP path (#914, HARPER_UWS_HTTP): the port is backed by uWebSockets.js, not a Node
 			// http server, so a raw non-function listener (e.g. Fastify's http.Server via
@@ -499,12 +505,12 @@ export function httpServer(listener, options) {
 			// port. Divert it to the fallback map like the Bun path; makeUwsHandler delegates unhandled
 			// requests to it via inject(). The { uws: true } marker is guaranteed present here: the
 			// getServer(port) call above (same loop iteration) sets it before this branch runs.
-			fallbackServers[port] = listener;
+			registerFallbackServer(port, listener);
 		} else {
 			listener.isSecure = secure;
 			registerServer(listener, port, false);
 		}
-		httpChain[port] = makeCallbackChain(httpResponders, port);
+		buildChains(httpChain, httpResponders, port);
 	}
 
 	return servers;
@@ -679,9 +685,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
 					// to interact with a node HTTP server object.
-					for (const headerPair of response.headers || []) {
-						nodeResponse.setHeader(headerPair[0], headerPair[1]);
-					}
+					bridgeChainHeadersToNodeResponse(response.headers, nodeResponse);
 					nodeRequest.baseRequest = request;
 					nodeResponse.baseResponse = response;
 					return httpServers[port].emit('unhandled', nodeRequest, nodeResponse);
@@ -984,7 +988,7 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
  * and a Fastify fallback is registered for the port, it delegates via inject() (see injectToFastify),
  * mirroring the Bun path — so legacy Fastify routes work behind uWS too.
  */
-function makeUwsHandler(port: number | string, isOperationsServer: boolean, requestQueueLimit?: number) {
+export function makeUwsHandler(port: number | string, isOperationsServer: boolean, requestQueueLimit?: number) {
 	// Build a fresh response descriptor rather than mutating what the chain returned: a handler may
 	// return a WHATWG `Response` (read-only `status`/`body` accessors), which the Bun path also never
 	// mutates. `headers` is normalized in place the same way the Bun path does.
@@ -1020,6 +1024,7 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 					if (Array.isArray(v)) respHeaders.set(k, k.toLowerCase() === 'set-cookie' ? v : v.join(', '));
 					else respHeaders.set(k, String(v));
 				}
+				mergeChainHeadersIntoFallback(headers, respHeaders);
 				if (universalHeaders.length > 0) applyUniversalHeaders(respHeaders);
 				logHttpRequest(request, injectResult.statusCode, requestId, performance.now() - startTime);
 				const responseStream = injectResult.stream();
@@ -1043,6 +1048,7 @@ function makeUwsHandler(port: number | string, isOperationsServer: boolean, requ
 			}
 			logHttpRequest(request, 404, requestId, performance.now() - startTime);
 			const notFoundHeaders = new Headers({ 'content-type': 'text/plain' });
+			mergeChainHeadersIntoFallback(headers, notFoundHeaders);
 			if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
 			return { status: 404, headers: notFoundHeaders, body: 'Not found\n' };
 		}
@@ -1217,10 +1223,11 @@ function getBunHTTPServer(port: number, secure: boolean, options: ServerOptions)
 						// Delegate to the fallback server (e.g. Fastify) via node:http compatibility.
 						// We create a Node-compatible IncomingMessage/ServerResponse and emit 'request'
 						// on the fallback server, then capture the response.
-						return await bunDelegateToNodeServer(fallbackServer, webRequest, request);
+						return await bunDelegateToNodeServer(fallbackServer, webRequest, request, response.headers);
 					}
 					logHttpRequest(request, 404, requestId, performance.now() - startTime);
 					const notFoundHeaders = new globalThis.Headers();
+					mergeChainHeadersIntoFallback(response.headers, notFoundHeaders);
 					if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
 					return new Response('Not found\n', { status: 404, headers: notFoundHeaders });
 				}
@@ -1404,6 +1411,10 @@ let fastifyInstances: Record<string | number, any> = {};
 export function registerFastifyInstance(port: string | number, instance: any) {
 	fastifyInstances[port] = instance;
 }
+
+export function registerFallbackServer(port: string | number, listener: any) {
+	fallbackServers[port] = listener;
+}
 const INTERNAL_USER_HEADER = 'x-harper-internal-pre-auth-user';
 
 /**
@@ -1434,10 +1445,11 @@ function injectToFastify(
 	return fastify.inject({ method: req.method, url: req.url, headers, payload: req.body, payloadAsStream: true });
 }
 
-async function bunDelegateToNodeServer(
+export async function bunDelegateToNodeServer(
 	nodeServer: any,
 	webRequest: globalThis.Request,
-	bunRequest?: any
+	bunRequest?: any,
+	chainHeaders?: any
 ): Promise<Response> {
 	// Check if there's a Fastify instance registered for this port (preferred path)
 	for (const port in fallbackServers) {
@@ -1458,13 +1470,19 @@ async function bunDelegateToNodeServer(
 			});
 			const webHeaders = new globalThis.Headers();
 			for (const [k, v] of Object.entries(injectResult.headers)) {
-				if (v != null) webHeaders.set(k, Array.isArray(v) ? v.join(', ') : String(v));
+				if (v == null) continue;
+				if (Array.isArray(v)) {
+					if (k.toLowerCase() === 'set-cookie') {
+						for (const single of v) webHeaders.append(k, String(single));
+					} else webHeaders.set(k, v.join(', '));
+				} else webHeaders.set(k, String(v));
 			}
 			// Propagate Connection: close so Bun closes the TCP connection after this response,
 			// preventing stale keep-alive sockets from causing silent hangs on subsequent requests.
 			if (webRequest.headers.get('connection')?.toLowerCase() === 'close') {
 				webHeaders.set('connection', 'close');
 			}
+			mergeChainHeadersIntoFallback(chainHeaders, webHeaders);
 			if (universalHeaders.length > 0) applyUniversalHeaders(webHeaders);
 			const responseStream = injectResult.stream();
 			// Event-stream responses (MCP SSE) must reach the client incrementally — return
@@ -1499,6 +1517,7 @@ async function bunDelegateToNodeServer(
 	}
 	// No Fastify instance found — return 404
 	const notFoundHeaders = new globalThis.Headers();
+	mergeChainHeadersIntoFallback(chainHeaders, notFoundHeaders);
 	if (universalHeaders.length > 0) applyUniversalHeaders(notFoundHeaders);
 	return new Response('Not found\n', { status: 404, headers: notFoundHeaders });
 }
@@ -1507,13 +1526,38 @@ type SerializedRoute = { host?: string; urlPath?: string; order: string[] };
 // Resolved order captured at chain-build time, keyed identically to httpChain/upgradeChains/
 // websocketChains (kind → port → routes). Reporting the stored build-time order rather than
 // recomputing from current responders guarantees get_status matches the callback chain actually
-// serving that port — including cases where a late `port: 'all'` registration rebuilds only the
-// 'all' chain and leaves a concrete port's chain (and this description) unchanged (#1573).
+// serving that port: buildChains() writes both in the same pass, so a description can never
+// describe an order the port isn't running (#1573).
 const resolvedChainDescriptions: Record<string, Record<string, SerializedRoute[]>> = {
 	http: {},
 	upgrade: {},
 	websocket: {},
 };
+
+// Preserve the original port type because route selection uses strict equality.
+const builtChainPorts: Record<string, Map<string, number | string>> = {
+	http: new Map(),
+	upgrade: new Map(),
+	websocket: new Map(),
+};
+
+// A late registration on 'all' must rebuild every already-bound concrete port (#2418).
+function buildChains(
+	chains: Record<string, Function>,
+	listeners: HttpEntry[],
+	port: number | string,
+	requestArgIndex: number = 0,
+	kind: string = 'http'
+) {
+	builtChainPorts[kind].set(String(port), port);
+	if (port !== 'all') {
+		chains[port] = makeCallbackChain(listeners, port, requestArgIndex, kind);
+		return;
+	}
+	for (const builtPort of builtChainPorts[kind].values()) {
+		chains[builtPort] = makeCallbackChain(listeners, builtPort, requestArgIndex, kind);
+	}
+}
 
 function makeCallbackChain(
 	responders: typeof httpResponders,
@@ -1640,7 +1684,7 @@ function onUpgrade(listener: UpgradeListener, options: UpgradeOptions) {
 			host: options?.host || undefined,
 		};
 		upgradeListeners[options?.runFirst ? 'unshift' : 'push'](entry);
-		upgradeChains[port] = makeCallbackChain(upgradeListeners, port, 0, 'upgrade');
+		buildChains(upgradeChains, upgradeListeners, port, 0, 'upgrade');
 	}
 }
 
@@ -1779,10 +1823,10 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			host: options?.host || undefined,
 		};
 		websocketListeners[options?.runFirst ? 'unshift' : 'push'](wsEntry);
-		websocketChains[port] = makeCallbackChain(websocketListeners, port, 1, 'websocket');
+		buildChains(websocketChains, websocketListeners, port, 1, 'websocket');
 
 		// mqtt doesn't invoke the http handler so this needs to be here to load up the http chains.
-		httpChain[port] = makeCallbackChain(httpResponders, port);
+		buildChains(httpChain, httpResponders, port);
 	}
 
 	return servers;

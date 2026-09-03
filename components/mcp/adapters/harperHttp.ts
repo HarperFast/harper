@@ -12,6 +12,7 @@
  * automatically and pipes the iterable to the wire.
  */
 import { handleMcpRequest, type McpProfile, type NormRequest, type NormResponse } from '../transport.ts';
+import { settleDeferredCredentialRejection } from '../../../security/deferredAuthentication.ts';
 import { toSseStream, type SseFrameSource } from '../sse.ts';
 
 /**
@@ -55,6 +56,9 @@ export function createHarperHttpHandler(profile: McpProfile) {
 	): Promise<HarperHttpResponse | unknown> {
 		// WebSocket upgrades aren't ours — let the next handler take it.
 		if (request.isWebSocket) return nextHandler(request);
+
+		const settledCredentialRejection = settleDeferredCredentialRejection(request);
+		if (settledCredentialRejection) return settledCredentialRejection;
 
 		const norm: NormRequest = {
 			method: request.method,
