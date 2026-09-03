@@ -21,15 +21,19 @@ const { EngineUnsupportedError } = require('#src/sqlEngine/errors');
 
 describe('sqlEngine router', () => {
 	let originalEngine;
+	let originalConfigEngine;
 
 	beforeEach(() => {
 		originalEngine = process.env.HARPER_SQL_ENGINE;
+		originalConfigEngine = configUtils.getConfigValue(CONFIG_PARAMS.SQL_ENGINE);
 		delete process.env.HARPER_SQL_ENGINE;
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ENGINE, undefined);
 	});
 
 	afterEach(() => {
 		if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
 		else process.env.HARPER_SQL_ENGINE = originalEngine;
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ENGINE, originalConfigEngine);
 	});
 
 	it('defaults to auto mode (phase-5 cutover)', () => {
@@ -135,15 +139,20 @@ describe('sqlEngine config: harper config integration', () => {
 		CONFIG_PARAMS.SQL_MAXHASHROWS,
 	];
 	let originalValues;
+	let originalEnvEngine;
 
 	beforeEach(() => {
 		originalValues = SQL_KEYS.map((key) => configUtils.getConfigValue(key));
+		originalEnvEngine = process.env.HARPER_SQL_ENGINE;
+		delete process.env.HARPER_SQL_ENGINE;
 		// Clear to a known-unset state so a default-value assertion below can't go red on a
 		// machine whose own harper-config.yaml happens to set one of these already.
 		SQL_KEYS.forEach((key) => configUtils.updateConfigObject(key, undefined));
 	});
 
 	afterEach(() => {
+		if (originalEnvEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
+		else process.env.HARPER_SQL_ENGINE = originalEnvEngine;
 		SQL_KEYS.forEach((key, i) => configUtils.updateConfigObject(key, originalValues[i]));
 	});
 
@@ -153,15 +162,9 @@ describe('sqlEngine config: harper config integration', () => {
 	});
 
 	it('HARPER_SQL_ENGINE env var still takes precedence over sql.engine config', () => {
-		const originalEngine = process.env.HARPER_SQL_ENGINE;
 		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ENGINE, 'legacy');
 		process.env.HARPER_SQL_ENGINE = 'new';
-		try {
-			assert.strictEqual(config.getSqlEngineConfig().engine, 'new');
-		} finally {
-			if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
-			else process.env.HARPER_SQL_ENGINE = originalEngine;
-		}
+		assert.strictEqual(config.getSqlEngineConfig().engine, 'new');
 	});
 
 	it('reads sql.allowFullScan from Harper config (default is false)', () => {
