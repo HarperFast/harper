@@ -264,17 +264,16 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 	// child process's captured stdout is not a substitute: it does not carry the per-thread trace
 	// lines this oracle counts.
 	function readServerLog(): string {
-		const candidates = [join(ctx.harper.dataRootDir, 'log', 'hdb.log')];
-		if (ctx.harper.logDir) candidates.unshift(join(ctx.harper.logDir, 'hdb.log'));
-		for (const candidate of candidates) {
-			try {
-				const text = readFileSync(candidate, 'utf8');
-				if (text) return text;
-			} catch {
-				/* try the next candidate */
-			}
+		// Exclusive, not preferred: logging.root points at exactly one of these, so falling through
+		// on an empty read would confuse "not flushed yet" with "wrong file".
+		const path = ctx.harper.logDir
+			? join(ctx.harper.logDir, 'hdb.log')
+			: join(ctx.harper.dataRootDir, 'log', 'hdb.log');
+		try {
+			return readFileSync(path, 'utf8');
+		} catch {
+			return '';
 		}
-		return '';
 	}
 
 	/** Waits minWaitMs, then polls until the accept counts THIS ORACLE READS stop changing for one
@@ -432,6 +431,10 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 
 			let tBeforeRestart = 0;
 			let tJobComplete: number | undefined;
+			// When the pool was PROVEN rotated, which can be later than tJobComplete. Recovery is
+			// keyed to this: an outgoing worker serving one connect after COMPLETE would otherwise
+			// satisfy "the surface came back" while every replacement listener refuses the tail.
+			let tRotated: number | undefined;
 			let finalJob: any;
 			try {
 				await sleep(WARMUP_MS);
@@ -452,7 +455,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				strictEqual(
 					restartResp.status,
 					200,
-					`restart_service should ack 200: ${restartResp.status} ${JSON.stringify(restartResp.body)}`
+					`restart_service should ack 200: ${restartResp.status} ${JSON.stringify(restartResp.body)} ${restartResp.errCode ?? ''}`
 				);
 				const jobId = (restartResp.body as any)?.job_id;
 				ok(jobId, `restart_service response carried no job_id: ${JSON.stringify(restartResp.body)}`);
@@ -504,8 +507,10 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 					if (Date.now() >= rotationDeadline) break;
 					await sleep(100);
 				}
+				tRotated = Date.now();
 				console.log(
-					`[QA-649] http worker threadIds ${JSON.stringify(workersBefore)} -> ${JSON.stringify(workersAfter)}`
+					`[QA-649] http worker threadIds ${JSON.stringify(workersBefore)} -> ${JSON.stringify(workersAfter)} ` +
+						`(proven rotated at t+${tRotated - tBeforeRestart}ms)`
 				);
 				strictEqual(
 					survivors.length,
@@ -528,7 +533,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				// the surface genuinely never came back. ---
 				await sleep(TAIL_MS);
 				const recoveredAfterRestart = (surface: string) =>
-					results.some((r) => r.surface === surface && r.kind === 'completed' && r.launchedAt >= tJobComplete!);
+					results.some((r) => r.surface === surface && r.kind === 'completed' && r.launchedAt >= tRotated!);
 				const tailDeadline = Date.now() + POST_RESTART_RECOVERY_MS;
 				while (Date.now() < tailDeadline && !surfaces.every((s) => recoveredAfterRestart(s.surface))) {
 					await sleep(100);
@@ -567,6 +572,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				const preRestart = rs.filter((r) => r.launchedAt < tBeforeRestart);
 				const inWindow = rs.filter((r) => r.launchedAt >= tBeforeRestart && r.launchedAt < tJobComplete!);
 				const postComplete = rs.filter((r) => r.launchedAt >= tJobComplete!);
+				const postRotation = rs.filter((r) => r.launchedAt >= tRotated!);
 				const wedgedInWindow = inWindow.filter((r) => r.kind === 'wedged');
 				const wedgedPostComplete = postComplete.filter((r) => r.kind === 'wedged');
 				const windowStart = wedged.length ? Math.min(...wedged.map((r) => r.launchedAt)) - tBeforeRestart : null;
@@ -588,6 +594,7 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 					preRestart,
 					inWindow,
 					postComplete,
+					postRotation,
 					wedgedInWindow,
 					wedgedPostComplete,
 				};
@@ -674,13 +681,10 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 			// one real post-restart completion per usable surface.
 			function assertUsableAfterRestart(surface: string, a: NonNullable<ReturnType<typeof analyzeSurface>>) {
 				ok(
-					a.postComplete.some((r) => r.kind === 'completed'),
-					`MQTT (${surface}) never completed a single connect after get_job COMPLETE -- listener may not have survived the restart`
+					a.postRotation.some((r) => r.kind === 'completed'),
+					`MQTT (${surface}) never completed a single connect after the pool was PROVEN rotated -- the replacement listener may not have come back (${a.postRotation.length} attempt(s) tried)`
 				);
 			}
-			assertUsableAfterRestart('WS', wsA!);
-			assertUsableAfterRestart('TCP', tcpA!);
-			assertUsableAfterRestart('TLS', tlsA!);
 
 			// Primary hypothesis: an MQTT connect on any usable transport must never wedge (neither
 			// complete nor cleanly refuse) within our bounded observation window.
@@ -694,6 +698,14 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 			assertNoWedge('WS', wsA!);
 			assertNoWedge('TCP', tcpA!);
 			assertNoWedge('TLS', tlsA!);
+
+			// After assertNoWedge, deliberately: a post-restart listener that WEDGES also completes
+			// nothing, so running this first would swallow the specific WEDGE DEFECT diagnostic and
+			// its samples behind a generic "never came back". Same ordering rule as the accept
+			// oracle below.
+			assertUsableAfterRestart('WS', wsA!);
+			assertUsableAfterRestart('TCP', tcpA!);
+			assertUsableAfterRestart('TLS', tlsA!);
 
 			// Two-sided oracle, enforced last: `assertNoWedge` above already independently pins
 			// the client-observed wedge count to zero with the most specific diagnostic, so a real
