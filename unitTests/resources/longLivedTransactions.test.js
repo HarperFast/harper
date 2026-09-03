@@ -532,9 +532,11 @@ describe('Long-lived transaction reporting (#2471)', () => {
 	// reporting the monitor's entry alone named an id the sweep's line could not be joined to whenever
 	// that child was the intent holder. The monitor must reach it through the chain.
 	describe('chain-link attribution', () => {
-		it('names a chain link reachable only through the root under its own native id', async function () {
-			this.timeout(15000);
-			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		// Drives one logical transaction across two databases and hands the test its links plus a matcher
+		// for the second link's own log line. Matched on that link's table, not on its native id: ids are
+		// allocated per database descriptor, so the root in `test` and this link in its own database both
+		// hold id 4 here, and an id-only match silently asserts against the root's line.
+		async function withChainLinks(inspect) {
 			setMainIsWorker(true);
 			const Primary = table({
 				table: 'ChainPrimaryTable',
@@ -559,38 +561,60 @@ describe('Long-lived transaction reporting (#2471)', () => {
 					const links = [];
 					for (let txn = context.transaction; txn; txn = txn.next) if (txn.db) links.push(txn);
 					assert.strictEqual(links.length, 2, 'the second database must be a chain link');
+					// Captured now, not at assertion time: the handle is released as soon as the logical
+					// transaction settles, and the reporting window closes with it.
 					const childId = links[1].transaction?.id;
 					assert.ok(childId !== undefined, 'the child link must own a native handle');
 					// put() reads the prior entry, which is what puts this link in trackedTxns; a link whose
 					// write never reads is not. Drop it to leave it reachable only through the root's chain,
 					// which is the shape the walk has to cover.
 					trackedTxns.delete(links[1]);
-					resetLongLivedTransactionReportsForTests();
-					warnings.length = 0;
-					// Matched on the child's own table, not on the id alone: ids are allocated per database
-					// descriptor, so the root in `test` and this link in its own database both hold id 4 here
-					// and an id-only match silently asserts against the root's line.
 					const childLine = () =>
 						warningsMatching('Harper transaction has held').find(([message]) =>
 							message.includes('ChainSecondaryTable')
 						)?.[0];
-					await waitFor(() => childLine() !== undefined, 10000);
-					assert.match(
-						childLine(),
-						new RegExp(`transaction ${childId}\\b`),
-						'the link must be named under its own native id, which is what the sweep line joins to'
-					);
-					// `timeout` is armed by addWrite and only decayed for the link the tick entered on, so an
-					// undecayed chain link would claim `active` for hours while sitting idle — the inverse of
-					// the diagnosis, on the shape this walk exists for.
-					assert.ok(
-						!/state: [^,]*active/.test(childLine()),
-						'a link the monitor never decays must not be reported as actively writing'
-					);
+					await inspect(links, childLine, childId);
 				});
 			} finally {
 				setTxnExpiration(30000);
 			}
+		}
+
+		it('names a chain link reachable only through the root under its own native id', async function () {
+			this.timeout(15000);
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			await withChainLinks(async (links, childLine, childId) => {
+				resetLongLivedTransactionReportsForTests();
+				warnings.length = 0;
+				await waitFor(() => childLine() !== undefined, 10000);
+				assert.match(
+					childLine(),
+					new RegExp(`transaction ${childId}\\b`),
+					'the link must be named under its own native id, which is what the sweep line joins to'
+				);
+				// The link was just written, so its write recency is armed: hiding that would report a link
+				// the application is actively using as merely over-limit.
+				assert.match(childLine(), /state: [^,]*active/);
+			});
+		});
+
+		// `active` for a chain link must come from `writeTimeout`, the clock chainStillActive decays, not
+		// from `timeout`, which nothing decays for a link the tick never enters on — reading `timeout`
+		// would report a link idle for hours as actively writing, the inverse of the diagnosis.
+		it('does not call a chain link active once its write recency has decayed', async function () {
+			this.timeout(15000);
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			await withChainLinks(async (links, childLine) => {
+				links[1].writeTimeout = 0;
+				links[1].timeout = 60000;
+				resetLongLivedTransactionReportsForTests();
+				warnings.length = 0;
+				await waitFor(() => childLine() !== undefined, 10000);
+				assert.ok(
+					!/state: [^,]*active/.test(childLine()),
+					`an idle chain link must not be reported as actively writing: ${childLine()}`
+				);
+			});
 		});
 	});
 

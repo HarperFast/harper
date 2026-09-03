@@ -1668,10 +1668,12 @@ function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number, mon
 	if (link.isReplay) states.push('replay');
 	if (link.committing) states.push('commit-phase');
 	if (link.open === TRANSACTION_STATE.CLOSED) states.push('closed-with-open-iterators');
-	// Only for a link this tick entered on. `timeout` is re-armed by addWrite and decremented once per
-	// tick for that link alone; a link reached through the chain is never decremented, so its armed
-	// `timeout` would read `active` for hours and say the application is still writing when it is idle.
-	if (monitored && link.timeout > 0) states.push('active');
+	// Which clock says "still active" depends on how the monitor sees this link: the one this tick
+	// entered on has its idle `timeout` decayed below, while a link reached only through the chain has
+	// nothing decay its `timeout` at all — `chainStillActive` decays its `writeTimeout` instead. Reading
+	// `timeout` for the latter reports `active` forever for an idle link; ignoring it entirely hides one
+	// that is genuinely still being written.
+	if ((monitored ? link.timeout : link.writeTimeout) > 0) states.push('active');
 	if (states.length === 0) states.push('over-limit');
 	reportLongLivedHolder({
 		databasePath: (link.db as any)?.rootStore?.path,
