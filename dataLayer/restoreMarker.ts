@@ -13,7 +13,7 @@ import {
 	unlinkSync,
 	writeSync,
 } from 'node:fs';
-import { readdir, rmdir, unlink } from 'node:fs/promises';
+import { opendir, rmdir, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
@@ -391,21 +391,29 @@ export async function removeDroppedDatabaseFiles(
  * depends on that to decide whether it may clear the drop marker.
  */
 async function removeSteadily(path: string): Promise<void> {
-	let entries;
+	let dir;
 	try {
-		entries = await readdir(path, { withFileTypes: true });
+		// opendir(), not readdir(): readdir() materializes every entry before this can remove any of
+		// them, which is the same whole-directory-at-once cost this function exists to avoid for a
+		// directory with very many entries. opendir()'s async iterator yields (and lets a removal
+		// begin) one entry at a time instead.
+		dir = await opendir(path);
 	} catch (error: any) {
 		if (error.code === 'ENOENT') return;
 		throw error;
 	}
-	for (const entry of entries) {
-		const entryPath = join(path, entry.name);
-		try {
-			if (entry.isDirectory()) await removeSteadily(entryPath);
-			else await unlink(entryPath);
-		} catch (error: any) {
-			if (error.code !== 'ENOENT') throw error;
+	try {
+		for await (const entry of dir) {
+			const entryPath = join(path, entry.name);
+			try {
+				if (entry.isDirectory()) await removeSteadily(entryPath);
+				else await unlink(entryPath);
+			} catch (error: any) {
+				if (error.code !== 'ENOENT') throw error;
+			}
 		}
+	} finally {
+		await dir.close().catch(() => {});
 	}
 	try {
 		await rmdir(path);
