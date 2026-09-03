@@ -1,7 +1,7 @@
 import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
-import { SKIP } from '@harperfast/extended-iterable';
+import { SKIP, ExtendedIterable } from '@harperfast/extended-iterable';
 import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
@@ -232,6 +232,47 @@ function composeRecordFilter(recordFilters, table, context): (primaryKey: Id) =>
 	};
 }
 
+const CANONICAL_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
+
+/**
+ * A set key that means what the store means by key equality. An array primary key decodes to a
+ * fresh instance for every index entry, so identity never matches it, and `flattenKey` is not a
+ * substitute here: it joins with \u0000, folding `['t', 7]` and the scalar `'t\u00007'` into one
+ * key and dropping a record.
+ */
+function canonicalPrimaryKey(primaryKey: Id) {
+	if (typeof primaryKey !== 'object' || primaryKey === null) return primaryKey;
+	return CANONICAL_KEY_BUFFER.toString('latin1', 0, writeKey(primaryKey, CANONICAL_KEY_BUFFER, 0));
+}
+
+/**
+ * Collapse an index scan to one result per record (#2434).
+ *
+ * An `elements` attribute gets one index entry per array element, and a record's entries are not
+ * adjacent — the composite `[indexedValue, primaryKey]` key sorts on the indexed value first — so
+ * this has to remember which records the scan has already yielded. The set holds one primary key
+ * per distinct record the range matches, and is deliberately NOT bounded by any page window: the
+ * sibling-condition and row filters that shrink the result run downstream of here, so a selective
+ * filter keeps the scan (and the set) going while the page fills.
+ *
+ * The set is built per iteration rather than per iterable so re-iterating a scan starts empty.
+ */
+function distinctRecords(entries: any): AsyncIterable<Id> {
+	const distinct = new ExtendedIterable();
+	(distinct as any).iterate = (options) => {
+		const yielded = new Set();
+		return entries
+			.filter((primaryKey) => {
+				const identity = canonicalPrimaryKey(primaryKey);
+				if (yielded.has(identity)) return false;
+				yielded.add(identity);
+				return true;
+			})
+			.iterate(options);
+	};
+	return distinct as any;
+}
+
 /**
  * Search for records or keys, based on the search condition, using an index if available
  * @param searchCondition
@@ -261,6 +302,10 @@ export function searchByIndex(
 		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
 	}
 	let needFullScan;
+	// Whether the scan stays inside one indexed value. `[indexedValue, primaryKey]` is unique, so
+	// such a scan cannot reach a record twice and needs no collapsing — which is what keeps
+	// element equality, the common array query, free of the dedup below.
+	let scansOneIndexedValue;
 	if (Array.isArray(attribute_name)) {
 		const firstAttributeName = attribute_name[0];
 		// get the potential relationship attribute
@@ -388,6 +433,7 @@ export function searchByIndex(
 				start = value;
 				end = value;
 				inclusiveEnd = true;
+				scansOneIndexedValue = true;
 				break;
 			case 'in':
 				// Phase 1: route through filter — index-merge optimization is a Phase 2 follow-up.
@@ -531,7 +577,7 @@ export function searchByIndex(
 			}
 			return loaded;
 		}
-		return index.getRange(rangeOptions).map(
+		const scanned = index.getRange(rangeOptions).map(
 			filter
 				? function ({ key, value }) {
 						let recordMatcher: any;
@@ -554,6 +600,12 @@ export function searchByIndex(
 					}
 				: ({ value }) => value
 		);
+		// Only a declared multi-valued attribute can put a record into the same scan twice. A
+		// runtime array under an undeclared attribute does too, but the schema does not say it is
+		// multi-valued, so it stays outside this boundary.
+		return scansOneIndexedValue || !findAttribute(Table.attributes, attribute_name)?.elements
+			? scanned
+			: distinctRecords(scanned);
 	} else {
 		return Table.primaryStore
 			.getRange(reverse ? { end: true, transaction, reverse: true } : { start: true, transaction })
