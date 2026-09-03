@@ -61,7 +61,7 @@ The audit entry data follows the transaction log header and contains the actual 
   leading byte is the field's _only_ presence signal, so a value outside it would be written and then
   skipped by every reader, shifting every following field by 8 bytes. The writer therefore rejects an
   unrepresentable value rather than emitting one (harper#2247). Millisecond epoch timestamps sit at
-  roughly `2^40.7`, so the band covers every real log position through the year 19857.
+  roughly `2^40.7`, so the band covers every real log position through roughly the year 19800.
 - **Cross-version contract:** the same leading-byte test decodes this field in harperdb 4.x and is how
   both versions' replication senders strip it before framing an entry for the wire. It cannot be
   replaced by a header flag without a coordinated change across all of them.

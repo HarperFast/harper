@@ -610,13 +610,14 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 	} else if (previousVersion === PENDING_LOCAL_TIME) {
 		// The previous entry has no log position yet, and a format whose presence signal is the value's
 		// own first byte cannot express "to be filled in at commit". The superseded code deferred to
-		// lmdb-js's substitution, which resolves to 2.0 when no previous time was recorded — the
-		// unreadable entry this guard exists to prevent. Not a throw: a pending previous is a producer
-		// state, unlike a value the format cannot hold.
+		// lmdb-js's instructed-write substitution, which resolves to 2.0 whenever no previous time was
+		// recorded — the unreadable entry behind harper-pro#737. It resolved correctly when one was, so
+		// this trades a lost link on that path for never minting the unreadable form. Not a throw: a
+		// pending previous is a producer state, unlike a value the format cannot hold.
 		hasPreviousVersion = false;
 		if (!warnedPendingPreviousVersion.has(`${tableId}:${type}`)) {
 			warnedPendingPreviousVersion.add(`${tableId}:${type}`);
-			harperLogger.warn(
+			warnContained(
 				`Audit entry (${type}) for record ${recordId} in table ${tableId} has a pending previous version; recording it without a previous-version link`,
 				new Error('pending audit previousVersion')
 			);
@@ -743,21 +744,18 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			if (start !== 0 || start + 9 > buffer.byteLength || ACTION_FIRST_BYTE[buffer[start + 8]] !== 1) {
 				return corruptEntry(buffer, start, end, firstByte);
 			}
-			const candidate = decoder.getFloat64(start);
-			// > 1 is exactly what the superseded writer's own guard could emit, which is the tightest
-			// bound available on "these bytes really are an old previousVersion".
-			if (!(candidate > 1)) return corruptEntry(buffer, start, end, firstByte);
+			// > 1 is exactly what the superseded writer's own guard could emit, the tightest available
+			// bound on "these bytes really are an old previousVersion"
+			if (!(decoder.getFloat64(start) > 1)) return corruptEntry(buffer, start, end, firstByte);
 			entryStart = decoder.position = start + 8;
-			previousVersion = candidate;
+			// The value itself is dropped, not reported. It cannot lead with 0x42 (that is the branch
+			// above), and audit keys carry the same constraint, so it could never have addressed a
+			// retrievable entry; reporting it would only feed an unrepresentable value back to
+			// createAuditEntry through the resolveRecord re-mint in RecordEncoder, which now rejects it.
 		}
 		const action = decoder.readInt();
-		if (entryStart !== start) {
-			if (!isDecodableAction(action)) return corruptEntry(buffer, start, end, firstByte);
-			// 2.0 is what lmdb-js's instructed-write substitution leaves in the slot when no previous
-			// time was recorded, so it is a "no previous version" sentinel rather than a log position.
-			// Any other recovered value is kept: it may be a real back-edge, and dropping it would
-			// truncate the record's history chain.
-			if (previousVersion === 2) previousVersion = undefined;
+		if (entryStart !== start && !isDecodableAction(action)) {
+			return corruptEntry(buffer, start, end, firstByte);
 		}
 		const nodeId = decoder.readInt();
 		const tableId = decoder.readInt();
@@ -766,7 +764,6 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			warnContained('Audit entry carries an unannounced previousVersion field; recovering its field offsets', {
 				tableId,
 				firstByte,
-				previousVersion,
 			});
 		}
 		let length = decoder.readInt();

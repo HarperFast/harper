@@ -1766,7 +1766,7 @@ describe('audit entry previousVersion presence', () => {
 			// is what threw RangeError inside the audit-forwarding loop.
 			const record = readAuditEntry(legacyEntry(asDouble(2)));
 			assertTrailingFields(record, '2.0 sentinel');
-			assert.strictEqual(record.previousVersion, undefined, '2.0 means "no previous version"');
+			assert.strictEqual(record.previousVersion, undefined);
 		});
 
 		for (const [label, previousVersion] of [
@@ -1775,13 +1775,13 @@ describe('audit entry previousVersion presence', () => {
 			['2 ** 49 (0x43)', 2 ** 49],
 			['Infinity (0x7f)', Infinity],
 		]) {
-			it(`recovers the field offsets and preserves the value for ${label}`, () => {
+			it(`recovers the field offsets for ${label}`, () => {
 				const record = readAuditEntry(legacyEntry(asDouble(previousVersion)));
 				assertTrailingFields(record, label);
-				// Preserved rather than discarded so a real link is never dropped. It is not resolvable as
-				// an audit key: the key codec makes the same leading-byte test, so a position outside the
-				// representable band could not have been stored as a key either.
-				assert.strictEqual(record.previousVersion, previousVersion, 'a recovered value must not be discarded');
+				// The value is dropped, not reported: it cannot lead with 0x42, audit keys carry the same
+				// constraint so it never addressed a retrievable entry, and reporting it would feed an
+				// unrepresentable value back into the writer through RecordEncoder's resolveRecord re-mint.
+				assert.strictEqual(record.previousVersion, undefined);
 			});
 		}
 
