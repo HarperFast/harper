@@ -28,22 +28,23 @@
  * Oracle, both sides:
  *   - client side: did 'connect' fire (completed), 'error'/'close' fire pre-connack (refused), or
  *     neither within the bounded window (wedged)?
- *   - server side: {dataRootDir}/log/hdb.log at logging.level 'trace' — server/mqtt.ts logs
+ *   - server side: hdb.log at logging.level 'trace' in the harness's per-suite log directory
+ *     (`ctx.harper.logDir`, always populated -- the test runner sets
+ *     HARPER_INTEGRATION_TEST_LOG_DIR itself when the caller hasn't) — server/mqtt.ts logs
  *     `Received WebSocket connection for MQTT from` / `Received TCP connection for MQTT from` /
  *     `Received SSL connection for MQTT from` at the moment the TRANSPORT (WS upgrade / raw
- *     socket) is accepted, BEFORE the MQTT CONNECT packet is even parsed. If the count of these
- *     "accepted" log lines during the restart window exceeds the count of client-side 'completed'
- *     outcomes for the same surface/window, that is server-side proof some connections were
- *     accepted at the transport level but never finished the MQTT handshake — the wedge shape
- *     described in the scenario, not a client-side illusion (a past QA finding was retracted for
- *     exactly this kind of one-sided evidence).
- *
- * Stage-2 gate: 2/2 cold runs green against Harper SHA 1e1edc666.
+ *     socket) is accepted, BEFORE the MQTT CONNECT packet is even parsed. If the whole-run count
+ *     of these "accepted" log lines exceeds the whole-run count of client-side 'completed'
+ *     outcomes for the same surface (beyond the +1 the baseline usability probe below
+ *     deliberately contributes and excludes from `completed`), that is server-side proof some
+ *     connection was accepted at the transport level but never finished the MQTT handshake — the
+ *     wedge shape described in the scenario, not a client-side illusion (a past QA finding was
+ *     retracted for exactly this kind of one-sided evidence). This is asserted, not just logged.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 
@@ -99,7 +100,6 @@ function attemptConnect(
 	url: string,
 	opts: IClientOptions
 ): Promise<Omit<AttemptResult, 'surface' | 'seq' | 'launchedAt'>> {
-	const launchedAt = Date.now();
 	return new Promise((resolveOuter) => {
 		let classified = false;
 		let client: MqttClient;
@@ -121,7 +121,10 @@ function attemptConnect(
 			resolveOuter({ kind, detail, tEnd: Date.now(), client });
 		};
 		client.once('connect', () => finish('completed', 'connack received'));
-		client.once('error', (err: any) => finish('refused', String(err?.code ?? err?.message ?? err)));
+		// .on, not .once: classified guards finish() to a single effect, but the listener must
+		// stay attached -- a client force-closed post-classification can emit a second 'error',
+		// and an unhandled second EventEmitter 'error' throws and kills the whole test process.
+		client.on('error', (err: any) => finish('refused', String(err?.code ?? err?.message ?? err)));
 		client.once('close', () => finish('refused', 'socket closed before connect/error'));
 		const wedgeTimer = setTimeout(() => {
 			finish(
@@ -129,7 +132,6 @@ function attemptConnect(
 				`neither connect/error/close within ${WALL_CLOCK_MS}ms (mqtt.js connectTimeout=${MQTT_JS_CONNECT_TIMEOUT_MS}ms did not fire either)`
 			);
 		}, WALL_CLOCK_MS);
-		void launchedAt;
 	});
 }
 
@@ -145,26 +147,19 @@ function endQuiet(client: MqttClient | undefined): Promise<void> {
 }
 
 suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSuite }, (ctx: ContextWithHarper) => {
-	let procOutput = '';
-
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: {
 				threads: { count: WORKERS },
-				logging: { root: 'log', level: 'trace', console: true },
+				logging: { level: 'trace' },
 			},
 			env: {},
 		});
 
-		procOutput += ctx.harper.startupOutput?.stdout ?? '';
-		procOutput += ctx.harper.startupOutput?.stderr ?? '';
-		const proc = ctx.harper.process;
-		proc?.stdout?.on('data', (d: Buffer) => (procOutput += d.toString()));
-		proc?.stderr?.on('data', (d: Buffer) => (procOutput += d.toString()));
-
 		// Poll the probe route directly for non-404 — deliberately NOT restartHttpWorkers() (fire-
 		// and-forget; would race the readiness wait against the same class of bug under test).
 		const deadline = Date.now() + 120_000;
+		let ready = false;
 		while (Date.now() < deadline) {
 			try {
 				const res = await fetch(`${ctx.harper.httpURL}/Probe/`, {
@@ -173,12 +168,16 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 					},
 					signal: AbortSignal.timeout(2000),
 				});
-				if (res.status !== 404) break;
+				if (res.status !== 404) {
+					ready = true;
+					break;
+				}
 			} catch {
 				/* not ready yet */
 			}
 			await sleep(150);
 		}
+		ok(ready, 'Probe route never left 404 within 120s -- fixture did not mount, not an MQTT problem');
 	});
 
 	after(async () => {
@@ -210,30 +209,19 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 		}
 	}
 
+	// setupHarperWithFixture always runs under harper-integration-test-run, which sets
+	// HARPER_INTEGRATION_TEST_LOG_DIR itself when the caller hasn't -- so logDir (and the
+	// config.logging.root it forces, overriding whatever `logging.root` this suite passes in) is
+	// always populated, not only when a caller opts in. That makes it the one reliable source:
+	// dataRootDir/log/hdb.log never gets created (root is redirected to logDir), and the child
+	// process's captured stdout does not carry the per-thread trace lines this oracle needs.
 	function readServerLog(): string {
-		let text = procOutput;
-		const p = join(ctx.harper.dataRootDir, 'log', 'hdb.log');
-		if (existsSync(p)) {
-			try {
-				text += readFileSync(p, 'utf8');
-			} catch {
-				/* ignore */
-			}
+		if (!ctx.harper.logDir) return '';
+		try {
+			return readFileSync(join(ctx.harper.logDir, 'hdb.log'), 'utf8');
+		} catch {
+			return '';
 		}
-		const logDir = (ctx.harper as any).logDir as string | undefined;
-		if (logDir) {
-			for (const name of ['hdb.log', 'stdout.log', 'stderr.log']) {
-				const p2 = join(logDir, name);
-				if (existsSync(p2)) {
-					try {
-						text += readFileSync(p2, 'utf8');
-					} catch {
-						/* ignore */
-					}
-				}
-			}
-		}
-		return text;
 	}
 
 	function countMatches(text: string, re: RegExp): number {
@@ -271,7 +259,6 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				`WS /mqtt surface must be usable at baseline for this experiment to be meaningful: ${skipReason.get('ws')}`
 			);
 
-			// --- Storm driver: fire connects on a fixed cadence per surface until stormOver ---
 			const results: AttemptResult[] = [];
 			const lateSelfHeals: Array<{ surface: string; seq: number; wedgedAt: number; lateConnectAt: number }> = [];
 			const lateWatchCount: Record<string, number> = { ws: 0, tcp: 0, tls: 0 };
@@ -315,27 +302,27 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				else console.log(`[QA-649] skipping storm for surface '${s.surface}': ${skipReason.get(s.surface)}`);
 			}
 
-			// --- Warm-up: confirm live traffic before touching anything ---
-			await sleep(WARMUP_MS);
-			ok(results.length > 0, 'connect storm produced no attempts during warm-up -- harness problem');
-
-			// --- Trigger restart_service http_workers, capture job_id ---
-			const tBeforeRestart = Date.now();
-			const restartResp = await opsCall({ operation: 'restart_service', service: 'http_workers' }, 30_000);
-			const tAfterRestartResp = Date.now();
-			strictEqual(
-				restartResp.status,
-				200,
-				`restart_service should ack 200: ${restartResp.status} ${JSON.stringify(restartResp.body)}`
-			);
-			const jobId = (restartResp.body as any)?.job_id;
-			ok(jobId, `restart_service response carried no job_id: ${JSON.stringify(restartResp.body)}`);
-			console.log(`[QA-649] restart_service acked 200 in ${tAfterRestartResp - tBeforeRestart}ms, job_id=${jobId}`);
-
-			// --- Poll get_job to a terminal state (the real completion signal per QA-642) ---
+			let tBeforeRestart = 0;
 			let tJobComplete: number | undefined;
 			let finalJob: any;
-			{
+			try {
+				// --- Warm-up: confirm live traffic before touching anything ---
+				await sleep(WARMUP_MS);
+				ok(results.length > 0, 'connect storm produced no attempts during warm-up -- harness problem');
+
+				tBeforeRestart = Date.now();
+				const restartResp = await opsCall({ operation: 'restart_service', service: 'http_workers' }, 30_000);
+				const tAfterRestartResp = Date.now();
+				strictEqual(
+					restartResp.status,
+					200,
+					`restart_service should ack 200: ${restartResp.status} ${JSON.stringify(restartResp.body)}`
+				);
+				const jobId = (restartResp.body as any)?.job_id;
+				ok(jobId, `restart_service response carried no job_id: ${JSON.stringify(restartResp.body)}`);
+				console.log(`[QA-649] restart_service acked 200 in ${tAfterRestartResp - tBeforeRestart}ms, job_id=${jobId}`);
+
+				// --- Poll get_job to a terminal state (the real completion signal per QA-642) ---
 				const deadline = Date.now() + 60_000;
 				while (Date.now() < deadline) {
 					const r = await opsCall({ operation: 'get_job', id: jobId }, 3000);
@@ -347,19 +334,29 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 					}
 					await sleep(20);
 				}
+				ok(tJobComplete, `get_job(${jobId}) never reached a terminal status within 60s`);
+				strictEqual(
+					finalJob.status,
+					'COMPLETE',
+					`restart job ended in ${finalJob.status}: ${JSON.stringify(finalJob)}`
+				);
+				console.log(`[QA-649] get_job(${jobId}) COMPLETE at t+${tJobComplete! - tBeforeRestart}ms`);
+
+				// --- Tail: keep storming a bit past COMPLETE, to see whether the window truly closes ---
+				await sleep(TAIL_MS);
+			} finally {
+				// Stop the storm loops no matter what -- if an assertion above throws (e.g. a
+				// regressed restart_service), leaving them running would fire qa649-* connects
+				// every 50/100/200ms past teardownHarper and hang the whole integration shard
+				// instead of just failing this test.
+				stormOver = true;
+				await Promise.all(stormPromises).catch(() => {});
 			}
-			ok(tJobComplete, `get_job(${jobId}) never reached a terminal status within 60s`);
-			strictEqual(finalJob.status, 'COMPLETE', `restart job ended in ${finalJob.status}: ${JSON.stringify(finalJob)}`);
-			console.log(`[QA-649] get_job(${jobId}) COMPLETE at t+${tJobComplete! - tBeforeRestart}ms`);
 
-			// --- Tail: keep storming a bit past COMPLETE, to see whether the window truly closes ---
-			await sleep(TAIL_MS);
-			stormOver = true;
-			await Promise.all(stormPromises);
-
-			// Give any attempts launched right at the tail edge (up to WALL_CLOCK_MS + LATE_GRACE_MS
-			// to fully classify/self-heal-observe) time to finish before we analyze.
-			await sleep(WALL_CLOCK_MS + LATE_GRACE_MS + 500);
+			// Promise.all(stormPromises) above already waited for every launched attempt to be
+			// CLASSIFIED (up to WALL_CLOCK_MS after launch); only the LATE_GRACE_MS late-connect
+			// watch that starts once a 'wedged' result lands is still outstanding.
+			await sleep(LATE_GRACE_MS + 500);
 
 			// ================= ANALYSIS =================
 			const serverLog = readServerLog();
@@ -417,6 +414,29 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				'server log never recorded a single "Received WebSocket connection for MQTT from" line -- logging/harness problem, cannot evaluate the transport-accepted-but-never-completed hypothesis'
 			);
 
+			// Two-sided oracle, enforced: the server must never have accepted more transports than
+			// the client saw complete. +1 per surface allows for the baseline usability probe fired
+			// above, which triggers an "accepted" log line but is deliberately excluded from
+			// `results`/`completed` (Stage-2 gate measured this delta at exactly 1, both cold runs).
+			// A larger delta is server-side proof of a transport accepted but never handshaken --
+			// the wedge shape this spec exists to catch, not a client-side illusion (F-164's mistake).
+			ok(
+				wsAcceptedLines <= wsA!.completed.length + 1,
+				`SERVER-SIDE WEDGE PROOF (WS): server log recorded ${wsAcceptedLines} accepted transports vs only ${wsA!.completed.length} client-side completions`
+			);
+			if (tcpA) {
+				ok(
+					tcpAcceptedLines <= tcpA.completed.length + 1,
+					`SERVER-SIDE WEDGE PROOF (TCP): server log recorded ${tcpAcceptedLines} accepted transports vs only ${tcpA.completed.length} client-side completions`
+				);
+			}
+			if (tlsA) {
+				ok(
+					sslAcceptedLines <= tlsA.completed.length + 1,
+					`SERVER-SIDE WEDGE PROOF (TLS): server log recorded ${sslAcceptedLines} accepted transports vs only ${tlsA.completed.length} client-side completions`
+				);
+			}
+
 			console.log(
 				`\n[QA-649] SELF-HEAL: ${lateSelfHeals.length} of the ${Object.values(lateWatchCount).reduce((a, b) => a + b, 0)} tracked wedged client(s) ` +
 					`fired a late 'connect' within the ${LATE_GRACE_MS}ms post-classification grace window. ` +
@@ -430,6 +450,14 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 				'no successful WS connects observed before the restart -- stream was not live, test invalid'
 			);
 
+			// Precondition proof: attempts must actually have landed strictly inside the restart
+			// window, not just before/after it -- otherwise a degenerate window (e.g. get_job
+			// completing on its very first poll) would make the wedge check below vacuous.
+			ok(
+				wsA!.inWindow.length > 0,
+				`no WS connect attempts landed inside the restart window [trigger, COMPLETE) -- window was ${tJobComplete! - tBeforeRestart}ms, nothing to test`
+			);
+
 			// Q3: does polling get_job to COMPLETE close the window entirely? Evidence: any wedged
 			// WS attempt LAUNCHED AT/AFTER tJobComplete would mean the window survives past the
 			// documented completion signal.
@@ -440,16 +468,18 @@ suite('QA-649 MQTT connect wedge across an HTTP-worker restart', { skip: skipSui
 						: '-- DEFECT-ADJACENT: the window OUTLIVES the documented completion signal.')
 			);
 
-			// Primary hypothesis: a WS /mqtt connect must never wedge (neither complete nor cleanly
-			// refuse) within our bounded observation window. Contrast surfaces are informational.
-			ok(
-				wsA!.wedged.length === 0,
-				`WEDGE DEFECT: ${wsA!.wedged.length} of ${wsA!.rs.length} WS /mqtt connect attempt(s) neither completed nor errored within ${WALL_CLOCK_MS}ms ` +
-					`(mqtt.js connectTimeout=${MQTT_JS_CONNECT_TIMEOUT_MS}ms also did not fire) -- samples: ${JSON.stringify(wsA!.wedged.slice(0, 5).map((r) => ({ seq: r.seq, launchRelMs: r.launchedAt - tBeforeRestart, detail: r.detail })))}`
-			);
-
-			if (tcpA) console.log(`[QA-649] contrast: raw TCP :1883 wedged=${tcpA.wedged.length}/${tcpA.rs.length}`);
-			if (tlsA) console.log(`[QA-649] contrast: TLS :8883 wedged=${tlsA.wedged.length}/${tlsA.rs.length}`);
+			// Primary hypothesis: an MQTT connect on any usable transport must never wedge (neither
+			// complete nor cleanly refuse) within our bounded observation window.
+			function assertNoWedge(surface: string, a: NonNullable<ReturnType<typeof analyzeSurface>>) {
+				ok(
+					a.wedged.length === 0,
+					`WEDGE DEFECT (${surface}): ${a.wedged.length} of ${a.rs.length} connect attempt(s) neither completed nor errored within ${WALL_CLOCK_MS}ms ` +
+						`(mqtt.js connectTimeout=${MQTT_JS_CONNECT_TIMEOUT_MS}ms also did not fire) -- samples: ${JSON.stringify(a.wedged.slice(0, 5).map((r) => ({ seq: r.seq, launchRelMs: r.launchedAt - tBeforeRestart, detail: r.detail })))}`
+				);
+			}
+			assertNoWedge('WS', wsA!);
+			if (tcpA) assertNoWedge('TCP', tcpA);
+			if (tlsA) assertNoWedge('TLS', tlsA);
 		}
 	);
 });
