@@ -21,8 +21,11 @@ const {
 	DatabaseTransaction,
 	getOutstandingCommits,
 	setMaxOutstandingTxnDuration,
+	setTxnExpiration,
 	trackOutstandingCommit,
 } = require('#src/resources/DatabaseTransaction');
+const { transaction } = require('#src/resources/transaction');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const harperLogger = require('#src/utility/logging/harper_logger');
 const { table } = require('#src/resources/databases');
 const { waitFor } = require('../waitFor.js');
@@ -117,6 +120,16 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			assert.match(reported[0][0], /1h/);
 		});
 
+		// registryStatus() reports an entry with no path for an ephemeral descriptor; the rest of this
+		// surface defaults it, and an operator reading "on database undefined" learns nothing.
+		it('names a handle whose database has no path without printing undefined', function () {
+			setRegistryStatusForTests(status(database(undefined, [7, 3600000])));
+			runLongLivedTransactionSweep();
+			const reported = warningsMatching('Long-lived RocksDB transaction handle');
+			assert.strictEqual(reported.length, 1);
+			assert.match(reported[0][0], /on database \?\./);
+		});
+
 		it('ignores a handle below the threshold', function () {
 			setRegistryStatusForTests(status(database('/db/alpha', [7, 1000])));
 			runLongLivedTransactionSweep();
@@ -200,6 +213,32 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			assert.strictEqual(errors.length, 1);
 		});
 
+		// The threshold is read per pass so a live config reload takes effect, but the backoff a handle
+		// accrued was pinned at first observation — so lowering it mid-incident did not bring the first
+		// report forward, and raising it did not quiet one.
+		it('re-measures an already-observed handle when the threshold is lowered', function () {
+			env.setProperty(THRESHOLD, '1h');
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 120000])));
+			runLongLivedTransactionSweep();
+			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 0);
+			env.setProperty(THRESHOLD, '1m');
+			runLongLivedTransactionSweep();
+			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 1);
+		});
+
+		it('re-measures an already-observed handle when the threshold is raised', function () {
+			setRegistryStatusForTests(status(database('/db/alpha', [7, 120000])));
+			runLongLivedTransactionSweep();
+			assert.strictEqual(warningsMatching('Long-lived RocksDB transaction handle').length, 1);
+			env.setProperty(THRESHOLD, '1h');
+			runLongLivedTransactionSweep();
+			assert.strictEqual(
+				warningsMatching('Long-lived RocksDB transaction handle').length,
+				1,
+				'a handle under the raised threshold must go quiet'
+			);
+		});
+
 		it('arms the sweep at most once', function () {
 			startLongLivedTransactionReporting();
 			startLongLivedTransactionReporting();
@@ -265,6 +304,15 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			assert.strictEqual(counted, 1, 'the suppressed report must not count staged writes');
 		});
 
+		it('re-measures an already-observed holder when the threshold changes', function () {
+			env.setProperty(THRESHOLD, '1h');
+			reportLongLivedHolder(holder({ ageMs: 120000 }));
+			assert.strictEqual(warningsMatching('Harper transaction has held').length, 0);
+			env.setProperty(THRESHOLD, '1m');
+			reportLongLivedHolder(holder({ ageMs: 120000 }));
+			assert.strictEqual(warningsMatching('Harper transaction has held').length, 1);
+		});
+
 		it('never throws', function () {
 			assert.doesNotThrow(() => reportLongLivedHolder(holder({ states: null })));
 		});
@@ -285,8 +333,37 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			assert.match(describeHolderCandidates('/db/alpha', 1), /2 \(open 0s\)/);
 		});
 
-		it('only offers handles from the stuck commit’s own database', function () {
+		// The verification table is one process-global slot array whose hash mixes in the database id, so a
+		// holder in `system` or `oauth` parks a `data` commit at the same rate another `data` key would.
+		// Filtering to the commit's own database printed nothing at all for that shape.
+		it('offers a handle on another database, labelled with its path', function () {
 			setRegistryStatusForTests(status(database('/db/alpha', [1, 90000]), database('/db/beta', [9, 3600000])));
+			const described = describeHolderCandidates('/db/alpha', 1);
+			assert.match(described, /9 \(open 1h 0m 0s on \/db\/beta\)/);
+		});
+
+		it('ranks the stuck commit’s own database ahead of an older foreign handle', function () {
+			setRegistryStatusForTests(
+				status(database('/db/alpha', [1, 90000], [2, 60000]), database('/db/beta', [9, 3600000]))
+			);
+			assert.match(
+				describeHolderCandidates('/db/alpha', 1),
+				/oldest first: 2 \(open 1m 0s\), 9 \(open 1h 0m 0s on \/db\/beta\)/
+			);
+		});
+
+		// A registry entry with no path can never be the target, and resolve() throws on undefined —
+		// inside the enumeration that dropped the candidate list for every database, not just that entry.
+		it('survives a registry entry with no path', function () {
+			setRegistryStatusForTests(
+				status(database(undefined, [8, 3600000]), database('/db/alpha', [1, 90000], [2, 120000]))
+			);
+			assert.match(describeHolderCandidates('/db/alpha', 1), /2 \(open 2m 0s\)/);
+		});
+
+		it('offers nothing when reporting is disabled', function () {
+			env.setProperty(THRESHOLD, 0);
+			setRegistryStatusForTests(status(database('/db/alpha', [1, 90000], [2, 3600000])));
 			assert.strictEqual(describeHolderCandidates('/db/alpha', 1), '');
 		});
 
@@ -339,6 +416,35 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			await waitFor(() => getOutstandingCommits().count === 0, 2000);
 		});
 
+		it('offers no candidates when reporting is disabled', async function () {
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			const errorLines = [];
+			const originalError = harperLogger.error;
+			harperLogger.error = (...args) => errorLines.push(args);
+			env.setProperty(THRESHOLD, 0);
+			setRegistryStatusForTests(status(database('/db/wedged', [4, 90000], [5, 3600000])));
+			try {
+				trackAStuckCommit();
+				await waitFor(() => {
+					try {
+						new DatabaseTransaction().checkOverloaded();
+						return false;
+					} catch {
+						// The log site is rate-limited across the whole thread, so an earlier test's line can
+						// hold the slot; keep shedding until this commit gets one.
+						return errorLines.length > 0;
+					}
+				}, 4000);
+			} finally {
+				harperLogger.error = originalError;
+			}
+			assert.strictEqual(errorLines.length, 1);
+			assert.ok(
+				!errorLines[0][0].includes('Live transaction handles'),
+				'a disabled threshold must silence this surface too'
+			);
+		});
+
 		it('appends the candidates to the 503-raising error, and still raises the 503', async function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 			const errorLines = [];
@@ -353,15 +459,15 @@ describe('Long-lived transaction reporting (#2471)', () => {
 						return false;
 					} catch (error) {
 						assert.strictEqual(error.statusCode, 503, 'the shed must still be a 503');
-						return true;
+						return errorLines.length > 0;
 					}
-				}, 2000);
+				}, 4000);
 			} finally {
 				harperLogger.error = originalError;
 			}
 			assert.strictEqual(errorLines.length, 1, 'the stuck commit must be logged once');
 			const line = errorLines[0][0];
-			assert.match(line, /Live transaction handles on this database/);
+			assert.match(line, /Live transaction handles, any of which could hold the write intent/);
 			assert.match(line, /5 \(open 1h 0m 0s\)/, 'the older candidate must be named');
 			assert.ok(!/oldest first: 4 /.test(line), 'the wedged commit is not its own holder');
 		});
@@ -410,6 +516,60 @@ describe('Long-lived transaction reporting (#2471)', () => {
 				registryStatus().some((entry) => path.resolve(entry.path) === path.resolve(storePath)),
 				'the path checkOverloaded() looks up must be a path the registry reports'
 			);
+		});
+	});
+
+	// A write to a second database attaches its OWN native handle to a `.next` link, while only the
+	// chain root enters supervisedWriteRoots. A link that never reads is in neither registry, so
+	// reporting the monitor's entry alone named an id the sweep's line could not be joined to whenever
+	// that child was the intent holder. The monitor must reach it through the chain.
+	describe('chain-link attribution', () => {
+		it('names a chain link reachable only through the root under its own native id', async function () {
+			this.timeout(15000);
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			setMainIsWorker(true);
+			const Primary = table({
+				table: 'ChainPrimaryTable',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
+			});
+			const Secondary = table({
+				table: 'ChainSecondaryTable',
+				database: 'chain-attribution-secondary',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
+			});
+			setRegistryStatusForTests(registryStatus);
+			env.setProperty(THRESHOLD, '0.02');
+			// sourceApply is exempt from reaping, which is what keeps both links open long enough for the
+			// monitor to observe them — and is the #2471 shape besides.
+			const context = { sourceApply: true };
+			const trackedTxns = setTxnExpiration(20);
+			try {
+				await transaction(context, async () => {
+					await Primary.put(1, { v: 'root' }, context);
+					await Secondary.put(1, { v: 'second' }, context);
+					const links = [];
+					for (let txn = context.transaction; txn; txn = txn.next) if (txn.db) links.push(txn);
+					assert.strictEqual(links.length, 2, 'the second database must be a chain link');
+					const childId = links[1].transaction?.id;
+					assert.ok(childId !== undefined, 'the child link must own a native handle');
+					// put() reads the prior entry, which is what puts this link in trackedTxns; a link whose
+					// write never reads is not. Drop it to leave it reachable only through the root's chain,
+					// which is the shape the walk has to cover.
+					trackedTxns.delete(links[1]);
+					resetLongLivedTransactionReportsForTests();
+					warnings.length = 0;
+					await waitFor(
+						() =>
+							warningsMatching('Harper transaction has held').some(([message]) =>
+								message.includes(`transaction ${childId}`)
+							),
+						10000
+					);
+				});
+			} finally {
+				setTxnExpiration(30000);
+			}
 		});
 	});
 

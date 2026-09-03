@@ -1358,6 +1358,67 @@ export class DatabaseTransaction implements Transaction {
 			}
 		}
 	}
+<<<<<<< HEAD
+=======
+	/** How long this logical commit may keep retrying: the thread-wide queue limit, or its own larger explicit budget. */
+	private commitConflictBudget(): number {
+		return Math.max(MAX_OUTSTANDING_TXN_DURATION, (this.root ?? this).timeoutBudget || 0);
+	}
+
+	/**
+	 * How long this logical commit has been retrying once it is past its budget, else 0. rocksdb-js
+	 * returns control from a parked commit every `ROCKSDB_JS_PARK_TIMEOUT_MS` even when the intent
+	 * holder never releases, so without this bound a request-path commit retries the attempt cap out
+	 * — minutes past the queue limit an operator configured (issue #2450).
+	 *
+	 * Source-applied writes are exempt for the same reason they are exempt from the attempt cap:
+	 * there is no resubscribe/sequence-resume path, so dropping one permanently diverges this node.
+	 */
+	private elapsedPastCommitBudget(): number {
+		if (this.sourceApply) return 0;
+		const startedAt = (this.root ?? this).commitStartedAt;
+		if (startedAt == null) return 0;
+		const elapsed = performance.now() - startedAt;
+		return elapsed > this.commitConflictBudget() ? elapsed : 0;
+	}
+
+	/**
+	 * Abandon a logical commit that stayed in write-intent conflict past its budget. Cleanup is
+	 * retry exhaustion's, so no link leaks a native handle or read snapshot; the error is distinct
+	 * because the condition is distinct — every attempt reported transient contention, so a later
+	 * request can succeed once the holder releases, which the generic exhaustion 500 does not say.
+	 *
+	 * Only a chain root may report `retryable`: a link commits solely from its predecessor's success
+	 * handler, so anywhere else in the chain an earlier store has already landed durable audit
+	 * entries and hooks that a replayed request would run twice. A head whose scope already rotated
+	 * through a mid-scope commit is in the same position.
+	 */
+	private abandonCommitAfterDeadline(headTransaction: RocksTransaction, elapsedMs: number): never {
+		const elapsed = Math.round(elapsedMs);
+		const budget = this.commitConflictBudget();
+		const retryable = !this.root && !this.snapshotFree;
+		if (allowStuckCommitLog('abandon', performance.now())) {
+			harperLogger.error(
+				`Abandoning a write transaction: its commit has been in write-intent conflict for ${elapsed}ms ` +
+					`(exceeds the ${budget}ms limit) across ${this.retries} retries, ` +
+					describeCommitIdentity(this.writes[0]?.store, this.startedFrom, headTransaction) +
+					`.` +
+					// The same holder line checkOverloaded() gets: this is the other place a commit parked on
+					// someone else's write intent is reported, and the holder is what an operator needs named.
+					describeHolderCandidates(this.writes[0]?.store?.rootStore?.path, headTransaction?.id) +
+					` Another transaction holds a conflicting write intent and has not completed; the request is ` +
+					`failed with a 503${retryable ? '' : ' (not retryable — an earlier store in this transaction already committed)'} ` +
+					`rather than waiting further.`
+			);
+		}
+		this.abortChainAfterRetries(headTransaction);
+		throw new TransactionCommitConflictTimeoutError(
+			`Commit was in conflict with ongoing writes for ${elapsed}ms, exceeding the ${budget}ms limit; transaction abandoned after ${this.retries} retries`,
+			retryable
+		);
+	}
+
+>>>>>>> 707d70112 (Address PR review: cross-database candidates, live threshold, chain links)
 	/**
 	 * Give up on a chain of linked transactions after exhausting conflict retries: poison every link
 	 * first, then abort each link's native transaction and release its DatabaseTransaction-level
@@ -1596,41 +1657,54 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 }
 
 /**
- * Name a transaction still holding its native handle past the reporting threshold, and why the
+ * Name a chain link still holding its native handle past the reporting threshold, and why the
  * branches below are not reaping it (harper#2471). Attribution only: it reads state, calls nothing
  * with a side effect — `chainStillActive` decays `writeTimeout`, so the chain case is inferred from
  * this link's own re-armed `timeout` rather than by asking — and runs before the branches so it
  * cannot reorder them.
  */
-function reportIfLongLived(txn: DatabaseTransaction, thresholdMs: number): void {
-	if (thresholdMs === 0 || !txn.transaction || txn.handleOpenedAt === 0) return;
-	const ageMs = performance.now() - txn.handleOpenedAt;
+function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number): void {
+	if (!link.transaction || link.handleOpenedAt === 0) return;
+	const ageMs = performance.now() - link.handleOpenedAt;
 	if (ageMs < thresholdMs) return;
 	const states: string[] = [];
-	if (txn.sourceApply) states.push('source-apply');
-	if (txn.isReplay) states.push('replay');
-	if (txn.committing) states.push('commit-phase');
-	if (txn.open === TRANSACTION_STATE.CLOSED) states.push('closed-with-open-iterators');
+	if (link.sourceApply) states.push('source-apply');
+	if (link.isReplay) states.push('replay');
+	if (link.committing) states.push('commit-phase');
+	if (link.open === TRANSACTION_STATE.CLOSED) states.push('closed-with-open-iterators');
 	// A transaction that keeps writing (or a chain link whose sibling does) re-arms its own idle
 	// limit indefinitely and so never reaches the over-limit branches at all.
-	if (txn.timeout > 0) states.push('active');
+	if (link.timeout > 0) states.push('active');
 	if (states.length === 0) states.push('over-limit');
 	reportLongLivedHolder({
-		databasePath: (txn.db as any)?.rootStore?.path,
-		nativeId: txn.transaction.id,
+		databasePath: (link.db as any)?.rootStore?.path,
+		nativeId: link.transaction.id,
 		ageMs,
-		databaseName: (txn.db as any)?.rootStore?.databaseName,
-		tableName: (txn.db as any)?.name,
+		databaseName: (link.db as any)?.rootStore?.databaseName,
+		tableName: (link.db as any)?.name,
+		// This link's own writes, not the chain's: the count is reported beside this link's native id,
+		// which is the id the registry sweep names and the only one it can be joined to.
 		countPendingWrites: () => {
 			let pendingWrites = 0;
-			for (let link: DatabaseTransaction = txn; link; link = link.next)
-				for (const write of link.writes) if (write) pendingWrites++;
+			for (const write of link.writes) if (write) pendingWrites++;
 			return pendingWrites;
 		},
 		states,
-		timeoutBudget: txn.timeoutBudget,
-		startedFrom: txn.startedFrom,
+		timeoutBudget: link.timeoutBudget,
+		startedFrom: link.startedFrom,
 	});
+}
+
+/**
+ * Report every link of this logical transaction that holds its own native handle. A blind write to a
+ * second database attaches a handle to a `.next` link while only the root is supervised, so reporting
+ * the entry alone names an id the sweep's line can never be joined to when the child is the holder.
+ * Links that read are in `trackedTxns` and get their own visit from the tick.
+ */
+function reportIfLongLived(txn: DatabaseTransaction, thresholdMs: number): void {
+	if (thresholdMs === 0) return;
+	for (let link: DatabaseTransaction = txn; link; link = link.next)
+		if (link === txn || !trackedTxns.has(link)) reportLongLivedLink(link, thresholdMs);
 }
 
 function startMonitoringTxns() {
