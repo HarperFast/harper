@@ -412,6 +412,34 @@ function startWorker(path, options = {}) {
 		error.code = 'ERR_HARPER_PROCESS_SHUTTING_DOWN';
 		throw error;
 	}
+	// Validated BEFORE anything with a side effect. `buildWorkerExecArgv` resolves the configured preload
+	// list through `getImportModules()`, which MEMOIZES — so rejecting bad input after that point would
+	// freeze the list for the whole process on a spawn that never happened.
+	// A caller's own workerData, merged rather than substituted. `...options` is spread into the
+	// constructor LAST, so an `options.workerData` would replace the object below wholesale and take
+	// `addPorts`/`addThreadIds` with it — the worker would come up with no ITC wiring at all, and
+	// `workerDataProviders` cannot carry a `MessagePort` because it `structuredClone`s. Callers that need
+	// both use `extraWorkerData`/`extraTransferList`; reserved keys are refused here, before the spawn,
+	// so a collision is an error rather than a worker missing the bootstrap it did not know it lost.
+	const {
+		extraWorkerData,
+		extraTransferList,
+		execArgvOptions: _execArgvOptions,
+		noServerStart: _noServerStart,
+		...workerOptions
+	} = options;
+	if (workerOptions.workerData) {
+		throw new Error(
+			`startWorker does not accept 'workerData' — it would replace the thread's ITC bootstrap. Use 'extraWorkerData'`
+		);
+	}
+	if (extraWorkerData) {
+		for (const key of Object.keys(extraWorkerData)) {
+			if (RESERVED_WORKER_DATA_KEYS.includes(key)) {
+				throw new Error(`extraWorkerData may not set '${key}': it is owned by the thread bootstrap`);
+			}
+		}
+	}
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
 	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
@@ -440,7 +468,7 @@ function startWorker(path, options = {}) {
 
 	if (!extname(path)) path += '.js';
 
-	const execArgv = buildWorkerExecArgv();
+	const execArgv = buildWorkerExecArgv(options.execArgvOptions);
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits,
@@ -449,17 +477,25 @@ function startWorker(path, options = {}) {
 		// pass these in synchronously to the worker so it has them on startup:
 		workerData: {
 			...collectProvidedWorkerData(options),
+			...extraWorkerData,
 			addPorts: portsToSend,
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
 			addPortIsJobWorkers: channelsToConnect.map((channel) => channel.existingPort.isJobWorker === true),
 			workerIndex: options.workerIndex,
-			workerCount: (workerCount = options.threadCount),
+			// Only a serving-topology start describes the topology. A start that omits `threadCount` used to
+			// write `undefined` here, and `restartWorkers`'s default throttle then evaluated to `NaN` — see
+			// HarperFast/harper#2491, which job workers already trigger.
+			workerCount: options.threadCount === undefined ? workerCount : (workerCount = options.threadCount),
 			name: options.name,
 			restartNumber: module.exports.restartNumber,
 			ticketKeys: getTicketKeys(),
+			// `noServerStart` is a RESERVED key, so a provider or `extraWorkerData` cannot supply it — but a
+			// thread that must not serve (a deploy validator) has to. Added only when asked for, so the
+			// default spawn's workerData is byte-identical to before.
+			...(options.noServerStart ? { noServerStart: true } : undefined),
 		},
-		transferList: portsToSend,
-		...options,
+		transferList: extraTransferList ? [...portsToSend, ...extraTransferList] : portsToSend,
+		...workerOptions,
 	});
 	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
 	// worker of the new port with thread id.
