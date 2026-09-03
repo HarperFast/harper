@@ -1922,6 +1922,40 @@ describe('audit entry previousVersion presence', () => {
 		});
 	});
 
+	// The pending branch is only meaningful on LMDB, where previousVersion is the previous entry's
+	// separately stored localTime. This drives it from a real table write rather than the codec, which
+	// is the only way to learn whether PENDING_LOCAL_TIME reaches createAuditEntry at all.
+	describe('through a real table write', function () {
+		let PendingTable;
+		before(async function () {
+			if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return this.skip();
+			setupTestDBPath();
+			setMainIsWorker(true);
+			PendingTable = table({
+				table: 'PendingPreviousVersionTable',
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			});
+		});
+
+		it('links the second of two writes to one key back to the first', async () => {
+			const id = 'pending-' + Date.now();
+			await PendingTable.put({ id, name: 'first' });
+			await PendingTable.put({ id, name: 'second' });
+			const entries = [];
+			for (const entry of PendingTable.auditStore.getRange({ start: 0 })) {
+				if (entry.recordId === id) entries.push(entry);
+			}
+			assert.ok(entries.length >= 2, `expected at least two audit entries, got ${entries.length}`);
+			const [first, second] = entries.slice(-2);
+			// The back-edge survives, which also establishes that PENDING_LOCAL_TIME does not reach the
+			// codec from an ordinary write: by the time the second entry is minted, existingEntry.localTime
+			// is a committed 0x42-band timestamp. That makes the pending branch defensive rather than
+			// routine, and it is the case a dropped link would otherwise break.
+			assert.strictEqual(second.previousVersion, first.key);
+			assert.notStrictEqual(second.previousVersion, undefined);
+		});
+	});
+
 	describe('over a real LMDB audit store', () => {
 		let directory;
 		let store;
