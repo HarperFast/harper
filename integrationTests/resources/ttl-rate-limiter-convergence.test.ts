@@ -37,18 +37,23 @@ suite(
 			httpURL = ctx.harper.httpURL;
 			auth = client.headers.Authorization;
 			const deadline = Date.now() + 30_000;
+			let ready = false;
 			while (Date.now() < deadline) {
 				try {
 					const r = await fetch(`${httpURL}/RateCounter/`, {
 						headers: { Authorization: auth },
 						signal: AbortSignal.timeout(3_000),
 					});
-					if (r.status !== 503) break;
+					if (r.status !== 503) {
+						ready = true;
+						break;
+					}
 				} catch {
 					/* not ready */
 				}
 				await sleep(200);
 			}
+			if (!ready) throw new Error('RateCounter never left 503 within the 30s readiness deadline');
 		});
 
 		after(async () => {

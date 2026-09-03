@@ -919,8 +919,9 @@ export class DatabaseTransaction implements Transaction {
 		// cross-worker cache vouch (stale when a resequenced write reused a version). That closes the
 		// lost-update window only when this transaction holds a snapshot to validate the later Put
 		// against; a snapshot-free transaction (this.snapshotFree, after a mid-scope-commit rotation)
-		// still narrows it to the read-to-put span, but does not close it — see PR discussion. Replays
-		// keep their pre-read base — their convergence contract is the replay pass itself.
+		// has no snapshot for rocksdb-js to validate the Put against, so it only narrows the window to
+		// the read-to-put span rather than closing it (open follow-up, tracked in the PR description).
+		// Replays keep their pre-read base — their convergence contract is the replay pass itself.
 		const reloadsCommitBase = operation.reloadCommitBase && !operation.saved && !this.isReplay;
 		if (reloadEntry || operation.entry === undefined || reloadsCommitBase) {
 			const uncachedRead = (!!operation.reloadCommitBase && !this.isReplay) || reloadEntry;

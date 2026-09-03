@@ -148,6 +148,8 @@ describe('PrimaryRocksDatabase', function () {
 		assert(!store.verifyVersion(9, resequenced.version), 'VT must not vouch for a version shared by two stored values');
 		assert.notEqual(store.getEntry(9).value, resequenced.value, 'a flagged record is never served from cache');
 		assert(!store.verifyVersion(9, resequenced.version), 'reading a flagged record must not publish its version');
+		const client = await TestTable.get(9);
+		assert.equal(client.count, 2, 'a client-level read sees the merged value, not a stale cache vouch');
 	});
 
 	it('an uncachedRead bypasses the cache vouch and returns the stored record', async function () {
