@@ -305,8 +305,16 @@ deferred credential is credential-dependent (#1565), so `authentication` stamps
 `Cache-Control: private, no-cache` and `Vary: Authorization, Cookie` on it. Before deferral an
 unrecognized credential could not reach a fallback at all, so this was unreachable. All three adapters
 now reconcile through one policy, `Headers.ts → mergeChainHeadersIntoFallback()`: Fastify wins every
-header it set, `Vary` is unioned, and the private scope is re-applied unless the final response
-explicitly opts into shared caching (`public`/`s-maxage`).
+single-valued header it set, `Vary` is unioned, and the private scope is re-applied unless the final
+response explicitly opts into shared caching (`public`/`s-maxage`).
+
+`Set-Cookie` is the deliberate exception to Fastify-wins. It is a list-valued field, so the chain's
+cookies are appended beside Fastify's and de-duplicated by exact value, never by cookie name. A cookie
+is identified by name _plus_ `Domain` _plus_ `Path` (RFC 6265 §5.3), so collapsing by name drops
+legitimately distinct cookies — a same-name pair scoped to `/` and `/wp-admin`, or a `Max-Age=0`
+deletion paired with a set. Exact value is also what makes Node's `writeHead` re-merge idempotent,
+because that path sees the chain's own cookie already on the response. Two cookies that do share a
+full identity both reach the client, chain last, and the user agent resolves them last-wins.
 
 Bun and uWS rebuild their headers from Fastify's reply and merge once. Node hands Fastify the same
 `ServerResponse` the chain's headers were copied onto, so copying is not enough — a route calling
