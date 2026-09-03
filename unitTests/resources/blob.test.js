@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, getDatabases } = require('#src/resources/databases');
+const { table, getDatabases, dropDatabase } = require('#src/resources/databases');
 const { removeEntry } = require('#src/resources/RecordEncoder');
 const { Readable, PassThrough } = require('node:stream');
 const { EventEmitter } = require('node:events');
@@ -3051,7 +3051,12 @@ describe('durable unlink intents across multiple blob storage paths (#1832)', ()
 			],
 		});
 	});
-	after(() => {
+	after(async () => {
+		// Dropped while the two-path config is still in force. The branch-preparation suite (harper#643)
+		// branches every database on the instance, and rejects one whose open base resolves through more
+		// blob roots than storage.blobPaths then provides — which is what this database becomes the
+		// moment the line below restores the single-path default.
+		await dropDatabase('blobmulti');
 		env.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, undefined);
 		setDeletionDelay(500);
 	});
