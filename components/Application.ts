@@ -2167,12 +2167,45 @@ export async function markCandidateComplete(
  *
  * The invariant across all three is *no verdict means no authority*, never *no verdict means no deploy*.
  */
+/** Environment switch for the certification mechanism. Off unless explicitly set. */
+export const CERTIFY_DEPLOYS_ENV = 'HARPER_CERTIFY_DEPLOYS';
+
+/**
+ * Whether a candidate load may run at all. **Off by default**, which is a deliberate, temporary state.
+ *
+ * The mechanism below is complete and reviewed, but WHERE the candidate load runs is unresolved, and both
+ * available hosts fail a requirement the guarantee depends on:
+ *
+ * - A thread shares this process's RocksDB handles, so the load is genuinely serving-equivalent — but under
+ *   Bun `terminate()` triggers a NAPI segfault, so the parent can only ask it to exit, which a candidate
+ *   blocking its event loop defeats. That leaks a thread and its concurrency slot for the process lifetime.
+ * - A separate process can be SIGKILLed, but cannot open the databases at all: RocksDB takes an exclusive
+ *   per-process lock, so a helper fails with `IO error: While lock file: … Resource temporarily unavailable`
+ *   the moment `loadRootPlugins` reaches `getTables()`. Opening read-only would reject any candidate that
+ *   writes during load, which is a false-rejection class worse than the problem.
+ *
+ * So this lands off rather than shipping a guarantee that only holds on some runtimes, or a load that is not
+ * the load a serving worker performs. With it off, `deploy_component` behaves exactly as it did before this
+ * work: the candidate is built aside and swapped in, and it earns no `.complete`. Tests that exercise
+ * certification set the variable explicitly.
+ */
+function certificationEnabled(): boolean {
+	const value = process.env[CERTIFY_DEPLOYS_ENV];
+	return value !== undefined && value !== '' && value !== 'false' && value !== '0';
+}
+
 async function certifyPreparedCandidate(
 	application: Application,
 	deploymentId: string,
 	candidateDirPath: string,
 	options: PrepareApplicationOptions
 ): Promise<{ certified: boolean }> {
+	if (!certificationEnabled()) {
+		application.logger.debug(
+			`Deploying ${application.name} without certification: no validator host is enabled (${CERTIFY_DEPLOYS_ENV})`
+		);
+		return { certified: false };
+	}
 	// Safe mode ACTIVATES, uncertified, rather than staging for later: a staged tree carries no journal, so
 	// `recoverInterruptedActivations` removes it as build residue at the next start — while the operation has
 	// already returned success, replicated, and run its restart phase. So it takes the same shape as the

@@ -9,7 +9,12 @@ const { join } = require('node:path');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { Application, prepareApplication, markCandidateComplete } = require('#src/components/Application');
+const {
+	Application,
+	prepareApplication,
+	markCandidateComplete,
+	CERTIFY_DEPLOYS_ENV,
+} = require('#src/components/Application');
 const { certifyCandidate } = require('#src/components/certifyCandidate');
 const { packageDirectory } = require('#src/components/packageComponent');
 const { rootApplicationLoadOptions } = require('#src/components/componentLoader');
@@ -25,6 +30,57 @@ async function payloadThatRunsOnLoad(rootDir, name, version, body) {
 }
 
 describe('deploy certification', () => {
+	// Certification is OFF by default — see `certificationEnabled` for why — so every test that expects a
+	// verdict has to ask for one. Without this the suite would still pass while proving nothing: an
+	// uncertified deploy publishes, so the acceptance cases would go green and only the rejection case
+	// would notice.
+	let priorCertifyDeploys;
+	before(() => {
+		priorCertifyDeploys = process.env[CERTIFY_DEPLOYS_ENV];
+		process.env[CERTIFY_DEPLOYS_ENV] = 'true';
+	});
+	after(() => {
+		if (priorCertifyDeploys === undefined) delete process.env[CERTIFY_DEPLOYS_ENV];
+		else process.env[CERTIFY_DEPLOYS_ENV] = priorCertifyDeploys;
+	});
+
+	it('deploys without certifying when no validator host is enabled', async function () {
+		// The default state, and the one that would otherwise be untested: with certification off, a
+		// candidate that throws at load is published exactly as it was before this work, and earns no
+		// `.complete`. Asserting it here is what would catch the switch being flipped on by accident —
+		// and it is the inverse of the headline test below, which enables it.
+		this.timeout(30000);
+		const restore = process.env[CERTIFY_DEPLOYS_ENV];
+		delete process.env[CERTIFY_DEPLOYS_ENV];
+		const rootDir = await mkdtemp(join(tmpdir(), 'certify-off-'));
+		const componentDirPath = join(rootDir, 'shop');
+		await mkdir(componentDirPath, { recursive: true });
+		await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: 'shop', version: '1.0.0' }));
+
+		const application = new Application({
+			name: 'shop',
+			payload: await payloadThatRunsOnLoad(rootDir, 'shop', '2.0.0', "throw new Error('candidate blew up at load');\n"),
+		});
+		application.dirPath = componentDirPath;
+
+		try {
+			await prepareApplication(application);
+			assert.strictEqual(
+				JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version,
+				'2.0.0',
+				'an uncertified deploy publishes, which is the pre-certification behaviour'
+			);
+			assert.ok(
+				!existsSync(join(componentDirPath, '.complete')),
+				'and mints no authority, so a crash mid-swap rolls back rather than forward'
+			);
+		} finally {
+			if (restore === undefined) delete process.env[CERTIFY_DEPLOYS_ENV];
+			else process.env[CERTIFY_DEPLOYS_ENV] = restore;
+			await rm(rootDir, { recursive: true, force: true });
+		}
+	});
+
 	it('does not publish a candidate that throws at load — ON THE MAIN THREAD', async function () {
 		// The whole point of this step. The in-process check this replaces was gated on `!isMainThread`, and
 		// the operations API deploys on main, so this exact deploy used to succeed and publish a broken

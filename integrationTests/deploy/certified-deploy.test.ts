@@ -45,7 +45,9 @@ async function buildPayload(version: number, { throwsAtLoad = false } = {}): Pro
 
 suite('deploy_component certifies a candidate before publishing it', (ctx: ContextWithHarper) => {
 	before(async () => {
-		await startHarper(ctx);
+		// Certification is off by default — see `certificationEnabled` in `components/Application.ts` — so this
+		// suite asks for it. Without the switch the deploys below all succeed and prove nothing.
+		await startHarper(ctx, { env: { HARPER_CERTIFY_DEPLOYS: 'true' } });
 	});
 
 	after(async () => {
