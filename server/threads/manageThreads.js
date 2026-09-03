@@ -528,7 +528,15 @@ function startWorker(path, options = {}) {
 	}
 	addPort(worker, true, isJobWorker);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
+	// A one-shot thread cannot be copied: its transferred ports are detached after the first spawn, so
+	// re-spawning from the same options throws `DataCloneError`. The restart loop skips these workers, so
+	// this is the backstop for a direct caller — a named error rather than a clone failure from deep inside
+	// `new Worker`.
+	worker.isOneShot = Boolean(extraTransferList?.length);
 	worker.startCopy = () => {
+		if (worker.isOneShot) {
+			throw new Error(`Cannot restart a one-shot ${options.name ?? 'worker'}: its transferred ports are spent`);
+		}
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
 		// to die, to ensure there is no loss of service and maximum availability.
 		return startWorker(path, options);
@@ -646,7 +654,11 @@ async function restartWorkers(
 			const worker = restarting[index];
 			// Terminal shutdown: stop replacing workers mid-loop — the guard for every replacement start below.
 			if (processShuttingDown && startReplacementThreads) break;
-			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
+			// One-shot threads are ephemeral by contract (transferred ports force `autoRestart: false`), so they
+			// are never restarted OR replaced: `startCopy` would re-spawn from spent ports and throw
+			// `DataCloneError` synchronously, inside this loop, taking the rest of the restart with it. Left
+			// alone, such a thread finishes its single task or hits its own deadline.
+			if ((name && worker.name !== name) || worker.wasShutdown || worker.isOneShot) continue; // filter by type, if specified
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
 			if (overlapping && startReplacementThreads && canPreStartReplacement) {
 				// Overlapping restart: start the replacement and wait until it is accepting connections

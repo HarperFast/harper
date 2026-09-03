@@ -36,11 +36,21 @@ async function payloadThatRunsOnLoad(rootDir, name, version, body) {
 const SKIP_ON_WINDOWS = process.platform === 'win32';
 
 describe('deploy certification', () => {
-	// The repo's mocha idiom for a platform skip — `describe(name, { skip }, fn)` is node:test's signature,
-	// and mocha silently treats the options object as the suite body, registering nothing at all.
-	beforeEach(function () {
-		if (SKIP_ON_WINDOWS) this.skip();
-	});
+	// Narrowed to the cases that actually SPAWN a validator. A suite-level skip also suppressed the
+	// default-off case, the mint gate, safe mode and the branch-configured options — none of which start a
+	// worker — and the default-off case is precisely the Windows coverage worth keeping, since it guards the
+	// behaviour Windows operators actually get.
+	function skipWithoutValidator(test) {
+		if (SKIP_ON_WINDOWS) test.skip();
+	}
+
+	// A separate precondition from the validator one, and stated as the dependency rather than as a platform:
+	// `getConfigObj()` is undefined in the Windows unit-test process, so a test that injects a root-config
+	// entry cannot run there. Naming the requirement means this stops skipping the day that changes, without
+	// anyone remembering to revisit a `win32` check.
+	function skipWithoutRootConfig(test) {
+		if (!getConfigObj()) test.skip();
+	}
 	// Certification is OFF by default — see `certificationEnabled` for why — so every test that expects a
 	// verdict has to ask for one. Without this the suite would still pass while proving nothing: an
 	// uncertified deploy publishes, so the acceptance cases would go green and only the rejection case
@@ -93,6 +103,7 @@ describe('deploy certification', () => {
 	});
 
 	it('does not publish a candidate that throws at load — ON THE MAIN THREAD', async function () {
+		skipWithoutValidator(this);
 		// The whole point of this step. The in-process check this replaces was gated on `!isMainThread`, and
 		// the operations API deploys on main, so this exact deploy used to succeed and publish a broken
 		// component while reporting an error. Tests run on the main thread, so this is that path.
@@ -126,6 +137,7 @@ describe('deploy certification', () => {
 	});
 
 	it('publishes a candidate that loads cleanly', async function () {
+		skipWithoutValidator(this);
 		this.timeout(30000);
 		const rootDir = await mkdtemp(join(tmpdir(), 'certify-accepts-'));
 		const componentDirPath = join(rootDir, 'shop');
@@ -151,6 +163,7 @@ describe('deploy certification', () => {
 	});
 
 	it('publishes a static-only component, which legitimately loads no module', async function () {
+		skipWithoutValidator(this);
 		// The "loaded nothing is not a pass" guard fires on a candidate that declares loadable content and
 		// then opens no scope and loads no module. A static-only component declares content (every component
 		// ships a `package.json`) and loads no JS module, so whether the guard rejects it comes down to
@@ -187,6 +200,7 @@ describe('deploy certification', () => {
 	});
 
 	it('rejects a candidate whose load never finishes, rather than waiting on it', async function () {
+		skipWithoutValidator(this);
 		this.timeout(30000);
 		const rootDir = await mkdtemp(join(tmpdir(), 'certify-timeout-'));
 		const candidateDirPath = join(rootDir, 'hangs');
@@ -211,6 +225,7 @@ describe('deploy certification', () => {
 	});
 
 	it('fails a deploy that cannot get a certification slot, rather than queueing it forever', async function () {
+		skipWithoutValidator(this);
 		// The concurrency cap deliberately withholds the slot of a validator that will not die, so the queue
 		// behind it has to be bounded too — otherwise one stuck thread turns every later deploy into a wait
 		// inside the preparation lock with nothing to report.
@@ -311,7 +326,8 @@ describe('deploy certification', () => {
 			if (config) delete config[appName];
 		});
 
-		it('reports the component as branch-configured and withholds the branch settings', () => {
+		it('reports the component as branch-configured and withholds the branch settings', function () {
+			skipWithoutRootConfig(this);
 			getConfigObj()[appName] = { branchedDatabases: ['data'] };
 
 			const forBoot = rootApplicationLoadOptions(appName);
@@ -326,6 +342,7 @@ describe('deploy certification', () => {
 		});
 
 		it('still deploys a branch-configured component, it just earns no authority', async function () {
+			skipWithoutRootConfig(this);
 			// The half of this decision that is observable end to end: nothing is refused. That certification
 			// is skipped is covered by the option test above, and that an unminted candidate rolls back
 			// rather than forward is covered by the recovery suite — the composition of the two (activate,
@@ -355,7 +372,8 @@ describe('deploy certification', () => {
 			}
 		});
 
-		it('reports an ordinary component as not branch-configured', () => {
+		it('reports an ordinary component as not branch-configured', function () {
+			skipWithoutRootConfig(this);
 			getConfigObj()[appName] = { package: 'npm:whatever@1.0.0' };
 
 			const forCertification = rootApplicationLoadOptions(appName, { forCertification: true });
