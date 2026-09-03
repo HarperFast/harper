@@ -503,7 +503,7 @@ const PREVIOUS_VERSION_FIRST_BYTE = 66;
  * entry types, and a peer one version ahead must keep decoding rather than look corrupt here.
  */
 const ACTION_FIRST_BYTE = new Uint8Array(256);
-// single-byte form: the entry type in the low nibble (0 is not a type) plus the two record flags
+// single-byte form; 0 is not an entry type, so a zero low nibble cannot start one
 for (let firstByte = 1; firstByte <= (HAS_RECORD | HAS_PARTIAL_RECORD | 0xf); firstByte++) {
 	if (firstByte & 0xf) ACTION_FIRST_BYTE[firstByte] = 1;
 }
@@ -608,12 +608,11 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		// silently dropped rather than rejected below
 		hasPreviousVersion = false;
 	} else if (previousVersion === PENDING_LOCAL_TIME) {
-		// The previous entry's log position is not assigned yet. The superseded code deferred this to
-		// lmdb-js's instructed-write substitution, which resolves to 2.0 whenever no previous time was
-		// recorded — the unreadable entry this guard exists to prevent. A format whose presence signal
-		// is the value's own first byte cannot express "to be filled in at commit", so the back-edge is
-		// dropped rather than gambled on. Not a throw: a pending previous is a legitimate producer
-		// state, unlike a value the format simply cannot hold.
+		// The previous entry has no log position yet, and a format whose presence signal is the value's
+		// own first byte cannot express "to be filled in at commit". The superseded code deferred to
+		// lmdb-js's substitution, which resolves to 2.0 when no previous time was recorded — the
+		// unreadable entry this guard exists to prevent. Not a throw: a pending previous is a producer
+		// state, unlike a value the format cannot hold.
 		hasPreviousVersion = false;
 		if (!warnedPendingPreviousVersion.has(`${tableId}:${type}`)) {
 			warnedPendingPreviousVersion.add(`${tableId}:${type}`);
