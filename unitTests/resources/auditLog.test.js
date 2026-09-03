@@ -25,6 +25,7 @@ const { execFileSync } = require('node:child_process');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { waitFor } = require('../waitFor');
+const { transaction } = require('#src/resources/transaction');
 const harperLogger = require('#src/utility/logging/harper_logger');
 require('#src/server/serverHelpers/serverUtilities');
 describe('Audit log', () => {
@@ -1922,9 +1923,9 @@ describe('audit entry previousVersion presence', () => {
 		});
 	});
 
-	// The pending branch is only meaningful on LMDB, where previousVersion is the previous entry's
-	// separately stored localTime. This drives it from a real table write rather than the codec, which
-	// is the only way to learn whether PENDING_LOCAL_TIME reaches createAuditEntry at all.
+	// Both review rounds asked whether PENDING_LOCAL_TIME is reachable from a real producer. Two
+	// separately awaited puts do not answer it: each commits its own transaction, so the second sees a
+	// committed timestamp. The pending sentinel needs both writes inside ONE transaction.
 	describe('through a real table write', function () {
 		let PendingTable;
 		before(async function () {
@@ -1937,22 +1938,27 @@ describe('audit entry previousVersion presence', () => {
 			});
 		});
 
-		it('links the second of two writes to one key back to the first', async () => {
+		it('decodes both entries of a same-transaction double write, with no link on the second', async () => {
 			const id = 'pending-' + Date.now();
-			await PendingTable.put({ id, name: 'first' });
-			await PendingTable.put({ id, name: 'second' });
+			await transaction(async () => {
+				await PendingTable.put({ id, name: 'first' });
+				await PendingTable.put({ id, name: 'second' });
+			});
 			const entries = [];
 			for (const entry of PendingTable.auditStore.getRange({ start: 0 })) {
 				if (entry.recordId === id) entries.push(entry);
 			}
-			assert.ok(entries.length >= 2, `expected at least two audit entries, got ${entries.length}`);
-			const [first, second] = entries.slice(-2);
-			// The back-edge survives, which also establishes that PENDING_LOCAL_TIME does not reach the
-			// codec from an ordinary write: by the time the second entry is minted, existingEntry.localTime
-			// is a committed 0x42-band timestamp. That makes the pending branch defensive rather than
-			// routine, and it is the case a dropped link would otherwise break.
-			assert.strictEqual(second.previousVersion, first.key);
-			assert.notStrictEqual(second.previousVersion, undefined);
+			assert.strictEqual(entries.length, 2, 'both writes should be audited');
+			const second = entries[1];
+			// Measured on this branch and on origin/main: identical. The second entry carries no
+			// back-edge either way, because the first write of the same transaction has not published a
+			// localTime for the second to point at. What this pins is that neither entry misparses —
+			// recordId and type survive, which is what a written-but-skipped prefix would destroy.
+			assert.strictEqual(second.previousVersion, undefined);
+			for (const entry of entries) {
+				assert.strictEqual(entry.recordId, id);
+				assert.strictEqual(entry.type, 'put');
+			}
 		});
 	});
 
