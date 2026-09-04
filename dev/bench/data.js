@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788506789432,
+  "lastUpdate": 1788513323654,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -15713,6 +15713,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 2939,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6910b74f2882e632b39a01ed3fe1e2cf61b9089d",
+          "message": "Stop the terminal-shutdown harness from loading the whole app graph to test worker respawn (#2366)\n\n* Stop the terminal-shutdown harness from loading the whole app graph to test worker respawn\n\nSeed the worker manager's lazy root-component dependency with a verified no-op in the harness, so respawn bookkeeping is tested without loading the full application graph. Keep the terminal shutdown modes' assertions and suite-level timeout intact.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Clarify terminal-shutdown harness ROOTPATH isolation\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-09-04T04:00:41Z",
+          "url": "https://github.com/HarperFast/harper/commit/6910b74f2882e632b39a01ed3fe1e2cf61b9089d"
+        },
+        "date": 1788513320464,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 19743,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 13203,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 13153,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 23106368,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 6222,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 1008,
             "unit": "ops"
           }
         ]
