@@ -2105,16 +2105,16 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	if (definedRoot) rootStores.add(definedRoot);
-	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
-	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
-	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
-	// synchronous purgeLogs() call with nothing suspended mid-removal.
-	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
 	// A rescan that skipped this database (its lifecycle marker was already present) has removed it
 	// from `databases`, but the root store an earlier rescan opened is still cached, still open, and
 	// still counts against the drop or restore that is waiting for every thread to let go of it.
 	const cachedRoot = rocksdbDatabaseEnvs.get(resolveDatabasePath(databaseName));
 	if (cachedRoot) rootStores.add(cachedRoot);
+	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
+	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
+	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
+	// synchronous purgeLogs() call with nothing suspended mid-removal.
+	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
 	if (!dbTables && rootStores.size === 0) return false;
 	for (const rootStore of rootStores) {
 		removeStorageReclamation(rootStore.path);
