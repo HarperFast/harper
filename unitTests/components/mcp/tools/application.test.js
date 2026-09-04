@@ -5,6 +5,7 @@ const {
 	_setResourcesForTest,
 	_setRequestTargetForTest,
 	_resetCustomToolWarningsForTest,
+	_resetInvalidSchemaWarningsForTest,
 	_resetApplicationToolsRegisteredForTest,
 } = require('#src/components/mcp/tools/application');
 const { Resource } = require('#src/resources/Resource');
@@ -85,6 +86,7 @@ describe('mcp/tools/application — registration', () => {
 		_setResourcesForTest(undefined);
 		_setRequestTargetForTest(undefined);
 		_resetApplicationToolsRegisteredForTest();
+		_resetInvalidSchemaWarningsForTest();
 	});
 
 	it('rebuilds the tool set when a table appears after initial registration (#1317)', () => {
@@ -116,7 +118,7 @@ describe('mcp/tools/application — registration', () => {
 
 		// Second pass includes a resource that throws during registration.
 		const Bad = makeTableResource({ databaseName: 'data', tableName: 'bad', attributes: [{ name: 'id' }] });
-		Object.defineProperty(Bad, 'description', {
+		Object.defineProperty(Bad, 'mcpTools', {
 			get() {
 				throw new Error('boom registering bad table');
 			},
@@ -148,7 +150,7 @@ describe('mcp/tools/application — registration', () => {
 		// Second pass throws mid-rebuild; the only resource present is the bad one,
 		// so without restore both tools AND prompts would be left cleared.
 		const Bad = makeTableResource({ databaseName: 'data', tableName: 'bad', attributes: [{ name: 'id' }] });
-		Object.defineProperty(Bad, 'description', {
+		Object.defineProperty(Bad, 'mcpTools', {
 			get() {
 				throw new Error('boom registering bad table');
 			},
@@ -640,6 +642,41 @@ describe('mcp/tools/application — custom mcpTools opt-in (#622)', () => {
 		_setResourcesForTest(makeRegistry([['CustomOnly', { Resource: CustomOnly }]]));
 		registerApplicationTools();
 		assert.ok(getTool('say_hello'), 'custom-only Resources still publish their mcpTools');
+	});
+
+	it('custom-only Resources continue reserving colliding suffixes for stable verb-tool names', () => {
+		class CustomOnly {
+			async hello() {
+				return { greeting: 'hi' };
+			}
+		}
+		CustomOnly.mcpTools = [{ name: 'say_hello', method: 'hello' }];
+		const Order = makeTableResource({ databaseName: 'data', tableName: 'order', verbs: ['get'] });
+		_setResourcesForTest(
+			makeRegistry([
+				['Order/', { Resource: CustomOnly }],
+				['Order.', { Resource: Order }],
+			])
+		);
+		registerApplicationTools();
+		assert.ok(getTool('get_data_Order_'), 'the later colliding Resource keeps its established disambiguated name');
+	});
+
+	it('malformed Resources continue reserving colliding suffixes', () => {
+		const Bad = makeTableResource({ databaseName: 'broken', tableName: 'bad', verbs: ['get'] });
+		const cyclic = { name: 'loop', type: 'object', properties: [] };
+		cyclic.properties.push(cyclic);
+		Bad.attributes.push(cyclic);
+		const Good = makeTableResource({ databaseName: 'data', tableName: 'good', verbs: ['get'] });
+		_setResourcesForTest(
+			makeRegistry([
+				['Order/', { Resource: Bad }],
+				['Order.', { Resource: Good }],
+			])
+		);
+		registerApplicationTools();
+		assert.equal(getTool('get_Order_'), undefined);
+		assert.ok(getTool('get_data_Order_'));
 	});
 
 	it('Resources can publish both verb tools AND custom tools', async () => {
@@ -1195,5 +1232,277 @@ describe('mcp/tools/application — custom mcpResources opt-in (#1609)', () => {
 		_resetApplicationToolsRegisteredForTest();
 		registerApplicationTools();
 		assert.equal(matchCustomResource('application', 'docs:///index'), undefined);
+	});
+});
+
+describe('mcp/tools/application — #1920 programmatic `static properties` + docstrings', () => {
+	beforeEach(() => {
+		_resetRegistryForTest();
+		_setRequestTargetForTest(FakeRequestTarget);
+	});
+
+	afterEach(() => {
+		_resetRegistryForTest();
+		_setResourcesForTest(undefined);
+		_setRequestTargetForTest(undefined);
+		_resetApplicationToolsRegisteredForTest();
+		_resetInvalidSchemaWarningsForTest();
+	});
+
+	// A programmatic Resource: declares `static properties` (Record) and NO `attributes` Array.
+	function makeProgrammaticResource({ path, tableName, description, properties, required }) {
+		class Cls {}
+		Cls.databaseName = 'data';
+		Cls.tableName = tableName;
+		Cls.primaryKey = 'id';
+		if (description) Cls.description = description;
+		if (properties) Cls.properties = properties;
+		if (required) Cls.required = required;
+		for (const v of ['get', 'put', 'patch', 'delete', 'search', 'post']) Cls.prototype[v] = function () {};
+		Cls.get = async (t) => ({ id: t.id });
+		Cls.put = async () => ({ ok: true });
+		Cls.patch = async () => ({ ok: true });
+		Cls.post = async (_t, d) => ({ created: true, ...d });
+		Cls.delete = async () => ({ deleted: true });
+		Cls.search = async () => [];
+		return { path, Resource: Cls };
+	}
+
+	it('derives a rich inputSchema from `static properties` when no attributes are declared', () => {
+		const Widget = makeProgrammaticResource({
+			path: 'Widget',
+			tableName: 'widget',
+			properties: {
+				id: { type: 'string', primaryKey: true },
+				label: { type: 'string', description: 'Human-readable label' },
+				size: { type: 'integer', description: 'Width in pixels' },
+				status: { type: 'string', enum: ['active', 'archived'] },
+				tags: { type: 'array', items: { type: 'string' } },
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Widget', { Resource: Widget.Resource }]]));
+		registerApplicationTools();
+		const create = getTool('create_Widget');
+		assert.ok(create, 'create_Widget registered');
+		// Non-skeletal: each declared property surfaces with its type AND description.
+		assert.equal(create.inputSchema.properties.label.type, 'string');
+		assert.equal(create.inputSchema.properties.label.description, 'Human-readable label');
+		assert.equal(create.inputSchema.properties.size.type, 'integer');
+		assert.equal(create.inputSchema.properties.size.description, 'Width in pixels');
+		// Enum and array shapes survive the projection too.
+		assert.deepEqual(create.inputSchema.properties.status.enum, ['active', 'archived']);
+		assert.equal(create.inputSchema.properties.tags.type, 'array');
+		assert.equal(create.inputSchema.properties.tags.items.type, 'string');
+	});
+
+	it('carries const, nested-object required, and array-of-object into the MCP inputSchema', () => {
+		const Widget = makeProgrammaticResource({
+			path: 'Widget',
+			tableName: 'widget',
+			properties: {
+				id: { type: 'string', primaryKey: true },
+				kind: { type: 'string', const: 'widget' },
+				dims: {
+					type: 'object',
+					required: ['w'],
+					additionalProperties: false,
+					properties: { w: { type: 'integer' }, h: { type: 'integer' } },
+				},
+				rows: { type: 'array', items: { type: 'object', properties: { x: { type: 'integer' } } } },
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Widget', { Resource: Widget.Resource }]]));
+		registerApplicationTools();
+		const create = getTool('create_Widget');
+		assert.ok(create, 'create_Widget registered');
+		assert.equal(create.inputSchema.properties.kind.const, 'widget');
+		assert.deepEqual(create.inputSchema.properties.dims.required, ['w']);
+		assert.equal(create.inputSchema.properties.dims.additionalProperties, false);
+		assert.equal(create.inputSchema.properties.dims.properties.w.type, 'integer');
+		assert.equal(create.inputSchema.properties.rows.type, 'array');
+		assert.equal(create.inputSchema.properties.rows.items.type, 'object');
+		assert.equal(create.inputSchema.properties.rows.items.properties.x.type, 'integer');
+	});
+
+	it('expresses top-level requiredness independently of nullability', () => {
+		const Widget = makeProgrammaticResource({
+			path: 'Widget',
+			tableName: 'widget',
+			required: ['label'],
+			properties: {
+				id: { type: 'string', primaryKey: true },
+				label: { type: ['string', 'null'] },
+				note: { type: 'string', nullable: false },
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Widget', { Resource: Widget.Resource }]]));
+		registerApplicationTools();
+		assert.deepEqual(getTool('create_Widget').inputSchema.required, ['label', 'note']);
+		assert.deepEqual(getTool('get_Widget').outputSchema.required, ['id', 'label', 'note']);
+	});
+
+	it('prefixes the verb-tool description with the class docstring / static description', () => {
+		const Widget = makeProgrammaticResource({
+			path: 'Widget',
+			tableName: 'widget',
+			description: 'A widget in the catalog.',
+			properties: { id: { type: 'string', primaryKey: true }, label: { type: 'string', description: 'The label' } },
+		});
+		_setResourcesForTest(makeRegistry([['Widget', { Resource: Widget.Resource }]]));
+		registerApplicationTools();
+		const get = getTool('get_Widget');
+		assert.ok(get, 'get_Widget registered');
+		assert.ok(
+			get.description.includes('A widget in the catalog.'),
+			`expected the docstring prefix on the tool description, got: ${get.description}`
+		);
+	});
+
+	it('carries per-attribute descriptions from a table-backed Resource into the tool inputSchema', () => {
+		// The table-backed path (real attributes carrying descriptions, as the GraphQL parser emits).
+		const Product = makeTableResource({
+			databaseName: 'data',
+			tableName: 'product',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true, type: 'String' },
+				{ name: 'sku', type: 'String', description: 'Stock keeping unit' },
+			],
+		});
+		Product.description = 'A product record.';
+		_setResourcesForTest(makeRegistry([['Product', { Resource: Product }]]));
+		registerApplicationTools();
+		const create = getTool('create_Product');
+		assert.ok(create, 'create_Product registered');
+		assert.equal(create.inputSchema.properties.sku.description, 'Stock keeping unit');
+		const get = getTool('get_Product');
+		assert.ok(get.description.includes('A product record.'), `expected docstring prefix, got: ${get.description}`);
+	});
+
+	it('inherits `static properties` through class extension', () => {
+		class Base {}
+		Base.databaseName = 'data';
+		Base.primaryKey = 'id';
+		Base.properties = {
+			id: { type: 'string', primaryKey: true },
+			label: { type: 'string', description: 'inherited label' },
+		};
+		class Special extends Base {}
+		Special.tableName = 'special';
+		for (const v of ['get', 'put', 'patch', 'delete', 'search', 'post']) Special.prototype[v] = function () {};
+		Special.get = async (t) => ({ id: t.id });
+		Special.put = async () => ({});
+		Special.patch = async () => ({});
+		Special.post = async (_t, d) => d;
+		Special.delete = async () => ({});
+		Special.search = async () => [];
+		_setResourcesForTest(makeRegistry([['Special', { Resource: Special }]]));
+		registerApplicationTools();
+		const create = getTool('create_Special');
+		assert.ok(create, 'create_Special registered');
+		assert.equal(
+			create.inputSchema.properties.label.description,
+			'inherited label',
+			'child should derive its schema from the inherited static properties'
+		);
+	});
+
+	it('isolates a malformed static-properties schema and warns only once', () => {
+		const Good = makeProgrammaticResource({
+			path: 'Good',
+			tableName: 'good',
+			properties: { id: { type: 'string', primaryKey: true } },
+		});
+		const Bad = makeProgrammaticResource({ path: 'Bad', tableName: 'bad', properties: {} });
+		const cyclic = { type: 'object', properties: {} };
+		cyclic.properties.self = cyclic;
+		Bad.Resource.properties = { cyclic };
+		Bad.Resource.prototype.custom = async function () {
+			return { ok: true };
+		};
+		Bad.Resource.mcpTools = [{ name: 'bad_custom', method: 'custom', description: 'Independent custom tool' }];
+		_setResourcesForTest(
+			makeRegistry([
+				['Good', { Resource: Good.Resource }],
+				['Bad', { Resource: Bad.Resource }],
+			])
+		);
+		const loggerModule = require('#src/utility/logging/harper_logger');
+		const harperLogger = loggerModule.default || loggerModule;
+		const warnings = [];
+		const originalWarn = harperLogger.warn;
+		harperLogger.warn = (message) => warnings.push(String(message));
+		try {
+			registerApplicationTools();
+			refreshApplicationTools();
+		} finally {
+			harperLogger.warn = originalWarn;
+		}
+		assert.ok(getTool('get_Good'), 'a valid sibling resource remains available');
+		assert.equal(getTool('get_Bad'), undefined, 'the malformed resource is omitted');
+		assert.ok(getTool('bad_custom'), 'custom tools do not depend on the malformed derived schema');
+		assert.equal(warnings.filter((message) => message.includes("resource '/Bad'")).length, 1);
+	});
+
+	it('isolates a cyclic attribute graph without dropping sibling tools', () => {
+		const cyclic = { name: 'loop', type: 'object', properties: [] };
+		cyclic.properties.push(cyclic);
+		const Bad = makeTableResource({
+			databaseName: 'data',
+			tableName: 'bad',
+			attributes: [{ name: 'id', type: 'String', isPrimaryKey: true }, cyclic],
+		});
+		const Good = makeTableResource({
+			databaseName: 'data',
+			tableName: 'good',
+			attributes: [{ name: 'id', type: 'String', isPrimaryKey: true }],
+		});
+		_setResourcesForTest(
+			makeRegistry([
+				['Bad', { Resource: Bad }],
+				['Good', { Resource: Good }],
+			])
+		);
+		assert.doesNotThrow(() => registerApplicationTools());
+		assert.equal(getTool('get_Bad'), undefined);
+		assert.ok(getTool('get_Good'));
+	});
+
+	it('contains a throwing Resource description getter', () => {
+		const Bad = makeProgrammaticResource({
+			path: 'Bad',
+			tableName: 'bad',
+			properties: { id: { type: 'string', primaryKey: true } },
+		});
+		Object.defineProperty(Bad.Resource, 'description', {
+			get() {
+				throw new Error('bad description');
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Bad', { Resource: Bad.Resource }]]));
+		assert.doesNotThrow(() => registerApplicationTools());
+		assert.equal(getTool('get_Bad'), undefined);
+	});
+
+	it('publishes no verb tools when a later verb descriptor fails', () => {
+		const Bad = makeProgrammaticResource({
+			path: 'Bad',
+			tableName: 'bad',
+			properties: { id: { type: 'string', primaryKey: true } },
+		});
+		Bad.Resource.mcp = {
+			annotations: new Proxy(
+				{},
+				{
+					get(_target, verb) {
+						if (verb === 'create') throw new Error('bad create annotation');
+					},
+				}
+			),
+		};
+		_setResourcesForTest(makeRegistry([['Bad', { Resource: Bad.Resource }]]));
+		registerApplicationTools();
+		for (const verb of ['get', 'search', 'create', 'update', 'delete']) {
+			assert.equal(getTool(`${verb}_Bad`), undefined);
+		}
 	});
 });

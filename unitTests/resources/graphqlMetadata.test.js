@@ -154,4 +154,163 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 			assert.ok(tables.ShapeCheck.properties.title);
 		});
 	});
+
+	// #1920: a programmatic Resource may declare `static properties` (the Record form) without an
+	// `attributes` Array; `projectPropertiesToAttributes` rebuilds the Array so the schema-derivation
+	// paths (MCP, OpenAPI) can consume it. It must be the structural inverse of the forward projection.
+	describe('projectPropertiesToAttributes (#1920)', () => {
+		const { projectPropertiesToAttributes, projectAttributesToProperties } = require('#src/resources/jsonSchemaTypes');
+
+		it('projects each property into a named attribute carrying type + description + flags', () => {
+			const attrs = projectPropertiesToAttributes({
+				id: { type: 'string', primaryKey: true },
+				label: { type: 'string', description: 'Human-readable label' },
+				size: { type: 'integer', description: 'Width in pixels', nullable: true },
+			});
+			const byName = Object.fromEntries(attrs.map((a) => [a.name, a]));
+			assert.strictEqual(byName.id.isPrimaryKey, true);
+			assert.strictEqual(byName.label.type, 'string');
+			assert.strictEqual(byName.label.description, 'Human-readable label');
+			assert.strictEqual(byName.size.type, 'integer');
+			assert.strictEqual(byName.size.nullable, true);
+		});
+
+		it('preserves explicit non-nullability', () => {
+			const [required] = projectPropertiesToAttributes({ required: { type: 'string', nullable: false } });
+			assert.strictEqual(required.nullable, false);
+		});
+
+		it('rejects an Array-shaped properties declaration and cyclic fragments', () => {
+			assert.throws(() => projectPropertiesToAttributes([]), /properties must be an object/);
+			assert.throws(() => projectPropertiesToAttributes(null), /properties must be an object/);
+			assert.throws(
+				() => projectPropertiesToAttributes({ nested: { type: 'object', properties: null } }),
+				/nested\.properties.*must be an object/
+			);
+			const cyclic = { type: 'object', properties: {} };
+			cyclic.properties.self = cyclic;
+			assert.throws(() => projectPropertiesToAttributes({ cyclic }), /contains a cycle/);
+		});
+
+		it('accepts an existing Array-form properties declaration', () => {
+			const attributes = [{ name: 'id', type: 'String' }];
+			assert.strictEqual(
+				require('#src/resources/jsonSchemaTypes').resolveAttributes({ properties: attributes }),
+				attributes
+			);
+		});
+
+		it('rejects a non-array or non-string nested required declaration', () => {
+			assert.throws(
+				() =>
+					projectPropertiesToAttributes({
+						profile: { type: 'object', properties: { name: { type: 'string' } }, required: 'name' },
+					}),
+				/profile\.required.*array of strings/
+			);
+			assert.throws(
+				() =>
+					projectPropertiesToAttributes({
+						profile: { type: 'object', properties: { name: { type: 'string' } }, required: ['name', 1] },
+					}),
+				/profile\.required.*array of strings/
+			);
+		});
+
+		it('validates enum, required uniqueness, and const intersection at runtime', () => {
+			assert.throws(
+				() => projectPropertiesToAttributes({ state: { type: 'string', enum: 'open' } }),
+				/non-empty array/
+			);
+			assert.throws(() => projectPropertiesToAttributes({ state: { type: 'string', enum: [] } }), /non-empty array/);
+			assert.throws(
+				() =>
+					projectPropertiesToAttributes({
+						profile: { type: 'object', properties: { name: { type: 'string' } }, required: ['name', 'name'] },
+					}),
+				/unique names/
+			);
+			assert.throws(
+				() => projectPropertiesToAttributes({ state: { type: 'string', enum: ['open'], const: 'closed' } }),
+				/must be included/
+			);
+			assert.throws(() => projectPropertiesToAttributes({ state: { const: 1n } }), /JSON-serializable/);
+			assert.throws(() => projectPropertiesToAttributes({ state: { const: Number.NaN } }), /JSON-serializable/);
+			assert.deepEqual(projectPropertiesToAttributes({ state: { const: { active: true } } })[0].const, {
+				active: true,
+			});
+			const [state] = projectPropertiesToAttributes({ state: { type: 'string', enum: ['open', 'open'] } });
+			assert.deepEqual(state.enum, ['open']);
+		});
+
+		it('caches by properties identity and invalidates when the object is replaced', () => {
+			const { resolveAttributes } = require('#src/resources/jsonSchemaTypes');
+			const properties = { name: { type: 'string' } };
+			const source = { properties, required: ['name'] };
+			const first = resolveAttributes(source);
+			assert.strictEqual(resolveAttributes(source), first);
+			assert.equal(first[0].requiredOnSchema, true);
+			source.properties = { count: { type: 'integer' } };
+			source.required = [];
+			const second = resolveAttributes(source);
+			assert.notStrictEqual(second, first);
+			assert.equal(second[0].name, 'count');
+		});
+
+		it('rejects malformed top-level required declarations', () => {
+			const { resolveAttributes } = require('#src/resources/jsonSchemaTypes');
+			const properties = { name: { type: 'string' } };
+			assert.throws(() => resolveAttributes({ properties, required: ['name', 'name'] }), /unique names/);
+			assert.throws(() => resolveAttributes({ properties, required: ['missing'] }), /unknown property/);
+		});
+
+		it('round-trips with projectAttributesToProperties (properties -> attributes -> properties)', () => {
+			// The `.properties` projection is front-end-neutral: type, description, primaryKey,
+			// nested/array shapes, and nested object-level constraints (required/additionalProperties)
+			// survive. enum/format/const deliberately do NOT (they'd break code-first ⇔ GraphQL parity
+			// for `types.enum`; the MCP/OpenAPI schema paths surface those instead — see below).
+			const properties = {
+				sku: { type: 'string', description: 'Stock keeping unit', primaryKey: true },
+				tags: { type: 'array', items: { type: 'string' } },
+				dims: {
+					type: 'object',
+					required: ['w'],
+					additionalProperties: false,
+					properties: { w: { type: 'integer' }, h: { type: 'integer' } },
+				},
+			};
+			const roundTripped = projectAttributesToProperties(projectPropertiesToAttributes(properties));
+			assert.deepStrictEqual(JSON.parse(JSON.stringify(roundTripped)), properties);
+		});
+
+		it('folds a JSON-Schema union `["T","null"]` into nullable (not truncated to the first member)', () => {
+			const [note] = projectPropertiesToAttributes({ note: { type: ['string', 'null'] } });
+			assert.strictEqual(note.type, 'string');
+			assert.strictEqual(note.nullable, true, 'the null member must become nullable, not be dropped');
+		});
+
+		it('preserves a genuine multi-type union instead of keeping only the first member', () => {
+			const [mixed] = projectPropertiesToAttributes({ mixed: { type: ['string', 'number'] } });
+			assert.deepStrictEqual(mixed.types, ['string', 'number']);
+			assert.strictEqual(mixed.type, 'string', 'single-type consumers still see the first member');
+		});
+
+		it('round-trips a union back to the declared fragment (properties -> attributes -> properties)', () => {
+			const declared = {
+				mixed: { type: ['string', 'number'] },
+				maybe: { type: ['string', 'null'] },
+				tags: { type: ['array', 'null'], items: { type: 'string' } },
+			};
+			const round = projectAttributesToProperties(projectPropertiesToAttributes(declared));
+			assert.deepStrictEqual(round.mixed.type, ['string', 'number']);
+			assert.deepStrictEqual(round.maybe.type, ['string', 'null']);
+			assert.deepStrictEqual(round.tags, declared.tags);
+		});
+
+		it('keeps a `["null"]`-only declaration nullable rather than silently untyped', () => {
+			const [nothing] = projectPropertiesToAttributes({ nothing: { type: ['null'] } });
+			assert.strictEqual(nothing.nullable, true);
+			assert.deepStrictEqual(nothing.types, ['null']);
+		});
+	});
 });

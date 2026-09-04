@@ -11,12 +11,22 @@
  * doesn't waste tokens on fields it can't write), NOT a security boundary.
  */
 
+import {
+	JSON_SCHEMA_SCALAR_TYPES,
+	attributeToSchema,
+	resolveDeclaredType,
+	type AttributeLike,
+	type JsonSchemaFragment,
+} from '../../../../resources/jsonSchemaTypes.ts';
+
 export interface HarperAttribute {
 	name: string;
 	type?: string;
 	description?: string;
 	hidden?: boolean;
 	nullable?: boolean;
+	/** Source JSON-Schema type union from `static properties`; MCP accepts type arrays, so it passes through. */
+	types?: readonly string[];
 	isPrimaryKey?: boolean;
 	properties?: HarperAttribute[];
 	elements?: HarperAttribute;
@@ -25,6 +35,15 @@ export interface HarperAttribute {
 	assignCreatedTime?: boolean;
 	assignUpdatedTime?: boolean;
 	expiresAt?: boolean;
+	// JSON-Schema hints a programmatic Resource may carry via `static properties`.
+	enum?: readonly (string | number | boolean | null)[];
+	format?: string;
+	const?: unknown;
+	required?: readonly string[];
+	additionalProperties?: boolean;
+	requiredOnSchema?: boolean;
+	relationship?: unknown;
+	definition?: unknown;
 }
 
 export interface AttributePermissionEntry {
@@ -37,11 +56,17 @@ export interface AttributePermissionEntry {
 type Mode = 'read' | 'insert' | 'update';
 
 /**
- * Maps a Harper attribute type to a JSON Schema `type` value (or list of
- * types when nullable). Falls back to "string" for unknown types — better
- * than blocking the field entirely; the runtime will validate.
+ * Maps a Harper attribute type to a JSON Schema `type` value. Unknown types
+ * remain untyped so the published contract does not invent a constraint.
  */
-function harperTypeToJsonSchema(type: string | undefined): { type: string | string[] } | object {
+function harperTypeToJsonSchema(
+	type: string | undefined,
+	attributeName?: string,
+	isDeclaredReference = false
+): { type: string | string[] } | object {
+	// A programmatic Resource's `static properties` already speaks JSON Schema (lowercase types, no
+	// collision with Harper's capitalized GraphQL types); pass those through unchanged.
+	if (type && JSON_SCHEMA_SCALAR_TYPES.has(type)) return { type };
 	switch (type) {
 		case 'Int':
 		case 'Long':
@@ -63,41 +88,52 @@ function harperTypeToJsonSchema(type: string | undefined): { type: string | stri
 		case 'Any':
 		case undefined:
 			return {};
-		default:
-			return { type: 'string' };
+		default: {
+			if (isDeclaredReference) return {};
+			const resolved = resolveDeclaredType(type, `MCP tool schema property "${attributeName ?? '<unnamed>'}"`);
+			return resolved ? { type: resolved } : {};
+		}
 	}
 }
 
-function attributeToProperty(attr: HarperAttribute): object {
-	let base: { type?: string | string[]; description?: string; [key: string]: unknown };
-	// The GraphQL parser emits nested objects via `.properties` (not a capitalized `'Object'` type) and
-	// list types as lowercase `type: 'array'` with `.elements` — the prior `'Object'`/`'Array'` literal
-	// checks never matched, so nested shapes fell through to a bare `{ type: 'string' }`. Detect them the
-	// way the parser actually emits, matching the shared `attributeToFragment` projector.
-	if (attr.properties) {
-		base = {
-			type: 'object',
-			properties: Object.fromEntries(attr.properties.map((p) => [p.name, attributeToProperty(p)])),
-		};
-	} else if (attr.type === 'array' && attr.elements) {
-		base = {
-			type: 'array',
-			items: attributeToProperty(attr.elements),
-		};
-	} else {
-		base = harperTypeToJsonSchema(attr.type) as typeof base;
-	}
-	if (attr.nullable && 'type' in base) {
-		const t = base.type;
-		const types = Array.isArray(t) ? t : [t as string];
-		if (!types.includes('null')) {
-			base.type = [...types, 'null'];
-		}
-	}
-	if (attr.description && !base.description) {
-		base.description = attr.description;
-	}
-	return base;
+/**
+ * Emit an attribute as an MCP property schema. The traversal (nesting, arrays, `hidden` suppression,
+ * hint propagation, nullability) is shared with the OpenAPI generator so the two can't describe the
+ * same fragment differently; only the Harper-primitive mapping below is MCP-specific.
+ *
+ * Returns `undefined` for a `hidden` attribute — callers skip it.
+ */
+function attributeToProperty(attr: HarperAttribute): object | undefined {
+	return attributeToSchema(attr as AttributeLike, {
+		dialect: 'json-schema',
+		mapPrimitive: (type, a) =>
+			harperTypeToJsonSchema(
+				type,
+				a.name,
+				Boolean((a as HarperAttribute).relationship || (a as HarperAttribute).definition)
+			) as JsonSchemaFragment,
+	});
+}
+
+/**
+ * The `id` argument's schema. Verb tools surface the primary key as the record's address, not as one
+ * of its fields, so a `@hidden` primary key still has to be typed here — otherwise the tool advertises
+ * a required argument with no type at all. Falls back only when there is no primary key to describe.
+ */
+function primaryKeySchema(pk: HarperAttribute | undefined): object {
+	if (!pk) return { type: 'string' };
+	return (
+		attributeToSchema(pk as AttributeLike, {
+			dialect: 'json-schema',
+			mapPrimitive: (type, a) =>
+				harperTypeToJsonSchema(
+					type,
+					a.name,
+					Boolean((a as HarperAttribute).relationship || (a as HarperAttribute).definition)
+				) as JsonSchemaFragment,
+			ignoreHidden: true,
+		}) ?? { type: 'string' }
+	);
 }
 
 /**
@@ -143,7 +179,7 @@ function buildPropertiesObject(
 	mode: Mode,
 	include?: (a: HarperAttribute) => boolean
 ): { properties: Record<string, object>; required: string[] } {
-	const properties: Record<string, object> = {};
+	const properties: Record<string, object> = Object.create(null);
 	const required: string[] = [];
 	for (const attr of attributes) {
 		if (include && !include(attr)) continue;
@@ -151,8 +187,11 @@ function buildPropertiesObject(
 		// Skip auto-managed columns from write inputs — Harper assigns them.
 		if (mode !== 'read' && (attr.assignCreatedTime || attr.assignUpdatedTime || attr.expiresAt)) continue;
 		if (mode !== 'read' && (attr.computed !== undefined || attr.computedFromExpression !== undefined)) continue;
-		properties[attr.name] = attributeToProperty(attr);
-		if (mode === 'insert' && !attr.nullable && !attr.isPrimaryKey) {
+		if (mode !== 'read' && attr.relationship) continue;
+		const schema = attributeToProperty(attr);
+		if (!schema) continue;
+		properties[attr.name] = schema;
+		if (mode === 'insert' && (attr.requiredOnSchema || attr.nullable === false) && !attr.isPrimaryKey) {
 			required.push(attr.name);
 		}
 	}
@@ -168,7 +207,7 @@ export function deriveGetSchema(
 	_permissions: AttributePermissionEntry[] | undefined
 ): object {
 	const pk = findPrimaryKey(attributes);
-	const pkSchema = pk ? attributeToProperty(pk) : { type: 'string' };
+	const pkSchema = primaryKeySchema(pk);
 	return {
 		type: 'object',
 		properties: {
@@ -256,7 +295,7 @@ export function deriveUpdateSchema(
 		type: 'object',
 		properties: {
 			id: pk
-				? { ...attributeToProperty(pk), description: `Primary key (${pk.name}). Required.` }
+				? { ...primaryKeySchema(pk), description: `Primary key (${pk.name}). Required.` }
 				: { type: 'string', description: 'Primary key. Required.' },
 			...properties,
 		},
@@ -273,7 +312,7 @@ export function deriveDeleteSchema(
 		type: 'object',
 		properties: {
 			id: pk
-				? { ...attributeToProperty(pk), description: `Primary key (${pk.name}).` }
+				? { ...primaryKeySchema(pk), description: `Primary key (${pk.name}).` }
 				: { type: 'string', description: 'Primary key.' },
 		},
 		required: ['id'],
@@ -297,13 +336,20 @@ function deriveRecordSchema(
 	attributes: HarperAttribute[],
 	permissions: AttributePermissionEntry[] | undefined
 ): object {
-	const properties: Record<string, object> = {};
+	const properties: Record<string, object> = Object.create(null);
 	const required: string[] = [];
 	for (const attr of attributes) {
 		if (!attributeVisible(attr, permissions, 'read')) continue;
-		properties[attr.name] = attributeToProperty(attr);
+		const schema = attributeToProperty(attr);
+		if (!schema) continue;
+		properties[attr.name] = schema;
 		const requiredOnOutput =
-			attr.nullable === false || attr.assignCreatedTime || attr.assignUpdatedTime || attr.isPrimaryKey;
+			!attr.relationship &&
+			(attr.requiredOnSchema ||
+				attr.nullable === false ||
+				attr.assignCreatedTime ||
+				attr.assignUpdatedTime ||
+				attr.isPrimaryKey);
 		if (requiredOnOutput) required.push(attr.name);
 	}
 	const schema: {
@@ -353,7 +399,7 @@ export function deriveCreateOutputSchema(
 	_permissions: AttributePermissionEntry[] | undefined
 ): object {
 	const pk = findPrimaryKey(attributes);
-	const idSchema = pk ? attributeToProperty(pk) : { type: 'string' };
+	const idSchema = primaryKeySchema(pk);
 	return {
 		type: 'object',
 		properties: {
