@@ -2069,6 +2069,7 @@ export function makeTable(options) {
 		 * Save any changes into this instance to the current transaction
 		 */
 		save() {
+			this.#assertLiveHandle(this.getId()); // a write through a released or expired lock never lands
 			const operation = this.#savingOperation;
 			if ((!operation || operation.dropped) && this.#lockWritable && this.#lockHandle?.hold) {
 				// A held lock's record stages its update here rather than at lock() time: it is often
