@@ -2098,7 +2098,7 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 	// still counts against the drop or restore that is waiting for every thread to let go of it.
 	const cachedRoot = rocksdbDatabaseEnvs.get(resolveDatabasePath(databaseName));
 	if (cachedRoot) rootStores.add(cachedRoot);
-	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
+	// Retire audit cleanup before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
 	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
 	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
 	// synchronous purgeLogs() call with nothing suspended mid-removal.
