@@ -1443,6 +1443,20 @@ describe('Record locks (harper#483)', () => {
 			await holder.unlock();
 			assert.strictEqual((await LockTest.get(lockedId)).n, 1, 'the holder write landed');
 		});
+
+		it('lock acquisition does not backdate a later ordinary context write', async function () {
+			if (isLMDB) return this.skip();
+			const lockedId = id();
+			const otherId = id();
+			await LockTest.put({ id: lockedId, n: 0 });
+			const context = {};
+			const holder = await LockTest.lock(lockedId, { hold: true, lease: 5000 }, context);
+			await delay(20);
+			await LockTest.put({ id: otherId, n: 1 });
+			await LockTest.delete(otherId, context);
+			await holder.unlock();
+			assert.strictEqual(await LockTest.get(otherId), null, 'ordinary delete used its own current timestamp');
+		});
 	});
 
 	describe('recreate-after-delete race (issue-(f))', function () {

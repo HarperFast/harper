@@ -2579,7 +2579,7 @@ export function makeTable(options) {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 					link.registerRecordLock(handle);
-					if (link.saveCommits && link.timestamp) handle.noteCandidateFloor(link.timestamp);
+					if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
 					if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
 						// Explicit transaction() (not ImmediateTransaction): pin the clock to
 						// acquiredAt when no writes have been staged yet.  When writes already
