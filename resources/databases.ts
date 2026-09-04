@@ -2010,10 +2010,12 @@ export async function dropDatabase(databaseName) {
 	if (!rootStore) rootStore = database({ database: databaseName, table: null });
 
 	if (!(rootStore instanceof RocksDatabase)) {
+		const rootStores = new Set<any>([rootStore]);
+		for (const tableName in dbTables) rootStores.add(dbTables[tableName].primaryStore.rootStore);
 		for (const tableName in dbTables) lmdbDatabaseEnvs.delete(dbTables[tableName].primaryStore.rootStore.path);
 		for (const tableName in dbTables) databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
-		await rootStore.auditStore?.stopAuditCleanup?.();
+		await Promise.all([...rootStores].map((store) => store.auditStore?.stopAuditCleanup?.()));
 		// the environment's close is asynchronous: the file must not be unlinked under it
 		const closing: Promise<unknown>[] = [];
 		closeDatabase(databaseName, closing);

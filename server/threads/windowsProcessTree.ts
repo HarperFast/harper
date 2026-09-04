@@ -297,13 +297,19 @@ export async function confirmWindowsProcessTreeGone(
 	for (;;) {
 		const table = await scan();
 		let members: WindowsProcessRecord[] | null = null;
+		let rootIdentityUnknown: WindowsProcessRecord | undefined;
 		if (table !== null) {
 			const scannedAt = now();
 			const root = findWindowsTreeRoot(table, identity);
-			const rootIdentityUnknown =
-				identity.rootExitedAt === undefined &&
-				table.some((process) => process.pid === identity.rootPid && process.created === null);
-			if (!rootIdentityUnknown) {
+			rootIdentityUnknown =
+				identity.rootExitedAt === undefined
+					? table.find((process) => process.pid === identity.rootPid && process.created === null)
+					: undefined;
+			if (rootIdentityUnknown) {
+				members = selectWindowsProcessTree(table, identity, scannedAt).filter(
+					(member) => identity.descendants?.get(member.pid)?.created === member.created
+				);
+			} else {
 				if (root && identity.rootCreatedAt === undefined) identity.rootCreatedAt = root.created;
 				members = selectWindowsProcessTree(table, identity, scannedAt);
 				// The root's PID is reusable the moment it exits, so from the first scan that no longer finds
@@ -314,13 +320,17 @@ export async function confirmWindowsProcessTreeGone(
 				rememberDescendants(identity, members, scannedAt);
 			}
 		}
-		if (members?.length === 0) return;
-		if (members) await kill(members, identity.rootPid);
+		if (!rootIdentityUnknown && members?.length === 0) return;
+		if (members?.length) await kill(members, identity.rootPid);
 		const time = now();
 		if (time >= nextWarningAt) {
 			warn(
 				`Termination of the process tree of ${label} remains unconfirmed after ${Math.round(time - startedAt)}ms: ` +
-					(members ? `live members ${describeMembers(members)}` : 'the Windows process table could not be queried')
+					(rootIdentityUnknown
+						? `root pid ${identity.rootPid} is held by ${rootIdentityUnknown.name} without a creation time`
+						: members
+							? `live members ${describeMembers(members)}`
+							: 'the Windows process table could not be queried')
 			);
 			nextWarningAt = time + WINDOWS_TREE_WARNING_INTERVAL_MS;
 		}
