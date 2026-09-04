@@ -220,6 +220,14 @@ certificateVerification:
 
 **Important:** Invalid signatures on CRLs always result in rejection regardless of failure mode, as this indicates potential tampering.
 
+### When the issuer certificate is unavailable
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+Revocation checking needs the client certificate's issuer. Harper takes it from the chain the client presented, and when that chain is not available (every resumed TLS session, and every connection on Node.js 26.8.0 and 26.8.1) from the certificate authorities you configured. If the issuer is in neither place, the revocation status cannot be established and the configured failure mode applies. Under `fail-closed`, the connection is rejected. Under `fail-open`, the connection is allowed. Either way, Harper logs a warning (once per certificate) because the revocation check is not running for that client.
+
+For revocation checking to work on resumed sessions, the CA that issued your client certificates must be one of Harper's configured certificate authorities (`tls.certificateAuthority`, or a certificate record marked as an authority). A client certificate issued by an intermediate CA that only the client sends, with just the root configured on Harper, cannot be checked on a resumed session. The same applies behind a proxy that terminates TLS and forwards the client's chain (such as symphony): Harper receives only what the client presented, so the issuing CA must also be configured on Harper.
+
 ## Performance Considerations
 
 ### CRL Performance
@@ -326,6 +334,15 @@ http:
 2. Verify CA infrastructure is accessible.
 3. Check timeout settings — increase if needed.
 4. Temporarily switch to fail-open mode while investigating.
+
+### Warning: Cannot check revocation status for client certificate
+
+**Cause:** The connection did not carry the client certificate's issuer and the issuer is not among Harper's configured certificate authorities, so revocation could not be checked. Under fail-closed the connection was rejected. See [When the issuer certificate is unavailable](#when-the-issuer-certificate-is-unavailable).
+
+**Solutions:**
+
+1. Add the CA that issued the client certificates (the intermediate, if there is one) to `tls.certificateAuthority` or as an authority certificate record.
+2. Have clients present their full chain and avoid Node.js 26.8.0 and 26.8.1, which drop the presented chain (fixed upstream in later releases).
 
 ### High Latency on First Connection
 
