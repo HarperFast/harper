@@ -679,7 +679,18 @@ export class LockCoordinator {
 		const identity = identityOf(entry.requester, entry.tsR);
 		if (state.peers.has(identity)) return; // idempotent by identity, which is what makes replay harmless
 		if (state.peers.size >= MAX_PEER_REQUESTS_PER_KEY) {
-			warnOnce(`dropping a replicated record lock request: too many contenders on one key in ${this.table}`);
+			// Released rounds linger only so a replayed request cannot resurrect them. They must not
+			// consume the contention budget: a hot key turns over more than this many rounds inside one
+			// bound, and counting them would make this node withhold grants from live requesters.
+			// Re-admitting a replayed round instead costs a spurious grant to a requester that is gone.
+			for (const [identity, peer] of state.peers) {
+				if (!peer.released) continue;
+				state.peers.delete(identity);
+				if (state.peers.size < MAX_PEER_REQUESTS_PER_KEY) break;
+			}
+		}
+		if (state.peers.size >= MAX_PEER_REQUESTS_PER_KEY) {
+			warnOnce(`dropping a replicated record lock request: too many live contenders on one key in ${this.table}`);
 			return;
 		}
 		const peer: PeerRound = {

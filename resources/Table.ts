@@ -881,7 +881,14 @@ export function makeTable(options) {
 						return;
 					}
 					const target = event.table ? databases[databaseName]?.[event.table] : TableResource;
-					target?.lockCoordinator?.applyEntry(entry, author);
+					try {
+						// The coordinator getter fails closed on an unusable node identity. That is right for
+						// an acquire and wrong here: rejecting out of this sink stalls the apply loop for
+						// every later entry rather than dropping one.
+						target?.lockCoordinator?.applyEntry(entry, author);
+					} catch (error) {
+						logger.warn?.('dropping a record lock control entry: the coordinator is unavailable', error);
+					}
 				};
 				// perform the write of an individual write event
 				const writeUpdate = async (event, context) => {
@@ -2585,7 +2592,13 @@ export function makeTable(options) {
 			// a caller asking for a guarantee this node cannot make, so it fails closed rather than
 			// silently returning the node-local lock; the default keeps Phase 0 behavior, which is what
 			// a build with no replication has anyway.
-			const coordinator = resolved.scope === 'node' ? undefined : TableResource.lockCoordinator;
+			// The getter fails closed on an unusable node identity, and lock() answers with a promise.
+			let coordinator: LockCoordinator | undefined;
+			try {
+				coordinator = resolved.scope === 'node' ? undefined : TableResource.lockCoordinator;
+			} catch (error) {
+				return Promise.reject(error as Error);
+			}
 			const key = lockAttemptKey(tableId, id);
 			// Coalesce concurrent lock() calls for the same key inside one link so they don't
 			// self-block: Promise.all([T.lock(id), T.lock(id)]) would otherwise have both calls
