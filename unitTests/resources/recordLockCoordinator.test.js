@@ -491,6 +491,25 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			assert.strictEqual(pending.state, 'pending', 'a node cannot grant on another node’s behalf');
 		});
 
+		it('does not let released rounds crowd out live contenders on a hot key', async () => {
+			const cluster = new FakeCluster(['node-a', 'node-b']);
+			// A hot key turns over far more rounds inside one bound than the per-key cap. Released rounds
+			// linger only for replay protection, so counting them would make node-a stop granting.
+			const grantsBefore = cluster.writtenOfType('node-a', 'lockGrant').length;
+			for (let round = 0; round < 90; round++) {
+				const held = cluster.acquire('node-b', KEY, 60_000, 60_000);
+				await cluster.flush(2);
+				assert.strictEqual(held.state, 'resolved', `round ${round} acquired`);
+				await cluster.release('node-b');
+				await cluster.flush(2);
+			}
+			assert.strictEqual(
+				cluster.writtenOfType('node-a', 'lockGrant').length - grantsBefore,
+				90,
+				'every live request was granted'
+			);
+		});
+
 		it('ignores a request replayed from beyond any live hold', async () => {
 			const cluster = new FakeCluster(['node-a', 'node-b']);
 			cluster.node('node-a').coordinator.applyEntry(
