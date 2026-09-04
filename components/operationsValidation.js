@@ -78,30 +78,28 @@ function checkProjectExists(checkExists, project, helpers) {
 	}
 }
 
-/**
- * Refuse a project name Harper's root config claims for itself, on every operation that CREATES a
- * component under that name. Drop/package/file operations deliberately don't call this: an
- * application deployed under the name before it was reserved has to stay removable.
- */
+// Drop/package/file operations deliberately don't call this: an application deployed under the
+// name before it was reserved has to stay removable.
 function checkReservedProjectName(project, helpers) {
 	if (isReservedComponentName(project)) return helpers.message(HDB_ERROR_MSGS.RESERVED_PROJECT_NAME(project));
 	return project;
 }
 
 /**
- * The same reservation for an operation that creates a project directory as a side effect of
- * writing into it (set_component_file): only the creation is refused, so an application that
- * already holds the name stays editable until it is migrated off it.
+ * The file writers create the project directory as a side effect of writing into it, so they refuse
+ * only the creation — an application that already holds the name stays editable until it is
+ * migrated off it. An unreadable components root resolves to the reservation, never past it.
  */
 function checkReservedProjectCreation(project, helpers) {
 	if (!isReservedComponentName(project)) return project;
+	let projectDir;
 	try {
-		const projectDir = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), project);
-		if (fs.existsSync(projectDir)) return project;
+		const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+		if (componentsRoot) projectDir = path.join(componentsRoot, project);
 	} catch (err) {
 		hdbLogger.error(err);
-		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
 	}
+	if (projectDir && fs.existsSync(projectDir)) return project;
 	return helpers.message(HDB_ERROR_MSGS.RESERVED_PROJECT_NAME(project));
 }
 
@@ -247,6 +245,7 @@ function setEnvValueValidator(req) {
 	const schema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkReservedProjectCreation)
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		file: Joi.string().custom(checkFilePath).optional(),

@@ -837,25 +837,24 @@ function lookupConfigParam(arg: string): string | undefined {
 
 const COMPONENT_PARAM_SUFFIXES = ['_package', '_port'];
 
-/** The component a `<component>_package` / `<component>_port` param names, if it names one. */
 function suffixEscapedComponentName(arg: string): string | undefined {
 	if (typeof arg !== 'string') return undefined;
 	const suffix = COMPONENT_PARAM_SUFFIXES.find((candidate) => arg.endsWith(candidate));
-	return suffix === undefined ? undefined : arg.slice(0, -suffix.length);
+	if (suffix === undefined) return undefined;
+	const component = arg.slice(0, -suffix.length);
+	return component === '' ? undefined : component;
 }
 
 /**
  * Component entries (`my-component_package`, `my-component_port`) are operator-named, so they
- * cannot be enumerated in CONFIG_PARAM_MAP and bypass it. A reserved name is excluded: this escape
- * is the one way to write a root component entry without going through deploy_component, so
- * admitting it here would recreate the entry the reservation exists to keep out of the config.
+ * cannot be enumerated in CONFIG_PARAM_MAP and bypass it. This escape is the one way to write a
+ * root component entry without going through deploy_component, so a reserved name is excluded.
  */
 function isSuffixEscapedParam(arg: string): boolean {
 	const component = suffixEscapedComponentName(arg);
 	return component !== undefined && !isReservedComponentName(component);
 }
 
-/** The suffix-escaped params in a set_configuration body that name a reserved component. */
 function findReservedComponentParams(args: object): string[] {
 	const reserved = [];
 	for (const arg in args) {
@@ -1256,8 +1255,8 @@ export async function setConfiguration(setConfigJson) {
 			true
 		);
 	}
-	// Reported before the generic unrecognized-parameter error below, which would otherwise be the
-	// message for these: they are rejected for a specific reason the operator can act on.
+	// Before the generic unrecognized-parameter error below, which would otherwise claim these names
+	// are unknown rather than reserved.
 	const reservedComponentParams = findReservedComponentParams(configFields);
 	if (reservedComponentParams.length > 0) {
 		throw handleHDBError(

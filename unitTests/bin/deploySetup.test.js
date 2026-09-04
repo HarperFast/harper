@@ -7,11 +7,31 @@
 // resolves its inputs.
 const assert = require('node:assert');
 const path = require('node:path');
-const { resolveComponentName, resolveGitHost, storeSealedSecret } = require('#src/bin/deploySetup');
+const {
+	assertUsableComponentName,
+	resolveComponentName,
+	resolveGitHost,
+	storeSealedSecret,
+} = require('#src/bin/deploySetup');
 const { directoryProjectName } = require('#src/utility/componentNames');
 const cliOperationsModule = require('#src/bin/cliOperations');
 
 describe('deploySetup', () => {
+	describe('assertUsableComponentName', () => {
+		it('accepts a name a deploy would accept', () => {
+			assert.doesNotThrow(() => assertUsableComponentName('sql-tools'));
+		});
+
+		it('rejects a name outside the deploy grammar', () => {
+			assert.throws(() => assertUsableComponentName('has space'), /not a usable component name/);
+		});
+
+		// Sealing a credential for a name deploy_component refuses leaves a secret nobody can use.
+		it('rejects a name reserved by the root config', () => {
+			assert.throws(() => assertUsableComponentName('sql'), /is reserved for Harper's "sql" configuration section/);
+		});
+	});
+
 	describe('resolveComponentName', () => {
 		it('canonicalizes an explicit project like deploy_component does', () => {
 			assert.strictEqual(resolveComponentName({ project: 'web' }), 'web');

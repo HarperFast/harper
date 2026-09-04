@@ -36,6 +36,7 @@ import {
 	normalizeGitHost,
 	projectNameFromPackage,
 	GIT_HOST_PATTERN,
+	isReservedComponentName,
 	PROJECT_NAME_PATTERN,
 } from '../utility/componentNames.ts';
 
@@ -72,6 +73,23 @@ export function resolveComponentName(req: any): string | undefined {
 	// than at deploy time.
 	if (typeof req.package === 'string' && req.package) return projectNameFromPackage(req.package);
 	return undefined;
+}
+
+/**
+ * The names a deploy would refuse, rejected here instead: a credential sealed and granted to a name
+ * no deploy can run as is a durable secret nobody can ever use.
+ */
+export function assertUsableComponentName(component: string): void {
+	if (!PROJECT_NAME_PATTERN.test(component)) {
+		throw cliError(
+			`"${component}" is not a usable component name — a deploy accepts letters, numbers, dashes and underscores.`
+		);
+	}
+	if (isReservedComponentName(component)) {
+		throw cliError(
+			`"${component}" is reserved for Harper's "${component}" configuration section — deploying a component under that name is refused.`
+		);
+	}
 }
 
 /**
@@ -185,11 +203,7 @@ export async function deploySetup(req: any): Promise<void> {
 				})
 			).project ?? ''
 		);
-	if (!PROJECT_NAME_PATTERN.test(component)) {
-		throw cliError(
-			`"${component}" is not a usable component name — a deploy accepts letters, numbers, dashes and underscores.`
-		);
-	}
+	assertUsableComponentName(component);
 
 	let credentialKey: string; // host (github) or registry (npm) — the credentials-entry discriminator
 	let credentialEntry: Record<string, string>;

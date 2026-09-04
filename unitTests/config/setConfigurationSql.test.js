@@ -31,9 +31,8 @@ describe('sql.* config param registration', () => {
 		);
 	});
 
-	// `<component>_package` / `<component>_port` are the escape hatch that lets set_configuration
-	// write a root component entry for an operator-named component, which would otherwise put back
-	// the very entry deploy_component now refuses to create.
+	// The `<component>_package` / `<component>_port` escape would otherwise put back the very entry
+	// deploy_component now refuses to create.
 	for (const param of ['sql_package', 'sql_port']) {
 		it(`set_configuration rejects ${param}, which would write a component entry over the sql section`, async () => {
 			await assert.rejects(

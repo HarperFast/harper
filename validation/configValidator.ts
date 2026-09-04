@@ -31,19 +31,23 @@ const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 
 /**
- * The keys a root-config application entry carries — what `deploy_component` writes, plus the
- * deployment-level keys componentLoader reads off the entry. Frozen: they identify the shape of a
- * `sql` application deployed before the name was reserved, not a shape anything new may take.
+ * What `deploy_component` writes into a root-config entry, plus the deployment-level keys
+ * componentLoader reads off it — the shape of a `sql` application deployed before the name was
+ * reserved. Closed to new keys: nothing new may take this shape.
  */
 export const LEGACY_SQL_APPLICATION_KEYS = [
 	'package',
 	'files',
+	'path',
 	'install',
 	'credentials',
 	'loadComponent',
 	'urlPath',
 	'host',
 	'branchedDatabases',
+	'network',
+	'port',
+	'securePort',
 ];
 
 export function isLegacySqlApplicationEntry(value: unknown): boolean {
@@ -267,11 +271,10 @@ export function configValidator(configJson, skipFsValidation = false) {
 		.unknown(false)
 		.prefs({ convert: false });
 
-	// An application deployed under the name before it was reserved (see RESERVED_COMPONENT_NAMES)
-	// still boots; validateConfig() warns to rename it. Selected positively, by the keys a deploy
-	// writes, so an entry that is merely a typo'd setting is still held to the settings schema
-	// rather than waved through as an application. The two shapes can't be mixed: an entry carrying
-	// both would leave which one `sql` means undecidable at every reader.
+	// An application deployed under the name before it was reserved still boots; validateConfig()
+	// warns to rename it. Selected positively so a typo'd setting is still held to the settings
+	// schema instead of passing as an application. Mixing the shapes would leave which one `sql`
+	// means undecidable at every reader.
 	const legacySqlApplicationSchema = Joi.object({
 		engine: Joi.any().forbidden(),
 		allowFullScan: Joi.any().forbidden(),
