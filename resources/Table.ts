@@ -717,6 +717,7 @@ export function makeTable(options) {
 		nodeId: number | undefined,
 		refs?: Array<{ version: number; nodeId: number }>
 	) {
+		if (!refs?.length) return { txnLogKey: version, nodeId };
 		const visited = new Set<string>();
 		function findHead(candidateRefs?: Array<{ version: number; nodeId: number }>) {
 			if (!candidateRefs) return;
@@ -728,7 +729,8 @@ export function makeTable(options) {
 				visited.add(identity);
 				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
 				if (!entry) continue;
-				if (entry.version === version) return { txnLogKey: ref.version, nodeId: ref.nodeId };
+				if (entry.version === version && (entry.nodeId ?? 0) === (nodeId ?? 0))
+					return { txnLogKey: ref.version, nodeId: ref.nodeId };
 				const previousRefs = entry.previousAdditionalAuditRefs;
 				if (previousRefs) {
 					for (let index = previousRefs.length - 1; index >= 0; index--) pending.push(previousRefs[index]);
@@ -739,7 +741,8 @@ export function makeTable(options) {
 		if (referencedHead) return referencedHead;
 		if (version != null) {
 			const directHead = auditStore.getSync(version, tableId, id, nodeId);
-			if (directHead?.version === version) return { txnLogKey: version, nodeId };
+			if (directHead?.version === version && (directHead.nodeId ?? 0) === (nodeId ?? 0))
+				return { txnLogKey: version, nodeId };
 		}
 		return { txnLogKey: version, nodeId };
 	}
@@ -3619,6 +3622,7 @@ export function makeTable(options) {
 								residencyId,
 								expiresAt,
 								recordVersion: txnTime,
+								recordNodeId: precedesExisting < 0 ? existingEntry?.nodeId : options?.nodeId,
 								nodeId: options?.nodeId,
 								viaNodeId: options?.viaNodeId,
 								originatingOperation: (context as any)?.originatingOperation,

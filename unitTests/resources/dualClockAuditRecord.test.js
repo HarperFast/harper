@@ -32,7 +32,9 @@ describe('Dual-clock audit records (harper#2412)', () => {
 				type: auditRecord.type,
 				version: auditRecord.version,
 				txnLogKey: auditRecord.txnLogKey,
+				nodeId: auditRecord.nodeId,
 				previousVersion: auditRecord.previousVersion,
+				previousNodeId: auditRecord.previousNodeId,
 				previousAdditionalAuditRefs: auditRecord.previousAdditionalAuditRefs,
 			});
 		}
@@ -182,13 +184,18 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			{ logKey: olderLogKey, version: olderVersion, nodeId: 2, fullUpdate: false }
 		);
 		assert.deepEqual(await Plain.get(id), { id, name: 'newer', count: 1 });
+		assert.equal(
+			Plain.primaryStore.getEntry(id).nodeId,
+			0,
+			'the stored node id stays paired with the surviving record version'
+		);
 		assert(
 			Plain.primaryStore.getEntry(id).additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0),
 			'an out-of-order merge must retain the surviving head in the log-key domain'
 		);
 		assert(
 			(await Plain.getHistoryOfRecord(id)).some((entry) => entry.localTime === logKey),
-			'an audit-only fold must not displace the real head of the surviving record'
+			`an audit-only fold must not displace the real head of the surviving record: ${JSON.stringify(auditEntriesFor(Plain, id))}`
 		);
 		const olderAudit = auditEntriesFor(Plain, id).find((entry) => entry.txnLogKey === olderLogKey);
 		assert.equal(olderAudit.version, olderVersion, "crash replay must see the folded write's original version");
@@ -433,7 +440,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		// auditStore.get(key, ...) walks the entries at one log key; a fill's entry sits at its commit
 		// key while the record itself stores the source version, so keying by version must not find it.
 		const id = 'lookup-1';
-		const logKey = Date.now() + 3;
+		const logKey = Date.now() + 1_000;
 		const version = logKey - 120_000;
 		// nodeId 0 so the entry lands in — and is read back from — the one log a single-node test has
 		await applyFromOrigin(Plain, id, { id, name: 'lookup' }, { logKey, version, nodeId: 0 });

@@ -908,9 +908,9 @@ export function recordUpdater(store, tableId, auditStore) {
 				metadataInNextEncoding |= HAS_RESIDENCY_ID;
 				extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			} else residencyIdAtNextEncoding = 0;
-			const nodeId = options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
-			if (nodeId >= 0) {
-				nodeIdAtNextEncoding = nodeId;
+			const recordNodeId = options?.recordNodeId ?? options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
+			if (recordNodeId >= 0) {
+				nodeIdAtNextEncoding = recordNodeId;
 				metadataInNextEncoding |= HAS_NODE_ID;
 			} else nodeIdAtNextEncoding = -1;
 			const additionalAuditRefs = options?.additionalAuditRefs;
@@ -985,10 +985,13 @@ export function recordUpdater(store, tableId, auditStore) {
 				if (resolveRecord && existingEntry?.localTime) {
 					let replacingId = existingEntry.localTime;
 					let replacingEntry;
-					if (isRocksDB) {
-						for (const ref of existingEntry.additionalAuditRefs ?? []) {
+					if (isRocksDB && existingEntry.additionalAuditRefs) {
+						for (const ref of existingEntry.additionalAuditRefs) {
 							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId);
-							if (candidate?.version === existingEntry.version) {
+							if (
+								candidate?.version === existingEntry.version &&
+								(candidate.nodeId ?? 0) === (existingEntry.nodeId ?? 0)
+							) {
 								replacingId = ref.version;
 								replacingEntry = candidate;
 								break;

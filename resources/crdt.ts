@@ -161,8 +161,9 @@ function reconstructForward(auditStore, store, tableId: number, recordId: any, f
 }
 
 function resolveAuditPosition(auditStore, tableId: number, recordId: any, version, nodeId, refs) {
+	if (!refs?.length) return { txnLogKey: version, nodeId };
 	const visited = new Set<string>();
-	const pending = (refs ?? []).slice().reverse();
+	const pending = refs.slice().reverse();
 	while (pending.length > 0) {
 		const ref = pending.pop();
 		const identity = `${ref.nodeId ?? 0}:${ref.version}`;
@@ -170,9 +171,11 @@ function resolveAuditPosition(auditStore, tableId: number, recordId: any, versio
 		visited.add(identity);
 		const entry = auditStore.get(ref.version, tableId, recordId, ref.nodeId);
 		if (!entry) continue;
-		if (entry.version === version) return { txnLogKey: ref.version, nodeId: ref.nodeId };
-		for (const previousRef of (entry.previousAdditionalAuditRefs ?? []).slice().reverse()) {
-			pending.push(previousRef);
+		if (entry.version === version && (entry.nodeId ?? 0) === (nodeId ?? 0))
+			return { txnLogKey: ref.version, nodeId: ref.nodeId };
+		const previousRefs = entry.previousAdditionalAuditRefs;
+		if (previousRefs) {
+			for (let index = previousRefs.length - 1; index >= 0; index--) pending.push(previousRefs[index]);
 		}
 	}
 	return { txnLogKey: version, nodeId };
