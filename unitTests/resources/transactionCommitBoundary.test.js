@@ -184,6 +184,28 @@ describe('Transaction native-submit boundary', () => {
 		child.commitsInFlight = 0;
 	});
 
+	it('keeps the root submission boundary until a third detached store settles', function () {
+		const root = new DatabaseTransaction();
+		const first = new DatabaseTransaction();
+		const second = new DatabaseTransaction();
+		const third = new DatabaseTransaction();
+		for (const link of [first, second, third]) link.root = root;
+		root.commitSubmitted = true;
+		root.committingWrites = true;
+		root.submittedLink = first;
+		root.submittedLinks = new Set([second, third]);
+		third.nativeCommitSubmitted = true;
+		third.commitsInFlight = 1;
+
+		assert.equal(root.isChainCommitting(), true, 'the third submitted link must keep the detached chain visible');
+		third.endCommitAttempt();
+
+		assert.equal(root.commitSubmitted, false, 'the root boundary clears after the last detached store settles');
+		assert.equal(root.committingWrites, false);
+		assert.equal(root.submittedLink, undefined);
+		assert.equal(root.submittedLinks, undefined);
+	});
+
 	it('preserves and leaves protected post-submit work unpoisoned', function () {
 		const transaction = new DatabaseTransaction();
 		transaction.commitsInFlight = 1;

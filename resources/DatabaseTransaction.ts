@@ -436,6 +436,12 @@ export function writeKeyId(key: Id): unknown {
 	return toBufferKey(key as any).toString('latin1');
 }
 
+function clearAttemptState(txn: DatabaseTransaction): void {
+	txn.poisonedMidCommit = false;
+	txn.postSubmitPoisoned = false;
+	txn.stalledCommitResourcesReleased = false;
+}
+
 type RocksTransactionWithRetry = RocksTransaction & { isRetry?: boolean };
 
 export class DatabaseTransaction implements Transaction {
@@ -1373,20 +1379,12 @@ export class DatabaseTransaction implements Transaction {
 		root.submittedLink = undefined;
 		const submittedLinks = root.submittedLinks;
 		root.submittedLinks = undefined;
-		const clearAttemptState = (txn: DatabaseTransaction) => {
-			txn.poisonedMidCommit = false;
-			txn.postSubmitPoisoned = false;
-			txn.stalledCommitResourcesReleased = false;
-		};
 		if (submittedLink) clearAttemptState(submittedLink);
 		if (submittedLinks) for (const txn of submittedLinks) clearAttemptState(txn);
-		for (let txn: DatabaseTransaction = root; txn; txn = txn.next) clearAttemptState(txn);
 		let stillWriteSupervised = false;
 		for (let txn: DatabaseTransaction = root; txn; txn = txn.next) {
-			if (txn.writeSupervised) {
-				stillWriteSupervised = true;
-				break;
-			}
+			clearAttemptState(txn);
+			if (txn.writeSupervised) stillWriteSupervised = true;
 		}
 		if (!stillWriteSupervised) supervisedWriteRoots.delete(root);
 		if (root.scopeAbandoned) {
@@ -2091,7 +2089,9 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	hasPendingWrites(): boolean {
 		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
-			if (txn.writes.some((write) => write)) return true;
+			for (let i = 0; i < txn.writes.length; i++) {
+				if (txn.writes[i]) return true;
+			}
 		}
 		return false;
 	}

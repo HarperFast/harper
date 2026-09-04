@@ -11,6 +11,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 export const contextStorage = new AsyncLocalStorage<Context>();
+const ONCE = Object.freeze({ once: true });
 
 export function transaction<T>(context: Context, callback: (transaction: Transaction) => T): T;
 export function transaction<T>(callback: (transaction: Transaction) => T): T;
@@ -93,7 +94,7 @@ export function transaction<T>(
 						harperLogger.debug?.('aborting transaction on client disconnect', error);
 					}
 				};
-				signal.addEventListener('abort', onDisconnect, { once: true });
+				signal.addEventListener('abort', onDisconnect, ONCE);
 			}
 			return (result as any).then(onComplete, onError);
 		}

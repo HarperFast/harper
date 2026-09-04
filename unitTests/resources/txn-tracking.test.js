@@ -1351,6 +1351,43 @@ describe('Disconnect abort', () => {
 		assert.ok((await DisconnectResource.get(531)) == null, 'the post-commit write must not land');
 	});
 
+	it('lets the wrapper-owned final commit settle after native submission before removing cancellation', async function () {
+		if (isLMDB) this.skip(); // LMDB submission-state parity is covered without gating its global store below
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let txn;
+		let releaseNativeCommit;
+		let nativeAborts = 0;
+		const handled = transaction(context, async (currentTxn) => {
+			txn = currentTxn;
+			await DisconnectResource.put(535, { name: 'wrapper commit outcome' }, context);
+			const nativeTransaction = currentTxn.transaction;
+			const nativeCommit = nativeTransaction.commit.bind(nativeTransaction);
+			const nativeAbort = nativeTransaction.abort.bind(nativeTransaction);
+			const nativeGate = new Promise((resolve) => (releaseNativeCommit = resolve));
+			nativeTransaction.commit = () => nativeGate.then(nativeCommit);
+			nativeTransaction.abort = () => {
+				nativeAborts++;
+				return nativeAbort();
+			};
+		});
+
+		await waitFor(() => txn?.commitSubmitted, { message: 'the wrapper must submit its final native commit' });
+		ac.abort();
+		assert.equal(txn.disconnected, true, 'the listener must remain armed through final commit settlement');
+		assert.equal(nativeAborts, 0, 'a submitted wrapper commit must not be aborted');
+		releaseNativeCommit();
+		await handled;
+		assert.equal(nativeAborts, 0);
+		assert.equal((await DisconnectResource.get(535))?.name, 'wrapper commit outcome');
+		assertChainReleased(context.transaction);
+
+		await transaction(context, async () => {
+			await DisconnectResource.put(536, { name: 'later scope on aborted signal' }, context);
+		});
+		assert.equal((await DisconnectResource.get(536))?.name, 'later scope on aborted signal');
+	});
+
 	// The same boundary from the other side of commit()'s CLOSED flip: once the native commit is in
 	// flight the transaction has already marked itself CLOSED, so the listener's OPEN + hasPendingWrites()
 	// test alone would see nothing to protect and let the scope rotate back open and commit later writes
