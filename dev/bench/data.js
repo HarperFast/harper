@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788506785389,
+  "lastUpdate": 1788506789432,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -12514,6 +12514,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 46.84,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6910b74f2882e632b39a01ed3fe1e2cf61b9089d",
+          "message": "Stop the terminal-shutdown harness from loading the whole app graph to test worker respawn (#2366)\n\n* Stop the terminal-shutdown harness from loading the whole app graph to test worker respawn\n\nSeed the worker manager's lazy root-component dependency with a verified no-op in the harness, so respawn bookkeeping is tested without loading the full application graph. Keep the terminal shutdown modes' assertions and suite-level timeout intact.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Clarify terminal-shutdown harness ROOTPATH isolation\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-09-04T04:00:41Z",
+          "url": "https://github.com/HarperFast/harper/commit/6910b74f2882e632b39a01ed3fe1e2cf61b9089d"
+        },
+        "date": 1788506788635,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.17,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.79,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 19.3,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 20.58,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 25.54,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 19.41,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 38.44,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 16.02,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 19,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 47.46,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 178.52,
             "unit": "ms"
           }
         ]
