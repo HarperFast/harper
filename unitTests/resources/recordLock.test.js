@@ -522,11 +522,14 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual(afterHold.n, 2, 'second save landed (hold, out-of-txn)');
 			assert.strictEqual(afterHold.name, 'updated', 'third save landed (hold, out-of-txn)');
 
-			// Scoped lock inside a transaction().
+			// Scoped lock inside a transaction(): stages exactly like update(), so a second write
+			// on the same instance needs its own update() call to create a fresh TransactionWrite
+			// (the ordinary path — no lock-writable auto-restaging for scoped).
 			await transaction(async () => {
 				const scoped = await LockTest.lock(recordId);
 				scoped.set('n', 3);
 				await scoped.save();
+				scoped.update();
 				scoped.set('n', 4);
 				await scoped.save();
 			});
@@ -687,7 +690,8 @@ describe('Record locks (harper#483)', () => {
 			// In an ImmediateTransaction context (no explicit transaction()) each write through a
 			// scoped lock is stamped via nextHolderVersion() (independent commits), but the key is
 			// NOT released by the first save() — the lock persists until unlock() or lease expiry.
-			// This allows multiple sequential set()+save() calls without a 409 on the second save.
+			// Scoped stages exactly like update(): each save() cycle needs its own update() call
+			// to create a fresh TransactionWrite (no lock-writable auto-restaging for scoped).
 			if (isLMDB) return this.skip();
 			this.timeout(2000);
 			const recordId = id();
@@ -706,6 +710,7 @@ describe('Record locks (harper#483)', () => {
 				'key still held after first save'
 			);
 			// Second save.
+			scoped.update();
 			scoped.set('n', 2);
 			await scoped.save();
 			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'second write landed');

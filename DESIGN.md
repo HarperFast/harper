@@ -132,6 +132,30 @@ Both orders are now pinned. `addWrite` defers a write whose earlier same-key wri
 
 Two consequences of that scoping are worth knowing, both pre-existing and neither closed by the ordering fix. `_writeRelocate` still saves eagerly, so a replicated `put K; relocate K` where the residency list excludes this host strips K to its indexed-attribute stub first and then re-stores the **full record** — content retained on a node the residency policy excludes; `_writeInvalidate` has the milder form (a lost invalidation, so stale reads until TTL). Closing those means teaching both handlers `priorStagedWrite()`/`stagedEntry` and then flagging them, not simply deferring them. Separately, the apply loop's per-key chain narrows but does not close the cross-key escape: in `{put A, delete B}` where A's resource load rejects and B's is slow, the abort lands at `end_txn` and B's continuation then reaches `addWrite` on a CLOSED transaction, where `save()` commits it alone.
 
+## A second sequential save() on the same ImmediateTransaction context must chain on `operation.innerCommit`
+
+Two `update()`+`save()` cycles on the _same resource instance_, outside an explicit `transaction()`,
+reuse the same `ImmediateTransaction` object even after its first cycle has closed it (`this.open =
+CLOSED`). The second `save()` re-enters `ImmediateTransaction.save()` with `isCommitting` false, so it
+calls `this.commit()` again; that `commit()`'s own sweep loop calls `this.save(newWrite, ...)` — a
+**polymorphic re-dispatch to `ImmediateTransaction.save()`**, now with `isCommitting` true, which takes
+the `super.save(operation, null, true)` branch and (since `this.open` is still `CLOSED`) creates its own
+brand-new `RocksTransaction` and immediately commits it, stashing the real commit promise on
+`operation.innerCommit`. But the outer `commit()`'s sweep loop discards the return value of
+`this.save(operation, ...)` for every write it processes — that's fine when the write commits inline,
+but this reused-context write's real work happens in a _third_, more deeply nested `commit()` call
+(triggered by `immediateCommit` inside the nested `save()`), whose promise never propagates back through
+any of the enclosing calls. `Table.save()`'s ordinary `#savingOperation` path used to just return
+`#saveOperation(operation)`'s result directly — which can resolve before that nested native commit
+actually settles, so a caller's `await resource.save()` can return before the write is durable (a real,
+if narrow, race: `LockTest.get()` immediately after can read the pre-write value). The lock-writable hold
+branch already avoided this by explicitly returning `operation.innerCommit` after its own recursive
+`save()`; the ordinary path now does the same — `when(this.#saveOperation(operation), () =>
+operation.innerCommit)`. `operation.innerCommit` is `undefined` when a write commits inline (no
+immediateCommit), so this is safe for the common case. Found via record-lock scoped-lock staging
+(harper#483), which is what first made this reused-closed-context pattern reachable for an ordinary
+resource, but the gap is general to `Table.save()`, not lock-specific.
+
 ## Record locks: the native key lock is the sole authority (`Table`/`DatabaseTransaction`/`recordLock`)
 
 `table.lock(id, options?, context?)` (harper#483, Phase 0: one node, every worker thread) gives a caller exclusive
@@ -180,20 +204,47 @@ Consequences that shape the code:
   not release it again. After any `unlock()` call `#lockWritable` is cleared so writes through the
   instance are no longer accepted. When no iterators are open (`readTxnsUsed <= 1`) the read snapshot
   is released and `snapshotFree` is set so subsequent reads see current state.
+- **Staging model: scoped stages like `update()`; hold stays deferred.** `#reloadLocked` eagerly
+  calls `_writeUpdate(id, this.#changes, false)` for a fresh scoped acquisition, exactly as the
+  instance `update()` does, so a `TransactionWrite` exists on the transaction immediately and `save()`
+  is the ordinary `#savingOperation` path — there is no `#lockWritable` auto-restaging branch for
+  scoped. A second write on the same locked instance (after an earlier `save()` on it has already run)
+  needs its own `update()` call to create a fresh `TransactionWrite`, the same as any other resource.
+  Hold keeps the deferred model: `save()`'s `#lockWritable` branch (now gated on `this.#lockHandle.hold`)
+  calls `_writeUpdate` lazily at `save()` time, because the acquiring transaction may already have
+  committed before the holder ever writes. The expired/released-handle 409 lives in the write path —
+  `DatabaseTransaction.save()`'s guard on `operation.lockHandle`, plus the hold branch's own liveness
+  check in `Table.save()` — not duplicated for scoped, since its eagerly-staged write already carries
+  `lockHandle` into the same guard.
+- **Read-your-writes in `#reloadLocked`.** Freshness always starts from the committed entry
+  (`primaryStore.getEntry(id)`, snapshot-free) so a hold lock sees concurrent committed writes rather
+  than a stale snapshot. A write earlier in the _same_ explicit transaction has not reached that
+  committed entry yet, so `#reloadLocked` looks up the tail `TransactionWrite` for the key
+  (`link.writesByKey`) and, if it (or an ancestor found via `priorStagedWrite`) has a `stagedEntry`,
+  takes the record from there — the same basis a chained write picks up (harper#1968): the record
+  comes from the prior staged write, the rest of the entry (version, audit chain, blob metadata) stays
+  the pre-transaction one.
 - **Scoped lock in an explicit `transaction()` scope.** After acquisition, when no writes have been
   staged yet (`link.writes.length === 0`), the transaction clock is pinned to `acquiredAt` so the
   holder write wins over any pre-lock concurrent write. When prior staged writes already exist,
   ordering is best-effort — no 409 is thrown. In an `ImmediateTransaction` context (no explicit
-  scope), each write through a scoped lock is stamped with `nextHolderVersion()` exactly like a hold
-  write, so sequential saves each land independently without pinning the context clock. A scoped lock
-  acquired outside any explicit `transaction()` scope persists until `unlock()` or the lease expires
+  scope), a scoped lock's writes go through the same `update()`-style staging as above; each explicit
+  `update()`+`save()` cycle is stamped with `nextHolderVersion()` independently. A scoped lock acquired
+  outside any explicit `transaction()` scope persists until `unlock()` or the lease expires
   (ImmediateTransaction's `releaseRecordLocks()` is a no-op for record locks).
 - **Scoped → hold upgrade.** Calling `lock(id, { hold: true })` while the same transaction already
-  holds a scoped lock on the same key upgrades it: the scoped handle is unregistered and its `released`
-  flag is set directly (not via `release()`) so the native key remains locked, and a fresh hold handle
-  is created that inherits ownership. Any changes staged under the scoped lock are preserved on the
-  instance. The upgrade is gated on `!scoped.hold`; if the existing handle is already a hold the call
-  is re-entrant and returns the existing handle.
+  holds a scoped lock on the same key upgrades it via `handle.upgradeToHold(lease)`, which flips the
+  existing handle object to hold mode in place (new lease timer, `nextHolderVersion()` primed) rather
+  than retiring it and minting a new one — every instance already referencing the handle (same or a
+  different resource instance sharing the key) stays valid; retiring and replacing would invalidate
+  those other references (their `save()` would then throw 409 against a released handle). The upgrade
+  also detaches the scoped phase's eagerly-staged `TransactionWrite` (see the staging-model bullet
+  below) via `detachScopedUpgradeWrite`: hold staging is deferred and explicit-save-only, so a dangling
+  scoped write left in place would otherwise auto-commit at the transaction's sweep and clobber
+  whatever the hold write lands. The detached write is marked `.dropped` so a later explicit `save()`
+  on the instance that owns it falls through to the hold branch instead of resolving a dead reference.
+  The upgrade is gated on `!scoped.hold`; if the existing handle is already a hold the call is
+  re-entrant and returns the existing handle.
 - **Concurrent `lock()` calls for one key on one link coalesce.** `Promise.all([T.lock(id), T.lock(id)])`
   would otherwise have both calls reach `tryLock` before either registers, so the second parks against
   the first. The first registers its in-flight acquisition (`registerPendingLock`); the second becomes a
