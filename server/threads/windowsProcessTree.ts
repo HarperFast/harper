@@ -142,7 +142,7 @@ export function findWindowsTreeRoot(
 ): WindowsProcessRecord | undefined {
 	if (identity.rootExitedAt !== undefined) return undefined;
 	const root = table.find((process) => process.pid === identity.rootPid);
-	if (root?.created !== null && root?.created <= identity.rootKnownAt + CLOCK_SKEW_MS) return root;
+	if (root && root.created !== null && root.created <= identity.rootKnownAt + CLOCK_SKEW_MS) return root;
 	return undefined;
 }
 
@@ -300,14 +300,19 @@ export async function confirmWindowsProcessTreeGone(
 		if (table !== null) {
 			const scannedAt = now();
 			const root = findWindowsTreeRoot(table, identity);
-			if (root?.created != null && identity.rootCreatedAt === undefined) identity.rootCreatedAt = root.created;
-			members = selectWindowsProcessTree(table, identity, scannedAt);
-			// The root's PID is reusable the moment it exits, so from the first scan that no longer finds
-			// it running as ours, nothing created later can be its child. Stamped after the scan: the
-			// snapshot may predate the stamp, and a bound that is late keeps waiting, which is the safe
-			// direction. The same goes for every other member.
-			if (!root && identity.rootExitedAt === undefined) identity.rootExitedAt = scannedAt;
-			rememberDescendants(identity, members, scannedAt);
+			const rootIdentityUnknown =
+				identity.rootExitedAt === undefined &&
+				table.some((process) => process.pid === identity.rootPid && process.created === null);
+			if (!rootIdentityUnknown) {
+				if (root && identity.rootCreatedAt === undefined) identity.rootCreatedAt = root.created;
+				members = selectWindowsProcessTree(table, identity, scannedAt);
+				// The root's PID is reusable the moment it exits, so from the first scan that no longer finds
+				// it running as ours, nothing created later can be its child. Stamped after the scan: the
+				// snapshot may predate the stamp, and a bound that is late keeps waiting, which is the safe
+				// direction. The same goes for every other member.
+				if (!root && identity.rootExitedAt === undefined) identity.rootExitedAt = scannedAt;
+				rememberDescendants(identity, members, scannedAt);
+			}
 		}
 		if (members?.length === 0) return;
 		if (members) await kill(members, identity.rootPid);
