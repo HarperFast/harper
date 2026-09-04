@@ -132,7 +132,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('keeps a log-key pointer to the audit head when the stored version differs', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'applied-head-1';
-		const logKey = Date.now() + 10;
+		const logKey = Date.now() - 10_000;
 		const version = logKey - 30_000;
 		await applyFromOrigin(Plain, id, { id, name: 'newer' }, { logKey, version, nodeId: 0 });
 		const head = Plain.primaryStore.getEntry(id);
@@ -169,6 +169,23 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		);
 		assert.equal(Plain.primaryStore.getEntry(id).additionalAuditRefs, undefined);
 		assert.equal(auditStore.get(logKey, Plain.tableId, id, 0), undefined);
+	});
+
+	it('does not let an audit-only fold displace an ordinary audit head', async function () {
+		if (isLMDB) return this.skip();
+		const id = 'ordinary-fold-head-1';
+		const head = Date.now() - 10_000;
+		await applyFromOrigin(Plain, id, { id, name: 'newer' }, { logKey: head, version: head, nodeId: 0 });
+		await applyFromOrigin(
+			Plain,
+			id,
+			{ name: 'older', count: { __op__: 'add', value: 1 } },
+			{ logKey: head + 1_000, version: head - 1, nodeId: 0, fullUpdate: false }
+		);
+		assert(
+			(await Plain.getHistoryOfRecord(id)).some((entry) => entry.localTime === head),
+			'an audit-only fold must not displace a directly addressable head'
+		);
 	});
 
 	it('bounds an overloaded audit-body version by the originating transaction-log key', async function () {

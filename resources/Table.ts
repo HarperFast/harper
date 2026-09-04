@@ -717,6 +717,10 @@ export function makeTable(options) {
 		nodeId: number | undefined,
 		refs?: Array<{ version: number; nodeId: number }>
 	) {
+		if (version != null) {
+			const directHead = auditStore.getSync(version, tableId, id, nodeId);
+			if (directHead?.version === version) return { txnLogKey: version, nodeId };
+		}
 		const visited = new Set<string>();
 		function findHead(candidateRefs?: Array<{ version: number; nodeId: number }>) {
 			if (!candidateRefs) return;
