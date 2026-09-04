@@ -444,7 +444,7 @@ describe('attributeToSchema — emitter edge cases (#1941, #1942)', () => {
 		const person = { name: 'Person', properties: [dogs] };
 		Object.defineProperty(owner, 'properties', { value: person.properties });
 		Object.defineProperty(dogs.elements, 'properties', { value: dog.properties });
-		assert.deepEqual(emit(owner, 'json-schema'), { type: 'object' });
+		assert.deepEqual(emit(owner, 'json-schema'), {});
 		assert.deepEqual(emit(dogs, 'json-schema'), { type: 'array', items: {} });
 	});
 

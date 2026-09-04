@@ -118,7 +118,7 @@ describe('mcp/tools/application — registration', () => {
 
 		// Second pass includes a resource that throws during registration.
 		const Bad = makeTableResource({ databaseName: 'data', tableName: 'bad', attributes: [{ name: 'id' }] });
-		Object.defineProperty(Bad, 'description', {
+		Object.defineProperty(Bad, 'mcpTools', {
 			get() {
 				throw new Error('boom registering bad table');
 			},
@@ -150,7 +150,7 @@ describe('mcp/tools/application — registration', () => {
 		// Second pass throws mid-rebuild; the only resource present is the bad one,
 		// so without restore both tools AND prompts would be left cleared.
 		const Bad = makeTableResource({ databaseName: 'data', tableName: 'bad', attributes: [{ name: 'id' }] });
-		Object.defineProperty(Bad, 'description', {
+		Object.defineProperty(Bad, 'mcpTools', {
 			get() {
 				throw new Error('boom registering bad table');
 			},
@@ -1465,5 +1465,21 @@ describe('mcp/tools/application — #1920 programmatic `static properties` + doc
 		assert.doesNotThrow(() => registerApplicationTools());
 		assert.equal(getTool('get_Bad'), undefined);
 		assert.ok(getTool('get_Good'));
+	});
+
+	it('contains a throwing Resource description getter', () => {
+		const Bad = makeProgrammaticResource({
+			path: 'Bad',
+			tableName: 'bad',
+			properties: { id: { type: 'string', primaryKey: true } },
+		});
+		Object.defineProperty(Bad.Resource, 'description', {
+			get() {
+				throw new Error('bad description');
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Bad', { Resource: Bad.Resource }]]));
+		assert.doesNotThrow(() => registerApplicationTools());
+		assert.equal(getTool('get_Bad'), undefined);
 	});
 });

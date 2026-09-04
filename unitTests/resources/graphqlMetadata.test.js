@@ -234,7 +234,10 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 				() => projectPropertiesToAttributes({ state: { type: 'string', enum: ['open'], const: 'closed' } }),
 				/must be included/
 			);
-			assert.throws(() => projectPropertiesToAttributes({ state: { type: 'string', const: 1n } }), /JSON scalar value/);
+			assert.throws(() => projectPropertiesToAttributes({ state: { const: 1n } }), /JSON-serializable/);
+			assert.deepEqual(projectPropertiesToAttributes({ state: { const: { active: true } } })[0].const, {
+				active: true,
+			});
 			const [state] = projectPropertiesToAttributes({ state: { type: 'string', enum: ['open', 'open'] } });
 			assert.deepEqual(state.enum, ['open']);
 		});
