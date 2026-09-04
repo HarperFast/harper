@@ -26,6 +26,16 @@ Harper uses a layered middleware chain for HTTP request processing. Components a
 
 Request and response objects follow the [WHATWG Fetch API](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API) conventions (`Request` and `Response` classes), providing good composability for layered middleware and clean mapping to REST resource handlers.
 
+### Authentication and fallthrough
+
+<VersionBadge type="changed" version="v5.3.0" />
+
+Authentication runs before the default middleware chain determines route ownership. A Basic or Bearer credential that Harper recognizes establishes `request.user`. A credential that Harper does not recognize leaves `request.user` unset while its original `Authorization` header continues through the chain.
+
+A Harper-owned handler settles that deferred authentication failure before responding. This prevents an unrecognized credential from turning a protected Harper route into anonymous access. A handler that calls `next(request)` without claiming the route leaves the credential available to later application middleware. This allows an unmounted catch-all handler to authenticate and proxy an open-ended set of application URLs without registering each URL with `urlPath`.
+
+An application receiving a deferred credential must validate it using its own authentication scheme, and the response it produces is returned unchanged — Harper does not replace an application's `WWW-Authenticate` challenge or turn its `401` into a login-page redirect. If no handler claims the request, Harper returns not found rather than treating the existence of an `Authorization` header as proof that the URL belongs to Harper. Internal Harper authentication errors remain fail-closed. See [Security](../security/overview.md#authentication-and-route-ownership) for the security boundary.
+
 ### Middleware routing
 
 <VersionBadge version="v5.2.0" />
