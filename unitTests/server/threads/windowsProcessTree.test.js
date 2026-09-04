@@ -303,6 +303,22 @@ describe('confirmWindowsProcessTreeGone', () => {
 		assert.equal(scans.length, 0);
 	});
 
+	it('keeps terminating descendants whose identities were verified before the root became unknown', async () => {
+		const child = row(4100, ROOT, SPAWNED_AT + 200);
+		const scans = [[row(ROOT, 1, SPAWNED_AT - 10, 'cmd.exe'), child], [row(ROOT, 1, null, 'cmd.exe'), child], []];
+		const kills = [];
+		await confirmWindowsProcessTreeGone(
+			{ rootPid: ROOT, rootKnownAt: SPAWNED_AT },
+			{
+				scan: async () => scans.shift(),
+				kill: async (members) => kills.push(pids(members)),
+				pollMs: 1,
+			}
+		);
+		assert.deepEqual(kills, [[ROOT, 4100], [4100]]);
+		assert.equal(scans.length, 0);
+	});
+
 	it('does not wait on a process that merely recycled the exited root PID', async () => {
 		let scans = 0;
 		await confirmWindowsProcessTreeGone(exitedIdentity(), {
