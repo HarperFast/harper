@@ -5,6 +5,11 @@ const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { handleApplication } = require('#src/server/static');
+const {
+	credentialRejectionError,
+	deferCredentialRejection,
+	getDeferredCredentialRejection,
+} = require('#src/security/deferredAuthentication');
 
 // A minimal Scope stand-in: captures the http registration and warning log so tests can
 // assert on the middleware ordering options the plugin passes to the server.
@@ -368,10 +373,6 @@ describe('static plugin ordering live reload', () => {
 });
 
 describe('static plugin mount-root redirect', () => {
-	// A root-level static plugin (no urlPath of its own) has baseURLPath === '/', so gating the
-	// redirect on baseURLPath alone never fires — even though the application mount makes the
-	// client-visible root something other than '/'. Review finding: the mount root then serves
-	// without ever redirecting to its trailing-slash form.
 	it('redirects the application mount root to its trailing-slash form even when static has no urlPath of its own', () => {
 		const { scope, state } = fakeScope({}, { urlPath: '/v1' });
 		handleApplication(scope);
@@ -388,8 +389,6 @@ describe('static plugin mount-root redirect', () => {
 	it('does not redirect when the application has no mount (root stays root)', () => {
 		const { scope, state } = fakeScope();
 		handleApplication(scope);
-		// A real, existing path — with no mount, the redirect guard is false and this falls through
-		// to actually serving the file (realpathSync must succeed).
 		state.entryCallback({ eventType: 'add', urlPath: '/index.html', absolutePath: __filename });
 
 		const result = state.listener({ method: 'GET', pathname: '/', url: '/', originalPathname: '/' }, () => ({
@@ -397,5 +396,208 @@ describe('static plugin mount-root redirect', () => {
 		}));
 
 		assert.notEqual(result.status, 301);
+	});
+});
+
+function staticRequest(pathname, { url = pathname, originalPathname, authorization } = {}) {
+	const asObject = { accept: 'application/json' };
+	if (authorization) asObject.authorization = authorization;
+	return {
+		method: 'GET',
+		isWebSocket: false,
+		pathname,
+		url,
+		originalPathname,
+		headers: { asObject, get: (name) => asObject[name.toLowerCase()] },
+	};
+}
+
+const NEXT_HANDLER = Symbol('next handler');
+const next = () => NEXT_HANDLER;
+
+function assertSettledUnauthorized(result, request, authorization) {
+	assert.equal(result.status, 401, 'a static-owned response must settle the deferred rejection');
+	assert.equal(result.headers.get('Content-Type'), 'application/json');
+	assert.deepStrictEqual(JSON.parse(result.body.toString()), { error: 'Login failed' });
+	assert.equal(request.headers.get('authorization'), authorization);
+}
+
+describe('static plugin deferred credential rejection', () => {
+	const BASIC = 'Basic d29yZHByZXNzOmFwcC1wYXNzd29yZA==';
+	const BEARER = 'Bearer downstream-owned-token';
+
+	function deferred(request) {
+		deferCredentialRejection(request, credentialRejectionError('Login failed', 401), 'Basic');
+		return request;
+	}
+
+	it('settles the mount-root redirect instead of answering 301', () => {
+		const { scope, state } = fakeScope({ after: 'rest' }, { urlPath: '/v1' });
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', urlPath: '/index.html', absolutePath: '/fake/app/web/index.html' });
+
+		const request = deferred(staticRequest('/', { originalPathname: '/v1', authorization: BASIC }));
+		const result = state.listener(request, next);
+
+		assertSettledUnauthorized(result, request, BASIC);
+	});
+
+	it('settles the trailing-slash directory redirect instead of answering 301', () => {
+		const { scope, state } = fakeScope({ after: 'rest' });
+		handleApplication(scope);
+		state.entryCallback({
+			eventType: 'add',
+			urlPath: '/docs/index.html',
+			absolutePath: '/fake/app/web/docs/index.html',
+		});
+
+		const request = deferred(staticRequest('/docs', { authorization: BEARER }));
+		const result = state.listener(request, next);
+
+		assertSettledUnauthorized(result, request, BEARER);
+	});
+
+	it('settles the built-in fallthrough: false 404 instead of answering "File not found"', () => {
+		const { scope, state } = fakeScope({ fallthrough: false, after: 'rest' });
+		handleApplication(scope);
+
+		const request = deferred(staticRequest('/wp-json/wc/v3/orders', { authorization: BASIC }));
+		const result = state.listener(request, next);
+
+		assertSettledUnauthorized(result, request, BASIC);
+	});
+
+	it('settles the configured notFound response instead of serving the fallback page', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-notfound-'));
+		writeFileSync(join(directory, 'spa.html'), '<html>spa</html>');
+
+		try {
+			const { scope, state } = fakeScope({
+				fallthrough: false,
+				after: 'rest',
+				notFound: { file: 'spa.html', statusCode: 200 },
+			});
+			scope.directory = directory;
+			handleApplication(scope);
+
+			const request = deferred(staticRequest('/app/route', { authorization: BEARER }));
+			const result = state.listener(request, next);
+
+			assertSettledUnauthorized(result, request, BEARER);
+			assert.equal(result.handlesHeaders, undefined, 'the settled 401 is not the send() stream response');
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('settles the ordinary file response', () => {
+		const { scope, state } = fakeScope({ after: 'rest' });
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', urlPath: '/asset.js', absolutePath: __filename });
+
+		const request = deferred(staticRequest('/asset.js', { authorization: BASIC }));
+		const result = state.listener(request, next);
+
+		assertSettledUnauthorized(result, request, BASIC);
+	});
+
+	it('leaves the rejection deferred on the actual fallthrough so a downstream owner still decides', () => {
+		const { scope, state } = fakeScope({ after: 'rest' });
+		handleApplication(scope);
+
+		const request = deferred(staticRequest('/wp-json/wc/v3/orders', { authorization: BASIC }));
+		const result = state.listener(request, next);
+
+		assert.strictEqual(result, NEXT_HANDLER);
+		assert.equal(getDeferredCredentialRejection(request).status, 401);
+		assert.equal(request.headers.get('authorization'), BASIC);
+		assert.equal(request.user, undefined);
+	});
+
+	it('leaves a non-GET request deferred', () => {
+		const { scope, state } = fakeScope({ fallthrough: false, after: 'rest' });
+		handleApplication(scope);
+
+		const request = deferred(staticRequest('/app/route', { authorization: BASIC }));
+		request.method = 'POST';
+
+		assert.strictEqual(state.listener(request, next), NEXT_HANDLER);
+		assert.equal(getDeferredCredentialRejection(request).status, 401);
+	});
+});
+
+describe('static plugin responses without a deferred rejection', () => {
+	it('still redirects the mount root, preserving the query string', () => {
+		const { scope, state } = fakeScope({ after: 'rest' }, { urlPath: '/v1' });
+		handleApplication(scope);
+		state.entryCallback({ eventType: 'add', urlPath: '/index.html', absolutePath: '/fake/app/web/index.html' });
+
+		const result = state.listener(staticRequest('/', { url: '/?a=1', originalPathname: '/v1' }), next);
+
+		assert.equal(result.status, 301);
+		assert.equal(result.headers.Location, '/v1/?a=1');
+	});
+
+	it('still redirects a directory to its trailing-slash form, preserving the query string', () => {
+		const { scope, state } = fakeScope({ after: 'rest' });
+		handleApplication(scope);
+		state.entryCallback({
+			eventType: 'add',
+			urlPath: '/docs/index.html',
+			absolutePath: '/fake/app/web/docs/index.html',
+		});
+
+		const result = state.listener(staticRequest('/docs', { url: '/docs?a=1' }), next);
+
+		assert.equal(result.status, 301);
+		assert.equal(result.headers.Location, '/docs/?a=1');
+	});
+
+	it('still rebuilds the directory redirect against an application mount', () => {
+		const { scope, state } = fakeScope({ after: 'rest' }, { urlPath: '/v1' });
+		handleApplication(scope);
+		state.entryCallback({
+			eventType: 'add',
+			urlPath: '/docs/index.html',
+			absolutePath: '/fake/app/web/docs/index.html',
+		});
+
+		const result = state.listener(staticRequest('/docs'), next);
+
+		assert.equal(result.status, 301);
+		assert.equal(result.headers.Location, '/v1/docs/');
+	});
+
+	it('still answers the built-in 404 body', () => {
+		const { scope, state } = fakeScope({ fallthrough: false, after: 'rest' });
+		handleApplication(scope);
+
+		const result = state.listener(staticRequest('/missing'), next);
+
+		assert.equal(result.status, 404);
+		assert.equal(result.body, 'File not found');
+	});
+
+	it('still serves the configured notFound file with its status code', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-static-notfound-ok-'));
+		writeFileSync(join(directory, 'spa.html'), '<html>spa</html>');
+
+		try {
+			const { scope, state } = fakeScope({
+				fallthrough: false,
+				after: 'rest',
+				notFound: { file: 'spa.html', statusCode: 200 },
+			});
+			scope.directory = directory;
+			handleApplication(scope);
+
+			const result = state.listener(staticRequest('/app/route'), next);
+
+			assert.equal(result.status, 200);
+			assert.equal(result.handlesHeaders, true);
+			assert.equal(typeof result.body.pipe, 'function');
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });
