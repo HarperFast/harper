@@ -2934,7 +2934,15 @@ async function rollbackExtractedDirectory(
 	await cleanupExtractionPaths(application, asideStagingDir, transactionPaths);
 }
 
-function automaticInstallArguments(packageManagerName: string, allowInstallScripts: boolean, force = false): string[] {
+/**
+ * The one definition of how Harper invokes a package manager to install dependencies; every npm
+ * entry point composes its arguments here rather than assembling its own.
+ */
+export function packageManagerInstallArguments(
+	packageManagerName: string,
+	allowInstallScripts: boolean,
+	force = false
+): string[] {
 	const args = ['install'];
 	if (force) args.push('--force');
 	if (packageManagerName === 'npm') args.push('--omit=dev', '--no-audit', '--no-fund');
@@ -3062,7 +3070,7 @@ export async function installApplication(application: Application, buildDirPath 
 		const { stdout, stderr, code } = await nonInteractiveSpawn(
 			application.name,
 			(application.packageManagerPrefix ? application.packageManagerPrefix + ' ' : '') + packageManager.name,
-			automaticInstallArguments(packageManager.name, allowInstallScripts),
+			packageManagerInstallArguments(packageManager.name, allowInstallScripts),
 			buildDirPath,
 			application.install?.timeout,
 			pmOnLine,
@@ -3111,7 +3119,7 @@ export async function installApplication(application: Application, buildDirPath 
 	}
 
 	// Finally, default to running `npm install`
-	const npmInstallArgs = automaticInstallArguments('npm', allowInstallScripts, true);
+	const npmInstallArgs = packageManagerInstallArguments('npm', allowInstallScripts, true);
 	// A candidate build is installed at a staging path and then RENAMED to the live path, so nothing npm
 	// writes may depend on the build location. npm links a `file:` dependency relatively on POSIX, which
 	// survives the move — but as an absolute junction on Windows, which does not, so the dependency stops
@@ -3785,19 +3793,6 @@ export function buildNpmrcContent(registryCredentials: ResolvedRegistryCredentia
 }
 
 /**
- * Execute a command (using `spawn`) with stdin ignored.
- *
- * Stdout is logged chunk-by-chunk. Stderr is buffered and then logged line-by-line.
- *
- * Rejects with an error if the command fails or times out.
- *
- * @param command The command to run.
- * @param args The arguments to pass to the command.
- * @param cwd The working directory for the command.
- * @param timeoutMs The timeout for the command in milliseconds. Defaults to 5 minutes.
- * @returns A promise that resolves when the command completes.
- */
-/**
  * Line-buffered split that emits complete `\n`-terminated lines as they
  * arrive, holding any partial trailing fragment until the next chunk or `flush()`.
  * Required because `child_process` stdout/stderr `'data'` events fire per OS-level
@@ -3838,9 +3833,20 @@ function createLineSplitter(onLine: (line: string) => void): {
 }
 
 /**
- * Run a command with the deploy's SSH key material materialized only for the duration of the
- * spawn. The keys are decrypted to a transient 0700 dir (see `materializeGitSSH`) and removed as
- * soon as the process settles — on success, failure, and timeout alike.
+ * Execute a command (using `spawn`) with stdin ignored, with the deploy's SSH key material
+ * materialized only for the duration of the spawn. The keys are decrypted to a transient 0700 dir
+ * (see `materializeGitSSH`) and removed as soon as the process settles — on success, failure, and
+ * timeout alike.
+ *
+ * Stdout is logged chunk-by-chunk. Stderr is buffered and then logged line-by-line.
+ *
+ * Rejects with an error if the command fails or times out.
+ *
+ * @param command The command to run.
+ * @param args The arguments to pass to the command.
+ * @param cwd The working directory for the command.
+ * @param timeoutMs The timeout for the command in milliseconds. Defaults to DEFAULT_COMMAND_TIMEOUT_MS.
+ * @returns A promise that resolves when the command completes.
  */
 export async function nonInteractiveSpawn(
 	applicationName: string,
