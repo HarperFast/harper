@@ -104,11 +104,11 @@ describe('mcp/tools/schemas/derive', () => {
 		});
 
 		it('keeps embedded definitions writable while omitting relationships', () => {
-			const schema = deriveCreateSchema([
-				{ name: 'profile', type: 'Profile', definition: { type: 'Profile' } },
-				{ name: 'owner', type: 'Owner', relationship: { from: 'ownerId' } },
-			]);
-			assert.ok(Object.hasOwn(schema.properties, 'profile'));
+			const profile = { name: 'profile', type: 'Profile', definition: { type: 'Profile' } };
+			Object.defineProperty(profile, 'properties', { value: [{ name: 'name', type: 'String' }] });
+			const schema = deriveCreateSchema([profile, { name: 'owner', type: 'Owner', relationship: { from: 'ownerId' } }]);
+			assert.equal(schema.properties.profile.type, 'object');
+			assert.equal(schema.properties.profile.properties.name.type, 'string');
 			assert.equal(schema.properties.owner, undefined);
 		});
 	});
