@@ -13,9 +13,7 @@ const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { installModules } = require('#src/utility/npmUtilities');
 
 describe('install_node_modules', function () {
-	// .mocharc.json sets `timeout: 0`, and these cases spawn real npm; without a bound here a
-	// registry stall wedges the whole run instead of failing it
-	this.timeout(60_000);
+	this.timeout(60_000); // .mocharc.json sets `timeout: 0`, and these cases spawn real npm
 
 	let componentsRoot;
 
@@ -105,8 +103,6 @@ describe('install_node_modules', function () {
 		await assert.rejects(installModules({ dry_run: true }), { statusCode: 400, message: /'projects'/ });
 	});
 
-	// npm 10 puts a `file:` link into its audit bulk request, and the registry's answer to that is
-	// unbounded from here, so `--no-audit` is an invariant of this operation, not a preference
 	it('runs npm with the registry audit disabled', async function () {
 		if (process.platform === 'win32') return this.skip(); // the shim below is a POSIX shell script
 		const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-npm-shim-'));

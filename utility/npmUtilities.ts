@@ -37,9 +37,7 @@ export async function installModules(req: any) {
 
 	const responseObject: any = {};
 
-	// `allowInstallScripts` is true because this operation has always run a project's install
-	// lifecycle; the flags that come with the shared builder include `--no-audit`, without which npm
-	// 10 puts even a `file:` link into an audit bulk request whose registry answer is unbounded here
+	// `allowInstallScripts` is true because this operation has always run a project's install lifecycle
 	const args = [...packageManagerInstallArguments('npm', true, true), '--json'];
 	if (dryRun) args.push('--dry-run');
 

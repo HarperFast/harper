@@ -2935,9 +2935,8 @@ async function rollbackExtractedDirectory(
 }
 
 /**
- * The one definition of how Harper invokes a package manager to install dependencies. Every npm
- * entry point goes through it: `install_node_modules` diverging from it is what left that operation
- * auditing against the registry, and a stalled audit response then wedged CI for nine runs.
+ * The one definition of how Harper invokes a package manager to install dependencies; every npm
+ * entry point composes its arguments here rather than assembling its own.
  */
 export function packageManagerInstallArguments(
 	packageManagerName: string,
