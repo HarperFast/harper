@@ -12,7 +12,7 @@ import harperLogger from './logging/harper_logger.ts';
 
 import { CONFIG_PARAMS } from './hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { nonInteractiveSpawn } from '../components/Application.ts';
+import { nonInteractiveSpawn, packageManagerInstallArguments } from '../components/Application.ts';
 import { withComponentPreparationLock } from '../components/componentPreparationLock.ts';
 import { isThreadRunning } from '../server/threads/manageThreads.js';
 
@@ -37,7 +37,8 @@ export async function installModules(req: any) {
 
 	const responseObject: any = {};
 
-	const args = ['install', '--force', '--omit=dev', '--json'];
+	// `allowInstallScripts` is true because this operation has always run a project's install lifecycle
+	const args = [...packageManagerInstallArguments('npm', true, true), '--json'];
 	if (dryRun) args.push('--dry-run');
 
 	for (const project of projects) {

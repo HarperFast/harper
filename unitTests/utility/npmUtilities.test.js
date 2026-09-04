@@ -12,7 +12,9 @@ const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { installModules } = require('#src/utility/npmUtilities');
 
-describe('install_node_modules', () => {
+describe('install_node_modules', function () {
+	this.timeout(60_000); // .mocharc.json sets `timeout: 0`, and these cases spawn real npm
+
 	let componentsRoot;
 
 	before(() => {
@@ -99,5 +101,32 @@ describe('install_node_modules', () => {
 
 	it('rejects a request without projects', async () => {
 		await assert.rejects(installModules({ dry_run: true }), { statusCode: 400, message: /'projects'/ });
+	});
+
+	it('runs npm with the registry audit disabled', async function () {
+		if (process.platform === 'win32') return this.skip(); // the shim below is a POSIX shell script
+		const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-npm-shim-'));
+		const originalPath = process.env.PATH;
+		let argv;
+		try {
+			const argvPath = path.join(shimDir, 'argv.txt');
+			// the destination travels as an environment value, not as text in the script: a `$` or a
+			// backtick in TMPDIR would otherwise be expanded by the shell that runs this
+			fs.writeFileSync(
+				path.join(shimDir, 'npm'),
+				'#!/bin/sh\nprintf \'%s\\n\' "$@" > "$HARPER_TEST_NPM_ARGV_PATH"\necho \'{"added":0}\'\n',
+				{ mode: 0o755 }
+			);
+			process.env.PATH = `${shimDir}${path.delimiter}${originalPath}`;
+			process.env.HARPER_TEST_NPM_ARGV_PATH = argvPath;
+			await installModules({ projects: ['application'] });
+			argv = fs.readFileSync(argvPath, 'utf8').split('\n').filter(Boolean);
+		} finally {
+			process.env.PATH = originalPath;
+			delete process.env.HARPER_TEST_NPM_ARGV_PATH;
+			fs.rmSync(shimDir, { recursive: true, force: true });
+		}
+
+		assert.deepStrictEqual(argv, ['install', '--force', '--omit=dev', '--no-audit', '--no-fund', '--json']);
 	});
 });
