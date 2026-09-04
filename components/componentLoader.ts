@@ -44,7 +44,7 @@ import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
 import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
-import { bootstrapModels } from '../resources/models/bootstrap.ts';
+import { bootstrapModels, startModelsConfigHotReload } from '../resources/models/bootstrap.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
@@ -790,7 +790,10 @@ export async function loadComponent(
 		// methods. Per-entry errors are logged and skipped by `bootstrapModels`.
 		// Awaited so module-backed entries (#1471) finish importing before the
 		// per-component iteration below; built-in entries register synchronously.
-		if (isRoot) await bootstrapModels(config);
+		if (isRoot) {
+			await bootstrapModels(config);
+			startModelsConfigHotReload();
+		}
 
 		// The `env:` block declares the component's environment expectations (string literal →
 		// process.env; object → declaration satisfied from the hdb_secret store / process.env).
