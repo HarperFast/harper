@@ -3577,15 +3577,6 @@ export function makeTable(options) {
 								residencyId,
 								expiresAt,
 								recordVersion: txnTime,
-								previousTxnLogKey:
-									isRocksDB && audit && existingEntry
-										? resolveAuditHead(
-												id,
-												existingEntry.version,
-												existingEntry.nodeId,
-												existingEntry.additionalAuditRefs
-											).txnLogKey
-										: undefined,
 								nodeId: options?.nodeId,
 								viaNodeId: options?.viaNodeId,
 								originatingOperation: (context as any)?.originatingOperation,
@@ -3753,15 +3744,6 @@ export function makeTable(options) {
 								transaction,
 								tableToTrack: tableName,
 								recordVersion: txnTime,
-								previousTxnLogKey:
-									isRocksDB && audit && existingEntry
-										? resolveAuditHead(
-												id,
-												existingEntry.version,
-												existingEntry.nodeId,
-												existingEntry.additionalAuditRefs
-											).txnLogKey
-										: undefined,
 								additionalAuditRefs:
 									isRocksDB && audit && txnLogKey !== txnTime
 										? [{ version: txnLogKey, nodeId: options?.nodeId }]
@@ -7087,15 +7069,6 @@ export function makeTable(options) {
 									residencyId,
 									transaction,
 									tableToTrack: tableName,
-									previousTxnLogKey:
-										writeAudit && existingEntry
-											? resolveAuditHead(
-													id,
-													existingEntry.version,
-													existingEntry.nodeId,
-													existingEntry.additionalAuditRefs
-												).txnLogKey
-											: undefined,
 									additionalAuditRefs:
 										writeAudit && txnLogKey !== recordVersion ? [{ version: txnLogKey, nodeId: 0 }] : undefined,
 								},
@@ -7122,12 +7095,6 @@ export function makeTable(options) {
 										transaction,
 										tableToTrack: tableName,
 										recordVersion,
-										previousTxnLogKey: resolveAuditHead(
-											id,
-											existingEntry.version,
-											existingEntry.nodeId,
-											existingEntry.additionalAuditRefs
-										).txnLogKey,
 										additionalAuditRefs:
 											audit && hasChanges && txnLogKey !== recordVersion
 												? [{ version: txnLogKey, nodeId: 0 }]

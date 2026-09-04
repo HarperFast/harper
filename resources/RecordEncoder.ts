@@ -1016,9 +1016,7 @@ export function recordUpdater(store, tableId, auditStore) {
 						version: options?.recordVersion ?? newVersion,
 						tableId,
 						recordId: id,
-						previousVersion: isRocksDB
-							? (options?.previousTxnLogKey ?? existingEntry?.version)
-							: existingEntry?.localTime,
+						previousVersion: isRocksDB ? existingEntry?.version : existingEntry?.localTime,
 						nodeId,
 						user: username,
 						type,

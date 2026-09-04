@@ -30,7 +30,7 @@ function currentEntry(value, localTime, options = {}) {
 }
 
 describe('crdt getRecordAtTime', () => {
-	it('walks divergent heads and previous links in the transaction-log-key domain', () => {
+	it('walks divergent heads through ref-based transaction-log keys', () => {
 		const events = [
 			{ txnLogKey: 100, version: 10, type: 'put', value: { id: 'D', count: 1 }, previousVersion: 0 },
 			{
