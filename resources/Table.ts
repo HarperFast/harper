@@ -42,6 +42,14 @@ import {
 	TRANSACTION_STATE,
 	writeKeyId,
 } from './DatabaseTransaction.ts';
+import {
+	acquireRecordKey,
+	lockAttemptKey,
+	lockNotHeldError,
+	resolveLockOptions,
+	type RecordLockHandle,
+	type RecordLockOptions,
+} from './recordLock.ts';
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
 import {
@@ -476,6 +484,24 @@ function chainKeyForId(id: any): string {
 	return typeof id === 'string' ? 's' + id : 'k' + writeKeyId(id);
 }
 
+/** Normalizes a passed `context` argument as `transactional()` does; undefined means fall back to ambient. */
+function contextArgument(context: unknown): any {
+	if (!context || isReleasedTransaction(context)) return undefined;
+	const resolved = (context as any).getContext?.() || context;
+	return resolved instanceof DatabaseTransaction ? { transaction: resolved } : resolved;
+}
+
+/** Distinguishes bare lock options from a record target (id, URL, {id:...}). */
+function isPlainOptions(value: unknown): boolean {
+	return (
+		typeof value === 'object' &&
+		value !== null &&
+		!Array.isArray(value) &&
+		!(value instanceof URLSearchParams) &&
+		(value as any).id === undefined
+	);
+}
+
 export function makeTable(options) {
 	const {
 		primaryKey,
@@ -691,7 +717,26 @@ export function makeTable(options) {
 		#version?: number; // version of the record
 		#entry?: Entry; // the entry from the database
 		#savingOperation?: any; // operation for the record is currently being saved
+		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
+		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		declare getProperty: (name: string) => any;
+
+		/**
+		 * Shared guard: if this instance is lock-writable but the handle is gone (expired or
+		 * released), throw 409 before staging any write. Covers update/invalidate/relocate/delete
+		 * in addition to the save() path. Every lock-writable instance carries its own handle in
+		 * #lockHandle (scoped and hold alike), so we never need to search the registry here.
+		 */
+		#assertLiveHandle(id: Id): void {
+			if (!this.#lockWritable) return;
+			const handle = this.#lockHandle!;
+			// Off-key writes through the same resource instance are ordinary; only guard the
+			// exact key the lock was acquired for.
+			if (handle.keyId !== writeKeyId(id)) return;
+			if (handle.expired || handle.released) {
+				throw lockNotHeldError(handle);
+			}
+		}
 		// #section: static-config
 		static name = tableName; // for display/debugging purposes
 		static primaryStore = primaryStore;
@@ -2024,12 +2069,70 @@ export function makeTable(options) {
 		 * Save any changes into this instance to the current transaction
 		 */
 		save() {
-			if (this.#savingOperation) {
-				try {
-					return this.#saveOperation(this.#savingOperation);
-				} finally {
-					this.#savingOperation = null;
+			this.#assertLiveHandle(this.getId()); // a write through a released or expired lock never lands
+			const operation = this.#savingOperation;
+			if ((!operation || operation.dropped) && this.#lockWritable && this.#lockHandle?.hold) {
+				// A held lock's record stages its update here rather than at lock() time: it is often
+				// written after the acquiring transaction has already completed, which would have
+				// dropped an update staged then. Nothing set means nothing to stage — a held-but-untouched
+				// id stays untouched. Scoped locks do not take this branch: #reloadLocked stages their
+				// TransactionWrite at lock() time (exactly like update()), so #savingOperation is always
+				// set for a live scoped lock and the ordinary path below applies.
+				// Verify the hold is still alive: if #lockWritable is set but the handle expired or was
+				// released between lock acquisition and this save(), throw 409 rather than silently
+				// committing stale data. Every lock-writable instance carries its own handle.
+				const saveHandle = this.#lockHandle!;
+				if (saveHandle.expired || saveHandle.released) {
+					throw lockNotHeldError(saveHandle);
 				}
+				const changes = this.#changes;
+				if (changes && Object.keys(changes).length > 0) {
+					this.#savingOperation = null;
+					return when(this._writeUpdate(this.getId(), changes, false), () => {
+						const op = this.#savingOperation;
+						if (op?.dropped) {
+							this.#changes = undefined;
+							return;
+						}
+						// Clear #savingOperation so the next sequential save() enters the lock-writable
+						// path and creates a fresh write (otherwise a non-null #savingOperation makes
+						// save() take the #saveOperation branch with an already-committed write, which
+						// is a no-op, silently dropping the new change).
+						// op.innerCommit is the real native-transaction commit Promise set on the
+						// immediateCommit path in DatabaseTransaction.save(); await it to ensure
+						// durability before resolving to the caller.
+						if (op?.saved) {
+							this.#savingOperation = null;
+							return op?.innerCommit;
+						}
+						// op.saved = false means addWrite deferred the save; #saveOperation commits it
+						// synchronously but ImmediateTransaction.save() returns undefined while the
+						// inner rocksdb commit is still pending — return innerCommit so the caller
+						// actually waits for durability.
+						return when(this.save(), () => op?.innerCommit);
+					});
+				}
+				// No changes: nothing to stage. A dropped operation (detached at a scoped→hold
+				// upgrade — see detachScopedUpgradeWrite) must not fall through to the ordinary
+				// #saveOperation path below with its now-detached reference.
+				if (!operation || operation.dropped) {
+					this.#savingOperation = null;
+					return;
+				}
+			}
+			if (this.#savingOperation) {
+				const operation = this.#savingOperation;
+				this.#savingOperation = null;
+				// A write that lands via a nested immediateCommit (e.g. a second sequential save() on
+				// the same ImmediateTransaction context, once the first has already closed it) sets
+				// operation.innerCommit to the real native-commit promise, but the commit() sweep loop
+				// that triggers it discards its own return value — #saveOperation()'s result can
+				// resolve before that native commit actually settles. Chain on innerCommit (as the
+				// lock-writable hold branch above already does) so callers awaiting save() see the
+				// write durably land, not just the outer (possibly premature) resolution.
+				const result = this.#saveOperation(operation);
+				const innerCommit = operation.innerCommit;
+				return innerCommit ? when(innerCommit, () => result) : result;
 			}
 		}
 		#saveOperation(operation: any) {
@@ -2108,6 +2211,7 @@ export function makeTable(options) {
 			});
 		}
 		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
+			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
@@ -2116,6 +2220,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
+				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
@@ -2148,6 +2253,7 @@ export function makeTable(options) {
 						},
 						'invalidate'
 					);
+					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// TODO: recordDeletion?
 				},
 			};
@@ -2155,14 +2261,16 @@ export function makeTable(options) {
 			transaction.addWrite(write);
 		}
 		_writeRelocate(id: Id, options: any) {
+			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
-			transaction.addWrite({
+			const write: any = {
 				key: id,
 				store: primaryStore,
 				invalidated: true,
 				entry: this.#entry,
+				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
@@ -2205,8 +2313,10 @@ export function makeTable(options) {
 						false,
 						null
 					);
+					if (write.trackRecordVersion) write.recordVersionApplied = true;
 				},
-			});
+			};
+			transaction.addWrite(write);
 		}
 
 		/**
@@ -2322,10 +2432,260 @@ export function makeTable(options) {
 			}
 		}
 		/**
-		 * This is intended to acquire a lock on a record from the whole cluster.
+		 * Static entry point: `Table.lock(id, options?, context?)` — creates an instance in the given,
+		 * ambient, or a fresh context and delegates to the instance lock(). This shadows Resource.static
+		 * lock so that both callers share the same transaction link (required for cross-instance upgrade
+		 * detection).  lock() is an in-process API with no authorization hook of its own; it is not
+		 * protocol-dispatched, so no allowUpdate/allowCreate check runs on acquisition.
+		 *
+		 * Dropping the trailing `context` leaks the key: the bare `{}` fallback is an
+		 * ImmediateTransaction, which releases no record locks.
 		 */
-		lock() {
-			throw new Error('Not yet implemented');
+		static async lock(
+			target?: RequestTargetOrId | RecordLockOptions,
+			options?: RecordLockOptions,
+			context?: any
+		): Promise<any> {
+			if (!isRocksDB) throw new ClientError('Record locks are not supported on LMDB', 501);
+			if (options === undefined && isPlainOptions(target)) {
+				options = target as RecordLockOptions;
+				target = undefined;
+			}
+			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : null;
+			const resolvedContext: any = contextArgument(context) ?? contextStorage.getStore() ?? {};
+			const resource = new TableResource(id, resolvedContext);
+			return resource.lock(target, options);
+		}
+		/**
+		 * Acquire an exclusive lock on this record (or on `target`'s) and return it ready for updates
+		 * (harper#483, Phase 0: exclusive across every worker thread of this node). The lock is held
+		 * in process memory only — no durable writes. Phase 0 contract: lock() is mutually exclusive
+		 * with other lock() calls on the same key; plain writes (put/patch/delete/create) are never
+		 * gated or blocked. The generation expires after `lease` if it is never released.
+		 *
+		 * Transaction-scoped (default): write through the returned record (or the table's static verbs
+		 * in the same transaction), and the commit or abort releases it. `{ hold: true }`: the lock
+		 * outlives the transaction; write through the returned record and release with `unlock()`, or
+		 * let the lease expire.
+		 */
+		// async so option/id validation rejects rather than throwing past a caller's `.catch()`; the
+		// body still runs to completion synchronously, which is what keeps concurrent lock() calls
+		// on one key coalescing instead of racing to tryLock.
+		async lock(target?: RequestTargetOrId | RecordLockOptions, options?: RecordLockOptions): Promise<any> {
+			if (!isRocksDB) throw new ClientError('Record locks are not supported on LMDB', 501);
+			if (options === undefined && isPlainOptions(target)) {
+				options = target as RecordLockOptions;
+				target = undefined;
+			}
+			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : this.getId();
+			checkValidId(id);
+			const resolved = resolveLockOptions(options);
+			const context = this.getContext();
+			const link = txnForContext(context);
+			const keyId = writeKeyId(id);
+			const held = this.#lockHandle;
+			if (held && !held.released && !held.expired && held.keyId === keyId) {
+				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
+				if (resolved.hold && !held.hold) {
+					held.upgradeToHold(resolved.lease);
+					// The scoped phase eagerly staged a TransactionWrite (see #reloadLocked); hold
+					// staging is deferred and explicit-save-only, so an unsaved scoped write left
+					// dangling here would otherwise auto-commit at the transaction sweep and clobber
+					// whatever the hold write lands. detachScopedUpgradeWrite marks it .dropped so a
+					// later save() on this instance falls through to the hold branch instead of the
+					// dead #savingOperation reference.
+					detachScopedUpgradeWrite(link, keyId, held);
+				}
+				return Promise.resolve(this.#reloadLocked(id, undefined, true));
+			}
+			const scoped = link.recordLockFor(primaryStore, keyId);
+			if (scoped && !scoped.released && !scoped.expired) {
+				if (resolved.hold && !scoped.hold) {
+					// Upgrade scoped → hold: flip the existing handle object to hold mode so every
+					// instance that already references this handle stays valid.  Retiring and creating a
+					// new handle would invalidate those other references (their save() would then throw
+					// 409 against a released handle).  The native key stays locked throughout.
+					scoped.upgradeToHold(resolved.lease);
+					detachScopedUpgradeWrite(link, keyId, scoped);
+					return Promise.resolve(this.#reloadLocked(id, scoped, true));
+				}
+				// Already held with the same type: re-entrant return. Preserve any staged changes.
+				return Promise.resolve(this.#reloadLocked(id, scoped, true));
+			}
+			const key = lockAttemptKey(tableId, id);
+			// Coalesce concurrent lock() calls for the same key inside one link so they don't
+			// self-block: Promise.all([T.lock(id), T.lock(id)]) would otherwise have both calls
+			// reach tryLock before either registers, making the second park against the first.
+			const pending = link.pendingLockFor(primaryStore, keyId);
+			if (pending) {
+				// Wait for the in-flight acquisition, then take the re-entrant path as if
+				// recordLockFor had found it.  If the first attempt timed out, re-enter so
+				// the second caller gets its own timeout.
+				// The follower waits on the leader's acquisition, but only for its own timeout.
+				let followerTimer: ReturnType<typeof setTimeout> | undefined;
+				const followerTimedOut = Symbol('follower timeout');
+				const followerStart = Date.now();
+				const followerDeadline = new Promise<never>((_, reject) => {
+					followerTimer = setTimeout(() => reject(followerTimedOut), resolved.timeout).unref();
+				});
+				// Try again on this caller's own terms with the budget it has left.
+				const retryOnRemainingBudget = () => {
+					// The enclosing transaction ended while we were parked. A retry re-resolves the
+					// context, which no longer points at this link, so the handle it acquired would be
+					// registered on a fresh transaction that no commit or abort ever releases — the
+					// same abandonment the leader's own post-acquisition guard below rejects.
+					if (link.open === TRANSACTION_STATE.CLOSED && !link.saveCommits)
+						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
+					const remaining = resolved.timeout - (Date.now() - followerStart);
+					if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
+					return this.lock(target, { ...resolved, timeout: remaining }) as Promise<any>;
+				};
+				return Promise.race([pending, followerDeadline]).then(
+					() => {
+						clearTimeout(followerTimer);
+						const acquired = link.recordLockFor(primaryStore, keyId);
+						if (acquired && !acquired.released && !acquired.expired) {
+							if (resolved.hold && !acquired.hold) {
+								detachScopedUpgradeWrite(link, keyId, acquired);
+								acquired.upgradeToHold(resolved.lease);
+							}
+							return this.#reloadLocked(id, acquired, true);
+						}
+						return retryOnRemainingBudget();
+					},
+					(error) => {
+						clearTimeout(followerTimer);
+						if (error === followerTimedOut) throw new ClientError(`Record is locked and was not released in time`, 423);
+						return retryOnRemainingBudget();
+					}
+				);
+			}
+			const pendingPromise = acquireRecordKey(
+				link,
+				primaryStore,
+				key,
+				keyId,
+				resolved.timeout,
+				resolved.lease,
+				resolved.hold
+			);
+			link.registerPendingLock(primaryStore, keyId, pendingPromise);
+			return pendingPromise.then(
+				(handle) => {
+					link.unregisterPendingLock(primaryStore, keyId);
+					if (link.open === TRANSACTION_STATE.CLOSED && !link.saveCommits) {
+						// The transaction was aborted while this call waited; nothing would ever release the handle.
+						handle.release();
+						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
+					}
+					link.registerRecordLock(handle);
+					if (link.saveCommits && (context as any)?.timestamp) handle.noteCandidateFloor((context as any).timestamp);
+					if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
+						// Explicit transaction() (not ImmediateTransaction): pin the clock to
+						// acquiredAt when no writes have been staged yet.  When writes already
+						// exist, leave the clock alone (ordering is best-effort; write held records
+						// in their own transaction for the guarantee).  ImmediateTransaction is
+						// excluded (saveCommits=true) — its clock is never pinned in lock();
+						// each save() stamps from the handle's committed version floor instead.
+						if (link.writes.length === 0 && !link.timestamp) {
+							link.timestamp = handle.acquiredAt;
+						}
+						if (!resolved.hold && link.transaction) {
+							// Scoped lock: the read snapshot may predate the lock; drop it so the
+							// scope reads what it locked.  Hold locks use acquiredAt directly and
+							// do not update the read snapshot.
+							// The timestamp guard matches DatabaseTransaction's own setTimestamp calls: a
+							// deferred update() write leaves the clock at 0, which rocksdb-js rejects.
+							if (link.writes.length === 0 && link.readTxnsUsed <= 1) {
+								link.releaseReadTxn();
+								link.snapshotFree = true;
+							} else if (link.timestamp) link.transaction.setTimestamp(link.timestamp);
+						}
+					}
+					// ImmediateTransaction: no clock pinning in lock(); save() stamps each write
+					// from the committed handle floor for both scoped and hold handles.
+					return this.#reloadLocked(id, handle);
+				},
+				(err) => {
+					link.unregisterPendingLock(primaryStore, keyId);
+					throw err;
+				}
+			);
+		}
+		#reloadLocked(id: Id, holdHandle?: RecordLockHandle | null, preserveChanges = false) {
+			// For freshness, read the committed entry (snapshot-free) so a hold lock sees concurrent
+			// committed writes rather than a stale snapshot.  A write earlier in THIS explicit
+			// transaction has not landed in that committed entry yet (harper#1968: Harper defers an
+			// explicit transaction's writes until the writing call actually runs them), so pull the
+			// current value the same way a chained write picks up its basis (priorStagedWrite): the
+			// record comes from the prior staged write, the rest of the entry (version, audit chain,
+			// blob metadata) stays the pre-transaction one.
+			const link = txnForContext(this.getContext());
+			let entryForReload: any = primaryStore.getEntry(id);
+			if (link.open === TRANSACTION_STATE.OPEN) {
+				const keyId = writeKeyId(id);
+				const tailWrite = link.writesByKey?.get(primaryStore)?.get(keyId);
+				const priorStaged =
+					tailWrite && (tailWrite.stagedEntry !== undefined ? tailWrite : priorStagedWrite(tailWrite));
+				if (priorStaged?.stagedEntry !== undefined) {
+					entryForReload = entryForReload
+						? { ...entryForReload, value: priorStaged.stagedEntry.value }
+						: { value: priorStaged.stagedEntry.value };
+					if (entryForReload.value && typeof entryForReload.value === 'object') {
+						// Register the merged entry in entryMap so getUpdatedTime() works.
+						entryMap.set(entryForReload.value, entryForReload);
+					}
+				}
+			}
+			if (writeKeyId(id) !== writeKeyId(this.getId())) {
+				// lock(target) where target differs from this record: return a separate instance.
+				const fresh = new (this.constructor as any)(id, this.getContext());
+				TableResource._updateResource(fresh, entryForReload);
+				if (holdHandle != null) {
+					fresh.#lockHandle = holdHandle;
+					// Do not clear this.#lockHandle: the original instance keeps its own lock on its
+					// own id; the fresh instance owns the lock on the target id independently.
+				}
+				fresh.#lockWritable = true;
+				// Scoped (not hold) stages exactly like update(): create the TransactionWrite now so
+				// save() is the ordinary #savingOperation path.  Hold keeps deferred staging (the
+				// acquiring transaction may commit before the holder ever writes).
+				if (!fresh.#lockHandle!.hold) fresh._writeUpdate(id, fresh.#changes, false);
+				return fresh;
+			}
+			// Store the handle for both scoped and hold locks; undefined (re-entrant hold fast-path)
+			// must not clear a handle already set.
+			if (holdHandle != null) this.#lockHandle = holdHandle;
+			TableResource._updateResource(this, entryForReload);
+			// Preserve staged changes when upgrading the same instance from scoped to hold so that
+			// set() calls made under the scoped lock survive the reload.
+			if (!preserveChanges) this.#changes = undefined;
+			this.#lockWritable = true;
+			// Scoped (not hold): stage now, same as update() would.  Skip if a write from an earlier
+			// lock() cycle on this instance is still pending (re-entrant call before its save()).
+			if (!this.#lockHandle!.hold && !this.#savingOperation) this._writeUpdate(id, this.#changes, false);
+			return this;
+		}
+		/**
+		 * Release the lock this instance holds. Resolves true when this call cleared the native key lock.
+		 * Works for both held (`{ hold: true }`) and transaction-scoped locks. After unlock() the
+		 * instance is no longer lock-writable; writes through it require a fresh lock.
+		 */
+		unlock(): Promise<boolean> {
+			// Always clear the local lock-writable state so subsequent writes on this instance are
+			// ungated, regardless of whether the handle was already released.
+			const handle = this.#lockHandle;
+			this.#lockHandle = undefined;
+			this.#lockWritable = false;
+			if (!handle || handle.released) return Promise.resolve(false);
+			const link = txnForContext(this.getContext());
+			// A scoped lock staged its write at lock() time; released before commit, that write must not
+			// run into the released-handle guard at the sweep.
+			if (this.#savingOperation && !this.#savingOperation.saved && this.#savingOperation.lockHandle === handle)
+				this.#savingOperation = null;
+			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle);
+			link.unregisterRecordLock(handle);
+			return Promise.resolve(handle.release());
 		}
 		static operation(operation, context) {
 			operation.table ||= tableName;
@@ -2451,6 +2811,7 @@ export function makeTable(options) {
 		// a notification that a write has already occurred in the canonical data source, we need to update our
 		// local copy
 		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
+			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			const transaction = txnForContext(context);
 			checkValidId(id);
@@ -2496,6 +2857,11 @@ export function makeTable(options) {
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
 				deferSave: true,
+				// Include the lock handle (if any) so the expired-handle guard in
+				// DatabaseTransaction.save() can throw 409 when the lease has lapsed.
+				// Only attach the hold handle when it covers exactly this key; off-key writes
+				// are ordinary and must not carry an unrelated hold's handle.
+				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
@@ -3108,6 +3474,7 @@ export function makeTable(options) {
 					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
 
 					writeCommit(true);
+					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					if (expiresAt >= 0) {
 						scheduleCleanup(); // arm for replicated writes too, not just local-context writes
 						// A runtime per-record expiresAt on a table with no table-level expiration/eviction, no expiresAt
@@ -3252,6 +3619,7 @@ export function makeTable(options) {
 			return Boolean(this.#record);
 		}
 		_writeDelete(id: Id, options?: any) {
+			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			const transaction = txnForContext(context);
 			checkValidId(id);
@@ -3263,6 +3631,7 @@ export function makeTable(options) {
 				entry,
 				chainsStagedState: true,
 				nodeName: (context as any)?.nodeName,
+				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				before:
 					(this.constructor as any).source?.delete && !(context as any)?.source
 						? (this.constructor as any).source.delete.bind((this.constructor as any).source, id, undefined, context)
@@ -3312,6 +3681,7 @@ export function makeTable(options) {
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
 					write.stagedEntry = { value: undefined }; // the key holds no record for the rest of this transaction
+					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// the removal supersedes the nearest record an earlier write in this transaction stored
 					// (older ones were already marked by their staged successors), so its saved blobs are
 					// cleaned up post-commit unless its audit entry references them
@@ -6104,6 +6474,22 @@ export function makeTable(options) {
 				if (context.timestamp) transaction.timestamp = context.timestamp;
 			}
 			return transaction;
+		}
+	}
+	/**
+	 * Detach an unsaved TransactionWrite that a scoped lock() eagerly staged (see #reloadLocked)
+	 * once its handle upgrades to hold: hold staging is deferred and explicit-save-only, so a
+	 * dangling scoped write would otherwise auto-commit at the transaction sweep and clobber
+	 * whatever the hold write lands. Marking it .dropped lets a later save() on the instance that
+	 * owns it (checked via #savingOperation === this write) fall through to the hold branch
+	 * instead of resolving a detached, dead reference.
+	 */
+	function detachScopedUpgradeWrite(link: any, keyId: unknown, handle: RecordLockHandle): void {
+		for (const write of link.writes) {
+			if (write && !write.saved && write.lockHandle === handle && writeKeyId(write.key) === keyId) {
+				write.dropped = true;
+				link.detachWrite(write);
+			}
 		}
 	}
 	function getAttributeValue(entry, attribute_name, context, sort?) {
