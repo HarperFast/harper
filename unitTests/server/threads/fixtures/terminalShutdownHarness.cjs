@@ -9,7 +9,7 @@ const { waitFor } = require('../../../waitFor.js');
 const { HARPER_CONFIG_FILE } = require('#src/utility/hdbTerms');
 process.env.HARPER_SAFE_MODE = 'true';
 
-// Keep configuration self-contained if the real root-component loader runs.
+// initLogSettings() resolves config through ROOTPATH without boot properties, so use an owned root.
 const rootPath = mkdtempSync(join(tmpdir(), 'harper-terminal-shutdown-'));
 writeFileSync(join(rootPath, HARPER_CONFIG_FILE), `rootPath: ${JSON.stringify(rootPath)}\n`);
 process.env.ROOTPATH = rootPath;
