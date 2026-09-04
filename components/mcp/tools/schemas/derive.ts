@@ -345,8 +345,6 @@ function deriveRecordSchema(
 		properties[attr.name] = schema;
 		const requiredOnOutput =
 			!attr.relationship &&
-			!attr.definition &&
-			!attr.elements?.definition &&
 			(attr.requiredOnSchema ||
 				attr.nullable === false ||
 				attr.assignCreatedTime ||

@@ -222,6 +222,9 @@ function fragmentToAttribute(
 			normalizedEnum = [...new Set(fragment.enum)];
 		}
 		if (fragment.const !== undefined) {
+			if (typeof fragment.const === 'number' && !Number.isFinite(fragment.const)) {
+				throw new TypeError(`Schema property "${name}.const" must be JSON-serializable`);
+			}
 			try {
 				if (JSON.stringify(fragment.const) === undefined) throw new TypeError();
 			} catch {
@@ -432,7 +435,7 @@ function emitAttributeSchema(
 	ancestors.add(attr);
 	try {
 		const fragment: JsonSchemaFragment = {};
-		const reference = attr.relationship || attr.definition || attr.elements?.definition;
+		const reference = attr.relationship;
 		if (reference) {
 			const target = reference as { database?: string; table?: string; type?: string };
 			const label = [target.database, target.table ?? target.type].filter(Boolean).join('.');
