@@ -33,9 +33,8 @@ import { isReadOnlyMode } from './databases.ts';
 initSync();
 
 export type AuditRecord = {
-	version: number;
-	recordVersion?: number; // the record's own version; on RocksDB reads `version` becomes the log key, so record identity uses this
-	localTime: number; // log position: LMDB audit-store key; RocksDB transaction-log timestamp
+	version: number; // the record's own version: LWW ordering, @updatedTime, ETag
+	txnLogKey: number; // position in the origin's transaction log
 	type: string;
 	encodedRecord?: Buffer;
 	extendedType?: number;
@@ -149,7 +148,7 @@ export function openAuditStore(rootStore) {
 		auditStore.getRange = function (options) {
 			if (options.values === false) return superGetRange(options); // getKeys shouldn't be modified
 			return superGetRange(options).map(({ key, value }) => {
-				value.key = value.localTime = key;
+				value.key = value.txnLogKey = key;
 				return value;
 			});
 		};
@@ -375,18 +374,40 @@ export function openAuditStore(rootStore) {
 	return auditStore;
 }
 
+/**
+ * Whether `entry` is the very write `auditRecord` describes. Write identity is (origin node, log key),
+ * never the record version: a version is legitimately non-unique, so a version match can name a
+ * different write and authorize destroying live state (a tombstone, a still-referenced blob).
+ *
+ * On LMDB this is exact — the audit-store key IS the record's `txnLogKey`. On RocksDB a record stores
+ * its version in the compatibility word and keeps a divergent log key in `additionalAuditRefs`.
+ * Absent identity answers false. The direction is deliberate: uncertainty retains.
+ */
+export function isAuditEntryWrite(entry: any, auditRecord: AuditRecord): boolean {
+	if (entry == null || auditRecord.txnLogKey == null) return false;
+	const auditNodeId = auditRecord.nodeId ?? 0;
+	return (
+		(entry.localTime === auditRecord.txnLogKey && (entry.nodeId ?? 0) === auditNodeId) ||
+		entry.additionalAuditRefs?.some(
+			(ref) => ref.version === auditRecord.txnLogKey && (ref.nodeId ?? 0) === auditNodeId
+		) === true
+	);
+}
+
 export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Promise<void> {
 	let tombstoneRemoval: Promise<void> | undefined;
 	if (auditRecord.type === 'delete') {
 		// if this is a delete, we remove the delete entry from the primary table
-		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
+		// at the same time so the audit table the primary table are in sync, assuming the entry is still
+		// the record state this audit record wrote
 		const tableId = auditRecord.tableId;
 		const primaryStore = auditStore.tableStores[auditRecord.tableId];
-		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
+		const tombstone = primaryStore?.getEntry(auditRecord.recordId);
+		if (isAuditEntryWrite(tombstone, auditRecord))
 			// a failed tombstone removal doesn't mean the audit entry removal failed — only
 			// auditStore.remove() below decides this function's outcome
 			tombstoneRemoval = new Promise<void>((resolve) => {
-				resolve(auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version));
+				resolve(auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, tombstone.version));
 			}).catch((error) => {
 				harperLogger.warn('Error removing deleted record while removing its audit entry', error);
 			});
@@ -729,7 +750,6 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				return buffer.subarray(recordIdStart, recordIdEnd);
 			},
 			version,
-			recordVersion: version,
 			previousVersion,
 			get user() {
 				try {

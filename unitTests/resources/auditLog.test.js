@@ -754,14 +754,22 @@ describe('Audit log', () => {
 		it(`removeAuditEntry does not let a delete-callback that ${label} block or escape the audit-store removal`, async () => {
 			const auditRemoveCalls = [];
 			const fakeAuditStore = {
-				tableStores: { 7: { getEntry: () => ({ version: 42 }) } },
+				tableStores: { 7: { getEntry: () => ({ version: 42, localTime: 42, nodeId: 0 }) } },
 				deleteCallbacks: { 7: failingCallback },
 				remove(key) {
 					auditRemoveCalls.push(key);
 					return Promise.resolve();
 				},
 			};
-			const deleteAuditRecord = { type: 'delete', tableId: 7, recordId: 'orphan', version: 42, key: 'audit-key' };
+			const deleteAuditRecord = {
+				type: 'delete',
+				tableId: 7,
+				recordId: 'orphan',
+				version: 42,
+				txnLogKey: 42,
+				nodeId: 0,
+				key: 'audit-key',
+			};
 
 			let unhandledRejection;
 			const onUnhandledRejection = (reason) => {
@@ -786,6 +794,71 @@ describe('Audit log', () => {
 			);
 		});
 	}
+	// harper#2412: a delete's audit entry authorizes removing the record's tombstone, so it has to name
+	// the very write that left it. The record version cannot: it is legitimately non-unique, and a
+	// version match on a different write would destroy live state.
+	describe('removeAuditEntry tombstone identity', () => {
+		function fakeStore(tombstone) {
+			const removals = [];
+			return {
+				removals,
+				store: {
+					tableStores: { 7: { getEntry: () => tombstone } },
+					deleteCallbacks: { 7: (id, version) => removals.push({ id, version }) },
+					remove: () => Promise.resolve(),
+				},
+			};
+		}
+
+		it('does not remove a tombstone that merely shares the audit record version', async () => {
+			const { store, removals } = fakeStore({ version: 42, localTime: 900, nodeId: 0 });
+			await removeAuditEntry(store, {
+				type: 'delete',
+				tableId: 7,
+				recordId: 'r',
+				version: 42,
+				txnLogKey: 100,
+				nodeId: 0,
+				key: 'audit-key',
+			});
+			assert.deepEqual(removals, [], 'a version match at a different log position is a different write');
+		});
+
+		it('removes the tombstone the audit record actually wrote', async () => {
+			const { store, removals } = fakeStore({ version: 42, localTime: 100, nodeId: 0 });
+			await removeAuditEntry(store, {
+				type: 'delete',
+				tableId: 7,
+				recordId: 'r',
+				version: 7,
+				txnLogKey: 100,
+				nodeId: 0,
+				key: 'audit-key',
+			});
+			assert.deepEqual(removals, [{ id: 'r', version: 42 }]);
+		});
+
+		it('does not remove a tombstone written by a different origin at the same log position', async () => {
+			const { store, removals } = fakeStore({ version: 42, localTime: 100, nodeId: 3 });
+			await removeAuditEntry(store, {
+				type: 'delete',
+				tableId: 7,
+				recordId: 'r',
+				version: 42,
+				txnLogKey: 100,
+				nodeId: 5,
+				key: 'audit-key',
+			});
+			assert.deepEqual(removals, [], "identity is (origin, log key); one origin cannot claim another's write");
+		});
+
+		it('retains the tombstone when the audit record carries no log position', async () => {
+			const { store, removals } = fakeStore({ version: 42, nodeId: 0 });
+			await removeAuditEntry(store, { type: 'delete', tableId: 7, recordId: 'r', version: 42, key: 'audit-key' });
+			assert.deepEqual(removals, [], 'unknown identity must retain, never delete');
+		});
+	});
+
 	it('check log after operations and prune', async () => {
 		await AuditedTable.operation({
 			operation: 'upsert',
@@ -839,8 +912,8 @@ describe('Audit log', () => {
 		// key (localTime on LMDB; RocksDB's version field already *is* its key), not a 0/1 placeholder
 		// flag substituted from a shared per-environment register. Resolving it through the audit
 		// store proves the chain is walkable, not just numerically similar.
-		assert.equal(entries[1].previousVersion, entries[0].localTime ?? entries[0].version);
-		assert.equal(entries[2].previousVersion, entries[1].localTime ?? entries[1].version);
+		assert.equal(entries[1].previousVersion, entries[0].txnLogKey);
+		assert.equal(entries[2].previousVersion, entries[1].txnLogKey);
 		assert(
 			AuditedTable.auditStore.get(entries[1].previousVersion, AuditedTable.tableId, id),
 			'previousVersion must resolve back to the actual prior audit entry'
@@ -1307,7 +1380,8 @@ describe('Audit log', () => {
 			const timestamps = [];
 			assert.doesNotThrow(() => {
 				for (const record of store.getRange({})) {
-					timestamps.push(record.version);
+					// txnLogKey is the log key: these synthetic entries carry no decodable record version
+					timestamps.push(record.txnLogKey);
 				}
 			}, 'aggregate iteration must not propagate the corrupt-entry RangeError');
 

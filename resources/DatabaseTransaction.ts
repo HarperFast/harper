@@ -312,6 +312,9 @@ export type TransactionWrite = {
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
 	fullUpdate?: boolean;
+	// The origin record version carried by an applied or replayed write. Bound it by the origin's
+	// transaction-log key so malformed or historical overloaded values cannot move ordering past the write.
+	recordVersion?: number;
 	saved?: boolean;
 	deferSave?: boolean;
 	skipReplicationConfirmation?: boolean;
@@ -370,6 +373,10 @@ export type TransactionWrite = {
 	// it to ensure the write is durable before resolving to the caller.
 	innerCommit?: MaybePromise<CommitResolution>;
 };
+
+export function getAppliedWriteVersion(recordVersion: number | undefined, txnLogKey: number): number {
+	return recordVersion == null ? txnLogKey : Math.min(recordVersion, txnLogKey);
+}
 
 /**
  * The state a preceding write in this transaction left for `operation`'s key, or undefined if this
@@ -1026,13 +1033,19 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
+		// `txnTime` is this transaction's timestamp — the key its entries take in the per-origin log.
+		// A write applied from elsewhere carries the origin's record version too, and that is what the
+		// record is stored at; the two coincide for every locally-originated write. Gated on the apply
+		// flags so an ordinary write never reads the property (harper#2412).
+		const writeVersion =
+			this.sourceApply || this.isReplay ? getAppliedWriteVersion(operation.recordVersion, txnTime) : txnTime;
 		if (reloadEntry || operation.entry === undefined) {
 			operation.entry = operation.store.getEntry(operation.key, { transaction });
 		}
 		if (!operation.saved) {
 			operation.saved = true;
 			// immediately execute in this transaction
-			if ((operation.validate?.(txnTime, this) as any) === false) {
+			if ((operation.validate?.(writeVersion, this) as any) === false) {
 				operation.commit = () => {}; // noop if we try again
 				return;
 			}
@@ -1043,9 +1056,9 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 		if (operation.trackRecordVersion) operation.recordVersionApplied = false;
-		const completion = operation.commit(txnTime, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		const completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
 		if (operation.trackRecordVersion)
-			operation.appliedRecordVersion = operation.recordVersionApplied ? txnTime : undefined;
+			operation.appliedRecordVersion = operation.recordVersionApplied ? writeVersion : undefined;
 		if (typeof completion?.then === 'function') this.stageCompletion(completion);
 		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
 		// native transaction and are durably written by its commit attempt — even a failed one — so

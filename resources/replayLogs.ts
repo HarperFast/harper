@@ -152,6 +152,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				nodeId,
 				recordId,
 				version,
+				txnLogKey,
 				residencyId,
 				expiresAt,
 				originatingOperation,
@@ -212,9 +213,13 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					warnedReplayHappening = true;
 					console.warn('Harper was not properly shutdown, replaying transaction logs to synchronize database');
 				}
-				if (lastTimestamp !== version) {
+				// Transactions are delimited by the log key — which is also what `truncatedVersions` records —
+				// and each write is replayed at its own stored record version. The two differ for a source
+				// fill, and stamping such a record at the log key would move its version forward and make a
+				// later legitimate write in between look stale (harper#2411).
+				if (lastTimestamp !== txnLogKey) {
 					const torn = entries.corruptFrameStop.truncatedVersions.has(lastTimestamp);
-					lastTimestamp = version;
+					lastTimestamp = txnLogKey;
 					try {
 						// commit the last transaction since we are starting a new one, unless a corrupt
 						// frame swallowed the rest of it — half of a source transaction must never become
@@ -256,7 +261,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					}
 					transaction = new DatabaseTransaction();
 					transaction.db = primaryStore;
-					transaction.timestamp = version;
+					transaction.timestamp = txnLogKey;
 					// retries=1 routes operation.commit() through its retry path (no duplicate audit staging)
 					transaction.retries = 1;
 					// Explicit replay marker: skips schema validation (harper#1316) and makes save() stamp
@@ -265,7 +270,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					transaction.isReplay = true;
 				}
 				context.transaction = transaction;
-				const options = { context, residencyId, nodeId, originatingOperation };
+				const options = { context, residencyId, nodeId, originatingOperation, version };
 				writes++;
 				stagedWrites++;
 				switch (type) {
