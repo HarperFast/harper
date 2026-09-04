@@ -360,6 +360,22 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			);
 		});
 
+		// The cap plus same-database-first ranking would otherwise bury the foreign holder inside the
+		// "and N more" count on exactly the busy database this surface is read on — which is the whole
+		// point of looking across databases in the first place.
+		it('always names the oldest foreign handle even when this database fills the cap', function () {
+			setRegistryStatusForTests(
+				status(
+					database('/db/alpha', [1, 90000], [2, 80000], [3, 70000], [4, 60000]),
+					database('/db/beta', [9, 3600000])
+				)
+			);
+			const described = describeHolderCandidates('/db/alpha', 1);
+			assert.match(described, /9 \(open 1h 0m 0s on \/db\/beta\)/, 'the cross-database holder must be named');
+			assert.match(described, /2 \(open 1m 20s\)/, 'this database still ranks first');
+			assert.match(described, /and 1 more\.$/);
+		});
+
 		// A registry entry with no path can never be the target, and resolve() throws on undefined —
 		// inside the enumeration that dropped the candidate list for every database, not just that entry.
 		it('survives a registry entry with no path', function () {

@@ -288,8 +288,16 @@ export function describeHolderCandidates(
 		}
 		if (candidates.length === 0) return '';
 		candidates.sort((a, b) => Number(b.sameDatabase) - Number(a.sameDatabase) || b.ageMs - a.ageMs);
-		const named = candidates
-			.slice(0, MAX_HOLDER_CANDIDATES)
+		const shortlist = candidates.slice(0, MAX_HOLDER_CANDIDATES);
+		// Ranking this database first and then capping can bury the one candidate the cross-database
+		// search exists to surface: a busy database routinely has MAX_HOLDER_CANDIDATES handles of its
+		// own, so a foreign holder would only ever appear inside the "and N more" count. Give the oldest
+		// one the last slot instead.
+		if (shortlist.length === MAX_HOLDER_CANDIDATES && shortlist.every((candidate) => candidate.sameDatabase)) {
+			const foreign = candidates.find((candidate) => !candidate.sameDatabase);
+			if (foreign) shortlist[MAX_HOLDER_CANDIDATES - 1] = foreign;
+		}
+		const named = shortlist
 			.map(
 				(candidate) =>
 					`${candidate.id} (open ${prettyDuration(candidate.ageMs)}${candidate.sameDatabase ? '' : ` on ${candidate.path ?? '?'}`})`
