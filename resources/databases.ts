@@ -1901,7 +1901,12 @@ function conflict(message: string): Error {
 function throwIfBlockedByRestore(dbPath: string, databaseName: string, attempt = 0): void {
 	const state = checkRestoreState(dbPath);
 	if (state === 'clear') return;
-	const kind = lifecycleMarkerKind(dbPath) ?? 'restore';
+	const kind = lifecycleMarkerKind(dbPath);
+	if (kind === null) {
+		if (attempt >= 5)
+			throw conflict(`Database '${databaseName}' has a lifecycle marker that will not settle; retry later`);
+		return throwIfBlockedByRestore(dbPath, databaseName, attempt + 1);
+	}
 	if (state === 'in-progress') {
 		throw conflict(
 			`Database '${databaseName}' is being ${kind === 'drop' ? 'dropped' : 'restored'}; retry when that completes`
@@ -1935,6 +1940,7 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string, attempt =
 function beginDropOfDatabase(dbPath: string, databaseName: string): RestoreLock {
 	if (lifecycleMarkerKind(dbPath) === 'restore') {
 		const state = checkRestoreState(dbPath);
+		if (state === 'clear') return beginDrop(dbPath);
 		throw conflict(
 			state === 'in-progress'
 				? `Database '${databaseName}' is being restored; retry when the restore completes`
@@ -2247,7 +2253,7 @@ function indexUsesObjectStore(attribute: any): boolean {
 function indexStoreMatches(dbi: any, rootStore: RootDatabaseKind, attribute: any): boolean {
 	const objectStorage = indexUsesObjectStore(attribute);
 	if (rootStore instanceof RocksDatabase) return dbi instanceof RocksIndexStore === !objectStorage;
-	return dbi.dupSort == null || Boolean(dbi.dupSort) === !objectStorage;
+	return Boolean(dbi.dupSort) === !objectStorage;
 }
 
 // opens an index, consulting with custom indexes that may use alternate store configuration
