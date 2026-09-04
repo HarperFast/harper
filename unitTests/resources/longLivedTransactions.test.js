@@ -367,13 +367,15 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			setRegistryStatusForTests(
 				status(
 					database('/db/alpha', [1, 90000], [2, 80000], [3, 70000], [4, 60000]),
+					database('/db/gamma', [8, 120000]),
 					database('/db/beta', [9, 3600000])
 				)
 			);
 			const described = describeHolderCandidates('/db/alpha', 1);
-			assert.match(described, /9 \(open 1h 0m 0s on \/db\/beta\)/, 'the cross-database holder must be named');
+			assert.match(described, /9 \(open 1h 0m 0s on \/db\/beta\)/, 'the OLDEST foreign holder must take the slot');
+			assert.ok(!described.includes('/db/gamma'), 'a younger foreign handle must not displace the oldest');
 			assert.match(described, /2 \(open 1m 20s\)/, 'this database still ranks first');
-			assert.match(described, /and 1 more\.$/);
+			assert.match(described, /and 2 more\.$/);
 		});
 
 		// A registry entry with no path can never be the target, and resolve() throws on undefined —

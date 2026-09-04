@@ -1658,9 +1658,9 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
  * those branches maintain rather than calling `chainStillActive`, which would decay `writeTimeout`
  * as a side effect, and it runs before them so it cannot reorder them.
  */
-function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number, monitored: boolean): void {
+function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number, monitored: boolean, now: number): void {
 	if (!link.transaction || link.handleOpenedAt === 0) return;
-	const ageMs = performance.now() - link.handleOpenedAt;
+	const ageMs = now - link.handleOpenedAt;
 	if (ageMs < thresholdMs) return;
 	const states: string[] = [];
 	if (link.sourceApply) states.push('source-apply');
@@ -1699,10 +1699,10 @@ function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number, mon
  * the entry alone names an id the sweep's line can never be joined to when the child is the holder.
  * Links that read are in `trackedTxns` and get their own visit from the tick.
  */
-function reportIfLongLived(txn: DatabaseTransaction, thresholdMs: number): void {
+function reportIfLongLived(txn: DatabaseTransaction, thresholdMs: number, now: number): void {
 	if (thresholdMs === 0) return;
 	for (let link: DatabaseTransaction = txn; link; link = link.next)
-		if (link === txn || !trackedTxns.has(link)) reportLongLivedLink(link, thresholdMs, link === txn);
+		if (link === txn || !trackedTxns.has(link)) reportLongLivedLink(link, thresholdMs, link === txn, now);
 }
 
 function startMonitoringTxns() {
@@ -1718,20 +1718,28 @@ function startMonitoringTxns() {
 =======
 		const checkedCommitPhaseChains = new Set<DatabaseTransaction>();
 		const reportThresholdMs = getReportThresholdMs();
+		// One clock read for the whole tick: every link with a live handle is aged against it, and the
+		// threshold this feeds is minutes, so per-link precision buys nothing.
+		const reportNow = performance.now();
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
 		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
-		for (const txn of trackedTxns) monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs);
+		for (const txn of trackedTxns) monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow);
 		for (const txn of supervisedWriteRoots)
-			if (!trackedTxns.has(txn)) monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs);
+			if (!trackedTxns.has(txn)) monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow);
 	}, txnExpiration).unref();
 
 	function monitorTransaction(
 		txn: DatabaseTransaction,
 		checkedCommitPhaseChains: Set<DatabaseTransaction>,
-		reportThresholdMs: number
+		reportThresholdMs: number,
+		reportNow: number
 	) {
+<<<<<<< HEAD
 		reportIfLongLived(txn, reportThresholdMs);
 >>>>>>> e2279d314 (Report the long-lived transaction holder behind a wedged commit)
+=======
+		reportIfLongLived(txn, reportThresholdMs, reportNow);
+>>>>>>> 2deae31ee (Read the clock once per monitor tick, not once per link)
 		{
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
 			// branches below — a tracked link that keeps its own idle limit alive by reading must not
