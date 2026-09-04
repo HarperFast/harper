@@ -3212,6 +3212,18 @@ export function makeTable(options) {
 									}
 									const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
 									if (!auditRecord) break;
+									if (
+										!stagedOwnAuditEntry &&
+										localTime === txnLogKey &&
+										precedesExistingVersion(
+											txnTime,
+											{ version: txnTime, localTime: txnLogKey, key: id, nodeId: auditRecord.nodeId },
+											options?.nodeId
+										) === 0
+									) {
+										write.skipped = true;
+										return;
+									}
 									auditedVersion = auditRecord.version;
 									if (auditedVersion >= txnTime) {
 										if (auditedVersion === txnTime) {

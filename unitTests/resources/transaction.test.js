@@ -675,6 +675,37 @@ describe('Transactions', () => {
 			assert.equal(capWarned, false, 're-delivery should be deduped up front, not via the deep walk');
 		});
 
+		it('deduplicates an audit-only write in the walk when the keyed lookup misses', async function () {
+			if (isLMDB) return;
+			const id = 1114005;
+			const base = Date.now() + 250_000_000;
+			const duplicateKey = base + 50;
+			await TxnTest.put(id, { count: 0 }, { timestamp: base });
+			await TxnTest.patch(id, { seq: 1 }, { timestamp: base + 100 });
+			const duplicate = { count: { __op__: 'add', value: 1 } };
+			await TxnTest.patch(id, duplicate, { timestamp: duplicateKey });
+			await TxnTest.patch(id, { seq: 2 }, { timestamp: base + 200 });
+			assert.equal((await TxnTest.get(id)).count, 1);
+
+			const auditStore = TxnTest.auditStore;
+			const originalGet = auditStore.get;
+			let missedKeyedLookup = false;
+			auditStore.get = (key, ...args) => {
+				if (key === duplicateKey && !missedKeyedLookup) {
+					missedKeyedLookup = true;
+					return;
+				}
+				return originalGet.call(auditStore, key, ...args);
+			};
+			try {
+				await TxnTest.patch(id, duplicate, { timestamp: duplicateKey });
+			} finally {
+				auditStore.get = originalGet;
+			}
+			assert(missedKeyedLookup, 'the up-front keyed lookup must miss so the audit walk owns dedup');
+			assert.equal((await TxnTest.get(id)).count, 1, 'the walk must not reapply the commutative operation');
+		});
+
 		// #1114/#1316: an out-of-order write whose every field is overwritten by newer in-order patches is
 		// fully superseded. The fold at the end of the walk already drops it (writeCommit(false)) — but only
 		// after walking the whole chain. The early-out folds as it walks and escapes the moment the residual
