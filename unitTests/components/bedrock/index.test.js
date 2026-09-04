@@ -16,9 +16,11 @@ const ACCOUNTING = { tenantId: 'tid', app: '/test' };
 // Each test wires its own responder to control what `client.send(command)` resolves to.
 function fakeSdk(responder) {
 	const sent = [];
+	const constructed = [];
 	class FakeClient {
 		constructor(config) {
 			this.config = config;
+			constructed.push(config);
 		}
 		async send(command, options) {
 			sent.push({ command, options });
@@ -44,6 +46,7 @@ function fakeSdk(responder) {
 			InvokeModelWithResponseStreamCommand,
 		},
 		sent,
+		constructed,
 	};
 }
 
@@ -544,5 +547,28 @@ describe('Bedrock Anthropic-stream tool-call accumulator cardinality cap', () =>
 				/* drain */
 			}
 		}, /tool-call accumulator exceeded 128/);
+	});
+});
+
+describe('BedrockBackend retry plumbing (#1594)', () => {
+	it('constructs the SDK client with maxAttempts = maxRetries + 1 (default 2 retries)', async () => {
+		const { sdk, constructed } = fakeSdk(() =>
+			jsonBodyResponse({ content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn' })
+		);
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude-opus-4-v1:0' });
+		await b.generate('hello', { accounting: ACCOUNTING });
+		assert.strictEqual(constructed.length, 1);
+		assert.strictEqual(constructed[0].maxAttempts, 3);
+	});
+
+	it('maxRetries: 0 maps to a single SDK attempt', async () => {
+		const { sdk, constructed } = fakeSdk(() =>
+			jsonBodyResponse({ content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn' })
+		);
+		_injectSdkForTests(sdk);
+		const b = new BedrockBackend({ region: 'us-east-1', model: 'anthropic.claude-opus-4-v1:0', maxRetries: 0 });
+		await b.generate('hello', { accounting: ACCOUNTING });
+		assert.strictEqual(constructed[0].maxAttempts, 1);
 	});
 });
