@@ -56,6 +56,14 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		});
 	}
 
+	function deleteFromOrigin(TableClass, id, { logKey, version, nodeId = 1 }) {
+		const context = { source: {}, sourceApply: true, timestamp: logKey };
+		return transaction(context, async () => {
+			const resource = await TableClass.getResource(id, context);
+			return resource._writeDelete(id, { nodeId, version });
+		});
+	}
+
 	before(async function () {
 		if (isLMDB) return;
 		setupTestDBPath();
@@ -63,7 +71,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		Plain = table({
 			table: 'DualClockPlain',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'count' }],
 			audit: true,
 		});
 		Filled = table({
@@ -132,24 +140,62 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('keeps a log-key pointer to the audit head when the stored version differs', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'applied-head-1';
-		const logKey = Date.now() - 10_000;
-		const version = logKey - 30_000;
-		await applyFromOrigin(Plain, id, { id, name: 'newer' }, { logKey, version, nodeId: 0 });
+		const baseVersion = Date.now() - 60_000;
+		await applyFromOrigin(
+			Plain,
+			id,
+			{ id, name: 'base', count: 0 },
+			{ logKey: baseVersion, version: baseVersion, nodeId: 0, isCopyApply: true }
+		);
+		const logKey = baseVersion + 5_000;
+		const version = baseVersion + 2_000;
+		await applyFromOrigin(Plain, id, { name: 'newer' }, { logKey, version, nodeId: 0, fullUpdate: false });
 		const head = Plain.primaryStore.getEntry(id);
 		assert(head.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0));
 		assert((await Plain.getHistoryOfRecord(id)).some((entry) => entry.localTime === logKey));
 
+		const olderLogKey = baseVersion + 4_000;
+		const olderVersion = baseVersion + 1_000;
 		await applyFromOrigin(
 			Plain,
 			id,
-			{ name: 'older', count: { __op__: 'add', value: 1 } },
-			{ logKey: logKey + 1_000, version: version - 1, nodeId: 0, fullUpdate: false }
+			{ count: { __op__: 'add', value: 1 } },
+			{ logKey: olderLogKey, version: olderVersion, nodeId: 2, fullUpdate: false }
 		);
-		assert.deepEqual(await Plain.get(id), { id, name: 'newer' });
+		assert.deepEqual(await Plain.get(id), { id, name: 'newer', count: 1 });
+		assert(
+			Plain.primaryStore.getEntry(id).additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0),
+			'an out-of-order merge must retain the surviving head in the log-key domain'
+		);
 		assert(
 			(await Plain.getHistoryOfRecord(id)).some((entry) => entry.localTime === logKey),
 			'an audit-only fold must not displace the real head of the surviving record'
 		);
+		const olderAudit = auditEntriesFor(Plain, id).find((entry) => entry.txnLogKey === olderLogKey);
+		assert.equal(olderAudit.version, olderVersion, "crash replay must see the folded write's original version");
+	});
+
+	it('keeps a log-key pointer to an applied delete whose version differs', async function () {
+		if (isLMDB) return this.skip();
+		const id = 'applied-delete-head-1';
+		const writeLogKey = Date.now() - 10_000;
+		const writeVersion = writeLogKey - 30_000;
+		await applyFromOrigin(
+			Plain,
+			id,
+			{ id, name: 'present' },
+			{ logKey: writeLogKey, version: writeVersion, nodeId: 0 }
+		);
+		const deleteLogKey = writeLogKey + 1_000;
+		const deleteVersion = writeVersion + 1;
+		await deleteFromOrigin(Plain, id, { logKey: deleteLogKey, version: deleteVersion, nodeId: 0 });
+		const tombstone = Plain.primaryStore.getEntry(id);
+		assert.equal(tombstone.value, null);
+		assert.equal(tombstone.version, deleteVersion);
+		assert(tombstone.additionalAuditRefs?.some((ref) => ref.version === deleteLogKey && ref.nodeId === 0));
+		const deleteAudit = auditEntriesFor(Plain, id).find((entry) => entry.txnLogKey === deleteLogKey);
+		assert.equal(deleteAudit.type, 'delete');
+		assert.equal(deleteAudit.version, deleteVersion);
 	});
 
 	it('does not point a copy-applied record at an audit entry that was never written', async function () {
@@ -188,7 +234,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		);
 	});
 
-	it('bounds an overloaded audit-body version by the originating transaction-log key', async function () {
+	it('bounds an applied record version by the originating transaction-log key', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'applied-out-of-order-1';
 		const logKey = Date.now();

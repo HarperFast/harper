@@ -312,8 +312,8 @@ export type TransactionWrite = {
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
 	fullUpdate?: boolean;
-	// The audit body's candidate record version. Applied writes bound it by the origin's transaction-log
-	// key because an out-of-order audit-only entry can carry the later surviving record version.
+	// The origin record version carried by an applied or replayed write. Bound it by the origin's
+	// transaction-log key so malformed or historical overloaded values cannot move ordering past the write.
 	recordVersion?: number;
 	saved?: boolean;
 	deferSave?: boolean;

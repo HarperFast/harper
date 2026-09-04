@@ -724,17 +724,29 @@ export function makeTable(options) {
 		const visited = new Set<string>();
 		function findHead(candidateRefs?: Array<{ version: number; nodeId: number }>) {
 			if (!candidateRefs) return;
-			for (const ref of candidateRefs) {
+			const pending: Array<{ ref: { version: number; nodeId: number }; auditRecord?: any }> = candidateRefs
+				.slice()
+				.reverse()
+				.map((ref) => ({ ref }));
+			while (pending.length > 0) {
+				const candidate: any = pending.pop();
+				const { ref, auditRecord } = candidate;
+				if (auditRecord) {
+					if (auditRecord.version === version) return { txnLogKey: ref.version, nodeId: ref.nodeId };
+					continue;
+				}
 				const identity = `${ref.nodeId ?? 0}:${ref.version}`;
 				if (visited.has(identity)) continue;
 				visited.add(identity);
-				const auditRecord = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
-				if (!auditRecord) continue;
-				// An audit-only out-of-order entry carries the surviving record version in its body.
-				// Its previous refs still identify the real head, so prefer them over the fold entry.
-				const previousHead = findHead(auditRecord.previousAdditionalAuditRefs);
-				if (previousHead) return previousHead;
-				if (auditRecord.version === version) return { txnLogKey: ref.version, nodeId: ref.nodeId };
+				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
+				if (!entry) continue;
+				// Historical audit-only entries can carry the surviving record version in their body.
+				// Their previous refs still identify the real head, so prefer them over the fold entry.
+				pending.push({ ref, auditRecord: entry });
+				const previousRefs = entry.previousAdditionalAuditRefs;
+				if (previousRefs) {
+					for (let index = previousRefs.length - 1; index >= 0; index--) pending.push({ ref: previousRefs[index] });
+				}
 			}
 		}
 		const referencedHead = findHead(refs);
@@ -3139,9 +3151,7 @@ export function makeTable(options) {
 							// (so replication's head-tie fast-skip can't see them) yet are exact duplicates. Keyed by nodeId,
 							// so it is correct across multiple source nodes. The lookup key is this write's LOG key, not its
 							// record version — a replication apply commits under the origin's log key while storing the
-							// origin's version, and only the log key addresses the entry (harper#2412). The synthetic entry
-							// below still carries `txnTime` as its version: an audit-only commit records the surviving
-							// (newer) record version in its body, so `priorAudit.version` is not this write's version.
+							// origin's version, and only the log key addresses the entry (harper#2412).
 							// RocksDB-only: LMDB audit entries are keyed by local audit time, so this lookup doesn't apply
 							// there (LMDB keeps the exact unbounded walk). A miss (the keyed lookup can lag a back-to-back re-delivery — #1137)
 							// simply falls through to the walk, so this never changes correctness; the additionalAuditRefs
@@ -3185,12 +3195,10 @@ export function makeTable(options) {
 								? existingEntry.additionalAuditRefs.map((ref) => ({ localTime: ref.version, nodeId: ref.nodeId }))
 								: [];
 
-							// Collect any existing audit refs that should be preserved (those older than current transaction)
+							// Out-of-order merges retain every existing branch head; per-origin log keys are not globally ordered.
 							if (existingEntry.additionalAuditRefs) {
 								for (const ref of existingEntry.additionalAuditRefs) {
-									if (ref.version <= txnTime) {
-										additionalAuditRefs.push(ref);
-									}
+									additionalAuditRefs.push(ref);
 								}
 							}
 							let addedAuditRef = false;
@@ -3578,6 +3586,7 @@ export function makeTable(options) {
 								user: (context as any)?.user,
 								residencyId,
 								expiresAt,
+								recordVersion: txnTime,
 								nodeId: options?.nodeId,
 								viaNodeId: options?.viaNodeId,
 								originatingOperation: (context as any)?.originatingOperation,
@@ -3714,6 +3723,8 @@ export function makeTable(options) {
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
 					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
+					const txnLogKey =
+						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
@@ -3742,6 +3753,11 @@ export function makeTable(options) {
 								viaNodeId: options?.viaNodeId,
 								transaction,
 								tableToTrack: tableName,
+								recordVersion: txnTime,
+								additionalAuditRefs:
+									isRocksDB && audit && txnLogKey !== txnTime
+										? [{ version: txnLogKey, nodeId: options?.nodeId }]
+										: undefined,
 							},
 							'delete'
 						);

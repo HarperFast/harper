@@ -1013,7 +1013,7 @@ export function recordUpdater(store, tableId, auditStore) {
 				result = auditStore[isRocksDB ? 'putSync' : 'put'](
 					record === undefined ? NEW_TIMESTAMP_PLACEHOLDER : LAST_TIMESTAMP_PLACEHOLDER,
 					{
-						version: newVersion,
+						version: options?.recordVersion ?? newVersion,
 						tableId,
 						recordId: id,
 						previousVersion: isRocksDB ? existingEntry?.version : existingEntry?.localTime,

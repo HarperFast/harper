@@ -102,9 +102,9 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 | How is application row filtering applied?                             | Authorization admission happens in the resource operation before query work. The legacy `allow*` hook, when armed by the protocol, is evaluated once with its historical receiver semantics; overriding it never changes its scope. An operation override may add indexed conditions and/or attach the JavaScript-only synchronous `target.rowFilter(record, context)`. `Table.search` composes it with query filters and rechecks the final materialized cache/source record. `SubscriptionRequest.rowFilter` covers full-row events; `eventFilter(event, context)` explicitly handles tombstones/messages/raw events. Prefer indexed conditions because an opaque predicate may inspect every admitted candidate and `limit` applies after filtering.                                                                                                                                                                                                                                                                                                                                                           |
 
 **An audit record carries two clocks; never substitute one for the other (harper#2412 stage 0b).**
-`AuditRecord.version` is the record's own version — LWW ordering in `precedesExistingVersion`,
-`@updatedTime`, ETag/`Last-Modified`. For audit-only out-of-order entries the body may carry the
-surviving record version rather than the originating write's version. `AuditRecord.txnLogKey` is that
+`AuditRecord.version` is the originating write's record version — LWW ordering in
+`precedesExistingVersion`, `@updatedTime`, ETag/`Last-Modified`. Historical audit-only entries may
+carry the surviving version instead. `AuditRecord.txnLogKey` is that
 entry's key in the per-origin transaction log: write identity, the record→log lookup
 (`auditStore.get(logKey, tableId, id, nodeId)`), and every resume cursor. On LMDB these have always
 been distinct fields; on RocksDB the read surface used to overwrite `version` with the log key, and
@@ -127,9 +127,9 @@ Consequences worth knowing:
   `options.version` by every `_write*` builder and read in `save()` only when the transaction is
   `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the
   transaction commits under the origin's log key — so a peer's copy of an origin's log stays in the
-  origin's clock. `getAppliedWriteVersion` bounds the body value by `txnLogKey`: a source fill keeps
-  its earlier source version, while an out-of-order audit body cannot restamp its originating write
-  at the later surviving version. One frame can carry writes at different record versions, so this
+  origin's clock. New audit entries persist that write version even when an out-of-order merge leaves
+  a newer record version in the primary store. `getAppliedWriteVersion` also bounds historical
+  overloaded values by `txnLogKey`. One frame can carry writes at different record versions, so this
   cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply
   behavior.
 - **`additionalAuditRefs[].version` is a log key, not a version.** Every consumer follows it straight
