@@ -28,8 +28,8 @@
  * The oracle reads a RocksDB checkpoint, never the live database directory. `readOnly: true` maps
  * to `rocksdb::DB::OpenForReadOnly`, which replays the MANIFEST into a file list and then opens
  * those files while holding no reference on any of them, so a compaction in the process under test
- * can unlink one inside that window and the open fails as MANIFEST corruption
- * (HarperFast/rocksdb-js#812). Nothing writes to a checkpoint, so the race cannot happen there, and
+ * can unlink one inside that window and the open fails as MANIFEST corruption (#2500,
+ * HarperFast/rocksdb-js#812). Nothing writes to a checkpoint, so the race cannot happen there, and
  * `createCheckpoint()` flushes the memtable — which the oracle needs anyway, since Harper opens
  * table/index column families with `disableWAL` defaulting to true (resources/databases.ts
  * openRocksDatabase) and a committed write can otherwise sit only in the writer's memtable. One
