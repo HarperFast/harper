@@ -290,6 +290,19 @@ describe('confirmWindowsProcessTreeGone', () => {
 		assert.equal(kills, 0);
 	});
 
+	it('waits for a root with an unknown creation time to disappear before confirming its tree is gone', async () => {
+		const scans = [[row(ROOT, 1, null, 'cmd.exe')], []];
+		await confirmWindowsProcessTreeGone(
+			{ rootPid: ROOT, rootKnownAt: SPAWNED_AT },
+			{
+				scan: async () => scans.shift(),
+				kill: async () => assert.fail('an unverified root must not be killed'),
+				pollMs: 1,
+			}
+		);
+		assert.equal(scans.length, 0);
+	});
+
 	it('does not wait on a process that merely recycled the exited root PID', async () => {
 		let scans = 0;
 		await confirmWindowsProcessTreeGone(exitedIdentity(), {

@@ -38,4 +38,20 @@ describe('LMDB drop closes the environment before unlinking under it', () => {
 		assert.ok(!existsSync(path), 'the environment file is unlinked once its close has settled');
 		assert.equal(getDatabases()[DB], undefined);
 	});
+
+	it('keeps an ordinary index handle when the same LMDB table is redefined', () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const defineIndexed = () =>
+			table({
+				table: 'IndexedRows',
+				database: 'lmdbindexreuse',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'value', indexed: true },
+				],
+			});
+		const first = defineIndexed();
+		assert.strictEqual(defineIndexed().indices.value, first.indices.value);
+	});
 });
