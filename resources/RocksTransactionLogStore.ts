@@ -7,6 +7,7 @@ import {
 	createCorruptFrameReporter,
 	endIteratorOnCorruptFrame,
 	isMidLogBreak,
+	type CorruptFrameError,
 	type CorruptFrameStop,
 } from './replayLogsGuards.ts';
 import { isMainThread } from 'node:worker_threads';
@@ -633,7 +634,3 @@ export class RocksTransactionLogStore extends EventEmitter {
 		// is added in `resources/Table.ts`
 	}
 }
-
-
-
-
