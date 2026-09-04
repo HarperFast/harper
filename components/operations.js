@@ -1,7 +1,6 @@
 'use strict';
 
 const path = require('node:path');
-const { isMainThread } = require('node:worker_threads');
 const fs = require('fs-extra');
 const fg = require('fast-glob');
 const normalize = require('normalize-path');
@@ -28,7 +27,6 @@ const {
 	scanPackageDirectory,
 	streamPackagedDirectory,
 } = require('../components/packageComponent.ts');
-const { Resources } = require('../resources/Resources.ts');
 const {
 	Application,
 	prepareApplication,
@@ -449,94 +447,6 @@ async function packageComponent(req) {
 // loading, A's load error lands in B, and A then activates broken code while B rejects a good candidate.
 // Validation is serialized (it is already the slow path) and the previous reporter is restored, so the
 // global is only ever owned by one in-flight validation.
-let validationChain = Promise.resolve();
-
-async function validateComponentLoads(candidateDirPath, emit) {
-	const run = validationChain.then(
-		() => validateComponentLoadsExclusive(candidateDirPath, emit),
-		() => validateComponentLoadsExclusive(candidateDirPath, emit)
-	);
-	validationChain = run.then(
-		() => {},
-		() => {}
-	);
-	return run;
-}
-
-async function validateComponentLoadsExclusive(candidateDirPath, emit) {
-	// now we attempt to actually load the component in case there is
-	// an error we can immediately detect and report, but app code should not run on the main thread
-	if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
-		const pseudoResources = new Resources();
-		pseudoResources.isWorker = true;
-
-		const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
-		const { trackScopeClose } = require('./scopeShutdown.ts');
-		let lastError;
-		const priorErrorReporter = componentLoader.getErrorReporter?.();
-		componentLoader.setErrorReporter((error) => (lastError = error));
-		emit('phase', { phase: 'load', status: 'start' });
-		// This load exists only to surface load-time errors early; the Scopes it creates are
-		// throwaway. They are collected (instead of registered for worker-shutdown auto-close) so we
-		// can close them here once validation completes — otherwise each deploy leaks the Scope's
-		// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
-		// (#1462).
-		const validationScopes = new Set();
-		// Process-wide `server.*` registrations (registerOperation, setMcpQuotaHandler) are not owned by
-		// a Scope, so a candidate's top-level registration during this throwaway load would otherwise
-		// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
-		// registration methods no-op for the duration of the load.
-		const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
-		// The candidate loads under the REAL component's name, so a candidate that throws would mark the live
-		// component ERROR. Its status writes are diverted into the guard's throwaway sink instead — see
-		// `deployValidationState.ts` for why this is context-scoped rather than captured and reverted here.
-		const componentName = path.basename(candidateDirPath);
-		// Extension modules the candidate load pulls in are registered in the loader's module registry keyed by
-		// module, so forgetting only the candidate's realpath leaves those behind — one set per deploy. Their
-		// identities are collected by the load itself; diffing the global registry instead would delete a live
-		// module registered by an interleaving real load, since validations serialize only with each other.
-		const validationModules = new Set();
-		const validation = runWithDeployValidationGuard(async () => {
-			try {
-				await componentLoader.loadComponent(candidateDirPath, pseudoResources, undefined, {
-					collectScopes: validationScopes,
-					collectLoadedModules: validationModules,
-				});
-			} finally {
-				const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
-				const failedCloses = closeResults.filter((result) => result.status === 'rejected');
-				for (const result of failedCloses) {
-					log.warn('Failed to close a deploy-validation Scope', result.reason);
-				}
-				// A rejected close is a REJECTED VALIDATION, not a warning. `Scope.close()` stops at the
-				// throwing listener, so its remaining internal listener removal and subscription-hold release
-				// never run and the throwaway scope stays partially live — one leak per deploy, on the worker
-				// that serves the component.
-				if (failedCloses.length) {
-					throw new AggregateError(
-						failedCloses.map((result) => result.reason),
-						`Could not tear down deploy validation for ${componentName}: ${failedCloses.length} scope(s) failed to close`
-					);
-				}
-			}
-		});
-		// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
-		// disposing — a plugin may start a native runtime in handleApplication — before realExit.
-		trackScopeClose(validation);
-		try {
-			await validation;
-		} finally {
-			componentLoader.setErrorReporter(priorErrorReporter);
-			// The candidate path is unique per deploy, so leaving it in the loader's realpath registry leaks
-			// one dead entry per deploy for the life of the process.
-			componentLoader.forgetLoadedPath?.(candidateDirPath);
-			componentLoader.forgetLoadedModules?.(validationModules);
-		}
-		emit('phase', { phase: 'load', status: 'done' });
-
-		if (lastError) throw lastError;
-	}
-}
 
 /** Report a restart outcome the operation's own success message cannot convey. */
 function logRestartOutcome(restart, what) {
@@ -752,12 +662,20 @@ async function deployComponent(req) {
 		// committed" — so a later failure arrives after both phases reported success. The operation's error
 		// is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
+		let prepareDoneEmitted = false;
 		await prepareApplication(application, {
-			validateCandidate: async (candidateDirPath) => {
-				emit('phase', { phase: 'prepare', status: 'done' });
-				await validateComponentLoads(candidateDirPath, emit);
+			// `prepare` closes when the candidate is built, then `load` brackets certification.
+			emitPhase: (phase, status) => {
+				if (phase === 'load' && status === 'start' && !prepareDoneEmitted) {
+					prepareDoneEmitted = true;
+					emit('phase', { phase: 'prepare', status: 'done' });
+				}
+				emit('phase', { phase, status });
 			},
 		});
+		// A candidate that is deliberately not certified (safe mode, or a branch-configured component)
+		// emits no `load` phase, so `prepare` still has to be closed out.
+		if (!prepareDoneEmitted) emit('phase', { phase: 'prepare', status: 'done' });
 		const rollingRestart = req.restart === 'rolling';
 		// if doing a rolling restart set restart to false so that other nodes don't also restart.
 		req.restart = rollingRestart ? false : req.restart;

@@ -63,17 +63,7 @@ async function loadRootComponents(isWorkerThread = false) {
 		console.error(errorForLog(error));
 	}
 
-	let resources = resetResources();
-	getTables();
-	resources.isWorker = isWorkerThread;
-
-	await loadCertificates();
-	// the Harper root component
-	await loadComponent(dirname(configUtils.getConfigFilePath()), resources, 'hdb', {
-		isRoot: true,
-		providedLoadedComponents: loadedComponents,
-		autoReload: false,
-	});
+	const resources = await loadRootPlugins(isWorkerThread);
 	if (!process.env.HARPER_SAFE_MODE) {
 		// once the global plugins are loaded, we now load all the CF and run applications (and their components)
 		const readyComponentPromises = new WeakMap();
@@ -84,4 +74,31 @@ async function loadRootComponents(isWorkerThread = false) {
 	await readyComponentModules(loadedComponents.keys());
 }
 
+/**
+ * Load the Harper root component — the global plugins — and nothing that depends on them.
+ *
+ * This is the boundary the deploy certification validator needs. Plugins are what establish the surfaces
+ * applications extend (`server.mqtt.authorizeClient` and friends), so a certification load without them
+ * fails a component that works perfectly on a serving worker: the plugin surface is simply absent. But the
+ * validator must NOT go on to load the other applications, which is exactly where this function stops.
+ *
+ * Extracted rather than duplicated so the two callers cannot drift on what "the plugins are loaded" means.
+ * Listeners are not bound here: plugins register handlers on the scope's server object, and the port
+ * binding belongs to `threadServer`'s startup, which a validator suppresses with `workerData.noServerStart`.
+ */
+async function loadRootPlugins(isWorkerThread = false) {
+	const resources = resetResources();
+	getTables();
+	resources.isWorker = isWorkerThread;
+
+	await loadCertificates();
+	await loadComponent(dirname(configUtils.getConfigFilePath()), resources, 'hdb', {
+		isRoot: true,
+		providedLoadedComponents: loadedComponents,
+		autoReload: false,
+	});
+	return resources;
+}
+
 module.exports.loadRootComponents = loadRootComponents;
+module.exports.loadRootPlugins = loadRootPlugins;

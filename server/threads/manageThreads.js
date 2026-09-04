@@ -142,6 +142,9 @@ const listenersByType = new Map();
 const messagesQueuedByType = new Map();
 
 module.exports = {
+	buildWorkerExecArgv,
+	buildWorkerResourceLimits,
+	isProcessShuttingDown,
 	startWorker,
 	restartWorkers,
 	shutdownWorkers,
@@ -338,46 +341,42 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
 listenersByType.set(THREAD_INFO, null);
 listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
 
-function startWorker(path, options = {}) {
-	if (processShuttingDown) {
-		const error = new Error('Cannot start a worker while the Harper process is shutting down');
-		error.code = 'ERR_HARPER_PROCESS_SHUTTING_DOWN';
-		throw error;
-	}
-	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
-	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
-	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
-	// amount of total memory that is and must be used for disk (heavily used by LMDB).
-	// Examples of how much we specify as the maximum memory (for old space):
-	// 1 thread: 80% of total memory
-	// 4 threads: 50% of total memory per thread
-	// 16 threads: 20% of total memory per thread
-	// 64 threads: 11% of total memory per thread
-	// (and then limit to their license limit, if they have one)
-	let availableMemory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
-	// and lower than total memory
+/**
+ * The interpreter flags and preloads every Harper worker needs to load Harper's own module graph.
+ *
+ * Exported because a worker that must NOT join the serving topology still needs exactly these: a bare
+ * `new Worker()` cannot even load a module that imports JSON. Shared rather than copied so the two spawn
+ * paths cannot drift on something this load-bearing.
+ *
+ * `preloads: false` omits the configured APM agents. Two reasons, and the second is the load-bearing one:
+ * a throwaway certification thread is not something an APM should see one of per deploy; and
+ * `getImportModules()`/`getRequireModules()` MEMOIZE on first call, so resolving them from a spawn that
+ * happens earlier than a serving worker would freeze the list against whatever config was live then. Before
+ * certification existed, nothing resolved them until the first real worker started.
+ */
+/** Whether the process is tearing down, so no new worker of any kind should be started. */
+function isProcessShuttingDown() {
+	return processShuttingDown;
+}
+
+/**
+ * The heap bounds every Harper worker runs under. Shared with the non-topology spawn path so a validator
+ * thread is constrained like a serving one — an unbounded module graph in a candidate's top-level load
+ * would otherwise be the OOM killer's problem, taken out on the whole process.
+ */
+function buildWorkerResourceLimits(threadCount) {
+	let availableMemory = process.constrainedMemory?.() || totalmem();
 	availableMemory = Math.min(availableMemory, totalmem(), 20000 * MB);
 	const maxOldMemory =
 		resolveThreadHeapMemoryMb(envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_MAXHEAPMEMORY)) ??
-		Math.max(Math.floor(availableMemory / MB / (10 + (options.threadCount || 1) / 4)), 512);
-	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
-	// machines this will be 64MB (less for t3's). This is based on recommendations from:
-	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization594965
-	// https://github.com/nodejs/node/issues/42511
-	// https://plaid.com/blog/how-we-parallelized-our-node-service-by-30x/
-	const maxYoungMemory = Math.min(Math.max(maxOldMemory >> 6, 16), 64);
+		Math.max(Math.floor(availableMemory / MB / (10 + (threadCount || 1) / 4)), 512);
+	return {
+		maxOldGenerationSizeMb: maxOldMemory,
+		maxYoungGenerationSizeMb: Math.min(Math.max(maxOldMemory >> 6, 16), 64),
+	};
+}
 
-	const channelsToConnect = [];
-	const portsToSend = [];
-	for (let existingPort of connectedPorts) {
-		const channel = new MessageChannel();
-		channel.existingPort = existingPort;
-		channelsToConnect.push(channel);
-		portsToSend.push(channel.port2);
-	}
-
-	if (!extname(path)) path += '.js';
-
+function buildWorkerExecArgv({ preloads = true } = {}) {
 	const isBun = typeof globalThis.Bun !== 'undefined';
 	const execArgv = isBun
 		? []
@@ -400,21 +399,111 @@ function startWorker(path, options = {}) {
 	// which safe mode must not resolve or execute.
 	const isSafeMode =
 		process.env.HARPER_SAFE_MODE && process.env.HARPER_SAFE_MODE !== 'false' && process.env.HARPER_SAFE_MODE !== '0';
-	if (!isBun && !isSafeMode) {
+	if (!isBun && !isSafeMode && preloads) {
 		for (const importPath of getImportModules()) execArgv.push('--import', pathToFileURL(importPath).href);
 		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
 	}
+	return execArgv;
+}
+
+function startWorker(path, options = {}) {
+	if (processShuttingDown) {
+		const error = new Error('Cannot start a worker while the Harper process is shutting down');
+		error.code = 'ERR_HARPER_PROCESS_SHUTTING_DOWN';
+		throw error;
+	}
+	// Validated BEFORE anything with a side effect. `buildWorkerExecArgv` resolves the configured preload
+	// list through `getImportModules()`, which MEMOIZES — so rejecting bad input after that point would
+	// freeze the list for the whole process on a spawn that never happened.
+	// A caller's own workerData, merged rather than substituted. `...options` is spread into the
+	// constructor LAST, so an `options.workerData` would replace the object below wholesale and take
+	// `addPorts`/`addThreadIds` with it — the worker would come up with no ITC wiring at all, and
+	// `workerDataProviders` cannot carry a `MessagePort` because it `structuredClone`s. Callers that need
+	// both use `extraWorkerData`/`extraTransferList`; reserved keys are refused here, before the spawn,
+	// so a collision is an error rather than a worker missing the bootstrap it did not know it lost.
+	const {
+		extraWorkerData,
+		extraTransferList,
+		execArgvOptions: _execArgvOptions,
+		noServerStart: _noServerStart,
+		...workerOptions
+	} = options;
+	// `in`, not truthiness: `workerData: null` is present, replaces the bootstrap object, and would sail
+	// past a truthy check leaving the thread with no ITC wiring and no error.
+	if ('workerData' in workerOptions) {
+		throw new Error(
+			`startWorker does not accept 'workerData' — it would replace the thread's ITC bootstrap. Use 'extraWorkerData'`
+		);
+	}
+	// Same hazard, other half: a raw `transferList` is spread last and REPLACES the merged list, dropping
+	// `portsToSend` so the thread comes up with no ports to its peers.
+	if ('transferList' in workerOptions) {
+		throw new Error(
+			`startWorker does not accept 'transferList' — it would drop the thread's ITC ports. Use 'extraTransferList'`
+		);
+	}
+	if (extraWorkerData) {
+		for (const key of Object.keys(extraWorkerData)) {
+			if (RESERVED_WORKER_DATA_KEYS.includes(key)) {
+				throw new Error(`extraWorkerData may not set '${key}': it is owned by the thread bootstrap`);
+			}
+			// A registered provider owns its key too. `extraWorkerData` is spread AFTER provider output, so
+			// without this a caller could silently replace an authoritative value — `configOverrides` most
+			// consequentially, which would leave the thread reading on-disk config while its parent runs on
+			// `setProperty()` overrides. `registerWorkerDataProvider` already refuses name collisions; this is
+			// the same ownership rule on the other path into `workerData`.
+			if (workerDataProviders.has(key)) {
+				throw new Error(`extraWorkerData may not set '${key}': a registered workerData provider owns it`);
+			}
+		}
+	}
+	// A transferred port is single-use, and the unexpected-exit path below re-invokes `startWorker` with the
+	// SAME options object — so a restartable worker carrying transferred ports throws `DataCloneError` on
+	// its second spawn, synchronously, inside an `exit` listener with no handler around it. That does not
+	// fail one deploy; it takes the process down. A caller transferring ports must own the thread's lifetime.
+	if (extraTransferList?.length && options.autoRestart !== false) {
+		throw new Error(
+			`startWorker with 'extraTransferList' requires 'autoRestart: false': transferred ports cannot be reused by a restart`
+		);
+	}
+	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
+	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
+	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
+	// amount of total memory that is and must be used for disk (heavily used by LMDB).
+	// Examples of how much we specify as the maximum memory (for old space):
+	// 1 thread: 80% of total memory
+	// 4 threads: 50% of total memory per thread
+	// 16 threads: 20% of total memory per thread
+	// 64 threads: 11% of total memory per thread
+	// (and then limit to their license limit, if they have one)
+	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
+	// machines this will be 64MB (less for t3's). This is based on recommendations from:
+	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization594965
+	// https://github.com/nodejs/node/issues/42511
+	// https://plaid.com/blog/how-we-parallelized-our-node-service-by-30x/
+	const resourceLimits = buildWorkerResourceLimits(options.threadCount);
+
+	const channelsToConnect = [];
+	const portsToSend = [];
+	for (let existingPort of connectedPorts) {
+		const channel = new MessageChannel();
+		channel.existingPort = existingPort;
+		channelsToConnect.push(channel);
+		portsToSend.push(channel.port2);
+	}
+
+	if (!extname(path)) path += '.js';
+
+	const execArgv = buildWorkerExecArgv(options.execArgvOptions);
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
-		resourceLimits: {
-			maxOldGenerationSizeMb: maxOldMemory,
-			maxYoungGenerationSizeMb: maxYoungMemory,
-		},
+		resourceLimits,
 		execArgv,
 		argv: process.argv.slice(2),
 		// pass these in synchronously to the worker so it has them on startup:
 		workerData: {
 			...collectProvidedWorkerData(options),
+			...extraWorkerData,
 			addPorts: portsToSend,
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
 			addPortIsJobWorkers: channelsToConnect.map((channel) => channel.existingPort.isJobWorker === true),
@@ -423,9 +512,13 @@ function startWorker(path, options = {}) {
 			name: options.name,
 			restartNumber: module.exports.restartNumber,
 			ticketKeys: getTicketKeys(),
+			// `noServerStart` is a RESERVED key, so a provider or `extraWorkerData` cannot supply it — but a
+			// thread that must not serve (a deploy validator) has to. Added only when asked for, so the
+			// default spawn's workerData is byte-identical to before.
+			...(options.noServerStart ? { noServerStart: true } : undefined),
 		},
-		transferList: portsToSend,
-		...options,
+		transferList: extraTransferList ? [...portsToSend, ...extraTransferList] : portsToSend,
+		...workerOptions,
 	});
 	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
 	// worker of the new port with thread id.
@@ -443,7 +536,15 @@ function startWorker(path, options = {}) {
 	}
 	addPort(worker, true, isJobWorker);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
+	// A one-shot thread cannot be copied: its transferred ports are detached after the first spawn, so
+	// re-spawning from the same options throws `DataCloneError`. The restart loop skips these workers, so
+	// this is the backstop for a direct caller — a named error rather than a clone failure from deep inside
+	// `new Worker`.
+	worker.isOneShot = Boolean(extraTransferList?.length);
 	worker.startCopy = () => {
+		if (worker.isOneShot) {
+			throw new Error(`Cannot restart a one-shot ${options.name ?? 'worker'}: its transferred ports are spent`);
+		}
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
 		// to die, to ensure there is no loss of service and maximum availability.
 		return startWorker(path, options);
@@ -561,7 +662,11 @@ async function restartWorkers(
 			const worker = restarting[index];
 			// Terminal shutdown: stop replacing workers mid-loop — the guard for every replacement start below.
 			if (processShuttingDown && startReplacementThreads) break;
-			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
+			// One-shot threads are ephemeral by contract (transferred ports force `autoRestart: false`), so they
+			// are never restarted OR replaced: `startCopy` would re-spawn from spent ports and throw
+			// `DataCloneError` synchronously, inside this loop, taking the rest of the restart with it. Left
+			// alone, such a thread finishes its single task or hits its own deadline.
+			if ((name && worker.name !== name) || worker.wasShutdown || worker.isOneShot) continue; // filter by type, if specified
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
 			if (overlapping && startReplacementThreads && canPreStartReplacement) {
 				// Overlapping restart: start the replacement and wait until it is accepting connections

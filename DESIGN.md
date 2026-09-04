@@ -649,10 +649,117 @@ with its journal intact. Only the sweep itself is best-effort, because it costs 
 decision. For the same reason, a swap whose rename cannot be confirmed on storage skips both the retire
 and the journal removal: the journal is what would carry the activation forward after a power loss.
 
-Three limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
+Two limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
 briefly absent (in-memory resources are unaffected, but a component that opens its own files during a
-request can still see a gap); validation does not run on the main-thread deploy path; and config
-publication is not yet an effect of this transaction, as above.
+request can still see a gap); and config publication is not yet an effect of this transaction, as above.
+
+## Certification: `.complete` requires a verdict, and the mint enforces it
+
+**Certification is OFF by default** (`HARPER_CERTIFY_DEPLOYS`). The mechanism below is complete and
+reviewed; where the candidate load _runs_ is not settled, and that is why it is gated rather than shipped —
+see "No host satisfies both requirements" below. With it off, `deploy_component` behaves as it did before
+this work: the candidate is built aside and swapped in, and it earns no `.complete`.
+
+`.complete` is what recovery treats as proof that a candidate both built and validated, so the function
+that writes it requires the verdict rather than trusting its caller to have asked for one. `validateCandidate`
+used to be an optional callback on `prepareApplication` and only one of its four production call sites
+supplied it — the same _one rule, N sites_ shape that produced most of this area's defects. The record of
+which candidates a validator certified is module-internal: a proof passed as an argument is one an external
+caller can forge, or a future caller can forget.
+
+Every outcome other than an explicit passing verdict is failure — a throw, an exit without a verdict, a
+malformed message, a closed channel, a deadline — because the alternative is minting authority from
+silence. A spawn failure is a deploy failure, not a success. The worker is terminated and its exit awaited
+before its tree is swept, so a still-running candidate cannot race the sweep.
+
+Two cases earn no authority rather than being refused — the rule is _no verdict means no authority_, never
+_no verdict means no deploy_:
+
+- **Safe mode** deploys uncertified. It may not execute configured code, so no validator can vouch for the
+  candidate. An earlier draft staged without activating, but nothing resumes a journal-less staged tree:
+  `recoverInterruptedActivations` removes it as build residue while the operation has already returned
+  success and replicated.
+- **A branch-configured component** deploys uncertified. A branch's location is derived only from the
+  application and database names, so a certification load would open the store the live version is serving
+  from: a candidate could mutate rows, throw, be rejected, and leave the live version serving the mutation.
+
+The guarantee is scoped to the lifetime of a preparation. A package deploy's root-config entry is still
+written before the build and never rolled back, so a rejected v2 can be re-prepared and activated after a
+restart; closing that needs config staged with activation.
+
+### No host satisfies both requirements
+
+A certification load has two non-negotiable properties, and no available host has both. This is the reason
+for the switch, and it is a real constraint rather than an unfinished implementation:
+
+| Host                     | Serving-equivalent load                    | Can be force-killed |
+| ------------------------ | ------------------------------------------ | ------------------- |
+| A thread in this process | Yes — shares the process's RocksDB handles | **No** under Bun    |
+| A separate process       | **No** — RocksDB's lock is exclusive       | Yes                 |
+
+- **A thread cannot be killed under Bun.** `terminate()` triggers a NAPI segfault there (`manageThreads` and
+  `jobProcess.ts` both avoid it, the latter draining its event loop instead of calling `process.exit`), so
+  the parent can only _ask_ the thread to exit. A candidate that blocks its event loop, or removes the
+  `parentPort` listener, never processes the ask: the thread never exits and its concurrency slot is held for
+  the life of the process. Two of those stop the node deploying.
+- **A separate process cannot open the databases.** RocksDB takes an exclusive per-process file lock, so a
+  helper process fails with `IO error: While lock file: … Resource temporarily unavailable` the moment
+  `loadRootPlugins` reaches `getTables()` — and `security/auth.ts` calls `table()` at module scope, so this
+  is not avoidable by loading fewer plugins. Opening `readOnly` takes a shared lock and would work, but then
+  any candidate that writes during load — creating a table, seeding a record — is rejected by certification
+  and fine in production, which is a worse failure than the one being prevented.
+
+Two things that are easy to get wrong about the thread host, learned the expensive way:
+
+- **What ships today is a bare `new Worker`, and it does not load on Windows.** The thread dies _inside its
+  import graph_ — before its first statement, exit code 0, no `error` event — so every certification there
+  fails identically (HarperFast/harper#2494). The certification unit tests skip the validator-dependent
+  cases on Windows for that reason, and removing that skip is #2494's acceptance test, not a cleanup.
+- **Moving to `startWorker` is the intended fix, and is not done.** The original reason for avoiding it was
+  half wrong: `isEligibleBroadcastRecipient` already excludes a job-type worker (`name: THREAD_TYPES.JOB`)
+  from broadcasts, and the per-peer `MessageChannel` construction is O(workers) for one slow-path deploy —
+  cheap for something a human triggers. The bootstrap plumbing that migration needs (`extraWorkerData`,
+  `extraTransferList`, `noServerStart`) landed with this work and is currently unused by certification.
+  What is **not** established is that the standard path repairs Windows: the evidence proves the bespoke
+  import graph fails, not that mesh membership or the standard bootstrap is what fixes it. #2494 names the
+  narrow experiment that would isolate the two.
+- **`startWorker` cannot take `workerData`.** `...options` is spread into the `Worker` constructor after the
+  bootstrap `workerData`, so passing it replaces `addPorts`/`addThreadIds` and the thread comes up with no
+  ITC wiring at all. Use `extraWorkerData` + `extraTransferList` (merged, reserved keys refused), and
+  `options.noServerStart` for the reserved key a validator needs.
+
+### Diagnosing a validator that reports nothing
+
+The verdict travels through a `SharedArrayBuffer` flag, not a message: the validator exits the instant it
+has posted, and on Windows the parent observes that exit before the queued message. A second slot carries
+how far the load got, and the validator's own `exit` handler marks it — so a thread ended _from outside_
+(`terminate()`, a native abort) is distinguishable from one that ended itself, which no exit code shows.
+
+Do not diagnose such a thread with `console.error`: a worker's stderr is piped to the parent
+asynchronously, so anything written on the way out loses the same race the verdict message loses. That
+mistake cost a full CI round. Shared memory is the only channel that survives the exit.
+
+Isolation contains the JS heap, the module registry, process-global registrations and component status. It
+does **not** contain databases, the filesystem, the network or native addons: a candidate can write before
+it throws. Component authors are administrators, so this is a correctness and recovery-authority boundary,
+not a security sandbox.
+
+Certification also loads for real, so it leaves the footprint a load leaves. `symlinkHarperModule` links the
+running install into `node_modules/harper` on every non-root load — that is what makes `import 'harper'`
+resolve to the live instance — so certifying writes into the tree it is only supposed to read, and that tree
+is then renamed into the live path. The packer dereferences symlinks and recurses into linked directories,
+so a component carrying that link packages the entire Harper install: `package_component` on a freshly added
+component spent 46s tarring and then failed with "Maximum response size reached". `certifyCandidate`
+therefore snapshots the candidate's `node_modules` before the load and removes only the links its own load
+created, which matters because a `file:<directory>` deploy stages a symlink to the developer's own source
+tree — deleting a link they already had would be certification reaching outside the candidate. A serving
+worker recreates the link the next time it loads the component. Packaging a component that a worker HAS
+loaded still follows the link; that is pre-existing (HarperFast/harper#2487), and `scanPackageDirectory`
+documents the missing cycle protection behind it.
+
+A validator must also release what it opened: `loadRootPlugins` reaches `getTables()`, and a thread that
+exits without `closeLoadedDatabases()` leaks process-global RocksDB handles and blocks an online
+`restore_backup` from confirming a database is closed.
 
 ## Component preparation is serialized across worker threads
 

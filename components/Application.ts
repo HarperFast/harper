@@ -1020,6 +1020,72 @@ export async function extractApplication(
 // non-recursive `rm` of a directory. `assertApplicationConfig` rejects any name `isJoinableComponentName`
 // rejects, so the collision is unreachable from a root-config key as well as from a deploy.
 const CANDIDATE_COMPLETE_MARKER = '.complete';
+
+/**
+ * What a `.complete` marker must contain to count as roll-forward authority.
+ *
+ * The marker used to be written empty, after a validation that was a no-op on the main thread — so an
+ * empty marker is one minted without any verdict at all. Recovery now requires this payload, which means
+ * a candidate staged by an older build and found after an upgrade rolls BACK to the committed tree rather
+ * than forward onto something nothing certified. That is the conservative direction and it costs only an
+ * in-flight deploy across an upgrade.
+ */
+const CANDIDATE_CERTIFIED_MARKER_BODY = 'certified:1';
+
+/**
+ * Candidates a validator has certified, by `<componentDirPath>\0<deploymentId>`.
+ *
+ * `.complete` is what recovery treats as authority for a "build AND validation complete" candidate — it
+ * will roll such a candidate forward after a crash. So the function that writes it has to require the
+ * verdict, rather than trusting its caller to have asked for one: `validateCandidate` was an optional
+ * callback and only one of `prepareApplication`'s four production call sites supplied it, which is the
+ * one-rule-N-sites shape that produced most of the previous step's defects.
+ *
+ * Module-internal on purpose. A proof passed in as an argument is a proof an external caller can forge or
+ * a future caller can forget; nothing crosses this boundary, so there is nothing to get wrong.
+ */
+const certifiedCandidates = new Set<string>();
+
+function certificationKey(componentDirPath: string, deploymentId: string): string {
+	return `${componentDirPath}\0${deploymentId}`;
+}
+
+/**
+ * Whether the on-disk marker says a validator certified this candidate.
+ *
+ * Content, not mere existence: an empty marker predates certification and was minted after a validation
+ * that did nothing on the main thread. An unreadable marker is not authority either — the same
+ * fail-closed reading the rest of this protocol uses.
+ */
+async function candidateIsCertifiedOnDisk(deploymentDirPath: string): Promise<boolean> {
+	try {
+		const body = await readFile(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER), 'utf8');
+		return body.trim() === CANDIDATE_CERTIFIED_MARKER_BODY;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+			logger.warn(
+				`Treating the completion marker in ${deploymentDirPath} as absent because it could not be read: ` +
+					errorMessage(error)
+			);
+		}
+		return false;
+	}
+}
+
+/** Whether a validator returned a passing verdict for exactly this candidate. */
+function isCandidateCertified(componentDirPath: string, deploymentId: string): boolean {
+	return certifiedCandidates.has(certificationKey(componentDirPath, deploymentId));
+}
+
+/** Record that a validator returned a passing verdict for exactly this candidate. */
+function recordCandidateCertified(componentDirPath: string, deploymentId: string): void {
+	certifiedCandidates.add(certificationKey(componentDirPath, deploymentId));
+}
+
+/** Forget a candidate's certification once its deployment directory is gone, so the set cannot grow. */
+function forgetCandidateCertification(componentDirPath: string, deploymentId: string): void {
+	certifiedCandidates.delete(certificationKey(componentDirPath, deploymentId));
+}
 // Records activation intent beside the candidate, so recovery finishes or undoes the whole transaction —
 // tree and configuration together — instead of inferring intent from filesystem shape alone.
 const ACTIVATION_JOURNAL = '.activation.json';
@@ -1812,7 +1878,7 @@ async function settleInterruptedActivation(
 		);
 	const liveExists = await exists(liveDirPath);
 	const candidateExists = await exists(candidateDirPath);
-	const candidateComplete = await exists(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER));
+	const candidateComplete = await candidateIsCertifiedOnDisk(deploymentDirPath);
 	const asideRecords = await inProgressAsideRecords(asideStagingDir);
 
 	const rollForward = async () => {
@@ -2021,18 +2087,18 @@ async function syncTreeContents(rootPath: string, foreignTree = false): Promise<
 	await syncDirectory(rootPath);
 }
 
-export async function markCandidateComplete(
-	componentDirPath: string,
-	deploymentId: string,
-	componentName: string
-): Promise<void> {
-	// Contents first: `.complete` is roll-forward AUTHORITY, so it must not be durable before the tree it
-	// vouches for.
-	//
-	// A `file:<directory>` candidate IS a symlink to a tree this deploy does not own, but the dependency
-	// install writes THROUGH it — so the tree still has to be walked, or the install output `.complete`
-	// vouches for is never made durable. Only the foreign files alongside it are tolerated: see
-	// `syncTreeContents`.
+/**
+ * Make a candidate's contents durable, before anything vouches for them.
+ *
+ * Separate from `markCandidateComplete` so it can be exercised without also being a way to write
+ * `.complete`: that marker is gated on certification, and a test seam that bypassed the gate would be a
+ * seam a caller could bypass it through too.
+ *
+ * A `file:<directory>` candidate IS a symlink to a tree this deploy does not own, but the dependency
+ * install writes THROUGH it — so the tree still has to be walked, or the install output is never made
+ * durable. Only the foreign files alongside it are tolerated: see `syncTreeContents`.
+ */
+export async function syncCandidateTree(componentDirPath: string, deploymentId: string): Promise<void> {
 	const candidatePath = candidateApplicationPath(componentDirPath, deploymentId);
 	const candidateIsLink = await lstat(candidatePath).then(
 		(stats) => stats.isSymbolicLink(),
@@ -2042,13 +2108,32 @@ export async function markCandidateComplete(
 		}
 	);
 	await syncTreeContents(candidatePath, candidateIsLink);
+}
+
+export async function markCandidateComplete(
+	componentDirPath: string,
+	deploymentId: string,
+	componentName: string
+): Promise<void> {
+	// Everything below writes the marker recovery trusts, so an uncertified candidate must not get here. The
+	// check lives at the mint rather than at the caller for the reason `certifiedCandidates` documents.
+	if (!isCandidateCertified(componentDirPath, deploymentId)) {
+		throw new Error(
+			`Refusing to mark the ${componentName} candidate ${deploymentId} complete: no validator has ` +
+				`certified it, and \`${CANDIDATE_COMPLETE_MARKER}\` is what recovery treats as proof that one did`
+		);
+	}
+
 	try {
 		await writeControlFileDurably(candidateComponentFilePath(componentDirPath, deploymentId), componentName);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 	}
 	try {
-		await writeControlFileDurably(candidateCompleteMarkerPath(componentDirPath, deploymentId), '');
+		await writeControlFileDurably(
+			candidateCompleteMarkerPath(componentDirPath, deploymentId),
+			CANDIDATE_CERTIFIED_MARKER_BODY
+		);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 	}
@@ -2064,6 +2149,104 @@ export async function markCandidateComplete(
  * rename is the COMMIT POINT: nothing after it may compensate, because the live path holds the candidate and
  * renaming the aside back over it cannot succeed.
  */
+/**
+ * Decide and obtain a candidate's certification, immediately before activation.
+ *
+ * Three outcomes, and the difference between the last two is the whole reason this is one function:
+ *
+ * - **Certified** — a validator loaded this exact tree under the real application identity and mount.
+ *   Activation mints `.complete`.
+ * - **Uncertified, activate anyway** — safe mode. It may not execute configured code, so it certifies
+ *   nothing, and it activates without minting `.complete`.
+ * - **Uncertified, activate anyway** — a branch-configured component. A branch's location is derived only
+ *   from the application and database names, so a certification load would open the store the LIVE version
+ *   is serving from; a candidate could mutate rows, throw, be rejected, and leave the live version serving
+ *   the mutation. Not deferrable — certification cannot succeed for these until validation-scoped branch
+ *   storage exists — so "pending" would be permanent limbo reported as success. It deploys exactly as it
+ *   does today and simply earns no authority.
+ *
+ * The invariant across all three is *no verdict means no authority*, never *no verdict means no deploy*.
+ */
+/** Environment switch for the certification mechanism. Off unless explicitly set. */
+export const CERTIFY_DEPLOYS_ENV = 'HARPER_CERTIFY_DEPLOYS';
+
+/**
+ * Whether a candidate load may run at all. **Off by default**, which is a deliberate, temporary state.
+ *
+ * The mechanism below is complete and reviewed, but WHERE the candidate load runs is unresolved, and both
+ * available hosts fail a requirement the guarantee depends on:
+ *
+ * - A thread shares this process's RocksDB handles, so the load is genuinely serving-equivalent — but under
+ *   Bun `terminate()` triggers a NAPI segfault, so the parent can only ask it to exit, which a candidate
+ *   blocking its event loop defeats. That leaks a thread and its concurrency slot for the process lifetime.
+ * - A separate process can be SIGKILLed, but cannot open the databases at all: RocksDB takes an exclusive
+ *   per-process lock, so a helper fails with `IO error: While lock file: … Resource temporarily unavailable`
+ *   the moment `loadRootPlugins` reaches `getTables()`. Opening read-only would reject any candidate that
+ *   writes during load, which is a false-rejection class worse than the problem.
+ *
+ * So this lands off rather than shipping a guarantee that only holds on some runtimes, or a load that is not
+ * the load a serving worker performs. With it off, `deploy_component` behaves exactly as it did before this
+ * work: the candidate is built aside and swapped in, and it earns no `.complete`. Tests that exercise
+ * certification set the variable explicitly.
+ */
+function certificationEnabled(): boolean {
+	const value = process.env[CERTIFY_DEPLOYS_ENV];
+	return value !== undefined && value !== '' && value !== 'false' && value !== '0';
+}
+
+async function certifyPreparedCandidate(
+	application: Application,
+	deploymentId: string,
+	candidateDirPath: string,
+	options: PrepareApplicationOptions
+): Promise<{ certified: boolean }> {
+	if (!certificationEnabled()) {
+		application.logger.debug(
+			`Deploying ${application.name} without certification: no validator host is enabled (${CERTIFY_DEPLOYS_ENV})`
+		);
+		return { certified: false };
+	}
+	// Safe mode ACTIVATES, uncertified, rather than staging for later: a staged tree carries no journal, so
+	// `recoverInterruptedActivations` removes it as build residue at the next start — while the operation has
+	// already returned success, replicated, and run its restart phase. So it takes the same shape as the
+	// branch-configured case below: the deploy happens and earns no authority, and with no `.complete` a
+	// crash mid-swap rolls back to the committed tree.
+	const safeMode =
+		process.env.HARPER_SAFE_MODE && process.env.HARPER_SAFE_MODE !== 'false' && process.env.HARPER_SAFE_MODE !== '0';
+	if (safeMode) {
+		application.logger.warn(
+			`Deploying ${application.name} without certification: safe mode must not execute configured code, so ` +
+				`no validator can vouch for this candidate`
+		);
+		return { certified: false };
+	}
+
+	const { rootApplicationLoadOptions } = await import('./componentLoader.ts');
+	const loadOptions = rootApplicationLoadOptions(application.name, { forCertification: true });
+	// Answered here rather than by spawning a thread that will fail on the same thing a moment later.
+	if (!loadOptions.ok) {
+		throw new Error(`Cannot certify ${application.name}: its root-config mount could not be resolved`);
+	}
+	if (loadOptions.branchConfigured) {
+		application.logger.warn(
+			`Deploying ${application.name} without certification: a certification load would open the same ` +
+				`database branch the live version is serving from, so it is skipped until validation-scoped ` +
+				`branch storage exists`
+		);
+		return { certified: false };
+	}
+
+	options.emitPhase?.('load', 'start');
+	const { certifyCandidate } = await import('./certifyCandidate.ts');
+	const outcome = await certifyCandidate(candidateDirPath, application.name, {
+		timeoutMs: options.certificationTimeoutMs,
+	});
+	if (!outcome.certified) throw outcome.error ?? new Error(`${application.name} could not be certified`);
+	recordCandidateCertified(application.dirPath, deploymentId);
+	options.emitPhase?.('load', 'done');
+	return { certified: true };
+}
+
 export async function activateCandidateApplication(application: Application, deploymentId: string): Promise<void> {
 	const liveDirPath = application.dirPath;
 	const candidateDirPath = candidateApplicationPath(liveDirPath, deploymentId);
@@ -2080,7 +2263,32 @@ export async function activateCandidateApplication(application: Application, dep
 		throw new Error(`Cannot activate ${application.name}: no candidate build at ${candidateDirPath}`);
 	}
 
-	await markCandidateComplete(liveDirPath, deploymentId, application.name);
+	// Durability first, and for EVERY activation, certified or not: `syncRenameParents` syncs only directory
+	// entries, so an unflushed swap can leave the live path holding zero-length files after a power loss,
+	// with the aside already retired. Certification decides what the tree MEANS, not whether it is durable,
+	// so this must not sit behind the mint.
+	await syncCandidateTree(liveDirPath, deploymentId);
+
+	// The RECORD decides, never the caller: a `certified` argument on an exported function is proof any
+	// caller can forge, which is the invariant this step exists for.
+	//
+	// So: certified candidates get `.complete`; the deliberately uncertified ones (a branch-configured
+	// component) simply do not, and a crash mid-swap rolls them back to the committed tree rather than
+	// forward onto something no validator vouched for.
+	if (isCandidateCertified(liveDirPath, deploymentId)) {
+		await markCandidateComplete(liveDirPath, deploymentId, application.name);
+	} else if (await candidateIsCertifiedOnDisk(candidateDeploymentDirPath(liveDirPath, deploymentId))) {
+		// A resumed activation after a restart. The in-memory record is empty then, but the marker a validator
+		// already earned is on disk, and recovery is rolling this candidate FORWARD on the strength of it —
+		// so the warning below would be the opposite of what is happening. The marker is not re-minted from
+		// its own presence; nothing is written here.
+		application.logger.info(`Resuming the interrupted activation of ${application.name}, already certified`);
+	} else {
+		application.logger.warn(
+			`Activating ${application.name} without a certification marker: nothing certified this candidate, so ` +
+				`recovery will roll it back rather than forward`
+		);
+	}
 	const journalPath = activationJournalPath(liveDirPath, deploymentId);
 	try {
 		await writeControlFileDurably(
@@ -2188,6 +2396,9 @@ export async function activateCandidateApplication(application: Application, dep
 		await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
 			application.logger.warn(`Deployed ${application.name} but could not clean up its staging directory:`, error)
 		);
+		// Same reason as `discardCandidate`: the tree is gone, so its verdict goes too. Both sites, because
+		// one site remembering and its sibling forgetting is the defect shape this whole area keeps producing.
+		forgetCandidateCertification(liveDirPath, deploymentId);
 		await rmdir(dirname(deploymentDirPath)).catch(() => {});
 	}
 }
@@ -2328,6 +2539,10 @@ function stripExtendedLengthPrefix(target: string): string {
 /** Remove a candidate's whole deployment directory, best-effort — it is never the last good copy. */
 async function discardCandidate(application: Application, deploymentId: string): Promise<void> {
 	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, deploymentId);
+	// The tree this certification vouched for is going, so the certification goes with it — otherwise a
+	// later deploy reusing the id would inherit a verdict that was never about its tree, and the set would
+	// grow for the life of the process.
+	forgetCandidateCertification(application.dirPath, deploymentId);
 	await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch((error) =>
 		application.logger.warn(`Failed to remove the abandoned deploy candidate at ${deploymentDirPath}:`, error)
 	);
@@ -3365,7 +3580,14 @@ export type PrepareApplicationOptions = {
 	 * behavior, where the swap committed first and a load failure was reported over an already-live
 	 * broken release.
 	 */
-	validateCandidate?: (candidateDirPath: string) => Promise<void>;
+	/**
+	 * Emit the operation's progress phases. Certification moved in here from `deploy_component`, which was
+	 * the only place emitting the `load` phases — SSE clients key progress off them, so the stream has to
+	 * keep coming from wherever certification now runs.
+	 */
+	emitPhase?: (phase: string, status: 'start' | 'done') => void;
+	/** Certification deadline. Callers with no request budget of their own (boot, `addComponent`) rely on the default. */
+	certificationTimeoutMs?: number;
 };
 
 export async function prepareApplication(application: Application, options: PrepareApplicationOptions = {}) {
@@ -3415,9 +3637,14 @@ export async function prepareApplication(application: Application, options: Prep
 						await application.cleanupGitCredentialSession();
 					}
 					try {
-						// Validated while the previous version is still the one serving, so a candidate that
+						// Certified while the previous version is still the one serving, so a candidate that
 						// installs cleanly but throws at load is rejected without ever having been live.
-						await options.validateCandidate?.(candidateDirPath);
+						//
+						// Here rather than in `deploy_component`, because this is the function that goes on to mint
+						// `.complete` — the marker recovery treats as proof a validation happened. Leaving it to the
+						// caller meant three of this function's four production call sites minted that authority
+						// without ever asking for a verdict.
+						await certifyPreparedCandidate(application, deploymentId, candidateDirPath, options);
 						if (!application.isNewComponent) {
 							application.packageMetadataChanged = installedRuntimeChanged(
 								previousPackageMetadata,
