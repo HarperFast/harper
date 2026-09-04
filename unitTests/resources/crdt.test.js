@@ -50,6 +50,42 @@ describe('crdt getRecordAtTime', () => {
 		assert.deepStrictEqual(getRecordAtTime(current, 150, store, 1, 'D'), { id: 'D', count: 1 });
 	});
 
+	it('crosses a dual-clock delete through its ref-based predecessor', () => {
+		const events = [
+			{ txnLogKey: 100, version: 10, type: 'put', value: { id: 'D', count: 1 }, previousVersion: 0 },
+			{
+				txnLogKey: 200,
+				version: 20,
+				type: 'patch',
+				value: { count: { __op__: 'add', value: 2 } },
+				previousVersion: 10,
+				previousAdditionalAuditRefs: [{ version: 100, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 300,
+				version: 30,
+				type: 'delete',
+				value: null,
+				previousVersion: 20,
+				previousAdditionalAuditRefs: [{ version: 200, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 400,
+				version: 40,
+				type: 'put',
+				value: { id: 'D', count: 9 },
+				previousVersion: 30,
+				previousAdditionalAuditRefs: [{ version: 300, nodeId: 1 }],
+			},
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'D', count: 9 }, 40, {
+			version: 40,
+			additionalAuditRefs: [{ version: 400, nodeId: 1 }],
+		});
+		assert.deepStrictEqual(getRecordAtTime(current, 250, store, 1, 'D'), { id: 'D', count: 3 });
+	});
+
 	describe('record deleted then re-inserted under the same key (issue #1330)', () => {
 		// put(n:1) -> patch(n:2) -> patch(n:3) -> delete -> put(n:4, re-insert, current)
 		const events = [

@@ -200,7 +200,14 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 				// The reverse walk reached a delete that is newer than `timestamp`. There is no
 				// base record to keep reversing patches against, so reconstruct the pre-delete
 				// state forward instead (issue #1330: a key deleted then re-inserted).
-				return reconstructForward(auditStore, store, tableId, recordId, auditEntry.previousVersion, timestamp);
+				return reconstructForward(
+					auditStore,
+					store,
+					tableId,
+					recordId,
+					previousAuditTime(auditStore, tableId, recordId, auditEntry),
+					timestamp
+				);
 		}
 		auditTime = previousAuditTime(auditStore, tableId, recordId, auditEntry);
 	}

@@ -983,8 +983,19 @@ export function recordUpdater(store, tableId, auditStore) {
 				const nodeId = options?.nodeId ?? getThisNodeId(auditStore) ?? 0;
 				const viaNodeId = options?.viaNodeId ?? nodeId;
 				if (resolveRecord && existingEntry?.localTime) {
-					const replacingId = existingEntry?.localTime;
-					const replacingEntry = auditStore.get(replacingId, tableId, id);
+					let replacingId = existingEntry.localTime;
+					let replacingEntry;
+					if (isRocksDB) {
+						for (const ref of existingEntry.additionalAuditRefs ?? []) {
+							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId);
+							if (candidate?.version === existingEntry.version) {
+								replacingId = ref.version;
+								replacingEntry = candidate;
+								break;
+							}
+						}
+					}
+					replacingEntry ??= auditStore.get(replacingId, tableId, id);
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
 						result = auditStore[isRocksDB ? 'putSync' : 'put'](

@@ -3166,7 +3166,10 @@ export function makeTable(options) {
 								}
 							}
 							// incremental CRDT updates are only available with audit logging on
-							let localTime = existingEntry.localTime;
+							const initialAuditHead = isRocksDB
+								? resolveAuditHead(id, existingEntry.version, existingEntry.nodeId, existingEntry.additionalAuditRefs)
+								: { txnLogKey: existingEntry.localTime, nodeId: existingEntry.nodeId };
+							let localTime = initialAuditHead.txnLogKey;
 							let auditedVersion = existingEntry.version;
 							logger.debug?.(
 								'Applying CRDT update to record with id: ',
@@ -3179,7 +3182,7 @@ export function makeTable(options) {
 								new Date(localTime)
 							);
 
-							let nodeId = existingEntry.nodeId;
+							let nodeId = initialAuditHead.nodeId;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = existingEntry.additionalAuditRefs
 								? existingEntry.additionalAuditRefs.map((ref) => ({ localTime: ref.version, nodeId: ref.nodeId }))
@@ -3193,6 +3196,28 @@ export function makeTable(options) {
 							}
 							let addedAuditRef = false;
 							let nextRef: { localTime: number; nodeId: number };
+							const visitedAuditRefs = new Set<string>();
+							const queuePreviousAuditRefs = (auditRecord) => {
+								const previousRefs = auditRecord.previousAdditionalAuditRefs;
+								if (previousRefs) {
+									for (const ref of previousRefs) {
+										auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
+										logger.debug?.('Adding audit ref from audit record to visit queue', {
+											version: ref.version,
+											nodeId: ref.nodeId,
+										});
+									}
+								}
+							};
+							const advanceToPreviousAudit = (auditRecord) => {
+								const previousRefs = auditRecord.previousAdditionalAuditRefs;
+								const previousHead =
+									isRocksDB && previousRefs?.length
+										? resolveAuditHead(id, auditRecord.previousVersion, auditRecord.previousNodeId, previousRefs)
+										: { txnLogKey: auditRecord.previousVersion, nodeId: auditRecord.previousNodeId };
+								localTime = previousHead.txnLogKey;
+								nodeId = previousHead.nodeId;
+							};
 							let walkSteps = 0;
 							let auditWalkCapped = false;
 							// Early-out residual: as we walk the chain newest-first, fold each succeeding patch into a
@@ -3226,6 +3251,9 @@ export function makeTable(options) {
 							};
 							do {
 								while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
+									const auditIdentity = `${nodeId ?? 0}:${localTime}`;
+									if (visitedAuditRefs.has(auditIdentity)) break;
+									visitedAuditRefs.add(auditIdentity);
 									// Bound the walk only for RocksDB, where the OOM was observed (issue #1114): each step
 									// is a transaction-log range scan + msgpackr decode, and the per-node logs can be huge.
 									// LMDB audit entries are keyed by local audit time (not version), so the duplicate
@@ -3236,6 +3264,7 @@ export function makeTable(options) {
 									}
 									const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
 									if (!auditRecord) break;
+									queuePreviousAuditRefs(auditRecord);
 									if (
 										isRocksDB &&
 										!stagedOwnAuditEntry &&
@@ -3267,8 +3296,7 @@ export function makeTable(options) {
 											}
 											if (precedesExisting > 0) {
 												// if the existing version is older, we can skip this update
-												localTime = auditRecord.previousVersion;
-												nodeId = auditRecord.previousNodeId;
+												advanceToPreviousAudit(auditRecord);
 												continue;
 											}
 										}
@@ -3315,17 +3343,6 @@ export function makeTable(options) {
 											nodeId: options?.nodeId,
 										});
 									}
-									// Collect any additional audit refs from this audit record to traverse other branches
-									if (auditRecord.previousAdditionalAuditRefs) {
-										for (const ref of auditRecord.previousAdditionalAuditRefs) {
-											auditRefsToVisit.push({ localTime: ref.version, nodeId: ref.nodeId });
-											logger.debug?.('Adding audit ref from audit record to visit queue', {
-												version: ref.version,
-												nodeId: ref.nodeId,
-											});
-										}
-									}
-
 									// Every field of this write is overwritten by newer writes, and there is no alternate
 									// audit branch left to scan, so it is fully superseded — the same outcome as walking to
 									// the end and taking the `writeCommit(false)` escape below, reached without paying the rest
@@ -3344,8 +3361,7 @@ export function makeTable(options) {
 										return writeCommit(false);
 									}
 
-									localTime = auditRecord.previousVersion;
-									nodeId = auditRecord.previousNodeId;
+									advanceToPreviousAudit(auditRecord);
 								}
 								// Check if we need to scan additional audit refs from this record
 								if (auditWalkCapped) break;
