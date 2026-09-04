@@ -23,6 +23,7 @@ function makeStore(events) {
 			return {
 				type: event.type,
 				version: event.version,
+				nodeId: event.nodeId ?? 1,
 				previousVersion: event.previousVersion,
 				previousNodeId: event.previousNodeId,
 				previousAdditionalAuditRefs: event.previousAdditionalAuditRefs,
@@ -78,6 +79,7 @@ describe('crdt getRecordAtTime', () => {
 		const store = makeStore(events);
 		const current = currentEntry({ id: 'D', count: 3 }, 20, {
 			version: 20,
+			nodeId: 1,
 			additionalAuditRefs: [{ version: 300, nodeId: 1 }],
 		});
 		assert.deepStrictEqual(getRecordAtTime(current, 150, store, 1, 'D'), { id: 'D', count: 1 });
@@ -114,6 +116,7 @@ describe('crdt getRecordAtTime', () => {
 		const store = makeStore(events);
 		const current = currentEntry({ id: 'D', count: 9 }, 40, {
 			version: 40,
+			nodeId: 1,
 			additionalAuditRefs: [{ version: 400, nodeId: 1 }],
 		});
 		assert.deepStrictEqual(getRecordAtTime(current, 250, store, 1, 'D'), { id: 'D', count: 3 });

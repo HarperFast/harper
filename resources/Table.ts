@@ -729,7 +729,7 @@ export function makeTable(options) {
 				visited.add(identity);
 				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
 				if (!entry) continue;
-				if (entry.version === version && (entry.nodeId ?? 0) === (nodeId ?? 0))
+				if (entry.version === version && (nodeId == null || (entry.nodeId ?? 0) === nodeId))
 					return { txnLogKey: ref.version, nodeId: ref.nodeId };
 				const previousRefs = entry.previousAdditionalAuditRefs;
 				if (previousRefs) {
@@ -741,7 +741,7 @@ export function makeTable(options) {
 		if (referencedHead) return referencedHead;
 		if (version != null) {
 			const directHead = auditStore.getSync(version, tableId, id, nodeId);
-			if (directHead?.version === version && (directHead.nodeId ?? 0) === (nodeId ?? 0))
+			if (directHead?.version === version && (nodeId == null || (directHead.nodeId ?? 0) === nodeId))
 				return { txnLogKey: version, nodeId };
 		}
 		return { txnLogKey: version, nodeId };

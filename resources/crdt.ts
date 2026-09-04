@@ -171,7 +171,7 @@ function resolveAuditPosition(auditStore, tableId: number, recordId: any, versio
 		visited.add(identity);
 		const entry = auditStore.get(ref.version, tableId, recordId, ref.nodeId);
 		if (!entry) continue;
-		if (entry.version === version && (entry.nodeId ?? 0) === (nodeId ?? 0))
+		if (entry.version === version && (nodeId == null || (entry.nodeId ?? 0) === nodeId))
 			return { txnLogKey: ref.version, nodeId: ref.nodeId };
 		const previousRefs = entry.previousAdditionalAuditRefs;
 		if (previousRefs) {

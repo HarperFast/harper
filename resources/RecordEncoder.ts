@@ -998,7 +998,7 @@ export function recordUpdater(store, tableId, auditStore) {
 							}
 						}
 					}
-					replacingEntry ??= auditStore.get(replacingId, tableId, id);
+					replacingEntry ??= auditStore.get(replacingId, tableId, id, existingEntry.nodeId);
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
 						result = auditStore[isRocksDB ? 'putSync' : 'put'](
