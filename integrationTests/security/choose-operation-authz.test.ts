@@ -238,9 +238,15 @@ suite(
 			strictEqual(await userExists(username), false, 'forged principal must not create an account');
 		});
 
+		// TABLER, not Mallory: Mallory's `operations` allowlist excludes both add_user and export_local,
+		// so gate 1 (`verifyOperationsAllowlist` on the top-level op) refuses her in both the fixed and a
+		// reverted dispatch — the test would pass without exercising the routing fix at all. TABLER
+		// declares no `operations`, so gate 1 is a no-op and the only thing standing between the request
+		// and a super_user account is that the nested `operation: 'sql'` must NOT route the outer op away
+		// from its `verifyPerms`/`requires_su` check. Reverting the scoping fix creates the account here.
 		test('DISPATCH — a SQL-shaped search_operation does not route add_user past verifyPerms', async () => {
 			const username = ESCALATION_TARGETS.dispatch;
-			const r = await client.reqAs(malloryHeaders).send({
+			const r = await client.reqAs(tablerHeaders).send({
 				operation: 'add_user',
 				role: 'super_user',
 				username,
@@ -252,8 +258,13 @@ suite(
 			strictEqual(await userExists(username), false, 'SQL-shaped search_operation must not create an account');
 		});
 
+		// Also TABLER, and deliberately NOT the EXPORTER: export_local is `requires_su`, and a role that
+		// lists it in `operations` is granted it by gate 2 — so EXPORTER exporting `select 1` is allowed
+		// (200), which would not discriminate. TABLER has no allowlist, so its only barrier to a
+		// requires_su export is the `requires_su` gate inside `verifyPerms` — exactly what a nested
+		// `operation: 'sql'` must not route around. Reverting the scoping fix lets the export through.
 		test('DISPATCH-SU — a SQL-shaped search_operation does not route export_local past requires_su', async () => {
-			const r = await client.reqAs(malloryHeaders).send({
+			const r = await client.reqAs(tablerHeaders).send({
 				operation: 'export_local',
 				path: '/tmp',
 				format: 'json',
