@@ -221,14 +221,12 @@ function fragmentToAttribute(
 			}
 			normalizedEnum = [...new Set(fragment.enum)];
 		}
-		if (
-			fragment.const !== undefined &&
-			fragment.const !== null &&
-			typeof fragment.const !== 'string' &&
-			typeof fragment.const !== 'boolean' &&
-			!(typeof fragment.const === 'number' && Number.isFinite(fragment.const))
-		) {
-			throw new TypeError(`Schema property "${name}.const" must be a JSON scalar value`);
+		if (fragment.const !== undefined) {
+			try {
+				if (JSON.stringify(fragment.const) === undefined) throw new TypeError();
+			} catch {
+				throw new TypeError(`Schema property "${name}.const" must be JSON-serializable`);
+			}
 		}
 		if (normalizedEnum && fragment.const !== undefined && !normalizedEnum.includes(fragment.const as never)) {
 			throw new TypeError(`Schema property "${name}.const" must be included in its enum`);
@@ -445,10 +443,7 @@ function emitAttributeSchema(
 					...(attr.description || label ? { description: attr.description ?? `Reference to ${label}.` } : {}),
 				};
 			}
-			return {
-				type: 'object',
-				...(attr.description || label ? { description: attr.description ?? `Reference to ${label}.` } : {}),
-			};
+			return attr.description || label ? { description: attr.description ?? `Reference to ${label}.` } : {};
 		}
 		// `ignoreHidden` applies to this attribute only — a hidden sub-property of a surfaced primary key
 		// is still a hidden field and stays suppressed.

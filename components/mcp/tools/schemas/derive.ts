@@ -187,7 +187,7 @@ function buildPropertiesObject(
 		// Skip auto-managed columns from write inputs — Harper assigns them.
 		if (mode !== 'read' && (attr.assignCreatedTime || attr.assignUpdatedTime || attr.expiresAt)) continue;
 		if (mode !== 'read' && (attr.computed !== undefined || attr.computedFromExpression !== undefined)) continue;
-		if (mode !== 'read' && (attr.relationship || attr.definition || attr.elements?.definition)) continue;
+		if (mode !== 'read' && attr.relationship) continue;
 		const schema = attributeToProperty(attr);
 		if (!schema) continue;
 		properties[attr.name] = schema;

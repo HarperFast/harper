@@ -102,6 +102,15 @@ describe('mcp/tools/schemas/derive', () => {
 			]);
 			assert.deepEqual(schema.required, ['required']);
 		});
+
+		it('keeps embedded definitions writable while omitting relationships', () => {
+			const schema = deriveCreateSchema([
+				{ name: 'profile', type: 'Profile', definition: { type: 'Profile' } },
+				{ name: 'owner', type: 'Owner', relationship: { from: 'ownerId' } },
+			]);
+			assert.ok(Object.hasOwn(schema.properties, 'profile'));
+			assert.equal(schema.properties.owner, undefined);
+		});
 	});
 
 	describe('deriveUpdateSchema', () => {

@@ -1387,7 +1387,6 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 			if (attributes) {
 				const databaseName = ResourceClass?.databaseName;
 				const tableName = ResourceClass?.tableName;
-				void ResourceClass.description;
 				let definitions: ToolDef[] | undefined;
 				try {
 					definitions = deriveVerbTools({
