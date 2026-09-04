@@ -174,7 +174,19 @@ async function updateLogSettings() {
 		// TODO: Any way to differentiate changes that we can and can't handle?
 		rootConfig.on('change', updateLogSettings);
 	}
-	let rootConfigObject = rootConfig.config;
+	applyLogSettings(rootConfig.config);
+}
+
+// Separate from the watcher wiring above because the watcher it builds reads a process-wide path,
+// which leaves no way to exercise these settings against a given config.
+function applyLogSettings(rootConfigObject: any) {
+	// `ready` settles on every terminal read outcome, including ones that carry no config at all —
+	// see DESIGN.md, "Every terminal read outcome settles the barrier". Applying that as settings
+	// would not be "the defaults": `updateLogger` reads an absent `rotation` as rotation off and an
+	// absent `console` as console off, so an unreadable config would silently disable logging.
+	// What `initLogSettings()` established at startup stands until a real config arrives, which
+	// is why the watcher settles those outcomes with no config rather than an empty one.
+	if (!rootConfigObject || typeof rootConfigObject !== 'object') return;
 	const logOptions = rootConfigObject.logging ?? {};
 	// Resolve relative paths against rootPath from the same config
 	const rootPath = rootConfigObject.rootPath;
@@ -197,7 +209,9 @@ async function updateLogSettings() {
 	for (const name in rootConfigObject) {
 		// we now scan each component to see if it has logging individual configured
 		const component = rootConfigObject[name];
-		if (component.logging) {
+		// `myComponent:` with nothing under it parses to null, and an async listener's TypeError
+		// escapes the watcher's emit guard as an unhandled rejection.
+		if (component?.logging) {
 			updateLogger(mainLogger.forComponent(name), component.logging, name);
 		} else if (mainLogger.hasComponent(name)) {
 			const componentLogger = mainLogger.forComponent(name);
@@ -399,6 +413,8 @@ module.exports = {
 	// we can start using the RootConfigWatcher
 	start: updateLogSettings,
 	startOnMainThread: updateLogSettings,
+	// Test-only: applies a config without the process-wide watcher `updateLogSettings` builds.
+	_applyLogSettingsForTests: applyLogSettings,
 	errorToString,
 	errorForLog,
 	inspectForLog,

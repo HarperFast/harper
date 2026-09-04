@@ -3,8 +3,9 @@ const { RootConfigWatcher } = require('#src/config/RootConfigWatcher');
 const { tmpdir } = require('node:os');
 const { once } = require('node:events');
 const { join } = require('node:path');
-const { writeFileSync, mkdtempSync, rmSync, renameSync } = require('node:fs');
+const { writeFileSync, mkdtempSync, rmSync, renameSync, chmodSync, readFileSync } = require('node:fs');
 const { writeFile } = require('node:fs/promises');
+const { setTimeout: delay } = require('node:timers/promises');
 const { replace, fake, restore, spy } = require('sinon');
 const chokidar = require('chokidar');
 const configUtils = require('#src/config/configUtils');
@@ -14,6 +15,10 @@ const { stringify } = require('yaml');
 // arrive, and .mocharc.json's `timeout: 0` would let that wedge the whole run
 describe('RootConfigWatcher', function () {
 	this.timeout(30000);
+
+	// `this` inside an `it(function () {...})` is mocha's Context, not the object beforeEach writes
+	// the fixture onto; cases that need this.skip() read the fixture through here instead.
+	const suite = this;
 
 	beforeEach(() => {
 		this.fixture = mkdtempSync(join(tmpdir(), 'harper.unit-test.root-config-watcher-'));
@@ -43,12 +48,10 @@ describe('RootConfigWatcher', function () {
 
 		expected.foo = 'baz';
 
-		// Subscribe before writing: the watcher re-reads the root config synchronously, so the
-		// change event can be emitted before this writer's own await resolves.
-		const changed = once(configWatcher, 'change');
+		const change = once(configWatcher, 'change');
 		await writeFile(this.configFilePath, stringify(expected));
 
-		const [updated] = await changed;
+		const [updated] = await change;
 
 		assert.deepEqual(updated, expected, 'RootConfigWatcher should emit a change event with the updated config');
 
@@ -65,6 +68,50 @@ describe('RootConfigWatcher', function () {
 		);
 	});
 
+	it('does not resolve ready before the watcher is armed', async () => {
+		writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+		const configWatcher = new RootConfigWatcher();
+
+		assert.equal(configWatcher._armedForTests, false, 'a freshly constructed watcher is not armed');
+		await configWatcher.ready;
+
+		// Callers take `ready` as "watching" and write immediately after it; see DESIGN.md,
+		// "`ready` means the watcher is armed".
+		assert.equal(configWatcher._armedForTests, true, 'ready must not resolve before the watcher is armed');
+
+		configWatcher.close();
+	});
+
+	it('does not publish config staged before an arming fallback', async () => {
+		writeFileSync(this.configFilePath, stringify({ foo: 'staged' }));
+		const configWatcher = new RootConfigWatcher();
+
+		configWatcher.handleChange();
+		assert.deepEqual(configWatcher.config, { foo: 'staged' }, 'the pre-arm read must stage the first config');
+		rmSync(this.configFilePath);
+
+		const [value] = await configWatcher.ready;
+
+		assert.strictEqual(value, undefined, 'an arming fallback must not publish the superseded staged config');
+		assert.strictEqual(configWatcher.config, undefined, 'the watcher must settle without a loaded config');
+		configWatcher.close();
+	});
+
+	it('keeps config staged before a watcher error settles ready', async () => {
+		writeFileSync(this.configFilePath, stringify({ foo: 'staged' }));
+		const configWatcher = new RootConfigWatcher();
+
+		configWatcher.handleChange();
+		assert.deepEqual(configWatcher.config, { foo: 'staged' }, 'the pre-arm read must stage the first config');
+		configWatcher._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EACCES' }));
+
+		const [value] = await configWatcher.ready;
+
+		assert.deepEqual(value, { foo: 'staged' }, 'a watcher error must settle with the successfully staged config');
+		assert.deepEqual(configWatcher.config, { foo: 'staged' }, 'the watcher must retain the loaded config');
+		configWatcher.close();
+	});
+
 	it('should detect changes written via temp-file + rename (atomic write)', async () => {
 		const initial = { foo: 'bar' };
 		writeFileSync(this.configFilePath, stringify(initial));
@@ -76,13 +123,214 @@ describe('RootConfigWatcher', function () {
 		const updated = { foo: 'baz' };
 		const tempPath = `${this.configFilePath}.${process.pid}.${Date.now()}.tmp`;
 		writeFileSync(tempPath, stringify(updated));
+		const change = once(configWatcher, 'change');
 		renameSync(tempPath, this.configFilePath);
 
-		const [changeValue] = await once(configWatcher, 'change');
+		const [changeValue] = await change;
 		assert.deepEqual(changeValue, updated, 'watcher should fire change after atomic rename');
 
 		configWatcher.close();
 	});
+
+	it('finishes reading the config before its change callback returns', async () => {
+		const initial = { foo: 'bar' };
+		writeFileSync(this.configFilePath, stringify(initial));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+
+		const updated = { foo: 'baz' };
+		writeFileSync(this.configFilePath, stringify(updated));
+		configWatcher.handleChange();
+
+		assert.deepEqual(configWatcher.config, updated, 'watcher must not leave a same-thread read in flight');
+		configWatcher.close();
+	});
+
+	// `harper_logger.start()` awaits this promise with no timeout, so every terminal read outcome
+	// has to settle it.
+	it('resolves ready for a config that parses to nothing', async () => {
+		writeFileSync(this.configFilePath, '# nothing but a comment\n');
+		const configWatcher = new RootConfigWatcher();
+
+		const [value] = await configWatcher.ready;
+
+		assert.strictEqual(value, undefined, 'a config that parses to nothing must still settle the boot barrier');
+		configWatcher.close();
+	}).timeout(5000);
+
+	it('resolves ready on an empty config once the retry ladder is spent', async () => {
+		writeFileSync(this.configFilePath, '');
+		const configWatcher = new RootConfigWatcher();
+
+		const [value] = await configWatcher.ready;
+
+		assert.strictEqual(value, undefined, 'a file that stays empty must settle the barrier carrying no config');
+		configWatcher.close();
+	}).timeout(10000);
+
+	// chokidar's initial scan finds nothing to report, so arming is the only place that can tell
+	// this apart from a watcher that has simply not read yet. A missing file is not a lock, so it
+	// must settle at once rather than spend the ladder — `harper_logger.start()` waits on this.
+	it('resolves ready when there is no config file to read', async () => {
+		const configWatcher = new RootConfigWatcher();
+
+		const [value] = await configWatcher.ready;
+
+		assert.strictEqual(value, undefined, 'a missing config file must still settle the boot barrier');
+		assert.equal(configWatcher._readCountForTests, 1, 'ENOENT must not take the retry ladder');
+		configWatcher.close();
+	}).timeout(10000);
+
+	it('settles ready when the watcher is closed before it arms', async () => {
+		writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+		const configWatcher = new RootConfigWatcher();
+
+		configWatcher.close();
+
+		await configWatcher.ready;
+	});
+
+	it('resolves ready for a config that cannot be parsed', async () => {
+		writeFileSync(this.configFilePath, 'foo: [unclosed\n');
+		const configWatcher = new RootConfigWatcher();
+
+		const [value] = await configWatcher.ready;
+
+		assert.strictEqual(value, undefined, 'an unparseable config must settle the barrier carrying no config');
+
+		// A parse failure is terminal for that read, but the watcher still has to deliver the file
+		// once an operator fixes it.
+		const change = once(configWatcher, 'change');
+		writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+		const [updated] = await change;
+
+		assert.deepEqual(updated, { foo: 'bar' }, 'a repaired config must arrive as a change');
+		configWatcher.close();
+	}).timeout(10000);
+
+	it('treats an empty read as a writer mid-write, not an empty config', async () => {
+		writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+
+		// A non-atomic writer truncates before it writes; a read landing in between sees nothing.
+		// chokidar throttles the change event that carries the content as a duplicate of the
+		// truncate's, so discarding the empty read strands the config on the stale value.
+		const before = configWatcher._readCountForTests;
+		writeFileSync(this.configFilePath, '');
+		configWatcher.handleChange();
+		assert.deepEqual(configWatcher.config, { foo: 'bar' }, 'an empty read must not clear the loaded config');
+
+		// Nothing touches the file again, so chokidar has only the truncate to report: the reads
+		// beyond that one came from ladder rungs.
+		for (let waited = 0; waited < 3000 && configWatcher._readCountForTests - before < 4; waited += 50) await delay(50);
+		assert.ok(
+			configWatcher._readCountForTests - before >= 4,
+			`the ladder attempted ${configWatcher._readCountForTests - before} reads after the empty read`
+		);
+
+		const change = once(configWatcher, 'change');
+		writeFileSync(this.configFilePath, stringify({ foo: 'baz' }));
+		const [updated] = await change;
+		assert.deepEqual(updated, { foo: 'baz' }, 'the content the writer went on to write must still arrive');
+
+		configWatcher.close();
+	});
+
+	it('ignores a watcher callback that lands after close()', async () => {
+		writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+
+		configWatcher.close();
+		writeFileSync(this.configFilePath, stringify({ foo: 'baz' }));
+		configWatcher.handleChange();
+
+		assert.equal(configWatcher.config, undefined, 'a closed watcher must not read or repopulate its config');
+	});
+
+	// A mode-000 file denies the watcher's read the way a Windows sharing violation does without
+	// stubbing node:fs, which AGENTS.md forbids. It has to be the file and not its directory:
+	// chokidar cannot watch an unreadable directory. Root ignores the mode and Windows has no POSIX
+	// modes, so those hosts skip.
+	const denyReads = (filePath) => {
+		chmodSync(filePath, 0o000);
+		try {
+			readFileSync(filePath, 'utf-8');
+			chmodSync(filePath, 0o644);
+			return false;
+		} catch {
+			return true;
+		}
+	};
+
+	it('retries a failed config read until it succeeds, without waiting for another change event', async function () {
+		writeFileSync(suite.configFilePath, stringify({ foo: 'bar' }));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+
+		const firstChange = once(configWatcher, 'change');
+		writeFileSync(suite.configFilePath, stringify({ foo: 'baz' }));
+		await firstChange;
+
+		if (!denyReads(suite.configFilePath)) {
+			configWatcher.close();
+			return this.skip();
+		}
+
+		configWatcher.handleChange();
+		assert.deepEqual(configWatcher.config, { foo: 'baz' }, 'a failed read must keep the previous config');
+
+		const change = once(configWatcher, 'change');
+		chmodSync(suite.configFilePath, 0o644);
+		const [updated] = await change;
+
+		// chokidar reports the unlocking chmod as a change of its own, so this asserts that the
+		// config comes back, not which path delivered it; configReadRetry.test.js covers the ladder.
+		assert.deepEqual(updated, { foo: 'baz' }, 'a read denied once must not leave the config stale');
+		configWatcher.close();
+	});
+
+	it('cancels a pending read retry on close', async function () {
+		writeFileSync(suite.configFilePath, stringify({ foo: 'bar' }));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+
+		if (!denyReads(suite.configFilePath)) {
+			configWatcher.close();
+			return this.skip();
+		}
+
+		configWatcher.handleChange();
+		configWatcher.close();
+		chmodSync(suite.configFilePath, 0o644);
+
+		// close() clears the config, so a retry that outlived it would reload and set it again.
+		await delay(400);
+		assert.equal(configWatcher.config, undefined, 'close() must not leave a retry timer behind');
+	});
+
+	// A truncated write usually leaves a *prefix* on disk, and `foo: [1, 2` is what a prefix of
+	// `foo: [1, 2, 3]` looks like: unparseable, with the event carrying the rest of the document
+	// throttled away by chokidar as a duplicate.
+	it('rides out an unparseable read on the same ladder as an empty one', async () => {
+		writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+		const configWatcher = new RootConfigWatcher();
+		await configWatcher.ready;
+
+		const before = configWatcher._readCountForTests;
+		writeFileSync(this.configFilePath, 'foo: [1, 2');
+		configWatcher.handleChange();
+
+		for (let waited = 0; waited < 3000 && configWatcher._readCountForTests - before < 3; waited += 50) await delay(50);
+
+		assert.ok(
+			configWatcher._readCountForTests - before >= 3,
+			`the ladder attempted ${configWatcher._readCountForTests - before} reads after the unparseable read`
+		);
+		assert.deepEqual(configWatcher.config, { foo: 'bar' }, 'a mid-write prefix must not replace the config');
+		configWatcher.close();
+	}).timeout(10000);
 
 	describe('polling fallback on watcher exhaustion', () => {
 		// harper#488: when ENOSPC/EMFILE fires on the underlying chokidar
@@ -109,8 +357,9 @@ describe('RootConfigWatcher', function () {
 			// Polling watcher should pick up subsequent writes; default polling
 			// interval is 1s, so allow up to ~3s for the change event.
 			const updated = { foo: 'after-fallback' };
+			const change = once(configWatcher, 'change');
 			await writeFile(this.configFilePath, stringify(updated));
-			const [changeValue] = await once(configWatcher, 'change');
+			const [changeValue] = await change;
 			assert.deepEqual(changeValue, updated, 'polling watcher should fire change');
 
 			configWatcher.close();
@@ -132,6 +381,39 @@ describe('RootConfigWatcher', function () {
 
 			configWatcher.close();
 		});
+
+		// `once(this, 'ready')` is what usually absorbs an `error`, and settling the barrier is
+		// what removes it — so the production shape has no listener at all by the time a scan
+		// error is reported, and an unlistened `error` throws out of chokidar's dispatch.
+		it('does not throw a scan error at an emitter no one is listening to', async () => {
+			const configWatcher = new RootConfigWatcher();
+			await configWatcher.ready;
+
+			configWatcher._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EACCES' }));
+
+			configWatcher.close();
+		}).timeout(10000);
+
+		// A scan error is terminal for the barrier — chokidar may never emit its own `ready` after
+		// one — but it is not the scan finishing, so the arming re-read still has to happen.
+		it('settles ready on a scan error without giving up the arming re-read', async () => {
+			writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
+			const configWatcher = new RootConfigWatcher();
+
+			configWatcher._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'EACCES' }));
+
+			await configWatcher.ready;
+			assert.equal(configWatcher._armedForTests, false, 'a scan error is not the scan finishing');
+
+			// The write that the unarmed window swallows is exactly what the arming re-read exists
+			// to recover, so it must still arrive with no further watcher event.
+			writeFileSync(this.configFilePath, stringify({ foo: 'armed' }));
+			for (let waited = 0; waited < 3000 && !configWatcher._armedForTests; waited += 50) await delay(50);
+
+			assert.equal(configWatcher._armedForTests, true, 'the watcher must still arm after a scan error');
+			assert.deepEqual(configWatcher.config, { foo: 'armed' }, 'arming must still re-read');
+			configWatcher.close();
+		}).timeout(5000);
 
 		it('swallows additional exhaustion errors during recovery', async () => {
 			writeFileSync(this.configFilePath, stringify({ foo: 'bar' }));
