@@ -550,26 +550,72 @@ export function searchByIndex(
 			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
-			const loaded = index.customIndex.search(searchCondition, context, recordFilter, minResults).map((entry) => {
-				// if the custom index returns an entry with metadata, merge it with the loaded entry
-				if (typeof entry === 'object' && entry) {
-					const { key, ...otherProps } = entry;
-					if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
-					const loadedEntry = Table.primaryStore.getEntry(key, {
-						transaction: context && Table._readTxnForContext(context),
-					});
-					if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
-					freezeRecord(loadedEntry?.value);
-					recordRead(loadedEntry);
-					return { ...otherProps, ...loadedEntry };
+			const searched = index.customIndex.search(searchCondition, context, recordFilter, minResults);
+			const processEntries = (entries: any[]) => {
+				const loaded = entries
+					.map((entry) => {
+						// if the custom index returns an entry with metadata, merge it with the loaded entry
+						if (typeof entry === 'object' && entry) {
+							const { key, ...otherProps } = entry;
+							if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
+							const loadedEntry = Table.primaryStore.getEntry(key, {
+								transaction: context && Table._readTxnForContext(context),
+							});
+							if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
+							freezeRecord(loadedEntry?.value);
+							recordRead(loadedEntry);
+							return { ...otherProps, ...loadedEntry };
+						}
+						return entry;
+					})
+					.filter((entry) => entry !== SKIP);
+				if (index.customIndex.rescoreResults) {
+					const rescored = index.customIndex.rescoreResults(loaded, searchCondition, comparator, attribute_name);
+					if (rescored != null) return rescored as any;
 				}
-				return entry;
-			});
-			if (index.customIndex.rescoreResults) {
-				const rescored = index.customIndex.rescoreResults(loaded, searchCondition, comparator, attribute_name);
-				if (rescored != null) return rescored as any;
+				return loaded;
+			};
+			if (typeof (searched as any)?.then === 'function') {
+				// An async custom-index search (the native HNSW plane runs off the event loop and
+				// resolves its candidate list as a promise). Apply the same load + rescore pipeline
+				// once it resolves, exposed as a lazily-resolving iterable — consumable through async
+				// iteration only, like the promise-entry filter paths above.
+				const pending = (searched as Promise<any[]>).then(processEntries);
+				// nothing is required to consume this iterable (an aborted request, `limit: 0`), and
+				// a rejection nobody observed reaches Node's unhandledRejection and exits the process
+				pending.catch(() => {});
+				const results: any = new ExtendedIterable();
+				results.iterate = (options?: { async?: boolean }) => {
+					// fail loudly rather than hand a synchronous consumer promise-shaped iterator
+					// results (which a bare for-of would spin on forever)
+					if (!options?.async) {
+						throw new Error(
+							'This index resolves search results asynchronously; the results must be consumed with async iteration'
+						);
+					}
+					// one shared iterator per iterate() call: overlapping next() calls must advance the
+					// same cursor
+					const iteratorPromise = pending.then((entries) => entries[Symbol.iterator]());
+					iteratorPromise.catch(() => {});
+					let closed = false;
+					return {
+						next() {
+							if (closed) return Promise.resolve({ done: true, value: undefined });
+							return iteratorPromise.then((inner) => (closed ? { done: true, value: undefined } : inner.next()));
+						},
+						return(value?: any) {
+							closed = true;
+							iteratorPromise.then(
+								(inner) => (inner as any).return?.(value),
+								() => {}
+							);
+							return Promise.resolve({ done: true, value });
+						},
+					};
+				};
+				return results;
 			}
-			return loaded;
+			return processEntries(searched);
 		}
 		const scanned = index.getRange(rangeOptions).map(
 			filter
