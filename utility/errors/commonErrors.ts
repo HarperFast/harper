@@ -236,6 +236,8 @@ const CUSTOM_FUNCTIONS_ERROR_MSGS = {
 	NO_FILE: 'File does not exist',
 	BAD_FILE_NAME: 'File name can only contain alphanumeric, dash and underscore characters',
 	BAD_PROJECT_NAME: 'Project name can only contain alphanumeric, dash and underscores characters',
+	RESERVED_PROJECT_NAME: (project: string) =>
+		`Component name '${project}' is reserved for Harper's '${project}' configuration section; deploy under a different name`,
 	BAD_PACKAGE: 'Packaged project must be base64-encoded tar file of project directory',
 	DROP_FUNCTION: 'Error dropping custom function, check the log for more details',
 	ADD_FUNCTION: 'Error adding custom function project, check the log for more details',

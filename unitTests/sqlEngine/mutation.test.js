@@ -17,6 +17,8 @@ const alasql = require('alasql');
 const router = require('#src/sqlEngine/router');
 const binder = require('#src/sqlEngine/binder/bind');
 const mutation = require('#src/sqlEngine/executor/runMutation');
+const configUtils = require('#src/config/configUtils');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 function evalConditions(row, conditions, operator) {
 	const fn = operator === 'or' ? 'some' : 'every';
@@ -122,13 +124,15 @@ function runSql(sql) {
 
 describe('sqlEngine phase 4: mutations', () => {
 	let originalEngine;
+	let originalAllowFullScan;
 	let widgets;
 	let txnCalls;
 
 	beforeEach(() => {
 		originalEngine = process.env.HARPER_SQL_ENGINE;
 		process.env.HARPER_SQL_ENGINE = 'new';
-		globalThis.harperConfig = { sql: { allowFullScan: true } };
+		originalAllowFullScan = configUtils.getConfigValue(CONFIG_PARAMS.SQL_ALLOWFULLSCAN);
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, true);
 
 		widgets = makeWritableTable({
 			primaryKey: 'id',
@@ -159,7 +163,7 @@ describe('sqlEngine phase 4: mutations', () => {
 	afterEach(() => {
 		if (originalEngine === undefined) delete process.env.HARPER_SQL_ENGINE;
 		else process.env.HARPER_SQL_ENGINE = originalEngine;
-		delete globalThis.harperConfig;
+		configUtils.updateConfigObject(CONFIG_PARAMS.SQL_ALLOWFULLSCAN, originalAllowFullScan);
 		binder._setDatabasesLoader(null);
 		mutation._setTransactionRunner(null);
 	});

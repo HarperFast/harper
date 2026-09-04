@@ -1,7 +1,12 @@
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import logger from '../utility/logging/harper_logger.ts';
-import { configValidator, getDomainSocketPathLengthWarning } from '../validation/configValidator.ts';
+import {
+	configValidator,
+	getDomainSocketPathLengthWarning,
+	isLegacySqlApplicationEntry,
+} from '../validation/configValidator.ts';
+import { isReservedComponentName } from '../utility/componentNames.ts';
 import fs from 'fs-extra';
 import YAML from 'yaml';
 import path from 'path';
@@ -757,6 +762,10 @@ function validateConfig(configDoc, skipFsValidation = false) {
 	configDoc.setIn(['operationsApi', 'network', 'domainSocket'], domainSocket);
 	const domainSocketWarning = getDomainSocketPathLengthWarning(validation.value.rootPath, domainSocket);
 	if (domainSocketWarning) logger.warn(domainSocketWarning);
+	if (isLegacySqlApplicationEntry(configJson.sql))
+		logger.warn(
+			"The root config entry 'sql' is an application, but 'sql' now configures Harper's SQL engine. Redeploy that application under a different name and remove the 'sql' entry; until then the SQL engine settings cannot be configured."
+		);
 }
 
 /**
@@ -826,12 +835,34 @@ function lookupConfigParam(arg: string): string | undefined {
 	return Object.hasOwn(CONFIG_PARAM_MAP, name) ? CONFIG_PARAM_MAP[name] : undefined;
 }
 
+const COMPONENT_PARAM_SUFFIXES = ['_package', '_port'];
+
+function suffixEscapedComponentName(arg: string): string | undefined {
+	if (typeof arg !== 'string') return undefined;
+	const suffix = COMPONENT_PARAM_SUFFIXES.find((candidate) => arg.endsWith(candidate));
+	if (suffix === undefined) return undefined;
+	const component = arg.slice(0, -suffix.length);
+	return component === '' ? undefined : component;
+}
+
 /**
  * Component entries (`my-component_package`, `my-component_port`) are operator-named, so they
- * cannot be enumerated in CONFIG_PARAM_MAP and bypass it.
+ * cannot be enumerated in CONFIG_PARAM_MAP and bypass it. This escape is the one way to write a
+ * root component entry without going through deploy_component, so a reserved name is excluded.
  */
 function isSuffixEscapedParam(arg: string): boolean {
-	return typeof arg === 'string' && (arg.endsWith('_package') || arg.endsWith('_port'));
+	const component = suffixEscapedComponentName(arg);
+	return component !== undefined && !isReservedComponentName(component);
+}
+
+function findReservedComponentParams(args: object): string[] {
+	const reserved = [];
+	for (const arg in args) {
+		if (!Object.hasOwn(args, arg)) continue;
+		const component = suffixEscapedComponentName(arg);
+		if (component !== undefined && isReservedComponentName(component)) reserved.push(arg);
+	}
+	return reserved;
 }
 
 const MAX_REPORTED_UNRECOGNIZED = 10;
@@ -1219,6 +1250,17 @@ export async function setConfiguration(setConfigJson) {
 		throw handleHDBError(
 			new Error(),
 			`'replicated' must be a boolean`,
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	const reservedComponentParams = findReservedComponentParams(configFields);
+	if (reservedComponentParams.length > 0) {
+		throw handleHDBError(
+			new Error(),
+			`Unable to update config, cannot configure a component whose name is reserved for Harper's own configuration section: ${describeUnrecognized(reservedComponentParams)}`,
 			HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,
