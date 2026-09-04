@@ -347,8 +347,11 @@ export class LockCoordinator {
 				throw new LockUnavailableError(
 					'Cluster record lock coordination is not owned by this worker thread; retry so the request reaches the coordinating thread'
 				);
-			if (this.#states.size >= MAX_KEYS_IN_FLIGHT && !this.#states.has(keyId))
-				throw new LockUnavailableError(`Too many record lock rounds in flight on ${this.database}.${this.table}`);
+			if (this.#states.size >= MAX_KEYS_IN_FLIGHT && !this.#states.has(keyId)) {
+				this.#evictReleasedOnlyKeys();
+				if (this.#states.size >= MAX_KEYS_IN_FLIGHT)
+					throw new LockUnavailableError(`Too many record lock rounds in flight on ${this.database}.${this.table}`);
+			}
 			grantSet = this.#grantSet();
 		} catch (error) {
 			return Promise.reject(error);
@@ -519,6 +522,24 @@ export class LockCoordinator {
 		ensureTicking();
 	}
 
+	/**
+	 * Drop keys whose only remaining state is released rounds. They are kept so a replayed request
+	 * cannot resurrect them, which must not cost a live key its slot — the same reason released rounds
+	 * do not consume the per-key contention budget.
+	 */
+	#evictReleasedOnlyKeys() {
+		for (const [keyId, state] of this.#states) {
+			if (state.own || state.deferredOrder.length > 0) continue;
+			let live = false;
+			for (const peer of state.peers.values())
+				if (!peer.released) {
+					live = true;
+					break;
+				}
+			if (!live) this.#states.delete(keyId);
+		}
+	}
+
 	#hasLiveRound(state: KeyState, requester: string): boolean {
 		for (const peer of state.peers.values()) if (peer.requester === requester && !peer.released) return true;
 		return false;
@@ -672,8 +693,13 @@ export class LockCoordinator {
 		if (entry.tsR < this.#now() - (MAX_LOCK_LEASE_MS + waitMs + this.#skewMs)) return;
 		const keyId = this.#keyIdOf(entry.key);
 		if (!this.#states.has(keyId) && this.#states.size >= MAX_KEYS_IN_FLIGHT) {
-			warnOnce(`dropping a replicated record lock request: ${this.database}.${this.table} has too many keys in flight`);
-			return;
+			this.#evictReleasedOnlyKeys();
+			if (this.#states.size >= MAX_KEYS_IN_FLIGHT) {
+				warnOnce(
+					`dropping a replicated record lock request: ${this.database}.${this.table} has too many live keys in flight`
+				);
+				return;
+			}
 		}
 		const state = this.#stateFor(keyId, entry.key);
 		const identity = identityOf(entry.requester, entry.tsR);
