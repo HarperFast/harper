@@ -1453,7 +1453,8 @@ describe('Record locks (harper#483)', () => {
 			const holder = await LockTest.lock(lockedId, { hold: true, lease: 5000 }, context);
 			await delay(20);
 			await LockTest.put({ id: otherId, n: 1 });
-			await LockTest.delete(otherId, context);
+			holder.delete(otherId);
+			await waitFor(() => LockTest.primaryStore.getEntry(otherId)?.value == null);
 			await holder.unlock();
 			assert.strictEqual(await LockTest.get(otherId), null, 'ordinary delete used its own current timestamp');
 		});
