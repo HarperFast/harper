@@ -118,12 +118,14 @@ which such a test needs anyway, since Harper opens table and index column famili
 defaulting to true — a committed write can otherwise sit only in the writer's memtable and never
 reach an external reader.
 
-Two things the recipe depends on. Put the checkpoint beside `database/`, not inside it: `database/`
-is the directory scanned for databases (`resources/databases.ts`), and any directory in it with a
-`CURRENT` and a `MANIFEST-*` is loaded as one. And close the handles and delete the previous
-checkpoint before taking the next — a checkpoint is hardlinked, so it is cheap to take but it also
-keeps every SST it names alive through the live database's compactions, and a suite that refreshes
-before each read would otherwise pin every historical file version for the length of the run.
+Two things the recipe depends on. Put the checkpoint outside every directory Harper scans for
+databases — the `storage.path` root, which is `database/` by default, and any per-database `path`
+the config sets: `resources/databases.ts` walks each of them and adopts any child holding a `CURRENT`
+and a `MANIFEST-*` as a database, so a checkpoint under one would be loaded as one. And close the
+handles and delete the previous checkpoint before taking the next — a checkpoint is hardlinked, so it
+is cheap to take but it also keeps every SST it names alive through the live database's compactions,
+and a suite that refreshes before each read would otherwise pin every historical file version for the
+length of the run.
 `database/delete-index-atomicity-rocksdb.test.ts` and its fixture are the worked example.
 
 ### Template
