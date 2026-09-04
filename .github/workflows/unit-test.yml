@@ -140,8 +140,10 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts
 
+      # strict here, unlike the other jobs: the plane suite runs against dist/, so a tolerated
+      # build failure would grade a stale dist and still report green
       - name: Build
-        run: npm run build || true # we currently have type errors so just ignore that
+        run: npm run build
 
       - name: Verify the published native binding loads
         run: node -e "if (typeof require('@harperfast/hnsw').Plane?.open !== 'function') throw new Error('@harperfast/hnsw loaded without a Plane constructor');"

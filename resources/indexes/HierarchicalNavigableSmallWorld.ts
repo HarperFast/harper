@@ -531,6 +531,11 @@ export class HierarchicalNavigableSmallWorld {
 		return false;
 	}
 
+	/** The JS graph's effective layer-0 cap for this configuration; sizes the plane's slots. */
+	private planeLayer0Cap(): number {
+		return this.optimizeRouting ? this.M << 3 : this.M << 1;
+	}
+
 	/**
 	 * Create the plane file and fully mirror the existing CF graph into it (the "first enable"
 	 * build — a pure copy of the same graph, so plane and CF are bit-identical by construction;
@@ -540,11 +545,6 @@ export class HierarchicalNavigableSmallWorld {
 	 * scan's older snapshot of that node — it re-syncs on the node's next touch, and the exact
 	 * rescore + record load already filter stale candidates (relaxed adherence, design §5).
 	 */
-	/** The JS graph's effective layer-0 cap for this configuration; sizes the plane's slots. */
-	private planeLayer0Cap(): number {
-		return this.optimizeRouting ? this.M << 3 : this.M << 1;
-	}
-
 	private createAndMirrorPlane(
 		Plane: NonNullable<ReturnType<typeof getPlaneBinding>>,
 		filePath: string,
