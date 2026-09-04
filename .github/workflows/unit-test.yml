@@ -27,11 +27,11 @@ jobs:
   unit-test:
     name: Unit Test (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
-    # on the required-check status — the long steps below carry their own caps for that reason.
-    # This one only has to exceed their sum: dependency install and the unit run measure ~2.5 and
-    # ~7.5 minutes, and the remaining steps under a minute.
-    timeout-minutes: 20
+    # GitHub reports a job that hits this cap as `cancelled`, not `failure`, so it reads as
+    # non-red on the required check — which is how a wedged v22 leg went unnoticed for 9 runs.
+    # Every step below is capped in its own right and this sits above their sum (33 on the
+    # longest leg), so a stall always surfaces as a step failure and this is only a backstop.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -48,24 +48,29 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        timeout-minutes: 10 # measures ~2.5 minutes; bounded so a registry stall fails loudly
+        timeout-minutes: 6
         run: npm install --ignore-scripts
 
       - name: Build
+        timeout-minutes: 3
         run: npm run build || true # we currently have type errors so just ignore that
 
       - name: Type contract tests
         if: matrix.node-version == 22
+        timeout-minutes: 3
         run: npm run test:types # strict tsc over unitTests/types/ — asserts the shipped public types
 
       - name: Benchmark unit tests
+        timeout-minutes: 3
         run: npm run test:bench # pure-logic tests for benchmarks/ converters; doesn't need a running Harper instance
 
       - name: Review-coverage action tests
         if: matrix.node-version == 24
+        timeout-minutes: 3
         run: node --test .github/actions/review-coverage/*.test.mjs
 
       - name: Setup Harper
+        timeout-minutes: 3
         env:
           DEFAULTS_MODE: 'dev'
           HDB_ADMIN_USERNAME: 'admin'
@@ -76,10 +81,8 @@ jobs:
 
         run: node --enable-source-maps ./dist/bin/harper.js install
 
-      # Bounded below the job so a hung suite fails the step rather than cancelling the job.
-      # `.mocharc.json` sets `timeout: 0`, so no individual test can ever time out on its own:
-      # anything that blocks — a registry call, a lock wait — stops the run until something above
-      # it gives up, and before this cap that something was the job timeout, which is silent.
+      # `.mocharc.json` sets `timeout: 0`, so nothing inside the run can time out on its own —
+      # this cap is the only thing that turns a wedged suite into a reported failure.
       - name: Run tests
         timeout-minutes: 15
         run: npm run test:unit:all

@@ -52,9 +52,6 @@ describe('install_node_modules', () => {
 
 	function assertInstalled(response) {
 		assert.equal(response.application.npm_output.added, 1, JSON.stringify(response.application));
-		// npm reports an `audit` block only when it made the registry audit call, and that call is
-		// what wedged this suite past the CI job budget on npm 10 — the install must stay local
-		assert.equal(response.application.npm_output.audit, undefined, JSON.stringify(response.application));
 		assert.equal(installedDependencyExists(), true);
 	}
 
@@ -102,5 +99,35 @@ describe('install_node_modules', () => {
 
 	it('rejects a request without projects', async () => {
 		await assert.rejects(installModules({ dry_run: true }), { statusCode: 400, message: /'projects'/ });
+	});
+
+	// npm 10 puts a `file:` link into its audit bulk request, and the registry's answer to that is
+	// unbounded from here, so the flags that keep this operation off the registry are the invariant
+	it('runs npm with the registry audit and funding lookups disabled', async function () {
+		if (process.platform === 'win32') return this.skip(); // the shim below is a POSIX shell script
+		const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-npm-shim-'));
+		const argvPath = path.join(shimDir, 'argv.txt');
+		fs.writeFileSync(
+			path.join(shimDir, 'npm'),
+			`#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvPath)}\necho '{"added":0}'\n`,
+			{ mode: 0o755 }
+		);
+		const originalPath = process.env.PATH;
+		process.env.PATH = `${shimDir}${path.delimiter}${originalPath}`;
+		try {
+			await installModules({ projects: ['application'] });
+		} finally {
+			process.env.PATH = originalPath;
+		}
+
+		assert.deepEqual(fs.readFileSync(argvPath, 'utf8').split('\n').filter(Boolean), [
+			'install',
+			'--force',
+			'--omit=dev',
+			'--no-audit',
+			'--no-fund',
+			'--json',
+		]);
+		fs.rmSync(shimDir, { recursive: true, force: true });
 	});
 });
