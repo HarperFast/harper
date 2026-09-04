@@ -6,9 +6,11 @@ title: JavaScript Environment
 
 # JavaScript Environment
 
-Harper executes component JavaScript in distinct module caches, using Node.js's VM module loader. This provides contextualized module environments that share the same Node.js runtime but have their own set of modules isolated from other applications. This means each application runs in its own module context while still being able to access Harper's full set of APIs.
+By default, Harper executes component JavaScript in distinct module caches, using Node.js's VM module loader. This provides contextualized module environments that share the same Node.js runtime but have their own set of modules isolated from other applications. This means each application runs in its own module context while still being able to access Harper's full set of APIs.
 
-## Module Loading
+This page covers what component code can reach: module formats, TypeScript support, the `harper` API surface, and the constrained `child_process`. How modules are loaded and isolated is configurable — see [Module Loading](./module-loading.md) for the `moduleLoader` modes, dependency loading, intrinsic lockdown, and the directory and built-in module restrictions. Everything below describes the default loader (`vm-current-context`) unless stated otherwise.
+
+## Module Formats
 
 Harper supports both ESM and CommonJS module formats. The full set of Harper APIs are accessible by importing from the `harper` package, for example::
 
@@ -30,7 +32,7 @@ npm link harper
 
 All installed components have `harper` automatically linked.
 
-Whether you reach them as globals or as `harper` imports, `tables`, `databases`, and the other APIs are the **same live, process-wide objects** — Harper runs as a single process, so a record written through one component is immediately visible to every other. The automatic link points `harper` at the **running** installation (not a separately-installed copy), so `import { tables } from 'harper'` resolves to that live runtime from any module Harper loads. Application module contexts are seeded from the same process globals, not given an isolated set of these objects.
+Whether you reach them as globals or as `harper` imports, `tables`, `databases`, and the other APIs are the **same live, process-wide objects** — Harper runs as a single process, so a record written through one component is immediately visible to every other. The automatic link points `harper` at the **running** installation (not a separately-installed copy), so `import { tables } from 'harper'` resolves to that live runtime from any module Harper loads. Under the default `vm-current-context` loader (and under `native`), application module contexts are seeded from the same process globals rather than given an isolated set of these objects. The `vm` and `compartment` loaders build a custom global object per application — see [Module Loader Modes](./module-loading.md#module-loader-modes).
 
 This includes bundler-built code. A Vite **server-side-render** entry, for example, can read data straight from Harper and render it into the HTML (no client-side fetch):
 
@@ -214,7 +216,7 @@ const agent = spawn('datadog-agent', ['run'], {
 
 ### Which imports get the substitute
 
-The substitution happens in Harper's module loader, so it only reaches code that loader handles:
+The substitution happens in Harper's module loader, so it only reaches code that loader handles. Which loader runs is set by [`applications.moduleLoader`](./module-loading.md#module-loader-modes), and whether a dependency goes through it is set by [`applications.dependencyLoader`](./module-loading.md#dependency-loading):
 
 | How the module is reached                                                                                                                                          | What you get                |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------- |

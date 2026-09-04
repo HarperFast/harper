@@ -408,19 +408,25 @@ agent:
 
 Added in: v5.0.0
 
+Controls how application modules are loaded and isolated. See [Module Loading](../components/module-loading.md) for the full reference.
+
 ```yaml
 applications:
   lockdown: freeze-after-load
   moduleLoader: vm-current-context
   dependencyLoader: auto
+  allowedDirectory: app
   allowedSpawnCommands:
     - npm
     - node
+  # allowedBuiltInModules: [] # if omitted, all Node.js built-ins are allowed
 ```
 
-- `lockdown` — Indicates if intrinsic/built-in objects should be locked down/frozen. This provides additional security and protection against prototype pollution attacks. The default is `freeze-after-load`, which freezes the important built-in objects once all components have loaded, so component initialization can still modify them. This can also be set to `freeze` (freeze before any application code loads), `none`, or `ses` (lockdown provided by the `ses` package, which is more strict). See [Intrinsic Lockdown](/release-notes/v5-lincoln/v5-migration#intrinsic-lockdown).
-- `moduleLoader` — The method used to load modules (and isolate the application). The default is `vm-current-context`, which uses Node's VM module loader in Harper's own context so applications share JavaScript intrinsics. This can also be set to `vm` (VM loader with a separate context and its own intrinsics per application), `native` (standard Node module loader), or `compartment`, which uses the `ses` implementation of the proposed `Compartment` functionality. See [Module Loader Modes](/release-notes/v5-lincoln/v5-migration#module-loader-modes).
-- `dependencyLoader` — The application module loader can be used to load packages/dependencies (installed as `dependencies` from the package.json). The default is 'auto', which only use the VM module loader if the package specifies `harper` as a dependency. This can also be set to `app` to always use the application module loader or `native` to always native module loader for packages.
+- `lockdown` — Indicates if intrinsic/built-in objects should be locked down/frozen. This provides additional security and protection against prototype pollution attacks. The default is `freeze-after-load` (since v5.0.2; v5.0.0 and v5.0.1 defaulted to `freeze`), which freezes the important built-in objects once all components have loaded, so component initialization can still modify them. This can also be set to `freeze` (freeze before any application code loads), `none`, or `ses` (lockdown provided by the `ses` package, which is more strict). See [Intrinsic Lockdown](../components/module-loading.md#intrinsic-lockdown).
+- `moduleLoader` — The method used to load modules (and isolate the application). The default is `vm-current-context` (since v5.1.0; v5.0.x defaulted to `vm`), which uses Node's VM module loader in Harper's own context so applications share JavaScript intrinsics. This can also be set to `vm` (VM loader with a separate context and its own intrinsics per application), `native` (standard Node module loader), or `compartment`, which uses the `ses` implementation of the proposed `Compartment` functionality. See [Module Loader Modes](../components/module-loading.md#module-loader-modes).
+- `dependencyLoader` — The application module loader can be used to load packages/dependencies (installed as `dependencies` from the package.json). The default is 'auto', which only use the VM module loader if the package specifies `harper` as a dependency. This can also be set to `app` to always use the application module loader or `native` to always native module loader for packages. See [Dependency Loading](../components/module-loading.md#dependency-loading).
+- `allowedDirectory` — Added in v5.0.4. Restricts where an application may load modules from. The default is `app`, which permits only modules within the application's own directory tree; loading from outside it throws. Set to `any` to remove the restriction. Dev-mode installs default to `any`. Applies to imports the application module loader handles, so treat it as a configuration guardrail rather than a security boundary. See [Allowed Directory](../components/module-loading.md#allowed-directory).
+- `allowedBuiltInModules` — An allowlist of the Node.js built-in modules applications may import. If omitted, all built-ins are allowed. Matching strips a `node:` prefix and compares the first path segment, so `fs` also permits `node:fs/promises`. Like `allowedDirectory`, it applies to imports the application module loader handles. See [Allowed Built-in Modules](../components/module-loading.md#allowed-built-in-modules).
 - `allowedSpawnCommands` - This lists the specific commands that can be spawned by the application (using `child_process`'s `spawn()` and `execFile()` functions). You can add commands that your application will need to launch (this is to protect against malicious code spawning processes). Only the first token of the command is matched, spawning also requires a mandatory `name` option, and the call is subject to a node-wide single-process lock — see [Child Processes](../components/javascript-environment.md#child-processes) for the full contract.
 
 ## Component Configuration
