@@ -129,16 +129,15 @@ function isDuration(value: unknown, min: number, max: number): value is number {
 	return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
 }
 
-/** A record id shape ordered-binary can encode. A plain object would throw out of `keyIdOf`. */
+/**
+ * A record id shape ordered-binary can encode. Anything else — a plain object, a Date — throws out
+ * of `keyIdOf`, and that throw would reach the replicated apply loop.
+ */
 function isEncodableKey(value: unknown): boolean {
 	if (Array.isArray(value)) return value.every((element) => isEncodableKey(element));
-	return (
-		value === null ||
-		typeof value === 'string' ||
-		typeof value === 'number' ||
-		typeof value === 'boolean' ||
-		value instanceof Date
-	);
+	if (value instanceof Uint8Array) return true;
+	const type = typeof value;
+	return value === null || type === 'string' || type === 'number' || type === 'bigint' || type === 'boolean';
 }
 
 /**
