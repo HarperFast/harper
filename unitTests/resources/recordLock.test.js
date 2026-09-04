@@ -129,6 +129,21 @@ describe('Record locks (harper#483)', () => {
 			await handle.unlock();
 		});
 
+		it('an early unlock() of a scoped lock leaves nothing for the commit to trip over', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			const otherId = id();
+			await LockTest.put({ id: recordId, n: 1 });
+			await transaction(async () => {
+				const record = await LockTest.lock(recordId);
+				await record.unlock();
+				await LockTest.put({ id: otherId, n: 2 }); // the rest of the scope commits normally
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 1);
+			assert.strictEqual((await LockTest.get(otherId)).n, 2);
+			const handle = await LockTest.lock(recordId, { hold: true, timeout: 500 }); // the key was released
+			await handle.unlock();
+		});
 		it('releases on abort and the write is rolled back', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();

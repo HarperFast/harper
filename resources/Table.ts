@@ -2130,7 +2130,9 @@ export function makeTable(options) {
 				// resolve before that native commit actually settles. Chain on innerCommit (as the
 				// lock-writable hold branch above already does) so callers awaiting save() see the
 				// write durably land, not just the outer (possibly premature) resolution.
-				return when(this.#saveOperation(operation), () => operation.innerCommit);
+				const result = this.#saveOperation(operation);
+				const innerCommit = operation.innerCommit;
+				return innerCommit ? when(innerCommit, () => result) : result;
 			}
 		}
 		#saveOperation(operation: any) {
@@ -2540,7 +2542,10 @@ export function makeTable(options) {
 						clearTimeout(followerTimer);
 						const acquired = link.recordLockFor(primaryStore, keyId);
 						if (acquired && !acquired.released && !acquired.expired) {
-							if (resolved.hold && !acquired.hold) acquired.upgradeToHold(resolved.lease);
+							if (resolved.hold && !acquired.hold) {
+								detachScopedUpgradeWrite(link, keyId, acquired);
+								acquired.upgradeToHold(resolved.lease);
+							}
 							return this.#reloadLocked(id, acquired, true);
 						}
 						return retryOnRemainingBudget();
@@ -2676,8 +2681,12 @@ export function makeTable(options) {
 			this.#lockHandle = undefined;
 			this.#lockWritable = false;
 			if (!handle || handle.released) return Promise.resolve(false);
-			// Remove from the transaction registry so commit/abort does not double-release.
 			const link = txnForContext(this.getContext());
+			// A scoped lock staged its write at lock() time; released before commit, that write must not
+			// run into the released-handle guard at the sweep.
+			if (this.#savingOperation && !this.#savingOperation.saved && this.#savingOperation.lockHandle === handle)
+				this.#savingOperation = null;
+			detachScopedUpgradeWrite(link, writeKeyId(this.getId()), handle);
 			link.unregisterRecordLock(handle);
 			return Promise.resolve(handle.release());
 		}
