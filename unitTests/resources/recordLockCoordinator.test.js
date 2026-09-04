@@ -655,10 +655,23 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			const structures = [];
 			for (let i = 0; i < 80; i++) structures.push([`a${i}`, `b${i}`]);
 			const tableDecoder = new Unpackr({ structures, useRecords: true });
-			for (const key of [0, 31, 32, 63, 64, 100, 127, 128, 4096, -5, 'k', [64, 'a'], 1.5]) {
+			for (const key of [0, 31, 32, 63, 64, 100, 127, 128, 4096, -5, 'k', [64, 'a'], 1.5, true, null]) {
 				const entry = { type: 'lockRequest', key, requester: 'node-a', tsR: 5, leaseMs: LEASE, waitMs: WAIT };
 				const decoded = decodeLockControlPayload(entry.type, tableDecoder.unpack(encodeLockControlPayload(entry)));
 				assert.deepStrictEqual(decoded, entry, `record key ${JSON.stringify(key)} round-trips`);
+			}
+		});
+
+		it('accepts every record-id shape the key encoder does', () => {
+			const { toBufferKey } = require('ordered-binary');
+			// The decoder's key check has to match what keyIdOf can actually encode: too strict drops a
+			// legitimate lock (a bigint or binary id), too loose throws into the replicated apply loop.
+			for (const key of [1, 1n, 2n ** 70n, 'k', true, null, new Uint8Array([1, 2]), [1n, 'k', null]]) {
+				assert.doesNotThrow(() => toBufferKey(key), `${String(key)} is encodable`);
+				assert.ok(
+					decodeLockControlPayload('lockRelease', [key, 'node-a', 5]),
+					`${String(key)} is accepted by the decoder`
+				);
 			}
 		});
 
@@ -675,6 +688,10 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 				['lockGrant', ['k', 'node-b', 5, 42]],
 				['lockRelease', ['k', 'node-b', 5, 'extra']],
 				['lockRelease', [undefined, 'node-b', 5]],
+				// Shapes the record-id encoder cannot serialize, which would throw out of keyIdOf.
+				['lockRelease', [{ not: 'a key' }, 'node-b', 5]],
+				['lockRelease', [new Date(0), 'node-b', 5]],
+				['lockRelease', [['ok', { nested: 1 }], 'node-b', 5]],
 				['somethingElse', ['k', 'node-b', 5]],
 			];
 			for (const [type, value] of bad)
