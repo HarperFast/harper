@@ -446,6 +446,11 @@ export const ACTION_32_BIT = 14;
 export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
 export const REMOTE_SEQUENCE_UPDATE = 11;
+/**
+ * Marks a patch whose existence precondition must be preserved by crash replay. Bit 17 is unused
+ * by audit flags, remains below the 32-bit action marker, and is never copied to record metadata.
+ */
+export const CONDITIONAL_PATCH = 0x20000;
 export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
 export const HAS_ORIGINATING_OPERATION = 2048;

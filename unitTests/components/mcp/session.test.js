@@ -7,28 +7,12 @@ const {
 	touchSession,
 	_setSessionTableForTest,
 } = require('#src/components/mcp/session');
-
-function makeFakeTable() {
-	const store = new Map();
-	return {
-		store,
-		async put(record) {
-			store.set(record.id, { ...record });
-		},
-		async get(id) {
-			const r = store.get(id);
-			return r ? { ...r } : undefined;
-		},
-		async delete(id) {
-			store.delete(id);
-		},
-	};
-}
+const { makeFakeSessionTable } = require('./fakeSessionTable');
 
 describe('mcp/session', () => {
 	let fake;
 	beforeEach(() => {
-		fake = makeFakeTable();
+		fake = makeFakeSessionTable();
 		_setSessionTableForTest(fake);
 	});
 	afterEach(() => {
@@ -70,17 +54,33 @@ describe('mcp/session', () => {
 	describe('saveSession', () => {
 		it('persists changes', async () => {
 			const created = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
-			await saveSession({ ...created, initialized: true });
+			await saveSession(created.id, { initialized: true });
 			const reloaded = await loadSession(created.id);
 			assert.equal(reloaded.initialized, true);
 		});
 	});
 
 	describe('deleteSession', () => {
-		it('removes the record and subsequent loads return null', async () => {
+		it('makes subsequent loads return null', async () => {
 			const created = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
 			await deleteSession(created.id);
 			assert.equal(await loadSession(created.id), null);
+			assert.equal(fake.store.has(created.id), false);
+		});
+
+		it('cannot be reversed by a stale save from an in-flight request', async () => {
+			const created = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			await deleteSession(created.id);
+			await saveSession(created.id, { lastActivity: created.lastActivity + 1 });
+			assert.equal(await loadSession(created.id), null);
+		});
+
+		it('does not create an incomplete row after deletion', async () => {
+			const created = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			await deleteSession(created.id);
+			await saveSession(created.id, { lastActivity: created.lastActivity + 1 });
+			assert.equal(await loadSession(created.id), null);
+			assert.equal(fake.store.has(created.id), false);
 		});
 	});
 

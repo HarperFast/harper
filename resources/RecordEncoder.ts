@@ -14,6 +14,7 @@ import {
 	HAS_ORIGINATING_OPERATION,
 	HAS_BLOBS,
 	ACTION_32_BIT,
+	CONDITIONAL_PATCH,
 	HAS_ADDITIONAL_AUDIT_REFS as HAS_ADDITIONAL_AUDIT_REFS_AUDIT,
 	LOCAL_ONLY,
 } from './auditStore.ts';
@@ -929,6 +930,7 @@ export function recordUpdater(store, tableId, auditStore) {
 				metadataInNextEncoding |= LOCAL_ONLY;
 				extendedType |= LOCAL_ONLY;
 			}
+			if (options?.ifExists) extendedType |= CONDITIONAL_PATCH;
 			if (previousResidencyId !== residencyId) {
 				extendedType |= HAS_PREVIOUS_RESIDENCY_ID;
 				if (!previousResidencyId) previousResidencyId = 0;

@@ -1,10 +1,8 @@
 /**
  * MCP session store backed by the `system.mcp_session` Harper table.
  *
- * Eviction is delegated to Harper's native TTL (`Table.setTTLExpiration`):
- * every write to a session record updates its `version`, which Harper uses
- * to determine expiration. So calling `saveSession(record)` on each request
- * gives sliding-window idle semantics for free — no custom timer, no sweep.
+ * Eviction is delegated to Harper's native TTL (`Table.setTTLExpiration`).
+ * Active-session writes use the table default for sliding-window idle expiry.
  *
  * Spec: when a request bears an `Mcp-Session-Id` the server doesn't
  * recognize (expired, terminated, or unknown), the server MUST return HTTP
@@ -13,6 +11,7 @@
  */
 import { v4 as uuid } from 'uuid';
 import { table, type Table } from '../../resources/databases.ts';
+import { patchIfExists } from '../../resources/Table.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -29,12 +28,10 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 1800;
 
 /**
  * Window between expiration and physical eviction. Short, but long enough
- * to absorb clock skew and let a late client request resolve to a tombstone
- * 404 rather than a "session never existed" 404. (The client recovery path
- * is identical either way.)
+ * to absorb clock skew before the expired row is physically removed.
  */
 const EVICTION_WINDOW_SECONDS = 60;
-
+const MAX_DELETE_ATTEMPTS = 3;
 export interface McpSessionRecord {
 	id: string;
 	protocolVersion: string;
@@ -65,6 +62,8 @@ export interface McpSessionRecord {
 	clientCapabilities?: Record<string, unknown>;
 }
 
+type McpSessionUpdate = Partial<Pick<McpSessionRecord, 'initialized' | 'lastActivity' | 'logLevel' | 'subscriptions'>>;
+
 let _sessionTable: Table | undefined;
 
 /**
@@ -78,6 +77,7 @@ function declareSessionTable(): Table {
 	return table<Table>({
 		table: TABLE_NAME,
 		database: DATABASE_NAME,
+		replicate: false,
 		expiration: idleTimeoutSeconds,
 		eviction: idleTimeoutSeconds + EVICTION_WINDOW_SECONDS,
 		attributes: [
@@ -100,10 +100,21 @@ function declareSessionTable(): Table {
  */
 export function ensureSessionTable(): Table {
 	if (!_sessionTable) {
-		_sessionTable = declareSessionTable();
+		const sessionTable = declareSessionTable();
+		if (sessionTable.replicate !== false) {
+			harperLogger.warn(`Correcting MCP session table system.${TABLE_NAME} to disable replication`);
+			sessionTable.replicate = false;
+		}
+		assertSessionTableIsLocal(sessionTable);
+		_sessionTable = sessionTable;
 		harperLogger.trace(`MCP session table system.${TABLE_NAME} initialized`);
 	}
+	assertSessionTableIsLocal(_sessionTable);
 	return _sessionTable;
+}
+
+function assertSessionTableIsLocal(sessionTable: Table): void {
+	if (sessionTable.source) throw new Error(`MCP session table system.${TABLE_NAME} must not be source-backed`);
 }
 
 /** Test seam: allow tests to inject a fake table without touching Harper. */
@@ -145,20 +156,25 @@ export async function createSession({
  */
 export async function loadSession(id: string): Promise<McpSessionRecord | null> {
 	const record = (await (getTable() as any).get(id)) as McpSessionRecord | undefined | null;
-	if (!record) return null;
+	if (!record || typeof record.createdAt !== 'number' || typeof record.protocolVersion !== 'string') return null;
 	return record;
 }
 
-/**
- * Persist updated session state. Used to bump `lastActivity` (sliding-window
- * idle reset) and to flip `initialized` after `notifications/initialized`.
- */
-export async function saveSession(record: McpSessionRecord): Promise<void> {
-	await (getTable() as any).put(record);
+export async function saveSession(id: string, changes: McpSessionUpdate): Promise<void> {
+	await patchIfExists(getTable(), id, changes);
 }
 
 export async function deleteSession(id: string): Promise<void> {
-	await (getTable() as any).delete(id);
+	const SessionTable = getTable() as any;
+	let deleted = false;
+	for (let attempt = 0; attempt < MAX_DELETE_ATTEMPTS; attempt++) {
+		await SessionTable.delete(id, {});
+		if (!(await SessionTable.get(id, {}))) {
+			deleted = true;
+			break;
+		}
+	}
+	if (!deleted) throw new Error('Unable to delete MCP session after concurrent updates');
 	// Tear down ancillary per-session in-memory state — the `tools/list`
 	// pagination cache and the per-session rate-limit buckets. Without
 	// these, every session that ever paged or called a tool leaves orphan
@@ -174,6 +190,6 @@ export async function deleteSession(id: string): Promise<void> {
  */
 export async function touchSession(record: McpSessionRecord): Promise<McpSessionRecord> {
 	const touched: McpSessionRecord = { ...record, lastActivity: Date.now() };
-	await saveSession(touched);
+	await saveSession(record.id, { lastActivity: touched.lastActivity });
 	return touched;
 }

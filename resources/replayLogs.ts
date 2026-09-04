@@ -13,7 +13,7 @@ import {
 	shouldAbortSlowReplay,
 	REPLAY_WALL_CLOCK_LIMIT_MS,
 } from './replayLogsGuards.ts';
-import { purgeAgedLogs } from './auditStore.ts';
+import { CONDITIONAL_PATCH, LOCAL_ONLY, purgeAgedLogs } from './auditStore.ts';
 import { get as envGet } from '../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
@@ -265,7 +265,14 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					transaction.isReplay = true;
 				}
 				context.transaction = transaction;
-				const options = { context, residencyId, nodeId, originatingOperation };
+				const options = {
+					context,
+					residencyId,
+					nodeId,
+					originatingOperation,
+					ifExists: type === 'patch' && Boolean(extendedType & CONDITIONAL_PATCH),
+					localOnly: Boolean(extendedType & LOCAL_ONLY),
+				};
 				writes++;
 				stagedWrites++;
 				switch (type) {

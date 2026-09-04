@@ -8,6 +8,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table, databases, database, BRANCH_ROOT_DIR, resolveBranchPath } = require('#src/resources/databases');
 const { getOrCreateBranch, removeBranches } = require('#src/resources/branchDatabase');
 const { replayLogs } = require('#src/resources/replayLogs');
+const { CONDITIONAL_PATCH, LOCAL_ONLY } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const { writeFileSync: _writeFileSync, mkdirSync: _mkdirSync } = require('node:fs');
@@ -181,6 +182,60 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 		};
 		await assert.rejects(() => replayLogs(stubStore, { Poisoned: poisonedTable }, true), /poisoned resource/);
 		assert.strictEqual(unlocked, true, 'a failed strict replay must release the lock for the retry');
+	});
+
+	it('preserves conditional and local-only write flags during replay', async function () {
+		const replayTable = table({
+			table: 'ReplayFlags',
+			database: 'replayflags',
+			replicate: false,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+		const conditionalId = 'conditional-replay';
+		const localOnlyId = 'local-only-replay';
+		await replayTable.put(localOnlyId, { id: localOnlyId, value: 1 });
+		const version = Date.now() + 10_000;
+		const stubStore = {
+			databaseName: 'replay-flags',
+			purgeLogs() {
+				return [];
+			},
+			tryLock() {
+				return true;
+			},
+			auditStore: {
+				getRange() {
+					return Object.assign(
+						[
+							{
+								type: 'patch',
+								tableId: replayTable.tableId,
+								recordId: conditionalId,
+								version,
+								extendedType: 5 | 32 | CONDITIONAL_PATCH,
+								getValue: () => ({ value: 2 }),
+							},
+							{
+								type: 'patch',
+								tableId: replayTable.tableId,
+								recordId: localOnlyId,
+								version,
+								extendedType: 5 | 32 | LOCAL_ONLY,
+								getValue: () => ({ value: 2 }),
+							},
+						],
+						{ corruptFrameStop: { breaks: 0, truncatedVersions: new Set() } }
+					);
+				},
+			},
+		};
+
+		await replayLogs(stubStore, { ReplayFlags: replayTable }, true);
+		assert.equal(await replayTable.get(conditionalId), undefined);
+		const entry = replayTable.primaryStore.getEntry(localOnlyId);
+		assert.equal(entry.version, version);
+		assert.equal(entry.value.value, 2);
+		assert.equal(entry.metadataFlags & LOCAL_ONLY, LOCAL_ONLY);
 	});
 
 	it('an elected replay rejects on a mid-log break even when every readable entry replayed cleanly', async function () {
