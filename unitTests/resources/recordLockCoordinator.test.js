@@ -552,6 +552,37 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			);
 		});
 
+		it('reclaims a key the moment it becomes released-only, with no throttle window', async () => {
+			const cluster = new FakeCluster(['node-a', 'node-b']);
+			const coordinator = cluster.node('node-a').coordinator;
+			const request = (key, tsR) => ({
+				type: 'lockRequest',
+				key,
+				requester: 'node-b',
+				tsR,
+				leaseMs: 60_000,
+				waitMs: 60_000,
+			});
+			// Fill the table to its cap with live rounds.
+			for (let key = 0; key < 10_000; key++)
+				coordinator.applyEntry(request(`k-${key}`, cluster.wall + key * 0.001), 'node-b');
+			const grantsBefore = cluster.writtenOfType('node-a', 'lockGrant').length;
+			coordinator.applyEntry(request('overflow-1', cluster.wall + 50), 'node-b');
+			assert.strictEqual(
+				cluster.writtenOfType('node-a', 'lockGrant').length,
+				grantsBefore,
+				'a genuinely full table drops the request'
+			);
+			// One key becomes released-only. The very next request must find that room, with no wait.
+			coordinator.applyEntry({ type: 'lockRelease', key: 'k-0', requester: 'node-b', tsR: cluster.wall }, 'node-b');
+			coordinator.applyEntry(request('overflow-2', cluster.wall + 51), 'node-b');
+			assert.strictEqual(
+				cluster.writtenOfType('node-a', 'lockGrant').length,
+				grantsBefore + 1,
+				'and the freed slot is used immediately'
+			);
+		});
+
 		it('ignores a request replayed from beyond any live hold', async () => {
 			const cluster = new FakeCluster(['node-a', 'node-b']);
 			cluster.node('node-a').coordinator.applyEntry(

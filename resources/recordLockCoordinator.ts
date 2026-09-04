@@ -225,11 +225,30 @@ class KeyState {
 	peers = new Map<string, PeerRound>();
 	/** Identities we owe a grant to, kept in `(tsR, nodeId)` order. */
 	deferredOrder: string[] = [];
+	/** Peer rounds not yet released. Maintained so the overflow sweep stays a flat scan. */
+	livePeers = 0;
 	constructor(key: any) {
 		this.key = key;
 	}
 	get idle(): boolean {
 		return !this.own && this.peers.size === 0 && this.deferredOrder.length === 0;
+	}
+	/** Nothing here can still act; what remains is kept only so a replay cannot resurrect it. */
+	get releasedOnly(): boolean {
+		return !this.own && this.livePeers === 0 && this.deferredOrder.length === 0;
+	}
+	addPeer(identity: string, peer: PeerRound) {
+		this.peers.set(identity, peer);
+		this.livePeers++;
+	}
+	releasePeer(peer: PeerRound) {
+		if (peer.released) return;
+		peer.released = true;
+		this.livePeers--;
+	}
+	deletePeer(identity: string, peer: PeerRound) {
+		this.peers.delete(identity);
+		if (!peer.released) this.livePeers--;
 	}
 }
 
@@ -302,7 +321,6 @@ export class LockCoordinator {
 	#lastOffOwnerWarn = 0;
 	#knownParticipants: Set<string> | undefined;
 	#knownParticipantsAt = 0;
-	#lastKeyEviction = -Infinity;
 
 	constructor(options: LockCoordinatorOptions) {
 		if (!isNodeName(options.nodeId) || NON_DISTINCTIVE_NODE_NAMES.has(options.nodeId))
@@ -483,7 +501,7 @@ export class LockCoordinator {
 		for (const [keyId, state] of this.#states) {
 			for (const [identity, peer] of state.peers) {
 				if (peer.expiresMono > mono) continue;
-				state.peers.delete(identity);
+				state.deletePeer(identity, peer);
 				this.#removeDeferred(state, identity);
 				// Synthesizing the missing grant is what lets a waiter proceed past a holder that crashed
 				// without writing its release — so it must mean exactly that, and nothing else. A peer that
@@ -528,25 +546,13 @@ export class LockCoordinator {
 	 * cannot resurrect them, which must not cost a live key its slot — the same reason released rounds
 	 * do not consume the per-key contention budget.
 	 *
-	 * Rate-limited because it is reached from the overflow path: with the table genuinely full of live
-	 * keys the scan reclaims nothing, and running it per arriving request would turn a cap meant to
-	 * bound work into a source of it, on the replication apply thread. `tick()` reclaims these anyway
-	 * once their rounds age out; this only pulls that forward.
+	 * Reached from the overflow path, so it is a flat scan with an O(1) test per key rather than a
+	 * nested one: `livePeers` is maintained as rounds arrive and are released. Throttling it instead
+	 * would be the wrong trade — it would skip a reclamation that had just become possible and drop a
+	 * one-shot request that had room waiting for it.
 	 */
 	#evictReleasedOnlyKeys() {
-		const now = this.#monotonic();
-		if (now - this.#lastKeyEviction < TICK_INTERVAL_MS) return;
-		this.#lastKeyEviction = now;
-		for (const [keyId, state] of this.#states) {
-			if (state.own || state.deferredOrder.length > 0) continue;
-			let live = false;
-			for (const peer of state.peers.values())
-				if (!peer.released) {
-					live = true;
-					break;
-				}
-			if (!live) this.#states.delete(keyId);
-		}
+		for (const [keyId, state] of this.#states) if (state.releasedOnly) this.#states.delete(keyId);
 	}
 
 	#hasLiveRound(state: KeyState, requester: string): boolean {
@@ -720,7 +726,7 @@ export class LockCoordinator {
 			// Re-admitting a replayed round instead costs a spurious grant to a requester that is gone.
 			for (const [identity, peer] of state.peers) {
 				if (!peer.released) continue;
-				state.peers.delete(identity);
+				state.deletePeer(identity, peer);
 				if (state.peers.size < MAX_PEER_REQUESTS_PER_KEY) break;
 			}
 		}
@@ -736,7 +742,7 @@ export class LockCoordinator {
 			expiresMono: this.#monotonic() + Math.max(leaseMs, waitMs) + this.#skewMs,
 			released: false,
 		};
-		state.peers.set(identity, peer);
+		state.addPeer(identity, peer);
 		this.#startTicking();
 		const own = state.own;
 		const defer =
@@ -773,7 +779,7 @@ export class LockCoordinator {
 		const identity = identityOf(entry.requester, entry.tsR);
 		const peer = state.peers.get(identity);
 		if (!peer || peer.released) return;
-		peer.released = true;
+		state.releasePeer(peer);
 		// A withdrawn request is owed nothing. The peer record itself stays until its bound, so a
 		// replayed request for the same identity cannot resurrect it.
 		this.#removeDeferred(state, identity);
