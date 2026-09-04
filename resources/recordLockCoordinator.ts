@@ -302,6 +302,7 @@ export class LockCoordinator {
 	#lastOffOwnerWarn = 0;
 	#knownParticipants: Set<string> | undefined;
 	#knownParticipantsAt = 0;
+	#lastKeyEviction = -Infinity;
 
 	constructor(options: LockCoordinatorOptions) {
 		if (!isNodeName(options.nodeId) || NON_DISTINCTIVE_NODE_NAMES.has(options.nodeId))
@@ -526,8 +527,16 @@ export class LockCoordinator {
 	 * Drop keys whose only remaining state is released rounds. They are kept so a replayed request
 	 * cannot resurrect them, which must not cost a live key its slot — the same reason released rounds
 	 * do not consume the per-key contention budget.
+	 *
+	 * Rate-limited because it is reached from the overflow path: with the table genuinely full of live
+	 * keys the scan reclaims nothing, and running it per arriving request would turn a cap meant to
+	 * bound work into a source of it, on the replication apply thread. `tick()` reclaims these anyway
+	 * once their rounds age out; this only pulls that forward.
 	 */
 	#evictReleasedOnlyKeys() {
+		const now = this.#monotonic();
+		if (now - this.#lastKeyEviction < TICK_INTERVAL_MS) return;
+		this.#lastKeyEviction = now;
 		for (const [keyId, state] of this.#states) {
 			if (state.own || state.deferredOrder.length > 0) continue;
 			let live = false;
