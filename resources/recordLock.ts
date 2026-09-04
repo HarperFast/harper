@@ -51,6 +51,10 @@ export interface RecordLockHandle {
 	acquiredAt: number;
 	/** Advance, but never lower, the version floor from the transaction that owns the actual write timestamp. */
 	noteHolderVersion(version: number): void;
+	/** Preserve a caller timestamp as a candidate floor without treating it as a committed write. */
+	noteCandidateFloor(version: number): void;
+	/** Compute a holder-write version without advancing the floor until that write commits. */
+	holderVersionCandidate(floor?: number): number;
 	/**
 	 * Return the next version to stamp a holder write with. Starts at acquiredAt when no transaction
 	 * version has been noted; otherwise advances by the minimum monotonic step from the recorded floor.
@@ -112,6 +116,7 @@ class KeyLockHandle implements RecordLockHandle {
 	expired = false;
 	acquiredAt: number;
 	#lastHolderVersion: number | undefined;
+	#candidateFloor: number | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(store: any, key: any[], keyId: unknown, lease?: number, hold = false, acquiredAt?: number) {
@@ -130,11 +135,23 @@ class KeyLockHandle implements RecordLockHandle {
 		this.#lastHolderVersion = Math.max(this.#lastHolderVersion ?? version, version);
 	}
 
-	nextHolderVersion(): number {
+	noteCandidateFloor(version: number): void {
+		this.#candidateFloor = Math.max(this.#candidateFloor ?? version, version);
+	}
+
+	holderVersionCandidate(floor?: number): number {
 		// A small nonzero step prevents exact LWW ties without materially moving past the observed floor.
 		const MIN_STEP = 0.000488;
-		const next =
-			this.#lastHolderVersion != null ? Math.max(this.#lastHolderVersion + MIN_STEP, this.acquiredAt) : this.acquiredAt;
+		return Math.max(
+			this.#lastHolderVersion != null ? this.#lastHolderVersion + MIN_STEP : this.acquiredAt,
+			this.acquiredAt,
+			this.#candidateFloor ?? -Infinity,
+			floor ?? -Infinity
+		);
+	}
+
+	nextHolderVersion(): number {
+		const next = this.holderVersionCandidate();
 		this.#lastHolderVersion = next;
 		return next;
 	}

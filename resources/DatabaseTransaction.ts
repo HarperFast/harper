@@ -360,6 +360,8 @@ export type TransactionWrite = {
 	// Version staged by a write that actually changed the record this round. It advances any
 	// same-key held handle's floor only after the native transaction commits successfully.
 	appliedRecordVersion?: number;
+	// Present only while a transaction owns record locks, keeping bookkeeping off ordinary writes.
+	trackRecordVersion?: boolean;
 	// Set by a table commit handler only when this retry round staged a record change.
 	recordVersionApplied?: boolean;
 	// Set by DatabaseTransaction.save() on the immediateCommit path: the Promise returned by the
@@ -781,7 +783,7 @@ export class DatabaseTransaction implements Transaction {
 		for (const write of this.writes) {
 			if (write?.appliedRecordVersion == null) continue;
 			const handle = write.lockHandle ?? recordLocks.get(write.store)?.get(writeKeyId(write.key));
-			if (handle?.hold && !handle.released) handle.noteHolderVersion(write.appliedRecordVersion);
+			if (handle && !handle.released) handle.noteHolderVersion(write.appliedRecordVersion);
 		}
 	}
 
@@ -976,7 +978,7 @@ export class DatabaseTransaction implements Transaction {
 				// the same context before the commit resets it — a concurrent write in the caller's
 				// own Promise.all, or the next operation in a retry/replay save loop — with the
 				// lock's version, which LWW then silently drops against a newer record version.
-				if (!operation.lockStamp) operation.lockStamp = lockHandle.nextHolderVersion();
+				if (!operation.lockStamp) operation.lockStamp = lockHandle.holderVersionCandidate();
 			}
 		}
 		let txnTime = operation.lockStamp ?? this.timestamp;
@@ -1039,8 +1041,11 @@ export class DatabaseTransaction implements Transaction {
 			result = operation.beforeIntermediate?.() as Promise<void>;
 			if (result?.then) this.stageCompletion(result);
 		}
+		if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
+		if (operation.trackRecordVersion) operation.recordVersionApplied = false;
 		const completion = operation.commit(txnTime, operation.entry, this.retries > 0, transaction) as Promise<void>;
-		operation.appliedRecordVersion = operation.recordVersionApplied ? txnTime : undefined;
+		if (operation.trackRecordVersion)
+			operation.appliedRecordVersion = operation.recordVersionApplied ? txnTime : undefined;
 		if (typeof completion?.then === 'function') this.stageCompletion(completion);
 		// Sticky record that THIS write staged with its audit entry appended (log entries batch on the
 		// native transaction and are durably written by its commit attempt — even a failed one — so
@@ -1070,10 +1075,15 @@ export class DatabaseTransaction implements Transaction {
 		// reused across retries — the native layer resets it in place (fresh snapshot) on IsBusy/TryAgain —
 		// but reassigned to a fresh replay transaction when outstanding read iterators retain this.transaction
 		let transaction = options.transaction ?? this.transaction;
-		for (let i = 0; i < this.writes.length; i++) {
-			let operation = this.writes[i];
-			if (!operation || (this.retries === 0 && operation.saved)) continue;
-			this.save(operation, transaction, i < this.validated, options);
+		try {
+			for (let i = 0; i < this.writes.length; i++) {
+				let operation = this.writes[i];
+				if (!operation || (this.retries === 0 && operation.saved)) continue;
+				this.save(operation, transaction, i < this.validated, options);
+			}
+		} catch (error) {
+			this.abort();
+			throw error;
 		}
 		this.validated = this.writes.length;
 		const completions = this.completions;

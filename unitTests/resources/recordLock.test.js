@@ -303,11 +303,14 @@ describe('Record locks (harper#483)', () => {
 			this.timeout(3000);
 			const lockedId = id();
 			const plainId = id();
+			const siblingLockId = id();
 			await LockTest.put({ id: lockedId, n: 1 });
 			await LockTest.put({ id: plainId, n: 1 });
+			await LockTest.put({ id: siblingLockId, n: 1 });
 			await assert.rejects(
 				transaction(async () => {
 					await LockTest.put({ id: plainId, n: 99 });
+					await LockTest.lock(siblingLockId, { lease: 5000 });
 					const record = await LockTest.lock(lockedId, { lease: MIN_LOCK_LEASE_MS });
 					record.update({ n: 5 }); // staged through the lock, saved at commit
 					await delay(MIN_LOCK_LEASE_MS + 60);
@@ -317,6 +320,8 @@ describe('Record locks (harper#483)', () => {
 			);
 			assert.strictEqual((await LockTest.get(lockedId)).n, 1, 'the locked write did not land');
 			assert.strictEqual((await LockTest.get(plainId)).n, 1, "and neither did the scope's other write");
+			const sibling = await LockTest.lock(siblingLockId, { hold: true, timeout: 150 });
+			await sibling.unlock();
 		});
 
 		it('static lock() accepts a transaction in the context position', async function () {
@@ -639,7 +644,7 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 0, 'record unchanged');
 		});
 
-		it('fix 1: 409 from expired hold does not latch isCommitting (later puts land)', async function () {
+		it('an expired hold does not latch its context transaction', async function () {
 			// A synchronous throw from DatabaseTransaction.save() (e.g. expired hold 409) would
 			// leave ImmediateTransaction.isCommitting stuck at true, causing every subsequent write
 			// on the same context to fire-and-forget and silently disappear.
@@ -648,8 +653,10 @@ describe('Record locks (harper#483)', () => {
 			const holdId = id();
 			const otherId = id();
 			await LockTest.put({ id: holdId, n: 0 });
+			const context = {};
 			// Acquire and let the hold expire.
-			const holder = await LockTest.lock(holdId, { hold: true, lease: MIN_LOCK_LEASE_MS });
+			const holder = await LockTest.lock(holdId, { hold: true, lease: MIN_LOCK_LEASE_MS }, context);
+			assert.strictEqual(context.transaction, holder.getContext().transaction, 'holder shares the explicit context');
 			await delay(MIN_LOCK_LEASE_MS + 50);
 			holder.set('n', 99);
 			let caught;
@@ -660,7 +667,7 @@ describe('Record locks (harper#483)', () => {
 			}
 			assert.strictEqual(caught?.statusCode, 409, '409 from expired hold');
 			// isCommitting must be reset; a subsequent put on the same context must land.
-			await LockTest.put({ id: otherId, n: 42 });
+			await LockTest.put({ id: otherId, n: 42 }, context);
 			assert.strictEqual((await LockTest.get(otherId)).n, 42, 'put after 409 landed (isCommitting reset)');
 		});
 
@@ -721,6 +728,29 @@ describe('Record locks (harper#483)', () => {
 				await r.save();
 			});
 			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'staged write visible through lock()');
+		});
+
+		it('keeps an earlier different-key write when acquiring a scoped lock', async function () {
+			if (isLMDB) return this.skip();
+			const earlierId = id();
+			const lockedId = id();
+			await LockTest.put({ id: earlierId, n: 0 });
+			await LockTest.put({ id: lockedId, n: 0 });
+			const auditCountBefore = [...LockTest.auditStore.getRange({ start: 1 })].filter(
+				(entry) => entry.tableId === LockTest.tableId && entry.recordId === earlierId
+			).length;
+			await transaction(async () => {
+				await LockTest.patch(earlierId, { n: 1 });
+				const locked = await LockTest.lock(lockedId);
+				locked.set('n', 1);
+				await locked.save();
+			});
+			assert.strictEqual((await LockTest.get(earlierId)).n, 1, 'earlier write landed');
+			assert.strictEqual((await LockTest.get(lockedId)).n, 1, 'locked write landed');
+			const auditCountAfter = [...LockTest.auditStore.getRange({ start: 1 })].filter(
+				(entry) => entry.tableId === LockTest.tableId && entry.recordId === earlierId
+			).length;
+			assert.strictEqual(auditCountAfter, auditCountBefore + 1, 'earlier write audit entry landed');
 		});
 
 		it('item-4/rule-C: scoped lock outside transaction() persists across sequential saves until unlock()', async function () {
@@ -1052,6 +1082,26 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write from s.save() landed');
 		});
 
+		it('scoped→hold upgrade detaches its scoped write behind a static write', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0, name: 'before' });
+			let holder;
+			await transaction(async () => {
+				const scoped = await LockTest.lock(recordId);
+				scoped.set('n', 1);
+				await LockTest.patch(recordId, { name: 'static' });
+				holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			});
+			const afterUpgrade = await LockTest.get(recordId);
+			assert.strictEqual(afterUpgrade.n, 0, 'unsaved scoped change did not auto-commit');
+			assert.strictEqual(afterUpgrade.name, 'static', 'intervening static write landed');
+			holder.set('n', 2);
+			await holder.save();
+			await holder.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'explicit hold write landed');
+		});
+
 		it('major: same-instance scoped→hold re-entrant upgrade: hold persists after transaction commit', async function () {
 			// r.lock({hold:true}) on a scoped-locked instance must flip the handle to hold mode
 			// so the native key lock survives past the transaction's commit.
@@ -1206,6 +1256,38 @@ describe('Record locks (harper#483)', () => {
 			await holdRef.unlock();
 			assert.strictEqual(after.value.n, 2, 'plain write remains the LWW winner');
 			assert.strictEqual(after.version, plainVersion, 'rolled-back version did not raise the holder floor');
+		});
+
+		it('a skipped immediate holder write does not advance its version floor', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const context = {};
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 }, context);
+			const lockHandle = [...context.transaction.recordLocks.values()][0].values().next().value;
+			const initialCandidate = lockHandle.holderVersionCandidate();
+			await LockTest.put({ id: recordId, n: 1 });
+			holder.set('n', 2);
+			await holder.save();
+			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'newer plain write remains visible');
+			assert.strictEqual(
+				lockHandle.holderVersionCandidate(),
+				initialCandidate,
+				'skipped write did not advance the floor'
+			);
+			await holder.unlock();
+		});
+
+		it('an immediate holder write preserves a caller-supplied timestamp floor', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0 });
+			const timestamp = Date.now() + 60_000;
+			const holder = await LockTest.lock(recordId, { hold: true, lease: 5000 }, { timestamp });
+			holder.set('n', 1);
+			await holder.save();
+			await holder.unlock();
+			assert.strictEqual(entryOf(recordId).version, timestamp, 'holder write kept the explicit timestamp floor');
 		});
 
 		it('a hold with no transaction write does not outrank a later plain write', async function () {

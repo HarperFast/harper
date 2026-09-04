@@ -2223,7 +2223,6 @@ export function makeTable(options) {
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
-					write.recordVersionApplied = false;
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
 						write.skipped = true;
 						return;
@@ -2254,7 +2253,7 @@ export function makeTable(options) {
 						},
 						'invalidate'
 					);
-					write.recordVersionApplied = true;
+					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// TODO: recordDeletion?
 				},
 			};
@@ -2277,7 +2276,6 @@ export function makeTable(options) {
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
-					write.recordVersionApplied = false;
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
@@ -2315,7 +2313,7 @@ export function makeTable(options) {
 						false,
 						null
 					);
-					write.recordVersionApplied = true;
+					if (write.trackRecordVersion) write.recordVersionApplied = true;
 				},
 			};
 			transaction.addWrite(write);
@@ -2581,13 +2579,14 @@ export function makeTable(options) {
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					}
 					link.registerRecordLock(handle);
+					if (link.saveCommits && link.timestamp) handle.noteCandidateFloor(link.timestamp);
 					if (link.open === TRANSACTION_STATE.OPEN && !link.saveCommits) {
 						// Explicit transaction() (not ImmediateTransaction): pin the clock to
 						// acquiredAt when no writes have been staged yet.  When writes already
 						// exist, leave the clock alone (ordering is best-effort; write held records
 						// in their own transaction for the guarantee).  ImmediateTransaction is
 						// excluded (saveCommits=true) — its clock is never pinned in lock();
-						// each save() stamps with nextHolderVersion() instead.
+						// each save() stamps from the handle's committed version floor instead.
 						if (link.writes.length === 0 && !link.timestamp) {
 							link.timestamp = handle.acquiredAt;
 						}
@@ -2597,14 +2596,14 @@ export function makeTable(options) {
 							// do not update the read snapshot.
 							// The timestamp guard matches DatabaseTransaction's own setTimestamp calls: a
 							// deferred update() write leaves the clock at 0, which rocksdb-js rejects.
-							if (link.readTxnsUsed <= 1) {
+							if (link.writes.length === 0 && link.readTxnsUsed <= 1) {
 								link.releaseReadTxn();
 								link.snapshotFree = true;
 							} else if (link.timestamp) link.transaction.setTimestamp(link.timestamp);
 						}
 					}
 					// ImmediateTransaction: no clock pinning in lock(); save() stamps each write
-					// with nextHolderVersion() for both scoped and hold handles.
+					// from the committed handle floor for both scoped and hold handles.
 					return this.#reloadLocked(id, handle);
 				},
 				(err) => {
@@ -2957,7 +2956,6 @@ export function makeTable(options) {
 					// (walk identity tie against its own staged record) before a fresh-transaction replay.
 					const stagedOwnAuditEntry = retry && write.appendedAuditEntry === true;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
-					write.recordVersionApplied = false;
 					write.stagedEntry = undefined; // likewise: only set once this round actually stores a record
 					write.superseded = false; // likewise: a later write to this key re-marks it this round
 					// The record a preceding write in this transaction left for this key is what this write
@@ -3476,7 +3474,7 @@ export function makeTable(options) {
 					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
 
 					writeCommit(true);
-					write.recordVersionApplied = true;
+					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					if (expiresAt >= 0) {
 						scheduleCleanup(); // arm for replicated writes too, not just local-context writes
 						// A runtime per-record expiresAt on a table with no table-level expiration/eviction, no expiresAt
@@ -3641,7 +3639,6 @@ export function makeTable(options) {
 				commit: (txnTime, existingEntry, retry, transaction: any) => {
 					write.stagedEntry = undefined; // reset per round; set below once the removal is applied
 					write.superseded = false; // reset per round, as in the update path
-					write.recordVersionApplied = false;
 					// what a preceding write in this transaction left for this key is what gets removed
 					// from the indices here, not the pre-transaction record (harper#1968)
 					const priorStagedOp = priorStagedWrite(write);
@@ -3684,7 +3681,7 @@ export function makeTable(options) {
 						removeEntry(primaryStore, existingEntry, isRocksDB && transaction ? { transaction } : undefined);
 					}
 					write.stagedEntry = { value: undefined }; // the key holds no record for the rest of this transaction
-					write.recordVersionApplied = true;
+					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					// the removal supersedes the nearest record an earlier write in this transaction stored
 					// (older ones were already marked by their staged successors), so its saved blobs are
 					// cleaned up post-commit unless its audit entry references them
@@ -6488,10 +6485,11 @@ export function makeTable(options) {
 	 * instead of resolving a detached, dead reference.
 	 */
 	function detachScopedUpgradeWrite(link: any, keyId: unknown, handle: RecordLockHandle): void {
-		const tailWrite = link.writesByKey?.get(primaryStore)?.get(keyId);
-		if (tailWrite && !tailWrite.saved && tailWrite.lockHandle === handle) {
-			tailWrite.dropped = true;
-			link.detachWrite(tailWrite);
+		for (const write of link.writes) {
+			if (write && !write.saved && write.lockHandle === handle && writeKeyId(write.key) === keyId) {
+				write.dropped = true;
+				link.detachWrite(write);
+			}
 		}
 	}
 	function getAttributeValue(entry, attribute_name, context, sort?) {
