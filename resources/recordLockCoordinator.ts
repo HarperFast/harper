@@ -321,8 +321,11 @@ export class LockCoordinator {
 	#lastOffOwnerWarn = 0;
 	#knownParticipants: Set<string> | undefined;
 	#knownParticipantsAt = 0;
-	// Every transition that can make a key state released-only bumps this, so a futile reclamation
-	// scan can tell "nothing has changed since I last looked" in O(1).
+	// Bumped only where liveness is REMOVED — a released round, a dropped one, a cleared own round, a
+	// shrinking deferred queue. Those are the only transitions that can make a key state released-only,
+	// so a futile reclamation scan can tell "nothing reclaimable has appeared" in O(1). Bumping on
+	// arrivals too would let a request on an existing key re-arm the scan for the next overflow, which
+	// is the amplification this exists to prevent.
 	#mutations = 0;
 	#lastFutileScan = -1;
 
@@ -410,7 +413,6 @@ export class LockCoordinator {
 			reject,
 		};
 		state.own = own;
-		this.#mutations++;
 		this.#startTicking();
 		// Await the request before resolving on grants: a request that never became durable is one no
 		// peer will ever answer, and leaving it pending would burn the caller's whole timeout.
@@ -762,14 +764,12 @@ export class LockCoordinator {
 			released: false,
 		};
 		state.addPeer(identity, peer);
-		this.#mutations++;
 		this.#startTicking();
 		const own = state.own;
 		const defer =
 			own !== undefined && !own.done && (own.acquired || isEarlier(own.tsR, this.nodeId, entry.tsR, entry.requester));
 		if (defer) {
 			state.deferredOrder.push(identity);
-			this.#mutations++;
 			this.#sortDeferred(state);
 			return;
 		}
