@@ -12,6 +12,7 @@ const { get: env_get, setProperty } = environmentManager;
 import { getThisNodeName } from '#src/server/nodeName';
 import { connect, connectAsync } from 'mqtt';
 import { readFileSync } from 'fs';
+import { join } from 'node:path';
 import { handleApplication as handleMQTTApplication } from '#src/server/mqtt';
 import { SERVERS, portServer } from '#src/server/serverRegistry';
 
@@ -595,21 +596,23 @@ describe('test MQTT connections and commands', function () {
 			reconnectPeriod: 0,
 		}).catch(() => null);
 
-		const private_key_path = env_get('tls_privateKey');
 		let cert, fallbackCert, ca;
 		for await (const certificate of databases.system.hdb_certificate.search([])) {
 			if (certificate.is_authority) ca = certificate.certificate;
 			else {
 				// See the WSS mTLS test below for why a name mismatch can happen and why the fallback
 				// is needed.
-				fallbackCert ??= certificate.certificate;
-				if (certificate.name === getThisNodeName()) cert = certificate.certificate;
+				fallbackCert ??= certificate;
+				if (certificate.name === getThisNodeName()) cert = certificate;
 			}
 		}
 		cert ??= fallbackCert;
+		assert.ok(cert, 'expected a non-authority certificate record in system.hdb_certificate');
+		assert.ok(cert.private_key_name, 'expected the certificate record to name its private key file');
+		const private_key_path = join(env_get('rootPath'), 'keys', cert.private_key_name);
 		let client = await connectAsync(`mqtts://${testHost}:8884`, {
 			key: readFileSync(private_key_path),
-			cert,
+			cert: cert.certificate,
 			ca,
 			// Self-signed CA in test environment; mTLS is server-side (server rejects clients without
 			// a cert), so we skip client-side server-cert verification to avoid intermittent
@@ -661,7 +664,6 @@ describe('test MQTT connections and commands', function () {
 				server.on('error', reject);
 			});
 
-			const private_key_path = env_get('tls_privateKey');
 			let cert, fallbackCert, ca;
 			for await (const certificate of databases.system.hdb_certificate.search([])) {
 				if (certificate.is_authority) ca = certificate.certificate;
@@ -673,11 +675,14 @@ describe('test MQTT connections and commands', function () {
 					// this test process's fallback resolves through the harness's overridden, per-run
 					// loopback address instead. Fall back to any non-authority cert (there's exactly one
 					// in a simple, non-replicated install) rather than leaving the client with none.
-					fallbackCert ??= certificate.certificate;
-					if (certificate.name === getThisNodeName()) cert = certificate.certificate;
+					fallbackCert ??= certificate;
+					if (certificate.name === getThisNodeName()) cert = certificate;
 				}
 			}
 			cert ??= fallbackCert;
+			assert.ok(cert, 'expected a non-authority certificate record in system.hdb_certificate');
+			assert.ok(cert.private_key_name, 'expected the certificate record to name its private key file');
+			const private_key_path = join(env_get('rootPath'), 'keys', cert.private_key_name);
 			let bad_client = await connectAsync(`wss://${testHost}:8885`, {
 				reconnectPeriod: 0,
 				clientId: 'test-bad-mtls',
@@ -685,7 +690,7 @@ describe('test MQTT connections and commands', function () {
 			}).catch(() => null);
 			let client = await connectAsync(`wss://${testHost}:8885`, {
 				key: readFileSync(private_key_path),
-				cert,
+				cert: cert.certificate,
 				ca,
 				// Same rationale as the TCP mTLS test: skip client-side server-cert check.
 				rejectUnauthorized: false,

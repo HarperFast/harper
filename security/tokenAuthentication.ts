@@ -10,7 +10,7 @@ import {
 	SYSTEM_SCHEMA_NAME,
 	SYSTEM_TABLE_NAMES,
 } from '../utility/hdbTerms.ts';
-import { ClientError, hdbErrors } from '../utility/errors/hdbError.ts';
+import { ClientError, ServerError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
 import logger from '../utility/logging/harper_logger.ts';
 import * as password from '../utility/password.ts';
@@ -23,6 +23,7 @@ import {
 	markTokenAsWorkloadIdentity,
 } from './credentialProvenance.ts';
 import { buildScopedTokenUser, syntheticRoleName } from './impersonation.ts';
+import { credentialRejectionError, isCredentialRejection } from './credentialRejection.ts';
 import type { ImpersonatePayload } from '../server/operationsServer.ts';
 import { expandOperationsPerms } from '../utility/operationPermissions.ts';
 import { update } from '../dataLayer/insert.ts';
@@ -414,6 +415,7 @@ export async function validateLoginToken(token: string): Promise<any> {
 async function validateToken(token: string, tokenType: string): Promise<any> {
 	try {
 		const keys: JWTRSAKeys = await getJWTRSAKeys();
+		assertUsableVerificationKey(keys.publicKey);
 		// The OPERATION type also accepts scoped tokens, so the subject is checked after
 		// verification rather than pinned in the verify options.
 		const tokenVerified = jwt.verify(
@@ -428,18 +430,18 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 			return buildUserFromScopedToken(tokenVerified);
 		}
 		if (tokenVerified.sub !== tokenType) {
-			throw new Error('Invalid token');
+			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 
 		// If a role is present, it means the token is not an operation token. The validation of
 		// the token will happen in the respective function/component that uses the token.
 		if (tokenVerified.role) {
-			throw new Error('Invalid token');
+			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 
 		const user: any = await findAndValidateUser(tokenVerified.username, undefined, false);
 		if (tokenType === TOKEN_TYPE.REFRESH && !password.validate(user.refresh_token, token)) {
-			throw new Error('Invalid token');
+			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 		}
 
 		// Surfaced as `tokenOperations` rather than merged into role.permission.operations: that field
@@ -455,10 +457,28 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 	} catch (err) {
 		logger.warn(err);
 		if (err?.name === 'TokenExpiredError') {
-			throw new ClientError(AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.FORBIDDEN);
+			throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.TOKEN_EXPIRED, HTTP_STATUS_CODES.FORBIDDEN);
 		}
+		// Only positively classified token failures may cross the route-ownership boundary as rejections.
+		if (!isTokenRejection(err)) throw err;
 
-		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
+		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
+	}
+}
+
+const JWT_REJECTION_ERROR_NAMES = new Set(['JsonWebTokenError', 'NotBeforeError', 'TokenExpiredError']);
+// jsonwebtoken reports unusable verification keys and bad tokens through the same error type.
+const KEY_MATERIAL_FAULT = /secretOrPublicKey|asymmetric key|PEM routines|^error:/i;
+
+function isTokenRejection(err: any): boolean {
+	if (isCredentialRejection(err)) return true;
+	if (!JWT_REJECTION_ERROR_NAMES.has(err?.name)) return false;
+	return !KEY_MATERIAL_FAULT.test(String(err?.message ?? ''));
+}
+
+function assertUsableVerificationKey(publicKey: unknown): void {
+	if (typeof publicKey !== 'string' || !publicKey.includes('-----BEGIN')) {
+		throw new ServerError(AUTHENTICATION_ERROR_MSGS.NO_ENCRYPTION_KEYS, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
 	}
 }
 
@@ -470,7 +490,7 @@ async function validateToken(token: string, tokenType: string): Promise<any> {
 function buildUserFromScopedToken(claims: JwtPayload): User {
 	const embedded = (claims.role as { permission?: Record<string, unknown> })?.permission;
 	if (!embedded || typeof embedded !== 'object' || Array.isArray(embedded) || typeof claims.username !== 'string') {
-		throw new Error('Invalid token');
+		throw credentialRejectionError(AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
 	const permission: Record<string, unknown> = { ...embedded, super_user: false, cluster_user: false };
 	// Hashed from the server-side downgraded clone (before the _expandedOperations Set is attached),

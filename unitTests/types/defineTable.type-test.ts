@@ -12,6 +12,7 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
 import { defineTable, types } from '../../dist/index.js';
+import type { RecordLockOptions, WritableRecord } from '../../dist/index.js';
 
 const { id, int, string, date } = types;
 
@@ -152,6 +153,14 @@ async function verbs() {
 	live.name = 'Renamed'; //                                                      writable field — mutable
 }
 
+const lockOptions: RecordLockOptions = { hold: true, lease: 5000 };
+async function lockTypes() {
+	const locked: WritableRecord<TrackRecord> = await Track.lock('DtMF', lockOptions);
+	await locked.lock({ hold: true });
+	await locked.delete('other-id');
+	await locked.unlock();
+}
+
 // Explicit-typed forms, to show the projections stand alone too:
 const toInsert: InsertTrack = { name: 'New Album', status: 'draft', duration: 50 };
 const toReplace: UpsertTrack = { id: 'DtMF', name: 'New Album', status: 'draft' };
@@ -176,4 +185,17 @@ const bad_query: TrackQuery = { duration: 50 };
 // @ts-expect-error relations are not writable
 const bad_album: (typeof Album)['$insert'] = { title: 'x', tracks: [] };
 
-export { Track, Album, Book, Author, toInsert, toReplace, toPatch, filter, verbs, authorName, firstBookTitle };
+export {
+	Track,
+	Album,
+	Book,
+	Author,
+	toInsert,
+	toReplace,
+	toPatch,
+	filter,
+	verbs,
+	lockTypes,
+	authorName,
+	firstBookTitle,
+};

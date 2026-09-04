@@ -159,3 +159,134 @@ export function toWriteHeadHeaders(headers: any): any {
 	}
 	return result;
 }
+
+// RFC 9111 cache-scope directives; boundaries on both sides so a token like `public-foo` doesn't match.
+export const SHARED_CACHE_OPTIN = /(^|[,\s])(public|s-maxage)($|[\s,;=])/i;
+export const PRIVATE_SCOPE = /(^|[,\s])(private|no-store)($|[\s,;=])/i;
+
+function headerValueString(value: unknown): string {
+	if (value == null) return '';
+	return Array.isArray(value) ? value.join(', ') : String(value);
+}
+
+/**
+ * Folds the middleware chain's response headers into the headers a fallback server produced for the
+ * same request.
+ *
+ * Bun and uWS construct a new response from legacy Fastify when the chain declines a request, so the
+ * chain's credential-dependent cache policy must be merged explicitly. Fastify wins headers it set,
+ * `Vary` is unioned, and private cache scope is re-applied unless the final response explicitly opts
+ * into RFC 9111 shared caching with `public` or `s-maxage`.
+ */
+export function mergeChainHeadersIntoFallback<
+	T extends {
+		get(name: string): any;
+		set(name: string, value: any): any;
+		has(name: string): boolean;
+		append?(name: string, value: any): any;
+	},
+>(chainHeaders: any, finalHeaders: T): T {
+	if (!chainHeaders?.[Symbol.iterator]) return finalHeaders;
+	const chainVary = headerValueString(chainHeaders.get('Vary'));
+	const chainCacheControl = headerValueString(chainHeaders.get('Cache-Control'));
+	for (const [name, value] of chainHeaders) {
+		const lowerName = String(name).toLowerCase();
+		if (lowerName === 'vary' || lowerName === 'cache-control') continue;
+		if (finalHeaders.has(name)) {
+			if (lowerName === 'set-cookie') {
+				const existing = (finalHeaders as any).getSetCookie?.() ?? finalHeaders.get(name);
+				const existingValues = new Set((Array.isArray(existing) ? existing : [existing]).map(String));
+				const values = Array.isArray(value) ? value : [value];
+				for (const single of values) {
+					if (!existingValues.has(String(single))) appendHeader(finalHeaders, name, single, false);
+				}
+			}
+			continue;
+		}
+		if (Array.isArray(value)) {
+			for (const single of value) appendHeader(finalHeaders, name, single, lowerName !== 'set-cookie');
+		} else finalHeaders.set(name, value);
+	}
+	for (const token of chainVary.split(',')) {
+		const trimmed = token.trim();
+		if (trimmed) addVaryHeader(finalHeaders as any, trimmed);
+	}
+	if (chainCacheControl) {
+		const finalCacheControl = headerValueString(finalHeaders.get('Cache-Control'));
+		if (!finalCacheControl) finalHeaders.set('Cache-Control', chainCacheControl);
+		else if (
+			PRIVATE_SCOPE.test(chainCacheControl) &&
+			!PRIVATE_SCOPE.test(finalCacheControl) &&
+			!SHARED_CACHE_OPTIN.test(finalCacheControl)
+		)
+			finalHeaders.set('Cache-Control', finalCacheControl + ', private');
+	}
+	return finalHeaders;
+}
+
+function nodeResponseHeaders(nodeResponse: any) {
+	return {
+		get: (name: string) => nodeResponse.getHeader(name),
+		set: (name: string, value: any) => nodeResponse.setHeader(name, value),
+		has: (name: string) => nodeResponse.hasHeader(name),
+		append: (name: string, value: any, commaDelimited?: boolean) => {
+			const existing = nodeResponse.getHeader(name);
+			if (existing == null) return nodeResponse.setHeader(name, value);
+			if (commaDelimited)
+				return nodeResponse.setHeader(name, (Array.isArray(existing) ? existing.join(', ') : existing) + ', ' + value);
+			return nodeResponse.setHeader(name, Array.isArray(existing) ? [...existing, value] : [existing, value]);
+		},
+	};
+}
+
+function applyWriteHeadHeaders(nodeResponse: any, headers: any): void {
+	const suppliedHeaders = new Map<string, { name: string; value: any }>();
+	const addHeader = (name: string, value: any) => {
+		const key = String(name).toLowerCase();
+		const supplied = suppliedHeaders.get(key);
+		if (!supplied) {
+			suppliedHeaders.set(key, { name, value });
+			return;
+		}
+		const values = Array.isArray(supplied.value) ? supplied.value : [supplied.value];
+		supplied.value = Array.isArray(value) ? values.concat(value) : values.concat([value]);
+	};
+	if (Array.isArray(headers)) {
+		if (Array.isArray(headers[0])) {
+			for (const [name, value] of headers) addHeader(name, value);
+		} else {
+			for (let i = 0; i + 1 < headers.length; i += 2) addHeader(headers[i], headers[i + 1]);
+		}
+	} else {
+		for (const name of Object.keys(headers)) {
+			const value = headers[name];
+			if (value != null) addHeader(name, value);
+		}
+	}
+	for (const { name, value } of suppliedHeaders.values()) nodeResponse.setHeader(name, value);
+}
+
+/**
+ * Node's counterpart to the Bun and uWS fallback bridges: the chain's headers go onto the
+ * `ServerResponse` before legacy Fastify runs, so a Fastify route that sets `Cache-Control` or `Vary`
+ * replaces them outright and can make a credential-dependent response shared-cacheable (#1565).
+ * Reconciliation therefore runs at `writeHead` — the last point the header set is still mutable, and
+ * the one Node also routes implicit headers through — using the same policy as the other two bridges.
+ */
+export function bridgeChainHeadersToNodeResponse(chainHeaders: any, nodeResponse: any): void {
+	if (!chainHeaders?.[Symbol.iterator]) return;
+	for (const [name, value] of chainHeaders) nodeResponse.setHeader(name, value);
+	const originalWriteHead = nodeResponse.writeHead;
+	nodeResponse.writeHead = function (statusCode: number, statusMessage?: any, headers?: any) {
+		if (this.headersSent) return originalWriteHead.apply(this, arguments as any);
+		if (statusMessage != null && typeof statusMessage !== 'string') {
+			headers = statusMessage;
+			statusMessage = undefined;
+		}
+		if (headers) applyWriteHeadHeaders(this, headers);
+		mergeChainHeadersIntoFallback(chainHeaders, nodeResponseHeaders(this));
+		return statusMessage === undefined
+			? originalWriteHead.call(this, statusCode)
+			: originalWriteHead.call(this, statusCode, statusMessage);
+	};
+}

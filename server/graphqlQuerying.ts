@@ -3,6 +3,7 @@ import type { RequestParams } from 'graphql-http';
 import { getDeserializer } from './serverHelpers/contentTypes.ts';
 import { resources } from '../resources/Resources.ts';
 import logger from '../utility/logging/harper_logger.ts';
+import { settleDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
 
 // This code makes heavy use of the word "node" to refer to a node in the GraphQL AST.
 
@@ -579,6 +580,9 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			if (!request.url.startsWith('/graphql')) {
 				return nextLayer(request);
 			}
+
+			const settledCredentialRejection = settleDeferredCredentialRejection(request);
+			if (settledCredentialRejection) return settledCredentialRejection;
 
 			try {
 				// Await the `graphqlHandler` call here so that errors are caught.

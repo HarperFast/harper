@@ -5,6 +5,7 @@ import { resolveBaseURLPath } from '../components/resolveBaseURLPath.ts';
 import { convertToMS } from '../utility/common_utils.ts';
 import { isMatch } from 'micromatch';
 import send from 'send';
+import { settleDeferredCredentialRejection } from '../security/deferredAuthentication.ts';
 
 /**
  * The static plugin handles serving static files from the respective application directory.
@@ -337,40 +338,30 @@ export function handleApplication(scope: Scope) {
 					// Retrieve index entry
 					staticFile = indexEntries.get(req.pathname);
 
-					// The router strips both '/assets' and '/assets/' down to '/', so the mount root
-					// must be disambiguated via the unstripped pathname (exposed by stripPrefix):
-					// redirect the no-slash form so relative links on the index page resolve under
-					// the mount (#1583). Query string is preserved across both redirects; compute it
-					// lazily inside each branch so the common (non-redirect) index serve stays allocation-free.
-					// Gated on the EXTERNAL base path, not the plugin-local one: a root-level static
-					// plugin (baseURLPath === '/') still needs this redirect when the application
-					// itself carries a host/urlPath mount, since the client-visible mount root is then
-					// externalBaseURLPath, not '/' (review finding).
-					if (staticFile && req.pathname === '/' && externalBaseURLPath !== '/') {
-						const originalPathname: string | undefined = (req as any).originalPathname;
-						if (originalPathname && !originalPathname.endsWith('/')) {
-							const queryIndex = (req.url as string).indexOf('?');
-							const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
-							return {
-								status: 301,
-								headers: {
-									Location: externalBaseURLPath + query,
-								},
-							};
-						}
-					}
+					// Prefix stripping makes `originalPathname` necessary to distinguish mounted roots (#1583).
+					const originalPathname: string | undefined = (req as any).originalPathname;
+					const redirectsMountRoot = !!(
+						staticFile &&
+						req.pathname === '/' &&
+						externalBaseURLPath !== '/' &&
+						originalPathname &&
+						!originalPathname.endsWith('/')
+					);
 
-					// If `null`, redirect to trailing slash. req.pathname arrives with the mount
-					// prefix stripped, so rebuild the external path for the Location header (#1583)
-					if (staticFile === null) {
-						const externalPath =
-							externalBaseURLPath === '/' ? req.pathname : externalBaseURLPath.slice(0, -1) + req.pathname;
+					if (redirectsMountRoot || staticFile === null) {
+						const settledCredentialRejection = settleDeferredCredentialRejection(req);
+						if (settledCredentialRejection) return settledCredentialRejection;
 						const queryIndex = (req.url as string).indexOf('?');
 						const query = queryIndex === -1 ? '' : (req.url as string).slice(queryIndex);
+						const location = redirectsMountRoot
+							? externalBaseURLPath + query
+							: (externalBaseURLPath === '/' ? req.pathname : externalBaseURLPath.slice(0, -1) + req.pathname) +
+								'/' +
+								query;
 						return {
 							status: 301,
 							headers: {
-								Location: externalPath + '/' + query,
+								Location: location,
 							},
 						};
 					}
@@ -393,6 +384,8 @@ export function handleApplication(scope: Scope) {
 
 			// If an entry matched, serve it
 			if (staticFile) {
+				const settledCredentialRejection = settleDeferredCredentialRejection(req);
+				if (settledCredentialRejection) return settledCredentialRejection;
 				// The benefit to using `send` is that it handles a lot of edge cases and headers for us.
 				return {
 					handlesHeaders: true,
@@ -405,7 +398,8 @@ export function handleApplication(scope: Scope) {
 				return next(req);
 			}
 
-			// Otherwise, handle not found
+			const settledCredentialRejection = settleDeferredCredentialRejection(req);
+			if (settledCredentialRejection) return settledCredentialRejection;
 
 			const notFound = scope.options.get(['notFound']);
 

@@ -10,7 +10,11 @@ const chokidar = require('chokidar');
 const configUtils = require('#src/config/configUtils');
 const { stringify } = require('yaml');
 
-describe('RootConfigWatcher', () => {
+// `function` so the suite can set a timeout: these tests await watcher events that may never
+// arrive, and .mocharc.json's `timeout: 0` would let that wedge the whole run
+describe('RootConfigWatcher', function () {
+	this.timeout(30000);
+
 	beforeEach(() => {
 		this.fixture = mkdtempSync(join(tmpdir(), 'harper.unit-test.root-config-watcher-'));
 		this.configFilePath = join(this.fixture, 'config.yaml');
