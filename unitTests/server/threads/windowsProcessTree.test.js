@@ -107,6 +107,14 @@ describe('selectWindowsProcessTree', () => {
 		);
 	});
 
+	it('does not treat a root without a creation time as the process we spawned', () => {
+		const members = selectWindowsProcessTree([row(ROOT, 1, null, 'cmd.exe')], {
+			rootPid: ROOT,
+			rootKnownAt: SPAWNED_AT,
+		});
+		assert.deepEqual(members, []);
+	});
+
 	it('bounds a still-running root only by the current time', () => {
 		const table = [row(ROOT, 1, SPAWNED_AT - 5, 'cmd.exe'), row(4100, ROOT, SPAWNED_AT + 90_000)];
 		const members = selectWindowsProcessTree(table, { rootPid: ROOT, rootKnownAt: SPAWNED_AT }, SPAWNED_AT + 100_000);

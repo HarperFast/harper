@@ -142,7 +142,7 @@ export function findWindowsTreeRoot(
 ): WindowsProcessRecord | undefined {
 	if (identity.rootExitedAt !== undefined) return undefined;
 	const root = table.find((process) => process.pid === identity.rootPid);
-	if (root && (root.created === null || root.created <= identity.rootKnownAt + CLOCK_SKEW_MS)) return root;
+	if (root?.created !== null && root?.created <= identity.rootKnownAt + CLOCK_SKEW_MS) return root;
 	return undefined;
 }
 
@@ -183,7 +183,7 @@ export function selectWindowsProcessTree(
 			pid: identity.rootPid,
 			notBefore:
 				(rootCreatedAt === undefined || rootCreatedAt === null
-					? identity.rootKnownAt - (identity.rootStartedWithinMs ?? 0)
+					? identity.rootKnownAt - (identity.rootStartedWithinMs ?? ROOT_SPAWN_ALLOWANCE_MS)
 					: rootCreatedAt) - CLOCK_SKEW_MS,
 			notAfter:
 				Math.min(

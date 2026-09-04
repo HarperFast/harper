@@ -2087,24 +2087,6 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
-		// the class goes with the database: its timers, callbacks and reclamation handler must not
-		// outlive it (cleanup also closes its RocksDB column families; LMDB sub-databases close below)
-		if (typeof table.cleanup === 'function') {
-			try {
-				table.cleanup();
-			} catch (error) {
-				logger.warn(`Error releasing table ${tableName} while closing database ${databaseName}:`, error);
-				// the handles are what a waiting drop or restore needs released, whatever else failed
-				try {
-					table.closeStores?.();
-				} catch {}
-			}
-		}
-		if (table.primaryStore instanceof RocksDatabase) continue;
-		for (const indexName in table.indices || {}) {
-			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
-		}
-		closeStore(table.primaryStore, `table ${tableName}`);
 	}
 	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
 	// an open root store, tracked only on the defined-database entry rather than any table — include
@@ -2122,6 +2104,25 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 	// synchronous purgeLogs() call with nothing suspended mid-removal.
 	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
 	if (!dbTables && rootStores.size === 0) return false;
+	for (const tableName in dbTables ?? {}) {
+		const table: any = dbTables[tableName];
+		if (!table?.primaryStore) continue;
+		if (typeof table.cleanup === 'function') {
+			try {
+				table.cleanup();
+			} catch (error) {
+				logger.warn(`Error releasing table ${tableName} while closing database ${databaseName}:`, error);
+				try {
+					table.closeStores?.();
+				} catch {}
+			}
+		}
+		if (table.primaryStore instanceof RocksDatabase) continue;
+		for (const indexName in table.indices || {}) {
+			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+		}
+		closeStore(table.primaryStore, `table ${tableName}`);
+	}
 	for (const rootStore of rootStores) {
 		removeStorageReclamation(rootStore.path);
 		closeStore(rootStore.dbisDb, 'attributes store');
