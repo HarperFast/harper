@@ -15,7 +15,8 @@ const { table } = require('#src/resources/databases');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { PassThrough } = require('node:stream');
-const { RocksDatabase, registryStatus } = require('@harperfast/rocksdb-js');
+const { RocksDatabase, registryStatus, constants } = require('@harperfast/rocksdb-js');
+const { RETRY_NOW_VALUE } = constants;
 const { createBlob } = require('#src/resources/blob');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const { waitFor } = require('../waitFor.js');
@@ -800,6 +801,25 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		assert.equal(await BlobResource.get(2063), undefined, 'the poisoned write must not be committed');
 	});
 
+	it('reports a disconnect that aborts a commit parked in pre-commit work', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = {};
+		let parked;
+		const committing = transaction(context, async () => {
+			await BlobResource.put({ id: 2071, blob }, context);
+			parked = databaseTxns(context)[0];
+		});
+		slow.write(Buffer.alloc(16384, 'l'));
+		await waitFor(() => parked?.committing, {
+			message: 'commit should park in its pre-commit phase while the blob save runs',
+		});
+		parked.abortDueToDisconnect();
+		slow.end();
+		await assert.rejects(committing, /client disconnected/);
+		assert.equal(await BlobResource.get(2071), undefined, 'the disconnected write must not be committed');
+	});
+
 	// Same phantom-commit hazard reached by a plain abort rather than the monitor's poison.
 	it('a transaction aborted while parked in its pre-commit phase throws instead of resolving as success', async function () {
 		const slow = new PassThrough();
@@ -1446,6 +1466,33 @@ describe('Disconnect abort', () => {
 		} finally {
 			setDisconnectExpiration(30000);
 		}
+	});
+
+	it('finishes a RETRY_NOW continuation after a submitted commit is monitor-poisoned', async function () {
+		if (isLMDB) this.skip();
+		const context = {};
+		let releaseFirstAttempt;
+		let attempts = 0;
+		await assert.rejects(
+			transaction(context, async (txn) => {
+				await DisconnectResource.put(571, { name: 'retry survives poison' }, context);
+				const nativeTransaction = txn.transaction;
+				const nativeCommit = nativeTransaction.commit.bind(nativeTransaction);
+				nativeTransaction.commit = () => {
+					attempts++;
+					if (attempts === 1) return new Promise((resolve) => (releaseFirstAttempt = () => resolve(RETRY_NOW_VALUE)));
+					return nativeCommit();
+				};
+				const committing = txn.commit();
+				await waitFor(() => releaseFirstAttempt, { message: 'the first native attempt should be pending' });
+				txn.poisonAfterStalledSubmittedCommit();
+				releaseFirstAttempt();
+				await committing;
+			}),
+			/open-transaction time/
+		);
+		assert.equal(attempts, 2, 'the poisoned attempt must run its RETRY_NOW continuation');
+		assert.equal((await DisconnectResource.get(571))?.name, 'retry survives poison');
 	});
 
 	// The wrapper cannot abort a commit it did not await, but its scope is still over. Without giving

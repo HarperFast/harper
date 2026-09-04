@@ -376,9 +376,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 		} catch (abortError) {
 			harperLogger.debug?.('aborting LMDB transaction after a failed commit', abortError);
 		}
-		// The success path detaches next before awaiting its completion. Retain the captured pointer so a
-		// rejecting child is still cleaned even though the current chain can no longer reach it.
-		if (next && !nextWasAttached) {
+		// A detached pre-submit child has no other cleanup path. A submitted child owns an unknown native
+		// outcome and will clean itself when its own commit promise settles.
+		if (next && !nextWasAttached && !next.nativeCommitSubmitted) {
 			try {
 				next.abort(true);
 			} catch (abortError) {

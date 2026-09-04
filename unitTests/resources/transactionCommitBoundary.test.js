@@ -7,6 +7,7 @@ const {
 	isReleasedTransaction,
 } = require('#src/resources/DatabaseTransaction');
 const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
+const { waitFor } = require('../waitFor');
 
 function makeLMDBWrite(id, commit) {
 	const store = {
@@ -134,6 +135,31 @@ describe('Transaction native-submit boundary', () => {
 		releaseBefore();
 
 		await assert.rejects(committing, /client disconnected/);
+	});
+
+	it('does not abort a detached LMDB child whose native commit is still pending', async function () {
+		const expected = new Error('head flush failed');
+		const head = new LMDBTransaction();
+		const child = new LMDBTransaction();
+		head.next = child;
+		child.root = head;
+		let releaseChild;
+		const childCommit = new Promise((resolve) => (releaseChild = resolve));
+		const headWrite = makeLMDBWrite(4, () => {});
+		const childWrite = makeLMDBWrite(5, () => childCommit);
+		const failedFlush = Promise.reject(expected);
+		failedFlush.catch(() => {});
+		headWrite.store.flushed = failedFlush;
+		head.writes.push(headWrite);
+		child.writes.push(childWrite);
+
+		await assert.rejects(head.commit({ flush: true }), (error) => error === expected);
+		assert.equal(child.nativeCommitSubmitted, true, 'the child must still own its unknown native outcome');
+		assert.equal(child.writes.length, 1, 'head cleanup must not delete the submitted child write state');
+
+		releaseChild();
+		await waitFor(() => child.writes.length === 0, { message: 'the child commit should settle' });
+		assert.equal(child.writes.length, 0, 'the child cleans itself once its own commit settles');
 	});
 
 	it('preserves and leaves protected post-submit work unpoisoned', function () {
