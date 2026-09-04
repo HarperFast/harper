@@ -2,7 +2,7 @@ import { type Logger } from '../utility/logging/logger.ts';
 import { loggerWithTag } from '../utility/logging/harper_logger.ts';
 import { EventEmitter, once } from 'events';
 import yaml from 'yaml';
-import chokidar, { type FSWatcher } from 'chokidar';
+import { type FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'util';
@@ -11,6 +11,8 @@ import { cloneDeep } from 'lodash';
 import {
 	POLLING_FALLBACK_OPTIONS,
 	PartialReadRetry,
+	claimLostNativeWatchError,
+	guardedWatch,
 	isPartialReadError,
 	isWatcherExhaustionError,
 	warnWatcherFallback,
@@ -126,11 +128,10 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 
 	#openWatcher() {
 		this.#openCount++;
-		this.#watcher = chokidar
-			.watch(this.#watchPath, {
-				persistent: false,
-				...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
-			})
+		this.#watcher = guardedWatch(this.#watchPath, {
+			persistent: false,
+			...(this.#usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
+		})
 			.on('add', this.#handleChange.bind(this))
 			.on('change', this.#handleChange.bind(this))
 			.on('error', this.#handleError.bind(this))
@@ -256,6 +257,9 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	}
 
 	#handleError(error: unknown) {
+		// See EntryHandler.#handleWatcherError: a lost native watch handle is benign
+		// and must not be surfaced to consumers as a config-watch failure.
+		if (claimLostNativeWatchError(error)) return;
 		if (isWatcherExhaustionError(error)) {
 			// Swallow every exhaustion error — chokidar can emit several before the
 			// failed native watcher closes, and we don't want a flurry of ENOSPC to

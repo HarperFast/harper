@@ -17,6 +17,7 @@ export interface PeerCertificate {
 		[key: string]: any;
 	};
 	raw?: Buffer;
+	fingerprint256?: string;
 	issuerCertificate?: PeerCertificate;
 }
 

@@ -93,6 +93,10 @@ When adding a new commit-handler early-return path: reset `write.skipped = false
 
 **Source-unavailable blobs must not abort the commit.** `startPreCommitBlobsForRecord().complete()` awaits each blob's `saving` promise; a rejection there propagates up and aborts the record's apply (the replication subscription loop catches and logs it as `error in subscription handler`). For a blob the replication source can no longer provide — evicted/expired at the origin, the receiver having flagged the rejection `sourceBlobUnavailable` (harper-pro#403) — that abort permanently wedged a replication copy stream on an expiration cache table whose TTL-evicted blobs are gone everywhere: every orphaned record's apply re-threw, the copy never advanced, and backpressure pinned at ~100%. `complete()` therefore tolerates a `sourceBlobUnavailable` rejection (`isSourceBlobUnavailable`): the record commits with a diverged blob reference, left for proactive backfill (harper-pro#388). Local/transient save faults stay unmarked and still reject, so the write aborts and a reconnect retries it — no silent loss. This is the apply/commit-side complement to the replication receiver's resume-cursor advance (harper-pro#403/#405), which handles the durability-watermark side of the same missing blob.
 
+## Blob compression: policy at `saveBlob`, completeness via the writer lock, codec is per-file truth
+
+Opt-in deflate compression for file-backed blobs (harper#2443) has three load-bearing placements. **Policy resolves in `saveBlob`, not `createBlob`:** every local blob write funnels through `saveBlob` (the msgpackr pack extension, pre-commit saves, native-Blob saves), including the HTTP-upload path, which never sees creation options — an explicit `compress` option or a pre-compressed source (`storedCodec`) still wins. The shipped `false` entries for already-compressed types merge under the operator's `storage.blobs.compression` map with same-key-operator-wins and exact-beats-wildcard precedence; unknown-size streamed writes never compress (a threshold cannot be evaluated without a size). **A compressed body's completeness authority is the writer lock, never its length:** the 8-byte header records the _uncompressed_ size, so the streaming read path (`stream()`'s `readCompressedBlob`) waits for the lock like `bytes()` always has. After the wait it checks **file identity** — `fstat` on its descriptor vs `stat` on the path — because an in-place repair renames a fresh (uncompressed) file over the path while holding that same lock, and can do so either during the wait or in the gap between the first read and the lock probe (so "did we wait" is not a reliable signal). If the inode changed, the descriptor is orphaned: it reopens the path (nulling `fd` before closing the stale descriptor, so a racing `cancel()` cannot double-close a reassigned fd, #1457) and re-reads the header — a repaired (now uncompressed) header is reported retryable 503 so a re-read serves the new file, matching `openStoredBlobBody`. If the inode is unchanged the descriptor is kept and the same-fd re-read still catches an in-place PENDING/ERROR stamp (harper-pro#481). It then inflates with a hard output ceiling at the declared size — a header that lies small is refused before emitting past it, and a clean deflate end short of the declared size is a torn body (500), not a short read. **The header type byte is per-file local truth:** the `storedCodec` hint stamped into stored blob-ref options is only a cheap prefilter for replication senders — every node re-encodes blob refs with local fileIds on apply, and `openStoredBlobBody`/`createBlobFromStoredBody` verify the actual bytes by concurrent inflate (sender: torn body → loud permanent error before the terminal frame; receiver: reject-before-publish), so no relayed metadata can ever mislabel a file. Both concurrent-inflate verifiers settle their pipeline from the inflater's `error`/`close`, not only from the per-chunk `write` callback: a mid-stream `Z_DATA_ERROR` (a corrupt, not merely truncated, body) fires `error`/`close` but never invokes the pending `write` callback, so a verifier waiting only on it would hang the write pipeline forever (receiver) or suspend the send generator with its descriptor and file hold un-released (sender). Do not "simplify" either to await only the write callback. **In-place repair classifies a compressed body once, unlocked and async, and confirms it locked by identity:** a deflate body torn by an unclean shutdown carries a finalized header recording the uncompressed size, so a length-only gate declines exactly the repair compression makes common — `blobFileMissingOrIncompleteAsync` inflates (streamed, output bounded at the declared size) and records the damaged file's `(length, header)` on its storage info; the locked sync recheck `blobFileMissingOrIncomplete` never inflates on the event loop and answers `true` for a deflate body only while length and header still equal that observation (writers only append and repairs replace the file, so unchanged length + header means unchanged bytes), otherwise `undefined`, which declines. Callers (harper-pro's copy-delivery repair) must probe async first. `openStoredBlobBody` sniffs synchronously (lock probe + header) but its `stream()` opens its own descriptor and re-reads the header — a mismatch means the announced form is gone (a repair rename landed) and is reported as a transient 503, not a corrupt body. Read streams own their descriptors in path mode — sharing an fd with an fs stream races its worker-thread `close(2)` (EBADF); the blob hold keeps the path alive instead.
+
 ## Over-time transactions are aborted, not force-committed (`DatabaseTransaction`/`LMDBTransaction`)
 
 `startMonitoringTxns()` (a `setInterval` per engine) watches `trackedTxns` and acts when a transaction's `timeout` reaches 0 (after ~2 ticks of `STORAGE_MAXTRANSACTIONOPENTIME`, default 30s). A transaction is tracked once it acquires a read snapshot (`getReadTxn`).
@@ -105,6 +109,8 @@ When adding a new commit-handler early-return path: reset `write.skipped = false
 - **Resuming from that await re-checks that the transaction is still alive.** `timedOut` (monitor poison, including via the `next` chain) throws `transactionOpenTooLongError`; a write set cleared with the handle released — a plain `abort()` in the same window — throws `Transaction was aborted while its commit was waiting on pre-commit work`. Without both, either path resolves as a phantom commit. `LMDBTransaction.commit` carries the same pair around its own `before` phase.
 
 **Extending the budget for one known-long write:** `DatabaseTransaction.timeoutBudget` is a per-transaction RocksDB floor applied whenever the transaction is re-armed (initial reads, writes, and active multi-store-chain propagation); the effective timeout is `Math.max(txnExpiration, timeoutBudget)`. This makes the budget sticky across a write's pre-commit existing-entry read and later writes, while never shortening a larger global `STORAGE_MAXTRANSACTIONOPENTIME`; RocksDB links added for another store inherit the same floor. Reads after a pending write do not re-arm the transaction: that preserves the idle-limit invariant for orphaned write-holding requests. Also, `resources/transaction.ts`'s `transaction(callback)` (no explicit context) joins whatever transaction is already open on the ambient AsyncLocalStorage context rather than guaranteeing a fresh one. `components/deploymentRecorder.ts`'s `withIsolatedTransaction` builds a new context from only the ambient audit/session/cancellation fields, so every recorder write commits independently without inheriting transaction controls. It uses the sticky budget to give `ingestPayload`'s blob-gated writes a size-appropriate limit instead of the generic default, while coalesced progress flushes are drained and suppressed until ingest settles to avoid same-row transaction conflicts. The ingest helper deliberately floors the shared `deployment_timeout` at ten minutes because `0` means “poll once” for peer waits; consequently an ingest can pin its system-database snapshot for that minimum. Known gap (harper#2057): the extension only reaches RocksDB transactions — on `HARPER_STORAGE_ENGINE=lmdb`, `Table.txnForContext()` chains a separate `LMDBTransaction` (`txn.next`) with its own independently-reset timeout that the LMDB engine's monitor tracks instead.
+
+**A commit's conflict retries have their own deadline, separate from the open-transaction limit** (issue #2450). rocksdb-js ≥2.8 wakes a commit parked on another transaction's write intent after `ROCKSDB_JS_PARK_TIMEOUT_MS` (5s) and returns `RETRY_NOW_VALUE` even when the holder never releases, so a wedged intent presents as a stream of transient conflicts rather than one hung commit — and the `MAX_RETRIES` cap alone then keeps the request pending for ~40 park timeouts, minutes past the configured queue limit. `DatabaseTransaction.commitStartedAt` is stamped on the **chain root** at its first native submission and read at both retry decisions (the coordinated `RETRY_NOW_VALUE` resolve path and the `ERR_BUSY`/`ERR_TRY_AGAIN` rejection path); past `Math.max(STORAGE_MAXTRANSACTIONQUEUETIME, timeoutBudget)` the commit takes the existing `abortChainAfterRetries()` cleanup and throws a 503 `TransactionCommitConflictTimeoutError`. One clock per _logical_ commit, deliberately not per attempt: the per-attempt clock is `trackOutstandingCommit()`'s, which measures native liveness and drives `checkOverloaded()`'s thread-wide shedding, so back-dating it would let one uncapped `sourceApply` retry shed every unrelated request on the thread. The clock is released through the promise `commit()` returns (which settles only after the chained stores' commits), so a reused transaction's next batch starts fresh. `retryable` is true only on a chain root that has not rotated through a mid-scope commit — anywhere else an earlier store already wrote durable audit entries and ran its hooks that a replayed request would repeat. `sourceApply` is exempt, as it is from the attempt cap, for the harper-pro#348 divergence reason above.
 
 ## Repeat writes to the same key in one transaction carry their state forward (`DatabaseTransaction`/`Table`)
 
@@ -125,6 +131,195 @@ The chain only describes reality if **staging order is also execution order**, a
 Both orders are now pinned. `addWrite` defers a write whose earlier same-key write has not run yet, but **only for writes that both consume `priorStagedWrite()` and publish `stagedEntry`** — marked `chainsStagedState`, today just the delete write. `_writeInvalidate`/`_writeRelocate`/`_writePublish` do neither, so reordering them past a staged put would hand them a pre-transaction basis they have no way to correct; they keep their eager save. And the apply loop's `stageWrite` chains the writes to any one key through a per-transaction map so staging order is arrival order, dropping settled entries (a bulk transaction retains one entry per in-flight write, not per record) and short-circuiting successors when a predecessor rejects. LMDB was never exposed: `LMDBTransaction.addWrite` defers every write and has always executed them in `this.writes` order.
 
 Two consequences of that scoping are worth knowing, both pre-existing and neither closed by the ordering fix. `_writeRelocate` still saves eagerly, so a replicated `put K; relocate K` where the residency list excludes this host strips K to its indexed-attribute stub first and then re-stores the **full record** — content retained on a node the residency policy excludes; `_writeInvalidate` has the milder form (a lost invalidation, so stale reads until TTL). Closing those means teaching both handlers `priorStagedWrite()`/`stagedEntry` and then flagging them, not simply deferring them. Separately, the apply loop's per-key chain narrows but does not close the cross-key escape: in `{put A, delete B}` where A's resource load rejects and B's is slow, the abort lands at `end_txn` and B's continuation then reaches `addWrite` on a CLOSED transaction, where `save()` commits it alone.
+
+## A second sequential save() on the same ImmediateTransaction context must chain on `operation.innerCommit`
+
+Two `update()`+`save()` cycles on the _same resource instance_, outside an explicit `transaction()`,
+reuse the same `ImmediateTransaction` object even after its first cycle has closed it (`this.open =
+CLOSED`). The second `save()` re-enters `ImmediateTransaction.save()` with `isCommitting` false, so it
+calls `this.commit()` again; that `commit()`'s own sweep loop calls `this.save(newWrite, ...)` — a
+**polymorphic re-dispatch to `ImmediateTransaction.save()`**, now with `isCommitting` true, which takes
+the `super.save(operation, null, true)` branch and (since `this.open` is still `CLOSED`) creates its own
+brand-new `RocksTransaction` and immediately commits it, stashing the real commit promise on
+`operation.innerCommit`. But the outer `commit()`'s sweep loop discards the return value of
+`this.save(operation, ...)` for every write it processes — that's fine when the write commits inline,
+but this reused-context write's real work happens in a _third_, more deeply nested `commit()` call
+(triggered by `immediateCommit` inside the nested `save()`), whose promise never propagates back through
+any of the enclosing calls. `Table.save()`'s ordinary `#savingOperation` path used to just return
+`#saveOperation(operation)`'s result directly — which can resolve before that nested native commit
+actually settles, so a caller's `await resource.save()` can return before the write is durable (a real,
+if narrow, race: `LockTest.get()` immediately after can read the pre-write value). The lock-writable hold
+branch already avoided this by explicitly returning `operation.innerCommit` after its own recursive
+`save()`; the ordinary path now does the same — `when(this.#saveOperation(operation), () =>
+operation.innerCommit)`. `operation.innerCommit` is `undefined` when a write commits inline (no
+immediateCommit), so this is safe for the common case. Found via record-lock scoped-lock staging
+(harper#483), which is what first made this reused-closed-context pattern reachable for an ordinary
+resource, but the gap is general to `Table.save()`, not lock-specific.
+
+## Record locks: the native key lock is the sole authority (`Table`/`DatabaseTransaction`/`recordLock`)
+
+`table.lock(id, options?, context?)` (harper#483, Phase 0: one node, every worker thread) gives a caller exclusive
+write access to one record. The sole authority is the rocksdb-js process-wide key lock — a shared in-memory
+map keyed by `[Symbol.for('record-lock'), tableId, id]`. No write goes to the store or audit log for
+`lock()` or `unlock()`. The record's version and stored bytes are unchanged when a lock is acquired or
+released; only the native key is locked in memory. This design eliminates all durable lock state from
+the on-disk format: durable LOCK/UNLOCK writes would produce version bumps that peers interpret as
+out-of-order duplicates and discard.
+
+**Phase 0 contract.** `lock()` is mutually exclusive only with other `lock()` calls on the same key.
+Plain writes (`put`, `patch`, `delete`, `create`, `invalidate`, `relocate`) are never gated, parked,
+or restaged — they proceed immediately at real wall-clock time. A holder write starts at the lock
+acquisition time, so a later plain write wins under LWW unless the holder first wrote through an
+unpinned mixed explicit transaction. That transaction's later timestamp becomes the handle's floor
+so the holder cannot lose its own subsequent writes; ordering against plain writes between acquisition
+and that transaction timestamp is best-effort. Use `lock()` when the caller needs to read-then-
+conditionally-write without another holder interleaving, not to serialize arbitrary writers.
+
+Consequences that shape the code:
+
+- **`store.tryLock(lockKey, onUnlocked)` is the acquisition primitive.** It returns `true` immediately
+  if the key is free, or queues `onUnlocked` and returns `false`. `store.unlock(lockKey)` is ownerless —
+  any caller can release — and fires all queued callbacks. Because `unlock` is ownerless, the handle's
+  `released` flag (set atomically with `store.unlock` in the same thread as the lease timer) is what
+  prevents a stale holder from clearing a new holder's lock: once `released` is set, `release()` is a
+  no-op. The key is `lockAttemptKey(tableId, id)` = `[LOCK_KEY_PREFIX, tableId, ...id]`, distinct from
+  `getFromSource`'s bare-id single-flight lock.
+- **`RecordLockHandle`** (`recordLock.ts`) carries `store`, `key`, `keyId`, `acquiredAt`, `expiresAt`,
+  `hold`, `released`, and `expired`. `release()` is synchronous: it sets `released`, clears the lease
+  timer, and calls `store.unlock(key)`. A lease timer sets `expired = true` then calls `store.unlock()`
+  on fire; any write staged through an expired or released handle throws 409 in
+  `DatabaseTransaction.save()` before the write reaches the store — from `lockNotHeldError()`, which
+  names the actual cause, since an expired lease and a handle already released (by `unlock()` or by
+  the commit) send a caller after different bugs. `acquireRecordKey` loops
+  `tryLock` → await wake → retry until acquired or `waitMs` elapsed (then 423). The contender wait
+  timer uses `.unref()` so it does not prevent process exit.
+- **Re-entrancy is per-transaction.** `DatabaseTransaction.recordLocks` is a lazily allocated
+  `Map<store, Map<keyId, handle>>` (O(1) lookup). `registerRecordLock`, `recordLockFor`, and
+  `unregisterRecordLock` manage it. `lock()` consults it before calling `tryLock`; a re-entrant call
+  returns the existing live handle. A handle expired by its lease timer is pruned on next re-lock lookup
+  so a stale holder's write gets 409.
+- **Release.** A transaction-scoped handle (the default) is in `link.recordLocks`; every commit or abort
+  calls `releaseRecordLocks()` which iterates and calls `handle.release()` on each non-hold handle.
+  `{ hold: true }` attaches the handle to the returned instance as `#lockHandle`; `unlock()` calls
+  `handle.release()` directly (synchronous, returns false if already released). `unlock()` also accepts
+  scoped handles: it calls `release()` early and unregisters the handle so the transaction commit does
+  not release it again. After any `unlock()` call `#lockWritable` is cleared so writes through the
+  instance are no longer accepted. When no iterators are open (`readTxnsUsed <= 1`) the read snapshot
+  is released and `snapshotFree` is set so subsequent reads see current state.
+- **Staging model: scoped stages like `update()`; hold stays deferred.** `#reloadLocked` eagerly
+  calls `_writeUpdate(id, this.#changes, false)` for a fresh scoped acquisition, exactly as the
+  instance `update()` does, so a `TransactionWrite` exists on the transaction immediately and `save()`
+  is the ordinary `#savingOperation` path — there is no `#lockWritable` auto-restaging branch for
+  scoped. A second write on the same locked instance (after an earlier `save()` on it has already run)
+  needs its own `update()` call to create a fresh `TransactionWrite`, the same as any other resource.
+  Hold keeps the deferred model: `save()`'s `#lockWritable` branch (now gated on `this.#lockHandle.hold`)
+  calls `_writeUpdate` lazily at `save()` time, because the acquiring transaction may already have
+  committed before the holder ever writes. The expired/released-handle 409 lives in the write path —
+  `DatabaseTransaction.save()`'s guard on `operation.lockHandle`, plus the hold branch's own liveness
+  check in `Table.save()` — not duplicated for scoped, since its eagerly-staged write already carries
+  `lockHandle` into the same guard.
+- **Read-your-writes in `#reloadLocked`.** Freshness always starts from the committed entry
+  (`primaryStore.getEntry(id)`, snapshot-free) so a hold lock sees concurrent committed writes rather
+  than a stale snapshot. A write earlier in the _same_ explicit transaction has not reached that
+  committed entry yet, so `#reloadLocked` looks up the tail `TransactionWrite` for the key
+  (`link.writesByKey`) and, if it (or an ancestor found via `priorStagedWrite`) has a `stagedEntry`,
+  takes the record from there — the same basis a chained write picks up (harper#1968): the record
+  comes from the prior staged write, the rest of the entry (version, audit chain, blob metadata) stays
+  the pre-transaction one.
+- **Scoped lock in an explicit `transaction()` scope.** After acquisition, when no writes have been
+  staged yet (`link.writes.length === 0`), the transaction clock is pinned to `acquiredAt` so the
+  holder write wins over any pre-lock concurrent write. When prior staged writes already exist,
+  ordering is best-effort — no 409 is thrown. In an `ImmediateTransaction` context (no explicit
+  scope), a scoped lock's writes go through the same `update()`-style staging as above; each explicit
+  `update()`+`save()` cycle is stamped with `nextHolderVersion()` independently. A scoped lock acquired
+  outside any explicit `transaction()` scope persists until `unlock()` or the lease expires
+  (ImmediateTransaction's `releaseRecordLocks()` is a no-op for record locks).
+- **Scoped → hold upgrade.** Calling `lock(id, { hold: true })` while the same transaction already
+  holds a scoped lock on the same key upgrades it via `handle.upgradeToHold(lease)`, which flips the
+  existing handle object to hold mode in place (new lease timer, `nextHolderVersion()` primed) rather
+  than retiring it and minting a new one — every instance already referencing the handle (same or a
+  different resource instance sharing the key) stays valid; retiring and replacing would invalidate
+  those other references (their `save()` would then throw 409 against a released handle). The upgrade
+  also detaches the scoped phase's eagerly-staged `TransactionWrite` (see the staging-model bullet
+  below) via `detachScopedUpgradeWrite`: hold staging is deferred and explicit-save-only, so a dangling
+  scoped write left in place would otherwise auto-commit at the transaction's sweep and clobber
+  whatever the hold write lands. The detached write is marked `.dropped` so a later explicit `save()`
+  on the instance that owns it falls through to the hold branch instead of resolving a dead reference.
+  The upgrade is gated on `!scoped.hold`; if the existing handle is already a hold the call is
+  re-entrant and returns the existing handle.
+- **Concurrent `lock()` calls for one key on one link coalesce.** `Promise.all([T.lock(id), T.lock(id)])`
+  would otherwise have both calls reach `tryLock` before either registers, so the second parks against
+  the first. The first registers its in-flight acquisition (`registerPendingLock`); the second becomes a
+  follower that races that promise against its OWN timeout, then either takes the re-entrant path or
+  retries with whatever budget it has left. A follower that lands after its enclosing transaction has
+  closed must NOT retry: `lock()` re-resolves the context, which no longer points at that link, so the
+  handle it acquired would be registered on a fresh transaction that no commit or abort ever releases —
+  a leaked key lock until the lease expires. It throws 500 instead, matching the leader's own
+  post-acquisition guard.
+- **The static entry point resolves the passed context before the ambient one.**
+  `Table.lock(id, options?, context?)` takes the same trailing context as the other static verbs,
+  normalized by `contextArgument()` exactly as `transactional()` does (a bare `DatabaseTransaction`
+  becomes the context slot holding it). Honoring it is load-bearing, not cosmetic: a caller with no
+  ambient context — a background job, a timer, a subscription callback — would otherwise land on a
+  bare `{}` whose ImmediateTransaction releases no record locks, so the native key would stay locked
+  for the whole lease and every other `lock()` on that record would fail 423 until it expired.
+- **Timed-out waiter callback residue (rocksdb-js follow-up).** When `acquireRecordKey` times out and
+  throws 423, the `onUnlocked` callback registered via `tryLock(key, onUnlocked)` stays live in the
+  native map until the current holder eventually releases the key. rocksdb-js has no `deregisterCallback`
+  API, so there is no way to cancel it today. The leaked callback is harmless — it fires once, calls
+  `wakeResolve?.()` on an already-settled promise (no-op), and is then freed — but it is a small
+  unnecessary allocation per timed-out waiter. Track as a follow-up: rocksdb-js should expose a
+  cancelable wait-registration API so `acquireRecordKey` can deregister on timeout.
+- **Crash / thread death.** A process crash releases all key locks (process-wide in-memory). A worker
+  thread termination releases its locks: rocksdb-js's `~DBHandle()` destructor calls
+  `lockReleaseByOwner(this)` on env teardown, releasing every key the terminated thread's handle held.
+  The lease timer is a soft bound in case the holder's event loop is blocked.
+- **Not supported on LMDB.** `lock()` throws 501.
+- **`lock()` is an in-process verb only.** `Resource.lock` is a static verb registered through
+  `transactional()` but no protocol reaches it: REST answers 501, `KNOWN_METHODS` does not include it,
+  and neither OpenAPI nor MCP enumerate it. Exposing lock/unlock over a protocol is a Phase 1 decision.
+  Acquisition itself has no authorization hook — lock() is not protocol-dispatched, so no
+  allowUpdate/allowCreate check runs when a caller acquires a lock.
+- **`lock()` and `allowUpdate`:** writes through a held lock bypass per-table `allowUpdate`/`allowWrite`
+  hooks by the same trust model as any in-process `Table.update(id)` + set/save sequence.
+
+Not in Phase 0, by design: replication of lock transitions, distributed grant, lease renewal,
+subscription events for lock/unlock, and lock() on LMDB. Phase 1 direction: replicate lock request/
+grant/release as control transaction-log entries with Ricart–Agrawala-style (timestamp, nodeId)
+tiebreaking; once every node participates in the grant protocol, lock() becomes a cluster-wide verb.
+
+**Acquisition timestamp and mixed transactions.** In an `ImmediateTransaction` context (no explicit
+`transaction()` scope) every save — hold or scoped — is stamped by `handle.nextHolderVersion()` so
+sequential saves each get a distinct, monotonically-increasing version. That stamp lives on the write
+(`TransactionWrite.lockStamp`) and is
+never assigned to the link clock: pinning `link.timestamp` would stamp every OTHER write staged on the
+same context before the commit resets it — a concurrent write in the caller's own `Promise.all`, an
+off-key write through the locked instance, the next operation in a retry or replay save loop — with
+the lock's acquisition time, which LWW then silently drops against a newer record version. In an
+explicit OPEN transaction, when the hold is the first write (no prior staged writes), the transaction
+clock is pinned to `handle.acquiredAt`; subsequent saves reuse that pinned clock. When non-hold writes
+were staged before the lock was acquired, the clock is left alone (best-effort ordering; no 409 is
+thrown for the mixed-write case). After a lock-backed record change commits, its transaction timestamp
+advances `handle.noteHolderVersion()`, so a surviving hold's later saves advance past that version
+rather than going backwards and being dropped by LWW. A skipped or rolled-back change never advances
+the floor. Consequently, a mixed transaction can
+make later holder writes outrank a plain write whose timestamp falls between `acquiredAt` and the mixed
+transaction timestamp. A caller-supplied future `context.timestamp` likewise remains the handle's floor
+for the life of the lease; clamping it would put the next holder write behind the handle's own committed
+version and recreate the silent-drop bug.
+
+**Hold handles and re-entrancy scope.** A hold handle stays registered on the resource instance
+(`#lockHandle`) and on the link until `unlock()` is called. Writing through the returned record after
+the acquiring transaction committed is fine (each write auto-commits as an ImmediateTransaction).
+Taking the lock again in a second `transaction()` scope issues a fresh `lock()` call rather than
+relying on the first hold still being re-entrant in that scope.
+
+**Untested scenarios (single-threaded unit tests).** One scenario cannot be exercised with a single
+JS thread:
+
+- _Abort during the `acquireRecordKey` await window._ The async gap between `tryLock` failing and the
+  `onUnlocked` callback is short in practice, and injecting an abort during that window requires two
+  concurrent threads.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 
@@ -285,6 +480,70 @@ A tombstone whose cleanup fails this way is not swept automatically — `schedul
 pass never retries it, since the audit entry that would have triggered a retry is already gone. It sits
 in the primary store until an operator runs `delete_transaction_logs_before` with `cleanup_deleted_records: true`.
 
+## Audit retention cleanup is a self-rearming, engine-independent lifecycle
+
+One call to `scheduleAuditCleanup` establishes a retention cadence that ends when the root store closes
+(or immediately in process-wide read-only mode). Storage-engine selection changes the work inside each pass, not whether the timer,
+serialization barrier, error containment, and re-arm exist. LMDB removes bounded batches of audit
+entries; RocksDB asks rocksdb-js to purge conservatively eligible log segments before the same time
+cutoff. Disk-pressure callbacks may accelerate the next pass and shorten the effective window, but
+ordinary retention progress must not depend on pressure.
+
+The two engines do not share a cadence rule, because their units of progress differ. LMDB's adaptive
+backoff reads a per-entry delete count: it speeds up while entries are being removed and doubles while
+idle. Rocks reclaims whole segments whose eligibility changes only on rotation/flush, so the same
+signal would only make it rescan the same files — its delay is instead a pure function of the
+pressure-adjusted retention window (a tenth of it, floored at `DEFAULT_AUDIT_CLEANUP_DELAY`).
+
+Exactly one Rocks purge loop exists per store, and that is owned by the **arming** sites, not the
+re-arm: `onStorageReclamation` registers its handler only on the last worker (it takes no
+`skipThreadCheck`), and the store-open arm gates on the same index. The last-worker conjunct on the
+re-arm is therefore unreachable through either of those paths; it is a backstop for a direct caller
+of the exported `scheduleAuditCleanup`, because a store-wide segment purge looping on every worker is
+duplicated work. If a future change passes `skipThreadCheck: true` at the registration site, that
+backstop — not the registration — becomes the thing keeping the loop single.
+
+Both re-arm guards are **Rocks-only**, deliberately: the LMDB arm keeps `origin/main`'s unconditional
+re-arm, so it neither yields to an already-pending pass (a pressure-armed 100ms pass can be cancelled
+and replaced by the idle backoff) nor restricts itself to one worker. Those are pre-existing LMDB
+behaviours, not invariants this section establishes — don't read the paragraphs above as
+engine-independent.
+
+Two things a purge does **not** need to coordinate, both load-bearing for the continuous cadence.
+Unlinking a segment a consumer has mapped is safe **on POSIX**: the inode outlives the unlink, and the
+mapping cache (`_logBuffers`) holds `WeakRef`s, with a strong ref only on the newest segment, which is
+never purge-eligible — so nothing pins a purged inode and no cross-worker cache invalidation is
+required. Windows does not share that property: deleting a mapped segment raises a sharing violation,
+so the purge throws, is warn-logged, re-arms, and makes no progress for as long as a consumer holds the
+mapping. The continuous cadence therefore turns a Windows retention stall into a steady state rather
+than a one-off, and nothing covers it — the Rocks retention integration test skips win32.
+What is _not_ covered is the segment a lagging consumer has not mapped yet: `TransactionLog.query()`'s
+iterator returns `done` when its next segment cannot be mapped, indistinguishable from being caught up
+(rocksdb-js `src/transaction-log-reader.ts`). A consumer that far behind needs a full copy rather than
+log replay, so the gap is a missing escalation signal in the reader, not a reason to hold retention —
+tracked as HarperFast/rocksdb-js#805. Continuous retention is what moves it from unreachable-in-steady-state
+to routine: a peer offline longer than `logging.auditRetention` now resumes into a purged prefix and is
+recorded as caught up, and `txnlogReplayGapBytes` observes the gap without escalating on it.
+
+Retirement is two things, and teardown needs both. `stopAuditCleanup()` latches the loop closed and
+cancels the pending timer, and it **returns a drain barrier** — a promise that settles once the pass
+already running has finished. The barrier is what makes closing stores safe: lmdb-js stamps the DBI
+number into its write instruction synchronously and the native writer consumes it later
+(`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
+delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
+transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
+`closeDatabase()` and branch `close()` are synchronous and cannot; what covers them is that every
+environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
+re-checks `rootStore.status`, plus the fact that their production callers reach them only for RocksDB
+stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.
+`resetDatabases()` closes LMDB roots with no retirement call at all, so that re-check is a routine
+path rather than a defensive one.
+
+The last-removed marker is retained until it commits. A rejected write is logged and carried to the
+next pass rather than dropped: a pass that deletes nothing never reaches the write again, so one
+transient failure would otherwise leave the recorded boundary permanently behind the entries that
+were already removed.
+
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
 When a blob attribute is created from a Node `Readable` (e.g. `createBlob(stream)` then `row.payload_blob = blob; await table.put(row)`), the put does **not** wait for the underlying stream to fully drain into the file before resolving. Internally `saveBlob` kicks off a `writeBlobWithStream` pipeline whose `storageInfo.saving` promise is tracked separately. The put resolves once encoding has captured the blob reference; the bytes finish writing concurrently.
@@ -297,9 +556,107 @@ Consequence for callers that wrap the source in a hashing `Transform`: calling `
 
 Future agents touching `components/deploymentRecorder.ts` for Slice B's streaming variant should pick one of the latter two patterns.
 
+## A deploy builds off to the side, is validated, and only then goes live
+
+`deploy_component` builds the replacement at `.deploy-staging/<deploymentId>/<component>`, runs the
+load validation against _that_ tree, and only then activates it. Activation is one compensating
+transaction over two effects: the live tree moves into `.deploy-aside`, then the candidate is renamed
+into the live path.
+
+The ordering is the design. Two things used to be wrong in a way each other hid:
+
+- **The live tree was moved aside first**, so the component was broken for the whole extract +
+  `npm install`. Worse than unavailable — the live path held the _new_ code before its dependencies were
+  installed, so requests during a deploy hit an unrunnable tree. `stage-swap-availability.test.ts`
+  samples the live path through a deliberately blocked install and fails against the old ordering.
+- **Validation ran after the swap committed**, so a component that installed cleanly but threw at load
+  went live anyway while the operation returned an error. Validation is now a callback preparation
+  invokes between build and activation, so a rejected candidate is never published. Note this is a
+  load-error PROBE, not a safety guarantee: it executes the component's own top-level code with
+  incomplete side-effect isolation. It also remains a no-op on the main thread, and the operations API
+  deploys on the main thread — so operator deploys are still unvalidated, exactly as before. Fixing that
+  is separate work; this only fixed the order.
+  **Root config is deliberately NOT part of this transaction.** It is still written before the build and
+  never rolled back, so `installApplications()` can reinstall a rejected release at the next restart —
+  unchanged from before this change. Making config an effect of the activation was implemented and then
+  pulled back out: it kept surfacing durability and locking problems that had nothing to do with the tree
+  swap (a memoized config object a disk write does not refresh, `atomicWriteFile` not fsyncing, writers that
+  do not share the publication lock). It is tracked as its own step so the tree half can land on its own
+  evidence.
+
+### Recovering an interrupted activation
+
+Every control file is dot-prefixed — `.activation.json`, `.component`, `.complete`, `.unsettled` — because
+a deployment directory holds the candidate tree under the _component's_ own name beside them, and
+`isJoinableComponentName` rejects a leading dot. An undotted control file shares that namespace: a component
+named `activation.json` would put its tree on the journal path and activate with no journal at all, and one
+named `unsettled` would make every settle throw. `assertApplicationConfig` rejects any name
+`isJoinableComponentName` rejects, so the collision is unreachable from a root-config key as well as from a
+deploy. Ownership inferred from a directory name is validated the same way, so a control file cannot
+impersonate a component either.
+
+A journal-LESS staging directory is not ambiguous: it is what a successful settlement leaves when its
+best-effort sweep fails. Both the deploy path and boot recovery pass over one rather than failing it closed,
+because a verdict written there would outlive the deployment and, once its sidecar became readable again, be
+attributed to a live component that never held an unsettled activation.
+
+An `.activation.json` journal is written beside the candidate — with a `.complete` marker recording that
+build _and_ validation both succeeded — before the first rename, so `recoverInterruptedActivations()` can
+settle a crash at any boundary. Both go to a temp name, are fsynced, then linked into place, so the final
+name never exists with partial contents; the candidate's own contents are fsynced before `.complete` is
+written, since `.complete` is what vouches for them. Recovery runs before `installApplications()`, which
+installs whatever the root config names and would otherwise reinstall over a half-swapped candidate.
+
+The journal is consulted **first**, and the legacy in-place extraction recovery enforces that itself: it
+refuses to restore a rollback record while an unsettled journal is attributable to that component — by its
+own `component` field OR by the deployment's ownership sidecar, whichever can be read, because restoring is
+the destructive step and takes the conservative union while settlement keeps the precise intersection.
+Ordering settlement
+ahead of it is not enough, because a worker can be respawned mid-activation with no settlement in front of
+it, and settlement that _fails_ deliberately keeps the journal while the same boot carries on. The refusal
+is scoped to the branch that actually restores a tree — a record that was already retired has nothing to
+restore, so that component still loads. Where no journal is attributable to the component, the legacy pass applies
+unchanged: a crash in that path also leaves an in-progress aside with the live tree present, and retiring
+it there would keep a half-written tree instead of restoring the good one.
+
+Settlement runs on **every thread**, not only main, for the same reason. It is safe anywhere because each
+deployment is settled under the cross-process component preparation lock and the pass is idempotent. It
+_probes_ for that lock — a 250 ms try, no renewal, matching the legacy boot probe — rather than queueing:
+it runs before every component load on every thread, so waiting behind a live deploy's `npm install` would
+load no components at all until that install finished. A held lock means a live deploy, and a live deploy
+settles its own journal.
+
+Ambiguity exists mainly while the live path is absent, and there `.complete` is the roll-forward authority:
+without it the candidate was never validated, so the committed tree in the aside wins. Live-present with a
+candidate is normally pre-swap (or already rolled back) — discard the candidate — **unless a rollback
+record shows the live tree had already been moved aside**. Then whatever is at the live path was recreated
+afterwards by something else, and settling either way would destroy both the committed tree and the
+validated candidate, so that component fails closed with both still on disk.
+Live-present without a candidate is a lost tail — finish forward; never revert a completed activation.
+Neither a live tree nor a rollback record is unrecoverable, so that component fails closed rather than
+guessing. Every branch is idempotent, so a crash _during_ recovery is settled by the next run, and
+failures are per component so one unsettleable component does not stop healthy siblings loading.
+
+Directory fsync is best-effort by necessity — Node cannot fsync a directory on Windows — so the protocol
+never depends on it. Roll-forward requires the journal, the candidate and `.complete` to all be
+observable, which means a lost directory update degrades to a roll back rather than to a wrong decision.
+
+Retiring the rollback record only marks the displaced tree disposable; both the activation path and
+recovery then sweep it, or the components root would grow by a whole component version per deploy. The
+retire is **correctness, not hygiene** — that marker is what stops the legacy pass treating the record as
+authoritative once the journal is gone — so a failure to retire propagates and the component fails closed
+with its journal intact. Only the sweep itself is best-effort, because it costs disk rather than a wrong
+decision. For the same reason, a swap whose rename cannot be confirmed on storage skips both the retire
+and the journal removal: the journal is what would carry the activation forward after a power loss.
+
+Three limits are deliberate and tracked separately: activation is two renames, so the live _pathname_ is
+briefly absent (in-memory resources are unaffected, but a component that opens its own files during a
+request can still see a gap); validation does not run on the main-thread deploy path; and config
+publication is not yet an effect of this transaction, as above.
+
 ## Component preparation is serialized across worker threads
 
-`prepareApplication()` performs one destructive transaction against a component directory: extract the incoming payload, then run its dependency installer. Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
+`prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" below). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
 
 The deploy lifecycle broadcast deliberately sits _outside_ the lock. Overlapping requests therefore increment the existing per-component lifecycle refcount before queueing; watchers remain suppressed continuously until the final queued preparation ends. The lock itself covers credential materialization, extraction, and installation. Its fully-written owner record is published with an atomic rename, so contenders never observe a partially initialized lock. A preparation caller never steals a lock from a known-live owner based on elapsed wall time: installs can be long-running and clocks can jump. Locks from a dead process are reclaimed, and a same-process contender asks the main thread whether the owning worker still exists so a worker crash does not wedge that component until Harper restarts. The boot-time bulk-recovery probe is deliberately different: it never renews its 250 ms deadline, even behind another live recovery, so it can defer that component and let the worker bind its listener.
 
@@ -1461,6 +1818,17 @@ New watch sites must go through it. As of this writing the sites are `components
 `components/OptionsWatcher.ts`, `config/RootConfigWatcher.ts`, `security/keys.ts`,
 `server/threads/manageThreads.js`, and `resources/blob.ts`. `fs.watchFile` (`utility/logging/readLog.ts`)
 is stat polling with no fs-event handle and is outside this invariant.
+
+Five of those six sites arm the watch through `guardedWatch()` (`utility/watcherFallback.ts`) rather
+than calling `chokidar.watch`/`fs.watch` directly — it installs a process-level guard for a second,
+unrelated failure (a watched path deleted out from under a non-persistent chokidar watcher raises an
+unhandled async `EPERM`; see that file's header comment) but does no canonicalization of its own.
+Every caller still resolves its own path first and passes the resolved path in, exactly as when they
+called `chokidar.watch` directly, so the invariant holds through the wrapper. `utility/watcherFallback.ts`
+itself is the one file that touches `chokidar` without canonicalizing — the watch-sites source scan
+(`unitTests/utility/watchPath.test.js`) lists it as a native watch site (it does arm one) but exempts
+it from the per-file canonicalization check, since canonicalizing is its callers' job, not its own —
+the same relationship raw `chokidar.watch` has to the other five sites.
 
 Two consequences worth knowing before adding a caller. `EntryHandler` is the one place where the
 canonical path is load-bearing past the `fs.watch` call: chokidar's `ignored` predicate receives

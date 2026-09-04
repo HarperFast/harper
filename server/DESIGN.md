@@ -131,7 +131,8 @@ Every entry is a top-level function or named const. Jump via go-to-symbol or `gr
 | `getPorts()`                                                                                                                             | Resolves listener options → list of `{port, secure}`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `httpServer()`                                                                                                                           | Main listener registration entry point.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `getHTTPServer(port, secure, options)`                                                                                                   | **The largest function in the file.** Creates/retrieves the underlying Node HTTP/HTTPS server. Wires `request`, `upgrade`, error handlers, TLS context, and the per-port middleware chain.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `makeCallbackChain()`                                                                                                                    | Builds the per-port handler chain via `middlewareChain.topoSort`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `makeCallbackChain()`                                                                                                                    | Builds the per-port handler chain via `middlewareChain.topoSort`, and records its resolved order for `get_status`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `buildChains()`                                                                                                                          | Stores a built chain, and rebuilds every other already-built chain of that kind when the registration is on the `'all'` pseudo-port. See "Middleware ordering" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `unhandled()`                                                                                                                            | Terminal 404 handler.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `onRequest()`                                                                                                                            | Thin alias of `httpServer({requestOnly: true})`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `onUpgrade()` / `upgradeListeners` (const)                                                                                               | Register HTTP upgrade listener; underlying list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -150,6 +151,19 @@ Components register listeners with optional `before: 'name'` / `after: 'name'` o
 - `websocketListeners` (in `http.ts`)
 
 The default WebSocket upgrade handler is registered automatically inside `onWebSocket()` the first time it runs for a given port.
+
+**`port: 'all'` is a pseudo-port, and its chain is not the one that serves traffic.** Chain building
+folds every `'all'` entry into each concrete port's chain, so `chains.all` exists but nothing
+dispatches through it — `httpChain[port]`/`upgradeChains[port]`/`websocketChains[port]` are looked up
+by the bound port on every request (Node, Bun, and uWS alike). A registration therefore has to
+rebuild the chains it affects, not just its own key: `http.ts → buildChains()` rebuilds every
+already-built chain of that kind whenever the registration is on `'all'`. Without that, an entry
+registered on `'all'` after the concrete port's chain was built — the shape an application catch-all
+mounted `after: 'rest'` takes, since `rest` registers first — updates only `chains.all` and never
+reaches a request (#2418). Rebuilding is a pure function of the listener list and the port, so the
+extra passes can only reproduce a port's order or extend it. `buildChains()` also writes the
+`get_status` chain description in the same pass, which is what keeps that report from ever
+describing an order a port isn't running (#1573).
 
 ### Application mounts (`host` / `urlPath` in the root config)
 
@@ -194,12 +208,127 @@ mirror because it only widens what an allowlist may _name_; enforcement stays on
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.
 
+### Deferred credential rejection (#2418)
+
+`authentication` runs before route matching, so when it meets an `Authorization` header it cannot
+resolve it does not yet know whether Harper or an application owns the URL. Rejecting there forces
+an application to choose between two things it needs: Harper owning its own routes (status, REST
+resources) and its own routes receiving their own credential scheme untouched.
+
+So a rejection is recorded rather than answered:
+
+- **Valid Harper credentials** authenticate normally and populate `request.user`. Unchanged.
+- **No credentials** continue anonymously. Unchanged.
+- **A syntactically valid credential Harper does not recognize** leaves `request.user` unset, leaves
+  the inbound `Authorization` header byte-for-byte intact, and records request-local state through
+  `security/deferredAuthentication.ts`. The state lives behind a module-private `Symbol`. Its
+  descriptor and value are immutable and non-enumerable, so downstream middleware cannot clear it
+  and it does not leak through request copies or serialization.
+- **An internal authentication fault** — unreadable or malformed JWT key material, a storage failure,
+  an unexpected error type — is never deferred, and fails closed with the in-line 401.
+- **The operations API** never defers: `request.isOperationsServer` short-circuits to the in-line
+  401, because every operations route is Harper-owned and there is nothing to defer to.
+
+**Rejection provenance is asserted, never inferred.** `security/credentialRejection.ts` holds a
+module-private `Symbol` tag; only the code that actually concludes "this credential is unacceptable"
+sets it, and `isCredentialRejection()` reads nothing else. Status ranges cannot carry that meaning:
+`findAndValidateUser()` lazily loads the user cache, whose system-table searches raise a
+default-status-400 `ClientError` when `system.hdb_role`/`system.hdb_user` is unavailable, so a 4xx
+test would classify a storage outage as an unknown credential and hand it to application
+authorization. The tag is set at exactly these points:
+
+| Tagged rejection                                                   | Where                                      |
+| ------------------------------------------------------------------ | ------------------------------------------ |
+| unknown user, inactive user, bad password                          | `security/user.ts → findAndValidateUser()` |
+| JWT syntax, signature, expiry, not-before, subject/claim rejection | `tokenAuthentication.ts → validateToken()` |
+| refresh-token hash mismatch, malformed scoped-token claims         | `tokenAuthentication.ts`                   |
+| an `Authorization` scheme Harper does not implement                | `security/auth.ts`                         |
+
+`validateToken()` separates the two in the same catch: `jsonwebtoken` reports unusable key material
+through the very same `JsonWebTokenError` type it uses for a forged token, so the public key is
+validated as key material before `jwt.verify()` runs and a residual key-material message is treated
+as a fault. An untagged error propagates unmasked.
+
+The Bearer path's refresh-token probe follows the same rule. When operation-token validation says
+`invalid token`, authentication retries the credential as a refresh token; a fault raised by that
+retry propagates, and only an ordinary _tagged_ refresh rejection restores the original
+operation-token rejection for deferral. An in-line fail-closed response logs the original fault
+server-side and returns the same generic authentication failure a rejected credential gets, so
+internal detail never reaches an unauthenticated client.
+
+Any layer that establishes Harper owns the route then settles the deferred state before doing work:
+
+| Layer                                   | Where                                                              |
+| --------------------------------------- | ------------------------------------------------------------------ |
+| `REST.ts → http()`                      | after `resources.getMatch` succeeds (and for the OpenAPI document) |
+| `REST.ts` WebSocket handler             | after `resources.getMatch(url, 'ws')` succeeds                     |
+| `graphqlQuerying.ts`                    | after the `/graphql` prefix match, ahead of its error mapping      |
+| `static.ts`                             | after a static file entry matches                                  |
+| `mqtt.ts` WebSocket handler             | once the pending HTTP chain settles, before the first packet       |
+| `components/mcp/adapters/harperHttp.ts` | after the WebSocket hand-off, before the body is read              |
+
+**Every Harper-owned handler registered `after: 'authentication'` owes this settlement**, because
+declining to call `nextHandler` is precisely the moment ownership is settled. A handler that skips
+it serves an unrecognized credential as anonymous — the MCP application mount did exactly that, and
+returned 200 for an `initialize` the base revision answered with 401.
+
+Settlement goes through `settleDeferredCredentialRejection()`, which returns the response descriptor
+`security/auth.ts` used to return in line: status 401 and `serializeMessage({error: message}, request)`
+in the request's negotiated content type. That matters because an owner's own error mapping is not
+that contract — REST renders a thrown error as an RFC 9457 Problem Details document and GraphQL as
+`{errors:[{message}]}` — and a rejected credential never reached either before deferral existed.
+`assertNoDeferredCredentialRejection()` is the throwing form, for a WebSocket upgrade that has no
+descriptor to return. A WebSocket owner cannot read the state synchronously: `server/http.ts` starts
+`httpChain[port](request)` and invokes the WebSocket chain with the still-pending completion, so
+authentication has not yet classified the credential. `mqtt.ts` therefore settles on that promise —
+the same one the session's principal resolves from — and closes the socket from its rejection, while
+its frame handlers still attach synchronously. The deferred status is pinned to 401 regardless of the underlying error's own
+status, so a 403 `token expired` reads exactly as it did before. A Harper-owned route therefore behaves identically to the pre-deferral
+build, protected or public: an unknown credential can never buy access an anonymous caller would
+have received, and can never reach an application catch-all. Only a URL that reached
+`nextHandler` — one no Harper route owns — carries the original header onward.
+
+The contract is route-ownership-based, not path-based. There is no exemption list, no carrier
+header, no credential rename, and no pre-auth stripping shim.
+
+**Authentication does not re-decorate a 401 it did not raise.** `security/auth.ts` post-processes any
+401 coming back up the chain — overwriting `WWW-Authenticate` with `Basic`, or rewriting the status to
+a 302 at `resources.loginPath` for a browser. The in-line rejection deferral replaced returned before
+that code, so a settled rejection must skip it to stay wire-identical; and a 401 an application
+catch-all raised for its own scheme (a WooCommerce or Bearer challenge) is that application's to make.
+Both cases are keyed on the deferred state, so a request that deferred nothing keeps the existing
+behavior exactly. The #1565 identity floor still applies either way — it is stamped in
+`applyResponseHeaders`, not in the challenge rewriting.
+
+**The identity cache floor survives the legacy Fastify fallbacks.** A response produced under a
+deferred credential is credential-dependent (#1565), so `authentication` stamps
+`Cache-Control: private, no-cache` and `Vary: Authorization, Cookie` on it. Before deferral an
+unrecognized credential could not reach a fallback at all, so this was unreachable. All three adapters
+now reconcile through one policy, `Headers.ts → mergeChainHeadersIntoFallback()`: Fastify wins every
+single-valued header it set, `Vary` is unioned, and the private scope is re-applied unless the final
+response explicitly opts into shared caching (`public`/`s-maxage`).
+
+`Set-Cookie` is the deliberate exception to Fastify-wins. It is a list-valued field, so the chain's
+cookies are appended beside Fastify's and de-duplicated by exact value, never by cookie name. A cookie
+is identified by name _plus_ `Domain` _plus_ `Path` (RFC 6265 §5.3), so collapsing by name drops
+legitimately distinct cookies — a same-name pair scoped to `/` and `/wp-admin`, or a `Max-Age=0`
+deletion paired with a set. Exact value is also what makes Node's `writeHead` re-merge idempotent,
+because that path sees the chain's own cookie already on the response. Two cookies that do share a
+full identity both reach the client, chain last, and the user agent resolves them last-wins.
+
+Bun and uWS rebuild their headers from Fastify's reply and merge once. Node hands Fastify the same
+`ServerResponse` the chain's headers were copied onto, so copying is not enough — a route calling
+`reply.header('Cache-Control', …)` replaces the floor outright and can make a credential-dependent
+response shared-cacheable. `bridgeChainHeadersToNodeResponse()` therefore runs the same merge from a
+`writeHead` interception, the last point the header set is still mutable and the one Node also routes
+implicit headers through.
+
 ### Response Cache-Control / Vary policy (#1518, #1565)
 
 Three tiers, applied in two places:
 
 1. **App/resource explicit** — a `Cache-Control` set by the resource (or `@table(cacheControl: "...")` for anonymous reads, emitted in `REST.ts → http()`) always wins. The declaration is required: anonymous readability alone never emits shared-cache headers, because a request-attribute-gated `allowRead` (IP, headers) would make inferred `public` unsound.
-2. **Identity floor** — `security/auth.ts → applyResponseHeaders` stamps `Cache-Control: private, no-cache` + `Vary: Authorization` (+ `Cookie` when sessions are on) on any response where a principal was resolved or credentials were rejected (401), _unless_ the app opted into shared caching with `public`/`s-maxage` (the RFC 9111 opt-in).
+2. **Identity floor** — `security/auth.ts → applyResponseHeaders` stamps `Cache-Control: private, no-cache` + `Vary: Authorization` (+ `Cookie` when sessions are on) on any response where a principal was resolved, credentials were rejected (401), or a credential rejection was deferred (#2418 — the application answered using the header Harper passed through, so the response is credential-dependent at a plain 200), _unless_ the app opted into shared caching with `public`/`s-maxage` (the RFC 9111 opt-in).
 3. **CORS partitioning** — when CORS is enabled, every response gets `Vary: Origin` (the ACAO header is reflected per-origin, and its absence on no-Origin requests is origin-dependent too).
 
 The `@table(cacheControl:)` value is persisted on the primary-key attribute (like `expiration`), so all threads and future boots see it; `resources/databases.ts → table()` treats `null` as "schema explicitly has none" (clears on reload) and `undefined` as "caller is not schema-defining" (no clobber from `add_attribute`/cluster schema events).
@@ -208,20 +337,21 @@ The `@table(cacheControl:)` value is persisted on the primary-key attribute (lik
 
 ## "Where is X" cheat sheet
 
-| Question                                                                  | Where                                                                                                                                                                     |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Where do I register a new HTTP handler?                                   | `http.ts → httpServer()` (or `onRequest()` for the request-only form)                                                                                                     |
-| Where do I register a WebSocket handler?                                  | `http.ts → onWebSocket()`                                                                                                                                                 |
-| How does `before`/`after` middleware ordering work?                       | `middlewareChain.ts → topoSort`                                                                                                                                           |
-| Where does PROXY protocol get parsed?                                     | `serverHelpers/proxyProtocol.ts` (applied by `http.ts → enableProxyProtocol` / `createH2CProxyFront`)                                                                     |
-| How does an app read forwarded TLS facts (JA3/JA4, ALPN, SNI, mTLS cert)? | `request.connectionInfo` (`ConnectionInfo` from `serverHelpers/proxyProtocol.ts`); only set from a trusted PROXY v2 header on the UDS mirror, never from a request header |
-| Where is the REST request → Resource dispatch?                            | `REST.ts → http()`                                                                                                                                                        |
-| Where is the operations API request handled?                              | `operationsServer.ts → handler`                                                                                                                                           |
-| How are content types (de)serialized?                                     | `serverHelpers/contentTypes.ts`                                                                                                                                           |
-| Why doesn't every MQTT subscriber re-serialize the message it receives?   | `serverHelpers/sharedMessageEncoding.ts` (memoized on the message object the fan-out shares); consumed by the outbound listener in `mqtt.ts`                              |
-| Where do durable subscriptions live?                                      | `DurableSubscriptionsSession.ts`                                                                                                                                          |
-| How are sockets dispatched to worker threads?                             | `threads/socketRouter.ts`                                                                                                                                                 |
-| Where is the Operations API wired into Fastify?                           | `operationsServer.ts → buildServer`                                                                                                                                       |
+| Question                                                                   | Where                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Where do I register a new HTTP handler?                                    | `http.ts → httpServer()` (or `onRequest()` for the request-only form)                                                                                                                                                                                                                                                                                                                                                  |
+| Where do I register a WebSocket handler?                                   | `http.ts → onWebSocket()`                                                                                                                                                                                                                                                                                                                                                                                              |
+| How does `before`/`after` middleware ordering work?                        | `middlewareChain.ts → topoSort`                                                                                                                                                                                                                                                                                                                                                                                        |
+| Where does PROXY protocol get parsed?                                      | `serverHelpers/proxyProtocol.ts` (applied by `http.ts → enableProxyProtocol` / `createH2CProxyFront`)                                                                                                                                                                                                                                                                                                                  |
+| How does an app read forwarded TLS facts (JA3/JA4, ALPN, SNI, mTLS cert)?  | `request.connectionInfo` (`ConnectionInfo` from `serverHelpers/proxyProtocol.ts`); only set from a trusted PROXY v2 header on the UDS mirror, never from a request header                                                                                                                                                                                                                                              |
+| Why does mTLS revocation checking look up the client cert's issuer itself? | `security/certificateVerification/trustedIssuers.ts` — Node only completes a peer chain from the _listener_ context's store, but Harper's client CAs live on SNI contexts (`security/keys.ts → createTLSSelector`), so a resumed TLS session (and Node 26.8.0/26.8.1, nodejs/node#65579) exposes the leaf alone; `verifyCertificate` recovers the issuer from the published CA set and otherwise applies `failureMode` |
+| Where is the REST request → Resource dispatch?                             | `REST.ts → http()`                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Where is the operations API request handled?                               | `operationsServer.ts → handler`                                                                                                                                                                                                                                                                                                                                                                                        |
+| How are content types (de)serialized?                                      | `serverHelpers/contentTypes.ts`                                                                                                                                                                                                                                                                                                                                                                                        |
+| Why doesn't every MQTT subscriber re-serialize the message it receives?    | `serverHelpers/sharedMessageEncoding.ts` (memoized on the message object the fan-out shares); consumed by the outbound listener in `mqtt.ts`                                                                                                                                                                                                                                                                           |
+| Where do durable subscriptions live?                                       | `DurableSubscriptionsSession.ts`                                                                                                                                                                                                                                                                                                                                                                                       |
+| How are sockets dispatched to worker threads?                              | `threads/socketRouter.ts`                                                                                                                                                                                                                                                                                                                                                                                              |
+| Where is the Operations API wired into Fastify?                            | `operationsServer.ts → buildServer`                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ---
 

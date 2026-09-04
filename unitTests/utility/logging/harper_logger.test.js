@@ -1,7 +1,8 @@
 'use strict';
 
 const assert = require('node:assert');
-const { EventEmitter } = require('node:events');
+const { EventEmitter, once } = require('node:events');
+const { spawn } = require('node:child_process');
 const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
@@ -167,6 +168,20 @@ describe('Test harper_logger module', () => {
 		const test_error = new Error('no such file or directory test');
 		const afterThisTest = [];
 
+		// these tests exercise initLogSettings' boot-props resolution, which mocha.init.js's
+		// ROOTPATH export shadows (see its header comment) — clear it for this describe only:
+		// the stdio-capture tests below must keep it, or their fresh module copies bind the
+		// log file to the installed root
+		let savedRootPathEnv;
+		before(() => {
+			savedRootPathEnv = process.env.ROOTPATH;
+			delete process.env.ROOTPATH;
+		});
+
+		after(() => {
+			if (savedRootPathEnv !== undefined) process.env.ROOTPATH = savedRootPathEnv;
+		});
+
 		afterEach(() => {
 			while (afterThisTest.length) afterThisTest.pop()();
 			sandbox.restore();
@@ -177,6 +192,13 @@ describe('Test harper_logger module', () => {
 			sandbox.stub(YAML, 'parseDocument').returns(setTestLogConfig('trace', TEST_LOG_DIR, false, true));
 			sandbox.stub(fs, 'readFileSync').returns('foo');
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+			// The module-load-time auto-init (`if (hdbProperties === undefined) initLogSettings();`)
+			// already ran against PropertiesReader() reading whatever ~/.harperdb/hdb_boot_properties.file
+			// happens to exist on this machine — nothing on a clean checkout. Stub PropertiesReader and
+			// force a re-init, same as the ENOENT test below, so this doesn't depend on ambient state.
+			harper_logger.__set__('PropertiesReader', sandbox.stub().returns({ get: () => 'settings.test' }));
+			harper_logger.__set__('hdbProperties', undefined);
+			harper_logger.__get__('initLogSettings')();
 			const log_to_file = harper_logger.__get__('log_to_file');
 			const log_to_stdstreams = harper_logger.__get__('logToStdstreams');
 			const log_level = harper_logger.logLevel;
@@ -190,6 +212,40 @@ describe('Test harper_logger module', () => {
 			expect(log_root).to.eql(TEST_LOG_DIR);
 			expect(log_name).to.eql('hdb.log');
 			expect(log_file_path).to.eql(path.join(TEST_LOG_DIR, 'hdb.log'));
+		});
+
+		// The install window, and any host with no harperdb-config.yaml. `log_to_file` is false
+		// there, so the streams are the only sink left; createLogger() shadows the module-level
+		// `logToStdstreams` with its own option, and a call that omits it drops the line entirely
+		// rather than writing it anywhere (harper#2364, where the Windows gate caught it as a
+		// warning-cadence test counting 0 of 2).
+		it('writes to the std streams, guarded, when there is no config to read', async function () {
+			this.timeout(30000);
+			const noConfigRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-no-config-'));
+			afterThisTest.push(() => {
+				try {
+					fs.removeSync(noConfigRoot);
+				} catch {}
+			});
+
+			// A ROOTPATH naming a directory with no config reaches the fallback either way: with boot
+			// properties present the config read throws ENOENT, and without them initLogSettings()
+			// only swallows that failure when ROOTPATH *does* hold a config. LOGGING_LEVEL is pinned
+			// for the same reason — that branch reads it from the environment, and the fixture logs
+			// at the default threshold.
+			const child = spawn(process.execPath, [require.resolve('./fixtures/noConfigLogging.cjs')], {
+				stdio: ['ignore', 'pipe', 'pipe'],
+				env: { ...process.env, ROOTPATH: noConfigRoot, LOGGING_LEVEL: 'warn' },
+			});
+			let stdout = '';
+			let stderr = '';
+			child.stdout.on('data', (chunk) => (stdout += chunk));
+			child.stderr.on('data', (chunk) => (stderr += chunk));
+			const [code] = await once(child, 'close');
+
+			assert.equal(code, 0, `fixture exited ${code}: ${stderr}`);
+			assert.match(stderr, /no-config stream check/);
+			assert.match(stdout, /stdout-guard=true stderr-guard=true/);
 		});
 
 		it('Test that if error code is not ENOENT error is handled correctly', () => {
@@ -1923,8 +1979,10 @@ describe('Test harper_logger module', () => {
 				// below, capture it here rather than letting it interleave with mocha's output.
 				harper_logger.__set__('nativeStdWrite', sinon.stub().returns(true));
 				// logConsole above makes the guard tee to writeToLogFile, which is only assigned when
-				// the resolved config gives the logger a path. Stub it so the tee is exercised here on
-				// any machine rather than throwing 'writeToLogFile is not a function'.
+				// the resolved config gives the logger a path — and, in a full-suite run, only when an
+				// earlier test's tearDownMockDB() hasn't removed the per-PID config file initLogSettings
+				// reads. Stub it so the tee is exercised here on any machine and in any run order,
+				// rather than throwing 'writeToLogFile is not a function'.
 				harper_logger.__set__('writeToLogFile', sinon.stub());
 				const installStdioGuard = harper_logger.__get__('installStdioGuard');
 				const fakeStdout = makeFakeStream();

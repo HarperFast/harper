@@ -25,14 +25,18 @@
  * the raw primary column family cannot answer it. It also covers the monitor-fired abort (Arm A)
  * alongside #1869's request-thrown abort (Arm B).
  *
- * A RocksDB `readOnly: true` open is a point-in-time snapshot of the SSTs as of that open, not a
- * live view like LMDB's shared mmap, and Harper opens table/index column families with
- * `disableWAL` defaulting to true (resources/databases.ts openRocksDatabase), so a committed
- * write can still sit only in the writer's memtable. An oracle that skips either step reports a
- * clean run from flush timing rather than from real consistency, so `refreshOracle()` flushes
- * through the fixture and reopens every handle before each raw read, and the 'oracle proof'
- * tests below demonstrate — rather than assert — that it detects a phantom the join cannot, on
- * both tables.
+ * The oracle reads a RocksDB checkpoint, never the live database directory. `readOnly: true` maps
+ * to `rocksdb::DB::OpenForReadOnly`, which replays the MANIFEST into a file list and then opens
+ * those files while holding no reference on any of them, so a compaction in the process under test
+ * can unlink one inside that window and the open fails as MANIFEST corruption (#2500,
+ * HarperFast/rocksdb-js#812). Nothing writes to a checkpoint, so the race cannot happen there, and
+ * `createCheckpoint()` flushes the memtable — which the oracle needs anyway, since Harper opens
+ * table/index column families with `disableWAL` defaulting to true (resources/databases.ts
+ * openRocksDatabase) and a committed write can otherwise sit only in the writer's memtable. One
+ * checkpoint operation covers every column family, rather than opening each one separately at
+ * unrelated instants. `refreshOracle()` takes a fresh one and reopens every handle before each raw
+ * read, and the 'oracle proof' tests below demonstrate — rather than assert — that the oracle
+ * really reads that snapshot, and that it detects a phantom the join cannot, on both tables.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/database/delete-index-atomicity-rocksdb.test.ts"
@@ -41,6 +45,7 @@ import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -57,6 +62,9 @@ const MAX_TXN_OPEN_MS = 1000;
 // on elapsed wall-clock.
 const HOLD_MS = 15_000;
 const LOG_FILES = ['hdb.log', 'stdout.log', 'stderr.log'];
+// Where the fixture puts a checkpoint; derived independently here so that a fixture regression
+// handing back a live directory fails the assertion in refreshOracle() rather than being opened.
+const SNAPSHOT_DIR = 'oracle-snapshots';
 const skipSuite = process.platform === 'win32';
 
 suite(
@@ -67,6 +75,8 @@ suite(
 		let httpURL: string;
 		const procChunks: string[] = [];
 		let rootPath: string;
+		let snapshotPath: string | undefined;
+		let snapshotSeq = 0;
 		const dbiCache = new Map<string, RocksDatabase>();
 
 		before(async () => {
@@ -121,7 +131,9 @@ suite(
 			strictEqual(itemT.audit, true, 'ItemT must be audit:true to serve as the control arm');
 
 			// The RocksDB root store for a database is a directory (not a single file as on LMDB) at
-			// `{dataRootDir}/database/{name}`, shared by every table and index column family in it.
+			// `{dataRootDir}/database/{name}`, shared by every table and index column family in it. The
+			// oracle checkpoints it rather than opening it; this is the writer's copy, and the negative
+			// the snapshot proof below asserts against.
 			rootPath = join(ctx.harper.dataRootDir, 'database', SCHEMA);
 			const dirDeadline = Date.now() + 30_000;
 			while (!existsSync(rootPath) && Date.now() < dirDeadline) await sleep(200);
@@ -129,15 +141,12 @@ suite(
 		});
 
 		after(async () => {
-			for (const db of dbiCache.values()) {
-				try {
-					db.close();
-				} catch {
-					/* ignore */
-				}
+			closeOracleHandles();
+			try {
+				await removeSnapshot();
+			} finally {
+				await teardownHarper(ctx);
 			}
-			dbiCache.clear();
-			await teardownHarper(ctx);
 		});
 
 		function postJSON(path: string, body: unknown): Promise<Response> {
@@ -181,10 +190,7 @@ suite(
 			return false;
 		}
 
-		/** Must precede every raw read; see the file header for why both halves are required. */
-		async function refreshOracle(): Promise<void> {
-			const res = await postJSON('/Flush/', {});
-			strictEqual(res.status, 200, 'flush control should succeed');
+		function closeOracleHandles(): void {
 			for (const db of dbiCache.values()) {
 				try {
 					db.close();
@@ -194,8 +200,34 @@ suite(
 			}
 			dbiCache.clear();
 		}
+		/** Removing before taking the next one bounds the hardlinked SSTs a snapshot pins to one. */
+		async function removeSnapshot(): Promise<void> {
+			if (!snapshotPath) return;
+			const stale = snapshotPath;
+			snapshotPath = undefined;
+			await rm(stale, { recursive: true, force: true });
+		}
+		/** Must precede every raw read; see the file header for why the oracle reads a checkpoint. */
+		async function refreshOracle(): Promise<void> {
+			closeOracleHandles();
+			await removeSnapshot();
+			const res = await postJSON('/Snapshot/', { seq: ++snapshotSeq });
+			const body = await res.text();
+			strictEqual(res.status, 200, `snapshot control should succeed; got ${res.status} ${body.slice(0, 300)}`);
+			const published = JSON.parse(body).path;
+			const expected = resolve(ctx.harper.dataRootDir, SNAPSHOT_DIR, String(snapshotSeq));
+			if (published === expected) snapshotPath = published;
+			strictEqual(
+				published,
+				expected,
+				'the oracle must only ever open a checkpoint at the path the fixture derives for this sequence'
+			);
+		}
 		function openDbi(name: string): RocksDatabase {
-			if (!dbiCache.has(name)) dbiCache.set(name, RocksDatabase.open(rootPath, { name, readOnly: true }));
+			// Reading the live directory instead would reintroduce the compaction race the checkpoint
+			// exists to remove, so an unrefreshed oracle is a test bug, not a fallback.
+			if (!snapshotPath) throw new Error('oracle read before refreshOracle(): there is no checkpoint to read');
+			if (!dbiCache.has(name)) dbiCache.set(name, RocksDatabase.open(snapshotPath, { name, readOnly: true }));
 			return dbiCache.get(name)!;
 		}
 		/**
@@ -241,6 +273,48 @@ suite(
 			const res = await postJSON('/Seed/', { table, ids });
 			strictEqual(res.status, 200, `seeding ${table} must succeed, or every assertion below is vacuous`);
 		}
+
+		// No assertion about the data can show which directory the handles were opened against: one
+		// left pointing at the live database returns the same rows and differs only by being able to
+		// lose its open to a compaction — the failure this suite exists to stop reproducing.
+		test('oracle proof: the raw handles read an immutable checkpoint, not the live database', async () => {
+			await seed('ItemF', [{ id: 'snapshot-1', category: 'SNAPSHOT' }]);
+			await refreshOracle();
+			const firstSnapshot = snapshotPath!;
+			ok(firstSnapshot !== rootPath, `the oracle must open a checkpoint, not ${rootPath}`);
+			strictEqual(
+				openDbi('ItemF/category').path,
+				firstSnapshot,
+				'the raw column-family handle must be opened against that checkpoint'
+			);
+			ok(
+				rawIndexEntries('ItemF', 'category').some((e) => e.key === 'SNAPSHOT' && e.id === 'snapshot-1'),
+				'the checkpoint must contain the write that preceded it'
+			);
+
+			// A held checkpoint stays frozen after the live database advances; the next refresh below
+			// must replace it with a checkpoint that includes the new write.
+			await seed('ItemF', [{ id: 'snapshot-2', category: 'SNAPSHOT' }]);
+			const flushed = await postJSON('/Flush/', {});
+			strictEqual(flushed.status, 200, 'flush control should succeed');
+			ok(
+				!rawIndexEntries('ItemF', 'category').some((e) => e.id === 'snapshot-2'),
+				'a held checkpoint must not see a write that landed after it'
+			);
+
+			await refreshOracle();
+			ok(snapshotPath !== firstSnapshot, 'each refresh must take a fresh checkpoint');
+			ok(!existsSync(firstSnapshot), 'and must remove the one it replaces, so the SSTs it pins are bounded');
+			ok(
+				rawIndexEntries('ItemF', 'category').some((e) => e.id === 'snapshot-2'),
+				'the fresh checkpoint must include it'
+			);
+
+			for (const id of ['snapshot-1', 'snapshot-2']) {
+				const res = await postJSON('/DeleteOne/', { table: 'ItemF', id });
+				strictEqual(res.status, 200, `cleanup delete of ${id} should succeed`);
+			}
+		});
 
 		// Run against both tables: an audit:true control arm whose oracle has never been shown to
 		// work on that table cannot be trusted to go red.

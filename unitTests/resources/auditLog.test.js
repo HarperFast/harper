@@ -1,16 +1,27 @@
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { open } = require('lmdb');
 const {
 	setAuditRetention,
+	openAuditStore,
 	readAuditEntry,
 	createAuditEntry,
 	transactionKeyEncoder,
 	removeAuditEntry,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const {
+	removeStorageReclamation,
+	runReclamationHandlers,
+	setAvailableSpaceRatioGetter,
+} = require('#src/server/storageReclamation');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
+const { mkdtempSync, readdirSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const { waitFor } = require('../waitFor');
 const harperLogger = require('#src/utility/logging/harper_logger');
 require('#src/server/serverHelpers/serverUtilities');
@@ -127,6 +138,154 @@ describe('Audit log', () => {
 		// verify that the twice-written entry was not removed
 		assert.equal(AuditedTable.primaryStore.getEntry(2)?.value?.name, 'two-changed');
 	});
+	it('re-arms Rocks audit cleanup without another pressure signal', async function () {
+		const store = AuditedTable.auditStore;
+		if (!(store instanceof RocksTransactionLogStore)) this.skip();
+
+		const rootStore = store.rootStore;
+		const originalPurgeLogs = rootStore.purgeLogs;
+		let purgeCalls = 0;
+		rootStore.purgeLogs = () => {
+			purgeCalls++;
+			return [];
+		};
+		setAuditRetention(100, 1);
+		try {
+			await store.scheduleAuditCleanup(1);
+			await waitFor(() => purgeCalls >= 2, {
+				timeout: 1000,
+				message: 'Rocks audit cleanup did not schedule a later retention pass',
+			});
+		} finally {
+			rootStore.purgeLogs = originalPurgeLogs;
+			setAuditRetention(60_000, 10_000);
+		}
+	});
+	// Reads the store's own cadence rather than replacing the global setTimeout: that global is shared by
+	// every audit store in the process, so a stub keyed on the delay swallows other loops' re-arms.
+	it('holds Rocks cleanup at the retention-derived cadence whatever a pass purges', async function () {
+		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-cadence-'));
+		const rootStore = new RocksDatabase(scratch).open();
+		let purgeCalls = 0;
+		// alternate empty and productive passes: the LMDB backoff would double on the first and halve on
+		// the second, so a shared cadence rule shows up here as a changing delay
+		rootStore.purgeLogs = () => (++purgeCalls % 2 ? [] : ['purged.txnlog']);
+		setAuditRetention(1_000, 10);
+		let store;
+		try {
+			store = openAuditStore(rootStore);
+			for (const pass of [1, 2, 3, 4]) {
+				// an explicit delay wins for the pass it schedules, and the pass then re-derives the cadence
+				await store.scheduleAuditCleanup(1);
+				assert.equal(store.auditCleanupDelay, 100, `pass ${pass} should hold the retention-derived cadence`);
+			}
+			assert.equal(purgeCalls, 4, 'every pass should have reached purgeLogs');
+		} finally {
+			setAuditRetention(60_000, 10_000);
+			store?.stopAuditCleanup();
+			removeStorageReclamation(scratch);
+			if (rootStore.status !== 'closed') rootStore.close();
+			rmSync(scratch, { recursive: true, force: true });
+		}
+	});
+	// stopAuditCleanup() is irreversible, so this runs against its own store rather than the shared fixture
+	it('stops scheduling Rocks cleanup once the audit store is retired', async function () {
+		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-stop-'));
+		const rootStore = new RocksDatabase(scratch).open();
+		let purgeCalls = 0;
+		rootStore.purgeLogs = () => {
+			purgeCalls++;
+			return [];
+		};
+		setAuditRetention(100, 1);
+		try {
+			const auditStore = openAuditStore(rootStore);
+			const pending = auditStore.scheduleAuditCleanup(1);
+			auditStore.stopAuditCleanup();
+			await pending;
+			const purgeCallsAtStop = purgeCalls;
+			await delay(20);
+			assert.equal(purgeCalls, purgeCallsAtStop, 'a retired cleanup loop kept purging');
+			await auditStore.scheduleAuditCleanup(1);
+			await delay(20);
+			assert.equal(purgeCalls, purgeCallsAtStop, 'a retired cleanup loop accepted a new pass');
+		} finally {
+			setAuditRetention(60_000, 10_000);
+			removeStorageReclamation(scratch);
+			if (rootStore.status !== 'closed') rootStore.close();
+			rmSync(scratch, { recursive: true, force: true });
+		}
+	});
+	it('shortens the Rocks cadence while disk pressure is reported', async function () {
+		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-pressure-'));
+		const rootStore = new RocksDatabase(scratch).open();
+		let purgeCalls = 0;
+		rootStore.purgeLogs = () => {
+			purgeCalls++;
+			return [];
+		};
+		// only the scratch path reports pressure, so no other open store's handler is invoked
+		setAvailableSpaceRatioGetter(async (path) => (path === scratch ? 0.2 : 0.8));
+		setAuditRetention(1_000, 10);
+		let store;
+		try {
+			store = openAuditStore(rootStore);
+			// the handler arms its pass and awaits it, so a settled reclamation run means the pass ran
+			await runReclamationHandlers();
+			assert.ok(purgeCalls > 0, 'a pressure signal should run a cleanup pass');
+			// priority 0.4/0.2 = 2, so the window is retention/(1+4) and the cadence a tenth of that
+			assert.equal(store.auditCleanupDelay, 20, 'pressure should shorten the cadence, not just the cutoff');
+		} finally {
+			setAvailableSpaceRatioGetter();
+			setAuditRetention(60_000, 10_000);
+			store?.stopAuditCleanup();
+			removeStorageReclamation(scratch);
+			if (rootStore.status !== 'closed') rootStore.close();
+			rmSync(scratch, { recursive: true, force: true });
+		}
+	});
+	it('purges aged, flushed Rocks segments through the Harper retention pass', async function () {
+		const scratch = mkdtempSync(join(tmpdir(), 'harper-audit-retention-'));
+		const rootStore = new RocksDatabase(scratch, { transactionLogMaxSize: 128 }).open();
+		const originalPurgeLogs = rootStore.purgeLogs;
+		let purgeCalls = 0;
+		rootStore.purgeLogs = function (options) {
+			purgeCalls++;
+			return originalPurgeLogs.call(this, options);
+		};
+		setAuditRetention(60_000, 10_000);
+		try {
+			const auditStore = openAuditStore(rootStore);
+			const log = rootStore.useLog('retention-test');
+			for (let sequence = 1; sequence <= 3; sequence++) {
+				await rootStore.transaction(async (transaction) => {
+					const value = Buffer.alloc(256, sequence);
+					log.addEntry(value, transaction.id);
+					rootStore.putSync(`key-${sequence}`, value, { transaction });
+				});
+				if (sequence < 3) rootStore.flushSync();
+				if (sequence === 2) {
+					await delay(75);
+					setAuditRetention(50, 1);
+				}
+			}
+
+			await auditStore.scheduleAuditCleanup(1);
+			const logDirectory = join(scratch, 'transaction_logs', 'retention-test');
+			const segments = readdirSync(logDirectory).filter((name) => name.endsWith('.txnlog'));
+			assert.deepEqual(segments, ['3.txnlog']);
+
+			rootStore.close();
+			const purgeCallsAtClose = purgeCalls;
+			await delay(20);
+			assert.equal(purgeCalls, purgeCallsAtClose, 'cleanup continued after the root store closed');
+		} finally {
+			setAuditRetention(60_000, 10_000);
+			removeStorageReclamation(scratch);
+			if (rootStore.status !== 'closed') rootStore.close();
+			rmSync(scratch, { recursive: true, force: true });
+		}
+	});
 	// Regression test for harper#F-264 (see DESIGN.md's audit-entry-removal-loop invariant).
 	// Run with both a throwing and a non-throwing failure logger: with a throwing one, an
 	// implementation that counted the removal *before* logging its failure would still pass
@@ -227,6 +386,39 @@ describe('Audit log', () => {
 			AuditedTable.auditStore.remove = originalRemove;
 			await AuditedTable.deleteHistory(cutoff());
 		}
+	});
+	it('deleteHistory does not misdecode the last-removed marker as a corrupt audit entry', async function () {
+		// A fresh table/audit store, not the shared AuditedTable: lmdb-js caches a key's decoded
+		// value once readAuditEntry() has been run on it (by any earlier test's getRange/get over
+		// the same store), so re-scanning the marker on the shared fixture would silently hit that
+		// cache instead of re-triggering the decode this test exists to catch.
+		const MarkerTable = table({
+			table: 'DeleteHistoryMarkerTable',
+			database: 'deleteHistoryMarkerTestDB',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		if (MarkerTable.auditStore.reusableIterable) return this.skip();
+		// the last-removed marker is written fire-and-forget when the audit store opens; wait for its
+		// key (not its decoded value, which would itself trigger and cache away the bug) to land
+		await waitFor(() => [...MarkerTable.auditStore.getRange({ start: 0, end: 1, values: false })].length > 0, {
+			timeout: 5000,
+			message: 'expected the audit store to have a last-removed marker key',
+		});
+		await MarkerTable.put(1, { name: 'has-history' });
+
+		const originalError = harperLogger.error;
+		const errors = [];
+		harperLogger.error = (...args) => errors.push(args);
+		try {
+			await MarkerTable.deleteHistory(Date.now() + 60_000);
+		} finally {
+			harperLogger.error = originalError;
+		}
+		assert.strictEqual(
+			errors.some((args) => args[0] === 'Reading audit entry error'),
+			false,
+			`deleteHistory must not attempt to decode the last-removed marker as an audit entry: ${JSON.stringify(errors)}`
+		);
 	});
 	it('deleteHistory limits concurrent removals without serializing them', async function () {
 		if (AuditedTable.auditStore.reusableIterable) return this.skip();
@@ -1183,4 +1375,227 @@ describe('Audit log', () => {
 			assert.equal(events[i].length, 1);
 		}
 	});
+});
+
+// Retirement has to stop a pass that is already suspended inside removeAuditEntry, not just decline
+// to start another one: lmdb-js stamps the DBI number into the write instruction synchronously
+// (node_modules/lmdb/write.js) and the native writer consumes it later, so the promise the pass
+// awaits is exactly the window in which those handles must stay open.
+describe('Audit cleanup retirement', () => {
+	const scratchDirs = [];
+	const openScratchStore = () => {
+		const directory = mkdtempSync(join(tmpdir(), 'harper-audit-retire-'));
+		scratchDirs.push(directory);
+		return open({ path: join(directory, 'retire.mdb') });
+	};
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+	});
+	afterEach(function () {
+		setAuditRetention(60_000, 10_000);
+	});
+	after(function () {
+		for (const directory of scratchDirs) rmSync(directory, { recursive: true, force: true });
+	});
+
+	/**
+	 * Arms a real audit store over a real LMDB environment with a controllable range, so a pass can be
+	 * suspended at the exact point teardown lands on it in production: inside the awaited removal.
+	 * `entries` bounds how many records the range yields across all passes.
+	 */
+	function armGatedPass(rootStore, { entries = Infinity } = {}) {
+		const auditStore = openAuditStore(rootStore);
+		const counts = { advances: 0, releases: 0, removals: 0, markerWrites: 0 };
+		const markerValues = [];
+		auditStore.getRange = () => ({
+			[Symbol.iterator]: () => ({
+				next() {
+					if (counts.advances++ >= entries) return { done: true, value: undefined };
+					return { done: false, value: { key: 1000 + counts.advances, type: 'put' } };
+				},
+				return() {
+					counts.releases++;
+					return { done: true, value: undefined };
+				},
+			}),
+		});
+		let releaseRemoval;
+		const removalGate = new Promise((resolve) => (releaseRemoval = resolve));
+		auditStore.remove = () => {
+			counts.removals++;
+			return removalGate;
+		};
+		const realPut = auditStore.put.bind(auditStore);
+		auditStore.put = (key, value) => {
+			counts.markerWrites++;
+			// the marker buffer is reused across writes, so record the value rather than the reference
+			markerValues.push(new Float64Array(value.slice().buffer)[0]);
+			return realPut(key, value);
+		};
+		return { auditStore, counts, markerValues, releaseRemoval };
+	}
+
+	it('drains the in-flight removal before stopAuditCleanup() reports the pass retired', async function () {
+		const rootStore = openScratchStore();
+		try {
+			const { auditStore, counts, releaseRemoval } = armGatedPass(rootStore);
+			const pass = auditStore.scheduleAuditCleanup(1);
+			await waitFor(() => counts.removals === 1, { timeout: 1000, message: 'the gated pass never started' });
+
+			const barrier = auditStore.stopAuditCleanup();
+			let drained = false;
+			barrier.then(() => (drained = true));
+			await delay(20);
+			assert.equal(drained, false, 'the barrier must not settle while a removal is still in flight');
+
+			releaseRemoval();
+			await barrier;
+			await pass;
+			assert.equal(counts.advances, 1, 'a retired pass must not advance the cursor again');
+			assert.equal(counts.releases, 1, 'a retirement that leaves the environment open still owes the cursor release');
+			assert.equal(counts.markerWrites, 0, 'a retired pass must not write the last-removed marker');
+			await delay(20);
+			assert.equal(counts.advances, 1, 'a retired pass must not re-arm');
+		} finally {
+			removeStorageReclamation(rootStore.path);
+			if (rootStore.status !== 'closed') await rootStore.close();
+		}
+	});
+
+	it('touches nothing further once the root store closes under a suspended pass', async function () {
+		const rootStore = openScratchStore();
+		let unhandledRejection;
+		const onUnhandledRejection = (reason) => (unhandledRejection = reason);
+		process.on('unhandledRejection', onUnhandledRejection);
+		try {
+			const { auditStore, counts, releaseRemoval } = armGatedPass(rootStore);
+			const pass = auditStore.scheduleAuditCleanup(1);
+			await waitFor(() => counts.removals === 1, { timeout: 1000, message: 'the gated pass never started' });
+
+			// the resetDatabases() shape: the root closes with no stopAuditCleanup() call at all
+			const closed = rootStore.close();
+			releaseRemoval();
+			await pass;
+			await closed;
+
+			assert.equal(counts.advances, 1, 'a pass resuming onto a closing environment must not advance the cursor');
+			assert.equal(counts.releases, 0, 'releasing a cursor into a closing environment reaches native code');
+			assert.equal(counts.markerWrites, 0, 'a pass resuming onto a closing environment must not write the marker');
+			await delay(20);
+			assert.equal(counts.advances, 1, 'a pass must not re-arm onto a closed store');
+			assert.equal(unhandledRejection, undefined, 'the detached timer callback must not reject');
+		} finally {
+			process.off('unhandledRejection', onUnhandledRejection);
+			removeStorageReclamation(rootStore.path);
+			if (rootStore.status !== 'closed') await rootStore.close();
+		}
+	});
+
+	// Both logger shapes: a throwing sink is what a try/catch around the marker write alone does not
+	// contain, and this file's deleteHistory regressions establish it as a real failure model.
+	for (const loggingThrows of [true, false]) {
+		it(`contains and retries a failed last-removed write (failure logging ${
+			loggingThrows ? 'throws' : 'succeeds'
+		})`, async function () {
+			const rootStore = openScratchStore();
+			const originalWarn = harperLogger.warn;
+			let unhandledRejection;
+			const onUnhandledRejection = (reason) => (unhandledRejection = reason);
+			process.on('unhandledRejection', onUnhandledRejection);
+			const { auditStore, counts, markerValues, releaseRemoval } = armGatedPass(rootStore, { entries: 1 });
+			try {
+				releaseRemoval(); // this test is about the marker write, so let the removal settle at once
+				let markerRejects = true;
+				const countingPut = auditStore.put;
+				auditStore.put = (key, value) => {
+					// still issued, so the failure under test is the rejection rather than a skipped write
+					const write = countingPut(key, value);
+					return markerRejects ? write.then(() => Promise.reject(new Error('simulated marker write failure'))) : write;
+				};
+				const warnings = [];
+				harperLogger.warn = (...args) => {
+					warnings.push(args);
+					if (loggingThrows) throw new Error('simulated logging failure');
+				};
+
+				await auditStore.scheduleAuditCleanup(1);
+				assert.equal(counts.markerWrites, 1, 'the pass should have attempted the marker write');
+				assert.equal(
+					warnings[0]?.[0],
+					'Error recording the last removed audit entry',
+					'a rejected marker write must be logged, not dropped'
+				);
+				assert.equal(warnings[0]?.[1]?.message, 'simulated marker write failure');
+
+				// A later pass deletes nothing, so without a retained watermark it never writes the marker
+				// again and the recorded boundary stays behind the entries that were already removed.
+				markerRejects = false;
+				harperLogger.warn = originalWarn;
+				await waitFor(() => counts.markerWrites >= 2, {
+					timeout: 2000,
+					message: 'the failed last-removed marker was never retried',
+				});
+				assert.deepEqual(markerValues, [1001, 1001], 'the retry must carry the watermark the failed write had');
+				await delay(20);
+				assert.equal(counts.markerWrites, 2, 'a committed marker must not be rewritten by later empty passes');
+				assert.equal(unhandledRejection, undefined, 'the detached timer callback must not reject');
+			} finally {
+				harperLogger.warn = originalWarn;
+				process.off('unhandledRejection', onUnhandledRejection);
+				auditStore.stopAuditCleanup();
+				removeStorageReclamation(rootStore.path);
+				if (rootStore.status !== 'closed') await rootStore.close();
+			}
+		});
+	}
+
+	// The initializing marker write has no downstream owner: openAuditStore() is synchronous and returns
+	// the store, so a rejection here escapes unless it is contained at the call site — and the
+	// containment has to survive its own log sink throwing.
+	for (const loggingThrows of [true, false]) {
+		it(`contains a rejected last-removed initialization write (failure logging ${
+			loggingThrows ? 'throws' : 'succeeds'
+		})`, async function () {
+			const rootStore = openScratchStore();
+			const originalWarn = harperLogger.warn;
+			let unhandledRejection;
+			const onUnhandledRejection = (reason) => (unhandledRejection = reason);
+			process.on('unhandledRejection', onUnhandledRejection);
+			const realOpenDB = rootStore.openDB.bind(rootStore);
+			let opens = 0;
+			// the scratch environment has no audit store yet, so the create:false probe returns nothing and
+			// openAuditStore takes the initialize-a-new-store branch on its own
+			rootStore.openDB = (name, options) => {
+				opens++;
+				const store = realOpenDB(name, options);
+				if (store) store.put = () => Promise.reject(new Error('simulated marker initialization failure'));
+				return store;
+			};
+			const warnings = [];
+			harperLogger.warn = (...args) => {
+				warnings.push(args);
+				if (loggingThrows) throw new Error('simulated logging failure');
+			};
+			let auditStore;
+			try {
+				auditStore = openAuditStore(rootStore);
+				assert.equal(opens, 2, 'the fixture must take the branch that initializes a new audit store');
+				await waitFor(
+					() => warnings.some(([message]) => message === 'Error initializing the audit log last-removed marker'),
+					{ timeout: 1000, message: 'the rejected initialization write was never logged' }
+				);
+				await delay(20);
+				assert.equal(unhandledRejection, undefined, 'the initialization write must not escape the synchronous open');
+			} finally {
+				harperLogger.warn = originalWarn;
+				process.off('unhandledRejection', onUnhandledRejection);
+				rootStore.openDB = realOpenDB;
+				auditStore?.stopAuditCleanup();
+				removeStorageReclamation(rootStore.path);
+				if (rootStore.status !== 'closed') await rootStore.close();
+			}
+		});
+	}
 });

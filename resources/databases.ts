@@ -1376,6 +1376,34 @@ const openBranches = new Map<string, BranchDatabase | undefined>();
 const openBranchIdentities = new Set<string>();
 
 /**
+ * Materialization renames its clone in from `<blobRoot>.staging`, so a branch owns two database
+ * names rather than one: a database legally called `<storeName>.staging` resolves its own blob root
+ * to exactly the path the clone removes and renames over. Every check, reservation and release
+ * covers the pair, so the name cannot be claimed at any point where a branch operation may still
+ * delete what it resolves to.
+ */
+const BRANCH_STAGING_SUFFIX = '.staging';
+function branchIdentityPair(storeName: string): string[] {
+	return [storeName, storeName + BRANCH_STAGING_SUFFIX];
+}
+
+/**
+ * Identities whose blob roots outlived the branch that owned them, because a removal or an abandoned
+ * materialization could not delete them. A database created under such a name would resolve its own
+ * fresh file ids onto files it never wrote, so the name stays refused -- but only against DATABASES.
+ * The branch itself may take it back: materializing it replaces those roots wholesale, which is the
+ * only route that clears the condition without an operator.
+ */
+const quarantinedBranchIdentities = new Set<string>();
+
+export function quarantineBranchIdentity(storeName: string): void {
+	for (const name of branchIdentityPair(storeName)) {
+		quarantinedBranchIdentities.add(name);
+		openBranchIdentities.delete(name);
+	}
+}
+
+/**
  * True when `dbPath` is a directory an open branch owns. The database scan opens any directory that
  * holds CURRENT + MANIFEST-*, and harper#643 places a branch inside the directory it walks, so
  * without this a rescan would rebuild the branch's tables into the global map, overwrite the store
@@ -1412,6 +1440,116 @@ function assertLegalBranchName(name: string, description: string): void {
 }
 
 /**
+ * Refuse a branch store identity that something else already answers to.
+ *
+ * `storeName` picks the branch's blob roots, and blob file ids restart from each store's own counter,
+ * so two holders of one identity write the same file paths and truncate each other. It must be
+ * checked BEFORE anything destructive runs: materialization removes and replaces the blob root that
+ * this name resolves to, and a real database may legally be called `5_myapp__data` -- `schemaRegex`
+ * permits digits, `_` and `.`. The `.staging` sibling materialization writes is covered too, since a
+ * database may legally carry that name as well.
+ */
+export function assertBranchIdentityAvailable(storeName: string): void {
+	// The on-disk scan, not just the in-memory maps: a database that exists on disk but has not been
+	// loaded is absent from both, and it owns the blob root this identity would destroy.
+	getDatabases();
+	for (const name of branchIdentityPair(storeName)) {
+		// The directory as well as the maps. `getDatabases` skips a database blocked by restore, so an
+		// in-memory check alone reports its name as free while its blob root is very much real -- and
+		// materialization would then remove and replace it.
+		if (
+			databases[name] ||
+			definedDatabases?.has(name) ||
+			openBranchIdentities.has(name) ||
+			existsSync(resolveDatabasePath(name)) ||
+			anotherBranchOwns(name, storeName)
+		) {
+			throw new Error(`Cannot use '${storeName}' as a branch store identity: '${name}' is already in use`);
+		}
+	}
+}
+
+/**
+ * Does a branch OTHER than the one being opened already answer to this name on disk? `.staging` is
+ * what makes the question two-sided: `<identity>.staging` is both the path a clone renames over and
+ * a legal identity for a branch of a database literally named `<base>.staging`, so each of the pair
+ * can belong to somebody else. Only the primary name read as itself is excluded -- that directory is
+ * the very branch this call is opening.
+ */
+function anotherBranchOwns(name: string, storeName: string): boolean {
+	if (name !== storeName) return branchDirectoryExistsFor(name);
+	return name.endsWith(BRANCH_STAGING_SUFFIX)
+		? branchDirectoryExistsFor(name.slice(0, -BRANCH_STAGING_SUFFIX.length))
+		: false;
+}
+
+/**
+ * Claim the identity as well as checking it, so the window between the check and the branch actually
+ * opening cannot be filled by a concurrent create or a second branch. `releaseBranchIdentity` hands
+ * it back if materialization never gets as far as opening.
+ */
+export function reserveBranchIdentity(storeName: string): void {
+	assertBranchIdentityAvailable(storeName);
+	retakeBranchIdentity(storeName);
+}
+
+/**
+ * Take the pair back for an operation that owned it a statement ago -- cleanup, which has to keep
+ * holding the names through the deletions its `close()` just released them for. Deliberately without
+ * the availability check: nothing can have taken a name the caller held until now, and the check runs
+ * the database scan, which at that exact moment would find the branch directory unowned.
+ */
+export function retakeBranchIdentity(storeName: string): void {
+	for (const name of branchIdentityPair(storeName)) {
+		openBranchIdentities.add(name);
+		quarantinedBranchIdentities.delete(name);
+	}
+}
+
+export function releaseBranchIdentity(storeName: string): void {
+	for (const name of branchIdentityPair(storeName)) openBranchIdentities.delete(name);
+}
+
+/** Is this name spoken for by a branch? Database creation has to refuse it -- they share a blob root. */
+export function isBranchIdentity(name: string): boolean {
+	if (openBranchIdentities.has(name) || quarantinedBranchIdentities.has(name)) return true;
+	// The in-memory set covers only branches open in THIS process, so after a restart -- or for an
+	// application that is simply not loaded -- a database could take the name of an on-disk branch and
+	// share its blob root. The staging sibling goes through the same route, because it names the path
+	// materialization renames over -- but BOTH readings of a name ending in `.staging` have to be
+	// tried: `schemaRegex` permits `.`, so `4_myapp__data.staging` is either the sibling of a branch of
+	// `data` or a branch of a database actually called `data.staging`.
+	if (branchDirectoryExistsFor(name)) return true;
+	return name.endsWith(BRANCH_STAGING_SUFFIX)
+		? branchDirectoryExistsFor(name.slice(0, -BRANCH_STAGING_SUFFIX.length))
+		: false;
+}
+
+/**
+ * Is there a branch directory answering to this store identity? The identity carries the application
+ * name's length precisely so it can be taken apart again without guessing where the name ends.
+ */
+function branchDirectoryExistsFor(storeName: string): boolean {
+	const prefix = /^(\d+)_/.exec(storeName);
+	if (!prefix) return false;
+	const appLength = Number(prefix[1]);
+	const appName = storeName.slice(prefix[0].length, prefix[0].length + appLength);
+	if (
+		appName.length !== appLength ||
+		storeName.slice(prefix[0].length + appLength, prefix[0].length + appLength + 2) !== '__'
+	)
+		return false;
+	const baseName = storeName.slice(prefix[0].length + appLength + 2);
+	if (!baseName) return false;
+	try {
+		return existsSync(resolveBranchPath(baseName, appName));
+	} catch {
+		// Not a name a branch path could hold, so no branch owns it.
+		return false;
+	}
+}
+
+/**
  * Open a RocksDB directory as a **scope-private** database: its Table classes are built into an
  * object the caller owns and nothing is registered in the global `databases` map, so no enumerator
  * of that map — analytics, `describe_all`, worker teardown, replication — can observe it.
@@ -1430,17 +1568,25 @@ function assertLegalBranchName(name: string, description: string): void {
  * live base Table class — which is why schema operations through a branch are refused
  * (branchGuard.ts).
  *
- * A branch's blob roots start empty, so a row whose blob was written before the checkpoint reads
- * back as a missing file until harper#644 links the base's blob tree into them. Non-blob rows are
- * unaffected, for reads and writes alike.
+ * A branch's blob roots are a hard-link clone of the base's, taken with the checkpoint, so a row
+ * whose blob predates the branch reads back normally and the branch allocates new file ids in its own
+ * directory (harper#644).
  *
  * A branch is the checkpoint's SST content plus its own transaction-log tail. This function opens
  * only the stores; replaying the tail is `openOrCreate`'s job (branchDatabase.ts), where the
  * cross-thread claim elects exactly one replayer and awaits it before any thread may open the
  * branch — the same recovery contract a base database gets at boot, without which a process that
  * died unflushed silently rewinds the branch to its last memtable flush (harper#643).
+ *
+ * Pass `blobRoots` to pin the handle to the roots the branch was published with; without it the
+ * store resolves them from current configuration, which is only right for a branch being created.
  */
-export function openBranchDatabase(path: string, databaseName: string, storeName: string): BranchDatabase {
+export function openBranchDatabase(
+	path: string,
+	databaseName: string,
+	storeName: string,
+	blobRoots?: string[]
+): BranchDatabase {
 	assertLegalBranchName(databaseName, 'logical database name');
 	assertLegalBranchName(storeName, 'store identity');
 	if (!existsSync(path)) throw new Error(`Cannot open branch database: no directory at ${path}`);
@@ -1456,11 +1602,7 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	// a loaded database's store is closed by `closeLoadedDatabases`, so adopting it would mean this
 	// handle's `close()` tears down a live database
 	if (rocksdbDatabaseEnvs.has(path)) throw new Error(`Cannot branch ${path}: it is already open as a database`);
-	// `storeName` picks the blob roots, and blob file ids restart from each store's own checkpointed
-	// counter, so two holders of one identity write the same file paths and truncate each other
-	if (databases[storeName] || definedDatabases?.has(storeName) || openBranchIdentities.has(storeName)) {
-		throw new Error(`Cannot use '${storeName}' as a branch store identity: it is already in use`);
-	}
+	assertBranchIdentityAvailable(storeName);
 
 	const tables: Tables = Object.create(null);
 	// initStores opens a table's column families well before `setTable` publishes it into `tables`,
@@ -1475,12 +1617,18 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	// `rocksdbDatabaseEnvs` partway through, so anything re-entering `database()` during initStores
 	// would otherwise find the branch's store on an unowned path
 	openBranches.set(path, undefined);
-	openBranchIdentities.add(storeName);
+	retakeBranchIdentity(storeName);
 	try {
 		rootStore = readRocksMetaDb(path, null, databaseName, { destination: tables, storeName, openedStores });
+		// Pin the handle to the roots the caller proved this branch was published with, before it is
+		// handed out. A row's `storageIndex` is a position in that list, so resolving through current
+		// configuration instead would let an appended volume take writes at an index the branch's own
+		// completion marker never recorded -- and a later change at that index would then silently
+		// re-address them. `closeBranchHandles` clears the entry with the rest of the handle.
+		if (blobRoots) databasePaths.set(rootStore as unknown as RootDatabase, blobRoots);
 	} catch (error) {
 		openBranches.delete(path);
-		openBranchIdentities.delete(storeName);
+		releaseBranchIdentity(storeName);
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
 		closeBranchHandles(path, stranded, openedStores);
@@ -1497,7 +1645,7 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 			if (closed) return;
 			closed = true;
 			openBranches.delete(path);
-			openBranchIdentities.delete(storeName);
+			releaseBranchIdentity(storeName);
 			rocksdbDatabaseEnvs.delete(path);
 			closeBranchHandles(path, rootStore, openedStores);
 		},
@@ -1517,6 +1665,7 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
  */
 function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, openedStores: any[] = []): void {
 	const reclamationPaths = new Set<string>([path]);
+	(rootStore as any)?.auditStore?.stopAuditCleanup?.();
 	const closeStore = (store: any, description: string) => {
 		if (store?.path) reclamationPaths.add(store.path);
 		try {
@@ -1801,6 +1950,10 @@ export async function dropDatabase(databaseName) {
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 
 		if (rootStore) {
+			// awaited: retirement stops the loop admitting work, the barrier is what says the pass that was
+			// already running has released the stores this is about to close and unlink
+			await rootStore.auditStore?.stopAuditCleanup?.();
+			removeStorageReclamation(rootStore.path);
 			if (rootStore.status === 'open') {
 				if (rootStore instanceof RocksDatabase) {
 					rootStore.close();
@@ -1815,6 +1968,8 @@ export async function dropDatabase(databaseName) {
 			// a tableless database resolves its root store here rather than in the loop above, so take
 			// the drop lock now (still before any destructive step)
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+			await rootStore.auditStore?.stopAuditCleanup?.();
+			removeStorageReclamation(rootStore.path);
 			if (rootStore instanceof RocksDatabase) {
 				rootStore.close();
 				rootStore.destroy();
@@ -1852,17 +2007,27 @@ export function closeDatabase(databaseName: string): boolean {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
-		for (const indexName in table.indices || {}) {
-			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
-		}
-		closeStore(table.primaryStore, `table ${tableName}`);
 	}
 	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
 	// an open root store, tracked only on the defined-database entry rather than any table — include
 	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	if (definedRoot) rootStores.add(definedRoot);
+	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
+	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
+	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
+	// synchronous purgeLogs() call with nothing suspended mid-removal.
+	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
+	for (const tableName in dbTables) {
+		const table: any = dbTables[tableName];
+		if (!table?.primaryStore) continue;
+		for (const indexName in table.indices || {}) {
+			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+		}
+		closeStore(table.primaryStore, `table ${tableName}`);
+	}
 	for (const rootStore of rootStores) {
+		removeStorageReclamation(rootStore.path);
 		closeStore(rootStore.dbisDb, 'attributes store');
 		closeStore(rootStore, 'root store');
 		lmdbDatabaseEnvs.delete(rootStore.path);
@@ -2095,6 +2260,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	// fix still loads (data stays accessible) and can be dropped to remediate.
 	if ((RESERVED_DATABASE_NAMES as readonly string[]).includes(databaseName)) {
 		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
+	}
+	// A branch resolves its blob root from its store identity, so a database created under that same
+	// name would share the root: two allocators minting the same file paths and truncating each other,
+	// and the branch's teardown removing the database's blobs.
+	if (isBranchIdentity(databaseName)) {
+		throw new ClientError(`'${databaseName}' is in use as a branch store identity and cannot be a database name`);
 	}
 	const rootStore = database({ database: databaseName, table: tableName });
 	const tables = databases[databaseName];

@@ -1,7 +1,6 @@
 'use strict';
 
 import * as path from 'path';
-import { watch } from 'chokidar';
 import * as fs from 'fs-extra';
 import * as forge from 'node-forge';
 import * as net from 'net';
@@ -33,9 +32,16 @@ export const getPrivateKeys = () => privateKeys;
 import { readFileSync, statSync } from 'node:fs';
 import { getTicketKeys, onMessageFromWorkers } from '../server/threads/manageThreads.js';
 import { isMainThread } from 'worker_threads';
-import { POLLING_FALLBACK_OPTIONS, isWatcherExhaustionError, warnWatcherFallback } from '../utility/watcherFallback.ts';
+import {
+	POLLING_FALLBACK_OPTIONS,
+	claimLostNativeWatchError,
+	guardedWatch,
+	isWatcherExhaustionError,
+	warnWatcherFallback,
+} from '../utility/watcherFallback.ts';
 import { resolveWatchTarget } from '../utility/watchPath.ts';
 import { TLSSocket } from 'node:tls';
+import { publishTrustedAuthorities } from './certificateVerification/trustedIssuers.ts';
 
 const CERT_VALIDITY_DAYS = 3650;
 // Default interval (ms) for the periodic cert-file re-read safety net. The chokidar (inotify)
@@ -381,7 +387,7 @@ function loadAndWatch(path, loadCert, type) {
 	let usingPolling = watchTarget.mustPoll;
 	let liveWatcher;
 	const openWatcher = () => {
-		const opened = (liveWatcher = watch(watchTarget.path, {
+		const opened = (liveWatcher = guardedWatch(watchTarget.path, {
 			persistent: false,
 			...(usingPolling ? POLLING_FALLBACK_OPTIONS : {}),
 		}));
@@ -391,6 +397,7 @@ function loadAndWatch(path, loadCert, type) {
 			.on('change', () => loadFile(path))
 			// chokidar emits 'error' unguarded for anything but ENOENT/ENOTDIR.
 			.on('error', (error) => {
+				if (claimLostNativeWatchError(error)) return;
 				if (isWatcherExhaustionError(error)) {
 					if (usingPolling || liveWatcher !== opened) return;
 					warnWatcherFallback(path);
@@ -1407,6 +1414,8 @@ export function createTLSSelector(type, mtlsOptions?, liveReload = true): any {
 					for (const [hostname, context] of candidateContexts) secureContexts.set(hostname, context);
 					caCerts.clear();
 					for (const [subject, certificate] of candidateCAs) caCerts.set(subject, certificate);
+					// only listener selectors publish: a one-shot client selector's pass may see no authority rows
+					if (liveReload) publishTrustedAuthorities(caCerts.values());
 					hasWildcards = candidateHasWildcards;
 					if (candidateDefault) {
 						(SNICallback as any).defaultContext = defaultContext = candidateDefault;

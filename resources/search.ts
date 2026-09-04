@@ -1,11 +1,12 @@
 import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
-import { ExtendedIterable, SKIP } from '@harperfast/extended-iterable';
+import { SKIP, ExtendedIterable } from '@harperfast/extended-iterable';
 import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata } from './RecordEncoder.ts';
+import { writeKeyId } from './DatabaseTransaction.ts';
 import { recordAction } from './analytics/write';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 
@@ -233,6 +234,41 @@ function composeRecordFilter(recordFilters, table, context): (primaryKey: Id) =>
 }
 
 /**
+ * A record's index entries are not adjacent — the composite `[indexedValue, primaryKey]` key sorts
+ * on the indexed value first — so comparing neighbours cannot collapse them and the scan has to
+ * remember what it already yielded (#2434).
+ *
+ * Heap cost is one key per distinct record in the scanned range, held for the life of the scan, and
+ * a page window does not cap it: sibling-condition and row filters run downstream, so a selective
+ * filter keeps the scan running and the set growing while the page fills. On a multi-million-row
+ * range that is hundreds of MB where main streamed at O(1). Accepted for #2434 over the bounded
+ * alternative, which costs a primary read per index entry.
+ */
+function distinctRecords(entries: any): AsyncIterable<Id> {
+	const distinct = new ExtendedIterable();
+	(distinct as any).iterate = (options) => {
+		// A non-scalar key decodes to a fresh instance per entry, so identity never matches it;
+		// `writeKeyId` is the store's own key equality. Its bytes get their own set because a scalar
+		// string id can legitimately carry exactly those bytes, and one set would fold the two —
+		// the collision `flattenKey` has, and the reason Table.ts prefixes its key ids.
+		const yieldedKeys = new Set();
+		const yieldedEncodedKeys = new Set();
+		// map rather than filter: filter clears `continueOnRecoverableError` for everything below it
+		return entries
+			.map((primaryKey) => {
+				const isEncoded = typeof primaryKey === 'object' && primaryKey !== null;
+				const yielded = isEncoded ? yieldedEncodedKeys : yieldedKeys;
+				const identity = isEncoded ? writeKeyId(primaryKey) : primaryKey;
+				if (yielded.has(identity)) return SKIP;
+				yielded.add(identity);
+				return primaryKey;
+			})
+			.iterate(options);
+	};
+	return distinct as any;
+}
+
+/**
  * Search for records or keys, based on the search condition, using an index if available
  * @param searchCondition
  * @param transaction
@@ -261,6 +297,9 @@ export function searchByIndex(
 		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
 	}
 	let needFullScan;
+	// `[indexedValue, primaryKey]` is unique, so a scan that stays inside one indexed value cannot
+	// reach a record twice and skips the collapse below
+	let scansOneIndexedValue;
 	if (Array.isArray(attribute_name)) {
 		const firstAttributeName = attribute_name[0];
 		// get the potential relationship attribute
@@ -388,6 +427,7 @@ export function searchByIndex(
 				start = value;
 				end = value;
 				inclusiveEnd = true;
+				scansOneIndexedValue = true;
 				break;
 			case 'in':
 				// Phase 1: route through filter — index-merge optimization is a Phase 2 follow-up.
@@ -577,7 +617,7 @@ export function searchByIndex(
 			}
 			return processEntries(searched);
 		}
-		return index.getRange(rangeOptions).map(
+		const scanned = index.getRange(rangeOptions).map(
 			filter
 				? function ({ key, value }) {
 						let recordMatcher: any;
@@ -600,6 +640,14 @@ export function searchByIndex(
 					}
 				: ({ value }) => value
 		);
+		// Collapsing AFTER the map is required, not incidental: the condition's own filter tests one
+		// element at a time, so a record whose first entry fails it and whose second passes must
+		// still be reached. Collapsing first would settle that record on the failing entry and drop
+		// it. Scoped to attributes the schema declares multi-valued; a runtime array under an
+		// undeclared attribute repeats the same way but stays outside this boundary.
+		return scansOneIndexedValue || !findAttribute(Table.attributes, attribute_name)?.elements
+			? scanned
+			: distinctRecords(scanned);
 	} else {
 		return Table.primaryStore
 			.getRange(reverse ? { end: true, transaction, reverse: true } : { start: true, transaction })
@@ -1262,7 +1310,7 @@ export function estimateCondition(table) {
 					for (const subCondition of condition.conditions) {
 						estimateConditionForTable(subCondition);
 						estimatedCount = isFinite(estimatedCount)
-							? (estimatedCount * subCondition.estimated_count) / estimatedEntryCount(table.primaryStore)
+							? (estimatedCount * subCondition.estimated_count) / (estimatedEntryCount(table.primaryStore) || 1)
 							: subCondition.estimated_count;
 					}
 				}
@@ -1312,8 +1360,10 @@ export function estimateCondition(table) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				const index = table.indices[attribute_name];
 				if (condition.value === null && searchType === 'ne') {
-					condition.estimated_count =
-						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0);
+					condition.estimated_count = Math.max(
+						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0),
+						0
+					);
 				} else condition.estimated_count = Infinity;
 			} else if (searchType === 'in') {
 				const attribute_name = condition[0] ?? condition.attribute;
