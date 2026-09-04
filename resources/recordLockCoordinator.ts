@@ -321,6 +321,10 @@ export class LockCoordinator {
 	#lastOffOwnerWarn = 0;
 	#knownParticipants: Set<string> | undefined;
 	#knownParticipantsAt = 0;
+	// Every transition that can make a key state released-only bumps this, so a futile reclamation
+	// scan can tell "nothing has changed since I last looked" in O(1).
+	#mutations = 0;
+	#lastFutileScan = -1;
 
 	constructor(options: LockCoordinatorOptions) {
 		if (!isNodeName(options.nodeId) || NON_DISTINCTIVE_NODE_NAMES.has(options.nodeId))
@@ -406,6 +410,7 @@ export class LockCoordinator {
 			reject,
 		};
 		state.own = own;
+		this.#mutations++;
 		this.#startTicking();
 		// Await the request before resolving on grants: a request that never became durable is one no
 		// peer will ever answer, and leaving it pending would burn the caller's whole timeout.
@@ -502,6 +507,7 @@ export class LockCoordinator {
 			for (const [identity, peer] of state.peers) {
 				if (peer.expiresMono > mono) continue;
 				state.deletePeer(identity, peer);
+				this.#mutations++;
 				this.#removeDeferred(state, identity);
 				// Synthesizing the missing grant is what lets a waiter proceed past a holder that crashed
 				// without writing its release — so it must mean exactly that, and nothing else. A peer that
@@ -546,13 +552,23 @@ export class LockCoordinator {
 	 * cannot resurrect them, which must not cost a live key its slot — the same reason released rounds
 	 * do not consume the per-key contention budget.
 	 *
-	 * Reached from the overflow path, so it is a flat scan with an O(1) test per key rather than a
-	 * nested one: `livePeers` is maintained as rounds arrive and are released. Throttling it instead
-	 * would be the wrong trade — it would skip a reclamation that had just become possible and drop a
-	 * one-shot request that had room waiting for it.
+	 * Reached from the overflow path, so two things keep it off the apply thread's budget: the per-key
+	 * test is O(1) (`livePeers` is maintained as rounds arrive and are released), and a scan that found
+	 * nothing is not repeated until some state has actually changed. A saturated table under a flood of
+	 * requests therefore scans once, not once per request, because a dropped request changes nothing.
+	 *
+	 * Throttling on a clock instead would be the wrong trade: it would skip a reclamation that had just
+	 * become possible and drop a one-shot request that had room waiting for it.
 	 */
 	#evictReleasedOnlyKeys() {
-		for (const [keyId, state] of this.#states) if (state.releasedOnly) this.#states.delete(keyId);
+		if (this.#mutations === this.#lastFutileScan) return;
+		let reclaimed = false;
+		for (const [keyId, state] of this.#states)
+			if (state.releasedOnly) {
+				this.#states.delete(keyId);
+				reclaimed = true;
+			}
+		if (!reclaimed) this.#lastFutileScan = this.#mutations;
 	}
 
 	#hasLiveRound(state: KeyState, requester: string): boolean {
@@ -661,6 +677,7 @@ export class LockCoordinator {
 	#finish(state: KeyState, keyId: unknown, own: OwnRound, rejection?: Error): Promise<void> | void {
 		own.done = true;
 		if (state.own === own) state.own = undefined;
+		this.#mutations++;
 		let write: Promise<void> | void;
 		if (own.requestSettled)
 			write = this.#writeControlSafely({
@@ -683,6 +700,7 @@ export class LockCoordinator {
 	#abandon(state: KeyState, keyId: unknown, own: OwnRound, error: Error) {
 		own.done = true;
 		if (state.own === own) state.own = undefined;
+		this.#mutations++;
 		this.#flushDeferred(state);
 		if (!own.resolved) {
 			own.resolved = true;
@@ -727,6 +745,7 @@ export class LockCoordinator {
 			for (const [identity, peer] of state.peers) {
 				if (!peer.released) continue;
 				state.deletePeer(identity, peer);
+				this.#mutations++;
 				if (state.peers.size < MAX_PEER_REQUESTS_PER_KEY) break;
 			}
 		}
@@ -743,12 +762,14 @@ export class LockCoordinator {
 			released: false,
 		};
 		state.addPeer(identity, peer);
+		this.#mutations++;
 		this.#startTicking();
 		const own = state.own;
 		const defer =
 			own !== undefined && !own.done && (own.acquired || isEarlier(own.tsR, this.nodeId, entry.tsR, entry.requester));
 		if (defer) {
 			state.deferredOrder.push(identity);
+			this.#mutations++;
 			this.#sortDeferred(state);
 			return;
 		}
@@ -780,6 +801,7 @@ export class LockCoordinator {
 		const peer = state.peers.get(identity);
 		if (!peer || peer.released) return;
 		state.releasePeer(peer);
+		this.#mutations++;
 		// A withdrawn request is owed nothing. The peer record itself stays until its bound, so a
 		// replayed request for the same identity cannot resurrect it.
 		this.#removeDeferred(state, identity);
@@ -796,13 +818,17 @@ export class LockCoordinator {
 
 	#removeDeferred(state: KeyState, identity: string) {
 		const index = state.deferredOrder.indexOf(identity);
-		if (index >= 0) state.deferredOrder.splice(index, 1);
+		if (index >= 0) {
+			state.deferredOrder.splice(index, 1);
+			this.#mutations++;
+		}
 	}
 
 	#flushDeferred(state: KeyState) {
 		if (state.deferredOrder.length === 0) return;
 		const order = state.deferredOrder;
 		state.deferredOrder = [];
+		this.#mutations++;
 		for (const identity of order) {
 			const peer = state.peers.get(identity);
 			if (!peer || peer.released) continue;
