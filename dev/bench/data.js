@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788426930249,
+  "lastUpdate": 1788506785389,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -5297,6 +5297,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1894.61,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6910b74f2882e632b39a01ed3fe1e2cf61b9089d",
+          "message": "Stop the terminal-shutdown harness from loading the whole app graph to test worker respawn (#2366)\n\n* Stop the terminal-shutdown harness from loading the whole app graph to test worker respawn\n\nSeed the worker manager's lazy root-component dependency with a verified no-op in the harness, so respawn bookkeeping is tested without loading the full application graph. Keep the terminal shutdown modes' assertions and suite-level timeout intact.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Clarify terminal-shutdown harness ROOTPATH isolation\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-09-04T04:00:41Z",
+          "url": "https://github.com/HarperFast/harper/commit/6910b74f2882e632b39a01ed3fe1e2cf61b9089d"
+        },
+        "date": 1788506784023,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6041.52,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8152.92,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8180.37,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6055.77,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4410.82,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8258.39,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 972.28,
             "unit": "ops/sec"
           }
         ]
