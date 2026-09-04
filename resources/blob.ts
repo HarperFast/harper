@@ -12,12 +12,14 @@
  */
 
 import { addExtension, pack, Packr } from 'msgpackr';
+import { compareKeys } from 'ordered-binary';
 import {
 	readFile,
 	rename,
 	statfs,
 	readdir,
 	rmdir,
+	stat as statPromised,
 	open as openFile,
 	type FileHandle,
 	unlink as unlinkPromised,
@@ -50,6 +52,7 @@ import { createDeflate, createInflate, inflate } from 'node:zlib';
 import { Readable, Transform, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.ts';
+import { isMainThread } from 'node:worker_threads';
 import { CONFIG_PARAMS, MAX_SET_TIMEOUT_MS } from '../utility/hdbTerms.ts';
 import { join, dirname } from 'path';
 import { logger } from '../utility/logging/logger.ts';
@@ -65,7 +68,11 @@ type StorageInfo = {
 	fileId: string;
 	store?: any;
 	filePath?: string;
-	recordId?: number;
+	owner?: BlobOwner;
+	// This process allocated the file id, so no committed record can reference it yet. It is what
+	// makes ownership stampable: a reference read back from storage never becomes owned, because
+	// nothing here can prove some other legacy record does not reference the same file.
+	allocated?: boolean;
 	contentBuffer?: Buffer;
 	source?: Readable;
 	compress?: boolean;
@@ -83,7 +90,23 @@ type StorageInfo = {
 	// The file `blobFileMissingOrIncompleteAsync` last found damaged, for the locked recheck to recognize
 	probedDamage?: { fileSize: number; header: Buffer };
 };
-type BlobFileInfo = { store?: any; fileId?: string };
+/**
+ * The record that owns a blob file, persisted alongside the reference so it survives a storage
+ * round trip: `[table name, primary key]`. The table half is required because blob file ids are per
+ * DATABASE while the encode only ever knew the record key — the same key in two tables of one
+ * database would otherwise read as the same owner. It is the table NAME rather than the numeric
+ * table id because `tableId` is assigned per node in creation order, so the same table can hold
+ * different ids on two nodes and a replicated reference would name the wrong one. `null` means the
+ * encoder had no table to give (the v4 migration, bare-store unit tests), which is never persisted.
+ */
+type BlobOwner = [tableName: string | null, key: any];
+type BlobFileInfo = { store?: any; fileId?: string; storageIndex?: number; owner?: BlobOwner };
+/**
+ * The record write that gave a blob file up: the version of the record it replaced, and whether that
+ * write commits synchronously. The second is what decides how the intent has to be written — see
+ * {@link stageDurableUnlink}.
+ */
+type BlobSupersession = { priorVersion?: number; synchronous?: boolean };
 
 function discardStorage(storageInfo: StorageInfo): void {
 	(storageInfo.fileState ??= {}).discarded = true;
@@ -156,7 +179,8 @@ export function isBlobReceiveInFlight(fileId: string | null | undefined, store: 
 }
 let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
-let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
+let encodeForStorageForRecordId: any = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
+let encodeForStorageTableName: string | null | undefined; // the table half of the owner this encode stamps
 let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
@@ -1251,6 +1275,10 @@ interface PendingReclamation {
 	enqueuedAt: number;
 	supersededAt: number;
 	unlinking?: boolean;
+	// The durable queue row is the authority for this entry, so the in-memory timer must not also act
+	// on it. What is left here is local bookkeeping: the blob instances to condemn when the drain
+	// commits, and something for a cancelling write to clear.
+	durable?: boolean;
 }
 // Keyed by file path, which is unique per store — a fileId is a per-store counter, so two databases
 // can hold the same one.
@@ -1430,27 +1458,46 @@ function isBlobHeld(storageInfo: BlobFileInfo | undefined, claim = false): boole
  * Cancel a queued reclamation because a record version being written references the file again: the
  * retain-on-update check covers only the write that supersedes, not a file already queued by an
  * earlier one. Cancelling at encode rather than at commit means an aborted write leaves the file
- * unreclaimed until the orphan sweeper runs (#2156) — chosen deliberately over the alternative
- * failure, which is unlinking a file the committed record still points at.
+ * unreclaimed until its intent is re-validated at drain time — chosen deliberately over the
+ * alternative failure, which is unlinking a file the committed record still points at.
  *
- * The signal is recorded in shared memory as well as in this worker's queue, because the worker that
- * queued the reclamation may not be this one.
+ * Throws when the file is already being unlinked. That is not a new failure mode so much as an
+ * honest one: the write it refuses would have committed a reference to bytes that are going away,
+ * which is what the discarded-blob guard in saveBlob already refuses in-process (#2062).
  */
 function cancelBlobReclamation(storageInfo: StorageInfo): void {
 	if (!storageInfo?.fileId || !storageInfo.store) return;
-	const state = blobHoldState(storageInfo.store, storageInfo.fileId);
-	if (state) {
-		if (Atomics.load(state.table, state.slot + HOLDS) < 0) {
-			// Already claimed by a reclaimer: the file is on its way out and the record being written
-			// will reference bytes that are about to disappear. Nothing to cancel; say so rather than
-			// letting it be silent.
-			logger.warn?.(
-				`Blob file ${storageInfo.fileId} is being reclaimed while a record is being written that references it`
+	if (hasUnlinkIntent(storageInfo)) {
+		// Withdraw the intent durably and BEFORE testing the lock. A drain takes the lock and then
+		// re-reads the row, so the two orderings are the only ones possible and both are safe: if the
+		// drain got the lock first this write fails, and if it did not, its re-read finds the row gone.
+		//
+		// Fail-closed throughout, unlike every other queue access here: this one is on the write path,
+		// and a withdrawal that did not land leaves a row that a later drain executes against bytes
+		// this record is about to commit a reference to. Refusing the write is the recoverable half.
+		removeUnlinkIntent(storageInfo);
+		if (!takeReclaimLock(storageInfo)) {
+			throw new Error(
+				`Blob file ${storageInfo.fileId} is being reclaimed and can no longer be referenced; the data must be supplied again`
 			);
-			return;
 		}
-		Atomics.store(state.table, state.slot + REREFERENCED, 1);
+		try {
+			if (hasUnlinkIntent(storageInfo)) {
+				throw new Error(
+					`Blob file ${storageInfo.fileId} still has an unlink intent that could not be withdrawn; refusing to reference it`
+				);
+			}
+		} finally {
+			releaseReclaimLock(storageInfo);
+		}
+		// The intent is withdrawn, so the reclaim claim taken for it must go back — the slot is shared
+		// by hash, and one left claimed reads as "already reclaimed" to every colliding file.
+		releaseReclaimClaim(storageInfo);
 	}
+	// Also recorded in shared memory for the in-memory reclamation path, whose queue lives on whichever
+	// worker superseded the file and may not be this one.
+	const state = blobHoldState(storageInfo.store, storageInfo.fileId);
+	if (state) Atomics.store(state.table, state.slot + REREFERENCED, 1);
 	if (pendingReclamation.size === 0) return;
 	let filePath: string;
 	try {
@@ -1459,8 +1506,49 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 		logger.debug?.('Could not resolve blob path to cancel pending reclamation', error);
 		return;
 	}
-	if (!pendingReclamation.delete(filePath)) return;
-	if (pendingReclamation.size === 0) resetDrainedQueue();
+	const pending = pendingReclamation.get(filePath);
+	if (!pending) return;
+	pendingReclamation.delete(filePath);
+	if (pendingReclamation.size === 0 && !pending.durable) resetDrainedQueue();
+}
+
+/**
+ * Whether a durable unlink intent exists for exactly this file. Exact, unlike the hashed hold slot.
+ *
+ * Reached from the encode of every stored blob, so the common answer has to be free. It is: a drain
+ * that walked the whole range and found nothing records that, and the shared epoch says whether
+ * anything has been staged since — one atomic load to prove there is nothing to read.
+ */
+function hasUnlinkIntent(storageInfo: BlobFileInfo): boolean {
+	const queueDb = unlinkQueueDb(storageInfo.store);
+	if (!queueDb) return false;
+	if (queueIsEmpty(storageInfo.store)) return false;
+	try {
+		return queueDb.getSync([UNLINK_QUEUE_KEY, storageInfo.fileId]) !== undefined;
+	} catch (error) {
+		logger.debug?.('Could not read the blob unlink queue while cancelling a reclamation', error);
+		return false;
+	}
+}
+
+// What the last drain in THIS thread saw, and the epoch it saw it at. Rows a previous process left
+// behind are covered because the startup drain runs before anything can be encoded against them.
+const queueEmptyAt = new WeakMap<any, number>();
+function queueIsEmpty(store: any): boolean {
+	const seen = queueEmptyAt.get(store);
+	if (seen === undefined) return false;
+	const epoch = unlinkEpoch(store);
+	return !!epoch && Atomics.load(epoch, 0) === seen;
+}
+
+/**
+ * Withdraw the durable intent for a file a record is referencing again. Synchronous, because the
+ * interlock below depends on the removal being visible to a drain that takes the lock afterwards.
+ */
+function removeUnlinkIntent(storageInfo: BlobFileInfo): void {
+	const queueDb = unlinkQueueDb(storageInfo.store);
+	if (!queueDb) return;
+	queueDb.removeSync([UNLINK_QUEUE_KEY, storageInfo.fileId]);
 }
 
 /** A drained queue has no tail to order against and nothing left to wake up for. */
@@ -1473,11 +1561,755 @@ function resetDrainedQueue(): void {
 	}
 }
 
+// -- Blob file ownership --------------------------------------------------------------
+// A blob file belongs to exactly one record. `pack` has always said so, but it compared a
+// `recordId` that only ever existed in the encoding thread, so a blob read back from storage and
+// re-encoded under a different record passed the check and two live records ended up sharing one
+// file — superseding either one deleted bytes the other still referenced. The owner is now part of
+// the persisted reference, which makes the check effective and lets the unlink drain re-read the
+// owning record before it deletes anything.
+
+/** Owners compare by value: a restored composite key is a fresh array, so `!==` would always fire. */
+function blobOwnerMatches(owner: BlobOwner, tableName: string, key: any): boolean {
+	return compareKeys(owner[0], tableName) === 0 && compareKeys(owner[1], key) === 0;
+}
+
 /**
- * Delete the file for the blob
- * @param blob
+ * Refuse to store a blob whose file already belongs to another record. An ownerless reference (one
+ * written before this check could be enforced) passes instead of failing, and stays ownerless: it
+ * may already be aliased by a record written legally, so neither rejecting it nor adopting the
+ * current record as its owner is answerable from here.
  */
-export function deleteBlob(blob: Blob): void {
+function assertBlobOwner(storageInfo: StorageInfo | undefined): void {
+	const owner = storageInfo?.owner;
+	// An encode with no table to name cannot make an ownership claim, so it cannot contradict one
+	// either: the v4→v5 migration copies each record's reference through verbatim, owner included,
+	// and there is no owner to compare it against.
+	if (encodeForStorageTableName == null) return;
+	if (!owner || blobOwnerMatches(owner, encodeForStorageTableName, encodeForStorageForRecordId)) return;
+	throw new Error(
+		'Cannot use the same blob in two different records; read the blob through the record that owns it, or supply the bytes again'
+	);
+}
+
+// Resolves the table-name half of an owner back to a store this thread can read. Weak on both
+// sides: a dropped database must not be pinned by unlink bookkeeping.
+const ownerTablesByRoot = new WeakMap<any, Map<string, WeakRef<any>>>();
+
+/** Registered by {@link makeTable} so the drain can resolve an owner recorded by another process. */
+export function registerBlobOwnerTable(rootStore: any, tableName: string, primaryStore: any): void {
+	if (!rootStore || !primaryStore || !tableName) return;
+	let tables = ownerTablesByRoot.get(rootStore);
+	if (!tables) ownerTablesByRoot.set(rootStore, (tables = new Map()));
+	tables.set(tableName, new WeakRef(primaryStore));
+}
+
+/**
+ * Read the record an unlink intent names: which blob files it currently references, and the version
+ * that answer came from. `undefined` means the question could not be answered — the owning table is
+ * not open in this thread, it was dropped, or the read failed — which is never treated as "no
+ * longer referenced": the drain leaves such a file alone.
+ *
+ * The result is cached for the drain pass, keyed by the owner tuple's exact encoding, so a record
+ * with many blobs is decoded and walked once rather than once per file it is losing.
+ */
+type OwnerReads = Map<string, { fileIds: Set<string>; version: number } | null>;
+function readOwner(
+	rootStore: any,
+	owner: BlobOwner | undefined,
+	reads: OwnerReads
+): { fileIds: Set<string>; version: number } | null {
+	// Validated before it is used to look anything up: this tuple came off disk.
+	if (!Array.isArray(owner) || owner.length < 2 || typeof owner[0] !== 'string') return null;
+	const cacheKey = pack(owner).toString('latin1');
+	if (reads.has(cacheKey)) return reads.get(cacheKey);
+	let result: { fileIds: Set<string>; version: number } | null = null;
+	// The catalog first, and not merely as a fallback for a read that failed. A dropped table's
+	// records are dead, but the store handle a thread already holds can go on answering from the
+	// dropped column family — so a record read alone reports the table's own rows as live, at their
+	// unchanged version, which is exactly the drain's "the superseding write has not landed yet"
+	// case. It would then defer every one of that table's files to the retention age cap, and the
+	// orphan sweep skips them while their intents are queued: dropping a table would stop reclaiming
+	// its blob files at all. The catalog is the authority on whether a table exists; a handle is not.
+	if (ownerTableIsGone(rootStore, owner[0])) result = { fileIds: new Set(), version: undefined };
+	else {
+		const store = ownerTablesByRoot.get(rootStore)?.get(owner[0])?.deref();
+		try {
+			if (store) {
+				const entry = decodeFromDatabase(() => store.getEntry(owner[1]), rootStore);
+				const fileIds = new Set<string>();
+				if (entry?.value) {
+					findBlobsInObject(entry.value, (blob) => {
+						const fileId = storageInfoForBlob.get(blob)?.fileId;
+						if (fileId) fileIds.add(fileId);
+					});
+				}
+				result = { fileIds, version: entry?.version };
+			}
+		} catch (error) {
+			logger.debug?.('Could not read the owning record of a queued blob unlink', owner[0], error);
+		}
+	}
+	reads.set(cacheKey, result);
+	return result;
+}
+
+/**
+ * Whether the table catalog has no live entry for this name, i.e. the table was dropped or is being
+ * dropped. An unreadable catalog answers "not gone", which both leaves the file on disk and keeps
+ * this off the drain's claim-releasing paths, where a throw would strand the reclaim claim it was
+ * called under.
+ */
+function ownerTableIsGone(rootStore: any, tableName: string): boolean {
+	const catalog = unlinkQueueDb(rootStore); // the internal dbi is also the table catalog
+	if (!catalog) return false;
+	try {
+		const meta = catalog.getSync(tableName + '/');
+		return !meta || !!meta.dropping;
+	} catch (error) {
+		logger.debug?.('Could not read the table catalog for a queued blob unlink', tableName, error);
+		return false;
+	}
+}
+
+/**
+ * The cross-thread interlock between a drain about to unlink a file and a write that references it
+ * again. Exact per file, unlike the hash-shared hold slot — a spurious failure here would fail a
+ * write, which a collision must never do.
+ */
+function reclaimLockKey(fileId: string): string {
+	return fileId + ':blob-reclaim';
+}
+
+// -- Durable blob-unlink queue (#1832) -------------------------------------------------
+// Reclamation above decides that a file is safe to unlink (no holder, no open snapshot, no
+// re-reference); this queue is what makes that decision survive the death of the thread that
+// made it. The reclaim claim is released only once a drain confirms the file is gone, never
+// at enqueue time, so a hold cannot be acquired on a file already committed to disappear.
+// Keys are [symbol, fileId] tuples (like the residency entries): symbol-led keys sort below
+// every boolean/string key, so the attribute-catalog scans over this dbi (which start at
+// `true`) never see them, and they cannot collide with table/attribute names.
+const UNLINK_QUEUE_KEY = Symbol.for('blob_unlink_queue');
+const UNLINK_QUEUE_DRAIN_DELAY = 25; // coalescing debounce; the row is already durable and due when this fires
+const UNLINK_SAFETY_INTERVAL = 5000; // main-thread backstop cadence
+// A backlog a dead process left behind is bounded by nothing this code controls, so unlinks go out a
+// batch at a time, leaving the libuv threadpool available to request traffic.
+const UNLINK_DRAIN_BATCH = 64;
+const MAX_UNLINK_ATTEMPTS = 5;
+// A failing unlink is retried on a widening delay rather than as fast as the drain runs: EBUSY/EPERM
+// on a network mount clears on the timescale of seconds, and burning the whole attempt budget inside
+// one drain pass discards the only durable record of the deletion in a few milliseconds.
+const UNLINK_RETRY_BASE_DELAY = 200;
+const UNLINK_RETRY_MAX_DELAY = 30000;
+// Keyed weakly: a dropped database's root must not be pinned by this thread's queue bookkeeping.
+const pendingLocalDrains = new WeakMap<any, { timer: ReturnType<typeof setTimeout>; at: number }>(); // per-root coalesced drain timer (this thread)
+const inFlightUnlinks = new WeakMap<any, Set<string>>(); // per-root fileIds this thread has an unlink open on
+// Backstop for the durable `attempts` counter: on a closing or full dbi the retry count cannot be
+// written, and without a thread-local count the cap would never be reached and the claim never freed.
+const localUnlinkAttempts = new WeakMap<any, Map<string, number>>();
+
+function unlinkQueueDb(store: any): any {
+	return store?.dbisDb;
+}
+
+function unlinkQueueRange(queueDb: any): any {
+	// `snapshot: false` because a drain must see rows committed after any read transaction this thread
+	// happens to be holding open — the intent it is looking for is by construction one that was
+	// written a moment ago, possibly by the write that scheduled this very pass.
+	return queueDb.getRange({ start: [UNLINK_QUEUE_KEY], end: [UNLINK_QUEUE_KEY, '\uffff'], snapshot: false });
+}
+
+/**
+ * A cross-thread counter of unlink intents staged for this root, in the store's shared buffer. It
+ * exists so the main-thread backstop can tell an idle database from a busy one with an atomic load
+ * instead of a range scan: at ten thousand open databases the scans alone were thousands of empty
+ * reads a second, all of them to discover there was nothing to do.
+ */
+const unlinkEpochs = new WeakMap<any, Int32Array>();
+function unlinkEpoch(store: any): Int32Array | undefined {
+	let epoch = unlinkEpochs.get(store);
+	if (!epoch) {
+		try {
+			epoch = new Int32Array(store.getUserSharedBuffer('blob-unlink-epoch', new ArrayBuffer(4)), 0, 1);
+		} catch (error) {
+			logger.debug?.('Could not get the shared blob unlink epoch', error);
+			return undefined;
+		}
+		unlinkEpochs.set(store, epoch);
+	}
+	return epoch;
+}
+function bumpUnlinkEpoch(store: any): void {
+	const epoch = unlinkEpoch(store);
+	if (epoch) Atomics.add(epoch, 0, 1);
+}
+
+/**
+ * Record a durable intent to unlink this blob's file at supersession, before the retention window
+ * rather than after it. That window is exactly the interval #1832 is about: a worker recycled inside
+ * it used to take the only copy of the decision with it.
+ *
+ * Ordered before the record write it belongs to, and durable no later than it. What that takes is the
+ * engine's to say: a RocksDB record write commits synchronously, so a batched intent could still be in
+ * flight when a worker is terminated after the replacement has committed — #1832's leak at a different
+ * offset — and the intent is committed synchronously there. An LMDB record write is queued into the
+ * same environment, so an intent queued ahead of it lands in that batch or an earlier one, which is
+ * the same guarantee without the commit (measured: ~2.1 ms per synchronous LMDB commit against
+ * ~0.08 ms on RocksDB).
+ *
+ * `priorVersion` is the version the record had while it still referenced these bytes. It is what
+ * lets the drain tell a write that has not landed yet from one that landed and dropped the file.
+ *
+ * Only for OWNED references. An ownerless one cannot be re-validated, so it keeps the pre-existing
+ * path: no durable intent until reclamation has established the file is safe to delete.
+ */
+function stageDurableUnlink(
+	fileInfo: BlobFileInfo,
+	supersededAt: number,
+	priorVersion?: number,
+	synchronous = true
+): boolean {
+	if (!fileInfo.owner || fileInfo.owner[0] == null || !fileInfo.fileId) return false;
+	const queueDb = unlinkQueueDb(fileInfo.store);
+	if (!queueDb) return false;
+	// Bumped BEFORE the row lands, so "the epoch has not moved since a drain found the range empty"
+	// cannot be observed while a row is mid-write. That ordering is what lets the encode skip the
+	// queue read entirely on the common path.
+	bumpUnlinkEpoch(fileInfo.store);
+	const key = [UNLINK_QUEUE_KEY, fileInfo.fileId];
+	const value = {
+		due: supersededAt + getReclamationDelay(),
+		storageIndex: fileInfo.storageIndex,
+		owner: fileInfo.owner,
+		supersededAt,
+		priorVersion,
+	};
+	try {
+		if (synchronous) queueDb.putSync(key, value);
+		else {
+			// The record write is batched, and this row is queued into the same environment ahead of it,
+			// so it commits in that batch or an earlier one — never later. That is the ordering the
+			// synchronous commit buys on the other engine, obtained here for free.
+			const written = queueDb.put(key, value);
+			if (written?.then) {
+				written.then(
+					// The drain armed at supersede time can fire before this batch commits, and would then
+					// find nothing and arm no successor. This is the wakeup that is certain to see the row.
+					() => scheduleBlobUnlinkDrain(fileInfo.store, value.due - Date.now()),
+					(error: any) =>
+						logger.debug?.(
+							'Could not stage a blob unlink intent; the file is left for the sweep',
+							fileInfo.fileId,
+							error
+						)
+				);
+			}
+		}
+	} catch (error) {
+		logger.debug?.('Could not stage a durable blob unlink', fileInfo.fileId, error);
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Record a durable intent to unlink this blob's file, now \u2014 the caller (reclamation, having
+ * just claimed the file with no holders) has already done the waiting. Always a synchronous,
+ * standalone commit: unlike the record write that superseded it, there is no enclosing
+ * transaction to join at this point, so durability has to come from the write itself landing
+ * before a dying worker can lose it.
+ */
+function enqueueBlobUnlink(storageInfo: BlobFileInfo): boolean {
+	const queueDb = unlinkQueueDb(storageInfo.store);
+	if (!queueDb) return false;
+	const key = [UNLINK_QUEUE_KEY, storageInfo.fileId];
+	const value = { due: Date.now(), storageIndex: storageInfo.storageIndex };
+	bumpUnlinkEpoch(storageInfo.store);
+	queueDb.putSync(key, value);
+	return true;
+}
+
+/**
+ * Execute all committed, due unlink intents for this database root. Idempotent and safe to
+ * run from any thread: a row is only removed after its file is confirmed gone, and drains
+ * racing on the same row converge (the loser's unlink sees ENOENT).
+ *
+ * Also completes reclamation's bookkeeping for the file: hands back the shared-memory claim
+ * (so a new hold can be taken again) and clears any local `pendingReclamation` entry. Both are
+ * harmless no-ops when this drain is running for a row this process didn't enqueue (a restart
+ * recovering a prior life's rows) \u2014 a fresh process has no claim and no pendingReclamation
+ * entry to clear.
+ */
+export function drainBlobUnlinkQueue(rootStore: any): boolean {
+	const queueDb = unlinkQueueDb(rootStore);
+	if (!queueDb) return false;
+	const now = Date.now();
+	// Sampled before the range is read, so a row staged during the pass cannot be recorded as absent.
+	const epoch = unlinkEpoch(rootStore);
+	const epochAtStart = epoch ? Atomics.load(epoch, 0) : undefined;
+	let entries;
+	try {
+		entries = unlinkQueueRange(queueDb);
+	} catch (error) {
+		logger.debug?.('Unable to read blob unlink queue', error);
+		return false;
+	}
+	let inFlight = inFlightUnlinks.get(rootStore);
+	if (!inFlight) inFlightUnlinks.set(rootStore, (inFlight = new Set()));
+	let attemptCounts = localUnlinkAttempts.get(rootStore);
+	if (!attemptCounts) localUnlinkAttempts.set(rootStore, (attemptCounts = new Map()));
+	let started = 0;
+	let queued = false;
+	let batchTruncated = false;
+	// One decode of each owning record per pass, however many of its files this pass is condemning.
+	const ownerReads: OwnerReads = new Map();
+	// When the next deferred row wants another look. Rows that are not due, and owned rows a live hold
+	// or an unsettled owner sent back, are the only things that keep a wakeup armed — an idle root has
+	// no timer at all, which is what makes the shared backstop below cheap.
+	let wakeAt = Infinity;
+	const deferTo = (at: number) => {
+		if (at < wakeAt) wakeAt = at;
+	};
+	const settleOne = () => {
+		if (--started === 0 && batchTruncated) scheduleBlobUnlinkDrain(rootStore);
+	};
+	for (const { key, value } of entries) {
+		queued = true;
+		if (!value || value.due > now) {
+			deferTo(value?.due ?? now + UNLINK_SAFETY_INTERVAL);
+			continue; // not yet due
+		}
+		const fileId = key[1];
+		if (inFlight.has(fileId)) continue; // a concurrent drain on this thread already owns this row
+		// Bounded on everything this thread has open, not just this pass: the safety interval can start
+		// a drain while an earlier batch is still settling on a slow filesystem.
+		if (inFlight.size >= UNLINK_DRAIN_BATCH) {
+			batchTruncated = true;
+			break;
+		}
+		const storageInfo: BlobFileInfo = {
+			storageIndex: value.storageIndex ?? 0,
+			fileId,
+			store: rootStore,
+			owner: value.owner,
+		};
+		let filePath: string;
+		try {
+			filePath = getFilePath(storageInfo as StorageInfo);
+		} catch (error) {
+			// A row whose id resolves to no path is structurally invalid, not transiently failing: no
+			// amount of retrying produces a path, so it is abandoned at once rather than retried by
+			// every drain for the life of the process.
+			abandonUnlinkRow(queueDb, key, storageInfo, attemptCounts, error);
+			// no path to key the local entry by, and fileIds are only unique per store
+			for (const [path, pending] of pendingReclamation) {
+				if (pending.fileInfo.fileId === fileId && pending.fileInfo.store === rootStore) {
+					pendingReclamation.delete(path);
+					break;
+				}
+			}
+			continue;
+		}
+		// An owned intent carries the whole safety decision with it, so the checks that used to gate
+		// the enqueue run here instead — reachable by whichever process picks the row up, which after a
+		// restart is never the one that staged it. An ownerless row was already validated by
+		// reclamation before it was written, and has no owner to re-read.
+		if (value.owner) {
+			if (!readyToUnlink(queueDb, key, value, storageInfo, now, ownerReads)) {
+				deferTo(now + Math.max(getReclamationDelay(), HELD_RECHECK_INTERVAL));
+				continue;
+			}
+		} else if (!takeReclaimLock(storageInfo) || !intentStillQueued(queueDb, key, storageInfo)) {
+			// An ownerless row's conditions were validated before it was written, so they are not
+			// re-checked here — but the row can still have been withdrawn since, and a withdrawal is
+			// visible only in the row. A cancelling write removes it and then tests the lock, so a
+			// cancellation that took the lock first and handed it back would otherwise be followed by
+			// this drain unlinking the file that write is committing a reference to.
+			deferTo(now + Math.max(getReclamationDelay(), HELD_RECHECK_INTERVAL));
+			continue;
+		}
+		// Once the file is committed to disappear, no live instance may re-store its id. Everything from
+		// here to the unlink runs under the reclaim lock, so it is guarded: a throw that skipped the
+		// release would leave the file permanently unwritable and permanently unreclaimable.
+		try {
+			const pending = pendingReclamation.get(filePath);
+			if (pending) {
+				pending.unlinking = true;
+				for (const blobRef of pending.blobs) {
+					const instanceStorageInfo = storageInfoForBlob.get(blobRef.deref());
+					if (instanceStorageInfo) discardStorage(instanceStorageInfo);
+				}
+			}
+			started++;
+			inFlight.add(fileId);
+		} catch (error) {
+			inFlight.delete(fileId);
+			releaseReclaimLock(storageInfo);
+			logger.debug?.('Could not prepare a queued blob unlink', fileId, error);
+			continue;
+		}
+		unlink(filePath, (error) => {
+			inFlight.delete(fileId);
+			releaseReclaimLock(storageInfo);
+			if (error && error.code !== 'ENOENT') {
+				if (!recordUnlinkFailure(queueDb, key, value, storageInfo, attemptCounts, error)) {
+					settleOne(); // still queued; a later drain retries
+					return;
+				}
+			} else {
+				attemptCounts.delete(fileId);
+				// The row is dropped before the claim is handed back, so a hold taken after the release
+				// can never be followed by another drain unlinking the file out from under it.
+				removeUnlinkQueueRow(queueDb, key);
+				releaseReclaimClaim(storageInfo);
+			}
+			pendingReclamation.delete(filePath);
+			if (pendingReclamation.size === 0) queueTailDeadline = 0;
+			settleOne();
+		});
+	}
+	// A pass that starts nothing has no unlink callback to trigger the continuation, so without this
+	// a truncated batch waits out the safety interval before the rest of the backlog is looked at.
+	if (started === 0 && batchTruncated) scheduleBlobUnlinkDrain(rootStore, UNLINK_QUEUE_DRAIN_DELAY);
+	if (wakeAt < Infinity) scheduleBlobUnlinkDrain(rootStore, Math.max(0, wakeAt - now));
+	prunePendingReclamation(now);
+	if (queued) queueEmptyAt.delete(rootStore);
+	else if (epochAtStart !== undefined) queueEmptyAt.set(rootStore, epochAtStart);
+	return queued;
+}
+
+/**
+ * Whether an owned intent may execute now. Runs the checks that gate an unlink — a record version
+ * that referenced the file again, a read snapshot that can still see the superseded version, a live
+ * hold — and then the one the intent's durability depends on: re-reading the owning record.
+ *
+ * Returning false always leaves the file on disk. Which of "drop the intent", "come back later" and
+ * "hand it to the sweep" applies is decided here, because only here is it known why.
+ */
+function readyToUnlink(
+	queueDb: any,
+	key: any,
+	value: any,
+	storageInfo: BlobFileInfo,
+	now: number,
+	reads: OwnerReads
+): boolean {
+	const supersededAt = value.supersededAt ?? value.due;
+	const expired = now - supersededAt >= Math.max(RECLAMATION_AGE_CAP, getReclamationDelay());
+	let held: boolean;
+	try {
+		// A snapshot that can still see the superseded version pins the file as surely as a hold.
+		// Checked before claiming so the claim is not taken and immediately handed back.
+		if (!expired && snapshotStillSees(storageInfo, supersededAt)) return false;
+		// Claim it in the same operation that establishes there are no holders, so a hold cannot slip
+		// in between. Not claimed once expired: the age cap deliberately reclaims held bytes.
+		held = isBlobHeld(storageInfo, !expired);
+	} catch (error) {
+		// Shared state is unreadable on a closing store, and this runs in a timer callback.
+		logger.debug?.('Could not determine blob hold state; deferring the unlink', storageInfo.fileId, error);
+		return false;
+	}
+	if (held && !expired) return false;
+	if (held) {
+		logger.warn?.(
+			`Reclaiming blob file ${storageInfo.fileId} after ${Math.round((now - supersededAt) / 1000)}s: it is ` +
+				`still held, but has reached the blob retention age cap`
+		);
+	}
+	const owner = readOwner(storageInfo.store, value.owner, reads);
+	if (!owner) {
+		// The owner cannot be resolved: the table is not open in this thread yet, or it was dropped.
+		// Never guessed — the file is left alone, and once it is older than the age cap it is handed to
+		// cleanup_orphan_blobs, whose full reference scan can answer what this cannot.
+		if (!expired) releaseReclaimClaim(storageInfo);
+		else {
+			logger.warn?.(
+				`Leaving blob file ${storageInfo.fileId} for cleanup_orphan_blobs: its owning record could not be read`
+			);
+			abandonUnlinkRow(queueDb, key, storageInfo, localUnlinkAttempts.get(storageInfo.store));
+		}
+		return false;
+	}
+	if (owner.fileIds.has(storageInfo.fileId)) {
+		// The record still references the file, and which of the two reasons it does decides what
+		// happens to the intent. A record still carrying the version it had when the intent was staged
+		// has not answered yet — the write may be in flight, or it may have failed terminally, and
+		// both mean the bytes are live — so it is deferred until the age cap ends the wait. A record
+		// at a later version has genuinely taken the file back, and the intent is void.
+		//
+		// The reverse case needs no such test: the version being superseded is by definition one that
+		// referenced the file, so "no longer referenced" can only be read off a version that has moved
+		// past it. That is what makes a same-transaction rewrite (which does not change the version)
+		// still reclaimable.
+		if (!expired) releaseReclaimClaim(storageInfo);
+		if (value.priorVersion !== undefined && owner.version === value.priorVersion) {
+			if (expired) abandonUnlinkRow(queueDb, key, storageInfo, localUnlinkAttempts.get(storageInfo.store));
+		} else dropUnlinkRow(queueDb, key, storageInfo);
+		return false;
+	}
+	// Last: shut out a write that is referencing this file again right now. Taking the lock before
+	// re-reading the row is what makes the interlock exact — a canceling write removes the row and
+	// then tests this lock, so whichever of the two gets the lock first, the other sees its evidence.
+	if (!takeReclaimLock(storageInfo) || !intentStillQueued(queueDb, key, storageInfo)) {
+		if (!expired) releaseReclaimClaim(storageInfo);
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Confirm under the reclaim lock that the intent is still queued, releasing the lock when it is not.
+ * A cancelling write withdraws the row before it tests the lock, so a row still present here cannot
+ * belong to a write that was allowed to proceed. An unreadable row counts as withdrawn: the file
+ * stays, which is the recoverable answer.
+ */
+function intentStillQueued(queueDb: any, key: any, storageInfo: BlobFileInfo): boolean {
+	let current: any;
+	try {
+		current = queueDb.getSync(key);
+	} catch (error) {
+		logger.debug?.('Could not confirm a blob unlink intent before executing it', storageInfo.fileId, error);
+	}
+	if (current) return true;
+	releaseReclaimLock(storageInfo);
+	return false;
+}
+
+/** Returns false when a write is referencing this file again, which is never overridden. */
+function takeReclaimLock(storageInfo: BlobFileInfo): boolean {
+	try {
+		return !!storageInfo.store?.tryLock(reclaimLockKey(storageInfo.fileId));
+	} catch (error) {
+		logger.debug?.('Could not take the blob reclaim lock', storageInfo.fileId, error);
+		return false;
+	}
+}
+
+function releaseReclaimLock(storageInfo: BlobFileInfo): void {
+	try {
+		storageInfo.store?.unlock(reclaimLockKey(storageInfo.fileId));
+	} catch (error) {
+		logger.debug?.('Could not release the blob reclaim lock', storageInfo.fileId, error);
+	}
+}
+
+/** Cancel an intent whose file turned out to be live, restoring the file to ordinary use. */
+function dropUnlinkRow(queueDb: any, key: any, storageInfo: BlobFileInfo): void {
+	removeUnlinkQueueRow(queueDb, key);
+	releaseReclaimClaim(storageInfo);
+	let filePath: string;
+	try {
+		filePath = getFilePath(storageInfo as StorageInfo);
+	} catch {
+		return;
+	}
+	pendingReclamation.delete(filePath);
+	if (pendingReclamation.size === 0) queueTailDeadline = 0;
+}
+
+/**
+ * Give up on an intent this process cannot execute, leaving the bytes to `cleanup_orphan_blobs`. The
+ * claim must go back with it: the slot is shared by hash, so a row abandoned still holding it makes
+ * every colliding fileId read as already reclaimed.
+ */
+function abandonUnlinkRow(
+	queueDb: any,
+	key: any,
+	storageInfo: BlobFileInfo,
+	attemptCounts?: Map<string, number>,
+	error?: any
+): void {
+	if (error) logger.warn?.(`Abandoning the unlink intent for blob file ${storageInfo.fileId}`, error);
+	attemptCounts?.delete(storageInfo.fileId);
+	removeUnlinkQueueRow(queueDb, key);
+	releaseReclaimClaim(storageInfo);
+}
+
+/**
+ * Drop local reclamation bookkeeping whose durable row is gone. An entry is normally cleared by the
+ * drain that unlinks its file, but any thread's drain can execute a row — and the one that does is
+ * often not the one holding the entry, which would then keep it (and the blob instances it tracks)
+ * for the life of the process.
+ */
+function prunePendingReclamation(now: number): void {
+	if (pendingReclamation.size === 0) return;
+	const ageCap = Math.max(RECLAMATION_AGE_CAP, getReclamationDelay());
+	for (const [path, pending] of pendingReclamation) {
+		if ((pending.unlinking || pending.durable) && now - pending.enqueuedAt > ageCap) pendingReclamation.delete(path);
+	}
+	if (pendingReclamation.size === 0) queueTailDeadline = 0;
+}
+
+/**
+ * The file paths every outstanding unlink intent for this root resolves to. Throws rather than
+ * returning a partial set: the only caller uses it to decide what a destructive sweep may NOT
+ * delete, and a silently short list there deletes a file whose drain still holds the claim.
+ */
+function queuedUnlinkPaths(rootStore: any): string[] {
+	const queueDb = unlinkQueueDb(rootStore);
+	if (!queueDb) return [];
+	const paths: string[] = [];
+	for (const { key, value } of unlinkQueueRange(queueDb)) {
+		paths.push(getFilePath({ storageIndex: value?.storageIndex ?? 0, fileId: key[1], store: rootStore }));
+	}
+	return paths;
+}
+
+/**
+ * Account for a failed unlink attempt, returning true once the retry cap is reached and the row has
+ * been abandoned. A file that can never be removed (EPERM on a mount, an unresolvable path) must not
+ * pin its hash-shared reclaim slot, which would make every colliding fileId read as unavailable to
+ * holders; it is left for `cleanup_orphan_blobs` instead.
+ */
+function recordUnlinkFailure(
+	queueDb: any,
+	key: any,
+	value: any,
+	storageInfo: BlobFileInfo,
+	attemptCounts: Map<string, number>,
+	error: any
+): boolean {
+	const fileId = storageInfo.fileId;
+	const attempts = Math.max(value.attempts ?? 0, attemptCounts.get(fileId) ?? 0) + 1;
+	if (attempts < MAX_UNLINK_ATTEMPTS) {
+		logger.debug?.('Could not remove a queued blob file, will retry', fileId, error);
+		attemptCounts.set(fileId, attempts);
+		// The retry is pushed out on a widening delay rather than taken by the next drain: the cap then
+		// measures elapsed time rather than drain passes, so a mount that is busy for a second no longer
+		// spends the whole budget before it clears.
+		const backoff = Math.min(UNLINK_RETRY_BASE_DELAY * 2 ** (attempts - 1), UNLINK_RETRY_MAX_DELAY);
+		const due = Date.now() + backoff;
+		try {
+			queueDb.putSync(key, { ...value, attempts, due });
+		} catch (putError) {
+			logger.debug?.('Unable to record blob unlink retry count', putError);
+		}
+		scheduleBlobUnlinkDrain(storageInfo.store, backoff);
+		return false;
+	}
+	logger.warn?.(
+		`Giving up on removing blob file ${fileId} after ${attempts} attempts; it is left for cleanup_orphan_blobs`,
+		error
+	);
+	abandonUnlinkRow(queueDb, key, storageInfo, attemptCounts);
+	return true;
+}
+
+/**
+ * `removeSync` on both engines, never the async `remove()`: called from an unlink callback, whose
+ * frame has returned by the time an async rejection (a dbi mid-close) would land.
+ */
+function removeUnlinkQueueRow(queueDb: any, key: any): void {
+	try {
+		queueDb.removeSync(key);
+	} catch (error) {
+		logger.debug?.('Unable to remove blob unlink queue entry', error);
+	}
+}
+
+/**
+ * Nudge this thread to drain shortly after the queue was written to. Small fixed debounce: the
+ * row is already durable and due by the time this fires, so it's purely coalescing bursts of
+ * enqueues into one drain pass, not waiting out a retention window (reclamation already did).
+ */
+function scheduleBlobUnlinkDrain(rootStore: any, delay = UNLINK_QUEUE_DRAIN_DELAY): void {
+	if (!unlinkQueueDb(rootStore)) return;
+	// Never sooner than the debounce, even for a zero retention window: a row committed in this turn
+	// of the event loop is not yet visible to a read taken in the same turn, and a drain that reads
+	// too early finds nothing and arms no successor.
+	delay = Math.max(delay, UNLINK_QUEUE_DRAIN_DELAY);
+	const at = Date.now() + delay;
+	const scheduled = pendingLocalDrains.get(rootStore);
+	// The earliest request wins. Keeping whichever timer was armed first makes a retention-length wait
+	// swallow the debounce a later enqueue asked for, so a due row sits for the older delay.
+	if (scheduled) {
+		if (scheduled.at <= at) return;
+		clearTimeout(scheduled.timer);
+	}
+	const timer = setTimeout(() => {
+		pendingLocalDrains.delete(rootStore);
+		try {
+			drainBlobUnlinkQueue(rootStore);
+		} catch (error) {
+			logger.debug?.('Blob unlink drain failed', error);
+		}
+	}, delay);
+	timer.unref?.(); // never holds a worker open; the main-thread interval and startup drain are the backstops
+	pendingLocalDrains.set(rootStore, { timer, at });
+}
+
+/**
+ * Called when a database root's internal dbi is opened: drain intents left over from a
+ * previous process (crash/restart \u2014 rows a prior life's reclamation decided on but never
+ * finished executing) and, on the main thread, arm the safety interval that reclaims intents
+ * whose enqueueing worker died before its local drain fired.
+ */
+export function initBlobUnlinkQueue(rootStore: any): void {
+	if (!unlinkQueueDb(rootStore)) return;
+	scheduleBlobUnlinkDrain(rootStore); // startup drain; prior-life rows are all due already
+	if (isMainThread && !mainSafetyDrains.has(rootStore)) {
+		mainSafetyDrains.add(rootStore);
+		// Held weakly: a store dropped without an explicit close (an ephemeral database, a dropped
+		// test fixture) would otherwise be pinned for the life of the process by this registration,
+		// since the timer is a GC root and the `status` check only fires on a clean close.
+		safetyRoots.add(new WeakRef(rootStore));
+		armUnlinkSafetyTimer();
+	}
+}
+
+// The backstop for an intent whose worker died before its own drain ran. One timer for every root
+// rather than one per root, and each idle root costs a single atomic load: the per-root interval
+// this replaces spent a range scan per database per tick, which at ten thousand databases is
+// thousands of empty reads a second to discover there is nothing to do.
+const mainSafetyDrains = new WeakSet<any>(); // roots already registered with the backstop
+const safetyRoots = new Set<WeakRef<any>>();
+const safetyState = new WeakMap<any, { epoch: number; idle: boolean }>();
+let safetyTimer: ReturnType<typeof setInterval> | undefined;
+
+function armUnlinkSafetyTimer(): void {
+	if (safetyTimer) return;
+	safetyTimer = setInterval(runUnlinkSafetyPass, UNLINK_SAFETY_INTERVAL);
+	safetyTimer.unref?.();
+}
+
+function runUnlinkSafetyPass(): void {
+	for (const ref of safetyRoots) {
+		const store = ref.deref();
+		if (!store || store.status === 'closed' || store.dbisDb?.status === 'closed') {
+			safetyRoots.delete(ref);
+			if (store) mainSafetyDrains.delete(store);
+			continue;
+		}
+		const epoch = unlinkEpoch(store);
+		const staged = epoch ? Atomics.load(epoch, 0) : undefined;
+		const state = safetyState.get(store);
+		// Nothing has been staged since a pass that found the queue empty: there is provably no work.
+		if (state?.idle && staged === state.epoch) continue;
+		let queued = false;
+		try {
+			queued = drainBlobUnlinkQueue(store);
+		} catch (error) {
+			logger.debug?.('Blob unlink safety drain failed', error);
+		}
+		safetyState.set(store, { epoch: staged, idle: !queued });
+	}
+	if (safetyRoots.size === 0) {
+		clearInterval(safetyTimer);
+		safetyTimer = undefined;
+	}
+}
+
+/**
+ * Delete the file for the blob. When the caller is a supersession — the owning record has committed,
+ * or is committing, a version that no longer references these bytes — and the reference names its
+ * owner, the intent is recorded durably here rather than at the end of the retention window, which
+ * is the window a worker recycle used to lose it in (#1832). Everything else keeps the in-memory
+ * schedule: an ownerless reference has no owner to re-validate against, and a caller that is not a
+ * supersession is not making a claim about the record at all.
+ * @param blob
+ * @param supersession set by the record write that gave these bytes up
+ */
+export function deleteBlob(blob: Blob, supersession?: BlobSupersession): void {
 	// do we even need to check for completion here?
 	const filePath = getFilePathForBlob(blob as any);
 	if (!filePath) {
@@ -1495,7 +2327,12 @@ export function deleteBlob(blob: Blob): void {
 	const pending = pendingReclamation.get(filePath) ?? {
 		blobs: [],
 		seenBlobs: new WeakSet<Blob>(),
-		fileInfo: { store: storageInfo?.store, fileId: storageInfo?.fileId },
+		fileInfo: {
+			store: storageInfo?.store,
+			fileId: storageInfo?.fileId,
+			storageIndex: storageInfo?.storageIndex,
+			owner: storageInfo?.owner,
+		},
 		deadline: 0,
 		enqueuedAt: now,
 		supersededAt: now,
@@ -1508,6 +2345,27 @@ export function deleteBlob(blob: Blob): void {
 		if (storageInfo) discardStorage(storageInfo);
 		return;
 	}
+	// Only a supersession earns a durable intent. A bare deleteBlob — the aborted-write cleanup, an
+	// explicit discard — is not a statement that the owning record gave the file up, so it cannot be
+	// re-validated against that record and keeps the in-memory path it has always had.
+	//
+	// Re-staged on every supersession of the same file rather than once. On LMDB the row is written
+	// into the record's own write transaction, so a write that aborts and retries takes the row with
+	// it — which is exactly right, and only works if the retry writes it again. The put is idempotent
+	// (same key, and the deadline is measured from the first supersession either way).
+	if (supersession) {
+		const supersededAt = pending.durable ? pending.supersededAt : now;
+		if (stageDurableUnlink(pending.fileInfo, supersededAt, supersession.priorVersion, supersession.synchronous)) {
+			pending.durable = true;
+			pending.deadline = supersededAt + getReclamationDelay();
+			// Set directly rather than through enqueue(): the in-memory queue's deadline ordering
+			// describes entries runReclamation will act on, and this one is the drain's.
+			pendingReclamation.set(filePath, pending);
+			scheduleBlobUnlinkDrain(pending.fileInfo.store, Math.max(0, pending.deadline - now));
+			return;
+		}
+	}
+	if (pending.durable) return; // the row already carries this deletion, with its own deadline
 	scheduleReclamation(enqueue(filePath, pending, Math.max(pending.deadline, now + getReclamationDelay())));
 }
 
@@ -1550,6 +2408,7 @@ function runReclamation(): void {
 	let earliest = Infinity;
 	for (const [filePath, pending] of pendingReclamation) {
 		if (pending.unlinking) continue;
+		if (pending.durable) continue; // the drain owns this one; the entry is here for bookkeeping only
 		if (pending.deadline > now) {
 			earliest = pending.deadline;
 			break; // insertion order is deadline order; nothing behind this entry is due
@@ -1619,6 +2478,28 @@ function runReclamation(): void {
 			const instanceStorageInfo = storageInfoForBlob.get(blob);
 			if (instanceStorageInfo) discardStorage(instanceStorageInfo);
 		}
+		// The claim taken above stays held until a drain confirms the file is gone, so a hold cannot be
+		// acquired on a file already durably committed to disappear.
+		let enqueued: boolean;
+		try {
+			enqueued = enqueueBlobUnlink(storageInfo);
+		} catch (error) {
+			// Same closed-store hazard the hold-state reads above guard against, and this is a raw timer
+			// callback: an uncaught throw here takes the worker down. Hand the claim back so the retry
+			// can re-take it, and let the entry age out through the cap if the store never reopens.
+			logger.debug?.('Could not durably record the blob unlink; deferring', filePath, error);
+			pending.unlinking = false;
+			releaseReclaimClaim(storageInfo);
+			const deferred = enqueue(filePath, pending, now + HELD_RECHECK_INTERVAL);
+			if (deferred < earliest) earliest = deferred;
+			continue;
+		}
+		if (enqueued) {
+			scheduleBlobUnlinkDrain(storageInfo.store);
+			continue;
+		}
+		// Fallback for stores without an internal dbi (bare stores in unit tests): unlink directly.
+		// Not durable, but such stores have no queue to recover from anyway.
 		unlink(filePath, (error) => {
 			pendingReclamation.delete(filePath);
 			if (pendingReclamation.size === 0) queueTailDeadline = 0;
@@ -1810,6 +2691,7 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 		if (resolveBlobCompression(blob.type, size)) storageInfo.compress = true;
 	}
 	generateFilePath(storageInfo);
+	storageInfo.allocated = true;
 	if (storageInfo.source) writeBlobWithStream(blob as any, storageInfo.source, storageInfo);
 	else if (storageInfo.contentBuffer) writeBlobWithBuffer(blob as any, storageInfo);
 	else {
@@ -2681,6 +3563,26 @@ function generateFilePath(storageInfo: StorageInfo) {
 	if (!existsSync(fileDir)) ensureDirSync(fileDir);
 	storageInfo.filePath = filePath;
 }
+/**
+ * The highest file id with an outstanding unlink intent. The allocator re-seeds from the highest id
+ * found *on disk*, but a queue row outlives its file by design (the drain unlinks first and removes
+ * the row second), so without this floor a row stranded by a crash can name an id that is handed out
+ * again — and the next drain would unlink that new, live file.
+ */
+function highestQueuedUnlinkFileId(store: any): number {
+	const queueDb = unlinkQueueDb(store);
+	if (!queueDb) return 0;
+	// Deliberately unguarded: a queue this cannot read may hold an id above the on-disk high water
+	// mark, and issuing that id again means a later drain unlinks a live file. Failing the write is
+	// the recoverable direction.
+	let highest = 0;
+	for (const key of queueDb.getKeys({ start: [UNLINK_QUEUE_KEY], end: [UNLINK_QUEUE_KEY, '\uffff'] })) {
+		const id = parseInt(key[1], 16);
+		if (id > highest) highest = id;
+	}
+	return highest;
+}
+
 const idIncrementers = new Map<RootDatabase, BigInt64Array>();
 function getNextFileId(): number {
 	// all threads will use a shared buffer to atomically increment the id
@@ -2715,6 +3617,7 @@ function getNextFileId(): number {
 			}
 			highestId = Math.max(highestId, id);
 		}
+		highestId = Math.max(highestId, highestQueuedUnlinkFileId(currentStore));
 		idIncrementer = new BigInt64Array([BigInt(highestId) + 1n]);
 		// now get the selected incrementer buffer, this is the shared buffer was first registered and that all threads will use
 		idIncrementer = new BigInt64Array(currentStore.getUserSharedBuffer('blob-file-id', idIncrementer.buffer));
@@ -2803,14 +3706,21 @@ async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
  * @param encodingId
  * @param objectToClear
  */
-export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number, store: RootDatabase): T {
+export function encodeBlobsWithFilePath<T>(
+	callback: () => T,
+	encodingId: any,
+	store: RootDatabase,
+	tableName?: string
+): T {
 	encodeForStorageForRecordId = encodingId;
+	encodeForStorageTableName = tableName ?? null;
 	currentStore = store;
 	blobsWereEncoded = false;
 	try {
 		return callback();
 	} finally {
 		encodeForStorageForRecordId = undefined;
+		encodeForStorageTableName = undefined;
 		currentStore = undefined;
 	}
 }
@@ -2921,14 +3831,15 @@ export function decodeFromDatabase<T>(callback: () => T, rootStore: RootDatabase
  *
  * @param object
  * @param retainedFileIds optional set of fileIds the caller wants to keep on disk
+ * @param supersession the record write that gave these blobs up, and the version it superseded
  */
-export function deleteBlobsInObject(object: any, retainedFileIds?: Set<string>): void {
+export function deleteBlobsInObject(object: any, retainedFileIds?: Set<string>, supersession?: BlobSupersession): void {
 	findBlobsInObject(object, (blob) => {
 		if (retainedFileIds?.size) {
 			const fileId = getFileId(blob);
 			if (fileId && retainedFileIds.has(fileId)) return;
 		}
-		deleteBlob(blob);
+		deleteBlob(blob, supersession);
 	});
 }
 
@@ -3138,6 +4049,7 @@ addExtension({
 			storageInfoForBlob.set(blob, {
 				storageIndex: blobInfo[1],
 				fileId: blobInfo[2],
+				owner: blobInfo[3],
 				store: currentStore,
 			});
 			if (currentBlobCallback) return currentBlobCallback(blob) ?? blob;
@@ -3163,9 +4075,7 @@ addExtension({
 		let storageInfo = storageInfoForBlob.get(blob);
 		if (encodeForStorageForRecordId !== undefined) {
 			blobsWereEncoded = true;
-			if (storageInfo?.recordId !== undefined && storageInfo.recordId !== encodeForStorageForRecordId) {
-				throw new Error('Cannot use the same blob in two different records');
-			}
+			assertBlobOwner(storageInfo);
 		}
 		// saveBeforeCommit/saveInRecord are origin-local write instructions, not blob data;
 		// shipping them makes the receiver's apply commit gate on an in-flight receive stream
@@ -3186,7 +4096,14 @@ addExtension({
 			if (!storageInfo.fileId) {
 				throw new Error('Unable to save blob without file id');
 			}
-			storageInfo.recordId = encodeForStorageForRecordId;
+			// Ownership is stamped only on a file THIS write allocated. A reference that arrived from
+			// storage without an owner keeps that state for good: two pre-upgrade records may already
+			// share the file, and stamping one of them as the owner would license deleting bytes the
+			// other still references — the exact corruption the owner is being introduced to prevent.
+			// Built here rather than once per encode: every record write passes through
+			// encodeBlobsWithFilePath, and the overwhelming majority carry no newly allocated blob, so
+			// an owner tuple allocated up there would be garbage on the serialization hot path.
+			if (storageInfo.allocated) storageInfo.owner ??= [encodeForStorageTableName ?? null, encodeForStorageForRecordId];
 			// Per-node hint only — a replication sender uses it to skip the header sniff for the
 			// uncompressed majority, but always confirms against the local file header before sending
 			// raw: a relayed record (or an in-place repair) can outlive the storage form recorded here.
@@ -3194,9 +4111,14 @@ addExtension({
 			if (storageInfo.compress || storageInfo.storedCodec) options.storedCodec = 'deflate';
 			// A record version being written now references this file, so any reclamation queued by an
 			// earlier supersession is void — the retain-on-update check in RecordEncoder only covers the
-			// write that supersedes, not a file already awaiting reclamation from a previous one.
-			cancelBlobReclamation(storageInfo);
-			return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
+			// write that supersedes, not a file already awaiting reclamation from a previous one. A file
+			// this write allocated cannot have one, so the queue is not consulted for it.
+			if (!storageInfo.allocated) cancelBlobReclamation(storageInfo);
+			// Ownerless references stay three elements wide, which is also what an older reader sees
+			// here — a missing owner is the conservative state, never a wrong one.
+			return storageInfo.owner?.[0] == null
+				? pack([options, storageInfo.storageIndex, storageInfo.fileId])
+				: pack([options, storageInfo.storageIndex, storageInfo.fileId, storageInfo.owner]);
 		}
 		if (storageInfo) {
 			if (currentBlobCallback) {
@@ -3298,13 +4220,29 @@ function polyfillBlob() {
 /**
  * Scans for blobs on the file system and then checks to verify they are referenced
  * from the database, and if not, deletes them
- * @param database
+ *
+ * With `dryRun`, the scan runs identically but nothing is unlinked: it only reports how many
+ * unreferenced files there are and how many bytes they hold. Nothing surfaces the orphan condition
+ * otherwise — a stranded file is invisible until someone runs the destructive sweep and reads the
+ * count out of the logs — so this gives operators a way to measure it (alerting, capacity planning)
+ * without also reclaiming, and a way to size the reclaim before committing to it. Both modes are
+ * on-demand only, so neither adds steady-state cost. See harper#1832.
+ *
+ * @param database the database to scan
+ * @param databaseName name used for logging
+ * @param dryRun when true, report orphans without deleting them
+ * @returns the number of orphaned files (deleted, or that would be deleted) and the bytes they hold
  */
-export async function cleanupOrphans(database: any, databaseName?: string) {
+export async function cleanupOrphans(
+	database: any,
+	databaseName?: string,
+	dryRun?: boolean
+): Promise<{ orphans: number; bytes: number }> {
 	const { HAS_BLOBS } = await import('./auditStore.ts');
 	let store: RootDatabase;
 	let auditStore: RootDatabase;
-	let orphansDeleted = 0;
+	let orphansFound = 0;
+	let orphanBytes = 0;
 	for (const tableName in database) {
 		const table = database[tableName];
 		store = table.primaryStore.rootStore;
@@ -3321,8 +4259,12 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 	}
 	// remove all remaining paths are not referenced
 	await removePathsThatAreNotReferenced();
-	logger.warn?.(`Cleaned Orphan Blobs from ${databaseName ?? 'database'}, deleted ${orphansDeleted} blobs)`);
-	return orphansDeleted;
+	logger.warn?.(
+		dryRun
+			? `Checked Orphan Blobs in ${databaseName ?? 'database'}, found ${orphansFound} orphaned blobs holding ${orphanBytes} bytes (dry run, nothing deleted)`
+			: `Cleaned Orphan Blobs from ${databaseName ?? 'database'}, deleted ${orphansFound} blobs holding ${orphanBytes} bytes`
+	);
+	return { orphans: orphansFound, bytes: orphanBytes };
 	async function searchPath(path: string) {
 		try {
 			if (!existsSync(path)) return;
@@ -3401,6 +4343,10 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 		for (const path of pathsToCheck) {
 			if (pendingReclamation.has(path)) pathsToCheck.delete(path);
 		}
+		// The durable rows are the same claim across a restart, where the in-memory map above is empty
+		// by definition. Sweeping one deletes the file out from under its drain, which then burns its
+		// retry budget on a file that is already gone and reports it as an orphan twice.
+		for (const path of queuedUnlinkPaths(store)) pathsToCheck.delete(path);
 		const repairTempLocks = new Map<string, string>();
 		for (const path of pathsToCheck) {
 			if (!path.endsWith(BLOB_REPAIR_SUFFIX)) continue;
@@ -3408,19 +4354,25 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 			if ((store as any).tryLock(lockKey)) repairTempLocks.set(path, lockKey);
 			else pathsToCheck.delete(path);
 		}
-		logger.warn?.('Deleting', pathsToCheck.size, 'orphaned blobs');
-		orphansDeleted += pathsToCheck.size;
+		logger.warn?.(dryRun ? 'Measuring' : 'Deleting', pathsToCheck.size, 'orphaned blobs');
+		let reclaimed = 0;
 		for (const path of pathsToCheck) {
 			try {
-				await unlinkPromised(path);
+				// A file that is already gone, or that could not be removed, was not reclaimed by this
+				// sweep; counting it would report freed space that is still occupied.
+				const { size } = await statPromised(path);
+				if (!dryRun) await unlinkPromised(path);
+				reclaimed++;
+				orphansFound++;
+				orphanBytes += size;
 			} catch (error) {
-				logger.debug?.('Error deleting file', error);
+				logger.debug?.('Error removing orphaned file', error);
 			} finally {
 				const lockKey = repairTempLocks.get(path);
 				if (lockKey) (store as any).unlock(lockKey);
 			}
 		}
-		logger.warn?.('Finished deleting', pathsToCheck.size, 'orphaned blobs');
+		logger.warn?.(dryRun ? 'Finished measuring' : 'Finished deleting', reclaimed, 'orphaned blobs');
 		pathsToCheck.clear();
 	}
 	// check each object for any blob references and removes from the paths to check if found

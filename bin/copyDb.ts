@@ -1056,8 +1056,12 @@ export async function copyDbToRocks(sourceRootStore, sourceDatabase: string, tar
 								versionlessKeys.add(typeof key === 'object' ? JSON.stringify(key) : key);
 							}
 							written = encodeBlobsWithFilePath(
+								// The record's own key, not a running count: a synthetic identity makes every migrated
+								// record claim a different owner for a file it may legitimately share with itself.
+								// Migrated references stay ownerless regardless — the migration cannot prove what it
+								// copied is unaliased.
 								() => targetDbi.put(key, value, version),
-								typeof key === 'number' ? key : recordsCopied,
+								key,
 								sourceRootStore
 							);
 							// Capture the put promise so the tripwire awaits THIS record's write, not
