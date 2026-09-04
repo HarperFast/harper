@@ -11,6 +11,7 @@ import * as hdbUtils from '../utility/common_utils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { getDomainSocketPathMaxBytes } from '../utility/domainSocket.ts';
 import { bareHostViolation } from '../utility/nodeIdentity.ts';
+import { parseMaxSize } from '../utility/logging/logRotation.ts';
 import * as validator from './validationWrapper.ts';
 
 const DEFAULT_LOG_FOLDER = 'log';
@@ -19,7 +20,7 @@ const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available 
 const INVALID_INTERVAL_UNIT_MSG =
 	'Invalid logging.rotation.interval unit. Available units are D (days), H (hours), M (months) or m (minutes)';
 const INVALID_MAX_SIZE_VALUE_MSG =
-	"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'";
+	"Invalid logging.rotation.maxSize value. Value should be a positive number followed by unit e.g. '10M'";
 const INVALID_INTERVAL_VALUE_MSG =
 	"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'";
 const INVALID_RETENTION_UNIT_MSG =
@@ -525,8 +526,9 @@ function validateRotationMaxSize(value, helpers) {
 		return helpers.message(INVALID_SIZE_UNIT_MSG);
 	}
 
-	const size = value.slice(0, -1);
-	if (isNaN(parseInt(size))) {
+	// The same parser the write-path size check uses, so a value accepted here can never become a
+	// zero, negative or NaN byte limit downstream. `parseInt` alone accepted '0K', '-1K' and '1xK'.
+	if (!parseMaxSize(value)) {
 		return helpers.message(INVALID_MAX_SIZE_VALUE_MSG);
 	}
 

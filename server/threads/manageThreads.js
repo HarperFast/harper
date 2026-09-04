@@ -1593,3 +1593,7 @@ if (isMainThread) {
 		realExit(0);
 	});
 }
+
+// Required here, not from logging, which must never import this module; last in the file because it
+// calls onThreadExit.
+require('./logRotationTransport.ts');

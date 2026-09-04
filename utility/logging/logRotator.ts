@@ -1,18 +1,24 @@
 'use strict';
 
-import { promises as fsProm, createReadStream, createWriteStream, mkdirSync } from 'fs';
-import { createGzip } from 'zlib';
-import { promisify } from 'util';
-import { pipeline } from 'stream';
-const pipe = promisify(pipeline);
+import { mkdirSync, statSync, promises as fsProm } from 'fs';
 import * as path from 'path';
-import { createHash } from 'crypto';
 import * as envMgr from '../environment/environmentManager.ts';
 envMgr.initSync();
 import hdbLogger from './harper_logger.ts';
 import { CONFIG_PARAMS } from '../hdbTerms.ts';
 import { convertToMS } from '../common_utils.ts';
 import { onStorageReclamation } from '../../server/storageReclamation.ts';
+import { requestStaleDescriptorRelease } from './logGenerationCoordinator.ts';
+import {
+	compressPendingArchives,
+	INVALID_MAX_SIZE_MSG,
+	isArchivePendingQuiescence,
+	parseMaxSize,
+	publishArchivedGeneration,
+	resolveRotatedLogDir,
+	retryPendingGenerations,
+	rotateLogFileSync,
+} from './logRotation.ts';
 
 // Interval in ms to check log file and decide if it should be rotated.
 const LOG_AUDIT_INTERVAL = 60000;
@@ -27,7 +33,16 @@ export { logRotator };
  * If log file is within the values set in config, log file will be renamed/moved and a new empty hdb.log created.
  * @returns LogRotator
  */
-function logRotator({ logger, maxSize, interval, retention, enabled, path: rotatedLogDir, auditInterval }: any) {
+function logRotator({
+	logger,
+	maxSize,
+	interval,
+	retention,
+	enabled,
+	compress,
+	path: rotatedLogDir,
+	auditInterval,
+}: any) {
 	if (enabled === false) return;
 	let reclamationPriority = 0;
 	onStorageReclamation(
@@ -42,20 +57,17 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 		throw new Error(INT_SIZE_UNDEFINED_MSG);
 	}
 
-	if (!rotatedLogDir) {
-		rotatedLogDir = path.join(path.dirname(logger.path), 'rotated');
-	}
+	rotatedLogDir = resolveRotatedLogDir(logger.path, rotatedLogDir);
 	mkdirSync(rotatedLogDir, { recursive: true });
 
-	// Convert maxSize param to bytes.
-	let maxBytes;
-	if (maxSize) {
-		const unit = maxSize.slice(-1);
-		const size = maxSize.slice(0, -1);
-		if (unit === 'G') maxBytes = size * 1000000000;
-		else if (unit === 'M') maxBytes = size * 1000000;
-		else maxBytes = size * 1000;
+	const maxBytes = parseMaxSize(maxSize);
+	if (maxSize && !maxBytes) {
+		hdbLogger.error(`Ignoring logging.rotation.maxSize '${maxSize}': ${INVALID_MAX_SIZE_MSG}`);
 	}
+
+	// The rotation block first, because that is all the write-path guard can read — environmentManager
+	// imports harper_logger — and two sources would mean two destruction policies for one log.
+	const compressArchives = compress ?? envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS);
 
 	// Convert interval param to ms.
 	let maxInterval;
@@ -67,39 +79,59 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 	// convert date.now to minutes
 	let lastRotationTime = Date.now();
 	hdbLogger.trace('Log rotate enabled, maxSize:', maxSize, 'interval:', interval);
+	let tickInFlight = false;
 	const setIntervalId = setInterval(async () => {
+		// setInterval does not await the callback, and one pass can now wait on peers; overlapping
+		// passes would work the same archive twice and double-compress it.
+		if (tickInFlight) return;
+		tickInFlight = true;
 		// The tick is async but setInterval doesn't await it, so any error that escapes this callback
 		// becomes an unhandled rejection rather than surfacing anywhere useful — and since it isn't
 		// caught, it also skips the retention cleanup below. Contain everything here and report via
 		// the logger instead, so one bad tick (e.g. an unexpected fs error) never kills rotation for
 		// the rest of the process's life.
 		try {
-			// A missing/relocated active log file only invalidates the rotation checks below — retention cleanup
-			// must still run. So skip the individual check on ENOENT rather than returning from the whole tick.
 			if (maxBytes) {
-				let fileStats;
 				try {
-					fileStats = await fsProm.stat(logger.path);
-				} catch (err) {
-					// If the log file doesn't exist, skip the size-based rotation check
-					if (err.code !== 'ENOENT') throw err;
-				}
-
-				if (fileStats && fileStats.size >= maxBytes) {
-					try {
-						lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger);
-					} catch (err) {
-						// If the log file doesn't exist, skip rotation
-						if (err.code !== 'ENOENT') throw err;
+					// statSync, and the rename in the same turn: an await here lets a writing thread rotate
+					// the generation this tick measured and start a fresh one, which the tick would then
+					// archive near-empty.
+					const active = statSync(logger.path);
+					if (active.size >= maxBytes) {
+						const generation = rotateLogFileSync(
+							logger.path,
+							rotatedLogDir,
+							logger?.closeLogFile ?? hdbLogger.closeLogFile,
+							active
+						);
+						lastRotatedLogPath = await publishArchivedGeneration(generation, compressArchives);
+						// The interval clock counts from the last rotation of any kind. Without this an
+						// instance whose uptime has passed `interval` archives a freshly-created log every
+						// interval on top of the size rotations already doing the work.
+						lastRotationTime = Date.now();
+						hdbLogger.notify(`hdb.log rotated, old log moved to ${lastRotatedLogPath}`);
 					}
+				} catch (err) {
+					// A missing or already-rotated active log only invalidates this check; retention below
+					// must still run, so skip the check rather than leaving the whole tick.
+					if (err.code !== 'ENOENT') throw err;
 				}
 			}
 
 			if (maxInterval) {
-				const minSinceLastRotate = Date.now() - lastRotationTime;
-				if (minSinceLastRotate >= maxInterval) {
+				// Whichever origin is older. birthtime is unsupported on some filesystems, where it mirrors
+				// a write-updated ctime and would postpone interval rotation forever; taking the minimum
+				// means this can only ever rotate at least as often as the counter alone did.
+				let generationStartedAt = lastRotationTime;
+				try {
+					const born = statSync(logger.path).birthtimeMs;
+					if (born > 0) generationStartedAt = Math.min(generationStartedAt, born);
+				} catch (err) {
+					if (err.code !== 'ENOENT') throw err;
+				}
+				if (Date.now() - generationStartedAt >= maxInterval) {
 					try {
-						lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger);
+						lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger, compressArchives);
 						lastRotationTime = Date.now();
 					} catch (err) {
 						// If the log file doesn't exist, skip rotation
@@ -107,32 +139,60 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 					}
 				}
 			}
-			if (retention || reclamationPriority) {
-				// remove old logs after retention time
-				// adjust retention time if there is a reclamation priority in place
-				const retentionMs = convertToMS(retention ?? '1M') / (1 + reclamationPriority);
-				reclamationPriority = 0; // reset it after use
-				let files;
+			// The compression sweep and retention both destroy archives this thread did not rotate, so
+			// both need the same proof: every peer releases any descriptor that is not on the live
+			// generation, and reports the log paths it is writing. One round trip per tick serves both,
+			// and it is not gated on retention being configured — retention is unset by default, and a
+			// worker's uncompressed archive still needs finishing.
+			if (compressArchives || retention || reclamationPriority) {
+				// Enumerated BEFORE the proof, and only these are destroyed: an archive created after the
+				// proof was never covered by it, and a peer blocked mid-rotation may still be writing to it.
+				let candidates;
 				try {
-					files = await fsProm.readdir(rotatedLogDir);
+					candidates = await fsProm.readdir(rotatedLogDir);
 				} catch (err) {
-					// The rotated log dir may not exist yet (nothing rotated so far); nothing to clean up
 					if (err.code !== 'ENOENT') hdbLogger.error('Error reading rotated log directory', rotatedLogDir, err);
-					files = [];
+					candidates = [];
 				}
-				for (const file of files) {
-					try {
-						const fileStats = await fsProm.stat(path.join(rotatedLogDir, file));
-						if (Date.now() - fileStats.mtimeMs > retentionMs) {
-							await fsProm.unlink(path.join(rotatedLogDir, file));
+				const { released, liveLogPaths } = await requestStaleDescriptorRelease();
+				const liveLogs = new Set([...liveLogPaths, logger.path].map((p) => path.resolve(p)));
+
+				if (released && compressArchives) await compressPendingArchives(rotatedLogDir, candidates, liveLogs);
+
+				if (released && (retention || reclamationPriority)) {
+					// remove old logs after retention time
+					// adjust retention time if there is a reclamation priority in place
+					const retentionMs = convertToMS(retention ?? '1M') / (1 + reclamationPriority);
+					reclamationPriority = 0; // reset it after use
+					for (const file of candidates) {
+						try {
+							const archivePath = path.join(rotatedLogDir, file);
+							// The rotated directory defaults to the log directory itself
+							// (`logging.rotation.path` defaults to `log`, as does `logging.root`), so it also
+							// holds the logs currently being written — including a component's, which loads in
+							// a worker and is only known here because the peers reported it.
+							if (liveLogs.has(path.resolve(archivePath))) continue;
+							// Unlinking an inode a stalled writer still holds loses whatever it writes next
+							// just as surely as compressing over it would.
+							if (isArchivePendingQuiescence(archivePath)) continue;
+							const fileStats = await fsProm.stat(archivePath);
+							if (Date.now() - fileStats.mtimeMs > retentionMs) {
+								await fsProm.unlink(archivePath);
+							}
+						} catch (err) {
+							// The compression sweep above unlinks archives from this same listing.
+							if (err.code !== 'ENOENT') hdbLogger.error('Error trying to remove log', file, err);
 						}
-					} catch (err) {
-						hdbLogger.error('Error trying to remove log', file, err);
 					}
 				}
 			}
+			// Last: retention is what bounds the rotated directory, so a stranded generation waiting on a
+			// peer must never be ahead of it.
+			await retryPendingGenerations();
 		} catch (err) {
 			hdbLogger.error('Error during log rotation audit tick for', logger.path, err);
+		} finally {
+			tickInFlight = false;
 		}
 	}, auditInterval ?? LOG_AUDIT_INTERVAL).unref();
 	return {
@@ -145,46 +205,18 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 	};
 }
 
-// Monotonically increasing across every rotation in this process, regardless of which logger/source
-// triggered it — combined with the pid, this guarantees two archive names can never collide even if
-// two rotations for two different sources race concurrently within the same audit-interval tick.
-let rotationSequence = 0;
-
-async function moveLogFile(logPath: string, rotatedLogPath: string, logger?: any) {
-	const compress = envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS);
-	// Name the archive after its source log (hdb, external, a component name, ...), not a fixed
-	// "HDB" literal — external/component loggers can now inherit rotation from the main logger
-	// (#1877) and default to the same rotated directory as it, so distinct sources rotating in
-	// the same audit tick must not collide on the same timestamp-only filename. A basename alone
-	// is not enough either: two distinct source paths can share a basename (e.g. `/logs/a/hdb.log`
-	// and `/logs/b/hdb.log`), so a hash of the full resolved source path plus a pid+sequence suffix
-	// give every archive a name POSIX rename() can never clobber, even under a same-millisecond race.
-	const sourceName = path.basename(logPath, path.extname(logPath)) || 'HDB';
-	// sha256, not sha1: this only needs a stable identifier, not cryptographic strength, but a FIPS-mode
-	// OpenSSL provider disables sha1 and throws synchronously, which would crash every rotation tick.
-	const sourceId = createHash('sha256').update(path.resolve(logPath)).digest('hex').slice(0, 8);
-	const uniqueSuffix = `${process.pid}-${rotationSequence++}`;
-	let fullRotateLogPath = path.join(
-		rotatedLogPath,
-		`${sourceName}-${sourceId}-${new Date(Date.now()).toISOString().replaceAll(':', '-')}-${uniqueSuffix}.log`
+async function moveLogFile(logPath: string, rotatedLogPath: string, logger?: any, compress?: boolean) {
+	// The rename and the descriptor close must not be separated by an await: the descriptor would
+	// otherwise keep feeding the archived inode while the event loop runs. Closing the rotating
+	// logger's own descriptor (not the module-global one) is what makes the next write reopen a
+	// fresh log file rather than append to the moved — and, when compressing, unlinked — inode.
+	const generation = rotateLogFileSync(logPath, rotatedLogPath, logger?.closeLogFile ?? hdbLogger.closeLogFile);
+	const publishedPath = await publishArchivedGeneration(
+		generation,
+		compress ?? envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS)
 	);
-	// Move log file to rotated log path first (if we crash
-	// during compression, we don't want to restart the compression with a new file)
-	await fsProm.rename(logPath, fullRotateLogPath);
-	// Close the rotating logger's own file descriptor now that the file has moved. This must be the
-	// logger's own closeLogFile (which resets its internal logFD), not the module-global one — otherwise
-	// the descriptor stays open on the moved (and, when compressing, subsequently unlinked) inode until the
-	// logger's safety timeout fires, pinning disk space and sending any writes in that window into the
-	// rotated/deleted file. Closing it here makes the next write reopen a fresh log file immediately.
-	(logger?.closeLogFile ?? hdbLogger.closeLogFile)();
-	if (compress) {
-		logPath = fullRotateLogPath;
-		fullRotateLogPath += '.gz';
-		await pipe(createReadStream(logPath), createGzip(), createWriteStream(fullRotateLogPath));
-		await fsProm.unlink(logPath);
-	}
 
 	// This notify log will create a new log file after the previous one has been rotated. It's important to keep this log as notify
-	hdbLogger.notify(`hdb.log rotated, old log moved to ${fullRotateLogPath}`);
-	return fullRotateLogPath;
+	hdbLogger.notify(`hdb.log rotated, old log moved to ${publishedPath}`);
+	return publishedPath;
 }
