@@ -641,6 +641,23 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		assert.equal(next.commitChainHead, undefined);
 	});
 
+	it('propagates stalled-commit poison to a database linked afterward', async function () {
+		const root = isLMDB ? new LMDBTransaction(BlobResource.primaryStore) : new DatabaseTransaction();
+		root.db = BlobResource.primaryStore;
+		root.postSubmitPoisoned = true;
+		const context = { transaction: root };
+		root.setContext(context);
+		try {
+			await assert.rejects(
+				async () => SecondaryBlobResource.put({ id: 2070, value: 'must reject' }, context),
+				/open-transaction time/
+			);
+			assert.equal(root.next.postSubmitPoisoned, true);
+		} finally {
+			root.abort();
+		}
+	});
+
 	it('lets a commit whose blob save outruns the limit finish, keeping the record and its blob', async function () {
 		const slow = new PassThrough();
 		const blob = createBlob(slow);

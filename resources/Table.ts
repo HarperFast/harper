@@ -4184,172 +4184,176 @@ export function makeTable(options) {
 							return Boolean(result);
 						}
 					: undefined;
-			const entries = executeConditions(
-				conditions,
-				operator,
-				TableResource,
-				readTxn,
-				target,
-				context,
-				(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
-				filtered,
-				recordAccess
-			);
-			const ensure_loaded = (target as any).ensureLoaded !== false;
-			// The guards inside executeConditions evaluate the
-			// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
-			// expired/invalidated row from source and return a DIFFERENT record. The explicit row filter
-			// must hold on the record actually returned, so it is re-checked
-			// there, after materialization (the earlier evaluation stays as a prune that also bounds HNSW
-			// traversal). vectorFilter and condition filters intentionally keep the local-record
-			// semantics all query filters have on caching tables.
-			//
-			// A row that is past its TTL but not yet swept by the background eviction
-			// scan is still physically present. A write that is about to overwrite it
-			// anyway (e.g. the SQL engine locating UPDATE/DELETE targets) needs to see
-			// it as a match — the same leniency a direct by-id put/patch already gets,
-			// since those never run the ensureLoaded-gated freshness check this transform
-			// otherwise applies unconditionally to every read.
-			const includeExpired = (target as any).includeExpired === true;
-			const transformToRecord = TableResource.transformEntryForSelect(
-				select,
-				context,
-				readTxn,
-				filtered,
-				ensure_loaded,
-				true,
-				boundRowFilter,
-				includeExpired,
-				postOrdering
-			);
-			let results = TableResource.transformToOrderedSelect(
-				entries,
-				select,
-				postOrdering,
-				context,
-				readTxn,
-				transformToRecord
-			);
-			const offset = target.offset || 0;
-			const end = target.limit !== undefined ? offset + (target.limit as number) : undefined;
-			// `Prefer: count=` (REST pagination): materialize the requested page and attach a total record
-			// count so the HTTP layer can emit a Content-Range. `exact` drains the full matched set once,
-			// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
-			// table estimate. Opt-in only — the default streaming path below is untouched.
-			//
-			// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
-			// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
-			// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
-			// oversized/non-finite/negative limit or offset (a bare collection GET, limit(Infinity),
-			// limit(foo), limit(-5,10)) or a deep-page window past the scan budget — falls through to the
-			// normal streaming path with no count. This bounds the offset too: without it a huge offset would
-			// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
-			const pageLimit = target.limit as number;
-			if (
-				target.count &&
-				Number.isInteger(pageLimit) &&
-				pageLimit >= 0 &&
-				pageLimit <= MAX_COUNT_PAGE &&
-				Number.isInteger(offset) &&
-				offset >= 0 &&
-				offset + pageLimit <= MAX_EXACT_COUNT_SCAN
-			) {
-				const wantExact = target.count === 'exact';
-				const pageEnd = offset + pageLimit;
-				const countStart = performance.now();
-				// A custom-index (vector/HNSW) traversal returns a bounded, approximate candidate set whose size is
-				// chosen from `minResults` (offset + limit), so `scanned` over it tracks the requested page size, not
-				// the true match count — the same query at limit(5) vs limit(200) would otherwise advertise two
-				// different `count=exact` totals. Any query whose execution touches a custom index is affected: a
-				// custom-index sort (its aligned pseudo-condition lands in `conditions`), a custom-index threshold
-				// filter (an HNSW `lt`/`le` is the same minResults-widened traversal as a sort), or an opaque vector
-				// filter. Report the total as unavailable for those rather than advertising it as count=exact
-				// (mirroring how the estimated branch below bails to null for an opaque row/vector filter). A vector
-				// sort applied as in-memory post-ordering leaves no custom-index condition here and stays exact.
-				const touchesCustomIndex = (conds: any[]): boolean =>
-					conds.some((c: any) => {
-						if (!c) return false;
-						if (c.conditions) return touchesCustomIndex(c.conditions);
-						const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
-						return typeof attr === 'string' && Boolean(indices[attr]?.customIndex);
-					});
-				const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
-				return (async () => {
-					const page: any = [];
-					let scanned = 0;
-					let exact = true;
-					try {
-						for await (const record of results) {
-							if (scanned >= offset && scanned < pageEnd) page.push(record);
-							scanned++;
-							// A store whose async iterator settles synchronously (the common indexed-scan case) would
-							// otherwise let this drain spin as one uninterrupted microtask run, blocking the event loop
-							// for the whole count. Yield to the macrotask queue periodically so concurrent requests and
-							// I/O still make progress during a large exact scan.
-							if ((scanned & (COUNT_YIELD_INTERVAL - 1)) === 0) await new Promise((resolve) => setImmediate(resolve));
-							// The page window [offset, pageEnd) is always collected in full first — the guardrail
-							// only ever abandons the running TOTAL, never truncates the page body.
-							if (scanned >= pageEnd) {
-								// `estimated` needs nothing past the page; an approximate (vector) exact total is going to
-								// be reported unavailable anyway, so don't drain its tail for a number we won't publish.
-								if (!wantExact || approximateResultSet) break;
-								// `exact` keeps counting the tail, bounded by a row cap AND a time budget so a
-								// large match set can't turn a bounded page fetch into an unbounded scan.
-								if (scanned > MAX_EXACT_COUNT_SCAN || performance.now() - countStart > MAX_EXACT_COUNT_MS) {
-									exact = false;
-									break;
+				const recordAccess =
+					boundRowFilter || typeof target.vectorFilter === 'function'
+						? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
+						: undefined;
+				const entries = executeConditions(
+					conditions,
+					operator,
+					TableResource,
+					readTxn,
+					target,
+					context,
+					(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
+					filtered,
+					recordAccess
+				);
+				const ensure_loaded = (target as any).ensureLoaded !== false;
+				// The guards inside executeConditions evaluate the
+				// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
+				// expired/invalidated row from source and return a DIFFERENT record. The explicit row filter
+				// must hold on the record actually returned, so it is re-checked
+				// there, after materialization (the earlier evaluation stays as a prune that also bounds HNSW
+				// traversal). vectorFilter and condition filters intentionally keep the local-record
+				// semantics all query filters have on caching tables.
+				//
+				// A row that is past its TTL but not yet swept by the background eviction
+				// scan is still physically present. A write that is about to overwrite it
+				// anyway (e.g. the SQL engine locating UPDATE/DELETE targets) needs to see
+				// it as a match — the same leniency a direct by-id put/patch already gets,
+				// since those never run the ensureLoaded-gated freshness check this transform
+				// otherwise applies unconditionally to every read.
+				const includeExpired = (target as any).includeExpired === true;
+				const transformToRecord = TableResource.transformEntryForSelect(
+					select,
+					context,
+					readTxn,
+					filtered,
+					ensure_loaded,
+					true,
+					boundRowFilter,
+					includeExpired,
+					postOrdering
+				);
+				results = TableResource.transformToOrderedSelect(
+					entries,
+					select,
+					postOrdering,
+					context,
+					readTxn,
+					transformToRecord
+				);
+				const offset = target.offset || 0;
+				const end = target.limit !== undefined ? offset + (target.limit as number) : undefined;
+				// `Prefer: count=` (REST pagination): materialize the requested page and attach a total record
+				// count so the HTTP layer can emit a Content-Range. `exact` drains the full matched set once,
+				// windowing the page in the same pass; `estimated` returns just the page plus a cheap planner/
+				// table estimate. Opt-in only — the default streaming path below is untouched.
+				//
+				// Requires a bounded page AND window. Counting is a pagination feature; both the limit and the
+				// offset must be finite, non-negative integers, the limit no larger than MAX_COUNT_PAGE, and the
+				// window (offset + limit) no larger than MAX_EXACT_COUNT_SCAN. Anything else — a missing/
+				// oversized/non-finite/negative limit or offset (a bare collection GET, limit(Infinity),
+				// limit(foo), limit(-5,10)) or a deep-page window past the scan budget — falls through to the
+				// normal streaming path with no count. This bounds the offset too: without it a huge offset would
+				// postpone the exact guardrail (which only engages past the page) until that offset was scanned.
+				const pageLimit = target.limit as number;
+				if (
+					target.count &&
+					Number.isInteger(pageLimit) &&
+					pageLimit >= 0 &&
+					pageLimit <= MAX_COUNT_PAGE &&
+					Number.isInteger(offset) &&
+					offset >= 0 &&
+					offset + pageLimit <= MAX_EXACT_COUNT_SCAN
+				) {
+					const wantExact = target.count === 'exact';
+					const pageEnd = offset + pageLimit;
+					const countStart = performance.now();
+					// A custom-index (vector/HNSW) traversal returns a bounded, approximate candidate set whose size is
+					// chosen from `minResults` (offset + limit), so `scanned` over it tracks the requested page size, not
+					// the true match count — the same query at limit(5) vs limit(200) would otherwise advertise two
+					// different `count=exact` totals. Any query whose execution touches a custom index is affected: a
+					// custom-index sort (its aligned pseudo-condition lands in `conditions`), a custom-index threshold
+					// filter (an HNSW `lt`/`le` is the same minResults-widened traversal as a sort), or an opaque vector
+					// filter. Report the total as unavailable for those rather than advertising it as count=exact
+					// (mirroring how the estimated branch below bails to null for an opaque row/vector filter). A vector
+					// sort applied as in-memory post-ordering leaves no custom-index condition here and stays exact.
+					const touchesCustomIndex = (conds: any[]): boolean =>
+						conds.some((c: any) => {
+							if (!c) return false;
+							if (c.conditions) return touchesCustomIndex(c.conditions);
+							const attr = Array.isArray(c.attribute) ? c.attribute[0] : (c.attribute ?? c[0]);
+							return typeof attr === 'string' && Boolean(indices[attr]?.customIndex);
+						});
+					const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
+					return (async () => {
+						const page: any = [];
+						let scanned = 0;
+						let exact = true;
+						try {
+							for await (const record of results) {
+								if (scanned >= offset && scanned < pageEnd) page.push(record);
+								scanned++;
+								// A store whose async iterator settles synchronously (the common indexed-scan case) would
+								// otherwise let this drain spin as one uninterrupted microtask run, blocking the event loop
+								// for the whole count. Yield to the macrotask queue periodically so concurrent requests and
+								// I/O still make progress during a large exact scan.
+								if ((scanned & (COUNT_YIELD_INTERVAL - 1)) === 0) await new Promise((resolve) => setImmediate(resolve));
+								// The page window [offset, pageEnd) is always collected in full first — the guardrail
+								// only ever abandons the running TOTAL, never truncates the page body.
+								if (scanned >= pageEnd) {
+									// `estimated` needs nothing past the page; an approximate (vector) exact total is going to
+									// be reported unavailable anyway, so don't drain its tail for a number we won't publish.
+									if (!wantExact || approximateResultSet) break;
+									// `exact` keeps counting the tail, bounded by a row cap AND a time budget so a
+									// large match set can't turn a bounded page fetch into an unbounded scan.
+									if (scanned > MAX_EXACT_COUNT_SCAN || performance.now() - countStart > MAX_EXACT_COUNT_MS) {
+										exact = false;
+										break;
+									}
 								}
 							}
+						} finally {
+							// We own the iteration here (no results.onDone consumer), so release the read
+							// transaction unconditionally — including when the drain throws — or the snapshot leaks.
+							txn.doneReadTxn();
 						}
-					} finally {
-						// We own the iteration here (no results.onDone consumer), so release the read
-						// transaction unconditionally — including when the drain throws — or the snapshot leaks.
-						txn.doneReadTxn();
-					}
-					let total: number | null;
-					if (wantExact) {
-						// `scanned` is only an authoritative total when the iteration was exhaustive and deterministic;
-						// an approximate (vector/HNSW) result set is neither, so report the total as unavailable.
-						total = exact && !approximateResultSet ? scanned : null;
-					} else if (boundRowFilter || typeof target.vectorFilter === 'function') {
-						// An opaque row/vector filter shapes the result but isn't reflected in the index/condition
-						// estimate; guessing would both mislead and disclose cardinality the filter hides.
-						total = null;
-					} else if (!hasUserConditions) {
-						total = estimatedEntryCount(primaryStore);
-					} else {
-						// Estimate from the real conditions only — drop the planner's synthetic `sort`
-						// pseudo-condition, which otherwise contributes a bogus (entryCount/2) cardinality.
-						const est = estimateCondition(TableResource)({
-							conditions: conditions.filter((c: any) => c.comparator !== 'sort'),
-							operator: operator ? String(operator).toLowerCase() : 'and',
-						});
-						total = isFinite(est) ? Math.round(est) : null;
-					}
-					// For an estimate, never report a total below the last row actually returned — keeps the
-					// Content-Range valid (start-end/total) when an estimate undershoots a non-empty page.
-					// Exact totals are authoritative (and an empty page past the end must not be clamped up).
-					if (!wantExact && total != null && page.length > 0 && total < offset + page.length) {
-						total = offset + page.length;
-					}
-					page.recordCount = total;
-					page.recordCountExact = wantExact && exact && !approximateResultSet;
-					page.selectApplied = true;
-					page.getColumns = getColumns;
-					return page;
-				})() as any;
-			}
-			// apply any offset/limit after all the sorting and filtering
-			if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
-			results.onDone = () => {
-				results.onDone = null; // ensure that it isn't called twice
-				txn.unregisterReadIterator(results);
-				txn.doneReadTxn();
-			};
-			// Recorded ownership: if the request dies before anything consumes these results, the
-			// transaction closes them itself rather than leaving its read snapshot pinned.
-			txn.registerReadIterator(results);
-		} catch (error) {
+						let total: number | null;
+						if (wantExact) {
+							// `scanned` is only an authoritative total when the iteration was exhaustive and deterministic;
+							// an approximate (vector/HNSW) result set is neither, so report the total as unavailable.
+							total = exact && !approximateResultSet ? scanned : null;
+						} else if (boundRowFilter || typeof target.vectorFilter === 'function') {
+							// An opaque row/vector filter shapes the result but isn't reflected in the index/condition
+							// estimate; guessing would both mislead and disclose cardinality the filter hides.
+							total = null;
+						} else if (!hasUserConditions) {
+							total = estimatedEntryCount(primaryStore);
+						} else {
+							// Estimate from the real conditions only — drop the planner's synthetic `sort`
+							// pseudo-condition, which otherwise contributes a bogus (entryCount/2) cardinality.
+							const est = estimateCondition(TableResource)({
+								conditions: conditions.filter((c: any) => c.comparator !== 'sort'),
+								operator: operator ? String(operator).toLowerCase() : 'and',
+							});
+							total = isFinite(est) ? Math.round(est) : null;
+						}
+						// For an estimate, never report a total below the last row actually returned — keeps the
+						// Content-Range valid (start-end/total) when an estimate undershoots a non-empty page.
+						// Exact totals are authoritative (and an empty page past the end must not be clamped up).
+						if (!wantExact && total != null && page.length > 0 && total < offset + page.length) {
+							total = offset + page.length;
+						}
+						page.recordCount = total;
+						page.recordCountExact = wantExact && exact && !approximateResultSet;
+						page.selectApplied = true;
+						page.getColumns = getColumns;
+						return page;
+					})() as any;
+				}
+				// apply any offset/limit after all the sorting and filtering
+				if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
+				results.onDone = () => {
+					results.onDone = null; // ensure that it isn't called twice
+					txn.unregisterReadIterator(results);
+					txn.doneReadTxn();
+				};
+				// Recorded ownership: if the request dies before anything consumes these results, the
+				// transaction closes them itself rather than leaving its read snapshot pinned.
+				txn.registerReadIterator(results);
+			} catch (error) {
 				txn.doneReadTxn();
 				throw error;
 			}
@@ -6625,6 +6629,7 @@ export function makeTable(options) {
 					// that was supposed to have been cut off.
 					if (transaction.timedOut) transaction.next.timedOut = true;
 					if (transaction.disconnected) transaction.next.disconnected = true;
+					if (transaction.postSubmitPoisoned) transaction.next.postSubmitPoisoned = true;
 					transaction = transaction.next;
 					transaction.db = primaryStore;
 					return transaction;

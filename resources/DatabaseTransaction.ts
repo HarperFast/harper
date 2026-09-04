@@ -2450,6 +2450,8 @@ export function deferForCommitInFlight(
 	// diagnostic grace, nor report a legitimately slow one early.
 	const now = performance.now();
 	const deadline = (root.deferredPoisonDeadline ??= now + MAX_DEFERRED_POISON_TICKS * expiration);
+	let hasUnsubmittedCommit = false;
+	let unsubmittedCommitGraceExpired = false;
 	if (now >= deadline) {
 		// Only reclaim after the commit has genuinely stalled. Submitted writes no longer depend on these
 		// separate snapshots; pre-submit handles can still carry writes needed by the attempt.
@@ -2464,7 +2466,6 @@ export function deferForCommitInFlight(
 			collect(txn);
 			collect(root.submittedLink);
 			if (root.submittedLinks) for (const link of root.submittedLinks) collect(link);
-			let hasUnsubmittedCommit = false;
 			for (const link of links) {
 				if (link.committing && !link.nativeCommitSubmitted) {
 					hasUnsubmittedCommit = true;
@@ -2473,10 +2474,14 @@ export function deferForCommitInFlight(
 			}
 			if (hasUnsubmittedCommit) {
 				const unsubmittedDeadline = (root.unsubmittedCommitDeadline ??= now + COMMIT_PHASE_GRACE * expiration);
-				if (now >= unsubmittedDeadline) txn.abortDueToTimeout();
+				if (now >= unsubmittedDeadline) {
+					unsubmittedCommitGraceExpired = true;
+					txn.abortDueToTimeout();
+				}
 			} else root.unsubmittedCommitDeadline = undefined;
 		}
-		if (!txn.nativeCommitSubmitted && txn.open === TRANSACTION_STATE.CLOSED) return false;
+		if (!txn.nativeCommitSubmitted && txn.open === TRANSACTION_STATE.CLOSED)
+			return hasUnsubmittedCommit && !unsubmittedCommitGraceExpired;
 		if (!root.stalledCommitLogged && now - lastStalledCommitErrorAt >= STALLED_COMMIT_LOG_MIN_INTERVAL_MS) {
 			lastStalledCommitErrorAt = now;
 			root.stalledCommitLogged = true;

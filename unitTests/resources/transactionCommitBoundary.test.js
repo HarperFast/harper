@@ -97,6 +97,45 @@ describe('Transaction native-submit boundary', () => {
 		transaction.commitsInFlight = 0;
 	});
 
+	it('keeps a closed pre-submit link deferred while another link has an unknown native outcome', function () {
+		const root = new DatabaseTransaction();
+		const sibling = new DatabaseTransaction();
+		root.next = sibling;
+		sibling.root = root;
+		root.commitsInFlight = 1;
+		root.commitSubmitted = true;
+		root.nativeCommitSubmitted = true;
+		root.deferredPoisonDeadline = -Infinity;
+		sibling.commitsInFlight = 1;
+		sibling.committing = true;
+		sibling.open = TRANSACTION_STATE.CLOSED;
+
+		assert.equal(deferForCommitInFlight(sibling, undefined, 1000), true);
+		assert.ok(!sibling.timedOut, 'the pre-submit continuation must receive its commit-phase grace');
+		assert.notEqual(root.unsubmittedCommitDeadline, undefined);
+		root.unsubmittedCommitDeadline = -Infinity;
+		assert.equal(deferForCommitInFlight(sibling, undefined, 1), false);
+		assert.equal(sibling.timedOut, true, 'the closed continuation becomes reapable after its grace expires');
+
+		root.commitsInFlight = 0;
+		sibling.commitsInFlight = 0;
+	});
+
+	it('reports a disconnect that aborts an LMDB commit parked in pre-commit work', async function () {
+		const transaction = new LMDBTransaction();
+		let releaseBefore;
+		const before = new Promise((resolve) => (releaseBefore = resolve));
+		const write = makeLMDBWrite(3, () => {});
+		write.before = () => before;
+		transaction.writes.push(write);
+
+		const committing = transaction.commit();
+		transaction.abortDueToDisconnect();
+		releaseBefore();
+
+		await assert.rejects(committing, /client disconnected/);
+	});
+
 	it('preserves and leaves protected post-submit work unpoisoned', function () {
 		const transaction = new DatabaseTransaction();
 		transaction.commitsInFlight = 1;
