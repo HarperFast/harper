@@ -447,6 +447,14 @@ function startWorker(path, options = {}) {
 			if (RESERVED_WORKER_DATA_KEYS.includes(key)) {
 				throw new Error(`extraWorkerData may not set '${key}': it is owned by the thread bootstrap`);
 			}
+			// A registered provider owns its key too. `extraWorkerData` is spread AFTER provider output, so
+			// without this a caller could silently replace an authoritative value — `configOverrides` most
+			// consequentially, which would leave the thread reading on-disk config while its parent runs on
+			// `setProperty()` overrides. `registerWorkerDataProvider` already refuses name collisions; this is
+			// the same ownership rule on the other path into `workerData`.
+			if (workerDataProviders.has(key)) {
+				throw new Error(`extraWorkerData may not set '${key}': a registered workerData provider owns it`);
+			}
 		}
 	}
 	// A transferred port is single-use, and the unexpected-exit path below re-invokes `startWorker` with the

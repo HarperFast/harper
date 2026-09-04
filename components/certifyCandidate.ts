@@ -282,6 +282,16 @@ export async function certifyCandidate(
 		installRoot = await realpath(PACKAGE_ROOT).catch(() => undefined);
 		linksBefore = installRoot ? await snapshotHarperModuleLinks(candidateDirPath, installRoot) : undefined;
 
+		// Re-checked here, not only at entry. The slot wait above is unbounded up to `timeoutMs` and the two
+		// filesystem calls after it are awaited, so shutdown can begin while this caller is queued — and a
+		// validator started then is absent from `manageThreads.workers`, so shutdown neither terminates nor
+		// awaits it while it loads databases and components into a process that is tearing down.
+		if (isProcessShuttingDown()) {
+			const error: any = new Error(`Cannot certify ${appName} while the Harper process is shutting down`);
+			error.statusCode = 503;
+			return { certified: false, error };
+		}
+
 		return await new Promise<CertificationOutcome>((resolve) => {
 			// Exactly one settlement, whichever of the outcomes below happens first. A candidate with a
 			// syntax error emits `error` AND then `exit`; a candidate that posts a verdict and then throws

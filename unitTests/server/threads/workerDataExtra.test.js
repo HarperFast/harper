@@ -3,7 +3,7 @@
 const assert = require('assert');
 const path = require('node:path');
 const { MessageChannel } = require('node:worker_threads');
-const { startWorker } = require('#js/server/threads/manageThreads');
+const { startWorker, registerWorkerDataProvider } = require('#js/server/threads/manageThreads');
 
 const FIXTURE = path.join(__dirname, 'workerDataExtra-fixture.js');
 const WORKER_NAME = 'workerData-extra-test';
@@ -66,6 +66,31 @@ describe('startWorker per-call workerData', () => {
 			port1.close();
 			port2.close();
 		}
+		// A registered provider owns its key on this path too. `extraWorkerData` is spread after provider
+		// output, so without this a caller could quietly replace `configOverrides` and leave the thread
+		// reading on-disk config while its parent runs on `setProperty()` overrides.
+		assert.throws(
+			() => startWorker(FIXTURE, { name: WORKER_NAME, extraWorkerData: { configOverrides: { 'a.b': 1 } } }),
+			/a registered workerData provider owns it/
+		);
+		const unregister = registerWorkerDataProvider('extraCollisionProbe', () => undefined);
+		try {
+			assert.throws(
+				() => startWorker(FIXTURE, { name: WORKER_NAME, extraWorkerData: { extraCollisionProbe: 1 } }),
+				/a registered workerData provider owns it/
+			);
+		} finally {
+			unregister();
+		}
+		// ...and once the provider is gone, the name is free again.
+		assert.doesNotThrow(() =>
+			startWorker(FIXTURE, {
+				autoRestart: false,
+				name: WORKER_NAME,
+				execArgvOptions: { preloads: false },
+				extraWorkerData: { extraCollisionProbe: 1 },
+			}).terminate()
+		);
 		for (const key of ['addPorts', 'ticketKeys', 'workerCount', 'noServerStart', '__proto__']) {
 			assert.throws(
 				() => startWorker(FIXTURE, { name: WORKER_NAME, extraWorkerData: { [key]: 'x' } }),
