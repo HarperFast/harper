@@ -38,11 +38,21 @@ describe('Dual-clock audit records (harper#2412)', () => {
 
 	// The receive path: the apply transaction commits under the origin's log key while each write
 	// stores the origin's record version (Table.ts's apply dispatcher -> options.version).
-	function applyFromOrigin(TableClass, id, record, { logKey, version, nodeId = 1 }) {
+	function applyFromOrigin(
+		TableClass,
+		id,
+		record,
+		{ logKey, version, nodeId = 1, fullUpdate = true, isCopyApply = false }
+	) {
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		return transaction(context, async () => {
 			const resource = await TableClass.getResource(id, context);
-			return resource._writeUpdate(id, record, true, { isNotification: true, nodeId, version });
+			return resource._writeUpdate(id, record, fullUpdate, {
+				isNotification: true,
+				isCopyApply,
+				nodeId,
+				version,
+			});
 		});
 	}
 
@@ -99,6 +109,12 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			entry.txnLogKey > reportedVersion,
 			`the log key is the fill's commit, not its version (txnLogKey ${entry.txnLogKey}, version ${entry.version})`
 		);
+		assert(
+			Filled.primaryStore
+				.getEntry(id)
+				.additionalAuditRefs?.some((ref) => ref.version === entry.txnLogKey && ref.nodeId === 0),
+			'the stored record keeps an addressable pointer to its audit head'
+		);
 	});
 
 	it('an applied write keeps the origin version and takes the origin log key', async function () {
@@ -111,6 +127,44 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		const [entry] = auditEntriesFor(Plain, id);
 		assert.equal(entry.version, version, 'the audit record carries the origin record version');
 		assert.equal(entry.txnLogKey, logKey, "the peer's log key for this write is the origin's log key");
+	});
+
+	it('keeps a log-key pointer to the audit head when the stored version differs', async function () {
+		if (isLMDB) return this.skip();
+		const id = 'applied-head-1';
+		const logKey = Date.now() + 10;
+		const version = logKey - 30_000;
+		await applyFromOrigin(Plain, id, { id, name: 'newer' }, { logKey, version, nodeId: 0 });
+		const head = Plain.primaryStore.getEntry(id);
+		assert(head.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0));
+		assert((await Plain.getHistoryOfRecord(id)).some((entry) => entry.localTime === logKey));
+
+		await applyFromOrigin(
+			Plain,
+			id,
+			{ name: 'older', count: { __op__: 'add', value: 1 } },
+			{ logKey: logKey + 1, version: version - 1, nodeId: 0, fullUpdate: false }
+		);
+		assert.deepEqual(await Plain.get(id), { id, name: 'newer' });
+	});
+
+	it('does not point a copy-applied record at an audit entry that was never written', async function () {
+		if (isLMDB) return this.skip();
+		const id = 'copy-head-1';
+		const logKey = Date.now() + 11;
+		await applyFromOrigin(
+			Plain,
+			id,
+			{ id, name: 'copied' },
+			{
+				logKey,
+				version: logKey - 30_000,
+				nodeId: 0,
+				isCopyApply: true,
+			}
+		);
+		assert.equal(Plain.primaryStore.getEntry(id).additionalAuditRefs, undefined);
+		assert.equal(auditStore.get(logKey, Plain.tableId, id, 0), undefined);
 	});
 
 	it('bounds an overloaded audit-body version by the originating transaction-log key', async function () {
@@ -136,13 +190,13 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			const older = await Plain.getResource('batched-old', context);
 			await older._writeUpdate('batched-old', { id: 'batched-old', name: 'a' }, true, {
 				isNotification: true,
-				nodeId: 1,
+				nodeId: 0,
 				version: olderVersion,
 			});
 			const current = await Plain.getResource('batched-new', context);
 			await current._writeUpdate('batched-new', { id: 'batched-new', name: 'b' }, true, {
 				isNotification: true,
-				nodeId: 1,
+				nodeId: 0,
 				version: logKey,
 			});
 		});
@@ -222,9 +276,6 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	});
 });
 
-// LMDB has carried the two clocks in separate fields all along, so nothing here is normalized — but the
-// per-write record version added for the receive path runs through LMDBTransaction's own commit loop,
-// and that branch would otherwise ship untested.
 describe('Dual-clock audit records on LMDB (harper#2412)', () => {
 	let Applied;
 
@@ -240,7 +291,7 @@ describe('Dual-clock audit records on LMDB (harper#2412)', () => {
 		});
 	});
 
-	it('stores the origin record version on an applied write and keys the entry by its own audit time', async function () {
+	it('keeps legacy transaction-version semantics while exposing the audit key as txnLogKey', async function () {
 		if (!isLMDB) return this.skip();
 		const id = 'lmdb-applied-1';
 		const originLogKey = Date.now();
@@ -254,14 +305,14 @@ describe('Dual-clock audit records on LMDB (harper#2412)', () => {
 				version,
 			});
 		});
-		assert.equal(Applied.primaryStore.getEntry(id).version, version, 'the peer stores the origin record version');
+		assert.equal(Applied.primaryStore.getEntry(id).version, originLogKey);
 		const auditStore = Applied.primaryStore.rootStore.auditStore;
 		let entry;
 		for (const auditRecord of auditStore.getRange({ start: 1 })) {
 			if (auditRecord.tableId === Applied.tableId && auditRecord.recordId === id) entry = auditRecord;
 		}
 		assert.ok(entry, 'the applied write must have produced an audit entry');
-		assert.equal(entry.version, version, 'the audit entry carries the origin record version');
+		assert.equal(entry.version, originLogKey);
 		assert.equal(
 			entry.txnLogKey,
 			Applied.primaryStore.getEntry(id).localTime,

@@ -113,8 +113,9 @@ been distinct fields; on RocksDB the read surface used to overwrite `version` wi
 They hold the same value for every write whose record version is its own commit timestamp, which is
 every ordinary local write, so a bug that confuses them stays invisible until a **source fill**
 (`getFromSource`, core #2065): the record is stored at the source-reported version while its log
-entry is keyed at the fill's commit. A record stores one word today, so it keeps its version and the
-first-word == log-key invariant is restored in stage 2, not here.
+entry is keyed at the fill's commit. A RocksDB record stores its version in the existing word and,
+when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 can replace that
+compatibility pointer with a dedicated log-key word.
 
 Consequences worth knowing:
 
@@ -122,18 +123,20 @@ Consequences worth knowing:
   single predicate; `removeAuditEntry`'s tombstone removal and `blob.ts`'s orphan sweep both gate on
   it, and both retain rather than delete when identity is unknown. A version compare there would let
   one write authorize destroying another's tombstone or blob.
-- **An applied write carries its own record version.** `TransactionWrite.recordVersion`, set from
+- **A RocksDB applied write carries its own record version.** `TransactionWrite.recordVersion`, set from
   `options.version` by every `_write*` builder and read in `save()` only when the transaction is
   `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the
   transaction commits under the origin's log key — so a peer's copy of an origin's log stays in the
   origin's clock. `getAppliedWriteVersion` bounds the body value by `txnLogKey`: a source fill keeps
   its earlier source version, while an out-of-order audit body cannot restamp its originating write
   at the later surviving version. One frame can carry writes at different record versions, so this
-  cannot be a per-transaction value.
+  cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply
+  behavior.
 - **`additionalAuditRefs[].version` is a log key, not a version.** Every consumer follows it straight
-  into `auditStore.get` (`Table.ts`'s `auditRefsToVisit`), so the out-of-order walk records the write's
-  `txnLogKey` there. Under stage 2 the stored reference field can be renamed; until then,
-  "fixing" it to the record version silently unaddresses the entry it points at.
+  into `auditStore.get` (`Table.ts`'s `auditRefsToVisit`). The list carries folded out-of-order
+  branches and, when a RocksDB record version differs from its log key, the record's own audit head.
+  Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record
+  version silently unaddresses the entry it points at.
 - **Crash replay uses both.** `replayLogs` delimits transactions by `txnLogKey` (which is also what
   `CorruptFrameStop.truncatedVersions` records) and replays each write at its stored `version`.
   Stamping a replayed record at its log key would move its version forward and make a later

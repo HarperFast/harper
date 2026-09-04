@@ -711,6 +711,20 @@ export function makeTable(options) {
 			},
 		});
 	}
+	function resolveAuditHead(
+		id: Id,
+		version: number | undefined,
+		nodeId: number | undefined,
+		refs?: Array<{ version: number; nodeId: number }>
+	) {
+		if (refs) {
+			for (const ref of refs) {
+				const auditRecord = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
+				if (auditRecord?.version === version) return { txnLogKey: ref.version, nodeId: ref.nodeId };
+			}
+		}
+		return { txnLogKey: version, nodeId };
+	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -2993,6 +3007,8 @@ export function makeTable(options) {
 					this.#savingOperation = null;
 					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
 					let omitLocalRecord = false;
+					const txnLogKey =
+						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -3040,12 +3056,6 @@ export function makeTable(options) {
 						// of the updates to the record to ensure consistency across the cluster
 						// TODO: can the previous version be older, but even more previous version be newer?
 						if (audit) {
-							// This write's key in the per-origin transaction log: the transaction's own timestamp,
-							// which a replication apply or a replay adopts from the origin. It is what the keyed
-							// dedup below looks up — never the record version, which a source fill sets from the
-							// source and which is legitimately non-unique. Resolved here rather than at the top of
-							// the commit so an in-order write, the overwhelming majority, never pays the call.
-							const txnLogKey = transaction?.getTimestamp?.() ?? txnTime;
 							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
 							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
 							// out-of-order versions, read with read-your-writes consistency, so this skips the duplicate up
@@ -3213,6 +3223,7 @@ export function makeTable(options) {
 									const auditRecord = auditStore.get(localTime, tableId, id, nodeId);
 									if (!auditRecord) break;
 									if (
+										isRocksDB &&
 										!stagedOwnAuditEntry &&
 										localTime === txnLogKey &&
 										precedesExistingVersion(
@@ -3507,6 +3518,14 @@ export function makeTable(options) {
 					);
 					updateIndices(id, existingRecord, recordToStore, transaction && { transaction });
 
+					// Preserve an addressable audit head when the record and log clocks diverge.
+					if (isRocksDB && audit && !isCopyApply && txnLogKey !== txnTime) {
+						const headIndex = additionalAuditRefs.findIndex(
+							(ref) => ref.version === txnLogKey && (ref.nodeId ?? 0) === (options?.nodeId ?? 0)
+						);
+						if (headIndex > 0) additionalAuditRefs.unshift(additionalAuditRefs.splice(headIndex, 1)[0]);
+						else if (headIndex < 0) additionalAuditRefs.unshift({ version: txnLogKey, nodeId: options?.nodeId });
+					}
 					writeCommit(true);
 					if (write.trackRecordVersion) write.recordVersionApplied = true;
 					if (expiresAt >= 0) {
@@ -5011,6 +5030,12 @@ export function makeTable(options) {
 						logger.trace?.('re-retrieved record', localTime, this.#entry?.localTime);
 						localTime = entry?.localTime;
 					}
+					let nodeId = entry?.nodeId;
+					if (isRocksDB && entry) {
+						const head = resolveAuditHead(thisId, entry.version, nodeId, entry.additionalAuditRefs);
+						localTime = head.txnLogKey;
+						nodeId = head.nodeId;
+					}
 					logger.trace?.('Subscription from', startTime, 'from', thisId, localTime);
 					if (startTime < localTime) {
 						// start time specified, get the audit history for this record. Set startTime up
@@ -5021,7 +5046,6 @@ export function makeTable(options) {
 						const history = [];
 						let inspected = 0;
 						let nextTime = localTime;
-						let nodeId = entry?.nodeId;
 						do {
 							if (++recordsSinceYield >= REPLAY_YIELD_INTERVAL) {
 								recordsSinceYield = 0;
@@ -5046,8 +5070,16 @@ export function makeTable(options) {
 										if (count) count--;
 									} else if (!isActive()) return;
 								}
-								nextTime = auditRecord.previousVersion;
-								nodeId = auditRecord.previousNodeId;
+								const previousHead = isRocksDB
+									? resolveAuditHead(
+											thisId,
+											auditRecord.previousVersion,
+											auditRecord.previousNodeId,
+											auditRecord.previousAdditionalAuditRefs
+										)
+									: { txnLogKey: auditRecord.previousVersion, nodeId: auditRecord.previousNodeId };
+								nextTime = previousHead.txnLogKey;
+								nodeId = previousHead.nodeId;
 							} else break;
 						} while (nextTime > startTime && count !== 0);
 						for (let i = history.length; i > 0;) {
@@ -6026,7 +6058,9 @@ export function makeTable(options) {
 			if (id == undefined) throw new Error('An id is required');
 			const entry = primaryStore.getEntry(id);
 			if (!entry) return history;
-			let nextVersion = entry.localTime;
+			let nextVersion = isRocksDB
+				? resolveAuditHead(id, entry.version, entry.nodeId, entry.additionalAuditRefs).txnLogKey
+				: entry.localTime;
 			if (!nextVersion) throw new Error('The entry does not have a local audit time');
 			const count = 0;
 			const auditWindow = 100;
@@ -6048,8 +6082,16 @@ export function makeTable(options) {
 							user: auditRecord.user,
 							operation: auditRecord.originatingOperation,
 						});
-						if (auditRecord.previousVersion > highestPreviousVersion && auditRecord.previousVersion < start) {
-							highestPreviousVersion = auditRecord.previousVersion;
+						const previousVersion = isRocksDB
+							? resolveAuditHead(
+									id,
+									auditRecord.previousVersion,
+									auditRecord.previousNodeId,
+									auditRecord.previousAdditionalAuditRefs
+								).txnLogKey
+							: auditRecord.previousVersion;
+						if (previousVersion > highestPreviousVersion && previousVersion < start) {
+							highestPreviousVersion = previousVersion;
 						}
 					}
 				}
@@ -6928,6 +6970,7 @@ export function makeTable(options) {
 						const currentRecord = existingEntry?.value;
 						const recordVersion =
 							isRocksDB && racedVersion != null ? Math.max(sourceVersion, racedVersion) : sourceVersion;
+						const txnLogKey = isRocksDB ? transaction?.getTimestamp?.() : recordVersion;
 						updateIndices(id, currentRecord, updatedRecord, transaction && { transaction });
 						if (updatedRecord) {
 							if (existingEntry) {
@@ -6989,19 +7032,22 @@ export function makeTable(options) {
 								`Writing resolved record from source with id: ${id}, timestamp: ${new Date(recordVersion).toISOString()}`
 							);
 							// TODO: We are doing a double check for ifVersion that should probably be cleaned out
+							const writeAudit = (audit && (hasChanges || omitLocalRecord)) || null;
 							updateRecord(
 								id,
 								updatedRecord,
 								existingEntry,
 								recordVersion,
 								omitLocalRecord ? INVALIDATED : 0,
-								(audit && (hasChanges || omitLocalRecord)) || null,
+								writeAudit,
 								{
 									user: (sourceContext as any)?.user,
 									expiresAt: sourceContext.expiresAt,
 									residencyId,
 									transaction,
 									tableToTrack: tableName,
+									additionalAuditRefs:
+										writeAudit && txnLogKey !== recordVersion ? [{ version: txnLogKey, nodeId: 0 }] : undefined,
 								},
 								'put',
 								Boolean(invalidated),
