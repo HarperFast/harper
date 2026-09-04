@@ -1506,6 +1506,26 @@ describe('Audit log', () => {
 				assert.strictEqual(future.nextCalls(), 0, 'the future peer is excluded before its iterator is created');
 			});
 
+			it('a hook exclusion is visible to a re-entrant refresh before iterator removal is applied', () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
+				const future = corruptLogNamed('future', [entry(2)], 2048);
+				const store = storeWith(corrupt);
+				let nested;
+				let iterable;
+				iterable = store.getRange({
+					onCorruptFrame: () => {
+						store.nodeLogs.push(future);
+						store.logByName.set(future.name, future);
+						store.updates++;
+						iterable.removeLog(future.name);
+						nested = iterable[Symbol.iterator]().next();
+					},
+				});
+				assert.strictEqual(iterable[Symbol.iterator]().next().value.version, 1);
+				assert.deepStrictEqual(nested, { done: true, value: undefined });
+				assert.strictEqual(future.nextCalls(), 0, 'the nested refresh cannot mount the excluded peer');
+			});
+
 			it('a break at the first frame is reported once the iterable exists, so the hook can act on it', () => {
 				const corrupt = corruptLogNamed('corrupt', [], 2048);
 				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3)]));

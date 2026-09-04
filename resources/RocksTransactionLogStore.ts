@@ -497,12 +497,12 @@ export class RocksTransactionLogStore extends EventEmitter {
 					if (index >= 0) excludedLogs.splice(index, 1);
 				},
 				removeLog: (logName: string) => {
+					const exclusions = (excludedLogs ??= []);
+					if (!exclusions.includes(logName)) exclusions.push(logName);
 					if (polling) {
 						(deferredRemovals ??= []).push(logName);
 						return;
 					}
-					const exclusions = (excludedLogs ??= []);
-					if (!exclusions.includes(logName)) exclusions.push(logName);
 					const log = this.logByName.get(logName);
 					if (!log) return; // not found
 
