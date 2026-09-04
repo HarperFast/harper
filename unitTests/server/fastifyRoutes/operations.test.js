@@ -631,4 +631,56 @@ describe('Test custom functions operations', () => {
 			}
 		});
 	});
+
+	describe('Test deployComponent reserved component names', () => {
+		let addConfigStub;
+		let prepareApplicationStub;
+
+		beforeEach(() => {
+			sandbox.restore();
+			sandbox = sinon.createSandbox();
+			sandbox.stub(configUtils, 'getConfigObj').returns({});
+			addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
+			prepareApplicationStub = sandbox.stub();
+			operations.__set__('prepareApplication', prepareApplicationStub);
+		});
+
+		after(() => {
+			sandbox.restore();
+		});
+
+		// The handler derives `project` (canonical form, or from `package`) before validating, so each
+		// of these is a distinct way to reach the reserved name.
+		const reserved = [
+			['an explicit project name', { project: 'sql', package: '@org/sql-app' }],
+			['a canonicalized project name', { project: 'sql.tgz', package: '@org/sql-app' }],
+			['a project name derived from the package', { package: 'sql' }],
+			['a payload deploy, which writes no root config entry', { project: 'sql', payload: 'ZmFrZQ==' }],
+			['force, which cannot buy a reserved name', { project: 'sql', package: '@org/sql-app', force: true }],
+		];
+
+		for (const [description, request] of reserved) {
+			it(`Test deployComponent rejects ${description}`, async () => {
+				let error;
+				try {
+					await operations.deployComponent(request);
+				} catch (err) {
+					error = err;
+				}
+
+				expect(error).to.exist;
+				expect(error.message).to.include("Component name 'sql' is reserved");
+				expect(error.statusCode).to.equal(400);
+				expect(addConfigStub.called).to.be.false;
+				expect(prepareApplicationStub.called).to.be.false;
+			});
+		}
+
+		it('Test deployComponent still accepts a name that merely starts with a reserved one', async () => {
+			await operations.deployComponent({ project: 'sql-tools', package: '@org/sql-tools' });
+
+			expect(addConfigStub.calledOnce).to.be.true;
+			expect(addConfigStub.firstCall.args[0]).to.equal('sql-tools');
+		});
+	});
 });

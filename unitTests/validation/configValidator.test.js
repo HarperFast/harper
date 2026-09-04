@@ -308,6 +308,44 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error.message).to.include("'sql.allwoFullScan' is not allowed");
 		});
 
+		it('accepts an empty sql section', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = {};
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('accepts an application deployed under the sql name before it was reserved', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { package: '@org/sql-app', urlPath: '/sql', install: { timeout: 1000 } };
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('rejects sql engine settings on an entry that is a deployed application', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { package: '@org/sql-app', engine: 'new' };
+			expect(configValidator(config).error.message).to.include(
+				"'sql.engine' cannot be set while 'sql' names a deployed application"
+			);
+		});
+
+		it("rejects a typo'd sql setting rather than reading it as an application entry", () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { allwoFullScan: true };
+			expect(configValidator(config).error.message).to.include("'sql.allwoFullScan' is not allowed");
+		});
+
+		// The predicate configUtils.validateConfig() uses to decide whether to warn that 'sql' holds
+		// an application; the schema branch above is driven by the same key list.
+		it('identifies an application-shaped sql entry positively, by the keys a deploy writes', () => {
+			const { isLegacySqlApplicationEntry } = config_val;
+			expect(isLegacySqlApplicationEntry({ package: '@org/sql-app' })).to.be.true;
+			expect(isLegacySqlApplicationEntry({ host: 'sql.example.com' })).to.be.true;
+			expect(isLegacySqlApplicationEntry({ engine: 'new' })).to.be.false;
+			expect(isLegacySqlApplicationEntry({ allwoFullScan: true })).to.be.false;
+			expect(isLegacySqlApplicationEntry({})).to.be.false;
+			expect(isLegacySqlApplicationEntry(undefined)).to.be.false;
+		});
+
 		it('rejects a URL / port / numeric node.hostname, and accepts a bare host (#2218)', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			for (const [bad, reason] of [

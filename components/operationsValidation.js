@@ -13,7 +13,11 @@ const { ENV_ENCRYPTED_PREFIX } = require('../utility/envFile.ts');
 // File and project names can only be alphanumeric, dash and underscores. Both patterns are shared
 // with the CLI (utility/componentNames.ts): `harper deploy setup=true` resolves a project name and a
 // credential host client-side, and has to reject exactly what these schemas would.
-const { PROJECT_NAME_PATTERN: PROJECT_FILE_NAME_REGEX, GIT_HOST_PATTERN } = require('../utility/componentNames.ts');
+const {
+	PROJECT_NAME_PATTERN: PROJECT_FILE_NAME_REGEX,
+	GIT_HOST_PATTERN,
+	isReservedComponentName,
+} = require('../utility/componentNames.ts');
 const { assertBranchedDatabases } = require('./Application.ts');
 
 // dotenv's accepted key character set. Restricting keys to this prevents a crafted key (e.g. one
@@ -72,6 +76,33 @@ function checkProjectExists(checkExists, project, helpers) {
 		hdbLogger.error(err);
 		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
 	}
+}
+
+/**
+ * Refuse a project name Harper's root config claims for itself, on every operation that CREATES a
+ * component under that name. Drop/package/file operations deliberately don't call this: an
+ * application deployed under the name before it was reserved has to stay removable.
+ */
+function checkReservedProjectName(project, helpers) {
+	if (isReservedComponentName(project)) return helpers.message(HDB_ERROR_MSGS.RESERVED_PROJECT_NAME(project));
+	return project;
+}
+
+/**
+ * The same reservation for an operation that creates a project directory as a side effect of
+ * writing into it (set_component_file): only the creation is refused, so an application that
+ * already holds the name stays editable until it is migrated off it.
+ */
+function checkReservedProjectCreation(project, helpers) {
+	if (!isReservedComponentName(project)) return project;
+	try {
+		const projectDir = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), project);
+		if (fs.existsSync(projectDir)) return project;
+	} catch (err) {
+		hdbLogger.error(err);
+		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
+	}
+	return helpers.message(HDB_ERROR_MSGS.RESERVED_PROJECT_NAME(project));
 }
 
 function checkFilePath(path, helpers) {
@@ -155,6 +186,7 @@ function setComponentFileValidator(req) {
 	const setCompSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkReservedProjectCreation)
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		file: Joi.string().custom(checkFilePath).required(),
@@ -331,6 +363,7 @@ function addComponentValidator(req) {
 	const addFuncSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkReservedProjectName)
 			.custom(checkProjectExists.bind(null, false))
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
@@ -456,6 +489,7 @@ function deployComponentValidator(req) {
 	const deployProjSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkReservedProjectName)
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		package: Joi.string().optional(),

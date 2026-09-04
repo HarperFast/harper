@@ -30,6 +30,27 @@ const INVALID_RETENTION_VALUE_MSG =
 const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 
+/**
+ * The keys a root-config application entry carries — what `deploy_component` writes, plus the
+ * deployment-level keys componentLoader reads off the entry. Frozen: they identify the shape of a
+ * `sql` application deployed before the name was reserved, not a shape anything new may take.
+ */
+export const LEGACY_SQL_APPLICATION_KEYS = [
+	'package',
+	'files',
+	'install',
+	'credentials',
+	'loadComponent',
+	'urlPath',
+	'host',
+	'branchedDatabases',
+];
+
+export function isLegacySqlApplicationEntry(value: unknown): boolean {
+	if (typeof value !== 'object' || value === null) return false;
+	return LEGACY_SQL_APPLICATION_KEYS.some((key) => Object.hasOwn(value, key));
+}
+
 // Directory-path validation. The previous `([...]+)+$` nested quantifier
 // backtracked catastrophically (ReDoS), hanging the CLI at 100% CPU on any
 // value with a character outside its allow-list after a run of valid ones — a
@@ -237,7 +258,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 	// threads/componentsRoot/logging/storage/operationsApi, not sql, so leaving Joi's default
 	// convert:true on here would accept a quoted `allowFullScan: "true"` and then silently drop
 	// it (getSqlEngineConfig()'s typeof guard rejects the still-unconverted string).
-	const sqlSchema = Joi.object({
+	const sqlSettingsSchema = Joi.object({
 		engine: string.valid('legacy', 'new', 'auto').optional(),
 		allowFullScan: boolean.optional(),
 		maxSortRows: number.integer().min(1).optional(),
@@ -245,6 +266,28 @@ export function configValidator(configJson, skipFsValidation = false) {
 	})
 		.unknown(false)
 		.prefs({ convert: false });
+
+	// An application deployed under the name before it was reserved (see RESERVED_COMPONENT_NAMES)
+	// still boots; validateConfig() warns to rename it. Selected positively, by the keys a deploy
+	// writes, so an entry that is merely a typo'd setting is still held to the settings schema
+	// rather than waved through as an application. The two shapes can't be mixed: an entry carrying
+	// both would leave which one `sql` means undecidable at every reader.
+	const legacySqlApplicationSchema = Joi.object({
+		engine: Joi.any().forbidden(),
+		allowFullScan: Joi.any().forbidden(),
+		maxSortRows: Joi.any().forbidden(),
+		maxHashRows: Joi.any().forbidden(),
+	})
+		.unknown(true)
+		.messages({
+			'any.unknown': `{#label} cannot be set while 'sql' names a deployed application; redeploy that application under a different name`,
+		});
+	const sqlSchema = Joi.alternatives().conditional(
+		Joi.object()
+			.or(...LEGACY_SQL_APPLICATION_KEYS)
+			.unknown(true),
+		{ then: legacySqlApplicationSchema, otherwise: sqlSettingsSchema }
+	);
 
 	const configSchema = Joi.object({
 		authentication: Joi.alternatives(
