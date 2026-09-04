@@ -7,6 +7,7 @@ import type { Id } from '../../resources/ResourceInterface.ts';
 import { SKIP } from '@harperfast/extended-iterable';
 import {
 	getPlaneBinding,
+	invalidatePlaneFile as invalidateHnswPlaneFile,
 	planeFilePathFor,
 	planeStalePathFor,
 	PLANE_NO_ID,
@@ -778,33 +779,12 @@ export class HierarchicalNavigableSmallWorld {
 		}
 	}
 
-	/**
-	 * Make an undeletable plane file unadoptable: in band first, then with the `.stale` sidecar.
-	 *
-	 * `invalidate()` zeroes the watermark and msyncs the header page alone, so the file reads as
-	 * an incomplete initial mirror — which planeSearchReady already refuses and
-	 * PLANE_INCOMPLETE_REBUILD_MS already rebuilds. It is synchronous on purpose: the sidecar is
-	 * an empty file whose directory entry is never fsynced, so creating it before the watermark
-	 * was durable would let a power loss keep the old nonzero watermark and lose the sidecar,
-	 * and the next process would adopt a plane missing every mutation made while mirroring was
-	 * off. A whole-mapping flush would give the same ordering but cannot run inline on a
-	 * multi-GB plane, which is why this is a 4 KB header barrier rather than `flush(0)`.
-	 *
-	 * The sidecar still follows, because another process may still be mapping this inode and can
-	 * re-stamp the watermark from its own mirror writes; it is checked at attach, before any
-	 * such writer exists.
-	 */
+	/** Make an undeletable plane unadoptable before this process stops mirroring it. */
 	private invalidatePlaneFile(filePath: string, attached?: HnswPlane | null): void {
 		try {
-			const plane = attached ?? (existsSync(filePath) ? getPlaneBinding()?.open(filePath) : undefined);
-			plane?.invalidate();
-		} catch (invalidateError) {
-			logger.warn?.('could not zero the watermark of the stale HNSW plane file', invalidateError);
-		}
-		try {
-			closeSync(openSync(planeStalePathFor(filePath), 'w'));
-		} catch (tombstoneError) {
-			logger.warn?.('could not tombstone the stale HNSW plane file', tombstoneError);
+			invalidateHnswPlaneFile(filePath, attached);
+		} catch (error) {
+			logger.warn?.('could not invalidate the stale HNSW plane file', error);
 		}
 	}
 

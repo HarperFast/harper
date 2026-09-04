@@ -68,7 +68,7 @@ Non-goals (this phase):
   │ HierarchicalNavigableSmallWorld.ts      │   │ hnsw-plane                          │
   │  • pk→nodeId mapping   (stays RocksDB)  │   │  • mmap'd slot file (per index/slice)│
   │  • insert/update/delete logic (phase 1) ├──►│  • slot read/write API (seqlocked)   │
-  │  • commit callback → slot writes        │   │  • search(query, k, ef, filter) →    │
+  │  • phase-1 mirror → slot writes         │   │  • search(query, k, ef, filter) →    │
   │  • record load + exact rescore (as-is)  │◄──┤    top-k ids, own thread pool        │
   │  • runIndexing replay from watermark    │   │  • TSFN batch filter callback        │
   └─────────────────────────────────────────┘   └─────────────────────────────────────┘
@@ -222,12 +222,18 @@ search(sliceHandles, queryVector: Float32Array, k, ef, filter?): Promise<{ids, d
   exact `indexStore.put/remove` sites via `writeNodeRaw`/`clearNode`/`setEntryPoint` with
   host-allocated ids; the plane file (`<store path>/<table>.<attr>.hnsw`, layer0 cap 128,
   16M-node sparse reservation) is created lazily with a full mirror of the existing CF graph on
-  first enable, reopened on restart, deleted on drop/clear/reindex. The compiled module is
-  optional (`npm run build:hnsw-plane`); absence falls back to the JS path with one warning.
+  first enable, reopened on restart, deleted on drop/clear/reindex. The exact-pinned
+  `@harperfast/hnsw` package is optional; absence falls back to the JS path with one warning.
   Parity, predicate, restart, and lifecycle coverage in `unitTests/resources/vectorIndexPlane.test.js`.
   Watermark/replay wiring, slicing, and msync-cadence flushes are not wired yet (open items).
 
-- **Phase 2 — file-primary.** Drop the CF writes; the file is the only graph store. JS insert
+- **Phase 2 — shared post-commit delivery, then file-primary.** Implement #2489's
+  `DerivedIndexBackend` contract rather than an HNSW-specific commit callback: every worker
+  enqueues its own committed transaction-log entries, the backend advances a durable log-position
+  watermark, and open/rebuild uses the shared retention-aware replay driver. Moving the mirror
+  from the pre-commit `indexStore.put/remove` sites into that delivery path removes rollback
+  phantoms without creating a second protocol alongside full-text indexing. Then drop the CF
+  graph writes; the file is the only graph store. JS insert
   reads nodes through a native `getNode(id)` (one NAPI crossing per read, ~1 µs — comparable to
   today's decode path). Migration for existing indexes: reindex (accepted contract), or a
   one-shot CF→file bulk conversion since it is a pure format transform.
@@ -270,12 +276,13 @@ Decided (Kris, 2026-08-31):
 - **Packaging: independent open-source package.** The core has zero Harper coupling — the crate
   compiles standalone and its NAPI surface is generic (create/open plane, insert(id, vector),
   remove(id), search(query, k, ef, filter), watermark get/set). Harper-specific glue — the
-  pk→nodeId mapping, commit-callback integration, txnlog-anchored replay, auto-ef policy
-  constants — stays in Harper regardless of packaging. Plan: develop in-repo under
-  `native/hnsw-plane/` until the NAPI surface stabilizes (end of phase 1), then split to its own
-  repo in the symphony/lmdb-js mold and consume via npm. The pitch as a community package: a
-  persistent, incrementally-maintained, concurrently-searchable HNSW for Node — hnswlib-node has
-  no durable incremental persistence, no off-loop batched filtering, no seqlock concurrency.
+  pk→nodeId mapping, #2489's `DerivedIndexBackend` delivery, txnlog-anchored replay, auto-ef
+  policy constants — stays in Harper regardless of packaging. Published as the exact-pinned
+  optional dependency `@harperfast/hnsw` 0.2.1 (Apache-2.0, HarperFast/hnsw), with platform
+  prebuilds and a source-build fallback; the Harper adapter owns only availability/fallback and
+  integration policy. The pitch as a community package: a persistent,
+  incrementally-maintained, concurrently-searchable HNSW for Node — hnswlib-node has no durable
+  incremental persistence, no off-loop batched filtering, no seqlock concurrency.
 
 Open:
 
@@ -307,8 +314,8 @@ bounded by the phase-1 contract (opt-in flag, CF authoritative, plane derived):
   transaction can leave phantom nodes in the plane (the CF never had them). Phantom ids are
   filtered at record load (missing record → SKIP), so results can be transiently short by
   the phantom count; the garbage accumulates only at the rollback rate. The structural fix —
-  driving the mirror from committed state (commit callback / txnlog consumer) — is the
-  phase-2 "watermark/replay wiring" work item and also subsumes the residual lost-write
+  driving the mirror through #2489's shared post-commit `DerivedIndexBackend` runtime — is the
+  phase-2 delivery/watermark/replay work item and also subsumes the residual lost-write
   window during attach retry (mirror calls during the 250 ms backoff are dropped and heal
   only on the node's next touch).
 - **The async custom-index search contract** (`resources/search.ts`): a plane-backed search

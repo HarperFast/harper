@@ -6,8 +6,7 @@
  * the CF graph (same ids/levels/edges), so a native search over it must return the same
  * candidates as the JS traversal of the CF graph at equal ef.
  *
- * The whole suite is skipped when the optional native artifact is absent — build it with
- * `npm run build:hnsw-plane`.
+ * The whole suite is skipped when the optional native package is absent.
  */
 require('../testUtils');
 const assert = require('node:assert');
@@ -52,7 +51,7 @@ function makeVector(i) {
 describe('HNSW native plane dual-write', function () {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return; // custom object index is RocksDB-only here
 	if (!getPlaneBinding()) {
-		it.skip('skipped: native hnsw-plane module not built (npm run build:hnsw-plane)', () => {});
+		it.skip('skipped: @harperfast/hnsw native module is unavailable', () => {});
 		return;
 	}
 	let PlaneTest;
@@ -384,7 +383,7 @@ describe('HNSW native plane dual-write', function () {
 		await Foreign.dropTable();
 	});
 
-	it('an undeletable plane is marked incomplete in band before its stale sidecar is created', async () => {
+	it('an undeletable plane is invalidated both in band and through a durable sidecar', async () => {
 		const Undeletable = table({
 			table: 'PlaneUndeletable',
 			database: DB,
@@ -399,24 +398,16 @@ describe('HNSW native plane dual-write', function () {
 		const stalePath = planeStalePathFor(planePath);
 		fs.rmSync(stalePath, { force: true });
 		const plane = getPlaneBinding().open(planePath);
-		plane.setWatermark(4096); // a plane that would read as a complete mirror on the next attach
-		const order = [];
-		// a stand-in rather than a monkeypatch: the binding's methods live on a non-writable
-		// prototype, so assigning over one silently does nothing in sloppy mode
-		const observed = {
-			invalidate() {
-				// the sidecar must not exist yet: it is an empty file whose directory entry is never
-				// fsynced, so creating it first lets a power loss keep the old watermark and lose the
-				// only marker
-				order.push(fs.existsSync(stalePath) ? 'sidecar-first' : 'in-band-first');
-				plane.invalidate();
-			},
-		};
+		plane.setWatermark(4096); // a plane that would otherwise read as complete on the next attach
 		try {
-			index.invalidatePlaneFile(planePath, observed);
-			assert.deepEqual(order, ['in-band-first'], 'the durable in-band mark must complete before the sidecar');
-			assert.ok(fs.existsSync(stalePath), 'the sidecar still follows, for a process that cannot map the file');
-			assert.equal(getPlaneBinding().open(planePath).getWatermark(), 0, 'the plane must read as an incomplete mirror');
+			index.invalidatePlaneFile(planePath, plane);
+			assert.ok(plane.invalidated(), 'the open mapping must observe the one-way in-band invalidation latch');
+			assert.ok(fs.existsSync(stalePath), 'the package must also persist the out-of-band sidecar');
+			assert.throws(
+				() => getPlaneBinding().open(planePath),
+				/invalidat|stale/i,
+				'a new process must refuse the invalidated plane'
+			);
 		} finally {
 			fs.rmSync(stalePath, { force: true });
 			await Undeletable.dropTable();

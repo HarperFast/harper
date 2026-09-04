@@ -67,7 +67,3 @@ test_export_terminology_test.json
 # dev-mode boots (harper dev <fixture>) symlink node_modules/harper into the
 # fixture component dir; keep those out of commits
 integrationTests/**/node_modules/
-
-# hnsw-plane native build outputs (optional module; build locally with npm run build:hnsw-plane)
-native/hnsw-plane/target/
-native/hnsw-plane/hnsw-plane.node

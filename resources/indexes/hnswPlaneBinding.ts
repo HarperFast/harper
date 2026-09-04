@@ -1,5 +1,5 @@
-import { join } from 'node:path';
-import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+import { closeSync, fsyncSync, openSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const logger = loggerWithTag('HNSW');
@@ -10,7 +10,7 @@ export interface PlaneSearchHit {
 }
 
 /**
- * NAPI surface of the native HNSW traversal plane (native/hnsw-plane). Dual-write phase 1 uses
+ * NAPI surface of the native HNSW traversal plane (`@harperfast/hnsw`). Dual-write phase 1 uses
  * only the raw mirroring calls (host-allocated ids; the plane's own insert()/remove() allocator
  * path is bypassed by design) plus the search entry points.
  */
@@ -60,13 +60,26 @@ export interface HnswPlane {
 	setWatermark(txn: number): void;
 	flush(watermark?: number): void;
 	flushAsync(watermark?: number): Promise<void>;
-	/** Zero the watermark and msync the header page alone — a 4 KB barrier, not a full flush. */
-	invalidate(): void;
+	invalidateFile(): PlaneInvalidationOutcome;
+	invalidated(): boolean;
 }
 
 export interface HnswPlaneConstructor {
 	create(path: string, dims: number, layer0Cap: number, maxNodes: number): HnswPlane;
 	open(path: string): HnswPlane;
+}
+
+export interface PlaneInvalidationOutcome {
+	inBand: boolean;
+	sidecar: boolean;
+	inBandError?: string;
+	sidecarError?: string;
+}
+
+interface HnswPlanePackage {
+	Plane: HnswPlaneConstructor;
+	invalidatePlane(path: string): PlaneInvalidationOutcome;
+	stalePathFor(path: string): string;
 }
 
 /** Entry-point id meaning "none" (u32::MAX in the plane header). */
@@ -90,27 +103,56 @@ export function planeFilePathFor(storePath: string, storeName: string): string {
  * possible and rebuild.
  */
 export function planeStalePathFor(planePath: string): string {
-	return `${planePath}.stale`;
+	// the package owns the convention; the literal covers the calls that precede its load
+	return binding?.stalePathFor(planePath) ?? `${planePath}.stale`;
 }
 
-// The compiled artifact is optional: harper installs carry no cargo toolchain, so absence just
-// means nativePlane-flagged indexes run the existing JS path. Build locally with
-// `npm run build:hnsw-plane`.
-const BINDING_PATH = join(PACKAGE_ROOT, 'native', 'hnsw-plane', 'hnsw-plane.node');
+let binding: HnswPlanePackage | null | undefined;
 
-let binding: HnswPlaneConstructor | null | undefined;
-
-/** The native plane constructor, or null when the compiled artifact is unavailable (warns once). */
-export function getPlaneBinding(): HnswPlaneConstructor | null {
+function getHnswPackage(): HnswPlanePackage | null {
 	if (binding !== undefined) return binding;
 	try {
-		binding = require(BINDING_PATH).Plane as HnswPlaneConstructor;
+		binding = require('@harperfast/hnsw') as HnswPlanePackage;
 	} catch (error) {
 		binding = null;
 		logger.warn?.(
-			`The hnsw-plane native module is not available (${(error as Error).message}); ` +
-				`indexes with nativePlane enabled will use the JS search path. Build it with: npm run build:hnsw-plane`
+			`The @harperfast/hnsw native module is not available (${(error as Error).message}); ` +
+				'indexes with nativePlane enabled will use the JS search path'
 		);
 	}
 	return binding;
+}
+
+/** The native plane constructor, or null when the compiled artifact is unavailable (warns once). */
+export function getPlaneBinding(): HnswPlaneConstructor | null {
+	return getHnswPackage()?.Plane ?? null;
+}
+
+/** Make a derived plane unadoptable before mirroring stops. */
+export function invalidatePlaneFile(filePath: string, attached?: HnswPlane | null): PlaneInvalidationOutcome {
+	if (attached) return attached.invalidateFile();
+	const hnswPackage = getHnswPackage();
+	if (hnswPackage) return hnswPackage.invalidatePlane(filePath);
+	// A plane can outlive the package that made it (uninstall, or a prebuild that stopped
+	// loading), and a reinstall would then adopt it. Only the sidecar is reachable without the
+	// package, and it has to survive a power loss to be worth writing, so fsync it and the
+	// directory entry that names it — the same durability the package's own sidecar has.
+	const fd = openSync(planeStalePathFor(filePath), 'w');
+	try {
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+	try {
+		const dirFd = openSync(dirname(filePath), 'r');
+		try {
+			fsyncSync(dirFd);
+		} finally {
+			closeSync(dirFd);
+		}
+	} catch {
+		// Windows cannot open a directory as a file; it also does not need this — the metadata
+		// journal already orders the create ahead of anything that could read the sidecar
+	}
+	return { inBand: false, sidecar: true };
 }

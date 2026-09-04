@@ -119,8 +119,10 @@ jobs:
         timeout-minutes: 30
         run: npm run test:unit:windows
 
-  # The vectorIndexPlane suite self-skips when the optional native artifact is absent; this
-  # job builds it so the dual-write mirroring and native search cutover run in CI.
+  # The vectorIndexPlane suite self-skips when the optional native package is absent, so the
+  # load probe below is what keeps that skip from reading as a green run. The crate's own
+  # tests belong to HarperFast/hnsw's CI, not here: this job runs the published prebuild, so
+  # testing the crate source would grade something other than the binary under test.
   hnsw-plane:
     name: HNSW native plane (Node.js v24)
     runs-on: ubuntu-latest
@@ -141,11 +143,8 @@ jobs:
       - name: Build
         run: npm run build || true # we currently have type errors so just ignore that
 
-      - name: Build native hnsw-plane module
-        run: npm run build:hnsw-plane
-
-      - name: Crate tests
-        run: cargo test --release --manifest-path native/hnsw-plane/Cargo.toml
+      - name: Verify the published native binding loads
+        run: node -e "if (typeof require('@harperfast/hnsw').Plane?.open !== 'function') throw new Error('@harperfast/hnsw loaded without a Plane constructor');"
 
       - name: Setup Harper
         env:
