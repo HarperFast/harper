@@ -129,6 +129,18 @@ function isDuration(value: unknown, min: number, max: number): value is number {
 	return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
 }
 
+/** A record id shape ordered-binary can encode. A plain object would throw out of `keyIdOf`. */
+function isEncodableKey(value: unknown): boolean {
+	if (Array.isArray(value)) return value.every((element) => isEncodableKey(element));
+	return (
+		value === null ||
+		typeof value === 'string' ||
+		typeof value === 'number' ||
+		typeof value === 'boolean' ||
+		value instanceof Date
+	);
+}
+
 /**
  * Decode a replicated control payload, returning undefined for anything that is not exactly the
  * shape this protocol writes. Peer input reaches the state machine through here, so every field is
@@ -137,7 +149,7 @@ function isDuration(value: unknown, min: number, max: number): value is number {
 export function decodeLockControlPayload(type: unknown, value: unknown): LockControlEntry | undefined {
 	if (!Array.isArray(value)) return undefined;
 	const [key, requester, tsR] = value;
-	if (key === undefined || !isNodeName(requester)) return undefined;
+	if (!isEncodableKey(key) || !isNodeName(requester)) return undefined;
 	if (typeof tsR !== 'number' || !Number.isFinite(tsR) || tsR <= 0) return undefined;
 	if (type === 'lockRequest') {
 		if (value.length !== 5) return undefined;
@@ -422,6 +434,17 @@ export class LockCoordinator {
 	 * and complete a requester's round while the real holder was still holding.
 	 */
 	applyEntry(entry: LockControlEntry, author: string): void {
+		// The only boundary peer input crosses into this state machine. A throw here would reach the
+		// replicated apply loop and drop the whole enclosing transaction, so one malformed entry could
+		// cost a table every control entry that follows it.
+		try {
+			this.#applyEntry(entry, author);
+		} catch (error) {
+			warnOnce('a cluster record lock control entry could not be applied', error);
+		}
+	}
+
+	#applyEntry(entry: LockControlEntry, author: string): void {
 		if (!this.transport.ownsCoordination()) {
 			this.#droppedOffOwner++;
 			const now = this.#now();
@@ -592,7 +615,9 @@ export class LockCoordinator {
 			return;
 		}
 		own.acquired = true;
-		own.deadlineMono = this.#monotonic() + remaining;
+		// From the mint origin: a pause between the two reads would otherwise push the deadline out by
+		// its own duration, past what peers bounded.
+		own.deadlineMono = own.mintedMono + own.leaseMs;
 		own.resolved = true;
 		own.resolve({ tsR: own.tsR, mintedMono: own.mintedMono });
 	}

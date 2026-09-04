@@ -135,8 +135,9 @@ export function getThisNodeId(auditStore: any) {
 // whichever worker first talks to a peer, and invalidation only reaches that worker's own copy — so
 // a newly admitted node is absent from every other worker's map until it is rebuilt. Rebuilding on
 // every miss would put a store read and unpack back on the apply thread for each unmapped entry, so
-// misses re-read at most once a second.
-const NODE_NAME_REFRESH_MS = 1000;
+// misses re-read at most this often — short enough that a joining node loses at most a stray entry,
+// long enough that a burst of unmapped ids cannot drive the store.
+const NODE_NAME_REFRESH_MS = 50;
 const idToNodeName = new WeakMap<object, { names: Map<number, string>; refreshedAt: number }>();
 function invalidateNodeNames(auditStore: any) {
 	idToNodeName.delete(auditStore);
