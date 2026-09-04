@@ -12,7 +12,7 @@ import harperLogger from './logging/harper_logger.ts';
 
 import { CONFIG_PARAMS } from './hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { nonInteractiveSpawn } from '../components/Application.ts';
+import { nonInteractiveSpawn, packageManagerInstallArguments } from '../components/Application.ts';
 import { withComponentPreparationLock } from '../components/componentPreparationLock.ts';
 import { isThreadRunning } from '../server/threads/manageThreads.js';
 
@@ -37,10 +37,10 @@ export async function installModules(req: any) {
 
 	const responseObject: any = {};
 
-	// npm 10 puts even a `file:` link into its audit bulk request, and the registry's answer to that
-	// is unbounded from here, so `--no-audit --no-fund` is what keeps a local dependency graph off
-	// the network — the same reason the component install path passes them.
-	const args = ['install', '--force', '--omit=dev', '--no-audit', '--no-fund', '--json'];
+	// `allowInstallScripts` is true because this operation has always run a project's install
+	// lifecycle; the flags that come with the shared builder include `--no-audit`, without which npm
+	// 10 puts even a `file:` link into an audit bulk request whose registry answer is unbounded here
+	const args = [...packageManagerInstallArguments('npm', true, true), '--json'];
 	if (dryRun) args.push('--dry-run');
 
 	for (const project of projects) {

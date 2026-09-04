@@ -12,7 +12,11 @@ const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 const { installModules } = require('#src/utility/npmUtilities');
 
-describe('install_node_modules', () => {
+describe('install_node_modules', function () {
+	// .mocharc.json sets `timeout: 0`, and these cases spawn real npm; without a bound here a
+	// registry stall wedges the whole run instead of failing it
+	this.timeout(60_000);
+
 	let componentsRoot;
 
 	before(() => {
@@ -102,32 +106,31 @@ describe('install_node_modules', () => {
 	});
 
 	// npm 10 puts a `file:` link into its audit bulk request, and the registry's answer to that is
-	// unbounded from here, so the flags that keep this operation off the registry are the invariant
-	it('runs npm with the registry audit and funding lookups disabled', async function () {
+	// unbounded from here, so `--no-audit` is an invariant of this operation, not a preference
+	it('runs npm with the registry audit disabled', async function () {
 		if (process.platform === 'win32') return this.skip(); // the shim below is a POSIX shell script
 		const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-npm-shim-'));
 		const argvPath = path.join(shimDir, 'argv.txt');
+		// the destination travels as an environment value, not as text in the script: a `$` or a
+		// backtick in TMPDIR would otherwise be expanded by the shell that runs this
 		fs.writeFileSync(
 			path.join(shimDir, 'npm'),
-			`#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvPath)}\necho '{"added":0}'\n`,
+			'#!/bin/sh\nprintf \'%s\\n\' "$@" > "$HARPER_TEST_NPM_ARGV_PATH"\necho \'{"added":0}\'\n',
 			{ mode: 0o755 }
 		);
 		const originalPath = process.env.PATH;
 		process.env.PATH = `${shimDir}${path.delimiter}${originalPath}`;
+		process.env.HARPER_TEST_NPM_ARGV_PATH = argvPath;
+		let argv;
 		try {
 			await installModules({ projects: ['application'] });
+			argv = fs.readFileSync(argvPath, 'utf8').split('\n').filter(Boolean);
 		} finally {
 			process.env.PATH = originalPath;
+			delete process.env.HARPER_TEST_NPM_ARGV_PATH;
+			fs.rmSync(shimDir, { recursive: true, force: true });
 		}
 
-		assert.deepEqual(fs.readFileSync(argvPath, 'utf8').split('\n').filter(Boolean), [
-			'install',
-			'--force',
-			'--omit=dev',
-			'--no-audit',
-			'--no-fund',
-			'--json',
-		]);
-		fs.rmSync(shimDir, { recursive: true, force: true });
+		assert.deepEqual(argv, ['install', '--force', '--omit=dev', '--no-audit', '--no-fund', '--json']);
 	});
 });

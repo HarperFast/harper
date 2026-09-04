@@ -27,11 +27,10 @@ jobs:
   unit-test:
     name: Unit Test (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    # GitHub reports a job that hits this cap as `cancelled`, not `failure`, so it reads as
-    # non-red on the required check — which is how a wedged v22 leg went unnoticed for 9 runs.
-    # Every step below is capped in its own right and this sits above their sum (33 on the
-    # longest leg), so a stall always surfaces as a step failure and this is only a backstop.
-    timeout-minutes: 35
+    # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
+    # on a required check. Every step below is capped in its own right and this sits above their
+    # sum (41 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -39,9 +38,11 @@ jobs:
 
     steps:
       - name: Checkout code
+        timeout-minutes: 3
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup Node.js ${{ matrix.node-version }}
+        timeout-minutes: 5
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ matrix.node-version }}

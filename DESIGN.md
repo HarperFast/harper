@@ -522,7 +522,11 @@ A package-manager timeout must not release this lock while npm descendants are s
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
 
-Automatic npm component installation is production-only and uses `--omit=dev --no-audit --no-fund`.
+Every npm install Harper runs — automatic component installation and the deprecated
+`install_node_modules` operation alike — composes its arguments in `packageManagerInstallArguments()`,
+which is production-only and adds `--omit=dev --no-audit --no-fund`. `--no-audit` is load-bearing, not
+hygiene: npm 10 puts even a `file:` link into its audit bulk request, and the registry's answer to that
+is unbounded from Harper's side.
 `installApplication()` skips the package-manager child entirely when the root manifest declares no
 production dependencies, non-empty workspaces, or enabled install lifecycle. An explicitly selected
 non-npm manager still runs so it can discover workspace configuration outside `package.json`, and it
