@@ -49,6 +49,15 @@ export interface LockParticipant {
 	capable: boolean;
 	/** When the node went DOWN in the cluster truth, or null/undefined while it is up. */
 	downSince?: number | null;
+	/**
+	 * Whether the DOWN verdict is cluster-agreed AND this node is known to have stopped acquiring.
+	 * Dropping a peer from the grant set on a LOCAL view alone breaks the exclusion argument: under an
+	 * asymmetric partition (A↔C down, both up and reachable from B) A and C each drop the other, both
+	 * ask only B, and B — holding no round of its own — grants both. Two holders on one key. So core
+	 * excludes nobody unless the transport asserts this, and a requester blocks on a peer it cannot
+	 * reach until its own timeout instead.
+	 */
+	agreedDown?: boolean;
 }
 
 export interface LockControlEntry {
@@ -637,9 +646,11 @@ export class LockCoordinator {
 				throw new LockUnavailableError(
 					`Node ${participant.nodeId} replicates ${this.database} but does not support record locks; use { scope: 'node' } to lock only on this node`
 				);
-			// Excluded only once every hold or request it could have had has certainly expired.
+			// Excluded only once every hold or request it could have had has certainly expired AND the
+			// cluster agrees it is down — see `agreedDown`, which is what makes the exclusion safe under
+			// an asymmetric partition rather than a way to manufacture a second holder.
 			const downSince = participant.downSince;
-			if (typeof downSince === 'number' && now - downSince > downCutoff) continue;
+			if (participant.agreedDown === true && typeof downSince === 'number' && now - downSince > downCutoff) continue;
 			grantSet.push(participant.nodeId);
 		}
 		return grantSet;
