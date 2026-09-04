@@ -117,7 +117,7 @@ export function queryWindowsProcessTable(): Promise<WindowsProcessRecord[] | nul
 export function parseProcessTable(json: string): WindowsProcessRecord[] | null {
 	let rows: unknown;
 	try {
-		rows = JSON.parse(json.replace(/^﻿/, ''));
+		rows = JSON.parse(json.replace(/^\uFEFF/, ''));
 	} catch {
 		return null;
 	}
