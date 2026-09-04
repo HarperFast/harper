@@ -2535,6 +2535,19 @@ export function makeTable(options) {
 			const context = this.getContext();
 			const link = txnForContext(context);
 			const keyId = writeKeyId(id);
+			// Before the re-entrant paths, not after: a transaction that already holds this key
+			// node-scoped would otherwise be handed that handle back for an explicit cluster request,
+			// while the same request on a fresh key fails closed.
+			if (
+				resolved.scope === 'cluster' &&
+				(resolved.scopeRequested || isClusterLockRequired(databaseName)) &&
+				!getClusterLockTransport(databaseName)
+			)
+				return Promise.reject(
+					new LockUnavailableError(
+						`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
+					)
+				);
 			const held = this.#lockHandle;
 			if (held && !held.isExpired() && held.keyId === keyId) {
 				// Re-entrant: upgrade to hold if requested, then preserve staged changes.
@@ -2573,16 +2586,6 @@ export function makeTable(options) {
 			// silently returning the node-local lock; the default keeps Phase 0 behavior, which is what
 			// a build with no replication has anyway.
 			const coordinator = resolved.scope === 'node' ? undefined : TableResource.lockCoordinator;
-			if (
-				!coordinator &&
-				resolved.scope === 'cluster' &&
-				(resolved.scopeRequested || isClusterLockRequired(databaseName))
-			)
-				return Promise.reject(
-					new LockUnavailableError(
-						`Cluster-scoped record locks are not available on ${databaseName}: no record lock transport is registered`
-					)
-				);
 			const key = lockAttemptKey(tableId, id);
 			// Coalesce concurrent lock() calls for the same key inside one link so they don't
 			// self-block: Promise.all([T.lock(id), T.lock(id)]) would otherwise have both calls

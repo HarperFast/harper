@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
@@ -98,6 +99,8 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(decoded.leaseMs, 5000);
 
 			await record.unlock();
+			// unlock() is synchronous by contract; the durable release is best-effort and lands after.
+			await waitFor(() => controlEntries().some((entry) => entry.type === 'lockRelease'));
 			const afterUnlock = controlEntries().slice(before);
 			assert.deepStrictEqual(
 				afterUnlock.map((entry) => entry.type),
@@ -195,6 +198,90 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				() => ClusterLockTest.lock(id(), { hold: true, lease: 5000 }),
 				(error) => error.statusCode === 503,
 				'a transport that went away is not proof this node became standalone'
+			);
+		});
+
+		it('fails an explicit cluster request closed even on a key this transaction already holds', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const recordId = id();
+			const warmUp = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });
+			await warmUp.unlock();
+			unregisterClusterLockTransport('test'); // still clustered; the transport just went away
+			await assert.rejects(
+				() =>
+					transaction(async () => {
+						await ClusterLockTest.lock(recordId, { scope: 'node', lease: 5000 });
+						// The re-entrant path must not hand the node-local handle back for this request.
+						await ClusterLockTest.lock(recordId, { scope: 'cluster', lease: 5000 });
+					}),
+				(error) => error.statusCode === 503
+			);
+		});
+
+		it('routes a replicated control entry to the coordinator and never to a record', async function () {
+			if (isLMDB) return this.skip();
+			const {
+				decodeLockControlPayload,
+				encodeLockControlPayload,
+				deliverLockControlEntry,
+			} = require('#src/resources/recordLockCoordinator');
+			const { unpack } = require('msgpackr');
+			useSoloTransport({
+				participants: [
+					{ nodeId: NODE_NAME, capable: true },
+					{ nodeId: 'peer-1', capable: true },
+				],
+			});
+			const recordId = id();
+			// The receive path a sender drives: encode, decode as the table decoder would, route.
+			const wire = {
+				type: 'lockRequest',
+				key: recordId,
+				requester: 'peer-1',
+				tsR: Date.now(),
+				leaseMs: 5000,
+				waitMs: 5000,
+			};
+			const decoded = decodeLockControlPayload(wire.type, unpack(encodeLockControlPayload(wire)));
+			assert.deepStrictEqual(decoded, wire, 'the payload survives the round trip');
+			deliverLockControlEntry('test', 'ClusterLockTest', decoded, 'peer-1');
+			assert.ok(!(await ClusterLockTest.get(recordId)), 'no record was created');
+			const coordinator = ClusterLockTest.lockCoordinator;
+			assert.ok(coordinator, 'the coordinator resolved through the registry');
+			// Granted, not deferred: this node holds nothing on that key.
+			assert.strictEqual(coordinator.stats.deferred, 0);
+		});
+
+		it('contains a malformed control entry instead of failing the apply loop', function () {
+			if (isLMDB) return this.skip();
+			const { decodeLockControlPayload, deliverLockControlEntry } = require('#src/resources/recordLockCoordinator');
+			useSoloTransport({
+				participants: [
+					{ nodeId: NODE_NAME, capable: true },
+					{ nodeId: 'peer-1', capable: true },
+				],
+			});
+			// A key the decoder must refuse, because keyIdOf would throw encoding it.
+			assert.strictEqual(
+				decodeLockControlPayload('lockRequest', [{ not: 'a key' }, 'peer-1', Date.now(), 5000, 5000]),
+				undefined
+			);
+			// And anything that still gets through must not escape into the replicated apply loop.
+			assert.doesNotThrow(() =>
+				deliverLockControlEntry(
+					'test',
+					'ClusterLockTest',
+					{
+						type: 'lockRequest',
+						key: { not: 'a key' },
+						requester: 'peer-1',
+						tsR: Date.now(),
+						leaseMs: 5000,
+						waitMs: 5000,
+					},
+					'peer-1'
+				)
 			);
 		});
 
@@ -310,7 +397,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(getNodeNameForId(store, 1), 'node-b');
 			assert.strictEqual(getNodeNameForId(store, 2), undefined, 'node-c is not in the cluster yet');
 			mapping = { ...mapping, 'node-c': 2 };
-			await delay(1100); // the miss-refresh window
+			await delay(120); // past the miss-refresh window
 			assert.strictEqual(getNodeNameForId(store, 2), 'node-c', 'and is resolved once it joins');
 		});
 
