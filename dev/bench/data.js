@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788513323654,
+  "lastUpdate": 1788513329830,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -18587,6 +18587,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 2102.3,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6910b74f2882e632b39a01ed3fe1e2cf61b9089d",
+          "message": "Stop the terminal-shutdown harness from loading the whole app graph to test worker respawn (#2366)\n\n* Stop the terminal-shutdown harness from loading the whole app graph to test worker respawn\n\nSeed the worker manager's lazy root-component dependency with a verified no-op in the harness, so respawn bookkeeping is tested without loading the full application graph. Keep the terminal shutdown modes' assertions and suite-level timeout intact.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Clarify terminal-shutdown harness ROOTPATH isolation\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-09-04T04:00:41Z",
+          "url": "https://github.com/HarperFast/harper/commit/6910b74f2882e632b39a01ed3fe1e2cf61b9089d"
+        },
+        "date": 1788513328080,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 4397.5,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 4397.5,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 246.5,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1010.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 1963.9,
             "unit": "ms"
           }
         ]
