@@ -1473,18 +1473,22 @@ describe('Audit log', () => {
 				const versions = [];
 				for (const record of iterable) versions.push(record.version);
 				assert.deepStrictEqual(versions, [1, 2, 3]);
-				assert.deepStrictEqual(excludeLogs, ['corrupt']);
+				assert.deepStrictEqual(excludeLogs, [], 'dynamic exclusions are private to this iterable');
 			});
 
-			it('a removeLog from the hook works without an excludeLogs option', () => {
+			it('a removeLog from the hook works with frozen options and survives a log refresh', () => {
 				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
 				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3)]));
-				const options = { onCorruptFrame: (error, logName) => iterable.removeLog(logName) };
-				const iterable = store.getRange(options);
-				const versions = [];
-				for (const record of iterable) versions.push(record.version);
+				let iterable;
+				const options = Object.freeze({ onCorruptFrame: (error, logName) => iterable.removeLog(logName) });
+				iterable = store.getRange(options);
+				const iterator = iterable[Symbol.iterator]();
+				const versions = [iterator.next().value.version];
+				store.updates++;
+				for (let result = iterator.next(); !result.done; result = iterator.next()) versions.push(result.value.version);
 				assert.deepStrictEqual(versions, [1, 2, 3]);
-				assert.deepStrictEqual(options.excludeLogs, ['corrupt']);
+				assert.strictEqual(corrupt.nextCalls(), 2, 'the removed corrupt log is not re-added on refresh');
+				assert.strictEqual(Object.hasOwn(options, 'excludeLogs'), false);
 			});
 
 			it('a break at the first frame is reported once the iterable exists, so the hook can act on it', () => {
@@ -1607,17 +1611,21 @@ describe('Audit log', () => {
 				}
 			});
 
-			it('contains a hook failure when either logger call fails', () => {
-				const store = storeWith(corruptLogNamed('corrupt', [entry(1)], 2048), healthyLogNamed('healthy', [entry(2)]));
+			it('contains a hook failure when either corrupt-frame logger call fails', () => {
+				const store = storeWith(
+					corruptLogNamed('logger-failure-corrupt', [entry(1)], 2048),
+					healthyLogNamed('healthy', [entry(2)])
+				);
 				const originalError = harperLogger.error;
 				const originalWarn = harperLogger.warn;
-				let warnings = 0;
+				let logCalls = 0;
 				let hookCalls = 0;
 				harperLogger.error = () => {
+					logCalls++;
 					throw new Error('logger failure');
 				};
 				harperLogger.warn = () => {
-					warnings++;
+					logCalls++;
 					throw new Error('logger failure');
 				};
 				try {
@@ -1631,7 +1639,7 @@ describe('Audit log', () => {
 						versions.push(record.version);
 					}
 					assert.deepStrictEqual(versions, [1, 2]);
-					assert.strictEqual(warnings, 1);
+					assert.strictEqual(logCalls, 2, 'the corrupt-frame report and hook-failure report both run');
 					assert.strictEqual(hookCalls, 1);
 				} finally {
 					harperLogger.error = originalError;
