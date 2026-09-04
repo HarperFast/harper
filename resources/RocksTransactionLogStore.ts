@@ -131,8 +131,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 		}
 		if (this.listenerCount('aftercommit')) {
 			if (!(auditRecord instanceof Uint8Array)) {
-				const txnTimestamp = options.transaction.getTimestamp?.();
-				if (txnTimestamp != null) auditRecord.localTime = txnTimestamp;
+				const txnLogKey = options.transaction.getTimestamp?.();
+				if (txnLogKey != null) auditRecord.txnLogKey = txnLogKey;
 			}
 			(options.transaction.logEntries ??= []).push(auditRecord);
 		}
@@ -183,7 +183,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 				if (entry.recordId === recordId && entry.tableId === tableId) {
 					return entry;
 				}
-				if (entry.localTime !== key) return; // no longer in this transaction
+				if (entry.txnLogKey !== key) return; // no longer in this transaction
 			}
 		} else {
 			// Harper puts some metadata in the database, we will just put this in the root store instead
@@ -478,10 +478,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					position += 8;
 				}
 				const auditRecord = readAuditEntry(data, position, undefined);
-				// `version` is the record's own version, decoded from the entry; `localTime` is this
-				// entry's key in the per-origin log. They are the same value for a write whose record
-				// version is its commit timestamp, and differ for a source fill (harper#2412).
-				auditRecord.localTime = timestamp;
+				auditRecord.txnLogKey = timestamp;
 				auditRecord.endTxn = endTxn;
 				auditRecord.previousResidencyId = previousResidencyId;
 				auditRecord.previousVersion = previousVersion;
@@ -495,7 +492,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 				return {
 					// the log key is all this entry still yields; its record version is undecodable
 					version: timestamp,
-					localTime: timestamp,
+					txnLogKey: timestamp,
 					endTxn,
 					type: undefined,
 					tableId: undefined,

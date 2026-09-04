@@ -152,7 +152,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				nodeId,
 				recordId,
 				version,
-				localTime,
+				txnLogKey,
 				residencyId,
 				expiresAt,
 				originatingOperation,
@@ -217,9 +217,9 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 				// and each write is replayed at its own stored record version. The two differ for a source
 				// fill, and stamping such a record at the log key would move its version forward and make a
 				// later legitimate write in between look stale (harper#2411).
-				if (lastTimestamp !== localTime) {
+				if (lastTimestamp !== txnLogKey) {
 					const torn = entries.corruptFrameStop.truncatedVersions.has(lastTimestamp);
-					lastTimestamp = localTime;
+					lastTimestamp = txnLogKey;
 					try {
 						// commit the last transaction since we are starting a new one, unless a corrupt
 						// frame swallowed the rest of it — half of a source transaction must never become
@@ -261,7 +261,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					}
 					transaction = new DatabaseTransaction();
 					transaction.db = primaryStore;
-					transaction.timestamp = localTime;
+					transaction.timestamp = txnLogKey;
 					// retries=1 routes operation.commit() through its retry path (no duplicate audit staging)
 					transaction.retries = 1;
 					// Explicit replay marker: skips schema validation (harper#1316) and makes save() stamp

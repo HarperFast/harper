@@ -1,5 +1,6 @@
 import {
 	DatabaseTransaction,
+	getAppliedWriteVersion,
 	shouldSpareCommitPhase,
 	transactionOpenTooLongError,
 	type CommitOptions,
@@ -131,6 +132,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 		if (!txnTime) txnTime = this.timestamp = options.timestamp || getNextMonotonicTime();
 		if (!options.timestamp) options.timestamp = txnTime;
 		const retries = options.retries || 0;
+		const writeVersion = (write: TransactionWrite) =>
+			this.sourceApply || this.isReplay ? getAppliedWriteVersion(write.recordVersion, txnTime) : txnTime;
 		// now validate
 		if (this.validated < this.writes.length) {
 			try {
@@ -140,7 +143,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				this.validated = this.writes.length;
 				for (let i = start; i < this.validated; i++) {
 					const write = this.writes[i];
-					write?.validate?.(this.timestamp, this);
+					write?.validate?.(writeVersion(write), this);
 				}
 				let hasBefore;
 				for (let i = start; i < this.validated; i++) {
@@ -204,11 +207,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		const doWrite = (write) => {
 			// see DatabaseTransaction.save(): an applied write carries the origin's record version
-			const completion = write.commit(
-				this.sourceApply || this.isReplay ? (write.recordVersion ?? txnTime) : txnTime,
-				write.entry,
-				retries
-			);
+			const completion = write.commit(writeVersion(write), write.entry, retries);
 			if (typeof completion?.then === 'function') {
 				// the aggregating Promise.all is attached a turn or more later (after the conditional batch
 				// or the exclusive transaction resolves), so handle rejection here to keep the gap from

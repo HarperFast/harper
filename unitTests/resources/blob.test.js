@@ -1240,7 +1240,7 @@ describe('Blob test', () => {
 					recordId: id,
 					type: 'put',
 					version: entry.version,
-					localTime: entry.localTime + 1,
+					txnLogKey: entry.localTime + 1,
 					nodeId: entry.nodeId ?? 0,
 					getValue: () => ({ blob }),
 				},

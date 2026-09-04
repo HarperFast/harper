@@ -3045,7 +3045,7 @@ export function makeTable(options) {
 							// dedup below looks up — never the record version, which a source fill sets from the
 							// source and which is legitimately non-unique. Resolved here rather than at the top of
 							// the commit so an in-order write, the overwhelming majority, never pays the call.
-							const logTime = transaction?.getTimestamp?.() ?? txnTime;
+							const txnLogKey = transaction?.getTimestamp?.() ?? txnTime;
 							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
 							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
 							// out-of-order versions, read with read-your-writes consistency, so this skips the duplicate up
@@ -3061,10 +3061,10 @@ export function makeTable(options) {
 							if (
 								existingEntry.additionalAuditRefs?.some(
 									(ref) =>
-										ref.version === logTime &&
+										ref.version === txnLogKey &&
 										precedesExistingVersion(
 											txnTime,
-											{ version: txnTime, localTime: logTime, key: id, nodeId: ref.nodeId },
+											{ version: txnTime, localTime: txnLogKey, key: id, nodeId: ref.nodeId },
 											options?.nodeId
 										) === 0
 								)
@@ -3095,10 +3095,10 @@ export function makeTable(options) {
 								if (!oldestRetainedAuditTimeResolved) {
 									oldestRetainedAuditTimeResolved = true;
 									// getRange yields ascending by audit-log key, so the first entry is the oldest retained.
-									// Mirror replicationConnection's retention check and the cleanup key basis (localTime ??
-									// version). Fall back to the nominal time-based purge floor when the log is empty/unavailable.
+									// Mirror replicationConnection's retention check and the cleanup key basis (`txnLogKey`).
+									// Fall back to the nominal time-based purge floor when the log is empty/unavailable.
 									for (const entry of auditStore.getRange({ start: 1, log: options?.nodeId })) {
-										oldestRetainedAuditTime = entry.localTime ?? entry.version;
+										oldestRetainedAuditTime = entry.txnLogKey;
 										break;
 									}
 									oldestRetainedAuditTime ??= Date.now() - auditRetention;
@@ -3124,14 +3124,14 @@ export function makeTable(options) {
 							// would find it and skip the write as "already applied" when the record was never committed.
 							// A recommit of the same transaction survived that skip only because the old write batch
 							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
-							if (isRocksDB && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(logTime)) {
-								const priorAudit = auditStore.get(logTime, tableId, id, options?.nodeId);
+							if (isRocksDB && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(txnLogKey)) {
+								const priorAudit = auditStore.get(txnLogKey, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
-									priorAudit.localTime === logTime &&
+									priorAudit.txnLogKey === txnLogKey &&
 									precedesExistingVersion(
 										txnTime,
-										{ version: txnTime, localTime: logTime, key: id, nodeId: priorAudit.nodeId },
+										{ version: txnTime, localTime: txnLogKey, key: id, nodeId: priorAudit.nodeId },
 										options?.nodeId
 									) === 0
 								) {
@@ -3188,14 +3188,14 @@ export function makeTable(options) {
 							// never committed (see the up-front keyed dedup above).
 							const isReDeliveredDuplicate = () => {
 								if (stagedOwnAuditEntry) return false;
-								if (!dedupVersionCouldBeRetained(logTime)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
-								const duplicate = auditStore.get(logTime, tableId, id, options?.nodeId);
+								if (!dedupVersionCouldBeRetained(txnLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
+								const duplicate = auditStore.get(txnLogKey, tableId, id, options?.nodeId);
 								return (
 									duplicate &&
-									duplicate.localTime === logTime &&
+									duplicate.txnLogKey === txnLogKey &&
 									precedesExistingVersion(
 										txnTime,
-										{ version: txnTime, localTime: logTime, key: id, nodeId: duplicate.nodeId },
+										{ version: txnTime, localTime: txnLogKey, key: id, nodeId: duplicate.nodeId },
 										options?.nodeId
 									) === 0
 								);
@@ -3272,9 +3272,9 @@ export function makeTable(options) {
 										// value is a LOG key, not a record version: every consumer follows it straight into
 										// `auditStore.get` (see the `auditRefsToVisit` mapping above and below), and on an
 										// applied write those two clocks differ.
-										additionalAuditRefs.push({ version: logTime, nodeId: options?.nodeId });
+										additionalAuditRefs.push({ version: txnLogKey, nodeId: options?.nodeId });
 										logger.debug?.('Adding additional audit ref for out-of-order write', {
-											logTime,
+											txnLogKey,
 											nodeId: options?.nodeId,
 										});
 									}
@@ -4756,7 +4756,7 @@ export function makeTable(options) {
 			const subscription = addSubscription(
 				TableResource,
 				thisId,
-				function (id: Id, auditRecord?: any, localTime?: any, beginTxn?: any) {
+				function (id: Id, auditRecord?: any, txnLogKey?: any, beginTxn?: any) {
 					if (dropDuringReplay) return;
 					try {
 						let type = auditRecord.type;
@@ -4788,7 +4788,7 @@ export function makeTable(options) {
 						}
 						const event = {
 							id,
-							localTime,
+							localTime: txnLogKey,
 							value,
 							version: auditRecord.version,
 							type,
@@ -4853,11 +4853,11 @@ export function makeTable(options) {
 								if (auditRecord.tableId !== tableId) continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
-									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
+									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.txnLogKey);
 									if (
 										!send({
 											id,
-											localTime: auditRecord.localTime,
+											localTime: auditRecord.txnLogKey,
 											value,
 											version: auditRecord.version,
 											type: auditRecord.type,
@@ -4870,7 +4870,7 @@ export function makeTable(options) {
 										if ((await subscription.waitForDrain()) === false) return;
 									}
 								}
-								subscription!.startTime = auditRecord.localTime ?? auditRecord.version; // update so we don't double send
+								subscription!.startTime = auditRecord.txnLogKey; // update so we don't double send
 							}
 						} finally {
 							// replay is done, we can start sending real-time messages again
@@ -4902,10 +4902,10 @@ export function makeTable(options) {
 										);
 										break;
 									}
-									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.localTime);
+									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.txnLogKey);
 									const historyEntry = {
 										id,
-										localTime: auditRecord.localTime,
+										localTime: auditRecord.txnLogKey,
 										value,
 										version: auditRecord.version,
 										type: auditRecord.type,
@@ -4919,7 +4919,7 @@ export function makeTable(options) {
 									if (--count <= 0) break;
 								}
 							} catch (error) {
-								logger.error?.('Error getting history entry', auditRecord.localTime, error);
+								logger.error?.('Error getting history entry', auditRecord.txnLogKey, error);
 							}
 						}
 						for (let i = history.length; i > 0;) {
@@ -6000,10 +6000,10 @@ export function makeTable(options) {
 				if (auditRecord.tableId !== tableId) continue;
 				yield {
 					id: auditRecord.recordId,
-					localTime: auditRecord.localTime,
+					localTime: auditRecord.txnLogKey,
 					version: auditRecord.version,
 					type: auditRecord.type,
-					value: auditRecord.getValue(primaryStore, true, auditRecord.localTime),
+					value: auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey),
 					user: auditRecord.user,
 					operation: auditRecord.originatingOperation,
 				};
@@ -6027,12 +6027,12 @@ export function makeTable(options) {
 					if (auditRecord.tableId === tableId && compareKeys(auditRecord.recordId, id) === 0) {
 						history.splice(insertionPoint, 0, {
 							id: auditRecord.recordId,
-							localTime: auditRecord.localTime,
+							localTime: auditRecord.txnLogKey,
 							version: auditRecord.version,
 							type: auditRecord.type,
 							// reconstruct each entry's record image as of its own log position, not the audit
 							// window boundary (nextVersion), matching getHistory (issue #1330)
-							value: auditRecord.getValue(primaryStore, true, auditRecord.localTime),
+							value: auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey),
 							user: auditRecord.user,
 							operation: auditRecord.originatingOperation,
 						});

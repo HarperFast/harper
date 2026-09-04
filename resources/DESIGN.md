@@ -103,7 +103,8 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 
 **An audit record carries two clocks; never substitute one for the other (harper#2412 stage 0b).**
 `AuditRecord.version` is the record's own version — LWW ordering in `precedesExistingVersion`,
-`@updatedTime`, ETag/`Last-Modified`. It is legitimately non-unique. `AuditRecord.localTime` is that
+`@updatedTime`, ETag/`Last-Modified`. For audit-only out-of-order entries the body may carry the
+surviving record version rather than the originating write's version. `AuditRecord.txnLogKey` is that
 entry's key in the per-origin transaction log: write identity, the record→log lookup
 (`auditStore.get(logKey, tableId, id, nodeId)`), and every resume cursor. On LMDB these have always
 been distinct fields; on RocksDB the read surface used to overwrite `version` with the log key, and
@@ -125,18 +126,21 @@ Consequences worth knowing:
   `options.version` by every `_write*` builder and read in `save()` only when the transaction is
   `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the
   transaction commits under the origin's log key — so a peer's copy of an origin's log stays in the
-  origin's clock. One frame can carry writes at different record versions, so this cannot be a
-  per-transaction value.
+  origin's clock. `getAppliedWriteVersion` bounds the body value by `txnLogKey`: a source fill keeps
+  its earlier source version, while an out-of-order audit body cannot restamp its originating write
+  at the later surviving version. One frame can carry writes at different record versions, so this
+  cannot be a per-transaction value.
 - **`additionalAuditRefs[].version` is a log key, not a version.** Every consumer follows it straight
   into `auditStore.get` (`Table.ts`'s `auditRefsToVisit`), so the out-of-order walk records the write's
-  `logTime` there. Under stage 2 the two clocks are separable and the field can be renamed; until then,
+  `txnLogKey` there. Under stage 2 the stored reference field can be renamed; until then,
   "fixing" it to the record version silently unaddresses the entry it points at.
-- **Crash replay uses both.** `replayLogs` delimits transactions by `localTime` (which is also what
+- **Crash replay uses both.** `replayLogs` delimits transactions by `txnLogKey` (which is also what
   `CorruptFrameStop.truncatedVersions` records) and replays each write at its stored `version`.
   Stamping a replayed record at its log key would move its version forward and make a later
   legitimate write look stale.
-- **`getHistory`/`read_audit_log` report `localTime` as the transaction timestamp.** That is what the
-  field meant on RocksDB all along; on LMDB it corrects a slot that was reporting the record version.
+- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription,
+  history, and pro-to-core replication event shapes predate this internal name and remain unchanged;
+  no on-disk or on-wire identifier changes in this stage.
 
 **QUERY admission uses the body projection.** `Resource.transactional` resolves an asynchronous HTTP QUERY body before resource resolution, recursively clones away client-supplied `checkPermission`, and copies the body's `select` onto the operation admission target before `allowRead`. After authorization, `Resource.query` transfers only the narrowed projection to the body target. This ensures a body-only relationship select is checked before `Table.search`; permission-control fields from QUERY data must never reach a search target.
 

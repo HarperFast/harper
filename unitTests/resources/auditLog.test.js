@@ -766,7 +766,7 @@ describe('Audit log', () => {
 				tableId: 7,
 				recordId: 'orphan',
 				version: 42,
-				localTime: 42,
+				txnLogKey: 42,
 				nodeId: 0,
 				key: 'audit-key',
 			};
@@ -817,7 +817,7 @@ describe('Audit log', () => {
 				tableId: 7,
 				recordId: 'r',
 				version: 42,
-				localTime: 100,
+				txnLogKey: 100,
 				nodeId: 0,
 				key: 'audit-key',
 			});
@@ -831,7 +831,7 @@ describe('Audit log', () => {
 				tableId: 7,
 				recordId: 'r',
 				version: 7,
-				localTime: 100,
+				txnLogKey: 100,
 				nodeId: 0,
 				key: 'audit-key',
 			});
@@ -845,7 +845,7 @@ describe('Audit log', () => {
 				tableId: 7,
 				recordId: 'r',
 				version: 42,
-				localTime: 100,
+				txnLogKey: 100,
 				nodeId: 5,
 				key: 'audit-key',
 			});
@@ -912,8 +912,8 @@ describe('Audit log', () => {
 		// key (localTime on LMDB; RocksDB's version field already *is* its key), not a 0/1 placeholder
 		// flag substituted from a shared per-environment register. Resolving it through the audit
 		// store proves the chain is walkable, not just numerically similar.
-		assert.equal(entries[1].previousVersion, entries[0].localTime ?? entries[0].version);
-		assert.equal(entries[2].previousVersion, entries[1].localTime ?? entries[1].version);
+		assert.equal(entries[1].previousVersion, entries[0].txnLogKey);
+		assert.equal(entries[2].previousVersion, entries[1].txnLogKey);
 		assert(
 			AuditedTable.auditStore.get(entries[1].previousVersion, AuditedTable.tableId, id),
 			'previousVersion must resolve back to the actual prior audit entry'
@@ -1380,8 +1380,8 @@ describe('Audit log', () => {
 			const timestamps = [];
 			assert.doesNotThrow(() => {
 				for (const record of store.getRange({})) {
-					// localTime is the log key: these synthetic entries carry no decodable record version
-					timestamps.push(record.localTime);
+					// txnLogKey is the log key: these synthetic entries carry no decodable record version
+					timestamps.push(record.txnLogKey);
 				}
 			}, 'aggregate iteration must not propagate the corrupt-entry RangeError');
 

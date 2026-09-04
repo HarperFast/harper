@@ -1,7 +1,7 @@
 // harper#2412 stage 0b: an audit record carries two clocks, and they must not be confused.
 //
 //   version   — the record's own version: LWW ordering, @updatedTime, ETag. Legitimately non-unique.
-//   localTime — this entry's key in the per-origin transaction log. Write identity, resume cursor.
+//   txnLogKey — this entry's key in the per-origin transaction log. Write identity, resume cursor.
 //
 // They hold the same value for a write whose record version is its own commit timestamp, which is
 // every ordinary local write — so a test that only writes ordinary records cannot tell the two
@@ -30,7 +30,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			entries.push({
 				type: auditRecord.type,
 				version: auditRecord.version,
-				localTime: auditRecord.localTime,
+				txnLogKey: auditRecord.txnLogKey,
 			});
 		}
 		return entries;
@@ -82,7 +82,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		const [entry] = auditEntriesFor(Plain, id);
 		assert.ok(entry, 'the write must have produced an audit entry');
 		assert.equal(entry.version, Plain.primaryStore.getEntry(id).version, 'version is the record version');
-		assert.equal(entry.localTime, entry.version, 'a locally-originated write commits at its own version');
+		assert.equal(entry.txnLogKey, entry.version, 'a locally-originated write commits at its own version');
 	});
 
 	it('a source fill records the source version and the fill commit as separate clocks', async function () {
@@ -96,8 +96,8 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		assert.ok(entry, 'the fill must have produced an audit entry');
 		assert.equal(entry.version, reportedVersion, 'the audit record carries the record version');
 		assert.ok(
-			entry.localTime > reportedVersion,
-			`the log key is the fill's commit, not its version (localTime ${entry.localTime}, version ${entry.version})`
+			entry.txnLogKey > reportedVersion,
+			`the log key is the fill's commit, not its version (txnLogKey ${entry.txnLogKey}, version ${entry.version})`
 		);
 	});
 
@@ -110,7 +110,19 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		assert.equal(Plain.primaryStore.getEntry(id).version, version, 'the peer stores the origin record version');
 		const [entry] = auditEntriesFor(Plain, id);
 		assert.equal(entry.version, version, 'the audit record carries the origin record version');
-		assert.equal(entry.localTime, logKey, "the peer's log key for this write is the origin's log key");
+		assert.equal(entry.txnLogKey, logKey, "the peer's log key for this write is the origin's log key");
+	});
+
+	it('bounds an overloaded audit-body version by the originating transaction-log key', async function () {
+		if (isLMDB) return this.skip();
+		const id = 'applied-out-of-order-1';
+		const logKey = Date.now();
+		const survivingVersion = logKey + 30_000;
+		await applyFromOrigin(Plain, id, { id, name: 'from-origin' }, { logKey, version: survivingVersion });
+		assert.equal(Plain.primaryStore.getEntry(id).version, logKey);
+		const [entry] = auditEntriesFor(Plain, id);
+		assert.equal(entry.version, logKey);
+		assert.equal(entry.txnLogKey, logKey);
 	});
 
 	it('one applied transaction can carry writes at different record versions', async function () {
@@ -140,8 +152,10 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		const [newEntry] = auditEntriesFor(Plain, 'batched-new');
 		assert.equal(oldEntry.version, olderVersion);
 		assert.equal(newEntry.version, logKey);
-		assert.equal(oldEntry.localTime, logKey, 'both share the transaction log key');
-		assert.equal(newEntry.localTime, logKey);
+		assert.equal(oldEntry.txnLogKey, logKey, 'both share the transaction log key');
+		assert.equal(newEntry.txnLogKey, logKey);
+		const foundSecond = auditStore.get(logKey, Plain.tableId, 'batched-new', 0);
+		assert.equal(foundSecond?.recordId, 'batched-new', 'lookup scans every entry sharing the transaction log key');
 	});
 
 	it('an ordinary local write ignores a record version it was not given', async function () {
@@ -150,7 +164,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		const id = 'plain-2';
 		await Plain.put(id, { id, name: 'still-local' });
 		const [entry] = auditEntriesFor(Plain, id);
-		assert.equal(entry.localTime, entry.version);
+		assert.equal(entry.txnLogKey, entry.version);
 	});
 
 	it('delivers a subscriber event whose version is the record version and localTime the log position', async function () {
@@ -187,7 +201,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		assert.equal(tombstone.localTime, tombstone.version, 'a locally-written record stores one word');
 		const [, deleteEntry] = auditEntriesFor(Plain, id);
 		assert.equal(deleteEntry.type, 'delete');
-		assert.equal(deleteEntry.localTime, tombstone.localTime, "the audit entry names the tombstone's write");
+		assert.equal(deleteEntry.txnLogKey, tombstone.localTime, "the audit entry names the tombstone's write");
 		await Plain.deleteHistory(Date.now() + 60_000);
 		assert.equal(Plain.primaryStore.getEntry(id), undefined, 'the tombstone must be removed with its entry');
 	});
@@ -249,7 +263,7 @@ describe('Dual-clock audit records on LMDB (harper#2412)', () => {
 		assert.ok(entry, 'the applied write must have produced an audit entry');
 		assert.equal(entry.version, version, 'the audit entry carries the origin record version');
 		assert.equal(
-			entry.localTime,
+			entry.txnLogKey,
 			Applied.primaryStore.getEntry(id).localTime,
 			"on LMDB the audit key is the receiver's own local time for the record, not the origin's log key"
 		);

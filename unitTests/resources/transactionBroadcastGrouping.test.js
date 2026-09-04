@@ -1,6 +1,6 @@
 // Transaction delimiting in the broadcaster is engine-aware: RocksDB entries committed together
 // share the log key while their record versions may differ (a source fill's version can be a
-// source-reported lastModified); LMDB's localTime is a per-entry audit key, so there the shared
+// source-reported lastModified); LMDB's transaction-log key is per-entry, so there the shared
 // version delimits the transaction. These drive the real same-thread aftercommit path.
 require('../testUtils');
 const assert = require('node:assert');
@@ -39,9 +39,9 @@ describe('transactionBroadcast transaction grouping', () => {
 		try {
 			const logKey = Date.now();
 			table.auditStore.emit('aftercommit', [
-				{ type: 'put', tableId: 1, recordId: 'a', version: logKey, localTime: logKey },
+				{ type: 'put', tableId: 1, recordId: 'a', version: logKey, txnLogKey: logKey },
 				// a source fill in the same commit: backdated record version, same log key
-				{ type: 'put', tableId: 1, recordId: 'b', version: logKey - 5000, localTime: logKey },
+				{ type: 'put', tableId: 1, recordId: 'b', version: logKey - 5000, txnLogKey: logKey },
 			]);
 			await waitFor(() => events.length === 3, { message: 'both entries and the end_txn should be delivered' });
 			assert.deepEqual(events, [
@@ -60,8 +60,8 @@ describe('transactionBroadcast transaction grouping', () => {
 		try {
 			const version = Date.now();
 			table.auditStore.emit('aftercommit', [
-				{ type: 'put', tableId: 1, recordId: 'c', version, localTime: version + 1 },
-				{ type: 'put', tableId: 1, recordId: 'd', version, localTime: version + 2 },
+				{ type: 'put', tableId: 1, recordId: 'c', version, txnLogKey: version + 1 },
+				{ type: 'put', tableId: 1, recordId: 'd', version, txnLogKey: version + 2 },
 			]);
 			await waitFor(() => events.length === 3, { message: 'both entries and the end_txn should be delivered' });
 			assert.deepEqual(events, [

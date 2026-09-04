@@ -34,7 +34,7 @@ initSync();
 
 export type AuditRecord = {
 	version: number; // the record's own version: LWW ordering, @updatedTime, ETag
-	localTime: number; // log position: LMDB audit-store key; RocksDB transaction-log key
+	txnLogKey: number; // position in the origin's transaction log
 	type: string;
 	encodedRecord?: Buffer;
 	extendedType?: number;
@@ -148,7 +148,7 @@ export function openAuditStore(rootStore) {
 		auditStore.getRange = function (options) {
 			if (options.values === false) return superGetRange(options); // getKeys shouldn't be modified
 			return superGetRange(options).map(({ key, value }) => {
-				value.key = value.localTime = key;
+				value.key = value.txnLogKey = key;
 				return value;
 			});
 		};
@@ -379,7 +379,7 @@ export function openAuditStore(rootStore) {
  * never the record version: a version is legitimately non-unique, so a version match can name a
  * different write and authorize destroying live state (a tombstone, a still-referenced blob).
  *
- * On LMDB this is exact — the audit-store key IS the record's `localTime`. On RocksDB a record stores
+ * On LMDB this is exact — the audit-store key IS the record's `txnLogKey`. On RocksDB a record stores
  * one word, its version, which equals its log key for every write except a source fill (harper#2065);
  * a fill therefore answers false here, as the pre-normalization version-versus-log-key compare
  * already did. Absent identity answers false too. The direction is deliberate: uncertainty retains.
@@ -387,8 +387,8 @@ export function openAuditStore(rootStore) {
 export function isAuditEntryWrite(entry: any, auditRecord: AuditRecord): boolean {
 	return (
 		entry != null &&
-		auditRecord.localTime != null &&
-		entry.localTime === auditRecord.localTime &&
+		auditRecord.txnLogKey != null &&
+		entry.localTime === auditRecord.txnLogKey &&
 		(entry.nodeId ?? 0) === (auditRecord.nodeId ?? 0)
 	);
 }

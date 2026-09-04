@@ -312,9 +312,8 @@ export type TransactionWrite = {
 	// overload accounting, the replay marker and a no-op write's removal all belong to the committer.
 	validate?: (txnTime: number, committedBy: DatabaseTransaction) => void;
 	fullUpdate?: boolean;
-	// The record version this write stores, when it is not the transaction's own timestamp: an applied
-	// write (replication receive, crash replay) keeps the origin's version while the transaction commits
-	// under the origin's log key. Read only on those paths — see save().
+	// The audit body's candidate record version. Applied writes bound it by the origin's transaction-log
+	// key because an out-of-order audit-only entry can carry the later surviving record version.
 	recordVersion?: number;
 	saved?: boolean;
 	deferSave?: boolean;
@@ -374,6 +373,10 @@ export type TransactionWrite = {
 	// it to ensure the write is durable before resolving to the caller.
 	innerCommit?: MaybePromise<CommitResolution>;
 };
+
+export function getAppliedWriteVersion(recordVersion: number | undefined, txnLogKey: number): number {
+	return recordVersion == null ? txnLogKey : Math.min(recordVersion, txnLogKey);
+}
 
 /**
  * The state a preceding write in this transaction left for `operation`'s key, or undefined if this
@@ -1034,7 +1037,8 @@ export class DatabaseTransaction implements Transaction {
 		// A write applied from elsewhere carries the origin's record version too, and that is what the
 		// record is stored at; the two coincide for every locally-originated write. Gated on the apply
 		// flags so an ordinary write never reads the property (harper#2412).
-		const writeVersion = this.sourceApply || this.isReplay ? (operation.recordVersion ?? txnTime) : txnTime;
+		const writeVersion =
+			this.sourceApply || this.isReplay ? getAppliedWriteVersion(operation.recordVersion, txnTime) : txnTime;
 		if (reloadEntry || operation.entry === undefined) {
 			operation.entry = operation.store.getEntry(operation.key, { transaction });
 		}
