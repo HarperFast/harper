@@ -5427,11 +5427,12 @@ export function makeTable(options) {
 		static writeLockControlEntry(entry: LockControlEntry): Promise<void> {
 			const encodedRecord = encodeLockControlPayload(entry);
 			const nodeId = getThisNodeId(auditStore) ?? 0;
-			// Only the request pins its clock, because ts_R is defined as that entry's own log key. A
-			// grant or release written seconds later must take a fresh commit time: an entry stamped with
-			// the round's original ts_R lands behind a peer's catch-up cursor, and a forward
-			// resume scan would never deliver it.
-			const context = entry.type === 'lockRequest' ? { timestamp: entry.tsR } : {};
+			// No entry pins its clock, the request included. `ts_R` is minted before the write, so pinning
+			// to it can land the entry behind a peer's replication cursor if any write to this table
+			// commits in between — the same hazard that rules it out for grants and releases, which are
+			// written later still. The protocol reads `ts_R` from the payload, so the entry's own log key
+			// never has to equal it.
+			const context = {};
 			return Promise.resolve(
 				transaction(context as any, (txn: any) => {
 					const tableTxn = txnForContext({ transaction: txn } as any);

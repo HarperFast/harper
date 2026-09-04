@@ -356,13 +356,13 @@ different ids on different nodes, a number inside a payload is not translated by
 `(ts, nodeId)` total order built on them would order the same pair of requests differently on two
 nodes — and both would grant. Registration refuses a loopback/bare-host identity for the same reason.
 
-**`ts_R` is chosen before the write.** The writer takes `primaryStore.getMonotonicTimestamp()`, pins
-the REQUEST transaction's clock to it (the mechanism `lock()` already uses to pin
-`link.timestamp = handle.acquiredAt`) and puts it in the payload, so that entry's log key and its
-payload identity are the same number by construction. A grant or release takes a fresh commit time
-instead, and carries `ts_R` only in its payload: an entry written seconds later but stamped with the
-round's original `ts_R` lands behind a peer's catch-up cursor, and a forward resume scan would never
-deliver it.
+**`ts_R` is chosen before the write and lives only in the payload.** The writer takes
+`primaryStore.getMonotonicTimestamp()` and puts it in the payload; no control entry pins its
+transaction clock to it. An entry stamped with a timestamp minted before it commits can land behind a
+peer's replication cursor if anything else on that table commits in between, and a forward resume scan
+would never deliver it — fatal for a grant written seconds later, and reachable under load even for
+the request. Since every consumer reads `ts_R` from the payload, the entry's own log key never has to
+equal it.
 
 **Ricart–Agrawala with total order `(tsR, nodeName)`.** The requester holds the local rocksdb key
 first — that is what bounds a node to one outstanding request per key — then writes `LOCK_REQUEST` and
@@ -421,9 +421,23 @@ Three consequences that are load-bearing rather than tidy:
 a `capable` flag on each, never a pre-filtered intersection, which could not distinguish "not a
 participant" from "peer cannot participate". `lock()` rejects with a retryable 503
 `LockUnavailableError` when the call throws, returns nothing, names a node twice, or contains any
-member with `capable !== true`. A participant DOWN longer than `MAX_LOCK_LEASE_MS + skew` is excluded
-from the grant set of NEW requests only; a requester still blocks (up to `waitMs`) on a peer down for
-less than that. Once a transport has been registered for a database, its later absence keeps failing
+member with `capable !== true`.
+
+**DOWN-exclusion needs cluster agreement, not a local view.** A participant is dropped from the grant
+set of NEW requests only when it has been down longer than `MAX_LOCK_LEASE_MS + skew` AND the
+transport marks it `agreedDown`. The first condition alone is not sufficient, and the earlier claim
+that "asymmetric partitions get the same rule from each side" was the bug rather than the argument:
+with A↔C down while both stay up and reachable from B, A drops C and C drops A, each asks only B, and
+B — holding no round of its own — grants both. One key, two holders. `agreedDown` asserts that the
+DOWN verdict is cluster-agreed and the excluded node is known to have stopped acquiring, which is what
+the membership epoch in the transport preconditions below is for. Nothing in core sets it, so core
+excludes nobody: a requester blocks on a peer it cannot reach until its own `waitMs` and then 423s.
+
+Known limit, not yet addressed: the contention caps are per (table, key) with no aggregate bound, so a
+lock-heavy workload can retain up to `MAX_KEYS_IN_FLIGHT × MAX_PEER_REQUESTS_PER_KEY` peer rounds per
+table until their bounds elapse. An aggregate cap belongs with the enablement gate's measurements.
+
+Once a transport has been registered for a database, its later absence keeps failing
 closed — only an explicit `unregisterClusterLockTransport(database, true)` says the database became
 standalone — because a transient empty registry during startup, component reload or a failed
 reconnect is not proof of standalone operation.
