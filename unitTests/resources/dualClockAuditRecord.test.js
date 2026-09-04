@@ -210,9 +210,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		);
 		assert.equal((await Plain.get(id)).count, 1, 'a distinct equal-version patch must still be folded');
 		assert(
-			Plain.primaryStore
-				.getEntry(id)
-				.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0),
+			Plain.primaryStore.getEntry(id).additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0),
 			'the distinct write remains addressable by its log identity'
 		);
 		assert.equal(auditStore.get(logKey, Plain.tableId, id, 0)?.version, version);
