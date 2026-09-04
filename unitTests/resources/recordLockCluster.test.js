@@ -14,6 +14,7 @@ const {
 	decodeLockControlPayload,
 } = require('#src/resources/recordLockCoordinator');
 const { LOCAL_ONLY, isLockControlType } = require('#src/resources/auditStore');
+const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 require('#src/server/serverHelpers/serverUtilities');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -23,6 +24,7 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 // that reports record activity, and that it does not collide with the holder's own audit entry.
 describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 	let ClusterLockTest;
+	let SinkLockTest;
 	let previousHostname;
 	let nextId = 1;
 	const id = () => `cluster-lock-${nextId++}`;
@@ -39,6 +41,11 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			table: 'ClusterLockTest',
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }, { name: 'name' }],
+		});
+		SinkLockTest = table({
+			table: 'SinkLockTest',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'n' }],
 		});
 	});
 
@@ -61,17 +68,17 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 		});
 	}
 
-	/** Every lock control entry currently in this table's transaction log, eagerly materialized. */
-	function controlEntries() {
+	/** Every lock control entry currently in a table's transaction log, eagerly materialized. */
+	function controlEntries(forTable = ClusterLockTest) {
 		const found = [];
-		for (const entry of ClusterLockTest.auditStore.getRange({ start: 1 })) {
-			if (entry.tableId !== ClusterLockTest.tableId || !isLockControlType(entry.type)) continue;
+		for (const entry of forTable.auditStore.getRange({ start: 1 })) {
+			if (entry.tableId !== forTable.tableId || !isLockControlType(entry.type)) continue;
 			found.push({
 				type: entry.type,
 				recordId: entry.recordId,
 				version: entry.version,
 				extendedType: entry.extendedType,
-				value: entry.getValue(ClusterLockTest.primaryStore),
+				value: entry.getValue(forTable.primaryStore),
 			});
 		}
 		return found;
@@ -217,6 +224,51 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 					}),
 				(error) => error.statusCode === 503
 			);
+		});
+
+		it('routes a control entry through the real replication sink, not to a record', async function () {
+			if (isLMDB) return this.skip();
+			const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
+			const { encodeLockControlPayload } = require('#src/resources/recordLockCoordinator');
+			const { unpack } = require('msgpackr');
+			const peerId = getIdOfRemoteNode('peer-sink', ClusterLockTest.auditStore);
+			useSoloTransport({
+				participants: [
+					{ nodeId: NODE_NAME, capable: true },
+					{ nodeId: 'peer-sink', capable: true },
+				],
+			});
+			// A source is how replication attaches, so this is the path applyLockControlEvent sits on:
+			// the sink decodes the payload, resolves the author from the audit nodeId, and routes.
+			const events = new IterableEventQueue();
+			SinkLockTest.sourcedFrom(
+				{ subscribe: () => events, subscribeOnThisThread: () => true },
+				{
+					intermediateSource: true,
+				}
+			);
+			const recordId = id();
+			const wire = {
+				type: 'lockRequest',
+				key: recordId,
+				requester: 'peer-sink',
+				tsR: Date.now(),
+				leaseMs: 5000,
+				waitMs: 5000,
+			};
+			events.send({
+				type: 'lockRequest',
+				table: 'SinkLockTest',
+				id: null,
+				value: unpack(encodeLockControlPayload(wire)),
+				nodeId: peerId,
+				timestamp: wire.tsR,
+			});
+			// The grant this node owes the peer is the observable effect of the entry being routed.
+			await waitFor(() =>
+				controlEntries(SinkLockTest).some((entry) => entry.type === 'lockGrant' && entry.value[1] === 'peer-sink')
+			);
+			assert.ok(!(await SinkLockTest.get(recordId)), 'and no record was written for it');
 		});
 
 		it('routes a replicated control entry to the coordinator and never to a record', async function () {
