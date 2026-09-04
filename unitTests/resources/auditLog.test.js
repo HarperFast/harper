@@ -9,9 +9,10 @@ const {
 	createAuditEntry,
 	transactionKeyEncoder,
 	removeAuditEntry,
+	ENTRY_DATAVIEW,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
-const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const { CorruptFrameError, RocksDatabase } = require('@harperfast/rocksdb-js');
 const {
 	removeStorageReclamation,
 	runReclamationHandlers,
@@ -19,12 +20,27 @@ const {
 } = require('#src/server/storageReclamation');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { setTimeout: delay } = require('node:timers/promises');
-const { mkdtempSync, readdirSync, rmSync } = require('node:fs');
+const { closeSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeSync } = require('node:fs');
 const { tmpdir } = require('node:os');
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
 const { waitFor } = require('../waitFor');
 const harperLogger = require('#src/utility/logging/harper_logger');
 require('#src/server/serverHelpers/serverUtilities');
+
+// Walks a transaction log file's entry chain (13-byte file header; per entry a float64 timestamp,
+// uint32 length and flag byte) up to the zero-timestamp end-of-entries marker.
+function readEntryFrames(image) {
+	const frames = [];
+	let position = 13;
+	while (position + 13 <= image.length) {
+		if (image.readDoubleBE(position) === 0) break;
+		const length = image.readUInt32BE(position + 8);
+		if (length === 0 || position + 13 + length > image.length) break;
+		frames.push({ position, length });
+		position += 13 + length;
+	}
+	return frames;
+}
 describe('Audit log', () => {
 	let AuditedTable;
 	let events = [];
@@ -1324,6 +1340,444 @@ describe('Audit log', () => {
 				2,
 				`failed corrupt iterator must not be re-polled after it throws (next() called ${corruptNextCalls} times)`
 			);
+		});
+
+		describe('onCorruptFrame', () => {
+			function corruptLogNamed(name, good, resyncPosition) {
+				const error = new CorruptFrameError(
+					'Corrupt transaction log entry at position 3e8 of log 1',
+					1,
+					1000,
+					resyncPosition
+				);
+				let nextCalls = 0;
+				return {
+					name,
+					error,
+					nextCalls: () => nextCalls,
+					query: () => {
+						let i = 0;
+						return {
+							next() {
+								nextCalls++;
+								if (i < good.length) return { done: false, value: good[i++] };
+								throw error;
+							},
+							[Symbol.iterator]() {
+								return this;
+							},
+						};
+					},
+					addEntry: () => null,
+					on: () => null,
+				};
+			}
+			function healthyLogNamed(name, entries) {
+				return {
+					name,
+					query: () => {
+						let i = 0;
+						return {
+							next() {
+								return i < entries.length ? { done: false, value: entries[i++] } : { done: true, value: undefined };
+							},
+							[Symbol.iterator]() {
+								return this;
+							},
+						};
+					},
+					addEntry: () => null,
+					on: () => null,
+				};
+			}
+			const entry = (timestamp) => ({ timestamp, data: new Uint8Array(20), endTxn: false });
+			function storeWith(...logs) {
+				const fakeLog = { query: () => null, addEntry: () => null, on: () => null };
+				const fakeRoot = { useLog: () => fakeLog, on: () => null, listLogs: () => [] };
+				const store = new RocksTransactionLogStore(fakeRoot);
+				store.nodeLogs = logs;
+				for (const log of logs) store.logByName.set(log.name, log);
+				return store;
+			}
+
+			it('aggregate path: hands the thrown error and the log name to the hook once, and keeps draining the other logs', () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
+				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3)]));
+				const reports = [];
+				const versions = [];
+				for (const record of store.getRange({ onCorruptFrame: (error, logName) => reports.push({ error, logName }) })) {
+					versions.push(record.version);
+				}
+				assert.deepStrictEqual(versions, [1, 2, 3]);
+				assert.strictEqual(reports.length, 1, 'the hook fires once per corrupt log, not once per poll');
+				assert.strictEqual(reports[0].logName, 'corrupt');
+				assert.strictEqual(reports[0].error, corrupt.error, 'the engine error object itself is passed, fields intact');
+				assert.strictEqual(reports[0].error.resyncPosition, 2048);
+				assert.strictEqual(corrupt.nextCalls(), 2, 'the latched iterator is not re-polled');
+			});
+
+			it('single-log path: hands the thrown error and the log name to the hook once', () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1), entry(2)]);
+				const store = storeWith(corrupt);
+				const reports = [];
+				const versions = [];
+				for (const record of store.getRange({
+					log: 'corrupt',
+					onCorruptFrame: (error, logName) => reports.push({ error, logName }),
+				})) {
+					versions.push(record.version);
+				}
+				assert.deepStrictEqual(versions, [1, 2]);
+				assert.deepStrictEqual(
+					reports.map((report) => [report.logName, report.error, report.error.resyncPosition]),
+					[['corrupt', corrupt.error, undefined]]
+				);
+			});
+
+			it('a throwing hook is contained: the drain still completes and the iterator stays latched', () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
+				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2)]));
+				let hookCalls = 0;
+				const versions = [];
+				assert.doesNotThrow(() => {
+					for (const record of store.getRange({
+						onCorruptFrame: () => {
+							hookCalls++;
+							throw new Error('hook failure');
+						},
+					})) {
+						versions.push(record.version);
+					}
+				});
+				assert.deepStrictEqual(versions, [1, 2]);
+				assert.strictEqual(hookCalls, 1);
+				assert.strictEqual(corrupt.nextCalls(), 2);
+			});
+
+			it('without a hook the corrupt log still ends cleanly', () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
+				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2)]));
+				const versions = [];
+				for (const record of store.getRange({})) versions.push(record.version);
+				assert.deepStrictEqual(versions, [1, 2]);
+			});
+
+			it('a removeLog requested from the hook is applied after the poll, without dropping another log entry', () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
+				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3)]));
+				const excludeLogs = [];
+				const iterable = store.getRange({
+					excludeLogs,
+					onCorruptFrame: (error, logName) => iterable.removeLog(logName),
+				});
+				const versions = [];
+				for (const record of iterable) versions.push(record.version);
+				assert.deepStrictEqual(versions, [1, 2, 3]);
+				assert.deepStrictEqual(excludeLogs, [], 'dynamic exclusions are private to this iterable');
+			});
+
+			it('a removeLog from the hook works with frozen options and survives a log refresh', () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
+				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3)]));
+				let iterable;
+				const options = Object.freeze({ onCorruptFrame: (error, logName) => iterable.removeLog(logName) });
+				iterable = store.getRange(options);
+				const iterator = iterable[Symbol.iterator]();
+				const versions = [iterator.next().value.version];
+				store.updates++;
+				for (let result = iterator.next(); !result.done; result = iterator.next()) versions.push(result.value.version);
+				assert.deepStrictEqual(versions, [1, 2, 3]);
+				assert.strictEqual(corrupt.nextCalls(), 2, 'the removed corrupt log is not re-added on refresh');
+				assert.strictEqual(Object.hasOwn(options, 'excludeLogs'), false);
+			});
+
+			it('removeLog remembers a peer that is not present until a later refresh', () => {
+				const healthy = healthyLogNamed('healthy', [entry(2)]);
+				const future = corruptLogNamed('future', [entry(1)], 2048);
+				const store = storeWith(healthy);
+				const iterable = store.getRange({});
+				iterable.removeLog('future');
+				store.nodeLogs.push(future);
+				store.logByName.set(future.name, future);
+				store.updates++;
+				const versions = [];
+				for (const record of iterable) versions.push(record.version);
+				assert.deepStrictEqual(versions, [2]);
+				assert.strictEqual(future.nextCalls(), 0, 'the future peer is excluded before its iterator is created');
+			});
+
+			it('a hook exclusion is visible to a re-entrant refresh before iterator removal is applied', () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
+				const future = corruptLogNamed('future', [entry(2)], 2048);
+				const store = storeWith(corrupt);
+				let nested;
+				let iterable;
+				iterable = store.getRange({
+					onCorruptFrame: () => {
+						store.nodeLogs.push(future);
+						store.logByName.set(future.name, future);
+						store.updates++;
+						iterable.removeLog(future.name);
+						nested = iterable[Symbol.iterator]().next();
+					},
+				});
+				assert.strictEqual(iterable[Symbol.iterator]().next().value.version, 1);
+				assert.deepStrictEqual(nested, { done: true, value: undefined });
+				assert.strictEqual(future.nextCalls(), 0, 'the nested refresh cannot mount the excluded peer');
+			});
+
+			it('a break at the first frame is reported once the iterable exists, so the hook can act on it', () => {
+				const corrupt = corruptLogNamed('corrupt', [], 2048);
+				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3)]));
+				const reports = [];
+				let hookSawIterable = false;
+				const iterable = store.getRange({
+					onCorruptFrame: (error, logName) => {
+						reports.push(logName);
+						hookSawIterable = iterable !== undefined;
+						iterable.removeLog(logName);
+					},
+				});
+				assert.deepStrictEqual(reports, [], 'the report is held until the caller can hold the iterable');
+				const versions = [];
+				for (const record of iterable) versions.push(record.version);
+				assert.deepStrictEqual(versions, [2, 3]);
+				assert.deepStrictEqual(reports, ['corrupt']);
+				assert.strictEqual(hookSawIterable, true);
+				assert.strictEqual(corrupt.nextCalls(), 1, 'the latched iterator is not re-polled');
+			});
+
+			it('a hook that re-enters next() gets the following entry, and its removal waits for the outermost call', () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
+				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3), entry(4)]));
+				const nestedVersions = [];
+				const iterable = store.getRange({
+					excludeLogs: [],
+					onCorruptFrame: (error, logName) => {
+						iterable.removeLog(logName);
+						const nested = iterable[Symbol.iterator]().next();
+						if (!nested.done) nestedVersions.push(nested.value.version);
+					},
+				});
+				const versions = [];
+				for (const record of iterable) versions.push(record.version);
+				assert.deepStrictEqual(nestedVersions, [2]);
+				assert.deepStrictEqual(versions, [1, 3, 4]);
+			});
+
+			it('defers a re-poll report until its rebuilt buffer is stable for a re-entering hook', () => {
+				const error = new CorruptFrameError('Corrupt transaction log entry at position 3e8 of log 1', 1, 1000, 2048);
+				let corruptOnPoll = false;
+				const pendingEntries = [entry(1)];
+				const corrupt = {
+					name: 'corrupt',
+					query: () => ({
+						next() {
+							if (corruptOnPoll) throw error;
+							return { done: true, value: undefined };
+						},
+						[Symbol.iterator]() {
+							return this;
+						},
+					}),
+					addEntry: () => null,
+					on: () => null,
+				};
+				const healthy = {
+					name: 'healthy',
+					query: () => ({
+						next() {
+							const next = pendingEntries.shift();
+							return next ? { done: false, value: next } : { done: true, value: undefined };
+						},
+						[Symbol.iterator]() {
+							return this;
+						},
+					}),
+					addEntry: () => null,
+					on: () => null,
+				};
+				const store = storeWith(corrupt, healthy);
+				const nestedVersions = [];
+				let iterable;
+				iterable = store.getRange({
+					onCorruptFrame: () => {
+						const nested = iterable[Symbol.iterator]().next();
+						if (!nested.done) nestedVersions.push(nested.value.version);
+					},
+				});
+				const iterator = iterable[Symbol.iterator]();
+				assert.strictEqual(iterator.next().value.version, 1);
+				pendingEntries.push(entry(2), entry(3), entry(4));
+				corruptOnPoll = true;
+				const versions = [];
+				for (let result = iterator.next(); !result.done; result = iterator.next()) versions.push(result.value.version);
+				assert.deepStrictEqual(nestedVersions, [3]);
+				assert.deepStrictEqual(versions, [2, 4]);
+			});
+
+			it('a rejecting async hook is contained and logged with the log name', async () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
+				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2)]));
+				const logged = [];
+				const originalError = harperLogger.error;
+				harperLogger.error = (...args) => logged.push(args);
+				const unhandled = [];
+				const onUnhandled = (reason) => unhandled.push(reason);
+				process.on('unhandledRejection', onUnhandled);
+				try {
+					const versions = [];
+					for (const record of store.getRange({
+						onCorruptFrame: async () => {
+							throw new Error('async hook failure');
+						},
+					})) {
+						versions.push(record.version);
+					}
+					assert.deepStrictEqual(versions, [1, 2]);
+					await waitFor(() => logged.length === 1, { timeout: 2000, message: 'the rejected hook was not logged' });
+					assert.deepStrictEqual(unhandled, []);
+					assert.match(logged[0][0], /onCorruptFrame hook failed for transaction log "corrupt"/);
+					assert.strictEqual(logged[0][1].message, 'async hook failure');
+				} finally {
+					harperLogger.error = originalError;
+					process.off('unhandledRejection', onUnhandled);
+				}
+			});
+
+			it('contains a hook failure when either corrupt-frame logger call fails', () => {
+				const store = storeWith(
+					corruptLogNamed('logger-failure-corrupt', [entry(1)], 2048),
+					healthyLogNamed('healthy', [entry(2)])
+				);
+				const originalError = harperLogger.error;
+				const originalWarn = harperLogger.warn;
+				let logCalls = 0;
+				let hookCalls = 0;
+				harperLogger.error = () => {
+					logCalls++;
+					throw new Error('logger failure');
+				};
+				harperLogger.warn = () => {
+					logCalls++;
+					throw new Error('logger failure');
+				};
+				try {
+					const versions = [];
+					for (const record of store.getRange({
+						onCorruptFrame: () => {
+							hookCalls++;
+							throw new Error('hook failure');
+						},
+					})) {
+						versions.push(record.version);
+					}
+					assert.deepStrictEqual(versions, [1, 2]);
+					assert.strictEqual(logCalls, 2, 'the corrupt-frame report and hook-failure report both run');
+					assert.strictEqual(hookCalls, 1);
+				} finally {
+					harperLogger.error = originalError;
+					harperLogger.warn = originalWarn;
+				}
+			});
+
+			it('reports a torn frame in an on-disk log as the engine CorruptFrameError with resyncPosition', async function () {
+				const store = AuditedTable.auditStore;
+				if (!store.reusableIterable) return this.skip();
+				const logName = 'torn-frame';
+				const log = store.rootStore.useLog(logName);
+				const total = 30;
+				const tornIndex = 19;
+				// Record ids that no other test in this file writes, so the aggregate drain below is attributable.
+				const tornIds = Array.from({ length: total }, (_, i) => 1000 + i);
+				const peerId = 2999;
+				const appendAuditEntry = async (targetLog, recordId) => {
+					ENTRY_DATAVIEW.setUint32(0, 0);
+					const binary = Buffer.from(
+						createAuditEntry(
+							{
+								version: 1_800_000_000_000 + recordId,
+								tableId: 1,
+								recordId,
+								previousVersion: 0,
+								nodeId: 1,
+								user: 'test-user',
+								type: 'put',
+								encodedRecord: Buffer.from([0x80]),
+								extendedType: 0,
+								residencyId: 0,
+								previousResidencyId: 0,
+								expiresAt: 0,
+								originatingOperation: 'insert',
+							},
+							4
+						)
+					);
+					await store.rootStore.transaction((txn) => {
+						targetLog.addEntry(binary, txn.id);
+					});
+				};
+				for (const recordId of tornIds) await appendAuditEntry(log, recordId);
+				await appendAuditEntry(store.rootStore.useLog('torn-frame-peer'), peerId);
+				const logDirectory = statSync(log.path).isDirectory() ? log.path : dirname(log.path);
+				const logFile = join(logDirectory, '1.txnlog');
+				const frames = readEntryFrames(readFileSync(logFile));
+				assert.strictEqual(frames.length, total);
+				const writeDeclaredLength = (value) => {
+					const bytes = Buffer.alloc(4);
+					bytes.writeUInt32BE(value);
+					const fd = openSync(logFile, 'r+');
+					try {
+						writeSync(fd, bytes, 0, 4, frames[tornIndex].position + 8);
+					} finally {
+						closeSync(fd);
+					}
+				};
+				// Declare a length the file cannot satisfy, so the reader has to find where framing resumes.
+				writeDeclaredLength(0x7fffffff);
+				try {
+					const reports = [];
+					const recordIds = [];
+					for (const record of store.getRange({
+						log: logName,
+						start: 0,
+						onCorruptFrame: (error, name) => reports.push({ error, name }),
+					})) {
+						recordIds.push(record.recordId);
+					}
+					assert.deepStrictEqual(
+						recordIds,
+						tornIds.slice(0, tornIndex),
+						'the drain yields every intact entry before the break and stops there'
+					);
+					assert.strictEqual(reports.length, 1);
+					assert.strictEqual(reports[0].name, logName);
+					assert(reports[0].error instanceof CorruptFrameError, `expected the engine error, got ${reports[0].error}`);
+					assert.strictEqual(reports[0].error.position, frames[tornIndex].position);
+					assert.strictEqual(reports[0].error.resyncPosition, frames[tornIndex + 1].position);
+
+					const aggregateReports = [];
+					const aggregateIds = new Set();
+					for (const record of store.getRange({
+						start: 0,
+						onCorruptFrame: (error, name) => aggregateReports.push({ error, name }),
+					})) {
+						aggregateIds.add(record.recordId);
+					}
+					assert.deepStrictEqual(
+						aggregateReports.map((report) => [report.name, report.error.position, report.error.resyncPosition]),
+						[[logName, frames[tornIndex].position, frames[tornIndex + 1].position]]
+					);
+					assert.deepStrictEqual(
+						[...tornIds, peerId].filter((id) => aggregateIds.has(id)),
+						[...tornIds.slice(0, tornIndex), peerId],
+						'the aggregate drain yields the intact prefix, nothing past the break, and the peer entry behind it'
+					);
+				} finally {
+					// Leave the shared test database's log intact for the tests that follow.
+					writeDeclaredLength(frames[tornIndex].length);
+				}
+			});
 		});
 	});
 
