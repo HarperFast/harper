@@ -858,6 +858,7 @@ function isSuffixEscapedParam(arg: string): boolean {
 function findReservedComponentParams(args: object): string[] {
 	const reserved = [];
 	for (const arg in args) {
+		if (!Object.hasOwn(args, arg)) continue;
 		const component = suffixEscapedComponentName(arg);
 		if (component !== undefined && isReservedComponentName(component)) reserved.push(arg);
 	}
@@ -1255,8 +1256,6 @@ export async function setConfiguration(setConfigJson) {
 			true
 		);
 	}
-	// Before the generic unrecognized-parameter error below, which would otherwise claim these names
-	// are unknown rather than reserved.
 	const reservedComponentParams = findReservedComponentParams(configFields);
 	if (reservedComponentParams.length > 0) {
 		throw handleHDBError(

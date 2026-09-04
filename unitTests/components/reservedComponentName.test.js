@@ -29,6 +29,14 @@ describe('reserved component names', () => {
 		assert.ok(isReservedComponentName('sql'));
 		assert.ok(!isReservedComponentName('sql-tools'));
 		assert.ok(!isReservedComponentName('mysql'));
+		// A case-insensitive filesystem would land 'SQL' in the reserved directory.
+		assert.ok(isReservedComponentName('SQL'));
+	});
+
+	it('refuses a deploy that varies only by case', () => {
+		const error = validator.deployComponentValidator({ project: 'SQL', package: '@org/sql-app' });
+		assert.ok(error);
+		assert.match(error.message, /Component name 'SQL' is reserved/);
 	});
 
 	it('add_component refuses to create a project under a reserved name', () => {

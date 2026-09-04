@@ -88,7 +88,7 @@ function checkReservedProjectName(project, helpers) {
 /**
  * The file writers create the project directory as a side effect of writing into it, so they refuse
  * only the creation — an application that already holds the name stays editable until it is
- * migrated off it. An unreadable components root resolves to the reservation, never past it.
+ * migrated off it.
  */
 function checkReservedProjectCreation(project, helpers) {
 	if (!isReservedComponentName(project)) return project;

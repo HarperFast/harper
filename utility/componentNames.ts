@@ -114,6 +114,8 @@ export function deriveGitSecretName(component: string, host: string): string {
  */
 export const RESERVED_COMPONENT_NAMES = new Set(['sql']);
 
+// Case-insensitive: a case-insensitive filesystem would land `SQL` in the reserved directory, and
+// the config param lookup lowercases names before resolving them.
 export function isReservedComponentName(project: string): boolean {
-	return RESERVED_COMPONENT_NAMES.has(project);
+	return typeof project === 'string' && RESERVED_COMPONENT_NAMES.has(project.toLowerCase());
 }

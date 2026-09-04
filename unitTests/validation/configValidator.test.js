@@ -314,6 +314,14 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error).to.be.undefined;
 		});
 
+		it('accepts a disabled entry, the loader spelling for an application turned off', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = false;
+			expect(configValidator(config).error).to.be.undefined;
+			config.sql = null;
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
 		it('accepts an application deployed under the sql name before it was reserved', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			config.sql = { package: '@org/sql-app', urlPath: '/sql', install: { timeout: 1000 } };

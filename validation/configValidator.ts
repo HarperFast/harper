@@ -273,8 +273,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 
 	// An application deployed under the name before it was reserved still boots; validateConfig()
 	// warns to rename it. Selected positively so a typo'd setting is still held to the settings
-	// schema instead of passing as an application. Mixing the shapes would leave which one `sql`
-	// means undecidable at every reader.
+	// schema instead of passing as an application.
 	const legacySqlApplicationSchema = Joi.object({
 		engine: Joi.any().forbidden(),
 		allowFullScan: Joi.any().forbidden(),
@@ -285,12 +284,16 @@ export function configValidator(configJson, skipFsValidation = false) {
 		.messages({
 			'any.unknown': `{#label} cannot be set while 'sql' names a deployed application; redeploy that application under a different name`,
 		});
-	const sqlSchema = Joi.alternatives().conditional(
-		Joi.object()
-			.or(...LEGACY_SQL_APPLICATION_KEYS)
-			.unknown(true),
-		{ then: legacySqlApplicationSchema, otherwise: sqlSettingsSchema }
-	);
+	const sqlSchema = Joi.alternatives()
+		.conditional(
+			Joi.object()
+				.or(...LEGACY_SQL_APPLICATION_KEYS)
+				.unknown(true),
+			{ then: legacySqlApplicationSchema, otherwise: sqlSettingsSchema }
+		)
+		// `false`/null is how componentLoader spells a disabled entry, so an operator who had already
+		// turned a pre-reservation `sql` application off keeps booting.
+		.allow(false, null);
 
 	const configSchema = Joi.object({
 		authentication: Joi.alternatives(

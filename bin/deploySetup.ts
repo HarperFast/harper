@@ -75,10 +75,7 @@ export function resolveComponentName(req: any): string | undefined {
 	return undefined;
 }
 
-/**
- * The names a deploy would refuse, rejected here instead: a credential sealed and granted to a name
- * no deploy can run as is a durable secret nobody can ever use.
- */
+/** A credential sealed and granted to a name no deploy can run as is a secret nobody can ever use. */
 export function assertUsableComponentName(component: string): void {
 	if (!PROJECT_NAME_PATTERN.test(component)) {
 		throw cliError(
