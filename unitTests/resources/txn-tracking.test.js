@@ -1165,10 +1165,8 @@ describe('Disconnect abort', () => {
 		assert.equal(iteratorTransaction.readTxn, null, 'closing the iterator must release its read transaction');
 	});
 
-	// txnForContext only chains a `next` link when the second store's path differs from the head's, and
-	// setupTestDBPath points every database name at one directory, so this covers only the same-store
-	// case: the rejection comes from the head's own poison check. txnForContext's poison propagation onto
-	// a genuinely new link is untested here.
+	// This deliberately stays in the head database; the distinct-database late-link propagation case is
+	// covered by "propagates stalled-commit poison to a database linked afterward" above.
 	it('rejects a write to a database first touched after the disconnect', async function () {
 		const OtherDisconnectResource = table({
 			table: 'OtherDisconnectTxnTable2',

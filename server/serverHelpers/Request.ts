@@ -71,6 +71,7 @@ export class Request {
 		this.url = url;
 		this.headers = new RequestHeaders(nodeRequest.headers);
 		this.__harperRequestUpgraded = false;
+		setMaxListeners(0, this.#abortController.signal);
 		// Abort the request's signal on premature client disconnect. nodeResponse 'close'
 		// also fires on clean completion; the writableFinished guard restricts to disconnect.
 		if (typeof nodeResponse?.on === 'function') {
@@ -78,7 +79,6 @@ export class Request {
 				if (!nodeResponse.writableFinished) this.#abortController.abort();
 			});
 		} else if (typeof nodeRequest.socket?.once === 'function') {
-			setMaxListeners(0, this.#abortController.signal);
 			// No response on this Request — typically the WebSocket-upgrade path
 			// (http.ts creates the Request before the ws library takes over). The TCP
 			// socket close is the fallback abort trigger; REST.ts's ws.on('close') hook
@@ -498,6 +498,7 @@ export class UwsRequest {
 		this.#ip = source.ip;
 		this.#body = source.body;
 		this.#signal = source.signal;
+		if (this.#signal) setMaxListeners(0, this.#signal);
 		this.__harperRequestUpgraded = false;
 	}
 	get absoluteURL() {
@@ -565,7 +566,11 @@ export class UwsRequest {
 		return this.#signal?.aborted ?? false;
 	}
 	get signal(): AbortSignal {
-		return (this.#signal ??= new AbortController().signal);
+		if (!this.#signal) {
+			this.#signal = new AbortController().signal;
+			setMaxListeners(0, this.#signal);
+		}
+		return this.#signal;
 	}
 	_abort(): void {
 		// Abort is driven externally, wired into the provided signal (uWS res.onAborted for plain HTTP,

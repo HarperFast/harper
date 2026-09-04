@@ -1416,8 +1416,8 @@ export class DatabaseTransaction implements Transaction {
 			txn.endScopeOwnership();
 			// Ending ownership alone only stops the attempt's own rotation; until it reaches its native
 			// outcome the instance is still OPEN, and a hung `before` hook makes that window arbitrarily
-			// long. The successful attempt reaches CLOSED here itself, and both monitors defer while a
-			// commit is in flight, so nothing reads this as reapable early. Not on its own sufficient:
+			// long. Submitted attempts are monitor-deferred; a pre-submit attempt remains safely abortable.
+			// Not on its own sufficient:
 			// LMDBTransaction's own commit reassigns `open`, so the release below is what actually keeps
 			// the next write on this context off an instance with no wrapper behind it.
 			txn.open = TRANSACTION_STATE.CLOSED;
