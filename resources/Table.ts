@@ -6054,7 +6054,11 @@ export function makeTable(options) {
 					for (const entry of primaryStore.getRange({ start: 0, versions: true })) {
 						const { key, value, localTime, version } = entry;
 						await rest(); // yield to other async operations
-						if (value === null && version != null && localTime < endTime) {
+						const auditTime =
+							isRocksDB && version != null
+								? resolveAuditHead(key, version, entry.nodeId, entry.additionalAuditRefs).txnLogKey
+								: localTime;
+						if (value === null && version != null && auditTime < endTime) {
 							const backpressure = queueRemoval(
 								() => primaryStore.remove(key, version),
 								'Error removing deleted record during deleteHistory'

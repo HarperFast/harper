@@ -201,6 +201,12 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		const deleteAudit = auditEntriesFor(Plain, id).find((entry) => entry.txnLogKey === deleteLogKey);
 		assert.equal(deleteAudit.type, 'delete');
 		assert.equal(deleteAudit.version, deleteVersion);
+		await Plain.deleteHistory(deleteLogKey - 1, true);
+		assert.equal(
+			Plain.primaryStore.getEntry(id)?.value,
+			null,
+			'cleanup must retain a tombstone while its delete audit entry is newer than the cutoff'
+		);
 		await removeAuditEntry(auditStore, auditStore.get(deleteLogKey, Plain.tableId, id, 0));
 		assert.equal(Plain.primaryStore.getEntry(id), undefined, 'removing the matching audit entry removes its tombstone');
 	});

@@ -6,16 +6,25 @@ const { getRecordAtTime, applyForward, addValues } = require('#src/resources/crd
 // entry by its exact version (matching the real store, which is only ever queried by exact
 // version via the previousVersion chain).
 function makeStore(events) {
+	const byPosition = new Map();
 	const byVersion = new Map();
-	for (const event of events) byVersion.set(event.txnLogKey ?? event.version, event);
+	for (const event of events) {
+		const txnLogKey = event.txnLogKey ?? event.version;
+		const nodeId = event.nodeId ?? 1;
+		byPosition.set(`${nodeId}:${txnLogKey}`, event);
+		const atVersion = byVersion.get(txnLogKey) ?? [];
+		atVersion.push(event);
+		byVersion.set(txnLogKey, atVersion);
+	}
 	const auditStore = {
-		get(version) {
-			const event = byVersion.get(version);
+		get(version, _tableId, _recordId, nodeId) {
+			const event = nodeId == null ? byVersion.get(version)?.at(-1) : byPosition.get(`${nodeId}:${version}`);
 			if (!event) return undefined;
 			return {
 				type: event.type,
 				version: event.version,
 				previousVersion: event.previousVersion,
+				previousNodeId: event.previousNodeId,
 				previousAdditionalAuditRefs: event.previousAdditionalAuditRefs,
 				getValue: () => event.value,
 			};
@@ -56,6 +65,14 @@ describe('crdt getRecordAtTime', () => {
 				value: { ignored: true },
 				previousVersion: 20,
 				previousAdditionalAuditRefs: [{ version: 200, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 200,
+				nodeId: 2,
+				version: 999,
+				type: 'put',
+				value: { id: 'D', count: 999 },
+				previousVersion: 0,
 			},
 		];
 		const store = makeStore(events);
