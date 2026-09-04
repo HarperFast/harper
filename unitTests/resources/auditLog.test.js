@@ -1491,6 +1491,21 @@ describe('Audit log', () => {
 				assert.strictEqual(Object.hasOwn(options, 'excludeLogs'), false);
 			});
 
+			it('removeLog remembers a peer that is not present until a later refresh', () => {
+				const healthy = healthyLogNamed('healthy', [entry(2)]);
+				const future = corruptLogNamed('future', [entry(1)], 2048);
+				const store = storeWith(healthy);
+				const iterable = store.getRange({});
+				iterable.removeLog('future');
+				store.nodeLogs.push(future);
+				store.logByName.set(future.name, future);
+				store.updates++;
+				const versions = [];
+				for (const record of iterable) versions.push(record.version);
+				assert.deepStrictEqual(versions, [2]);
+				assert.strictEqual(future.nextCalls(), 0, 'the future peer is excluded before its iterator is created');
+			});
+
 			it('a break at the first frame is reported once the iterable exists, so the hook can act on it', () => {
 				const corrupt = corruptLogNamed('corrupt', [], 2048);
 				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3)]));
@@ -1526,7 +1541,6 @@ describe('Audit log', () => {
 				});
 				const versions = [];
 				for (const record of iterable) versions.push(record.version);
-				// The break fires while entry 1 is being returned; the nested pull must not get it again.
 				assert.deepStrictEqual(nestedVersions, [2]);
 				assert.deepStrictEqual(versions, [1, 3, 4]);
 			});

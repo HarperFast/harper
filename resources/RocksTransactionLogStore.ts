@@ -30,15 +30,6 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 };
 
 /**
- * The error a corrupt frame ends a query iterator with: the engine's `CorruptFrameError` when it
- * classified the break (`resyncPosition` is set when intact entries follow the break — a mid-log
- * break whose entries in between are lost to the stream — and absent for a torn tail), or a plain
- * `RangeError` from an engine that does not classify, carrying none of those fields.
- */
-export type CorruptFrameReport = RangeError &
-	Partial<Pick<CorruptFrameError, 'logId' | 'position' | 'resyncPosition' | 'unreadableBytes'>>;
-
-/**
  * Called once per log per iterable when a corrupt frame ends that log's query iterator early (a new
  * `getRange` over a still-broken log reports it again), synchronously from inside the iterable's
  * `next()`; on the aggregate path a `removeLog` requested from the hook is applied once that `next()`
@@ -46,7 +37,7 @@ export type CorruptFrameReport = RangeError &
  * the aggregate path's own containment (see `safeNext`) without a report. Core only reports; what to
  * do about the gap is the caller's policy.
  */
-export type CorruptFrameHook = (error: CorruptFrameReport, logName: string) => void | Promise<void>;
+export type CorruptFrameHook = (error: CorruptFrameError, logName: string) => void | Promise<void>;
 
 type TrackedIterator = IterableIterator<TransactionEntry> & { lastVersion?: number; lastEndTxn?: boolean };
 
@@ -57,7 +48,7 @@ export type TransactionLogIterable = Iterable<AuditRecord> & {
 
 const reportCorruptFrame = createCorruptFrameReporter(harperLogger);
 
-function invokeCorruptFrameHook(onCorruptFrame: CorruptFrameHook, error: CorruptFrameReport, logName: string) {
+function invokeCorruptFrameHook(onCorruptFrame: CorruptFrameHook, error: CorruptFrameError, logName: string) {
 	const hookFailed = (hookError: unknown) => {
 		try {
 			harperLogger.error(`onCorruptFrame hook failed for transaction log "${logName}"`, hookError);
@@ -347,7 +338,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			iterable.iterate = () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
-			const excludedLogs = [...(options.excludeLogs ?? [])];
+			let excludedLogs = options.excludeLogs && [...options.excludeLogs];
 			let logs: TransactionLog[] = [];
 			// holds the queue of next entries from each iterator
 			let nextEntries: any[];
@@ -380,15 +371,15 @@ export class RocksTransactionLogStore extends EventEmitter {
 			// Reports wait until the outer poll has finished building nextEntries, so a hook may reference
 			// the iterable and re-enter it without an in-flight poll overwriting its buffer.
 			const hook = options.onCorruptFrame;
-			let deferredReports: [CorruptFrameReport, string][] | undefined;
+			let deferredReports: [CorruptFrameError, string][] | undefined;
 			const onCorruptFrame =
 				hook &&
-				((error: CorruptFrameReport, logName: string) => {
+				((error: CorruptFrameError, logName: string) => {
 					(deferredReports ??= []).push([error, logName]);
 				});
 			const updateIterators = () => {
 				if (latestUpdates !== this.updates) {
-					const latestLogs = (this.nodeLogs || this.loadLogs()).filter((log) => !excludedLogs.includes(log.name));
+					const latestLogs = (this.nodeLogs || this.loadLogs()).filter((log) => !excludedLogs?.includes(log.name));
 					for (let log of latestLogs) {
 						if (!logs.includes(log)) {
 							logs.push(log);
@@ -502,7 +493,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			aggregateIterator = {
 				next: hook ? guardedNext(hook) : advance,
 				addLog(logName: string) {
-					const index = excludedLogs.indexOf(logName);
+					const index = excludedLogs?.indexOf(logName);
 					if (index >= 0) excludedLogs.splice(index, 1);
 				},
 				removeLog: (logName: string) => {
@@ -510,6 +501,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 						(deferredRemovals ??= []).push(logName);
 						return;
 					}
+					const exclusions = (excludedLogs ??= []);
+					if (!exclusions.includes(logName)) exclusions.push(logName);
 					const log = this.logByName.get(logName);
 					if (!log) return; // not found
 
@@ -518,7 +511,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 						logs.splice(index, 1);
 						iterators.splice(index, 1);
 						nextEntries.splice(index, 1);
-						excludedLogs.push(logName);
 					}
 				},
 			};
