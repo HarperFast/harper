@@ -662,6 +662,23 @@ describe('mcp/tools/application — custom mcpTools opt-in (#622)', () => {
 		assert.ok(getTool('get_data_Order_'), 'the later colliding Resource keeps its established disambiguated name');
 	});
 
+	it('malformed Resources continue reserving colliding suffixes', () => {
+		const Bad = makeTableResource({ databaseName: 'broken', tableName: 'bad', verbs: ['get'] });
+		const cyclic = { name: 'loop', type: 'object', properties: [] };
+		cyclic.properties.push(cyclic);
+		Bad.attributes.push(cyclic);
+		const Good = makeTableResource({ databaseName: 'data', tableName: 'good', verbs: ['get'] });
+		_setResourcesForTest(
+			makeRegistry([
+				['Order/', { Resource: Bad }],
+				['Order.', { Resource: Good }],
+			])
+		);
+		registerApplicationTools();
+		assert.equal(getTool('get_Order_'), undefined);
+		assert.ok(getTool('get_data_Order_'));
+	});
+
 	it('Resources can publish both verb tools AND custom tools', async () => {
 		const Product = makeTableResource({ databaseName: 'data', tableName: 'product', verbs: ['get'] });
 		Product.prototype.bulkDiscount = async function (args) {
@@ -1233,13 +1250,14 @@ describe('mcp/tools/application — #1920 programmatic `static properties` + doc
 	});
 
 	// A programmatic Resource: declares `static properties` (Record) and NO `attributes` Array.
-	function makeProgrammaticResource({ path, tableName, description, properties }) {
+	function makeProgrammaticResource({ path, tableName, description, properties, required }) {
 		class Cls {}
 		Cls.databaseName = 'data';
 		Cls.tableName = tableName;
 		Cls.primaryKey = 'id';
 		if (description) Cls.description = description;
 		if (properties) Cls.properties = properties;
+		if (required) Cls.required = required;
 		for (const v of ['get', 'put', 'patch', 'delete', 'search', 'post']) Cls.prototype[v] = function () {};
 		Cls.get = async (t) => ({ id: t.id });
 		Cls.put = async () => ({ ok: true });
@@ -1304,6 +1322,23 @@ describe('mcp/tools/application — #1920 programmatic `static properties` + doc
 		assert.equal(create.inputSchema.properties.rows.type, 'array');
 		assert.equal(create.inputSchema.properties.rows.items.type, 'object');
 		assert.equal(create.inputSchema.properties.rows.items.properties.x.type, 'integer');
+	});
+
+	it('expresses top-level requiredness independently of nullability', () => {
+		const Widget = makeProgrammaticResource({
+			path: 'Widget',
+			tableName: 'widget',
+			required: ['label'],
+			properties: {
+				id: { type: 'string', primaryKey: true },
+				label: { type: ['string', 'null'] },
+				note: { type: 'string', nullable: false },
+			},
+		});
+		_setResourcesForTest(makeRegistry([['Widget', { Resource: Widget.Resource }]]));
+		registerApplicationTools();
+		assert.deepEqual(getTool('create_Widget').inputSchema.required, ['label', 'note']);
+		assert.deepEqual(getTool('get_Widget').outputSchema.required, ['id', 'label', 'note']);
 	});
 
 	it('prefixes the verb-tool description with the class docstring / static description', () => {

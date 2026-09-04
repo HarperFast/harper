@@ -34,6 +34,7 @@ import {
 	snapshotProfileTools,
 	type AuthedUser,
 	type ToolCallContext,
+	type ToolDef,
 	type ToolResult,
 } from '../toolRegistry.ts';
 import {
@@ -53,7 +54,7 @@ import {
 } from '../customResourceRegistry.ts';
 import { notifyPromptsListChanged, notifyResourcesListChanged, notifyToolsListChanged } from '../listChanged.ts';
 import { decodeCursor, encodeCursor } from '../pagination.ts';
-import { resolveAttributes, SchemaTraversalError } from '../../../resources/jsonSchemaTypes.ts';
+import { resolveAttributes } from '../../../resources/jsonSchemaTypes.ts';
 import {
 	type AttributePermissionEntry,
 	type HarperAttribute,
@@ -88,6 +89,7 @@ interface ResourceClassLike {
 	description?: string;
 	hidden?: boolean;
 	properties?: Record<string, unknown>;
+	required?: readonly string[];
 	outputSchemas?: { [verb: string]: object };
 	/** The URL path (may carry `:param`/`*wildcard` segments), used to bind path params for contract resources. */
 	path?: string;
@@ -333,7 +335,11 @@ let warnedInvalidResourceSchemas = new WeakSet<object>();
 function warnInvalidResourceSchema(resource: ResourceClassLike, path: string, error: unknown): void {
 	if (warnedInvalidResourceSchemas.has(resource)) return;
 	warnedInvalidResourceSchemas.add(resource);
-	harperLogger.warn(`MCP application skipped invalid schema for resource '/${path}': ${(error as Error).message}`);
+	let detail = 'unknown schema error';
+	try {
+		detail = typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error);
+	} catch {}
+	harperLogger.warn(`MCP application skipped invalid schema for resource '/${path}': ${detail}`);
 }
 
 export function _setResourcesForTest(r: ResourcesRegistry | undefined): void {
@@ -841,8 +847,8 @@ function mergeAnnotations(
  * semantics) is the only built-in default; `patch_*`/`delete_*` annotations are
  * deferred until repeat-call behavior is verified end-to-end.
  */
-function registerVerbTools(ctx: ResourceContext): number {
-	let count = 0;
+function deriveVerbTools(ctx: ResourceContext): ToolDef[] {
+	const definitions: ToolDef[] = [];
 	const { suffix, ResourceClass, attributes, verbs, tableName, databaseName, path } = ctx;
 	const tableDoc = ResourceClass.description;
 	const primaryKey = ResourceClass.primaryKey;
@@ -864,7 +870,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 
 	if (verbs.get) {
 		const name = `get_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('get', ctxForVerb),
 			inputSchema: overrideInput('get') ?? deriveGetSchema(attributes, undefined),
@@ -874,13 +880,12 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
 			handler: makeGetHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
 	if (verbs.search) {
 		const name = `search_${suffix}`;
 		// search_* deliberately omits outputSchema — envelope shape (records vs
 		// data, cursor vs nextCursor) is tracked in the sibling envelope issue.
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('search', ctxForVerb),
 			inputSchema: overrideInput('search') ?? deriveSearchSchema(attributes, undefined),
@@ -889,11 +894,10 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'read'),
 			handler: makeSearchHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
 	if (verbs.create) {
 		const name = `create_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('create', ctxForVerb),
 			inputSchema: overrideInput('create') ?? deriveCreateSchema(attributes, undefined),
@@ -903,11 +907,10 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'insert'),
 			handler: makeCreateHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
 	if (verbs.updatePut) {
 		const name = `update_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('update', ctxForVerb),
 			inputSchema: overrideInput('update') ?? deriveUpdateSchema(attributes, undefined),
@@ -919,10 +922,9 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
 			handler: makeUpdateHandler(name, path, ResourceClass, 'put'),
 		});
-		count++;
 	} else if (verbs.updatePatch) {
 		const name = `patch_${suffix}`;
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('patch', ctxForVerb),
 			inputSchema: overrideInput('patch') ?? deriveUpdateSchema(attributes, undefined),
@@ -934,7 +936,6 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'update'),
 			handler: makeUpdateHandler(name, path, ResourceClass, 'patch'),
 		});
-		count++;
 	}
 	if (verbs.delete) {
 		const name = `delete_${suffix}`;
@@ -942,7 +943,7 @@ function registerVerbTools(ctx: ResourceContext): number {
 		// `{ deleted }` so the result carries structuredContent matching the
 		// `{ deleted: boolean }` outputSchema. Authors can override the shape via
 		// `static outputSchemas.delete`.
-		addTool({
+		definitions.push({
 			name,
 			description: verbDescription('delete', ctxForVerb),
 			inputSchema: overrideInput('delete') ?? deriveDeleteSchema(attributes, undefined),
@@ -954,9 +955,8 @@ function registerVerbTools(ctx: ResourceContext): number {
 			visibleTo: makeVisibleTo(databaseName, tableName, 'delete'),
 			handler: makeDeleteHandler(name, path, ResourceClass),
 		});
-		count++;
 	}
-	return count;
+	return definitions;
 }
 
 /**
@@ -1375,9 +1375,8 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 		const hasCustomPrompts = Array.isArray(ResourceClass?.mcpPrompts) && ResourceClass.mcpPrompts.length > 0;
 		const hasCustomResources = Array.isArray(ResourceClass?.mcpResources) && ResourceClass.mcpResources.length > 0;
 		if (!hasVerbs && !hasCustomTools && !hasCustomPrompts && !hasCustomResources) return;
-		if (!hasVerbs) {
-			claimedSuffixes.add(uniqueSuffix(path, ResourceClass?.databaseName, claimedSuffixes));
-		}
+		const suffix = uniqueSuffix(path, ResourceClass?.databaseName, claimedSuffixes);
+		claimedSuffixes.add(suffix);
 		if (hasVerbs) {
 			let attributes: HarperAttribute[] | undefined;
 			try {
@@ -1388,10 +1387,10 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 			if (attributes) {
 				const databaseName = ResourceClass?.databaseName;
 				const tableName = ResourceClass?.tableName;
-				const suffix = uniqueSuffix(path, databaseName, claimedSuffixes);
-				claimedSuffixes.add(suffix);
+				void ResourceClass.description;
+				let definitions: ToolDef[] | undefined;
 				try {
-					toolsRegistered += registerVerbTools({
+					definitions = deriveVerbTools({
 						path,
 						suffix,
 						ResourceClass,
@@ -1401,8 +1400,11 @@ function buildApplicationTools(resources: ResourcesRegistry): void {
 						verbs,
 					});
 				} catch (error) {
-					if (!(error instanceof SchemaTraversalError)) throw error;
 					warnInvalidResourceSchema(ResourceClass, path, error);
+				}
+				if (definitions) {
+					for (const definition of definitions) addTool(definition);
+					toolsRegistered += definitions.length;
 				}
 			}
 		}

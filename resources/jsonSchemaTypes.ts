@@ -94,6 +94,9 @@ export interface AttributeLike {
 	/** Object-level constraints for a nested object field, carried through the round-trip. */
 	required?: readonly string[];
 	additionalProperties?: boolean;
+	requiredOnSchema?: boolean;
+	relationship?: unknown;
+	definition?: unknown;
 }
 
 /**
@@ -162,6 +165,7 @@ export function projectAttributesToProperties(attributes: AttributeLike[]): Reco
  * attributes lets those paths produce the same rich schema they build for table-backed resources.
  */
 const MAX_SCHEMA_DEPTH = 100;
+const projectedProperties = new WeakMap<object, { requiredSignature: string; attributes: readonly AttributeLike[] }>();
 
 export class SchemaTraversalError extends Error {}
 
@@ -195,6 +199,39 @@ function fragmentToAttribute(
 			if (!Array.isArray(fragment.required) || !fragment.required.every((item) => typeof item === 'string')) {
 				throw new TypeError(`Schema property "${name}.required" must be an array of strings`);
 			}
+			if (new Set(fragment.required).size !== fragment.required.length) {
+				throw new TypeError(`Schema property "${name}.required" must contain unique names`);
+			}
+		}
+		let normalizedEnum: JsonSchemaFragment['enum'];
+		if (fragment.enum !== undefined) {
+			if (!Array.isArray(fragment.enum) || fragment.enum.length === 0) {
+				throw new TypeError(`Schema property "${name}.enum" must be a non-empty array`);
+			}
+			if (
+				!fragment.enum.every(
+					(value) =>
+						value === null ||
+						typeof value === 'string' ||
+						typeof value === 'boolean' ||
+						(typeof value === 'number' && Number.isFinite(value))
+				)
+			) {
+				throw new TypeError(`Schema property "${name}.enum" must contain only JSON scalar values`);
+			}
+			normalizedEnum = [...new Set(fragment.enum)];
+		}
+		if (
+			fragment.const !== undefined &&
+			fragment.const !== null &&
+			typeof fragment.const !== 'string' &&
+			typeof fragment.const !== 'boolean' &&
+			!(typeof fragment.const === 'number' && Number.isFinite(fragment.const))
+		) {
+			throw new TypeError(`Schema property "${name}.const" must be a JSON scalar value`);
+		}
+		if (normalizedEnum && fragment.const !== undefined && !normalizedEnum.includes(fragment.const as never)) {
+			throw new TypeError(`Schema property "${name}.const" must be included in its enum`);
 		}
 		if (fragment.properties !== undefined) {
 			if (
@@ -221,7 +258,7 @@ function fragmentToAttribute(
 		if (fragment.assignUpdatedTime) attr.assignUpdatedTime = true;
 		if (fragment.hidden) attr.hidden = true;
 		if (fragment.nullable !== undefined) attr.nullable = fragment.nullable;
-		if (fragment.enum) attr.enum = fragment.enum;
+		if (normalizedEnum) attr.enum = normalizedEnum;
 		if (fragment.format) attr.format = fragment.format;
 		if (fragment.const !== undefined) attr.const = fragment.const;
 		return attr;
@@ -240,6 +277,71 @@ export function projectPropertiesToAttributes(properties: Record<string, JsonSch
 	}
 	const ancestors = new WeakSet<object>();
 	return Object.entries(properties).map(([name, fragment]) => fragmentToAttribute(name, fragment, ancestors, 1));
+}
+
+function freezeAttribute(attr: AttributeLike): AttributeLike {
+	if (attr.properties) attr.properties = Object.freeze(attr.properties.map(freezeAttribute)) as AttributeLike[];
+	if (attr.elements) freezeAttribute(attr.elements);
+	return Object.freeze(attr);
+}
+
+export function filterAttributeTree(
+	attributes: AttributeLike[],
+	include: (attribute: AttributeLike) => boolean = (attribute) => !attribute.hidden
+): AttributeLike[] {
+	const ancestors = new WeakSet<object>();
+	const visit = (attribute: AttributeLike, depth: number): AttributeLike | undefined => {
+		if (!include(attribute)) return undefined;
+		if (depth > MAX_SCHEMA_DEPTH) {
+			throw new SchemaTraversalError(`Schema attribute "${attribute.name}" exceeds ${MAX_SCHEMA_DEPTH} levels`);
+		}
+		if (ancestors.has(attribute))
+			throw new SchemaTraversalError(`Schema attribute "${attribute.name}" contains a cycle`);
+		ancestors.add(attribute);
+		try {
+			const visible = { ...attribute };
+			const reference = attribute.relationship || attribute.definition || attribute.elements?.definition;
+			if (reference) {
+				delete visible.properties;
+				return visible;
+			}
+			if (attribute.properties && Object.prototype.propertyIsEnumerable.call(attribute, 'properties')) {
+				visible.properties = attribute.properties
+					.map((child) => visit(child, depth + 1))
+					.filter((child): child is AttributeLike => child !== undefined);
+				if (attribute.required) {
+					const names = new Set(visible.properties.map((child) => child.name));
+					const required = attribute.required.filter((name) => names.has(name));
+					if (required.length) visible.required = required;
+					else delete visible.required;
+				}
+			}
+			if (attribute.elements) {
+				const elements = visit(attribute.elements, depth + 1);
+				if (elements) visible.elements = elements;
+				else delete visible.elements;
+			}
+			return visible;
+		} finally {
+			ancestors.delete(attribute);
+		}
+	};
+	return attributes
+		.map((attribute) => visit(attribute, 1))
+		.filter((attribute): attribute is AttributeLike => attribute !== undefined);
+}
+
+function validateTopLevelRequired(required: readonly string[] | undefined, properties: object): readonly string[] {
+	if (required === undefined) return [];
+	if (!Array.isArray(required) || !required.every((name) => typeof name === 'string')) {
+		throw new TypeError('Resource required must be an array of strings');
+	}
+	if (new Set(required).size !== required.length) throw new TypeError('Resource required must contain unique names');
+	for (const name of required) {
+		if (!Object.hasOwn(properties, name))
+			throw new TypeError(`Resource required references unknown property "${name}"`);
+	}
+	return required;
 }
 
 /**
@@ -332,6 +434,22 @@ function emitAttributeSchema(
 	ancestors.add(attr);
 	try {
 		const fragment: JsonSchemaFragment = {};
+		const reference = attr.relationship || attr.definition || attr.elements?.definition;
+		if (reference) {
+			const target = reference as { database?: string; table?: string; type?: string };
+			const label = [target.database, target.table ?? target.type].filter(Boolean).join('.');
+			if (attr.type === 'array') {
+				return {
+					type: 'array',
+					items: {},
+					...(attr.description || label ? { description: attr.description ?? `Reference to ${label}.` } : {}),
+				};
+			}
+			return {
+				type: 'object',
+				...(attr.description || label ? { description: attr.description ?? `Reference to ${label}.` } : {}),
+			};
+		}
 		// `ignoreHidden` applies to this attribute only — a hidden sub-property of a surfaced primary key
 		// is still a hidden field and stays suppressed.
 		const childOptions = options.ignoreHidden ? { ...options, ignoreHidden: false } : options;
@@ -481,9 +599,22 @@ function applyNullability(fragment: JsonSchemaFragment, dialect: SchemaDialect):
 export function resolveAttributes(source?: {
 	attributes?: AttributeLike[];
 	properties?: Record<string, JsonSchemaFragment> | AttributeLike[];
+	required?: readonly string[];
 }): AttributeLike[] {
 	if (source?.attributes?.length) return source.attributes;
 	if (Array.isArray(source?.properties)) return source.properties;
-	if (source?.properties !== undefined) return projectPropertiesToAttributes(source.properties);
+	if (source?.properties !== undefined) {
+		const required = validateTopLevelRequired(source.required, source.properties);
+		const requiredSignature = JSON.stringify(required);
+		const cached = projectedProperties.get(source.properties);
+		if (cached?.requiredSignature === requiredSignature) return cached.attributes as AttributeLike[];
+		const requiredNames = new Set(required);
+		const attributes = projectPropertiesToAttributes(source.properties).map((attr) =>
+			freezeAttribute(requiredNames.has(attr.name) ? { ...attr, requiredOnSchema: true } : attr)
+		);
+		Object.freeze(attributes);
+		projectedProperties.set(source.properties, { requiredSignature, attributes });
+		return attributes;
+	}
 	return [];
 }

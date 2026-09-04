@@ -71,7 +71,7 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 		assert.deepEqual(create.inputSchema.properties.anything, { type: 'array' });
 		assert.deepEqual(create.inputSchema.properties.choice.enum, ['a', 1]);
 		assert.equal(create.inputSchema.properties.profile.properties.creditScore, undefined);
-		assert.deepEqual(create.inputSchema.required, ['status']);
+		assert.deepEqual(create.inputSchema.required, ['status', 'note']);
 	});
 
 	test('emits OpenAPI `nullable` for a top-level nullable property', () => {
@@ -96,7 +96,7 @@ suite('OpenAPI — static properties emission', { skip: skipSuite }, (ctx) => {
 		// `required: []` is invalid under draft-04 (which OpenAPI 3.0.3 inherits).
 		assert.deepEqual(schema.properties.profile.required, ['name']);
 		assert.equal('required' in schema.properties.allHidden, false, 'empty required must be omitted');
-		assert.deepEqual(schema.required, ['status']);
+		assert.deepEqual(schema.required, ['status', 'note']);
 	});
 
 	test('carries enum and description into array items', () => {

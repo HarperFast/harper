@@ -41,6 +41,7 @@ export interface HarperAttribute {
 	const?: unknown;
 	required?: readonly string[];
 	additionalProperties?: boolean;
+	requiredOnSchema?: boolean;
 	relationship?: unknown;
 	definition?: unknown;
 }
@@ -186,10 +187,11 @@ function buildPropertiesObject(
 		// Skip auto-managed columns from write inputs — Harper assigns them.
 		if (mode !== 'read' && (attr.assignCreatedTime || attr.assignUpdatedTime || attr.expiresAt)) continue;
 		if (mode !== 'read' && (attr.computed !== undefined || attr.computedFromExpression !== undefined)) continue;
+		if (mode !== 'read' && (attr.relationship || attr.definition || attr.elements?.definition)) continue;
 		const schema = attributeToProperty(attr);
 		if (!schema) continue;
 		properties[attr.name] = schema;
-		if (mode === 'insert' && attr.nullable === false && !attr.isPrimaryKey) {
+		if (mode === 'insert' && (attr.requiredOnSchema || attr.nullable === false) && !attr.isPrimaryKey) {
 			required.push(attr.name);
 		}
 	}
@@ -342,7 +344,14 @@ function deriveRecordSchema(
 		if (!schema) continue;
 		properties[attr.name] = schema;
 		const requiredOnOutput =
-			attr.nullable === false || attr.assignCreatedTime || attr.assignUpdatedTime || attr.isPrimaryKey;
+			!attr.relationship &&
+			!attr.definition &&
+			!attr.elements?.definition &&
+			(attr.requiredOnSchema ||
+				attr.nullable === false ||
+				attr.assignCreatedTime ||
+				attr.assignUpdatedTime ||
+				attr.isPrimaryKey);
 		if (requiredOnOutput) required.push(attr.name);
 	}
 	const schema: {

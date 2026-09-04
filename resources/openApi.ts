@@ -4,7 +4,6 @@ import { Resources, routePatternToTemplate } from './Resources.ts';
 import { Resource } from './Resource.ts';
 import {
 	DATA_TYPES,
-	SchemaTraversalError,
 	type AttributeLike,
 	type JsonSchemaFragment,
 	attributeToSchema,
@@ -186,7 +185,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 				if (hidden) continue;
 				const def = definition ?? elements?.definition;
 				if (def) includeDefinitionInSchema(def);
-				if (nullable === false) resourceRequired.push(name);
+				if (nullable === false || attr.requiredOnSchema) resourceRequired.push(name);
 				if (relationship) {
 					props[name] =
 						type === 'array'
@@ -201,7 +200,6 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 					try {
 						props[name] = attributeToOpenApiSchema(attr) ?? {};
 					} catch (error) {
-						if (!(error instanceof SchemaTraversalError)) throw error;
 						warnInvalidResourceSchema(resource.Resource, resource.path, error);
 						continue resourceLoop;
 					}

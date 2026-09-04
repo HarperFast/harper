@@ -436,4 +436,34 @@ describe('attributeToSchema — emitter edge cases (#1941, #1942)', () => {
 		cyclic.properties.push(cyclic);
 		assert.throws(() => emit(cyclic), /Schema attribute "self" contains a cycle/);
 	});
+
+	it('stops at production-style non-enumerable relationship edges', () => {
+		const owner = { name: 'owner', type: 'Person', relationship: true };
+		const dogs = { name: 'dogs', type: 'array', relationship: true, elements: { name: '', type: 'Dog' } };
+		const dog = { name: 'Dog', properties: [owner] };
+		const person = { name: 'Person', properties: [dogs] };
+		Object.defineProperty(owner, 'properties', { value: person.properties });
+		Object.defineProperty(dogs.elements, 'properties', { value: dog.properties });
+		assert.deepEqual(emit(owner, 'json-schema'), { type: 'object' });
+		assert.deepEqual(emit(dogs, 'json-schema'), { type: 'array', items: {} });
+	});
+
+	it('prunes hidden children from a cloned required list', () => {
+		const { filterAttributeTree } = require('#src/resources/jsonSchemaTypes');
+		const [profile] = filterAttributeTree([
+			{
+				name: 'profile',
+				properties: [
+					{ name: 'name', type: 'string' },
+					{ name: 'secret', type: 'string', hidden: true },
+				],
+				required: ['name', 'secret'],
+			},
+		]);
+		assert.deepEqual(profile.required, ['name']);
+		assert.equal(
+			profile.properties.some((property) => property.name === 'secret'),
+			false
+		);
+	});
 });

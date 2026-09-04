@@ -217,6 +217,49 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 			);
 		});
 
+		it('validates enum, required uniqueness, and const intersection at runtime', () => {
+			assert.throws(
+				() => projectPropertiesToAttributes({ state: { type: 'string', enum: 'open' } }),
+				/non-empty array/
+			);
+			assert.throws(() => projectPropertiesToAttributes({ state: { type: 'string', enum: [] } }), /non-empty array/);
+			assert.throws(
+				() =>
+					projectPropertiesToAttributes({
+						profile: { type: 'object', properties: { name: { type: 'string' } }, required: ['name', 'name'] },
+					}),
+				/unique names/
+			);
+			assert.throws(
+				() => projectPropertiesToAttributes({ state: { type: 'string', enum: ['open'], const: 'closed' } }),
+				/must be included/
+			);
+			assert.throws(() => projectPropertiesToAttributes({ state: { type: 'string', const: 1n } }), /JSON scalar value/);
+			const [state] = projectPropertiesToAttributes({ state: { type: 'string', enum: ['open', 'open'] } });
+			assert.deepEqual(state.enum, ['open']);
+		});
+
+		it('caches by properties identity and invalidates when the object is replaced', () => {
+			const { resolveAttributes } = require('#src/resources/jsonSchemaTypes');
+			const properties = { name: { type: 'string' } };
+			const source = { properties, required: ['name'] };
+			const first = resolveAttributes(source);
+			assert.strictEqual(resolveAttributes(source), first);
+			assert.equal(first[0].requiredOnSchema, true);
+			source.properties = { count: { type: 'integer' } };
+			source.required = [];
+			const second = resolveAttributes(source);
+			assert.notStrictEqual(second, first);
+			assert.equal(second[0].name, 'count');
+		});
+
+		it('rejects malformed top-level required declarations', () => {
+			const { resolveAttributes } = require('#src/resources/jsonSchemaTypes');
+			const properties = { name: { type: 'string' } };
+			assert.throws(() => resolveAttributes({ properties, required: ['name', 'name'] }), /unique names/);
+			assert.throws(() => resolveAttributes({ properties, required: ['missing'] }), /unknown property/);
+		});
+
 		it('round-trips with projectAttributesToProperties (properties -> attributes -> properties)', () => {
 			// The `.properties` projection is front-end-neutral: type, description, primaryKey,
 			// nested/array shapes, and nested object-level constraints (required/additionalProperties)

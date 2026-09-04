@@ -468,6 +468,7 @@ describe('mcp/resources', () => {
 				id: { type: 'string', primaryKey: true },
 				publicProfile: {
 					type: 'object',
+					required: ['publicName', 'secretDetail'],
 					properties: {
 						publicName: { type: 'string' },
 						secretDetail: { type: 'string', hidden: true, description: 'internal only' },
@@ -493,6 +494,9 @@ describe('mcp/resources', () => {
 					.properties.map((attribute) => attribute.name),
 				['publicName']
 			);
+			assert.deepEqual(body.attributes.find((attribute) => attribute.name === 'publicProfile').required, [
+				'publicName',
+			]);
 			assert.equal(JSON.stringify(body).includes('internal only'), false);
 		});
 
@@ -512,7 +516,7 @@ describe('mcp/resources', () => {
 				user: SUPER,
 				profile: 'application',
 			});
-			assert.equal(res.ok, true);
+			assert.equal(res.ok, true, res.reason);
 			assert.equal(JSON.stringify(JSON.parse(res.contents[0].text)).includes('"properties"'), false);
 		});
 	});
