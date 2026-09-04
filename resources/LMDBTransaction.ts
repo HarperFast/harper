@@ -476,6 +476,15 @@ function startMonitoringTxns() {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
 				if (deferForCommitInFlight(txn, url, txnExpiration)) continue;
+				if (txn.open === TRANSACTION_STATE.CLOSED && shouldSpareCommitPhase(txn, checkedCommitPhaseChains)) {
+					harperLogger.warn?.(
+						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work; letting it complete, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`
+					);
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
+					continue;
+				}
 				if (txn.open === TRANSACTION_STATE.CLOSED) {
 					// Only reachable through abort(true), which retained the snapshot for read iterators
 					// that own it. Nothing else here can reclaim it: the branches below would re-enter

@@ -101,9 +101,11 @@ export function transaction<T>(
 		onError(error);
 	}
 	return onComplete(result);
+	function removeDisconnectListener() {
+		if (onDisconnect) signal.removeEventListener('abort', onDisconnect);
+	}
 	// when the transaction function completes, run this to commit the transaction
 	function onComplete(result) {
-		if (onDisconnect) signal.removeEventListener('abort', onDisconnect);
 		let committed;
 		try {
 			committed = transaction.commit({ doneWriting: true });
@@ -112,14 +114,19 @@ export function transaction<T>(
 		}
 		if ((committed as any).then) {
 			return (committed as any).then(
-				() => result,
+				() => {
+					removeDisconnectListener();
+					return result;
+				},
 				(error) => onCommitError(error, result)
 			);
 		} else {
+			removeDisconnectListener();
 			return result;
 		}
 	}
 	function onCommitError(error, result) {
+		removeDisconnectListener();
 		try {
 			if (typeof result?.onDone === 'function') result.onDone();
 		} catch (cleanupError) {
@@ -129,7 +136,7 @@ export function transaction<T>(
 	}
 	// if the transaction function throws an error, we abort
 	function onError(error) {
-		if (onDisconnect) signal.removeEventListener('abort', onDisconnect);
+		removeDisconnectListener();
 		abortAndThrow(error);
 	}
 	function abortAndThrow(error): never {

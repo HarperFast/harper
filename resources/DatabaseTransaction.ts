@@ -1234,10 +1234,12 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	isChainCommitting(): boolean {
 		let attached = false;
-		for (let txn: DatabaseTransaction = this.root ?? this; txn; txn = txn.next) {
+		const root = this.root ?? this;
+		for (let txn: DatabaseTransaction = root; txn; txn = txn.next) {
 			if (txn.commitsInFlight) return true;
 			if (txn === this) attached = true;
 		}
+		if (submittedCommitStillInFlight(root)) return true;
 		if (attached) return false;
 		// Only a link a settling commit already detached needs its own walk, and its own attempt is
 		// exactly the one that must not be torn out from under it. The ordinary case — asked of the root,
@@ -1970,7 +1972,7 @@ export class DatabaseTransaction implements Transaction {
 				// make that check see `undefined?.timedOut` and take the "start fresh" branch instead.
 				this.releaseContext(!this.timedOut && !this.disconnected);
 			} finally {
-				if (next) {
+				if (next && !(next.nativeCommitSubmitted && next.commitsInFlight)) {
 					try {
 						next.abort(retainReadTransaction);
 					} catch (error) {
@@ -2437,6 +2439,16 @@ const STALLED_COMMIT_LOG_MIN_INTERVAL_MS = 1000;
 let lastStalledCommitWarningAt = -Infinity;
 let lastStalledCommitErrorAt = -Infinity;
 
+function submittedCommitStillInFlight(root: DatabaseTransaction): boolean {
+	if (root.submittedLink?.nativeCommitSubmitted && root.submittedLink.commitsInFlight) return true;
+	if (root.submittedLinks) {
+		for (const txn of root.submittedLinks) {
+			if (txn.nativeCommitSubmitted && txn.commitsInFlight) return true;
+		}
+	}
+	return false;
+}
+
 /**
  * True when this tick must leave `txn` alone because some link has submitted writes whose native
  * outcome is not known yet. Merely entering commit() is not enough: a wholly pre-submit transaction
@@ -2483,7 +2495,11 @@ export function deferForCommitInFlight(
 				}
 			} else root.unsubmittedCommitDeadline = undefined;
 		}
-		if (!txn.nativeCommitSubmitted && txn.open === TRANSACTION_STATE.CLOSED)
+		if (
+			!txn.nativeCommitSubmitted &&
+			txn.open === TRANSACTION_STATE.CLOSED &&
+			!(txn === root && submittedCommitStillInFlight(root))
+		)
 			return hasUnsubmittedCommit && !unsubmittedCommitGraceExpired;
 		if (!root.stalledCommitLogged && now - lastStalledCommitErrorAt >= STALLED_COMMIT_LOG_MIN_INTERVAL_MS) {
 			lastStalledCommitErrorAt = now;
@@ -2544,6 +2560,15 @@ function startMonitoringTxns() {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
 				if (deferForCommitInFlight(txn, url, txnExpiration)) return;
+				if (txn.open === TRANSACTION_STATE.CLOSED && shouldSpareCommitPhase(txn, checkedCommitPhaseChains)) {
+					harperLogger.warn?.(
+						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work; letting it complete, from table: ${
+							(txn.db as any)?.name + (url ? ' path: ' + url : '')
+						}`
+					);
+					txn.timeout = Math.max(txnExpiration, txn.timeoutBudget ?? 0);
+					return;
+				}
 				if (txn.open === TRANSACTION_STATE.CLOSED) {
 					if (!txn.transaction) {
 						// Nothing left to supervise, and this is the registry's only unconditional exit:

@@ -156,10 +156,32 @@ describe('Transaction native-submit boundary', () => {
 		await assert.rejects(head.commit({ flush: true }), (error) => error === expected);
 		assert.equal(child.nativeCommitSubmitted, true, 'the child must still own its unknown native outcome');
 		assert.equal(child.writes.length, 1, 'head cleanup must not delete the submitted child write state');
+		assert.equal(head.commitSubmitted, true, 'the root boundary must remain until the detached child settles');
+		assert.equal(deferForCommitInFlight(child, undefined, 1), true);
 
 		releaseChild();
 		await waitFor(() => child.writes.length === 0, { message: 'the child commit should settle' });
 		assert.equal(child.writes.length, 0, 'the child cleans itself once its own commit settles');
+		assert.equal(head.commitSubmitted, false);
+	});
+
+	it('does not cascade a RocksDB abort into a submitted child', function () {
+		const head = new DatabaseTransaction();
+		const child = new DatabaseTransaction();
+		const write = { key: 6 };
+		let childAborts = 0;
+		head.next = child;
+		child.root = head;
+		child.writes.push(write);
+		child.transaction = { abort: () => childAborts++ };
+		child.commitsInFlight = 1;
+		child.nativeCommitSubmitted = true;
+
+		head.abort(true);
+
+		assert.equal(childAborts, 0, 'cleanup must not race the submitted native outcome');
+		assert.equal(child.writes[0], write, 'the child keeps state needed by its own settle path');
+		child.commitsInFlight = 0;
 	});
 
 	it('preserves and leaves protected post-submit work unpoisoned', function () {

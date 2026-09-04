@@ -820,6 +820,26 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		assert.equal(await BlobResource.get(2071), undefined, 'the disconnected write must not be committed');
 	});
 
+	it('keeps disconnect cancellation armed through the wrapper final commit', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		let parked;
+		const committing = transaction(context, async () => {
+			await BlobResource.put({ id: 2072, blob }, context);
+			parked = databaseTxns(context)[0];
+		});
+		slow.write(Buffer.alloc(16384, 'm'));
+		await waitFor(() => parked?.committing, {
+			message: 'the wrapper final commit should park in pre-commit work',
+		});
+		ac.abort();
+		slow.end();
+		await assert.rejects(committing, /client disconnected/);
+		assert.equal(await BlobResource.get(2072), undefined, 'the disconnected final commit must not land');
+	});
+
 	// Same phantom-commit hazard reached by a plain abort rather than the monitor's poison.
 	it('a transaction aborted while parked in its pre-commit phase throws instead of resolving as success', async function () {
 		const slow = new PassThrough();
