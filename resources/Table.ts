@@ -717,40 +717,30 @@ export function makeTable(options) {
 		nodeId: number | undefined,
 		refs?: Array<{ version: number; nodeId: number }>
 	) {
-		if (version != null) {
-			const directHead = auditStore.getSync(version, tableId, id, nodeId);
-			if (directHead?.version === version) return { txnLogKey: version, nodeId };
-		}
 		const visited = new Set<string>();
 		function findHead(candidateRefs?: Array<{ version: number; nodeId: number }>) {
 			if (!candidateRefs) return;
-			const pending: Array<{ ref: { version: number; nodeId: number }; auditRecord?: any }> = candidateRefs
-				.slice()
-				.reverse()
-				.map((ref) => ({ ref }));
+			const pending: Array<{ version: number; nodeId: number }> = candidateRefs.slice().reverse();
 			while (pending.length > 0) {
-				const candidate: any = pending.pop();
-				const { ref, auditRecord } = candidate;
-				if (auditRecord) {
-					if (auditRecord.version === version) return { txnLogKey: ref.version, nodeId: ref.nodeId };
-					continue;
-				}
+				const ref = pending.pop()!;
 				const identity = `${ref.nodeId ?? 0}:${ref.version}`;
 				if (visited.has(identity)) continue;
 				visited.add(identity);
 				const entry = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
 				if (!entry) continue;
-				// Historical audit-only entries can carry the surviving record version in their body.
-				// Their previous refs still identify the real head, so prefer them over the fold entry.
-				pending.push({ ref, auditRecord: entry });
+				if (entry.version === version) return { txnLogKey: ref.version, nodeId: ref.nodeId };
 				const previousRefs = entry.previousAdditionalAuditRefs;
 				if (previousRefs) {
-					for (let index = previousRefs.length - 1; index >= 0; index--) pending.push({ ref: previousRefs[index] });
+					for (let index = previousRefs.length - 1; index >= 0; index--) pending.push(previousRefs[index]);
 				}
 			}
 		}
 		const referencedHead = findHead(refs);
 		if (referencedHead) return referencedHead;
+		if (version != null) {
+			const directHead = auditStore.getSync(version, tableId, id, nodeId);
+			if (directHead?.version === version) return { txnLogKey: version, nodeId };
+		}
 		return { txnLogKey: version, nodeId };
 	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
@@ -3587,6 +3577,15 @@ export function makeTable(options) {
 								residencyId,
 								expiresAt,
 								recordVersion: txnTime,
+								previousTxnLogKey:
+									isRocksDB && audit && existingEntry
+										? resolveAuditHead(
+												id,
+												existingEntry.version,
+												existingEntry.nodeId,
+												existingEntry.additionalAuditRefs
+											).txnLogKey
+										: undefined,
 								nodeId: options?.nodeId,
 								viaNodeId: options?.viaNodeId,
 								originatingOperation: (context as any)?.originatingOperation,
@@ -3754,6 +3753,15 @@ export function makeTable(options) {
 								transaction,
 								tableToTrack: tableName,
 								recordVersion: txnTime,
+								previousTxnLogKey:
+									isRocksDB && audit && existingEntry
+										? resolveAuditHead(
+												id,
+												existingEntry.version,
+												existingEntry.nodeId,
+												existingEntry.additionalAuditRefs
+											).txnLogKey
+										: undefined,
 								additionalAuditRefs:
 									isRocksDB && audit && txnLogKey !== txnTime
 										? [{ version: txnLogKey, nodeId: options?.nodeId }]
@@ -7079,6 +7087,15 @@ export function makeTable(options) {
 									residencyId,
 									transaction,
 									tableToTrack: tableName,
+									previousTxnLogKey:
+										writeAudit && existingEntry
+											? resolveAuditHead(
+													id,
+													existingEntry.version,
+													existingEntry.nodeId,
+													existingEntry.additionalAuditRefs
+												).txnLogKey
+											: undefined,
 									additionalAuditRefs:
 										writeAudit && txnLogKey !== recordVersion ? [{ version: txnLogKey, nodeId: 0 }] : undefined,
 								},
@@ -7100,7 +7117,22 @@ export function makeTable(options) {
 									recordVersion,
 									0,
 									(audit && hasChanges) || null,
-									{ user: (sourceContext as any)?.user, transaction, tableToTrack: tableName },
+									{
+										user: (sourceContext as any)?.user,
+										transaction,
+										tableToTrack: tableName,
+										recordVersion,
+										previousTxnLogKey: resolveAuditHead(
+											id,
+											existingEntry.version,
+											existingEntry.nodeId,
+											existingEntry.additionalAuditRefs
+										).txnLogKey,
+										additionalAuditRefs:
+											audit && hasChanges && txnLogKey !== recordVersion
+												? [{ version: txnLogKey, nodeId: 0 }]
+												: undefined,
+									},
 									'delete',
 									Boolean(invalidated)
 								);

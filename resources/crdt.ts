@@ -138,7 +138,7 @@ function reconstructForward(auditStore, store, tableId: number, recordId: any, f
 				entries.push(auditEntry);
 			}
 		}
-		auditTime = auditEntry.previousVersion;
+		auditTime = previousAuditTime(auditStore, tableId, recordId, auditEntry);
 	}
 	if (entries.length === 0) return null; // record did not exist at `timestamp`
 	// Replay oldest-first. The base is the put if the chain reached one; otherwise an empty record
@@ -158,6 +158,14 @@ function reconstructForward(auditStore, store, tableId: number, recordId: any, f
 	return record;
 }
 
+function previousAuditTime(auditStore, tableId: number, recordId: any, auditEntry) {
+	for (const ref of auditEntry.previousAdditionalAuditRefs ?? []) {
+		const previous = auditStore.get(ref.version, tableId, recordId, ref.nodeId);
+		if (previous?.version === auditEntry.previousVersion) return ref.version;
+	}
+	return auditEntry.previousVersion;
+}
+
 /**
  * Reconstruct the record state at a given timestamp by going back through the audit history and reversing any changes
  * @param currentEntry
@@ -169,6 +177,13 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	const auditStore = store.rootStore.auditStore;
 	let record = { ...currentEntry.value };
 	let auditTime = currentEntry.localTime;
+	for (const ref of currentEntry.additionalAuditRefs ?? []) {
+		const head = auditStore.get(ref.version, tableId, recordId, ref.nodeId);
+		if (head?.version === currentEntry.version) {
+			auditTime = ref.version;
+			break;
+		}
+	}
 	// Iterate in reverse through the record history, trying to reverse all changes
 	const unknowns = new Set<string>();
 	while (auditTime > timestamp) {
@@ -187,7 +202,7 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 				// state forward instead (issue #1330: a key deleted then re-inserted).
 				return reconstructForward(auditStore, store, tableId, recordId, auditEntry.previousVersion, timestamp);
 		}
-		auditTime = auditEntry.previousVersion;
+		auditTime = previousAuditTime(auditStore, tableId, recordId, auditEntry);
 	}
 	// If the most recent entry at or before `timestamp` is a delete, the record did not exist then.
 	// (A delete reached as a boundary — rather than crossed, which returns via reconstructForward —

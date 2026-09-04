@@ -7,14 +7,16 @@ const { getRecordAtTime, applyForward, addValues } = require('#src/resources/crd
 // version via the previousVersion chain).
 function makeStore(events) {
 	const byVersion = new Map();
-	for (const event of events) byVersion.set(event.version, event);
+	for (const event of events) byVersion.set(event.txnLogKey ?? event.version, event);
 	const auditStore = {
 		get(version) {
 			const event = byVersion.get(version);
 			if (!event) return undefined;
 			return {
 				type: event.type,
+				version: event.version,
 				previousVersion: event.previousVersion,
+				previousAdditionalAuditRefs: event.previousAdditionalAuditRefs,
 				getValue: () => event.value,
 			};
 		},
@@ -23,11 +25,31 @@ function makeStore(events) {
 }
 
 // currentEntry mirrors the live record entry getRecordAtTime starts the reverse walk from.
-function currentEntry(value, localTime) {
-	return { value, localTime };
+function currentEntry(value, localTime, options = {}) {
+	return { value, localTime, ...options };
 }
 
 describe('crdt getRecordAtTime', () => {
+	it('walks divergent heads and previous links in the transaction-log-key domain', () => {
+		const events = [
+			{ txnLogKey: 100, version: 10, type: 'put', value: { id: 'D', count: 1 }, previousVersion: 0 },
+			{
+				txnLogKey: 200,
+				version: 20,
+				type: 'patch',
+				value: { count: { __op__: 'add', value: 2 } },
+				previousVersion: 10,
+				previousAdditionalAuditRefs: [{ version: 100, nodeId: 1 }],
+			},
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'D', count: 3 }, 20, {
+			version: 20,
+			additionalAuditRefs: [{ version: 200, nodeId: 1 }],
+		});
+		assert.deepStrictEqual(getRecordAtTime(current, 150, store, 1, 'D'), { id: 'D', count: 1 });
+	});
+
 	describe('record deleted then re-inserted under the same key (issue #1330)', () => {
 		// put(n:1) -> patch(n:2) -> patch(n:3) -> delete -> put(n:4, re-insert, current)
 		const events = [

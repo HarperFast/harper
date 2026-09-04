@@ -31,6 +31,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 				type: auditRecord.type,
 				version: auditRecord.version,
 				txnLogKey: auditRecord.txnLogKey,
+				previousVersion: auditRecord.previousVersion,
 			});
 		}
 		return entries;
@@ -173,6 +174,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		);
 		const olderAudit = auditEntriesFor(Plain, id).find((entry) => entry.txnLogKey === olderLogKey);
 		assert.equal(olderAudit.version, olderVersion, "crash replay must see the folded write's original version");
+		assert.equal(olderAudit.previousVersion, logKey, 'history links must stay in the log-key domain');
 	});
 
 	it('keeps a log-key pointer to an applied delete whose version differs', async function () {
