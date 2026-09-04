@@ -22,8 +22,7 @@ describe('sql.* config param registration', () => {
 		});
 	}
 
-	// Rejected before any file read (findUnrecognizedParams runs first), so this is safe to run
-	// without a real harper-config.yaml fixture on disk.
+	// Rejected before any file read, so these run without a harper-config.yaml fixture on disk.
 	it('set_configuration still rejects a key outside the four registered sql.* settings', async () => {
 		await assert.rejects(
 			setConfiguration({ operation: 'set_configuration', sql_bogus: true }),

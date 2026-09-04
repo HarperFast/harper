@@ -9,9 +9,7 @@
  *              EngineUnsupportedError (default).
  *
  * The flag is read from the HARPER_SQL_ENGINE environment variable, then
- * sql.engine in Harper config, then defaults to 'auto'. Reading it through
- * configUtils.getConfigValue() keeps this callable without a fully booted Harper
- * config, which the router relies on in unit tests.
+ * sql.engine in Harper config, then defaults to 'auto'.
  *
  * Phase 5 cutover: the default is now 'auto' — the new engine handles every SQL
  * request it can plan and silently falls back to legacy on anything it can't, so
