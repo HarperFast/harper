@@ -102,7 +102,9 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.ok(decoded, 'the payload decodes');
 			assert.strictEqual(decoded.key, recordId);
 			assert.strictEqual(decoded.requester, NODE_NAME);
-			assert.strictEqual(decoded.tsR, request.version, 'ts_R is the entry’s own log timestamp');
+			// ts_R is minted before the write and lives in the payload; the entry takes a fresh commit
+			// time so it can never land behind a peer's replication cursor.
+			assert.ok(decoded.tsR > 0 && decoded.tsR <= request.version, 'ts_R was minted before the entry committed');
 			assert.strictEqual(decoded.leaseMs, 5000);
 
 			await record.unlock();

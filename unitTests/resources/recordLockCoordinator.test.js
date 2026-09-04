@@ -39,6 +39,7 @@ class FakeCluster {
 			owns: true,
 			capable: true,
 			downSince: null,
+			agreedDown: false,
 			/** Control entries this node wrote, in order. */
 			written: [],
 			/** Entries this node applied, for replay assertions. */
@@ -78,6 +79,7 @@ class FakeCluster {
 			nodeId: node.name,
 			capable: node.capable,
 			downSince: node.downSince,
+			agreedDown: node.agreedDown,
 		}));
 	}
 
@@ -354,10 +356,11 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			assert.strictEqual(cluster.node('node-a').written.length, 0, 'and nothing is written');
 		});
 
-		it('excludes a node only once it has been down longer than any hold could last', async () => {
+		it('excludes a node only once it has been down longer than any hold could last, and the cluster agrees', async () => {
 			const cluster = new FakeCluster(['node-a', 'node-b']);
 			cluster.node('node-b').alive = false;
 			cluster.node('node-b').downSince = cluster.wall - 1_000;
+			cluster.node('node-b').agreedDown = true;
 			const blocked = cluster.acquire('node-a', KEY, 60_000, 3_000);
 			await cluster.advance(3_500);
 			assert.strictEqual(blocked.state, 'rejected', 'a recently-down peer still has to grant');
@@ -366,7 +369,21 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			cluster.node('node-b').downSince = cluster.wall - (MAX_LOCK_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
 			const allowed = cluster.acquire('node-a', 'record-2', 60_000, 3_000);
 			await cluster.flush();
-			assert.strictEqual(allowed.state, 'resolved', 'a long-down peer is out of the grant set');
+			assert.strictEqual(allowed.state, 'resolved', 'a long-down, cluster-agreed peer is out of the grant set');
+		});
+
+		it('will not exclude a peer this node merely cannot reach', async () => {
+			// The asymmetric partition: A and C cannot see each other but both reach B. If a local DOWN
+			// view were enough, each would ask only B, B holds no round of its own and grants both, and
+			// one key has two holders. Without cluster agreement the requester must block instead.
+			const cluster = new FakeCluster(['node-a', 'node-b']);
+			cluster.node('node-b').alive = false;
+			cluster.node('node-b').downSince = cluster.wall - (MAX_LOCK_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
+			cluster.node('node-b').agreedDown = false;
+			const blocked = cluster.acquire('node-a', KEY, 60_000, 2_000);
+			await cluster.advance(2_500);
+			assert.strictEqual(blocked.state, 'rejected', 'a peer that is only locally unreachable still has to grant');
+			assert.strictEqual(blocked.error.statusCode, 423);
 		});
 
 		it('rejects on a worker that does not own lock coordination', async () => {
