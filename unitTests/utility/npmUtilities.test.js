@@ -52,6 +52,9 @@ describe('install_node_modules', () => {
 
 	function assertInstalled(response) {
 		assert.equal(response.application.npm_output.added, 1, JSON.stringify(response.application));
+		// npm reports an `audit` block only when it made the registry audit call, and that call is
+		// what wedged this suite past the CI job budget on npm 10 — the install must stay local
+		assert.equal(response.application.npm_output.audit, undefined, JSON.stringify(response.application));
 		assert.equal(installedDependencyExists(), true);
 	}
 

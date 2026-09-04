@@ -37,7 +37,10 @@ export async function installModules(req: any) {
 
 	const responseObject: any = {};
 
-	const args = ['install', '--force', '--omit=dev', '--json'];
+	// `--no-audit --no-fund` matches the component install path (Application.ts) and, for a purely
+	// local dependency graph, is what keeps the install off the network entirely: npm 10 puts even a
+	// `file:` link in its audit bulk request, and that registry round trip is unbounded from here.
+	const args = ['install', '--force', '--omit=dev', '--no-audit', '--no-fund', '--json'];
 	if (dryRun) args.push('--dry-run');
 
 	for (const project of projects) {

@@ -3794,7 +3794,7 @@ export function buildNpmrcContent(registryCredentials: ResolvedRegistryCredentia
  * @param command The command to run.
  * @param args The arguments to pass to the command.
  * @param cwd The working directory for the command.
- * @param timeoutMs The timeout for the command in milliseconds. Defaults to 5 minutes.
+ * @param timeoutMs The timeout for the command in milliseconds. Defaults to DEFAULT_COMMAND_TIMEOUT_MS.
  * @returns A promise that resolves when the command completes.
  */
 /**

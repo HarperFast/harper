@@ -27,7 +27,11 @@ jobs:
   unit-test:
     name: Unit Test (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
+    # on the required-check status — the long steps below carry their own caps for that reason.
+    # This one only has to exceed their sum: dependency install and the unit run measure ~2.5 and
+    # ~7.5 minutes, and the remaining steps under a minute.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +48,7 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
+        timeout-minutes: 10 # measures ~2.5 minutes; bounded so a registry stall fails loudly
         run: npm install --ignore-scripts
 
       - name: Build
@@ -71,7 +76,12 @@ jobs:
 
         run: node --enable-source-maps ./dist/bin/harper.js install
 
+      # Bounded below the job so a hung suite fails the step rather than cancelling the job.
+      # `.mocharc.json` sets `timeout: 0`, so no individual test can ever time out on its own:
+      # anything that blocks — a registry call, a lock wait — stops the run until something above
+      # it gives up, and before this cap that something was the job timeout, which is silent.
       - name: Run tests
+        timeout-minutes: 15
         run: npm run test:unit:all
 
   # Windows had no unit-level coverage at all before this job: every job above pins
