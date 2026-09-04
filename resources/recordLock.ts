@@ -1,12 +1,19 @@
+import { performance } from 'node:perf_hooks';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 
 /**
- * Exclusive per-record locks (harper#483, Phase 0: one node, every worker thread).
+ * Exclusive per-record locks (harper#483).
  *
- * The sole authority is the rocksdb-js process-wide key lock: one `locks` map per DBDescriptor
- * shared by every worker thread's handle. Nothing is written to the store or audit log. Lock and
- * unlock are pure in-memory operations; the record's version and bytes are unchanged.
+ * The intra-node authority is the rocksdb-js process-wide key lock: one `locks` map per DBDescriptor
+ * shared by every worker thread's handle. Acquiring and releasing it write nothing to the store, and
+ * the record's version and bytes are unchanged.
+ *
+ * Phase 1 layers cluster-wide exclusion on top without changing that: once the native key is held,
+ * `Table.lock()` runs a Ricart-Agrawala round over replicated control entries (see
+ * `recordLockCoordinator.ts`) and calls `joinClusterRound()` on the handle. A node-scoped lock
+ * (`{ scope: 'node' }`), or any lock on a database with no transport registered, skips that round
+ * entirely and behaves exactly as it did in Phase 0.
  */
 
 export const DEFAULT_LOCK_LEASE_MS = 30_000;
@@ -24,12 +31,20 @@ export interface RecordLockOptions {
 	timeout?: number;
 	/** A held lock outlives the acquiring transaction; it is released by `unlock()` or by its lease */
 	hold?: boolean;
+	/**
+	 * `'cluster'` (default) is exclusive across every participating node; `'node'` keeps Phase 0
+	 * semantics and is exclusive only across this node's worker threads.
+	 */
+	scope?: 'cluster' | 'node';
 }
 
 export interface ResolvedRecordLockOptions {
 	lease: number;
 	timeout: number;
 	hold: boolean;
+	scope: 'cluster' | 'node';
+	/** True when the caller named `scope` explicitly, which makes `'cluster'` fail-closed. */
+	scopeRequested: boolean;
 }
 
 /**
@@ -49,6 +64,33 @@ export interface RecordLockHandle {
 	expired: boolean;
 	/** Monotonic timestamp at which tryLock succeeded; used as the base version for holder writes. */
 	acquiredAt: number;
+	/** `ts_R` of the granted cluster round; undefined while the hold is node-scoped (Phase 0). */
+	clusterTsR?: number;
+	/**
+	 * Whether this handle may still authorize a write, evaluated NOW rather than trusting the lease
+	 * timer to have run. A holder whose event loop stalled past its deadline would otherwise commit
+	 * between the deadline and its own timer callback, while peers had already expired the hold.
+	 * Expiry is detected on a monotonic clock, so a wall-clock jump cannot extend a lease.
+	 */
+	isExpired(): boolean;
+	/**
+	 * Whether the LEASE elapsed. Distinct from `isExpired()` in that a deliberate release does NOT
+	 * make it true on its own: a write staged while the lock was held stays valid at commit if the
+	 * caller merely unlocked. Once the deadline passes it is true either way, because by then peers
+	 * have passed their own bound and the key may already belong to someone else.
+	 */
+	isLeaseExpired(): boolean;
+	/**
+	 * Re-anchor a granted cluster round: the hold now runs from `tsR` (no margin, so this node
+	 * always expires before any participant does) and `onRelease` emits the durable LOCK_RELEASE.
+	 * Returns false when the round completed after the lease had already elapsed.
+	 *
+	 * `mintedMono` is `performance.now()` at the instant `tsR` was minted. The remaining lease is
+	 * measured from it rather than from `tsR - Date.now()`: `tsR` comes from a never-decreasing
+	 * monotonic source, so after a backward wall-clock step that subtraction would hand back MORE
+	 * lease than the round was granted, past what every peer bounded from its own observation.
+	 */
+	joinClusterRound(tsR: number, leaseMs: number, mintedMono: number, onRelease: () => void): boolean;
 	/**
 	 * Return the next version to stamp a holder write with. Starts at acquiredAt; increments by
 	 * the minimum monotonic step for every subsequent call so sequential saves on the same hold do
@@ -79,10 +121,15 @@ export function resolveLockOptions(options?: RecordLockOptions | null): Resolved
 		throw new ClientError(`Lock options must be an object, but received ${typeof options}`);
 	const hold = options?.hold ?? false;
 	if (typeof hold !== 'boolean') throw new ClientError(`Lock option hold must be a boolean, but received ${hold}`);
+	const scope = options?.scope ?? 'cluster';
+	if (scope !== 'cluster' && scope !== 'node')
+		throw new ClientError(`Lock option scope must be 'cluster' or 'node', but received ${scope}`);
 	return {
 		lease: requireDuration('lease', options?.lease, DEFAULT_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS, MAX_LOCK_LEASE_MS),
 		timeout: requireDuration('timeout', options?.timeout, DEFAULT_LOCK_TIMEOUT_MS, 1, MAX_LOCK_TIMEOUT_MS),
 		hold,
+		scope,
+		scopeRequested: options?.scope !== undefined,
 	};
 }
 
@@ -101,6 +148,12 @@ export function lockAttemptKey(tableId: number, id: any): any[] {
 }
 
 const warnedLeaseTimerStores = new WeakSet();
+let warnedClusterReleaseFailure = false;
+function warnClusterReleaseFailure(err: unknown) {
+	if (warnedClusterReleaseFailure) return;
+	warnedClusterReleaseFailure = true;
+	harperLogger.warn?.('cluster record lock release could not be written; peers will expire the hold', err);
+}
 
 class KeyLockHandle implements RecordLockHandle {
 	store: any;
@@ -111,8 +164,14 @@ class KeyLockHandle implements RecordLockHandle {
 	released = false;
 	expired = false;
 	acquiredAt: number;
+	clusterTsR: number | undefined;
 	#lastHolderVersion: number | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
+	// Monotonic mirror of expiresAt. The wall-clock field stays public (callers and the cluster
+	// protocol both speak in timestamps) but the enforcement compares monotonic readings, so neither
+	// an NTP step nor a manual clock change can extend a lease past what peers assumed.
+	#deadlineMono: number | undefined;
+	#onRelease: (() => void) | undefined;
 
 	constructor(store: any, key: any[], keyId: unknown, lease?: number, hold = false, acquiredAt?: number) {
 		this.store = store;
@@ -122,11 +181,49 @@ class KeyLockHandle implements RecordLockHandle {
 		this.hold = hold;
 		this.acquiredAt = acquiredAt ?? store.getMonotonicTimestamp();
 		if (lease != null) {
+			this.#deadlineMono = performance.now() + lease;
 			this.#timer = setTimeout(() => this.#onLeaseExpire(), lease).unref();
 		}
 	}
 
+	isExpired(): boolean {
+		return this.released || this.expired || this.#leaseLapsed();
+	}
+
+	isLeaseExpired(): boolean {
+		return this.expired || this.#leaseLapsed();
+	}
+
+	// The single place the deadline is evaluated, so the two predicates cannot disagree about it. A
+	// deliberate release does not make a lapsed lease valid again: by then peers have passed their own
+	// bound and the key may belong to someone else.
+	#leaseLapsed(): boolean {
+		if (this.#deadlineMono === undefined || performance.now() < this.#deadlineMono) return false;
+		// Finish the expiry rather than only reporting it: the native key must actually go back so a
+		// stalled holder does not keep a key every participant has already written off.
+		if (!this.released) this.#onLeaseExpire();
+		return true;
+	}
+
+	joinClusterRound(tsR: number, leaseMs: number, mintedMono: number, onRelease: () => void): boolean {
+		const remaining = leaseMs - (performance.now() - mintedMono);
+		if (remaining <= 0) return false;
+		this.clusterTsR = tsR;
+		this.acquiredAt = tsR;
+		this.#lastHolderVersion = undefined;
+		this.#onRelease = onRelease;
+		this.expiresAt = tsR + leaseMs;
+		// From the mint origin, not a second clock read: the design says this bound has no margin.
+		this.#deadlineMono = mintedMono + leaseMs;
+		clearTimeout(this.#timer);
+		this.#timer = setTimeout(() => this.#onLeaseExpire(), remaining).unref();
+		return true;
+	}
+
 	nextHolderVersion(): number {
+		// TODO(harper#2412): under the settled dual-clock model the lock-ordered stamp belongs in the
+		// distinct-version second word (HAS_DISTINCT_VERSION_FLAG), not the transaction timestamp.
+		// Until that lands, Phase 1 keeps this Phase 0 mechanism, anchored at ts_R in cluster mode.
 		// Minimum monotonic step matches getNextMonotonicTime()'s own increment.
 		const MIN_STEP = 0.000488;
 		const next =
@@ -139,6 +236,7 @@ class KeyLockHandle implements RecordLockHandle {
 		if (this.released) return;
 		this.released = true;
 		this.expired = true;
+		clearTimeout(this.#timer);
 		try {
 			this.store.unlock(this.key);
 		} catch (err) {
@@ -146,6 +244,24 @@ class KeyLockHandle implements RecordLockHandle {
 				warnedLeaseTimerStores.add(this.store);
 				harperLogger.warn?.('record lock lease timer failed (store may have been dropped)', err);
 			}
+		}
+		this.#emitRelease();
+	}
+
+	// The cluster release is a durability optimization, not the safety mechanism — peers expire the
+	// hold on their own lease bound — so neither a throw nor a rejected promise may escape here. This
+	// runs from a lease timer and from post-commit cleanup, where an escaping rejection would take
+	// down the worker or turn a committed transaction into a 500.
+	#emitRelease() {
+		const onRelease = this.#onRelease;
+		if (!onRelease) return;
+		this.#onRelease = undefined;
+		try {
+			const result = onRelease() as unknown;
+			if (result && typeof (result as Promise<void>).then === 'function')
+				(result as Promise<void>).then(undefined, warnClusterReleaseFailure);
+		} catch (err) {
+			warnClusterReleaseFailure(err);
 		}
 	}
 
@@ -161,14 +277,24 @@ class KeyLockHandle implements RecordLockHandle {
 				harperLogger.warn?.('record lock release failed (store may have been dropped)', err);
 			}
 		}
+		this.#emitRelease();
 		return true;
 	}
 
 	upgradeToHold(lease: number): void {
 		this.hold = true;
 		clearTimeout(this.#timer);
-		this.expiresAt = Date.now() + lease;
-		this.#timer = setTimeout(() => this.#onLeaseExpire(), lease).unref();
+		// A granted cluster round may not be extended locally: peers bound the hold from the request
+		// they saw, and a longer local lease is exactly the two-holder window this protocol removes.
+		// Clamped on the monotonic deadline, not on expiresAt, so a backward wall-clock step cannot
+		// turn the upgrade into the extension this is here to refuse.
+		const now = performance.now();
+		const extended = now + lease;
+		const deadline = this.clusterTsR === undefined ? extended : Math.min(extended, this.#deadlineMono ?? extended);
+		const remaining = deadline - now;
+		this.#deadlineMono = deadline;
+		this.expiresAt = Date.now() + remaining;
+		this.#timer = setTimeout(() => this.#onLeaseExpire(), remaining).unref();
 		// Prime the nextHolderVersion counter so a later CLOSED-path save (e.g. after the
 		// enclosing transaction commits) gets acquiredAt+MIN_STEP rather than acquiredAt again
 		// — the same priming the fresh-hold path performs.  Without this, a post-commit save
@@ -203,7 +329,7 @@ export async function acquireRecordKey(
 	hold = false
 ): Promise<RecordLockHandle> {
 	const existing = txn.recordLockFor(store, keyId);
-	if (existing && !existing.released && !existing.expired) return existing;
+	if (existing && !existing.isExpired()) return existing;
 
 	const deadline = Date.now() + waitMs;
 	// One persistent wake slot: at most one onUnlocked callback is registered per waiter at any

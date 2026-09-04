@@ -50,6 +50,7 @@ function getIdMappingRecord(auditStore) {
 		// now we can take over the local node id
 		nameToId[node_name] = 0;
 		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
+		invalidateNodeNames(auditStore);
 	}
 	return idMappingRecord;
 }
@@ -84,6 +85,7 @@ export function remoteToLocalNodeId(remoteMapping: any, auditStore: any) {
 	}
 	if (hasChanges) {
 		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
+		invalidateNodeNames(auditStore);
 	}
 	return remoteToLocalId;
 }
@@ -103,6 +105,7 @@ export function getIdOfRemoteNode(remoteNodeName, auditStore) {
 		id = lastId + 1;
 		nameToId[remoteNodeName] = id;
 		auditStore.putSync(REMOTE_NODE_IDS, pack(idMappingRecord));
+		invalidateNodeNames(auditStore);
 	}
 	logger.trace?.('The remote node name map', remoteNodeName, nameToId, id);
 	return id;
@@ -122,4 +125,38 @@ export function lastTimeInAuditStore(auditStore: Database) {
 }
 export function getThisNodeId(auditStore: any) {
 	return exportIdMapping(auditStore)?.[server.hostname];
+}
+
+// Inverted id -> name map. exportIdMapping() re-reads and unpacks the mapping record on every call,
+// which is far too much per replicated entry on the apply thread; ids are stable once minted, so the
+// inversion is cached and dropped wherever nameToId is written. Keyed per audit store because short
+// ids are minted per database in first-seen order — id 1 names a different node in each one.
+// Refresh window for a MISS. A hit is always trusted, but a miss cannot be: ids are minted by
+// whichever worker first talks to a peer, and invalidation only reaches that worker's own copy — so
+// a newly admitted node is absent from every other worker's map until it is rebuilt. Rebuilding on
+// every miss would put a store read and unpack back on the apply thread for each unmapped entry, so
+// misses re-read at most this often — short enough that a joining node loses at most a stray entry,
+// long enough that a burst of unmapped ids cannot drive the store.
+const NODE_NAME_REFRESH_MS = 50;
+const idToNodeName = new WeakMap<object, { names: Map<number, string>; refreshedAt: number }>();
+function invalidateNodeNames(auditStore: any) {
+	idToNodeName.delete(auditStore);
+}
+
+/**
+ * The node name a local short id refers to. Callers that must attribute a replicated entry to its
+ * origin node need the globally stable name, not the id, which is assigned per node.
+ */
+export function getNodeNameForId(auditStore: any, nodeId: number | undefined): string | undefined {
+	if (typeof nodeId !== 'number' || !auditStore) return undefined;
+	const cached = idToNodeName.get(auditStore);
+	const hit = cached?.names.get(nodeId);
+	if (hit !== undefined) return hit;
+	const now = Date.now();
+	if (cached && now - cached.refreshedAt < NODE_NAME_REFRESH_MS) return undefined;
+	const nameToId = exportIdMapping(auditStore);
+	const names = new Map<number, string>();
+	for (const name in nameToId) names.set(nameToId[name], name);
+	idToNodeName.set(auditStore, { names, refreshedAt: now });
+	return names.get(nodeId);
 }

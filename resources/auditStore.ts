@@ -440,12 +440,23 @@ const STRUCTURES = 7;
 // and subscribers should re-read it. Used after a copyApply base copy, whose per-row snapshot writes
 // carry no audit entry (harper-pro#489). The entry type lives in the low nibble of the action byte
 // (decoded via `action & 0xf`); 1–7 are the record actions above, 8 is reload, leaving 9–15 free for
-// future actions. Markers are always written LOCAL_ONLY so an unknown type never reaches a peer.
+// future actions. Reload markers are always written LOCAL_ONLY so an unknown type never reaches a
+// peer; the lock control entries below deliberately are not, and rely on the capability gate instead.
 const RELOAD = 8;
 export const ACTION_32_BIT = 14;
 export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
 export const REMOTE_SEQUENCE_UPDATE = 11;
+/**
+ * Cluster record-lock coordination (harper#483 Phase 1). These replicate — unlike the reload marker
+ * they are NOT `LOCAL_ONLY` — and carry a control payload rather than a record, so they are written
+ * with `recordId: null`: an entry sharing a real record's `(version, tableId, recordId, nodeId)`
+ * would be returned by `RocksTransactionLogStore.getSync` ahead of that record's own audit entry and
+ * make `_writeUpdate`'s keyed dedup drop the holder's write. 13 is spare; 14/15 are the width flags.
+ */
+export const LOCK_REQUEST = 9;
+export const LOCK_GRANT = 10;
+export const LOCK_RELEASE = 12;
 export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
 export const HAS_ORIGINATING_OPERATION = 2048;
@@ -481,7 +492,24 @@ const EVENT_TYPES = {
 	[RELOAD]: 'reload',
 	remoteSequenceUpdate: REMOTE_SEQUENCE_UPDATE,
 	[REMOTE_SEQUENCE_UPDATE]: 'remoteSequenceUpdate',
+	lockRequest: LOCK_REQUEST | HAS_RECORD,
+	[LOCK_REQUEST]: 'lockRequest',
+	lockGrant: LOCK_GRANT | HAS_RECORD,
+	[LOCK_GRANT]: 'lockGrant',
+	lockRelease: LOCK_RELEASE | HAS_RECORD,
+	[LOCK_RELEASE]: 'lockRelease',
 };
+
+/**
+ * Cluster lock coordination entries. They ride the replicated audit stream but describe no record,
+ * so every consumer that surfaces audit entries as record activity — subscriber fan-out, the
+ * `startTime` replay, the `previousCount` backfill, the replicated-event sink — must exclude them.
+ * An equality chain rather than a Set: this runs once per audit entry on the replay and fan-out
+ * paths, where the common answer is false on the first comparison.
+ */
+export function isLockControlType(type: unknown): boolean {
+	return type === 'lockRequest' || type === 'lockGrant' || type === 'lockRelease';
+}
 const ORIGINATING_OPERATIONS = {
 	insert: 1,
 	update: 2,

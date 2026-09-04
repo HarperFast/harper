@@ -282,9 +282,9 @@ Consequences that shape the code:
   hooks by the same trust model as any in-process `Table.update(id)` + set/save sequence.
 
 Not in Phase 0, by design: replication of lock transitions, distributed grant, lease renewal,
-subscription events for lock/unlock, and lock() on LMDB. Phase 1 direction: replicate lock request/
-grant/release as control transaction-log entries with Ricart–Agrawala-style (timestamp, nodeId)
-tiebreaking; once every node participates in the grant protocol, lock() becomes a cluster-wide verb.
+subscription events for lock/unlock, and lock() on LMDB. Phase 1 adds the distributed grant — see
+"Phase 1: cluster-wide `lock()` over replicated control entries" below. Lease renewal, subscription
+events for lock/unlock, and lock() on LMDB remain out of scope.
 
 **Acquisition timestamp and mixed transactions.** In an `ImmediateTransaction` context (no explicit
 `transaction()` scope) every save — hold or scoped — is stamped by `handle.nextHolderVersion()` so
@@ -310,6 +310,204 @@ JS thread:
 - _Abort during the `acquireRecordKey` await window._ The async gap between `tryLock` failing and the
   `onUnlocked` callback is short in practice, and injecting an abort during that window requires two
   concurrent threads.
+
+### Phase 1: cluster-wide `lock()` over replicated control entries (`recordLockCoordinator`)
+
+Phase 1 keeps every Phase 0 mechanism and adds a cluster round on top of it. Nothing in core registers
+a `ClusterLockTransport`, so in a core-only build the machinery is inert and `lock()` behaves exactly
+as it did in Phase 0 — the whole feature is gated on harper-pro registering a transport.
+
+**Three control entries.** `LOCK_REQUEST = 9`, `LOCK_GRANT = 10`, `LOCK_RELEASE = 12` are new action
+nibbles in `auditStore.ts` (11 is `REMOTE_SEQUENCE_UPDATE`, 13 spare, 14/15 the width flags), named
+`lockRequest`/`lockGrant`/`lockRelease`. Each is written in its own transaction, with no primary-store
+write, and — unlike the `reload` marker it is otherwise modeled on — **not** `LOCAL_ONLY`, because
+replicating it IS the send. The payload:
+
+| entry         | payload                                      |
+| ------------- | -------------------------------------------- |
+| `lockRequest` | `[key, requesterName, tsR, leaseMs, waitMs]` |
+| `lockGrant`   | `[key, requesterName, tsR, grantorName]`     |
+| `lockRelease` | `[key, requesterName, tsR]`                  |
+
+Two encoding decisions carry facts the code cannot state:
+
+- **`recordId` is null and the locked key rides in the payload.** `_writeUpdate`'s keyed dedup asks
+  `auditStore.get(txnTime, tableId, id, nodeId)`, and `RocksTransactionLogStore.getSync` returns the
+  FIRST entry matching that timestamp and key. The holder's own first write is stamped at exactly
+  `ts_R`, so a control entry carrying the locked key would answer that lookup instead, and the dedup
+  would discard the holder's write as an already-applied duplicate. The same collision misleads
+  `getRecordAtTime`'s reverse walk.
+- **The payload is packed by a module-local `Packr` with its own structure dictionary, not by
+  `recordUpdater`.** An audit value object passes through `storedFieldsOnly()`, which tests
+  `Object.hasOwn(value, resolvedName)` — an array owns `"0"`, so a table with a resolved attribute of
+  that name would have the field stripped — and is encoded with the table's own encoder, which mints a
+  shared structure per shape and raises `HAS_STRUCTURE_UPDATE` for replication. Writing the bytes
+  directly removes both. Record mode stays ON in that packer even though the payload is an array: the
+  reader is the receiving table's decoder (`auditRecord.getValue`), which repurposes a range of
+  positive fixints as structure ids, so a payload packed without record mode writes an integer record
+  key of 64–127 as a bare fixint that the decoder then reads as a structure header — and the entry
+  fails to decode. The private dictionary can never be written to (a record key is an ordered-binary
+  value, never a plain object) and the encoder throws if that ever stops holding, because the receiver
+  has no way to resolve an id minted here.
+
+The entry identity is `(requesterName, tsR)`. **Node identity is the node NAME, never the audit
+`nodeId`**: `nodeIdMapping.ts` hands out per-node short ids (0 is always local), so the same node has
+different ids on different nodes, a number inside a payload is not translated by the receiver, and a
+`(ts, nodeId)` total order built on them would order the same pair of requests differently on two
+nodes — and both would grant. Registration refuses a loopback/bare-host identity for the same reason.
+
+**`ts_R` is chosen before the write and lives only in the payload.** The writer takes
+`primaryStore.getMonotonicTimestamp()` and puts it in the payload; no control entry pins its
+transaction clock to it. An entry stamped with a timestamp minted before it commits can land behind a
+peer's replication cursor if anything else on that table commits in between, and a forward resume scan
+would never deliver it — fatal for a grant written seconds later, and reachable under load even for
+the request. Since every consumer reads `ts_R` from the payload, the entry's own log key never has to
+equal it.
+
+**Ricart–Agrawala with total order `(tsR, nodeName)`.** The requester holds the local rocksdb key
+first — that is what bounds a node to one outstanding request per key — then writes `LOCK_REQUEST` and
+waits for a `LOCK_GRANT` from every participant. On applying `LOCK_REQUEST(Q, tsQ)` a participant
+defers if it holds the key cluster-granted, or if its own pending request is earlier; otherwise it
+grants. Deferred grants are written in `(tsR, nodeName)` order on release or withdraw. A wait that
+times out writes `LOCK_RELEASE` as its withdraw and hands out what it was deferring.
+
+**A missing grant is synthesized only for a crash.** When a peer's observed round passes its bound,
+the waiter treats that peer's grant as given. That is sound only as evidence the peer died while
+owing it, so two cases are excluded: a peer that wrote a clean `LOCK_RELEASE` is alive and will answer
+normally, and a peer with another round still live may be holding the key right now. Either one,
+treated as a grant, admits a second holder. A peer we never observed a request from is never
+synthesized at all — the waiter simply times out, which is the intended outcome for a peer that is
+merely down.
+
+**An entry's identity is bound to the node that wrote it.** `applyEntry` takes the author from the
+audit header's `nodeId` (translated on receive, preserved across relays), not from the payload, and
+drops any entry whose payload names a different requester or grantor. Without that, one participant
+could write a grant naming every other node and complete a requester's round while the real holder
+still held. Core cannot authenticate the header itself; binding it to the connection's authenticated
+origin is the transport's job.
+
+**Leases: the holder always expires first.** On success `handle.acquiredAt` becomes `ts_R` and the
+hold is re-armed to run for `leaseMs` measured from the monotonic instant `ts_R` was minted — never
+from `ts_R + leaseMs - Date.now()`, because `ts_R` comes from a never-decreasing source and after a
+backward wall-clock step that subtraction hands back more lease than the round was granted. A participant bounds the same hold at its
+OWN observation of the request plus `max(leaseMs, waitMs) + LOCK_LEASE_SKEW_MS` (default 5 s); once
+that passes, the peer can neither be holding nor newly acquire, so its grant is implied and a waiter
+proceeds past a holder that crashed without releasing. Every expiry decision is made on a monotonic
+clock and no remote timestamp is ever compared against a local one, so the guarantee rests on the skew
+allowance rather than on clock offset, and a wall-clock jump cannot extend a lease. That is a claim
+about the EXPIRY decisions specifically. One comparison necessarily does cross clocks: the
+stale-replay filter drops an arriving `LOCK_REQUEST` older than
+`now − (MAX_LOCK_LEASE_MS + waitMs + skew)`, and a remote `ts_R` has no local equivalent to measure
+against. It is a replay heuristic rather than a bound — its margin is minutes, and dropping a live
+request only costs the requester its own grant, never exclusion — so it fails in the safe direction
+under a clock offset large enough to reach it, which is far past the point where LWW itself stops
+working. A deliberate
+`unlock()` does not make a lapsed lease valid again either: by then every peer has passed its own
+bound, so a write staged before the lapse is still fenced at commit.
+
+Three consequences that are load-bearing rather than tidy:
+
+- A round that completes after `ts_R + leaseMs` yields **no** hold (423). A requester acquiring late,
+  next to a participant that had already synthesized its grant, is exactly the two-holder case.
+  Practically this means `timeout` must be well under `lease` for a contended lock to be usable.
+- `upgradeToHold` clamps to the granted round's deadline instead of extending it. A locally extended
+  lease that peers never hear about is the same bug.
+- Expiry is checked **synchronously on every staged write and again immediately before the native
+  commit submits**. `commit()` skips operations already marked saved, so a holder that stalled between
+  staging and commit would otherwise submit a batch every participant had written off. The lease timer
+  is now cleanup — it returns the native key — not the thing that makes the guarantee.
+
+**Membership is fail-closed.** `participants(database)` must return the COMPLETE desired peer set with
+a `capable` flag on each, never a pre-filtered intersection, which could not distinguish "not a
+participant" from "peer cannot participate". `lock()` rejects with a retryable 503
+`LockUnavailableError` when the call throws, returns nothing, names a node twice, or contains any
+member with `capable !== true`.
+
+**DOWN-exclusion needs cluster agreement, not a local view.** A participant is dropped from the grant
+set of NEW requests only when it has been down longer than `MAX_LOCK_LEASE_MS + skew` AND the
+transport marks it `agreedDown`. The first condition alone is not sufficient, and the earlier claim
+that "asymmetric partitions get the same rule from each side" was the bug rather than the argument:
+with A↔C down while both stay up and reachable from B, A drops C and C drops A, each asks only B, and
+B — holding no round of its own — grants both. One key, two holders. `agreedDown` asserts that the
+DOWN verdict is cluster-agreed and the excluded node is known to have stopped acquiring, which is what
+the membership epoch in the transport preconditions below is for. Nothing in core sets it, so core
+excludes nobody: a requester blocks on a peer it cannot reach until its own `waitMs` and then 423s.
+
+Known limit, not yet addressed: the contention caps are per (table, key) with no aggregate bound, so a
+lock-heavy workload can retain up to `MAX_KEYS_IN_FLIGHT × MAX_PEER_REQUESTS_PER_KEY` peer rounds per
+table until their bounds elapse. An aggregate cap belongs with the enablement gate's measurements.
+
+Once a transport has been registered for a database, its later absence keeps failing
+closed — only an explicit `unregisterClusterLockTransport(database, true)` says the database became
+standalone — because a transient empty registry during startup, component reload or a failed
+reconnect is not proof of standalone operation.
+
+**`{ scope: 'node' }`** opts out of the cluster round and keeps exact Phase 0 semantics, which by
+design permits simultaneous holders on different nodes. An **explicit** `{ scope: 'cluster' }` with no
+transport rejects 503 rather than silently returning the weaker lock, and a transaction that already
+holds a key node-scoped cannot take a cluster lock on it (409) — including through the concurrent-lock
+coalescing path, where a follower would otherwise inherit the leader's weaker handle.
+
+**Routing and exclusion from record surfaces.** The replicated-event consumer in `Table.ts` dispatches
+the three types to the table's `LockCoordinator` before it resolves a resource, so they never reach
+`_writeUpdate`, and `stageWrite` keeps them off the per-key write chain. Every surface that reports
+audit entries as record activity filters them through `isLockControlType`: the subscriber listener
+(ahead of the `rawEvents` branch, which otherwise forwards every type verbatim), the
+`subscribe({ startTime })` replay, the `previousCount` backfill, and `getHistory()`.
+`getHistoryOfRecord()` excludes them already by matching on record id.
+
+**Rolling upgrade.** Unlike the reload marker these entries are modeled on, the three lock nibbles are
+not `LOCAL_ONLY`, so a peer that predates them will decode an action it does not know. Nothing in core
+sends them — the harper-pro transport's capability gate is what keeps them off a peer that cannot
+handle them, and the fail-closed participant rule is what keeps a lock from being promised across
+such a peer.
+
+**Replay and validation.** Entries are idempotent by `(requesterName, tsR)`, and a `LOCK_REQUEST`
+older than `now − (MAX_LOCK_LEASE_MS + waitMs + skew)` is ignored on arrival, so a cursor replay after
+reconnect is harmless. Peer payloads are validated before they can create state: exact tuple length,
+a positive finite `ts_R`, durations inside the configured bounds, non-empty node names, a requester
+that is a current participant, and a grantor the round was actually waiting on. Per-key and per-table
+caps bound what a contention storm can accumulate. A failed control write never escapes: release is
+best-effort with a latched warning, since peer lease expiry is the safety net, while request and grant
+writes are awaited before the state that depends on them advances.
+
+Preconditions the harper-pro transport task must satisfy before this is enabled (none of them can be
+established in core):
+
+- **One process-owned coordinator.** `lock()` runs on whatever worker serves the request while
+  replicated events are applied on the subscription's thread, and coordinator state is per-thread.
+  Core makes the unsafe state unreachable rather than merely documented: `ownsCoordination()` gates
+  every cluster acquire and every arriving entry, so a non-owner worker gets 503 instead of arbitrating
+  against a partial view. The transport must therefore register on EVERY worker (returning false off
+  the owner) and bridge BOTH directions to it — a non-owner worker's acquire/release, and any control
+  entry that arrives on a non-owner worker. Registering only on the owner would leave the other
+  workers with no transport and hand them a silent node-local lock; delivering entries off the owner
+  drops them, which the coordinator counts in `stats.droppedOffOwner` and re-warns about once a
+  minute rather than latching to silence.
+- **Relay re-emission.** A receiving node hands control entries to its coordinator and does not
+  re-write them to its own log, so a hub does not forward them to a spoke. Full mesh works;
+  hub-and-spoke needs the transport to re-emit.
+- **Trusted origin identity.** Core validates a payload's shape and membership but cannot authenticate
+  its author, so a capable peer could name another node as the grantor. The transport must bind
+  requester/grantor to the connection's authenticated origin, including through relays.
+- **A membership epoch** gating a rejoining node before it may request, which needs the topology
+  source core does not have.
+- **A measured enablement gate.** Grants ride the replicated audit stream, so an acquisition with `P`
+  participants produces up to `P-1` grants each delivered to `P-1` peers. That is inherent to the
+  approved transport choice — unicast grant RPC was rejected because it is neither durable nor ordered
+  with the data stream — so it is a rollout threshold, not something core can design away. Lock rate,
+  latency, audit growth, replication lag and normal-write impact need thresholds and a kill switch
+  before cluster scope is on by default.
+
+**Audit-log surface.** Control entries appear in `read_audit_log` with a null record id and type
+`lockRequest`/`lockGrant`/`lockRelease`. They are real transaction-log entries, so this is accurate,
+but a consumer that assumes only record actions needs to filter.
+
+**Dual-clock (harper#2412 / rocksdb-js#811).** Phase 1 keeps Phase 0's stamping — the pinned
+transaction clock and `nextHolderVersion()` anchored at `ts_R`. Under the settled dual-clock model the
+lock-ordered stamp belongs in the distinct-version second word (`HAS_DISTINCT_VERSION_FLAG`); that
+move is fenced to harper#2412, and harper#2259 (resequenced-version reuse) is its version-uniqueness
+prerequisite.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 

@@ -728,9 +728,9 @@ export class DatabaseTransaction implements Transaction {
 		if (!storeMap) return undefined;
 		const h = storeMap.get(keyId);
 		if (!h) return undefined;
-		if (!h.released) return h;
-		// Prune released handles so they don't accumulate; an expired handle checking re-entrancy
-		// would otherwise be seen as the holder and incorrectly granted access.
+		if (!h.isExpired()) return h;
+		// Prune released/expired handles so they don't accumulate; a handle past its deadline checking
+		// re-entrancy would otherwise be seen as the holder and incorrectly granted access.
 		storeMap.delete(keyId);
 		return undefined;
 	}
@@ -939,9 +939,11 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
-		// Guard: a write staged through an expired or released lock handle must not land.
-		// The handle's lease timer already unlocked the native key; another holder may have taken it.
-		if (operation.lockHandle && (operation.lockHandle.expired || operation.lockHandle.released)) {
+		// A write staged through an expired lock handle must not land: another holder may already have
+		// the key. isExpired() re-evaluates the deadline rather than trusting the lease timer to have
+		// run, since a holder whose event loop stalled would otherwise write inside the window between
+		// its deadline and its own timer callback.
+		if (operation.lockHandle?.isExpired()) {
 			// Remove the operation from the staged set so subsequent writes on this context do not
 			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
 			const failedIdx = this.writes.indexOf(operation);
@@ -1180,6 +1182,28 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
+							// Re-fence before submitting: the loop above skips operations already marked saved, so
+							// save()'s own check cannot see a holder that stalled between staging and commit. The
+							// retry/replay path re-saves every operation and is fenced there instead. Lease expiry
+							// only: an unlock() inside the lease leaves the staged write valid, an elapsed lease
+							// does not, whether or not the caller also unlocked.
+							for (let i = 0; i < this.writes.length; i++) {
+								const lapsed = this.writes[i].lockHandle;
+								if (!lapsed?.isLeaseExpired()) continue;
+								try {
+									transaction.abort();
+								} catch {}
+								// Every other terminal exit from commit() runs the logical cleanup too. Throwing
+								// straight out would strand the OTHER locks this transaction holds, its staged
+								// blobs, and the context's back-reference to a CLOSED transaction — and
+								// transaction()'s onComplete has no rejection path to run it later.
+								try {
+									this.abort();
+								} catch (error) {
+									harperLogger.debug?.('cleaning up a transaction whose record lock lapsed', error);
+								}
+								throw lockNotHeldError(lapsed);
+							}
 							// The transaction was created with coordinatedRetry:true (see
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed
