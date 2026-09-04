@@ -25,6 +25,7 @@ import type {
 import { collapseData } from '../../resources/tracked.ts';
 import { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { boundedAuditPruneEnd, raiseAuditFloor } from '../../resources/auditStore.ts';
 import { BridgeMethods } from './BridgeMethods.ts';
 import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
 import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
@@ -520,8 +521,30 @@ export class ResourceBridge extends BridgeMethods {
 			deleteObj.timestamp instanceof Date
 				? deleteObj.timestamp.getTime()
 				: typeof deleteObj.timestamp === 'string'
-					? Number.parseInt(deleteObj.timestamp)
+					? // Number, not Number.parseInt: parseInt takes a numeric PREFIX, so '9999999999999oops'
+						// parsed to a year-2286 bound that satisfied every check below and purged the whole log,
+						// and '1e3' silently became 1 (#2458). Number rejects both as NaN. The
+						// empty/whitespace case is explicit because Number('') and Number('   ') are 0, which
+						// parseInt correctly refused.
+						deleteObj.timestamp.trim() === ''
+						? Number.NaN
+						: Number(deleteObj.timestamp)
 					: deleteObj.timestamp;
+		// Neither NaN nor a non-finite bound is harmless: audit keys are raw float64, so NaN and negatives
+		// sort above every real timestamp and the prune range spans the whole log, while Infinity purges
+		// everything AND records the unknown sentinel — which `raiseAuditFloor` will never lift again. So
+		// require a finite, non-negative number and reject anything else as the operator input error it is,
+		// rather than letting raiseAuditFloor stop it with a bare Error that reports as a server fault.
+		// `Number.isFinite` does the type check too: it never coerces, so a non-number is false.
+		if (!Number.isFinite(before) || before < 0 || Object.is(before, -0))
+			throw handleHDBError(
+				new Error(),
+				`'timestamp' must be a non-negative epoch time or Date, received: ${String(deleteObj.timestamp)}`,
+				400,
+				undefined,
+				undefined,
+				true
+			);
 		const databaseName = deleteObj.database || deleteObj.schema || DEFAULT_DATABASE;
 		const table = getTable(deleteObj);
 		// A nonexistent table must not fall through to the no-table branch below — on RocksDB that
@@ -544,7 +567,16 @@ export class ResourceBridge extends BridgeMethods {
 			if (tables) {
 				for (const table of Object.values(tables)) {
 					if (table.primaryStore instanceof RocksDatabase) {
-						const deleted = table.primaryStore.purgeLogs({ before, includeEntryCounts: true });
+						// Clamp before recording: an operator-supplied bound has no ceiling of its own, and a
+						// floor above everything reachable never comes down — `raiseAuditFloor` only raises and
+						// `establishAuditFloor` skips a store that has a record. `Date.now() * 1000`, or a bare
+						// '9999999999999', would otherwise pin this whole database's floor in the year 2286+,
+						// retiring `oldestRetainedAuditTime` for every table in it including cursors saved after
+						// this call (#2458). The purge takes the same clamped bound, so it cannot remove an entry
+						// the floor does not cover.
+						const pruneEnd = boundedAuditPruneEnd(table.auditStore, before);
+						raiseAuditFloor(table.auditStore, pruneEnd);
+						const deleted = table.primaryStore.purgeLogs({ before: pruneEnd, includeEntryCounts: true });
 						totalResults.log_files_deleted += deleted.length;
 						totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);
 						break;

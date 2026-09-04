@@ -80,7 +80,14 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericT
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
+import {
+	HAS_BLOBS,
+	auditRetention,
+	removeAuditEntry,
+	raiseAuditFloor,
+	boundedAuditPruneEnd,
+	getAuditFloor,
+} from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -5923,10 +5930,27 @@ export function makeTable(options) {
 			}
 			const drainRemovals = () => Promise.all(inFlightRemovals);
 			let entriesDeleted = 0;
+			// LMDB only: RocksTransactionLogStore.remove() is a no-op, so a RocksDB deleteHistory removes
+			// nothing and must not claim it did.
+			// A request unbounded ABOVE must not become a floor unbounded above: `raiseAuditFloor` only
+			// raises and `establishAuditFloor` skips a store that has a record, so a floor above anything
+			// reachable never comes down — for this whole database, every sibling table included,
+			// permanently (#2458). Infinity is the absorbing unknown sentinel and the worst case, but a
+			// finite year-2286 bound is the same defect by degree, and entries written after this call
+			// would land below such a floor. `boundedAuditPruneEnd` clamps any cutoff to just above the
+			// newest key in the log, and the scan below uses that same value as its range end, so the
+			// prune provably cannot remove an entry the floor does not cover.
+			let pruneEnd = endTime;
+			if (!isRocksDB) {
+				pruneEnd = boundedAuditPruneEnd(auditStore, endTime);
+				raiseAuditFloor(auditStore, pruneEnd);
+			}
 			try {
 				for (const auditRecord of auditStore.getRange({
-					start: 1, // must not be zero; see getHistory below for why
-					end: endTime,
+					// must not be zero: 0 encodes to all zero bytes and so overlaps the symbol keys, as in
+					// getHistory below
+					start: 1,
+					end: pruneEnd,
 				})) {
 					await rest(); // yield to other async operations
 					if (auditRecord.tableId !== tableId) continue;
@@ -5967,6 +5991,44 @@ export function makeTable(options) {
 				throw firstRemovalError ?? new Error('Every removal attempted during deleteHistory failed');
 			}
 			return entriesDeleted;
+		}
+		/**
+		 * The floor of retained audit history, in the same time domain as `subscribe`'s `startTime` and
+		 * the `localTime` its events carry — but NOT `getHistory`'s `localTime`, which is the origin
+		 * version under that name. Concretely:
+		 * a consumer whose last-processed cursor is below the returned value must resync from a full read.
+		 * That is the action, not a diagnosis: such a cursor *may* have lost history and the floor cannot
+		 * certify otherwise, which is not the same as history having been lost — an `Infinity` floor puts
+		 * every cursor below it with nothing necessarily pruned, and a prune that removed no entry the
+		 * cursor needed reads the same way. `Infinity` means the floor is unknown and fails closed, so
+		 * no cursor reads as safe — reachable when the floor could not be recorded (a read-only
+		 * database, or a failed metadata write).
+		 *
+		 * **Diagnostic, and it answers exactly one question: did a prune remove audit history the cursor
+		 * still needs — that is, anything *after* it?** What it never covers is history below the FLOOR,
+		 * which is exactly what a prune takes — not everything below the cursor: for a cursor strictly
+		 * above the floor, `[floor, cursor)` is below the cursor and still covered. Across the paths that prune, and given a
+		 * cursor from the time domain above, it errs in one direction only — it can ask for a resync that
+		 * was not strictly necessary, never certify a cursor a prune truncated. A `getHistory` cursor is
+		 * outside that guarantee, not an exception to it: an origin version can overstate the consumer's
+		 * real audit position and so pass while that position sits below the floor. But it is
+		 * not a database-generation check, so `cursor >= floor` is not by itself a guarantee that
+		 * resuming is safe: replacing a database's state with a copy of an earlier state
+		 * (`restore_backup`, a RocksDB checkpoint) reinstalls that state's floor, and a cursor from
+		 * after the copy point then compares as safe against it even though the database carries no
+		 * change stream describing the rollback (harper#2451).
+		 *
+		 * Database-scoped, and a moment-in-time observation: retention can advance between this call
+		 * and whatever the caller does with the answer. Closing that race and validating a generation
+		 * both belong inside the resume itself (harper#2448). See `getAuditFloor` in auditStore.ts for
+		 * the full contract.
+		 */
+		static oldestRetainedAuditTime(): number {
+			if (!auditStore)
+				throw new Error(
+					`The database holding ${tableName} has no audit log, so it has no retained audit history to report`
+				);
+			return getAuditFloor(auditStore);
 		}
 		static async *getHistory(startTime = 0, endTime = Infinity) {
 			for (const auditRecord of auditStore.getRange({

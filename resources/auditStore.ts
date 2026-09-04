@@ -10,6 +10,7 @@ import { getRecordAtTime } from './crdt.ts';
 import { decodeFromDatabase } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { asBinary } from 'lmdb';
 import { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { isReadOnlyMode } from './databases.ts';
 
@@ -118,6 +119,29 @@ const warnedBodylessMints = new Set<string>();
 const warnedBodylessTables = new Set<number>();
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
+/**
+ * Key of this database's audit retention floor — the staleness horizon `getAuditFloor` reports.
+ * Its *presence* is what marks the floor trustworthy, which is why it is not the `last-removed`
+ * marker above: that one is written after its removals and by only one of the five prune paths, so a
+ * value found there cannot be told apart from one carrying the write-ahead and monotonicity
+ * guarantees `raiseAuditFloor` provides. The two coexist deliberately and answer different
+ * questions.
+ */
+const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
+// The epoch `establishAuditFloor` stamped, kept for the life of the store so a later release can tell
+// a floor that is still that unverified bootstrap value from one a real prune recorded. Never raised,
+// never removed: it is a comparison basis, not a floor. See `establishAuditFloor`.
+const AUDIT_FLOOR_BOOTSTRAP_KEY = Symbol.for('audit-floor-bootstrap');
+/**
+ * The floor's own eight bytes, deliberately NOT the FLOAT_TARGET/FLOAT_BUFFER pair the `last-removed`
+ * marker uses: decoding a floor writes into its buffer on every read, including the pre-check on each
+ * prune, while `updateLastRemoved` hands the shared buffer to an async `put` it has not yet consumed.
+ * Sharing them would let a floor read rewrite a marker still in flight.
+ */
+const FLOOR_TARGET = new Float64Array(1);
+const FLOOR_BUFFER = new Uint8Array(FLOOR_TARGET.buffer);
+/** No trustworthy floor: the highest possible floor, so every cursor compares as stale. */
+const AUDIT_FLOOR_UNKNOWN = Infinity;
 
 /** Last resort on a detached path: a failing log sink must not itself become an unhandled rejection. */
 function warnContained(message: string, error: unknown) {
@@ -156,6 +180,7 @@ export function openAuditStore(rootStore) {
 	}
 	rootStore.auditStore = auditStore;
 	auditStore.rootStore = rootStore;
+	establishAuditFloor(auditStore);
 	auditStore.tableStores = [];
 	const deleteCallbacks = [];
 	auditStore.addDeleteRemovalCallback = function (tableId, table, callback) {
@@ -229,25 +254,39 @@ export function openAuditStore(rootStore) {
 				let lastKey: any;
 				try {
 					if (isRocksAuditStore) {
-						auditStore.rootStore.purgeLogs({
-							before: Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority),
-						});
+						const before = Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority);
+						raiseAuditFloor(auditStore, before);
+						auditStore.rootStore.purgeLogs({ before });
 					} else {
 						// Driven explicitly rather than with for-of: this loop suspends on the awaits below, and a
 						// close landing mid-pass closes the env under it. for-of calls next() before the body, so a
 						// check inside the body advances the cursor first — the guard has to precede every next().
+						// remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
+						const end = Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority);
+						// Probe before raising, so an idle database does not write a floor transaction on every
+						// pass forever. `end` is fixed and audit keys only move forward, so an empty probe means
+						// the loop below finds nothing either.
 						const entries = auditStore
 							.getRange({
 								start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
 								snapshot: false,
-								end: Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
+								end,
 							})
 							[Symbol.iterator]();
 						try {
+							// Raised off the first eligible entry rather than a separate probe range: one cursor,
+							// so a pass over an idle database writes no floor at all, and nothing else observing
+							// this range sees an extra advance. Still strictly before any removal — see
+							// raiseAuditFloor.
+							let floorRaised = false;
 							while (!cleanupStopped && !storeClosing()) {
 								const entry = entries.next();
 								if (entry.done) break;
 								const auditRecord = entry.value;
+								if (!floorRaised) {
+									raiseAuditFloor(auditStore, end);
+									floorRaised = true;
+								}
 								try {
 									// awaited so a rejection (not just a synchronous throw) is caught here instead of
 									// escaping as an unhandled rejection once a later iteration's promise replaces this one
@@ -407,6 +446,358 @@ export function getLastRemoved(auditStore) {
 		return FLOAT_TARGET[0];
 	}
 }
+/**
+ * Read the recorded floor, normalizing anything we cannot trust to AUDIT_FLOOR_UNKNOWN. Reads bytes
+ * rather than going through the store's value decoder, which would read these eight raw float bytes
+ * as an audit entry (and as msgpack on RocksDB). Callers get a number in every case: a NaN or
+ * negative floor read as a number would make one of `cursor >= floor` / `cursor < floor` report
+ * safety, and which of the two a consumer writes must not decide whether corrupt metadata fails
+ * closed.
+ */
+function decodeAuditFloor(stored: any): number {
+	// RocksDB's getBinarySync is typed to also return a length; anything that is not exactly the
+	// eight bytes we write is metadata written by something else.
+	if (stored?.byteLength !== 8) return AUDIT_FLOOR_UNKNOWN;
+	FLOOR_BUFFER.set(stored);
+	const floor = FLOOR_TARGET[0];
+	// `Object.is` for -0, which passes `>= 0` and would then read as a permissive zero — every cursor
+	// safe — from bytes with the sign bit set that nothing here writes. raiseAuditFloor rejects the
+	// same value as a cutoff; the read side has to agree or corrupt metadata fails open.
+	if (!Number.isFinite(floor) || floor < 0 || Object.is(floor, -0)) return AUDIT_FLOOR_UNKNOWN;
+	return floor;
+}
+
+/**
+ * Did the floor write land? A record has to be PRESENT, not merely decode to the value we wrote:
+ * `decodeAuditFloor(undefined)` is the unknown sentinel too, so on a floorless store — where the
+ * resolver writes exactly that sentinel — comparing decoded values alone reported a commit for a
+ * write that never happened, and the caller pruned with nothing persisted.
+ */
+function floorWriteLanded(stored: any, floor: number): boolean {
+	return stored !== undefined && decodeAuditFloor(stored) === floor;
+}
+
+/** Own eight bytes per write: the store must never be handed a live view of the reused module buffer. */
+function encodeAuditFloor(floor: number): Uint8Array {
+	FLOOR_TARGET[0] = floor;
+	return FLOOR_BUFFER.slice();
+}
+
+/**
+ * Read-modify-write the floor under one store transaction. `resolve` receives the recorded floor
+ * (AUDIT_FLOOR_UNKNOWN when there is none) and returns the value to store, or undefined to leave it
+ * alone. `key` selects the record: the floor itself, or the bootstrap-provenance record beside it,
+ * which wants the same verified commit rather than a second write path.
+ *
+ * The transaction is the point: pruning is not confined to one worker — the retention loop,
+ * a boot purge, `deleteHistory` and `delete_transaction_logs_before` can all advance the floor — and
+ * two unsynchronized read-then-writes can interleave so the lower cutoff lands last, leaving a floor
+ * below history the higher one already removed. In read-only mode nothing is written, which is
+ * consistent because nothing is pruned there either.
+ */
+function updateAuditFloor(
+	auditStore: any,
+	resolve: (current: number, recorded: boolean) => number | undefined,
+	key: symbol = AUDIT_FLOOR_KEY
+): void {
+	// A legacy `auditPath` layout is opened as its own standalone LMDB root (databases.ts) and has no
+	// `.rootStore`, so it owns the transaction itself.
+	const transactionOwner = auditStore?.rootStore ?? auditStore;
+	if (!transactionOwner?.transactionSync)
+		throw new Error('Cannot record the audit retention floor: this database has no audit store');
+	// Both branches read their own write back and report `false` on mismatch, and the caller demands an
+	// explicit `true`. Both halves are load-bearing: a RocksDB transactionSync returns undefined for a
+	// swallowed abort rather than throwing (see RecordEncoder.saveStructures), and a write that fails
+	// without throwing is otherwise indistinguishable from one that landed — a caller pruning against a
+	// floor never recorded. Reads inside a write transaction see their own writes on both engines, so
+	// the read-back observes what commit will make durable.
+	const committed =
+		auditStore instanceof RocksTransactionLogStore
+			? transactionOwner.transactionSync(
+					(txn) => {
+						const stored = txn.getBinarySync(key);
+						const floor = resolve(decodeAuditFloor(stored), stored !== undefined);
+						if (floor !== undefined) {
+							txn.putSync(key, asBinary(encodeAuditFloor(floor)));
+							if (!floorWriteLanded(txn.getBinarySync(key), floor)) return false;
+						}
+						return true;
+					},
+					{ retryOnBusy: true }
+				)
+			: transactionOwner.transactionSync(() => {
+					const stored = auditStore.getBinary(key);
+					const floor = resolve(decodeAuditFloor(stored), stored !== undefined);
+					// `put` rather than `putSync`, and inside the transaction: lmdb's putSync is itself
+					// `put(...) === SYNC_PROMISE_SUCCESS`, so it drops whatever put returns — and a put that
+					// hands back a real rejection (a replaced one, as the marker-failure fixtures install)
+					// leaks it with no owner. Within a write transaction put writes synchronously and returns
+					// an already-resolved sentinel, so the value is visible immediately either way and this
+					// only takes ownership of the failure case.
+					// asBinary: a legacy standalone audit root's encoder has no Uint8Array passthrough, so raw
+					// bytes would reach createAuditEntry and throw. This bypasses both encoders.
+					if (floor !== undefined) {
+						auditStore
+							.put(key, asBinary(encodeAuditFloor(floor)))
+							?.catch?.((error) => warnContained('Error writing the audit retention floor', error));
+						if (!floorWriteLanded(auditStore.getBinary(key), floor)) return false;
+					}
+					return true;
+				});
+	if (committed !== true) throw new Error('The audit retention floor transaction did not commit');
+}
+
+/**
+ * The bound a prune should use — and record — in place of an unbounded cutoff.
+ *
+ * `Infinity` is a legitimate thing for a caller to *mean* ("remove all of it") and a ruinous thing to
+ * store: it is the unknown sentinel, and the sentinel is absorbing. `raiseAuditFloor`'s lock-free
+ * pre-check skips any present record no cutoff exceeds, and `establishAuditFloor` skips any store that
+ * has one, so a floor at `Infinity` never comes back down — for the whole database, including sibling
+ * tables whose own history was never touched. One `deleteHistory(Infinity)` would otherwise retire the
+ * accessor for that database permanently (#2458).
+ *
+ * So bound it by what exists: strictly above the newest key currently in the log, and never below the
+ * clock. Nothing already written can escape that bound, and a caller that passes it as the prune's
+ * range end as well as its floor cannot remove anything the floor does not cover — which is what makes
+ * the write-ahead ordering hold without an infinite bound. An entry written *after* this returns is
+ * simply not history the call asked to remove.
+ *
+ * `Infinity` is only the extreme case. Any cutoff above this bound is the same defect by degree: a
+ * finite year-2286 bound (`Date.now() * 1000`, or a bare `'9999999999999'`) is equally unreachable
+ * and equally permanent, and entries written after the prune then land *below* the recorded floor,
+ * so the floor's promise — nothing after it was pruned — is false about history that is still there.
+ * Every cutoff is therefore clamped, not just the unbounded one.
+ *
+ * NaN, negatives and `-0` fall through unchanged to `raiseAuditFloor`, which rejects them: they are
+ * ordered keys the prune range would honor, not bounds anyone meant. `cutoff > bound` rather than
+ * `Math.min` keeps that so — NaN fails the comparison and is returned as-is to be rejected.
+ *
+ * On RocksDB `getKeys` is unimplemented and returns `[]`, so the bound reduces to `Date.now()`. A
+ * key above the clock therefore survives a purge that asked for it on that engine. That is the safe
+ * direction: the entry is kept and the floor stays honest, where the alternative removes history the
+ * floor does not cover.
+ */
+export function boundedAuditPruneEnd(auditStore: any, cutoff: number): number {
+	let bound = Date.now();
+	for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
+		if (typeof newest === 'number' && newest >= bound) bound = newest + 1;
+	}
+	return cutoff > bound ? bound : cutoff;
+}
+
+/**
+ * Raise the floor to `cutoff`, the exclusive lower bound of the history a prune is about to make
+ * unreachable.
+ *
+ * **Call this before removing anything.** A floor written after the removal is lost if the process
+ * dies in between, and the surviving lower floor then certifies a cursor whose history is gone.
+ * Ordering it first also means it covers a prune that removes less than `cutoff` spans — a RocksDB
+ * purge that finds no whole droppable file, a retention pass that stops at MAX_DELETES_PER_CLEANUP
+ * with a large backlog still eligible. Over-reporting costs a consumer one unnecessary resync;
+ * under-reporting loses its data silently. For the three retention paths the over-report is bounded
+ * by the thing that already bounds the promise — they pass `Date.now() - auditRetention`, so the
+ * floor cannot climb above the horizon `logging.auditRetention` already declines to retain past. The
+ * two operator-supplied bounds (`deleteHistory`, and the bridge's whole-database purge) have no such
+ * ceiling of their own and must be run through `boundedAuditPruneEnd` first; a bound above everything
+ * reachable would otherwise be recorded verbatim and never come down.
+ *
+ * Throws if the floor cannot be persisted, which is why it is called first — the throw is what stops
+ * the prune from proceeding unrecorded. Never lowers the floor, so a narrower prune cannot undo a
+ * wider one, and a store whose floor is unknown stays unknown rather than being talked down to a
+ * cutoff that says nothing about the history it has already lost.
+ */
+export function raiseAuditFloor(auditStore: any, cutoff: number): void {
+	// Throw rather than no-op on a bound we will not store. A NaN or negative cutoff is NOT harmless
+	// here: transactionKeyEncoder writes keys as raw float64, so NaN (0x7FF8…) and negatives (sign bit
+	// set) sort ABOVE every real timestamp, and `getRange({ start: 1, end: NaN })` therefore spans the
+	// whole log. `delete_transaction_logs_before` reaches that via Number.parseInt on a non-numeric
+	// timestamp, so silently declining the floor update would leave the prune deleting everything.
+	// Infinity is accepted and IS stored, decoding back to "unknown" — but no production caller passes
+	// it any more, because storing it retires the accessor for the whole database (see
+	// `boundedAuditPruneEnd`, which `deleteHistory` uses to bound an unbounded request, and the 400 the
+	// bridge returns for one). Kept accepted rather than rejected so the sentinel stays reachable for a
+	// caller that genuinely cannot bound its prune; there is currently no such caller.
+	// `-0` and a non-number slip past a naive `< 0` check but are still ordered keys the range honors:
+	// -0 sets the float64 sign bit and a non-number takes the ordered-binary branch of the key encoder,
+	// so both sort outside the timestamp space the prune means to bound.
+	if (typeof cutoff !== 'number' || Number.isNaN(cutoff) || cutoff < 0 || Object.is(cutoff, -0))
+		throw new Error(`Invalid audit prune bound: ${String(cutoff)}`);
+	// Read-only mode does not exempt a prune from recording its floor; it means the prune must not
+	// happen. Only scheduleAuditCleanup and purgeAgedLogs check read-only themselves, so for
+	// deleteHistory and the whole-database purge this throw is the guard.
+	if (isReadOnlyMode()) throw new Error('Cannot record the audit retention floor: the database is read-only');
+	// Lock-free pre-check, getBinary-guarded so this optimization never decides the error a store with
+	// no audit store reports. Most calls cannot move the floor (a RocksDB reclamation pass on an idle
+	// database, a cutoff below one a wider prune already set), and taking the env write lock to
+	// discover that serializes every worker's boot and reclamation on it. The in-transaction guards
+	// below stay authoritative.
+	// Skips only the case it can prove is a no-op: a record that exists and already sits at or above
+	// the cutoff. An absent record is NOT decided here — the presence question is settled inside the
+	// transaction below, because another worker's establishAuditFloor can land between this read and
+	// that write.
+	if (auditStore?.getBinary) {
+		const stored = auditStore.getBinary(AUDIT_FLOOR_KEY);
+		if (stored !== undefined && !(cutoff > decodeAuditFloor(stored))) return;
+	}
+	updateAuditFloor(auditStore, (current, recorded) => {
+		// Still no record, and we are about to prune: persist the unknown sentinel. Leaving no marker
+		// lets the next open stamp a FINITE epoch, and a prune bound above that epoch (a future
+		// `endTime`, or a rolled-back clock) then certifies cursors whose history this prune deleted.
+		// Unknown is the honest value, because a store with no record may have been pruned before this
+		// run too.
+		if (!recorded) return AUDIT_FLOOR_UNKNOWN;
+		// A record appeared while we were getting here, so this is an ordinary monotonic raise: pruning
+		// to `cutoff` against a floor left below it is exactly the silent gap this function prevents.
+		return cutoff > current ? cutoff : undefined;
+	});
+}
+
+/**
+ * Give a database a trustworthy floor if it has none: the current time, as a one-time resync epoch.
+ *
+ * The floor record's *presence* is the trust marker, so a store without one is a store whose
+ * retention history we cannot account for. It may have been pruned by a version that recorded no
+ * floor; it may be the empty audit store an LMDB→RocksDB migration deliberately leaves behind
+ * (`bin/copyDb.ts` does not migrate it, so the records and their resumable cursors outlive their
+ * history); or it may be a database restored from a table-scoped backup taken without
+ * `include_audit`, which carries records but no audit DBI. Cursors from before this moment are
+ * therefore reported stale — not because we know they are, but because we do not know they are not.
+ *
+ * There is no "brand new store, use a permissive baseline" case: creating the audit DBI proves only
+ * that the DBI was absent, which the audit-less backup above also produces. Being conservative on a
+ * genuinely new database costs nothing, since its entries are all written after this instant.
+ *
+ * In read-only mode nothing is written and the floor stays unknown — the fail-closed answer for a
+ * process that cannot record what it does not know.
+ *
+ * **The epoch is also recorded under its own key, so this bootstrap is repairable.** The epoch is a
+ * guess bounded by surviving state, and surviving state cannot see history a selective prune already
+ * removed (see the clock note below). The record marks the store as one that carried a guess, and
+ * preserves the value guessed — the two facts a later release needs to raise such a floor to
+ * something it can stand behind. See "Audit retention floor" in DESIGN.md for the full reading.
+ *
+ * **The mark is the signal, not a comparison against the floor.** A store carrying this record has an
+ * unverified pre-tracking window for as long as it exists, however far the floor has since moved: a
+ * prune raising the floor above the epoch certifies only what that prune removed, and says nothing
+ * about history removed before tracking began — which may sit above the epoch, since that is exactly
+ * the case the guess cannot see. Retiring the mark takes a database generation (harper#2451), not a
+ * floor that has climbed past it.
+ *
+ * Ordering. The provenance record is written **first**, so a crash between the two writes leaves a
+ * record with no floor — which the next open retries, since the early return above tests the floor.
+ * The epoch actually stamped is always read back from the record rather than taken from this call's
+ * own `Date.now()`, so a worker whose record lost the race adopts the winner's value and the two
+ * always agree. Re-adopting an older record is sound: nothing was pruned in the meantime, or a prune
+ * would have written the floor this function returns early on.
+ */
+export function establishAuditFloor(auditStore: any): void {
+	if (isReadOnlyMode()) return;
+	// Every read and write in here is inside the try: the contract is that a database open never fails
+	// over this metadata, and a throwing getBinary/getKeys would escape to initStores just as a
+	// throwing write would.
+	try {
+		// Absence of the record, not `getAuditFloor() === AUDIT_FLOOR_UNKNOWN`: a record that exists but
+		// decodes to unknown — corrupt bytes, or the Infinity a prune-everything stored — is already the
+		// fail-closed answer, and stamping over it would LOWER a floor that is never supposed to lower.
+		// The check is repeated inside the transaction (the `recorded` argument), because between this
+		// read and that write another worker's prune can store exactly such a value; this read only keeps
+		// the common case — a floor already established, every worker, every database, every boot — off
+		// the env write lock.
+		if (auditStore.getBinary(AUDIT_FLOOR_KEY) !== undefined) return;
+		// Not bare Date.now(): a clock that has rolled back would bootstrap a floor BELOW history this
+		// database may already have pruned, certifying a stale cursor. The newest retained entry is a
+		// lower bound the clock cannot argue with — everything at or above it is demonstrably still here —
+		// so take whichever is later.
+		//
+		// It narrows that hole; it does not close it, because the bound covers what SURVIVES rather than
+		// what existed. A legacy `deleteHistory` removes one table's entries below its endTime out of the
+		// shared log, so a table whose entries were the newest and all fell below that bound leaves the
+		// log's newest survivor being a sibling's OLDER entry — removed history above every surviving key.
+		// A clock rolled back to between the two then stamps an epoch below entries that are gone, and a
+		// cursor in that window resumes over the gap (#2458). Also unclosed:
+		// RocksTransactionLogStore.getKeys() is unimplemented, so on that engine this reduces to
+		// Date.now() outright.
+		//
+		// Neither is a reason to refuse to stamp — the unknown sentinel is absorbing, so that would make
+		// every upgraded deployment fail closed forever (a recorded ruling in #2458). They are the reason
+		// the guess is RECORDED as a guess: written first, so it cannot be lost behind a floor that
+		// outlives it, and left in place afterwards so the repair reading stays available.
+		let fresh = Date.now();
+		for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
+			if (typeof newest === 'number' && newest > fresh) fresh = newest;
+		}
+		// A READABLE record is kept, so the epoch read back below is whatever landed first and the floor
+		// always matches it. An unreadable one is replaced: unlike the floor, where a present record may
+		// be a deliberate AUDIT_FLOOR_UNKNOWN and overwriting it would lower a floor, this record is only
+		// a comparison basis, and undecodable bytes carry nothing worth keeping. Declining to replace
+		// them pinned the store's floor to unknown forever — the resolver would skip the write on every
+		// later open, the read back would fail identically, and no retry could ever succeed, which is the
+		// fail-closed-forever state this bootstrap exists to avoid.
+		updateAuditFloor(
+			auditStore,
+			(current, recorded) => (recorded && Number.isFinite(current) ? undefined : fresh),
+			AUDIT_FLOOR_BOOTSTRAP_KEY
+		);
+		const epoch = decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_BOOTSTRAP_KEY));
+		// Never stamp a floor whose provenance cannot be read: that is the one state a later repair cannot
+		// act on. Unreachable in principle, since `updateAuditFloor` throws if its write did not land.
+		if (!Number.isFinite(epoch)) return;
+		updateAuditFloor(auditStore, (_current, recorded) => (recorded ? undefined : epoch));
+	} catch (error) {
+		// An unrecorded floor already reads as unknown, which is the fail-closed answer; aborting startup
+		// instead would turn a metadata failure into an outage. The next open retries.
+		warnContained('Error initializing the audit retention floor', error);
+	}
+}
+
+/**
+ * The floor of this database's retained audit history: every audit entry at or after the returned
+ * time is still retained, so a consumer whose last-processed audit-log cursor is `>=` it can resume
+ * incrementally, and one below it must resync — it may have lost nothing, but the floor cannot
+ * certify it either way. Returns `Infinity` when
+ * the floor is unknown, which fails closed — no cursor compares as safe.
+ *
+ * The time domain is the audit-log key: what `subscribe`'s events carry as `localTime` and what MQTT
+ * durable sessions persist as `startTime`, so those compare against the floor directly.
+ * **`getHistory` is not in that domain** — it reports each entry's origin `version` under the name
+ * `localTime`, which a backdated or replicated write makes differ from the audit-log key. A cursor
+ * saved from `getHistory` is not comparable to this floor.
+ *
+ * **Database-scoped**, and deliberately conservative: the audit store is per-database and its
+ * entries carry a `tableId`, so a per-table floor would need a scan for the first entry matching
+ * that table. For a valid cursor, `cursor >= floor` therefore means no entry of *any* table in the
+ * database was removed *after* the cursor. What it never promises is anything below the FLOOR — that
+ * history is exactly what a prune takes. Below the *cursor* is not the same set: for a cursor strictly
+ * above the floor, `[floor, cursor)` sits below the cursor and is still covered by the guarantee. `Table.deleteHistory`
+ * prunes one table out of that shared log and raises the whole database's floor, which can overstate
+ * the floor for its siblings.
+ *
+ * **A moment-in-time observation.** Retention can advance between this call and whatever the caller
+ * does with the answer, so a check-then-resume sequence has a window where the floor moves under it.
+ * Closing that requires validating the cursor inside the resume itself (harper#2448); until then a
+ * lost race degrades to the truncation that happens today, never to anything worse.
+ *
+ * **On RocksDB the floor tracks the configured horizon, not retained reality.** That branch purges at
+ * whole-log-file granularity, so it cannot know before the fact which entries a purge will drop, and
+ * the floor has to be written first — so every retention pass advances it to
+ * `Date.now() - auditRetention / (1 + priority²)` whether or not a file was dropped. Entries below
+ * that horizon are routinely still on disk, and a consumer holding a cursor among them is told to
+ * resync. Conservative in the one safe direction, and the reason the LMDB branch (which can see a
+ * single eligible entry) instead raises off the first one it finds.
+ *
+ * **Not covered: copying a database's state without its history.** `restore_backup` replaces a
+ * database with the backup's, floor and all, and a RocksDB checkpoint (a branch database) copies the
+ * floor record but no transaction logs — so in both cases a cursor from after the copy point sits
+ * above a floor that is present, and therefore trusted, for history that is not there. Nothing here
+ * can detect that on its own, and it is not the audit log's problem alone: the same copy rolls back
+ * record versions and per-node replication sequence state, so making this one field honest while
+ * those stay stale would not give a consumer a coherent answer. It needs a database-level epoch —
+ * harper#2451.
+ */
+export function getAuditFloor(auditStore: any): number {
+	return decodeAuditFloor(auditStore.getBinary(AUDIT_FLOOR_KEY));
+}
 export function setAuditRetention(retentionTime, defaultDelay = DEFAULT_AUDIT_CLEANUP_DELAY) {
 	auditRetention = retentionTime;
 	DEFAULT_AUDIT_CLEANUP_DELAY = defaultDelay;
@@ -424,7 +815,10 @@ export function setAuditRetention(retentionTime, defaultDelay = DEFAULT_AUDIT_CL
 export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
 	// Mirror the read-only guard in scheduleAuditCleanup: never delete log files in read-only mode.
 	if (isReadOnlyMode()) return [];
-	return rootStore.purgeLogs({ before: Date.now() - auditRetention });
+	const before = Date.now() - auditRetention;
+	// The audit store is reachable this early because initStores opens it before replayLogs runs this.
+	raiseAuditFloor((rootStore as any).auditStore, before);
+	return rootStore.purgeLogs({ before });
 }
 
 const HAS_RECORD = 16;
