@@ -2260,8 +2260,10 @@ export function makeTable(options) {
 				recordVersion: options?.version,
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
+					const txnLogKey =
+						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
+					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						write.skipped = true;
 						return;
 					}
@@ -2288,6 +2290,11 @@ export function makeTable(options) {
 							viaNodeId: options?.viaNodeId,
 							transaction,
 							tableToTrack: tableName,
+							recordVersion: txnTime,
+							additionalAuditRefs:
+								isRocksDB && audit && txnLogKey !== txnTime
+									? [{ version: txnLogKey, nodeId: options?.nodeId }]
+									: undefined,
 						},
 						'invalidate'
 					);
@@ -2315,7 +2322,9 @@ export function makeTable(options) {
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
 						: undefined,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
+					const txnLogKey =
+						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
+					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let newRecord = null;
@@ -2347,6 +2356,11 @@ export function makeTable(options) {
 							viaNodeId: options?.viaNodeId,
 							expiresAt: options.expiresAt,
 							transaction,
+							recordVersion: txnTime,
+							additionalAuditRefs:
+								isRocksDB && audit && txnLogKey !== txnTime
+									? [{ version: txnLogKey, nodeId: options?.nodeId }]
+									: undefined,
 						},
 						'relocate',
 						false,
@@ -2853,6 +2867,7 @@ export function makeTable(options) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			const transaction = txnForContext(context);
+			const replaying = transaction.isReplay === true;
 			checkValidId(id);
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
 				// A source/replication-applied put must carry the record; these applies skip record
@@ -3150,7 +3165,7 @@ export function makeTable(options) {
 							// would find it and skip the write as "already applied" when the record was never committed.
 							// A recommit of the same transaction survived that skip only because the old write batch
 							// still carried the put; a fresh-transaction replay (ERR_TRY_AGAIN) would drop the write.
-							if (isRocksDB && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(txnLogKey)) {
+							if (isRocksDB && !replaying && !stagedOwnAuditEntry && dedupVersionCouldBeRetained(txnLogKey)) {
 								const priorAudit = auditStore.get(txnLogKey, tableId, id, options?.nodeId);
 								if (
 									priorAudit &&
@@ -3236,7 +3251,7 @@ export function makeTable(options) {
 							// appended this write's own audit entry, so the lookup would match it while the record was
 							// never committed (see the up-front keyed dedup above).
 							const isReDeliveredDuplicate = () => {
-								if (stagedOwnAuditEntry) return false;
+								if (replaying || stagedOwnAuditEntry) return false;
 								if (!dedupVersionCouldBeRetained(txnLogKey)) return false; // pre-retention log key — skip the end-of-log scan (best-effort; see above)
 								const duplicate = auditStore.get(txnLogKey, tableId, id, options?.nodeId);
 								return (
@@ -3267,6 +3282,7 @@ export function makeTable(options) {
 									queuePreviousAuditRefs(auditRecord);
 									if (
 										isRocksDB &&
+										!replaying &&
 										!stagedOwnAuditEntry &&
 										localTime === txnLogKey &&
 										precedesExistingVersion(
@@ -3287,12 +3303,22 @@ export function makeTable(options) {
 												options?.nodeId
 											);
 											if (precedesExisting === 0) {
-												logger.debug?.(
-													'The transaction time is equal to the existing version, treating as duplicate',
-													id
-												);
-												write.skipped = true;
-												return; // treat a tie as a duplicate and drop it
+												if (isRocksDB && localTime !== txnLogKey) {
+													// Same origin and record version, but a distinct write. Its per-origin log key
+													// orders the otherwise non-unique record clock without comparing keys across origins.
+													precedesExisting = txnLogKey > localTime ? 1 : -1;
+												} else if (replaying || stagedOwnAuditEntry) {
+													// The log entry being replayed (or staged by this write's failed attempt) is
+													// the write itself, not proof that its primary-store mutation committed.
+													precedesExisting = 1;
+												} else {
+													logger.debug?.(
+														'The transaction time and log key match the existing write, treating as duplicate',
+														id
+													);
+													write.skipped = true;
+													return;
+												}
 											}
 											if (precedesExisting > 0) {
 												// if the existing version is older, we can skip this update

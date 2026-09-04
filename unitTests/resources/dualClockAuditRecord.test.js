@@ -67,6 +67,22 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		});
 	}
 
+	function invalidateFromOrigin(TableClass, id, partialRecord, { logKey, version, nodeId = 1 }) {
+		const context = { source: {}, sourceApply: true, timestamp: logKey };
+		return transaction(context, async () => {
+			const resource = await TableClass.getResource(id, context);
+			return resource._writeInvalidate(id, partialRecord, { nodeId, version });
+		});
+	}
+
+	function relocateFromOrigin(TableClass, id, { logKey, version, nodeId = 1 }) {
+		const context = { source: {}, sourceApply: true, timestamp: logKey };
+		return transaction(context, async () => {
+			const resource = await TableClass.getResource(id, context);
+			return resource._writeRelocate(id, { nodeId, version });
+		});
+	}
+
 	before(async function () {
 		if (isLMDB) return;
 		setupTestDBPath();
@@ -180,6 +196,28 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		assert.deepEqual(olderAudit.previousAdditionalAuditRefs, [{ version: logKey, nodeId: 0 }]);
 	});
 
+	it('distinguishes equal record versions from distinct log-key writes', async function () {
+		if (isLMDB) return this.skip();
+		const id = 'equal-version-distinct-log-key-1';
+		const version = Date.now() - 30_000;
+		await applyFromOrigin(Plain, id, { id, name: 'base', count: 0 }, { logKey: version, version, nodeId: 0 });
+		const logKey = Date.now();
+		await applyFromOrigin(
+			Plain,
+			id,
+			{ count: { __op__: 'add', value: 1 } },
+			{ logKey, version, nodeId: 0, fullUpdate: false }
+		);
+		assert.equal((await Plain.get(id)).count, 1, 'a distinct equal-version patch must still be folded');
+		assert(
+			Plain.primaryStore
+				.getEntry(id)
+				.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0),
+			'the distinct write remains addressable by its log identity'
+		);
+		assert.equal(auditStore.get(logKey, Plain.tableId, id, 0)?.version, version);
+	});
+
 	it('keeps a log-key pointer to an applied delete whose version differs', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'applied-delete-head-1';
@@ -209,6 +247,58 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		);
 		await removeAuditEntry(auditStore, auditStore.get(deleteLogKey, Plain.tableId, id, 0));
 		assert.equal(Plain.primaryStore.getEntry(id), undefined, 'removing the matching audit entry removes its tombstone');
+	});
+
+	it('keeps a log-key pointer to an applied invalidation whose version differs', async function () {
+		if (isLMDB) return this.skip();
+		const id = 'applied-invalidate-head-1';
+		const baseVersion = Date.now() - 30_000;
+		await applyFromOrigin(
+			Plain,
+			id,
+			{ id, name: 'present' },
+			{ logKey: baseVersion, version: baseVersion, nodeId: 0, isCopyApply: true }
+		);
+		const logKey = Date.now() + 20;
+		const version = baseVersion;
+		await invalidateFromOrigin(Plain, id, { id, name: 'present' }, { logKey, version, nodeId: 0 });
+		const invalidated = Plain.primaryStore.getEntry(id);
+		const invalidateAudit = auditEntriesFor(Plain, id).find((entry) => entry.type === 'invalidate');
+		assert.equal(invalidated.version, version);
+		assert(
+			invalidated.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0),
+			`invalidated record must retain ${logKey}; refs=${JSON.stringify(invalidated.additionalAuditRefs)} audit=${JSON.stringify(invalidateAudit)}`
+		);
+		assert.equal(invalidateAudit.type, 'invalidate');
+		assert.equal(invalidateAudit.txnLogKey, logKey);
+		assert.equal(invalidateAudit.version, version);
+		assert((await Plain.getHistoryOfRecord(id)).some((entry) => entry.localTime === logKey));
+	});
+
+	it('keeps a log-key pointer to an applied relocation whose version differs', async function () {
+		if (isLMDB) return this.skip();
+		const id = 'applied-relocate-head-1';
+		const baseVersion = Date.now() - 30_000;
+		await applyFromOrigin(
+			Plain,
+			id,
+			{ id, name: 'present' },
+			{ logKey: baseVersion, version: baseVersion, nodeId: 0, isCopyApply: true }
+		);
+		const logKey = Date.now() + 21;
+		const version = baseVersion;
+		await relocateFromOrigin(Plain, id, { logKey, version, nodeId: 0 });
+		const relocated = Plain.primaryStore.getEntry(id);
+		const relocateAudit = auditEntriesFor(Plain, id).find((entry) => entry.type === 'relocate');
+		assert.equal(relocated.version, version);
+		assert(
+			relocated.additionalAuditRefs?.some((ref) => ref.version === logKey && ref.nodeId === 0),
+			`relocated record must retain ${logKey}; refs=${JSON.stringify(relocated.additionalAuditRefs)} audit=${JSON.stringify(relocateAudit)}`
+		);
+		assert.equal(relocateAudit.type, 'relocate');
+		assert.equal(relocateAudit.txnLogKey, logKey);
+		assert.equal(relocateAudit.version, version);
+		assert((await Plain.getHistoryOfRecord(id)).some((entry) => entry.localTime === logKey));
 	});
 
 	it('does not point a copy-applied record at an audit entry that was never written', async function () {
