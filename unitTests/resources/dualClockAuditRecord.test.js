@@ -143,9 +143,13 @@ describe('Dual-clock audit records (harper#2412)', () => {
 			Plain,
 			id,
 			{ name: 'older', count: { __op__: 'add', value: 1 } },
-			{ logKey: logKey + 1, version: version - 1, nodeId: 0, fullUpdate: false }
+			{ logKey: logKey + 1_000, version: version - 1, nodeId: 0, fullUpdate: false }
 		);
 		assert.deepEqual(await Plain.get(id), { id, name: 'newer' });
+		assert(
+			(await Plain.getHistoryOfRecord(id)).some((entry) => entry.localTime === logKey),
+			'an audit-only fold must not displace the real head of the surviving record'
+		);
 	});
 
 	it('does not point a copy-applied record at an audit entry that was never written', async function () {
@@ -313,6 +317,8 @@ describe('Dual-clock audit records on LMDB (harper#2412)', () => {
 		}
 		assert.ok(entry, 'the applied write must have produced an audit entry');
 		assert.equal(entry.version, originLogKey);
+		const [historyEntry] = await Applied.getHistoryOfRecord(id);
+		assert.equal(historyEntry.localTime, originLogKey, 'legacy history continues to report the record version');
 		assert.equal(
 			entry.txnLogKey,
 			Applied.primaryStore.getEntry(id).localTime,

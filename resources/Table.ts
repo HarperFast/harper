@@ -717,12 +717,24 @@ export function makeTable(options) {
 		nodeId: number | undefined,
 		refs?: Array<{ version: number; nodeId: number }>
 	) {
-		if (refs) {
-			for (const ref of refs) {
+		const visited = new Set<string>();
+		function findHead(candidateRefs?: Array<{ version: number; nodeId: number }>) {
+			if (!candidateRefs) return;
+			for (const ref of candidateRefs) {
+				const identity = `${ref.nodeId ?? 0}:${ref.version}`;
+				if (visited.has(identity)) continue;
+				visited.add(identity);
 				const auditRecord = auditStore.getSync(ref.version, tableId, id, ref.nodeId);
-				if (auditRecord?.version === version) return { txnLogKey: ref.version, nodeId: ref.nodeId };
+				if (!auditRecord) continue;
+				// An audit-only out-of-order entry carries the surviving record version in its body.
+				// Its previous refs still identify the real head, so prefer them over the fold entry.
+				const previousHead = findHead(auditRecord.previousAdditionalAuditRefs);
+				if (previousHead) return previousHead;
+				if (auditRecord.version === version) return { txnLogKey: ref.version, nodeId: ref.nodeId };
 			}
 		}
+		const referencedHead = findHead(refs);
+		if (referencedHead) return referencedHead;
 		return { txnLogKey: version, nodeId };
 	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
@@ -6044,7 +6056,8 @@ export function makeTable(options) {
 				if (auditRecord.tableId !== tableId) continue;
 				yield {
 					id: auditRecord.recordId,
-					localTime: auditRecord.txnLogKey,
+					// Compatibility-facing LMDB history has always reported/grouped by record version.
+					localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
 					version: auditRecord.version,
 					type: auditRecord.type,
 					value: auditRecord.getValue(primaryStore, true, auditRecord.txnLogKey),
@@ -6073,7 +6086,7 @@ export function makeTable(options) {
 					if (auditRecord.tableId === tableId && compareKeys(auditRecord.recordId, id) === 0) {
 						history.splice(insertionPoint, 0, {
 							id: auditRecord.recordId,
-							localTime: auditRecord.txnLogKey,
+							localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
 							version: auditRecord.version,
 							type: auditRecord.type,
 							// reconstruct each entry's record image as of its own log position, not the audit
