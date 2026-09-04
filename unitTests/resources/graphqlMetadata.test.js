@@ -235,6 +235,7 @@ describe('GraphQL parser — metadata capture (#1095)', () => {
 				/must be included/
 			);
 			assert.throws(() => projectPropertiesToAttributes({ state: { const: 1n } }), /JSON-serializable/);
+			assert.throws(() => projectPropertiesToAttributes({ state: { const: Number.NaN } }), /JSON-serializable/);
 			assert.deepEqual(projectPropertiesToAttributes({ state: { const: { active: true } } })[0].const, {
 				active: true,
 			});

@@ -1482,4 +1482,27 @@ describe('mcp/tools/application — #1920 programmatic `static properties` + doc
 		assert.doesNotThrow(() => registerApplicationTools());
 		assert.equal(getTool('get_Bad'), undefined);
 	});
+
+	it('publishes no verb tools when a later verb descriptor fails', () => {
+		const Bad = makeProgrammaticResource({
+			path: 'Bad',
+			tableName: 'bad',
+			properties: { id: { type: 'string', primaryKey: true } },
+		});
+		Bad.Resource.mcp = {
+			annotations: new Proxy(
+				{},
+				{
+					get(_target, verb) {
+						if (verb === 'create') throw new Error('bad create annotation');
+					},
+				}
+			),
+		};
+		_setResourcesForTest(makeRegistry([['Bad', { Resource: Bad.Resource }]]));
+		registerApplicationTools();
+		for (const verb of ['get', 'search', 'create', 'update', 'delete']) {
+			assert.equal(getTool(`${verb}_Bad`), undefined);
+		}
+	});
 });
