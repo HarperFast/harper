@@ -1,6 +1,7 @@
 export class OrderSummary extends Resource {
 	static description = 'Rolled-up order totals.';
 	static primaryKey = 'orderId';
+	static required = ['note'];
 	static properties = {
 		orderId: { type: 'string', primaryKey: true, description: 'Order id.' },
 		status: { type: 'string', enum: ['open', 'closed'], description: 'Fulfillment state.', nullable: false },

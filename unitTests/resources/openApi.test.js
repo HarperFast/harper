@@ -306,6 +306,16 @@ describe('test openApi module', () => {
 			expect(schema.properties.size).to.include({ type: 'integer', description: 'Width in pixels' });
 		});
 
+		it('emits top-level required independently of nullable', () => {
+			const r = programmaticResources();
+			const resource = r.get('Widget').Resource;
+			resource.required = ['label'];
+			resource.properties.label = { type: ['string', 'null'] };
+			const schema = generateJsonApi(r, serverURL).components.schemas.Widget;
+			expect(schema.required).to.deep.equal(['label']);
+			expect(schema.properties.label.nullable).to.equal(true);
+		});
+
 		it('emits array items, enum, and nested-object shapes (not undefined/skeletal)', () => {
 			const r = new Map();
 			r.set('Gadget', {
