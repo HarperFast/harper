@@ -46,6 +46,16 @@ describe('mcp/session with a real table', () => {
 		assert.equal(SessionTable.source, undefined);
 	});
 
+	it('rejects a source-backed MCP session table', () => {
+		const SessionTable = ensureSessionTable();
+		SessionTable.source = class {};
+		try {
+			assert.throws(() => ensureSessionTable(), /must not be source-backed/);
+		} finally {
+			SessionTable.source = undefined;
+		}
+	});
+
 	it('keeps a deleted session absent when a late save reaches storage', async () => {
 		for (const [index, SessionTable] of SessionTables.entries()) {
 			const id = `real-mcp-session-late-save-${index}`;

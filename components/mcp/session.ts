@@ -100,15 +100,21 @@ function declareSessionTable(): Table {
  */
 export function ensureSessionTable(): Table {
 	if (!_sessionTable) {
-		_sessionTable = declareSessionTable();
-		if (_sessionTable.replicate !== false) {
+		const sessionTable = declareSessionTable();
+		if (sessionTable.replicate !== false) {
 			harperLogger.warn(`Correcting MCP session table system.${TABLE_NAME} to disable replication`);
-			_sessionTable.replicate = false;
+			sessionTable.replicate = false;
 		}
-		if (_sessionTable.source) harperLogger.fatal(`MCP session table system.${TABLE_NAME} must not be source-backed`);
+		assertSessionTableIsLocal(sessionTable);
+		_sessionTable = sessionTable;
 		harperLogger.trace(`MCP session table system.${TABLE_NAME} initialized`);
 	}
+	assertSessionTableIsLocal(_sessionTable);
 	return _sessionTable;
+}
+
+function assertSessionTableIsLocal(sessionTable: Table): void {
+	if (sessionTable.source) throw new Error(`MCP session table system.${TABLE_NAME} must not be source-backed`);
 }
 
 /** Test seam: allow tests to inject a fake table without touching Harper. */
