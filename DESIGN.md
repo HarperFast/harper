@@ -1182,11 +1182,25 @@ this fix doesn't attempt to solve. `deploy_component`/`package_component` still 
 declared entry points (`jsResource`/`graphqlSchema`) survived extraction — a truncation from some
 other future cause would still report success silently; that's a deferred, separate fix.
 
-## RocksDB backup/restore: the restore lock + marker protocol (`dataLayer/restoreMarker.ts`, `dataLayer/rocksdbBackup.ts`)
+## RocksDB backup/restore and drop: the lifecycle lock + marker protocol (`dataLayer/restoreMarker.ts`, `dataLayer/rocksdbBackup.ts`, `dropDatabase` in `resources/databases.ts`)
 
 The `restore_backup` operation restores a user database on a live server by closing it across all
 worker threads, purging its directory (`backups.restore` with `purgeAllFiles`), and reloading it.
-Three non-obvious mechanics keep that safe:
+`drop_database` destroys a directory the same way and runs the same protocol: `beginDrop` takes the
+per-database lock and writes the marker typed `drop` (second line), every thread releases its
+handles on the ITC `close_database` message (`ITC_SCHEMA_OPERATIONS`, never an API operation),
+`waitForDatabaseClosedProcessWide` checks rocksdb-js's registry, and only then are the directory and
+its blob roots destroyed — through the same strict removal as boot-time recovery (`removeDroppedDatabaseFiles`:
+nothing deleted through a symlink, parent directories fsynced, the first failed removal keeps the
+marker) — and the marker cleared. A handle that remains — a running job (job workers
+never receive broadcasts), or a component holding its own `RocksDatabase` — fails the drop with 409
+instead of being force-closed: a destroy under a concurrent open is what recreates the directory
+and leaves its `LOCK` held for the life of the process (HarperFast/rocksdb-js#818). A crash between
+the marker and the deletions leaves an incomplete `drop` marker, which the next scan on any thread
+finishes under the lock (`recoverInterruptedDrop`: the marker's name must be a single directory name
+whose key matches, nothing deleted through a symlink, the marker last); a failure there leaves the
+database unloaded and is logged once — never thrown through `getDatabases()`, which runs at worker
+boot. Three non-obvious mechanics keep the restore half safe:
 
 - **Two files in an isolated `` `restore` `` directory beside (never inside) the database directory**,
   each keyed by `sha256(basename(dbPath)).slice(0,32)`: `<key>.lock`, an OS-level exclusive flock
@@ -1249,16 +1263,18 @@ Three non-obvious mechanics keep that safe:
   calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
   user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
   exited job worker leaves no residual handle to be mistaken for a live holder.
-- **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
-  A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
-  a "successful" restore (or vice versa). `dropDatabase` therefore _acquires_ the restore lock
-  (`acquireRestoreLock`, marker-less) for each RocksDB root store and holds it across the whole drop,
-  releasing in a `finally`; a restore in progress makes the acquire fail with 409, and a leftover
-  incomplete-restore marker (lock free, detected via `restoreMarkerPresent`, which — unlike
-  `checkRestoreState` — is safe while this thread holds the lock) is refused rather than dropped over.
-  `database()`'s on-demand open still uses the read-only `throwIfBlockedByRestore` (a
-  `create_table`/`create_schema` must not resurrect a half-purged directory as a fresh empty DB), but
-  the destructive drop path now uses the exclusive lock so the race is closed, not merely narrowed.
+- **`dropDatabase` and `restore_backup` serialize on the same lock and the same typed marker, not a
+  check-then-act probe.** A drop's `destroy()` interleaving with a restore's purge-and-copy on the
+  same directory would gut a "successful" restore (or vice versa). `dropDatabase` takes the
+  per-database lifecycle lock (`beginDropOfDatabase`) and writes a `drop`-typed marker before
+  touching anything, holding both across the whole drop; a restore in progress (lock held, or a
+  leftover incomplete-restore marker) makes the acquire fail with 409, so the destructive path never
+  starts against a directory a restore owns. `database()`'s on-demand open now shares the same
+  guard: `throwIfBlockedByRestore` reads the current lifecycle marker rather than only refusing —
+  an interrupted `drop` it finds is finished under the lock (`recoverInterruptedDrop`) before the
+  open proceeds, and it re-derives the marker's state if a concurrent operation replaces it between
+  reads, so a `create_table`/`create_schema` never resurrects a half-purged directory as a fresh
+  empty one, and never opens through an incomplete restore either.
 - **The offline restore probes RocksDB's own `LOCK` file, and fails closed.** The offline path runs
   only when the CLI sees no server (a PID heuristic; the PID file is briefly absent mid-`harper
 restart`), and `backups.restore`'s `purgeAllFiles` never takes RocksDB's lock — so before purging,

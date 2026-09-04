@@ -18,8 +18,16 @@ const {
 	restoringMarkerPath,
 	restoreMetaDir,
 	scanBlockedRestores,
+	scanLifecycleMarkers,
+	beginDrop,
+	completeDrop,
+	abandonDrop,
+	lifecycleMarkerKind,
+	recoverInterruptedDrop,
+	removeDroppedDatabaseFiles,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');
+const { symlinkSync, readFileSync, lstatSync } = require('node:fs');
 
 describe('restoreMarker', function () {
 	let tempDir;
@@ -240,6 +248,167 @@ describe('restoreMarker', function () {
 
 		it('returns [] when there is no .restore directory', function () {
 			assert.deepStrictEqual(scanBlockedRestores(join(tempDir, 'no-such-root')), []);
+		});
+	});
+
+	describe('drop markers', function () {
+		it('beginDrop writes a marker typed as a drop, and the kind is readable while it is held', function () {
+			const lock = beginDrop(dbPath);
+			try {
+				assert.equal(lifecycleMarkerKind(dbPath), 'drop');
+				assert.equal(checkRestoreState(dbPath), 'in-progress');
+				const [entry] = scanLifecycleMarkers(tempDir);
+				assert.deepEqual(entry, { dbName: 'somedb', state: 'in-progress', kind: 'drop' });
+			} finally {
+				completeDrop(lock);
+			}
+			assert.equal(lifecycleMarkerKind(dbPath), null);
+			assert.equal(checkRestoreState(dbPath), 'clear');
+		});
+
+		it('a restore marker, including one written before markers were typed, reads as a restore', function () {
+			const lock = beginRestore(dbPath);
+			assert.equal(lifecycleMarkerKind(dbPath), 'restore');
+			abandonRestore(lock);
+			writeFileSync(restoringMarkerPath(dbPath), 'somedb\n');
+			assert.equal(lifecycleMarkerKind(dbPath), 'restore');
+			assert.deepEqual(scanLifecycleMarkers(tempDir), [{ dbName: 'somedb', state: 'incomplete', kind: 'restore' }]);
+		});
+
+		it('ignores a marker whose key does not match the database it names', function () {
+			// a marker keyed for `somedb` that names another database is not evidence about either
+			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+			writeFileSync(restoringMarkerPath(dbPath), 'otherdb\ndrop started now\n');
+			assert.deepEqual(scanLifecycleMarkers(tempDir), []);
+		});
+	});
+
+	describe('recoverInterruptedDrop', function () {
+		let blobRoot;
+
+		function leaveInterruptedDrop() {
+			mkdirSync(dbPath, { recursive: true });
+			writeFileSync(join(dbPath, 'CURRENT'), 'MANIFEST-000001\n');
+			blobRoot = join(tempDir, 'blobs', 'somedb');
+			mkdirSync(blobRoot, { recursive: true });
+			writeFileSync(join(blobRoot, 'leftover.bin'), 'x');
+			abandonDrop(beginDrop(dbPath));
+			assert.equal(checkRestoreState(dbPath), 'incomplete');
+		}
+
+		it('deletes the database directory and its blob roots, then the marker', function () {
+			leaveInterruptedDrop();
+			assert.equal(recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [blobRoot] }), 'recovered');
+			assert.ok(!existsSync(dbPath));
+			assert.ok(!existsSync(blobRoot));
+			assert.equal(checkRestoreState(dbPath), 'clear');
+			assert.deepEqual(scanLifecycleMarkers(tempDir), []);
+		});
+
+		it('is a no-op once whoever held the lock finished the drop', function () {
+			assert.equal(recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [] }), 'recovered');
+		});
+
+		it('does not delete while another holder has the lock', function () {
+			leaveInterruptedDrop();
+			const token = tryFileLock(restoreLockPath(dbPath));
+			try {
+				assert.equal(recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [blobRoot] }), 'in-progress');
+				assert.ok(existsSync(dbPath));
+			} finally {
+				fileLockRelease(token);
+			}
+		});
+
+		it('leaves a restore marker alone', function () {
+			mkdirSync(dbPath, { recursive: true });
+			abandonRestore(beginRestore(dbPath));
+			assert.equal(recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [] }), 'not-a-drop');
+			assert.ok(existsSync(dbPath));
+			assert.equal(checkRestoreState(dbPath), 'incomplete');
+		});
+
+		it('refuses a name that is not a single directory name, without touching anything', function () {
+			leaveInterruptedDrop();
+			for (const name of ['../somedb', 'a/b', '..', '.', 'a\\b', '']) {
+				assert.throws(() => recoverInterruptedDrop(tempDir, name, { blobRoots: [] }), /Refusing/);
+			}
+			assert.ok(existsSync(dbPath));
+			assert.equal(checkRestoreState(dbPath), 'incomplete');
+		});
+
+		it('refuses a marker that names a different database, keeping the marker', function () {
+			leaveInterruptedDrop();
+			writeFileSync(restoringMarkerPath(dbPath), 'otherdb\ndrop started now\n');
+			assert.throws(() => recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [] }), /names a different database/);
+			assert.ok(existsSync(dbPath));
+			assert.ok(existsSync(restoringMarkerPath(dbPath)));
+		});
+
+		it('refuses to delete through a symbolic link, keeping the marker', function () {
+			const elsewhere = join(tempDir, 'elsewhere');
+			mkdirSync(elsewhere, { recursive: true });
+			writeFileSync(join(elsewhere, 'precious'), 'x');
+			symlinkSync(elsewhere, dbPath, 'dir');
+			assert.ok(lstatSync(dbPath).isSymbolicLink());
+			abandonDrop(beginDrop(dbPath));
+			assert.throws(() => recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [] }), /symbolic link/);
+			assert.ok(existsSync(join(elsewhere, 'precious')));
+			assert.equal(checkRestoreState(dbPath), 'incomplete');
+		});
+
+		describe('removeDroppedDatabaseFiles (the online drop)', function () {
+			it('removes the directory remnants and every blob root', async function () {
+				leaveInterruptedDrop();
+				await removeDroppedDatabaseFiles(dbPath, [blobRoot]);
+				assert.ok(!existsSync(dbPath));
+				assert.ok(!existsSync(blobRoot));
+			});
+
+			it('rejects on the first removal that fails, so the caller keeps its marker', async function () {
+				leaveInterruptedDrop();
+				await assert.rejects(
+					removeDroppedDatabaseFiles(dbPath, [blobRoot], async (path) => {
+						if (path === blobRoot) throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+						rmSync(path, { recursive: true, force: true });
+					}),
+					/EBUSY/
+				);
+				assert.ok(!existsSync(dbPath));
+				assert.ok(existsSync(join(blobRoot, 'leftover.bin')));
+				assert.equal(checkRestoreState(dbPath), 'incomplete');
+			});
+
+			it('refuses a blob root that is a symbolic link before removing anything', async function () {
+				leaveInterruptedDrop();
+				const elsewhere = join(tempDir, 'elsewhere');
+				mkdirSync(elsewhere, { recursive: true });
+				writeFileSync(join(elsewhere, 'precious'), 'x');
+				const linkedRoot = join(tempDir, 'blobs', 'linked');
+				symlinkSync(elsewhere, linkedRoot, 'dir');
+				await assert.rejects(removeDroppedDatabaseFiles(dbPath, [blobRoot, linkedRoot]), /symbolic link/);
+				assert.ok(existsSync(join(dbPath, 'CURRENT')));
+				assert.ok(existsSync(join(blobRoot, 'leftover.bin')));
+				assert.ok(existsSync(join(elsewhere, 'precious')));
+			});
+		});
+
+		it('keeps the marker when a deletion fails, so the next scan tries again', function () {
+			leaveInterruptedDrop();
+			assert.throws(
+				() =>
+					recoverInterruptedDrop(tempDir, 'somedb', {
+						blobRoots: [blobRoot],
+						remove: (path) => {
+							if (path === blobRoot) throw Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+							rmSync(path, { recursive: true, force: true });
+						},
+					}),
+				/EBUSY/
+			);
+			assert.ok(existsSync(restoringMarkerPath(dbPath)));
+			assert.equal(checkRestoreState(dbPath), 'incomplete');
+			assert.equal(readFileSync(restoringMarkerPath(dbPath), 'utf8').split('\n')[0], 'somedb');
 		});
 	});
 });

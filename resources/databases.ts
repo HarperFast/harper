@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
-import { join, extname, basename } from 'path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import {
@@ -17,11 +17,13 @@ import {
 	DATABASES_DIR_NAME,
 	MIGRATING_DIR_SUFFIX,
 	RESERVED_DATABASE_NAMES,
+	ITC_SCHEMA_OPERATIONS,
 } from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
+import { setTimeout as delay } from 'node:timers/promises';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import { workerData } from 'worker_threads';
@@ -30,12 +32,12 @@ const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
-import { databasePaths, deleteRootBlobPathsForDB } from './blob.ts';
+import { databasePaths, deleteRootBlobPathsForDB, getBlobPathsForDatabaseName, getRootBlobPathsForDB } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
-import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
+import { RocksDatabase, registryStatus, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import { replayLogs } from './replayLogs.ts';
 import { totalmem } from 'node:os';
@@ -44,13 +46,17 @@ import { when } from '../utility/when.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 import {
-	acquireRestoreLock,
+	abandonDrop,
+	beginDrop,
 	checkRestoreState,
-	releaseRestoreLock,
-	restoreMarkerPresent,
-	scanBlockedRestores,
+	completeDrop,
+	lifecycleMarkerKind,
+	recoverInterruptedDrop,
+	scanLifecycleMarkers,
 	RESTORE_META_DIR,
 	type RestoreLock,
+	assertDropTargetsRemovable,
+	removeDroppedDatabaseFiles,
 } from '../dataLayer/restoreMarker.ts';
 
 /**
@@ -541,8 +547,9 @@ export function getDatabases(): Databases {
 	if (databasePath && existsSync(databasePath)) {
 		// First load all the databases from our main database folder
 		// TODO: Load any databases defined with explicit storage paths from the config
+		// finishing an interrupted drop removes its directory, so decide what is blocked before listing
+		const blockedByLifecycle = databasesBlockedByLifecycle(databasePath);
 		const entries = readdirSync(databasePath, { withFileTypes: true });
-		const blockedByRestore = databasesBlockedByRestore(databasePath);
 		for (const databaseEntry of entries) {
 			// in-progress migration staging dirs are not databases until atomically renamed into place
 			if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue;
@@ -554,7 +561,7 @@ export function getDatabases(): Databases {
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
-			if (blockedByRestore.has(dbName)) continue;
+			if (blockedByLifecycle.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
 
 			if (
@@ -612,13 +619,13 @@ export function getDatabases(): Databases {
 			const schemaConfig = schemaConfigs[dbName];
 			const databasePath = schemaConfig.path;
 			if (existsSync(databasePath)) {
+				const blockedByLifecycle = databasesBlockedByLifecycle(databasePath);
 				const entries = readdirSync(databasePath, { withFileTypes: true });
-				const blockedByRestore = databasesBlockedByRestore(databasePath);
 				for (const databaseEntry of entries) {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
-					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
+					if (blockedByLifecycle.has(basename(databaseEntry.name, '.mdb'))) continue;
 					if (isOpenBranchPath(join(databasePath, databaseEntry.name))) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
 						readMetaDb(join(databasePath, databaseEntry.name), basename(databaseEntry.name, '.mdb'), dbName);
@@ -860,24 +867,47 @@ function reportRelationshipError(key: string, message: string): void {
 	logger.error(message);
 }
 
+// Interrupted drops whose recovery failed on this thread; each is reported once per process rather
+// than on every rescan (a rescan runs on every thread for every schema event).
+const reportedDropRecoveryFailures = new Set<string>();
+
 /**
- * Scan a databases directory's entries for restore lock/marker files and return the names of
- * databases that must not be loaded: a held restore lock means a restore is in progress in some
- * process; an unheld lock with a surviving `.restoring` marker means a restore was interrupted
- * mid-purge (the directory may be partial garbage) and must be rerun. The files live *next to*
- * the database directory, so this also covers a database whose directory is missing or empty.
+ * Scan a databases directory's lifecycle lock/marker files and return the names of databases that
+ * must not be loaded: a held lock means a restore or drop is in progress in some thread or process;
+ * an unheld lock with a surviving marker means the operation was interrupted. An interrupted
+ * restore must be rerun (the directory may be partial garbage); an interrupted drop is finished
+ * here, under the lock, and stays unloaded if that fails — a deletion that cannot complete must
+ * never take a booting worker down with it. The files live *next to* the database directory, so
+ * this also covers a database whose directory is missing or empty.
  */
-function databasesBlockedByRestore(databasePath: string): Set<string> {
+function databasesBlockedByLifecycle(databasePath: string): Set<string> {
 	const blocked = new Set<string>();
-	for (const [dbName, state] of scanBlockedRestores(databasePath)) {
+	for (const { dbName, state, kind } of scanLifecycleMarkers(databasePath)) {
+		blocked.add(dbName);
 		if (state === 'in-progress') {
-			logger.warn(`A restore of database '${dbName}' is in progress; not loading it`);
-			blocked.add(dbName);
-		} else if (state === 'incomplete') {
+			logger.warn(`A ${kind} of database '${dbName}' is in progress; not loading it`);
+		} else if (kind === 'restore') {
 			logger.error(
 				`Incomplete restore of database '${dbName}' detected (a restore started but did not finish); not loading it — rerun the restore to recover`
 			);
-			blocked.add(dbName);
+		} else {
+			try {
+				const outcome = recoverInterruptedDrop(databasePath, dbName, {
+					blobRoots: getBlobPathsForDatabaseName(dbName),
+				});
+				if (outcome === 'recovered') {
+					reportedDropRecoveryFailures.delete(dbName);
+					logger.info(`Finished the interrupted drop of database '${dbName}'`);
+				}
+			} catch (error) {
+				if (!reportedDropRecoveryFailures.has(dbName)) {
+					reportedDropRecoveryFailures.add(dbName);
+					logger.error(
+						`Unable to finish the interrupted drop of database '${dbName}'; it stays unloaded until its directory can be removed:`,
+						error
+					);
+				}
+			}
 		}
 	}
 	return blocked;
@@ -1856,122 +1886,185 @@ export function database({ database: databaseName, table: tableName }) {
 	if (definedDatabase) (definedDatabase as any).rootStore = rootStore;
 	return rootStore;
 }
-function throwIfBlockedByRestore(dbPath: string, databaseName: string): void {
-	const restoreState = checkRestoreState(dbPath);
-	if (restoreState !== 'clear') {
-		const error: any = new Error(
-			restoreState === 'in-progress'
+function conflict(message: string): Error {
+	const error: any = new Error(message);
+	error.statusCode = 409;
+	return error;
+}
+
+/**
+ * Refuse an on-demand open (create_table/create_database and friends) of a database whose
+ * directory a restore or drop is rewriting or removing, or that a crashed restore left half
+ * purged. A crashed drop is finished here instead: the caller is about to create the database
+ * anew, and nothing from before the drop may survive into it.
+ */
+function throwIfBlockedByRestore(dbPath: string, databaseName: string, attempt = 0): void {
+	const state = checkRestoreState(dbPath);
+	if (state === 'clear') return;
+	const kind = lifecycleMarkerKind(dbPath);
+	if (kind === null) {
+		if (attempt >= 5)
+			throw conflict(`Database '${databaseName}' has a lifecycle marker that will not settle; retry later`);
+		return throwIfBlockedByRestore(dbPath, databaseName, attempt + 1);
+	}
+	if (state === 'in-progress') {
+		throw conflict(
+			`Database '${databaseName}' is being ${kind === 'drop' ? 'dropped' : 'restored'}; retry when that completes`
+		);
+	}
+	if (kind === 'restore') {
+		throw conflict(`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`);
+	}
+	const outcome = recoverInterruptedDrop(dirname(dbPath), basename(dbPath), {
+		blobRoots: getBlobPathsForDatabaseName(databaseName),
+	});
+	if (outcome === 'in-progress')
+		throw conflict(`Database '${databaseName}' is being dropped; retry when that completes`);
+	if (outcome === 'not-a-drop') {
+		// the marker read above was a drop, but by the time recoverInterruptedDrop re-read it (its
+		// own barrier against a concurrent recovery) something else had replaced it — most plausibly
+		// a fresh restore taking the now-lock-free path after the drop's crash. 'not-a-drop' is only
+		// truly benign for a caller (like the startup scan) that leaves a restore marker alone; here
+		// it must not be read as "nothing more to check" — re-evaluate against whatever is there now.
+		if (attempt >= 5)
+			throw conflict(`Database '${databaseName}' has a lifecycle marker that will not settle; retry later`);
+		return throwIfBlockedByRestore(dbPath, databaseName, attempt + 1);
+	}
+}
+
+/**
+ * Take the per-database lifecycle lock for a drop and write its marker, refusing (409) while a
+ * restore holds the lock or a crashed restore left its marker (the directory may still need
+ * recovery). A marker from a crashed *drop* is simply superseded: this drop finishes what it started.
+ */
+function beginDropOfDatabase(dbPath: string, databaseName: string): RestoreLock {
+	if (lifecycleMarkerKind(dbPath) === 'restore') {
+		const state = checkRestoreState(dbPath);
+		if (state === 'clear') return beginDrop(dbPath);
+		throw conflict(
+			state === 'in-progress'
 				? `Database '${databaseName}' is being restored; retry when the restore completes`
 				: `Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
 		);
-		error.statusCode = 409;
-		throw error;
 	}
+	return beginDrop(dbPath); // 409 while a restore (or another drop) holds the lock
 }
 
+// After the close broadcast is acknowledged, every worker thread has released its Harper-managed
+// handles; a short grace period covers a just-finished job worker still draining its own close.
+// Anything still open past that is a handle Harper neither tracks nor controls (a running job, or
+// a loaded component holding its own instance), which will never close on its own — so fail fast
+// rather than waiting out a long timeout.
+const DATABASE_CLOSE_WAIT_MS = 3000;
+const DATABASE_CLOSE_POLL_INTERVAL_MS = 250;
+
 /**
- * Take the per-database restore lock for a drop, refusing (409) if a restore holds it (in-progress)
- * or a crashed restore left a marker (incomplete). Pushes the acquired lock onto `held` so the
- * caller releases it after the drop. On refusal, releases anything already held and throws.
- *
- * The lock is not reentrant within a process, so a path already in `held` must be skipped — every
- * table in a RocksDB database shares one root store (and one lock path), and re-acquiring it in the
- * same drop would spuriously 409 on the second table.
+ * Whether no thread in this process still has the database at `databaseDir` open (rocksdb-js's
+ * registry is process-global across worker threads), polling briefly to let a just-finished job
+ * worker's own close drain. The ITC close broadcast is best-effort — acknowledgements time out,
+ * job workers never receive it — so a destructive step on the directory must be gated on this,
+ * never on the broadcast resolving.
  */
-function lockDatabaseForDrop(dbPath: string, databaseName: string, held: RestoreLock[]): void {
-	if (held.some((h) => h.dbPath === dbPath)) return;
-	let lock: RestoreLock;
-	try {
-		lock = acquireRestoreLock(dbPath);
-	} catch (error) {
-		for (const h of held) releaseRestoreLock(h);
-		throw error; // 409: a restore is in progress and holds the lock
-	}
-	// We now hold the lock, so no restore is active. A surviving marker is therefore debris from a
-	// crashed restore (incomplete) — refuse rather than delete a directory that still needs recovery.
-	if (restoreMarkerPresent(dbPath)) {
-		releaseRestoreLock(lock);
-		for (const h of held) releaseRestoreLock(h);
-		const error: any = new Error(
-			`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
-		);
-		error.statusCode = 409;
-		throw error;
-	}
-	held.push(lock);
+export async function waitForDatabaseClosedProcessWide(databaseDir: string): Promise<boolean> {
+	return (await describeOpenHandles(databaseDir)) === null;
 }
 
 /**
- * Delete the database
- * @param databaseName
+ * What rocksdb-js still holds open on `databaseDir` after the close grace period, for the error
+ * that refuses to destroy it — the column-family names say which table's handles they are — or
+ * null once nothing does.
+ */
+async function describeOpenHandles(databaseDir: string): Promise<string | null> {
+	const targetPath = resolve(databaseDir);
+	const deadline = Date.now() + DATABASE_CLOSE_WAIT_MS;
+	for (;;) {
+		const open = registryStatus().filter((instance) => resolve(instance.path) === targetPath && instance.refCount > 0);
+		if (open.length === 0) return null;
+		if (Date.now() >= deadline) {
+			return open.map((instance: any) => JSON.stringify(instance)).join('; ');
+		}
+		await delay(DATABASE_CLOSE_POLL_INTERVAL_MS);
+	}
+}
+
+/**
+ * Delete the database.
+ *
+ * A RocksDB database is destroyed only once no thread in the process can open it: the drop marker
+ * makes every rescan skip the directory and every on-demand open refuse it, the close broadcast
+ * makes every worker release its handles, and the registry is checked before anything is deleted —
+ * a handle that remains (a running job, a component holding its own instance) fails the drop with
+ * 409 rather than being force-closed, because a destroy under a concurrent open is what leaves the
+ * directory recreated and its LOCK held for the life of the process (rocksdb-js#818). The marker
+ * outlives the deletion of the database and its blob roots, so a crash in between is finished by
+ * the next scan. LMDB databases keep their single-file close-and-unlink.
  */
 export async function dropDatabase(databaseName) {
 	if (!databases[databaseName]) throw new Error('Database does not exist');
 	const dbTables = databases[databaseName];
 	let rootStore;
+	for (const tableName in dbTables) {
+		rootStore = dbTables[tableName].primaryStore.rootStore;
+		break;
+	}
+	if (!rootStore) rootStore = database({ database: databaseName, table: null });
 
-	// Hold the per-database restore lock across the entire drop so its file deletion can never
-	// interleave with a restore's purge-and-copy on the same directory — a destroy landing after a
-	// restore's copy would gut a "successful" restore, and vice versa. Restore takes the same lock
-	// (before writing its marker), so both operations serialize on this one primitive rather than on
-	// a check-then-act marker probe. Released in the finally below.
-	const restoreLocks: RestoreLock[] = [];
-	try {
-		for (const tableName in dbTables) {
-			const table = dbTables[tableName];
-			rootStore = table.primaryStore.rootStore;
-			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
-			lmdbDatabaseEnvs.delete(rootStore.path);
-			rocksdbDatabaseEnvs.delete(rootStore.path);
-		}
-
-		for (const tableName in dbTables) {
-			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
-		}
-
-		if (databaseName === 'data') {
-			for (const tableName in tables) {
-				delete tables[tableName];
-			}
-			delete tables[DEFINED_TABLES];
-		}
-		delete databases[databaseName];
-
+	if (!(rootStore instanceof RocksDatabase)) {
+		const rootStores = new Set<any>([rootStore]);
+		for (const tableName in dbTables) rootStores.add(dbTables[tableName].primaryStore.rootStore);
+		const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+		if (definedRoot) rootStores.add(definedRoot);
+		for (const tableName in dbTables) lmdbDatabaseEnvs.delete(dbTables[tableName].primaryStore.rootStore.path);
+		for (const tableName in dbTables) databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
-
-		if (rootStore) {
-			// awaited: retirement stops the loop admitting work, the barrier is what says the pass that was
-			// already running has released the stores this is about to close and unlink
-			await rootStore.auditStore?.stopAuditCleanup?.();
-			removeStorageReclamation(rootStore.path);
-			if (rootStore.status === 'open') {
-				if (rootStore instanceof RocksDatabase) {
-					rootStore.close();
-					rootStore.destroy();
-				} else {
-					await rootStore.close();
-					await unlink(rootStore.path);
-				}
-			}
-		} else {
-			rootStore = database({ database: databaseName, table: null });
-			// a tableless database resolves its root store here rather than in the loop above, so take
-			// the drop lock now (still before any destructive step)
-			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
-			await rootStore.auditStore?.stopAuditCleanup?.();
-			removeStorageReclamation(rootStore.path);
-			if (rootStore instanceof RocksDatabase) {
-				rootStore.close();
-				rootStore.destroy();
-			} else if (rootStore.status === 'open') {
-				await rootStore.close();
-				await unlink(rootStore.path);
-			}
-		}
-
+		await Promise.all([...rootStores].map((store) => store.auditStore?.stopAuditCleanup?.()));
+		// the environment's close is asynchronous: the file must not be unlinked under it
+		const closing: Promise<unknown>[] = [];
+		closeDatabase(databaseName, closing);
+		await Promise.all(closing);
+		await unlink(rootStore.path);
 		await deleteRootBlobPathsForDB(rootStore);
+		return;
+	}
+
+	const path = rootStore.path;
+	const blobRoots: string[] = getRootBlobPathsForDB(rootStore as any) ?? [];
+	const lock = beginDropOfDatabase(path, databaseName);
+	let lockSettled = false;
+	let destructionStarted = false;
+	try {
+		// refused before anything is closed or announced, so there is nothing to reload
+		assertDropTargetsRemovable(path, blobRoots);
+		for (const tableName in dbTables) databaseEventsEmitter.emit('dropTable', tableName, databaseName);
+		databaseEventsEmitter.emit('dropDatabase', databaseName);
+		closeDatabase(databaseName);
+		await signalling.signalSchemaChange(
+			new SchemaEventMsg(process.pid, ITC_SCHEMA_OPERATIONS.CLOSE_DATABASE, databaseName)
+		);
+		const openHandles = await describeOpenHandles(path);
+		if (openHandles !== null) {
+			// nothing was destroyed: clear the marker and let every thread reload the intact database
+			lockSettled = true;
+			completeDrop(lock);
+			await signalling.signalSchemaChange(
+				new SchemaEventMsg(process.pid, ITC_SCHEMA_OPERATIONS.CLOSE_DATABASE, databaseName)
+			);
+			throw conflict(
+				`Cannot drop database '${databaseName}' while it is held open in this process (a running job, or a loaded component holding its own handle); retry once it is released. Still open: ${openHandles}`
+			);
+		}
+		destructionStarted = true;
+		rootStore.destroy();
+		// a removal that fails throws past completeDrop: the marker stays for the next scan to finish
+		await removeDroppedDatabaseFiles(path, blobRoots);
+		lockSettled = true;
+		completeDrop(lock);
 	} finally {
-		for (const lock of restoreLocks) releaseRestoreLock(lock);
+		// a failure after destruction began leaves the marker: the next scan finishes the deletion
+		if (!lockSettled) {
+			if (destructionStarted) abandonDrop(lock);
+			else completeDrop(lock);
+		}
 	}
 }
 
@@ -1980,20 +2073,21 @@ export async function dropDatabase(databaseName) {
  * touching its files. Used by the restore_backup flow: every thread must release its handles so
  * `backups.restore()` can purge and rewrite the (fully closed) database directory. A subsequent
  * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
- * progress, per the restore marker checks in the scan).
+ * progress, per the restore marker checks in the scan). Store closes that return a promise (LMDB
+ * environments) are collected into `closing` when it is given.
  */
-export function closeDatabase(databaseName: string): boolean {
+export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]): boolean {
 	const dbTables = databases[databaseName];
-	if (!dbTables) return false;
 	const rootStores = new Set<any>();
 	const closeStore = (store: any, description: string) => {
 		try {
-			store?.close?.();
+			const result = store?.close?.();
+			if (closing && typeof result?.then === 'function') closing.push(result);
 		} catch (error) {
 			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
 		}
 	};
-	for (const tableName in dbTables) {
+	for (const tableName in dbTables ?? {}) {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
@@ -2003,14 +2097,28 @@ export function closeDatabase(databaseName: string): boolean {
 	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	if (definedRoot) rootStores.add(definedRoot);
-	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
-	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
-	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
-	// synchronous purgeLogs() call with nothing suspended mid-removal.
+	// A rescan that skipped this database (its lifecycle marker was already present) has removed it
+	// from `databases`, but the root store an earlier rescan opened is still cached, still open, and
+	// still counts against the drop or restore that is waiting for every thread to let go of it.
+	const cachedRoot = rocksdbDatabaseEnvs.get(resolveDatabasePath(databaseName));
+	if (cachedRoot) rootStores.add(cachedRoot);
+	// Retire audit cleanup before closing any table store.
 	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
-	for (const tableName in dbTables) {
+	if (!dbTables && rootStores.size === 0) return false;
+	for (const tableName in dbTables ?? {}) {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
+		if (typeof table.cleanup === 'function') {
+			try {
+				table.cleanup();
+			} catch (error) {
+				logger.warn(`Error releasing table ${tableName} while closing database ${databaseName}:`, error);
+				try {
+					table.closeStores?.();
+				} catch {}
+			}
+		}
+		if (table.primaryStore instanceof RocksDatabase) continue;
 		for (const indexName in table.indices || {}) {
 			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
 		}
@@ -2134,10 +2242,25 @@ function armVersionedIndexEncoder(dbi: any, rootStore: any) {
 	if (dbi.encoder) dbi.encoder.autoVersion = true;
 }
 
+// A custom object index (an HNSW graph) lives in a primary-style store keyed by node; an ordinary
+// index is a dupSort store keyed by value. Neither can be driven through the other's wrapper.
+function indexUsesObjectStore(attribute: any): boolean {
+	return !!(
+		attribute.isPrimaryKey ||
+		(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore)
+	);
+}
+
+/** Whether an open index store is the wrapper `openIndex` would choose for the attribute as it is now defined. */
+function indexStoreMatches(dbi: any, rootStore: RootDatabaseKind, attribute: any): boolean {
+	const objectStorage = indexUsesObjectStore(attribute);
+	if (rootStore instanceof RocksDatabase) return dbi instanceof RocksIndexStore === !objectStorage;
+	return Boolean(dbi.dupSort) === !objectStorage;
+}
+
 // opens an index, consulting with custom indexes that may use alternate store configuration
 function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) {
-	const objectStorage =
-		attribute.isPrimaryKey || (attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
+	const objectStorage = indexUsesObjectStore(attribute);
 	const dbiInit = createOpenDBIObject(!objectStorage, objectStorage);
 	// Custom-index object stores (e.g. HNSW vector graphs) hold fixed-shape internal nodes —
 	// numeric-keyed per-level connection arrays and quantized bins — that rely on random-access
@@ -2167,17 +2290,7 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		} as any) as any;
 		(dbi as any).rootStore = rootStore;
 		try {
-			// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
-			// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
-			// Verification-Table cache can't track them. A versioned index initialises its encoder as a
-			// versioned RocksDB store (isRocksDB → metadata-prefix encode/decode) and marks it
-			// self-versioning, so each node gets a monotonic version the VT can extract — enabling cached,
-			// decode-free graph traversal. The format is resolved from the persisted attribute descriptor
-			// (decided once at create — see resolveIndexFormat) so every worker and reload agree on it.
-			if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
-				armVersionedIndexEncoder(dbi, rootStore);
-			}
-			installCustomIndex(dbi);
+			prepareIndexStore(dbi, dbiKey, rootStore, attribute);
 		} catch (error) {
 			// the handle is not yet owned by any table, so nobody else can close it
 			try {
@@ -2187,16 +2300,31 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		}
 	} else {
 		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
-		installCustomIndex(dbi);
+		prepareIndexStore(dbi, dbiKey, rootStore, attribute);
 	}
-	function installCustomIndex(indexStore: any) {
-		if (!attribute.indexed.type) return;
-		const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
-		if (CustomIndex) {
-			indexStore.customIndex = new CustomIndex(indexStore, attribute.indexed);
-		} else {
-			logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
+	return dbi;
+}
+
+/**
+ * The per-open work an index store needs beyond the handle itself: resolve (and stamp on the
+ * attribute) its record format, arm the versioned encoder, and bind the custom index for the
+ * attribute's current options. Split from `openIndex` so a table's already-open index store can be
+ * reused by a later `table()` call — reopening it leaked the previous handle — while still
+ * re-resolving the format and rebinding the custom index that call may have changed.
+ */
+function prepareIndexStore(dbi: any, dbiKey: string, rootStore: RootDatabaseKind, attribute: any) {
+	const isCustomObjectIndex = !!(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
+	if (rootStore instanceof RocksDatabase) {
+		if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
+			armVersionedIndexEncoder(dbi, rootStore);
 		}
+	}
+	if (!attribute.indexed.type) return dbi;
+	const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
+	if (CustomIndex) {
+		dbi.customIndex = new CustomIndex(dbi, attribute.indexed);
+	} else {
+		logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
 	}
 	return dbi;
 }
@@ -2409,14 +2537,16 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				dbiInit.randomAccessStructure = primaryKeyAttribute.randomAccessFields;
 			const dbiName = tableName + '/';
 
+			// reuse the catalog store this thread already holds: a fresh handle here would replace it
+			// without closing it, and that leaked handle alone keeps the database open process-wide
 			if (rootStore instanceof RocksDatabase) {
-				attributesDbi = (rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
+				attributesDbi = (rootStore as any).dbisDb ??= openRocksDatabase(rootStore.path, {
 					...internalDbiInit,
 					disableWAL: false,
 					name: INTERNAL_DBIS_NAME,
 				} as any);
 			} else {
-				attributesDbi = (rootStore as any).dbisDb = (rootStore as any).openDB(
+				attributesDbi = (rootStore as any).dbisDb ??= (rootStore as any).openDB(
 					INTERNAL_DBIS_NAME,
 					internalDbiInit as any
 				);
@@ -2499,14 +2629,16 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		}
 		const indices = Table.indices;
 		if (!attributesDbi) {
+			// same reuse as the create path above: replacing the thread's catalog store handle here leaked
+			// the previous one on every attribute change
 			if (rootStore instanceof RocksDatabase) {
-				(rootStore as any).dbisDb = openRocksDatabase(rootStore.path, {
+				(rootStore as any).dbisDb ??= openRocksDatabase(rootStore.path, {
 					...internalDbiInit,
 					disableWAL: false,
 					name: INTERNAL_DBIS_NAME,
 				} as any);
 			} else {
-				(rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
+				(rootStore as any).dbisDb ??= (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 			}
 			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 		}
@@ -2676,118 +2808,169 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// crash-recovery, leaving the index stuck. Falls back to manageThreads.restartNumber
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
-				const dbi = openIndex(dbiKey, rootStore, attribute);
-				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
-				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
-				// custom-object) index. An index created before this field existed has no indexFormat on
-				// disk; persist the resolved value now — even when nothing else changed — so the format is
-				// durable BEFORE any node is written. Otherwise an empty pre-existing index would resolve
-				// 'versioned', write versioned nodes, and on the next load re-derive 'legacy' from the
-				// now-non-empty store, opening versioned data with the legacy decoder (silent corruption).
-				// (Scoped by attribute.indexFormat != null: only RocksDB custom-object indexes set it.)
-				const indexFormatNeedsPersist =
-					attribute.indexFormat != null && attributeDescriptor?.indexFormat !== attribute.indexFormat;
-				if (
-					changed ||
-					indexFormatNeedsPersist ||
-					attributeDescriptor?.indexingFailed ||
-					(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
-					attributeDescriptor?.restartNumber < currentRestartGeneration
-				) {
-					hasChanges = true;
-					exclusiveLock();
-					attributeDescriptor = attributesDbi.getSync(dbiKey);
+				// the live table's index store is reused: a fresh handle assigned over it below would leave the
+				// old one open but unreachable, and one such handle per index per schema change is what
+				// keeps a database open long after every table released it — unless the index changed kind,
+				// when the store must be reopened as the other wrapper (the structural change below rebuilds it)
+				let dbi = indices[attribute.name];
+				// The old handle is closed only once `indices[attribute.name] = dbi` below has actually
+				// run: every other caller of table() for this table (including a concurrent one) reads
+				// that map, and a throw anywhere between opening the replacement and that assignment —
+				// the reindex trigger below reads the primary store and writes the attribute descriptor,
+				// either of which can throw — must leave the map pointing at a handle this thread has not
+				// closed. Symmetrically, a throw in that same window must not leak the *new*, freshly
+				// opened but never-published replacement: nothing else references it to close it later,
+				// and an open native handle nothing owns still counts against a later drop_database.
+				let previousIndexToRelease: any;
+				let replacementToReleaseOnFailure: any;
+				try {
+					if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
+						previousIndexToRelease = dbi;
+						dbi = openIndex(dbiKey, rootStore, attribute);
+					} else if (dbi) {
+						dbi = prepareIndexStore(dbi, dbiKey, rootStore, attribute);
+					} else {
+						dbi = openIndex(dbiKey, rootStore, attribute);
+					}
+					if (deferredPrimaryRow) {
+						indices[attribute.name] = dbi; // private until published; lets the rollback close it
+					} else if (previousIndexToRelease || !indices[attribute.name]) {
+						// a freshly opened handle — a kind change, or the first time this index exists — not
+						// yet published: a throw before the assignment below must close it, or it leaks as a
+						// native handle nothing references and still counts against a later drop_database
+						replacementToReleaseOnFailure = dbi;
+					}
+					// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
+					// custom-object) index. An index created before this field existed has no indexFormat on
+					// disk; persist the resolved value now — even when nothing else changed — so the format is
+					// durable BEFORE any node is written. Otherwise an empty pre-existing index would resolve
+					// 'versioned', write versioned nodes, and on the next load re-derive 'legacy' from the
+					// now-non-empty store, opening versioned data with the legacy decoder (silent corruption).
+					// (Scoped by attribute.indexFormat != null: only RocksDB custom-object indexes set it.)
+					const indexFormatNeedsPersist =
+						attribute.indexFormat != null && attributeDescriptor?.indexFormat !== attribute.indexFormat;
 					if (
-						structurallyChanged ||
+						changed ||
+						indexFormatNeedsPersist ||
 						attributeDescriptor?.indexingFailed ||
 						(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
 						attributeDescriptor?.restartNumber < currentRestartGeneration
 					) {
 						hasChanges = true;
-						if (attribute.indexNulls === undefined) attribute.indexNulls = true;
-						let hasExistingData = false;
-						for (let _entry of Table.primaryStore.getRange({ start: true })) {
-							hasExistingData = true;
-							break;
-						}
-						if (hasExistingData) {
-							// When the index definition itself has structurally changed (different distance
-							// metric, M, quantization, etc.), any
-							// previous lastIndexedKey checkpoint is for a graph built under the old options —
-							// resuming from it would mix two incompatible graphs. Reset to undefined so
-							// runIndexing clears the dbi and starts from scratch.
-							// For pure crash-recovery (same options, different PID/restartNumber) — including a
-							// representation-only option difference — preserve the checkpoint so the backfill
-							// resumes rather than restarts. Canonicalized to match structurallyChanged above.
-							const indexOptionsChanged =
-								canonicalIndexKey(attributeDescriptor?.indexed) !== canonicalIndexKey(attribute.indexed);
-							attribute.lastIndexedKey = indexOptionsChanged
-								? undefined
-								: (attributeDescriptor?.lastIndexedKey ?? undefined);
-							// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
-							// object store to the versioned, VT-cacheable format. A full rebuild from scratch
-							// (lastIndexedKey === undefined) clears the store and rewrites every node, so the
-							// new nodes can carry versions: flip the persisted format and re-arm the dbi encoder
-							// (openIndex armed it from the pre-rebuild format, which for a legacy index was
-							// un-versioned). A crash-recovery resume (lastIndexedKey preserved) keeps the
-							// existing format — its partial graph was already written under it.
-							if (
-								rootStore instanceof RocksDatabase &&
-								indexType &&
-								CUSTOM_INDEXES[indexType]?.useObjectStore &&
-								!hnswAutoVersionDisabled() &&
-								attribute.lastIndexedKey === undefined
-							) {
-								attribute.indexFormat = 'versioned';
-								armVersionedIndexEncoder(dbi, rootStore);
+						exclusiveLock();
+						attributeDescriptor = attributesDbi.getSync(dbiKey);
+						if (
+							structurallyChanged ||
+							attributeDescriptor?.indexingFailed ||
+							(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
+							attributeDescriptor?.restartNumber < currentRestartGeneration
+						) {
+							hasChanges = true;
+							if (attribute.indexNulls === undefined) attribute.indexNulls = true;
+							let hasExistingData = false;
+							for (let _entry of Table.primaryStore.getRange({ start: true })) {
+								hasExistingData = true;
+								break;
 							}
-							attribute.indexingPID = process.pid;
-							// Persist the owning restart generation (see currentRestartGeneration above) so
-							// the trigger can re-detect an incomplete index after a worker restart even when
-							// the new process reuses the old PID. Cleared on clean completion; left in place
-							// on failure/crash so the next, higher-numbered restart re-triggers the backfill.
-							attribute.restartNumber = currentRestartGeneration;
-							delete attribute.indexingFailed; // clear failure flag for the new run
-							dbi.isIndexing = true;
-							Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
-							// Explainability: log which trigger fired so an unexpected rebuild is diagnosable. harper#1357
-							const reindexReasons: string[] = [];
-							if (commonChanged)
-								reindexReasons.push(attributeDescriptor ? 'attribute-definition-changed' : 'new-index');
-							if (attributeDescriptor && indexOptionsStructurallyChanged)
-								reindexReasons.push('structural-options-changed');
-							if (attributeDescriptor?.indexingFailed) reindexReasons.push('indexing-failed-retry');
-							if (attributeDescriptor?.indexingPID && attributeDescriptor.indexingPID !== process.pid)
-								reindexReasons.push(`crash-recovery(pid=${attributeDescriptor.indexingPID})`);
-							if (attributeDescriptor?.restartNumber < currentRestartGeneration) reindexReasons.push('restart-number');
-							logger.info(
-								`reindex ${databaseName}.${tableName}.${attribute.name}: reason=${reindexReasons.join(',') || 'unknown'}`
-							);
-							// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
-							attributesToIndex.push(attribute);
+							if (hasExistingData) {
+								// When the index definition itself has structurally changed (different distance
+								// metric, M, quantization, etc.), any
+								// previous lastIndexedKey checkpoint is for a graph built under the old options —
+								// resuming from it would mix two incompatible graphs. Reset to undefined so
+								// runIndexing clears the dbi and starts from scratch.
+								// For pure crash-recovery (same options, different PID/restartNumber) — including a
+								// representation-only option difference — preserve the checkpoint so the backfill
+								// resumes rather than restarts. Canonicalized to match structurallyChanged above.
+								const indexOptionsChanged =
+									canonicalIndexKey(attributeDescriptor?.indexed) !== canonicalIndexKey(attribute.indexed);
+								attribute.lastIndexedKey = indexOptionsChanged
+									? undefined
+									: (attributeDescriptor?.lastIndexedKey ?? undefined);
+								// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
+								// object store to the versioned, VT-cacheable format. A full rebuild from scratch
+								// (lastIndexedKey === undefined) clears the store and rewrites every node, so the
+								// new nodes can carry versions: flip the persisted format and re-arm the dbi encoder
+								// (openIndex armed it from the pre-rebuild format, which for a legacy index was
+								// un-versioned). A crash-recovery resume (lastIndexedKey preserved) keeps the
+								// existing format — its partial graph was already written under it.
+								if (
+									rootStore instanceof RocksDatabase &&
+									indexType &&
+									CUSTOM_INDEXES[indexType]?.useObjectStore &&
+									!hnswAutoVersionDisabled() &&
+									attribute.lastIndexedKey === undefined
+								) {
+									attribute.indexFormat = 'versioned';
+									armVersionedIndexEncoder(dbi, rootStore);
+								}
+								attribute.indexingPID = process.pid;
+								// Persist the owning restart generation (see currentRestartGeneration above) so
+								// the trigger can re-detect an incomplete index after a worker restart even when
+								// the new process reuses the old PID. Cleared on clean completion; left in place
+								// on failure/crash so the next, higher-numbered restart re-triggers the backfill.
+								attribute.restartNumber = currentRestartGeneration;
+								delete attribute.indexingFailed; // clear failure flag for the new run
+								dbi.isIndexing = true;
+								Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
+								// Explainability: log which trigger fired so an unexpected rebuild is diagnosable. harper#1357
+								const reindexReasons: string[] = [];
+								if (commonChanged)
+									reindexReasons.push(attributeDescriptor ? 'attribute-definition-changed' : 'new-index');
+								if (attributeDescriptor && indexOptionsStructurallyChanged)
+									reindexReasons.push('structural-options-changed');
+								if (attributeDescriptor?.indexingFailed) reindexReasons.push('indexing-failed-retry');
+								if (attributeDescriptor?.indexingPID && attributeDescriptor.indexingPID !== process.pid)
+									reindexReasons.push(`crash-recovery(pid=${attributeDescriptor.indexingPID})`);
+								if (attributeDescriptor?.restartNumber < currentRestartGeneration)
+									reindexReasons.push('restart-number');
+								logger.info(
+									`reindex ${databaseName}.${tableName}.${attribute.name}: reason=${reindexReasons.join(',') || 'unknown'}`
+								);
+								// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
+								attributesToIndex.push(attribute);
+							}
+						} else if (attributeDescriptor.indexingPID) {
+							// Metadata-only change (e.g. a search-only option like efConstructionSearch) while a
+							// backfill is in progress: we did NOT re-trigger indexing, so carry over the in-progress
+							// indexing state instead of persisting a descriptor that looks complete — otherwise other
+							// workers / a reload would treat the still-partial index as ready and return incomplete results.
+							attribute.indexingPID = attributeDescriptor.indexingPID;
+							attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
+							// Carry the in-progress restart generation too, so persisting this metadata-only
+							// change doesn't drop it and break the crash-recovery trigger for the running backfill.
+							attribute.restartNumber = attributeDescriptor.restartNumber;
+							if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
 						}
-					} else if (attributeDescriptor.indexingPID) {
-						// Metadata-only change (e.g. a search-only option like efConstructionSearch) while a
-						// backfill is in progress: we did NOT re-trigger indexing, so carry over the in-progress
-						// indexing state instead of persisting a descriptor that looks complete — otherwise other
-						// workers / a reload would treat the still-partial index as ready and return incomplete results.
-						attribute.indexingPID = attributeDescriptor.indexingPID;
-						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
-						// Carry the in-progress restart generation too, so persisting this metadata-only
-						// change doesn't drop it and break the crash-recovery trigger for the running backfill.
-						attribute.restartNumber = attributeDescriptor.restartNumber;
-						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
+						attributesDbi.put(dbiKey, attribute);
 					}
-					attributesDbi.put(dbiKey, attribute);
+					// If a migration is in progress (indexingPID set), any newly opened dbi must also
+					// reflect isIndexing = true. A resetDatabases() during an active runIndexing creates
+					// a new dbi object; without this, queries could use the new dbi (isIndexing = false)
+					// and return incomplete results while the backfill is still running.
+					if (attributeDescriptor?.indexingPID) dbi.isIndexing = true;
+					if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
+					dbi.indexNulls = attribute.indexNulls;
+				} catch (error) {
+					if (replacementToReleaseOnFailure) {
+						try {
+							replacementToReleaseOnFailure.close?.();
+						} catch (closeError) {
+							logger.warn(
+								`Error closing the ${attribute.name} index of ${tableName} after a failed reopen:`,
+								closeError
+							);
+						}
+					}
+					throw error;
 				}
-				// If a migration is in progress (indexingPID set), any newly opened dbi must also
-				// reflect isIndexing = true. A resetDatabases() during an active runIndexing creates
-				// a new dbi object; without this, queries could use the new dbi (isIndexing = false)
-				// and return incomplete results while the backfill is still running.
-				if (attributeDescriptor?.indexingPID) dbi.isIndexing = true;
-				if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
-				dbi.indexNulls = attribute.indexNulls;
 				indices[attribute.name] = dbi;
+				if (previousIndexToRelease) {
+					try {
+						previousIndexToRelease.close?.();
+					} catch (error) {
+						logger.warn(`Error closing the ${attribute.name} index of ${tableName} after reopening it:`, error);
+					}
+				}
 			} else if (changed) {
 				hasChanges = true;
 				exclusiveLock();
@@ -2875,9 +3058,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		return tableName + '/';
 	}
 	// The catalog of a published table stays, but a class the registration never accepted is
-	// unreachable, so release what makeTable() registered process-wide instead of leaving its timers
-	// and reclamation handler live for the process. The stores stay open: the table is durable, and
-	// whichever scan reloads it opens its own handles.
+	// unreachable, so release what makeTable() registered process-wide — its timers, its reclamation
+	// handler and this thread's store handles — instead of leaving them live for the process. The
+	// table is durable, and whichever scan reloads it opens its own handles.
 	function discardUnregisteredClass() {
 		try {
 			Table.cleanup();
