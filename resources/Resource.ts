@@ -147,20 +147,49 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 	static put = transactional(
 		function (resource: any, query: RequestTarget, request: Context, data: any) {
 			if (Array.isArray(data) && resource.#isCollection && resource.constructor.loadAsInstance !== false) {
+				const resourceClass = resource.constructor;
+				const primaryKey = resourceClass.primaryKey;
+				// Before dispatching anything: a malformed body must not race a sibling's write, and a bare
+				// dereference below would reach the client as a 500 carrying V8's wording.
+				for (let index = 0; index < data.length; index++)
+					if (data[index] == null)
+						throw new ClientError(`Array element at index ${index} is ${data[index]}, expected a record`);
+				const elementTarget = elementTargetFactory(query);
 				const results = [];
-				for (const element of data) {
-					const resourceClass = resource.constructor;
-					const id = element[resourceClass.primaryKey];
-					let target = new RequestTarget();
-					target.id = id;
-					const elementResource = resourceClass.getResource(target, request, {
-						async: true,
+				try {
+					for (let index = 0; index < data.length; index++) {
+						const element = data[index];
+						const target = elementTarget(element[primaryKey]);
+						const elementResource = resourceClass.getResource(target, request, {
+							async: true,
+						});
+						// `target`, not `request`: this is the target slot, and Table's back-compat shift only
+						// recognizes a RequestTarget there — a context is taken for the record.
+						// `missingMethod` rather than an unguarded call, so a resource without `put` answers 405
+						// here exactly as it does on the single-record path below.
+						if (typeof elementResource.then === 'function')
+							results.push(
+								elementResource.then((resource) =>
+									resource.put ? resource.put(element, target) : missingMethod(resource, 'put')
+								)
+							);
+						else if (elementResource.put) results.push(elementResource.put(element, target));
+						else missingMethod(elementResource, 'put');
+					}
+				} catch (error) {
+					// Settle the already-dispatched elements or a rejection among them goes unhandled. Then
+					// report the earliest-index failure, the same rule `settleElements` applies: every sibling
+					// already dispatched precedes the element that threw, so the batch reports the same failure
+					// whether that element's dispatch resolved synchronously or asynchronously.
+					return Promise.allSettled(results).then((settled) => {
+						const failed = settled.find((sibling) => sibling.status === 'rejected');
+						if (!failed) throw error;
+						throw (failed as PromiseRejectedResult).reason;
 					});
-					if (typeof elementResource.then === 'function')
-						results.push(elementResource.then((resource) => resource.put(element, request)));
-					else results.push(elementResource.put(element, query));
 				}
-				return Promise.all(results);
+				// Not `Promise.all`: settling the batch while a slower element is still resolving lets that
+				// element commit outside the failed batch — a partially applied array PUT.
+				return settleElements(results);
 			}
 			return resource.put
 				? resource.constructor.loadAsInstance === false
@@ -572,6 +601,53 @@ export function snakeCase(camelCase: string) {
 }
 
 /**
+ * Mint per-element targets for a fanned-out batch write. Each element needs its own object — its id
+ * must not be visible to a sibling whose dispatch resolves later — but it also needs the request's
+ * query and route metadata, which a `put()` override can read. The request's contribution is
+ * therefore resolved once here rather than deep-cloned per element, and nested metadata is shared
+ * rather than copied. `checkPermission` never carries: the collection receiver's single verdict is
+ * authoritative and per-element dispatch must not re-arm it.
+ */
+function elementTargetFactory(query: any): (id: any) => RequestTarget {
+	const base = cloneRequestTarget(query);
+	const search = base.toString();
+	// Only what the element target would not otherwise have. `RequestTarget` declares `pathname`,
+	// `search` and `sort` without `declare`, so they are own properties on every instance and would
+	// otherwise always be "carried" — overwriting what this element's own construction just derived,
+	// and making the skip below dead. A nullish own value carries no metadata either.
+	const carried: Record<string, any> = {};
+	for (const key of Object.keys(base)) {
+		if (key === 'id' || key === 'isCollection' || key === 'pathname' || key === 'search') continue;
+		const value = (base as any)[key];
+		if (value != null) carried[key] = value;
+	}
+	const hasCarried = Object.keys(carried).length > 0;
+	return (id) => {
+		const target = search ? new RequestTarget(search) : new RequestTarget();
+		if (hasCarried) Object.assign(target, carried);
+		target.id = id;
+		target.isCollection = false;
+		return target;
+	};
+}
+
+/**
+ * Report a fanned-out batch write's outcome only once every element has staged or failed its own
+ * write, so the enclosing transaction cannot unwind under one. Rejects with the first failure.
+ */
+function settleElements(results: any[]): Promise<any[]> {
+	return Promise.allSettled(results).then((settled) => {
+		const values = new Array(settled.length);
+		for (let index = 0; index < settled.length; index++) {
+			const element = settled[index];
+			if (element.status === 'rejected') throw element.reason;
+			values[index] = element.value;
+		}
+		return values;
+	});
+}
+
+/**
  * This is responsible for arranging arguments in the main static methods and creating the appropriate context and default transaction wrapping
  * @param action
  * @param options
@@ -733,8 +809,10 @@ function transactional(
 		if (!query) {
 			query = new RequestTarget();
 			query.id = id;
-			if (isCollection && options.method === 'put' && Array.isArray(data) && this.loadAsInstance === false)
-				query.isCollection = true;
+			// The collection inferred from the batch's null id has to survive onto the synthesized target,
+			// or the array is dispatched as one record update against a null primary key. Array-only:
+			// a null id on non-array data means auto-generate, not collection.
+			if (isCollection && options.method === 'put' && Array.isArray(data)) query.isCollection = true;
 		}
 		if (options.method === 'query' && data && typeof data === 'object') {
 			// QUERY executes the independently parsed body target. Make its requested projection part of
