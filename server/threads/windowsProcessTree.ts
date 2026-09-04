@@ -327,7 +327,7 @@ export async function confirmWindowsProcessTreeGone(
 			warn(
 				`Termination of the process tree of ${label} remains unconfirmed after ${Math.round(time - startedAt)}ms: ` +
 					(rootIdentityUnknown
-						? `root pid ${identity.rootPid} is held by ${rootIdentityUnknown.name} without a creation time`
+						? `root pid ${identity.rootPid} is held by ${rootIdentityUnknown.name ?? 'an unnamed process'} without a creation time`
 						: members
 							? `live members ${describeMembers(members)}`
 							: 'the Windows process table could not be queried')

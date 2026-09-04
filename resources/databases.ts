@@ -2012,6 +2012,8 @@ export async function dropDatabase(databaseName) {
 	if (!(rootStore instanceof RocksDatabase)) {
 		const rootStores = new Set<any>([rootStore]);
 		for (const tableName in dbTables) rootStores.add(dbTables[tableName].primaryStore.rootStore);
+		const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+		if (definedRoot) rootStores.add(definedRoot);
 		for (const tableName in dbTables) lmdbDatabaseEnvs.delete(dbTables[tableName].primaryStore.rootStore.path);
 		for (const tableName in dbTables) databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
@@ -2100,10 +2102,7 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 	// still counts against the drop or restore that is waiting for every thread to let go of it.
 	const cachedRoot = rocksdbDatabaseEnvs.get(resolveDatabasePath(databaseName));
 	if (cachedRoot) rootStores.add(cachedRoot);
-	// Retire audit cleanup before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
-	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
-	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
-	// synchronous purgeLogs() call with nothing suspended mid-removal.
+	// Retire audit cleanup before closing any table store.
 	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
 	if (!dbTables && rootStores.size === 0) return false;
 	for (const tableName in dbTables ?? {}) {
