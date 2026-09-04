@@ -380,16 +380,17 @@ export function openAuditStore(rootStore) {
  * different write and authorize destroying live state (a tombstone, a still-referenced blob).
  *
  * On LMDB this is exact — the audit-store key IS the record's `txnLogKey`. On RocksDB a record stores
- * one word, its version, which equals its log key for every write except a source fill (harper#2065);
- * a fill therefore answers false here, as the pre-normalization version-versus-log-key compare
- * already did. Absent identity answers false too. The direction is deliberate: uncertainty retains.
+ * its version in the compatibility word and keeps a divergent log key in `additionalAuditRefs`.
+ * Absent identity answers false. The direction is deliberate: uncertainty retains.
  */
 export function isAuditEntryWrite(entry: any, auditRecord: AuditRecord): boolean {
+	if (entry == null || auditRecord.txnLogKey == null) return false;
+	const auditNodeId = auditRecord.nodeId ?? 0;
 	return (
-		entry != null &&
-		auditRecord.txnLogKey != null &&
-		entry.localTime === auditRecord.txnLogKey &&
-		(entry.nodeId ?? 0) === (auditRecord.nodeId ?? 0)
+		(entry.localTime === auditRecord.txnLogKey && (entry.nodeId ?? 0) === auditNodeId) ||
+		entry.additionalAuditRefs?.some(
+			(ref) => ref.version === auditRecord.txnLogKey && (ref.nodeId ?? 0) === auditNodeId
+		) === true
 	);
 }
 

@@ -13,6 +13,7 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
+const { removeAuditEntry } = require('#src/resources/auditStore');
 const { waitFor } = require('../waitFor.js');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -200,6 +201,8 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		const deleteAudit = auditEntriesFor(Plain, id).find((entry) => entry.txnLogKey === deleteLogKey);
 		assert.equal(deleteAudit.type, 'delete');
 		assert.equal(deleteAudit.version, deleteVersion);
+		await removeAuditEntry(auditStore, auditStore.get(deleteLogKey, Plain.tableId, id, 0));
+		assert.equal(Plain.primaryStore.getEntry(id), undefined, 'removing the matching audit entry removes its tombstone');
 	});
 
 	it('does not point a copy-applied record at an audit entry that was never written', async function () {

@@ -158,12 +158,32 @@ function reconstructForward(auditStore, store, tableId: number, recordId: any, f
 	return record;
 }
 
-function previousAuditTime(auditStore, tableId: number, recordId: any, auditEntry) {
-	for (const ref of auditEntry.previousAdditionalAuditRefs ?? []) {
-		const previous = auditStore.get(ref.version, tableId, recordId, ref.nodeId);
-		if (previous?.version === auditEntry.previousVersion) return ref.version;
+function resolveAuditTime(auditStore, tableId: number, recordId: any, version, refs) {
+	const visited = new Set<string>();
+	const pending = (refs ?? []).slice().reverse();
+	while (pending.length > 0) {
+		const ref = pending.pop();
+		const identity = `${ref.nodeId ?? 0}:${ref.version}`;
+		if (visited.has(identity)) continue;
+		visited.add(identity);
+		const entry = auditStore.get(ref.version, tableId, recordId, ref.nodeId);
+		if (!entry) continue;
+		if (entry.version === version) return ref.version;
+		for (const previousRef of (entry.previousAdditionalAuditRefs ?? []).slice().reverse()) {
+			pending.push(previousRef);
+		}
 	}
-	return auditEntry.previousVersion;
+	return version;
+}
+
+function previousAuditTime(auditStore, tableId: number, recordId: any, auditEntry) {
+	return resolveAuditTime(
+		auditStore,
+		tableId,
+		recordId,
+		auditEntry.previousVersion,
+		auditEntry.previousAdditionalAuditRefs
+	);
 }
 
 /**
@@ -176,14 +196,13 @@ function previousAuditTime(auditStore, tableId: number, recordId: any, auditEntr
 export function getRecordAtTime(currentEntry, timestamp, store, tableId: number, recordId: any) {
 	const auditStore = store.rootStore.auditStore;
 	let record = { ...currentEntry.value };
-	let auditTime = currentEntry.localTime;
-	for (const ref of currentEntry.additionalAuditRefs ?? []) {
-		const head = auditStore.get(ref.version, tableId, recordId, ref.nodeId);
-		if (head?.version === currentEntry.version) {
-			auditTime = ref.version;
-			break;
-		}
-	}
+	let auditTime = resolveAuditTime(
+		auditStore,
+		tableId,
+		recordId,
+		currentEntry.version ?? currentEntry.localTime,
+		currentEntry.additionalAuditRefs
+	);
 	// Iterate in reverse through the record history, trying to reverse all changes
 	const unknowns = new Set<string>();
 	while (auditTime > timestamp) {
