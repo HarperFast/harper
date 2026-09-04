@@ -510,6 +510,48 @@ describe('Cluster record lock coordinator (harper#483 Phase 1)', () => {
 			);
 		});
 
+		it('does not let released keys crowd out live ones across the table', async () => {
+			const cluster = new FakeCluster(['node-a', 'node-b']);
+			// Same rule as the per-key cap, applied table-wide: a key whose only remaining state is
+			// released rounds must give up its slot rather than block a fresh key.
+			for (let key = 0; key < 10_050; key++) {
+				cluster.node('node-a').coordinator.applyEntry(
+					{
+						type: 'lockRequest',
+						key: `hot-${key}`,
+						requester: 'node-b',
+						tsR: cluster.wall + key * 0.001,
+						leaseMs: 60_000,
+						waitMs: 60_000,
+					},
+					'node-b'
+				);
+				cluster
+					.node('node-a')
+					.coordinator.applyEntry(
+						{ type: 'lockRelease', key: `hot-${key}`, requester: 'node-b', tsR: cluster.wall + key * 0.001 },
+						'node-b'
+					);
+			}
+			const grantsBefore = cluster.writtenOfType('node-a', 'lockGrant').length;
+			cluster.node('node-a').coordinator.applyEntry(
+				{
+					type: 'lockRequest',
+					key: 'the-live-one',
+					requester: 'node-b',
+					tsR: cluster.wall + 20,
+					leaseMs: 60_000,
+					waitMs: 60_000,
+				},
+				'node-b'
+			);
+			assert.strictEqual(
+				cluster.writtenOfType('node-a', 'lockGrant').length,
+				grantsBefore + 1,
+				'a fresh key is still granted after the table filled with released ones'
+			);
+		});
+
 		it('ignores a request replayed from beyond any live hold', async () => {
 			const cluster = new FakeCluster(['node-a', 'node-b']);
 			cluster.node('node-a').coordinator.applyEntry(
