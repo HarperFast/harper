@@ -208,8 +208,6 @@ describe('Test configValidator module', () => {
 			config.replication.blobGapReconnectMs = 1000;
 			expect(configValidator(config).error).to.be.undefined;
 		});
-<<<<<<< HEAD
-=======
 
 		it('accepts the blob-gap escalation bounds as non-negative integers, 0 meaning disabled', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
@@ -233,55 +231,6 @@ describe('Test configValidator module', () => {
 			config.replication = { blobGapEscalationMs: 2.5 };
 			expect(configValidator(config).error.message).to.include("'replication.blobGapEscalationMs' must be an integer");
 		});
-
-		it('rejects a URL / port / numeric node.hostname, and accepts a bare host (#2218)', () => {
-			const config = testUtils.deepClone(FAKE_CONFIG);
-			for (const [bad, reason] of [
-				['http://localhost:9926', 'must not include a URL scheme'],
-				['localhost:9926', 'must not include a port'],
-				[9926, 'must be a string'],
-			]) {
-				config.node = { hostname: bad };
-				expect(configValidator(config).error.message).to.include(`'node.hostname' ${reason}`);
-			}
-			config.node = { hostname: 'node1.example.com' };
-			expect(configValidator(config).error).to.be.undefined;
-			config.node = { hostname: '::1' }; // a bare IPv6 literal is a valid identity
-			expect(configValidator(config).error).to.be.undefined;
-		});
-
-		it('rejects an authority-form replication.url that parses to no host (#2218)', () => {
-			const config = testUtils.deepClone(FAKE_CONFIG);
-			// Written as a real URL ("//" authority) yet parses to no host — the unambiguous mistake.
-			config.replication = { url: 'file:///etc/passwd' };
-			expect(configValidator(config).error.message).to.include("'replication.url' must be a URL with a host");
-
-			config.replication = { url: 'wss://node1.example.com:9933' };
-			expect(configValidator(config).error).to.be.undefined;
-
-			// Deliberately tolerated at the boundary: these carry no host, but urlToNodeName skips them
-			// at runtime (so they can never reach a certificate SAN) and identity falls through to
-			// another source. A scheme-less "host:port" even parses as a *scheme*, so it cannot be told
-			// apart from "mailto:" here — rejecting that shape would turn a harmless config into a boot
-			// failure. node.url is also left alone: this repo never reads it.
-			for (const tolerated of ['mailto:operator@example.com', 'node1.example.com:9933', 'not a url']) {
-				config.replication = { url: tolerated };
-				expect(configValidator(config).error, `expected ${tolerated} to be accepted`).to.be.undefined;
-			}
-			config.replication = undefined;
-			config.node = { hostname: 'prod-node', url: 'mailto:admin@corp.com' };
-			expect(configValidator(config).error).to.be.undefined;
-		});
-
-		it('rejects a URL-valued replication.hostname (the previously accepted string|number path) (#2218)', () => {
-			const config = testUtils.deepClone(FAKE_CONFIG);
-			config.replication = { hostname: 'http://host:9926' };
-			expect(configValidator(config).error.message).to.include("'replication.hostname' must not include a URL scheme");
-
-			config.replication.hostname = 'node-two';
-			expect(configValidator(config).error).to.be.undefined;
-		});
->>>>>>> 169fed8e0 (Register the replication blob-gap escalation config keys)
 	});
 
 	describe('getDomainSocketPathLengthWarning', () => {
