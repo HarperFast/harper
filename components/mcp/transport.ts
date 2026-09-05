@@ -47,7 +47,6 @@ import { dropSessionSubscriptions, restoreResourceSubscriptions } from './subscr
 import {
 	claimSubscriptionOwner,
 	routeResourceSubscription,
-	subscriptionUser,
 	withSessionSubscriptionLock,
 } from './subscriptionRouting.ts';
 import {
@@ -264,8 +263,8 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 		return { status: 403, headers: {} };
 	}
 
-	// Sliding-window idle reset. Await persistence before dispatch; loadSession
-	// rejects any partial row left by a concurrent DELETE/patch race.
+	// Adopt the persisted sliding-window update so later writes cannot roll
+	// lastActivity back; loadSession rejects partial rows from DELETE/patch races.
 	session = await touchSession(session);
 
 	// A client's response to a server→client request (#3.7): route it to the
@@ -428,24 +427,25 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
 	// a URI that's no longer subscribable is dropped from the persisted list.
 	try {
-		await withSessionSubscriptionLock(sessionId, async () => {
+		const sessionPresent = await withSessionSubscriptionLock(sessionId, async () => {
 			const snapshot = await updateSessionSubscriptions(sessionId, (subscriptions) => subscriptions);
-			if (!snapshot) throw new Error('MCP session disappeared during subscription restore');
+			if (!snapshot) return false;
 			const attempted = snapshot.subscriptions ?? [];
-			if (!attempted.length) return;
-			const retained = await restoreResourceSubscriptions(
-				sessionId,
-				attempted,
-				subscriptionUser(effectiveUser(request))
-			);
-			if (retained.length === attempted.length) return;
+			if (!attempted.length) return true;
+			const retained = await restoreResourceSubscriptions(sessionId, attempted, effectiveUser(request));
+			if (retained.length === attempted.length) return true;
 			const attemptedSet = new Set(attempted);
 			const retainedSet = new Set(retained);
 			await updateSessionSubscriptions(sessionId, (subscriptions) => {
 				const updated = subscriptions.filter((uri) => !attemptedSet.has(uri) || retainedSet.has(uri));
 				return updated.length === subscriptions.length ? subscriptions : updated;
 			});
+			return true;
 		});
+		if (!sessionPresent) {
+			record.queue.emit('close');
+			return { status: 404, headers: {} };
+		}
 	} catch (error) {
 		record.queue.emit('close');
 		throw error;

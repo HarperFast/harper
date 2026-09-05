@@ -141,12 +141,31 @@ describe('mcp/subscriptionRouting', () => {
 		bridge.available = false;
 		_setSubscriptionItcForTest(bridge);
 		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
-		await assert.rejects(claimSubscriptionOwner(session.id, 'first-stream'), /routing is unavailable/);
+		await patchSession(session.id, { streamOwner: { threadId: 7, token: 'stale-owner' } });
+		assert.equal(await claimSubscriptionOwner(session.id, 'first-stream'), false);
+		assert.equal((await loadSession(session.id)).streamOwner, undefined);
 		assert.equal(bridge.listeners.size, 0);
 		bridge.available = true;
-		await claimSubscriptionOwner(session.id, 'second-stream');
+		assert.equal(await claimSubscriptionOwner(session.id, 'second-stream'), true);
 		assert.equal(bridge.listeners.has(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND), true);
 		assert.equal(bridge.listeners.has(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE), true);
+	});
+
+	it('routes locally without publishing an owner when the thread bridge is unavailable', async () => {
+		const bridge = fakeBridge();
+		bridge.available = false;
+		_setSubscriptionItcForTest(bridge);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		const record = registerSession(session.id, 'application', USER);
+		assert.equal(await claimSubscriptionOwner(session.id, record.streamToken), false);
+		assert.equal(
+			await routeResourceSubscription({
+				session: await loadSession(session.id),
+				operation: 'unsubscribe',
+				uri: 'https://app.test/Product/1',
+			}),
+			'success'
+		);
 	});
 
 	it('reports a send exception as an internal error rather than a missing stream', async () => {

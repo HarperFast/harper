@@ -139,9 +139,13 @@ function ensureWired(): boolean {
 	return true;
 }
 
-export async function claimSubscriptionOwner(sessionId: string, streamToken: string): Promise<void> {
-	if (!ensureWired()) throw new Error('MCP subscription routing is unavailable');
+export async function claimSubscriptionOwner(sessionId: string, streamToken: string): Promise<boolean> {
+	if (!ensureWired()) {
+		await patchSession(sessionId, { streamOwner: undefined });
+		return false;
+	}
 	await patchSession(sessionId, { streamOwner: { threadId: currentThreadId(), token: streamToken } });
+	return true;
 }
 
 function countPendingForSession(sessionId: string): number {
@@ -189,7 +193,13 @@ function routeRemote(
 		try {
 			sent = bridge().sendToThread(owner.threadId, {
 				type: ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND,
-				message: { ...command, requestId, originator: currentThreadId(), streamToken: owner.token },
+				message: {
+					...command,
+					...(command.user ? { user: subscriptionUser(command.user) } : {}),
+					requestId,
+					originator: currentThreadId(),
+					streamToken: owner.token,
+				},
 			});
 		} catch (error) {
 			sendFailed = true;
@@ -282,13 +292,22 @@ export async function routeResourceSubscription(args: {
 	user?: AuthedUser;
 }): Promise<SubscriptionRouteResult> {
 	const owner = args.session.streamOwner;
-	if (!owner) return 'no-live-stream';
 	const command = {
 		sessionId: args.session.id,
 		operation: args.operation,
 		uri: args.uri,
-		...(args.user ? { user: subscriptionUser(args.user) } : {}),
+		...(args.user ? { user: args.user } : {}),
 	};
+	if (!owner) {
+		const registered = getRegisteredSession(args.session.id);
+		if (!registered) return 'no-live-stream';
+		return executeLocalContained({
+			...command,
+			requestId: '',
+			originator: currentThreadId(),
+			streamToken: registered.streamToken,
+		});
+	}
 	if (owner.threadId === currentThreadId()) {
 		return executeLocalContained({
 			...command,

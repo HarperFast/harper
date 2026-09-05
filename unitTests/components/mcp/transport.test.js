@@ -276,6 +276,41 @@ describe('mcp/transport', () => {
 			}
 		});
 
+		it('serves the GET stream when cross-worker routing is unavailable', async () => {
+			const originalClaim = subscriptionRouting.claimSubscriptionOwner;
+			subscriptionRouting.claimSubscriptionOwner = async () => false;
+			try {
+				const res = await handleMcpRequest(
+					makeReq({
+						method: 'GET',
+						headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' },
+					})
+				);
+				assert.equal(res.status, 200);
+				assert.ok(res.sseIterable);
+				res.sseIterable.emit('close');
+			} finally {
+				subscriptionRouting.claimSubscriptionOwner = originalClaim;
+			}
+		});
+
+		it('returns 404 when the durable session disappears during reconnect', async () => {
+			const originalUpdate = sessionModule.updateSessionSubscriptions;
+			sessionModule.updateSessionSubscriptions = async () => null;
+			try {
+				const res = await handleMcpRequest(
+					makeReq({
+						method: 'GET',
+						headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' },
+					})
+				);
+				assert.equal(res.status, 404);
+				assert.equal(getRegisteredSession(sessionId), undefined);
+			} finally {
+				sessionModule.updateSessionSubscriptions = originalUpdate;
+			}
+		});
+
 		it('closes the registered GET stream when subscription restoration fails', async () => {
 			const originalLock = subscriptionRouting.withSessionSubscriptionLock;
 			subscriptionRouting.withSessionSubscriptionLock = async () => {
@@ -295,7 +330,7 @@ describe('mcp/transport', () => {
 			}
 		});
 
-		it('restores subscriptions with the same projected principal used by subscribe', async () => {
+		it('restores subscriptions with the full local principal', async () => {
 			const uri = 'https://app.test:9926/Product/restore';
 			await patchSession(sessionId, { subscriptions: [uri] });
 			let restoredUser;
@@ -323,8 +358,8 @@ describe('mcp/transport', () => {
 			);
 			assert.equal(res.status, 200);
 			assert.equal(restoredUser.username, 'alice');
-			assert.equal(restoredUser.password, undefined);
-			assert.equal(restoredUser.customClaim, undefined);
+			assert.equal(restoredUser.password, 'do-not-forward');
+			assert.equal(restoredUser.customClaim, 'not-in-contract');
 			res.sseIterable.emit('close');
 		});
 
