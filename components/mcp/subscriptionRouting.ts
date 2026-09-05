@@ -149,7 +149,7 @@ function countPendingForSession(sessionId: string): number {
 	return count;
 }
 
-function subscriptionUser(user: AuthedUser): AuthedUser {
+export function subscriptionUser(user: AuthedUser): AuthedUser {
 	// Cross-worker subscribe authorization may rely only on this data-only principal shape.
 	// Built-in checks consume role.permission; credentials and mutable user state stay local.
 	return {

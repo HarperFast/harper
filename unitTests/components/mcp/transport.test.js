@@ -3,7 +3,8 @@ const { threadId } = require('node:worker_threads');
 const rewire = require('rewire');
 const transport_mod = rewire('#src/components/mcp/transport');
 const { handleMcpRequest } = transport_mod;
-const { _setSessionTableForTest, createSession, loadSession, patchSession } = require('#src/components/mcp/session');
+const sessionModule = require('#src/components/mcp/session');
+const { _setSessionTableForTest, createSession, loadSession, patchSession } = sessionModule;
 const {
 	getRegisteredSession,
 	pushSessionFrame,
@@ -273,6 +274,58 @@ describe('mcp/transport', () => {
 			} finally {
 				subscriptionRouting.claimSubscriptionOwner = originalClaim;
 			}
+		});
+
+		it('closes the registered GET stream when subscription restoration fails', async () => {
+			const originalLock = subscriptionRouting.withSessionSubscriptionLock;
+			subscriptionRouting.withSessionSubscriptionLock = async () => {
+				throw new Error('restore failed');
+			};
+			try {
+				const res = await handleMcpRequest(
+					makeReq({
+						method: 'GET',
+						headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' },
+					})
+				);
+				assert.equal(res.status, 500);
+				assert.equal(getRegisteredSession(sessionId), undefined);
+			} finally {
+				subscriptionRouting.withSessionSubscriptionLock = originalLock;
+			}
+		});
+
+		it('restores subscriptions with the same projected principal used by subscribe', async () => {
+			const uri = 'https://app.test:9926/Product/restore';
+			await patchSession(sessionId, { subscriptions: [uri] });
+			let restoredUser;
+			_setSubscribeImplForTest(async (_path, user) => {
+				restoredUser = user;
+				return {
+					end() {},
+					[Symbol.asyncIterator]() {
+						return { next: () => new Promise(() => {}) };
+					},
+				};
+			});
+
+			const res = await handleMcpRequest(
+				makeReq({
+					method: 'GET',
+					userObject: {
+						username: 'alice',
+						password: 'do-not-forward',
+						customClaim: 'not-in-contract',
+						role: { permission: { super_user: true } },
+					},
+					headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' },
+				})
+			);
+			assert.equal(res.status, 200);
+			assert.equal(restoredUser.username, 'alice');
+			assert.equal(restoredUser.password, undefined);
+			assert.equal(restoredUser.customClaim, undefined);
+			res.sseIterable.emit('close');
 		});
 
 		it('accepts a matching MCP-Protocol-Version and returns Method-not-found for unknown methods', async () => {
@@ -1307,6 +1360,30 @@ describe('mcp/transport', () => {
 					assert.deepEqual((await loadSession(sessionId)).subscriptions, []);
 				} finally {
 					subscriptionRouting.routeResourceSubscription = originalRoute;
+				}
+			});
+
+			it('contains a durable unsubscribe failure in the request JSON-RPC response', async () => {
+				const originalRoute = subscriptionRouting.routeResourceSubscription;
+				const originalUpdate = sessionModule.updateSessionSubscriptions;
+				subscriptionRouting.routeResourceSubscription = async () => 'no-live-stream';
+				sessionModule.updateSessionSubscriptions = async () => {
+					throw new Error('lock timed out');
+				};
+				try {
+					const res = await handleMcpRequest(
+						makeReq({
+							body: jsonRpc(77, 'resources/unsubscribe', { uri: 'https://app.test:9926/Product/4' }),
+							headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						})
+					);
+					assert.equal(res.status, 200);
+					assert.equal(res.jsonBody.id, 77);
+					assert.equal(res.jsonBody.error.code, -32603);
+					assert.match(res.jsonBody.error.message, /retry/);
+				} finally {
+					subscriptionRouting.routeResourceSubscription = originalRoute;
+					sessionModule.updateSessionSubscriptions = originalUpdate;
 				}
 			});
 		});

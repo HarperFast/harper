@@ -166,7 +166,6 @@ export async function loadSession(id: string): Promise<McpSessionRecord | null> 
 	return record;
 }
 
-/** Incrementally update session fields without replacing concurrent changes. */
 export async function patchSession(id: string, changes: Partial<Omit<McpSessionRecord, 'id'>>): Promise<void> {
 	await (getTable() as any).patch({ id, ...changes });
 }
