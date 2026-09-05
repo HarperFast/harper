@@ -20,6 +20,7 @@ import {
 	describeHolderCandidates,
 	finishLongLivedHolderReports,
 	getReportThresholdMs,
+	rebaseLongLivedTransactionReports,
 	reportLongLivedHolder,
 	type LongLivedHolderReportBudget,
 } from './longLivedTransactions.ts';
@@ -1998,6 +1999,7 @@ function startMonitoringTxns() {
 		monitorTick++;
 		const checkedCommitPhaseChains = new Set<DatabaseTransaction>();
 		const reportThresholdMs = getReportThresholdMs();
+		rebaseLongLivedTransactionReports(reportThresholdMs);
 		const reportBudget = createLongLivedHolderReportBudget(reportThresholdMs);
 		const reportNow = performance.now();
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
@@ -2118,27 +2120,16 @@ function startMonitoringTxns() {
 
 startMonitoringTxns();
 
-/**
- * Test seam: re-arms the once-per-process replay warning. The whole unit suite shares one process,
- * so whichever test first drives a commit under open iterators consumes the warning for every test
- * after it.
- */
 export function resetReplayedWritesWarning() {
 	replayedWritesWarned = false;
 }
 
-/**
- * Test seam: the queue time after which checkOverloaded() sheds writes. A test cannot otherwise reach
- * that branch without waiting out the real 45s limit, which left the stuck-commit log — the line an
- * operator reads during an outage — with no coverage at all. Returns the previous value to restore.
- */
 export function setMaxOutstandingTxnDuration(ms: number): number {
 	const previous = MAX_OUTSTANDING_TXN_DURATION;
 	MAX_OUTSTANDING_TXN_DURATION = ms;
 	return previous;
 }
 
-/** Test seam: whether the monitor supervises this logical transaction for its writes. */
 export function isWriteSupervised(txn: DatabaseTransaction): boolean {
 	return supervisedWriteRoots.has(txn);
 }

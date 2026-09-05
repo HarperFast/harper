@@ -33,7 +33,6 @@ let sweepTimer: NodeJS.Timeout | undefined;
 let invalidThresholdWarned = false;
 let missingDetailsWarned = false;
 let lastAttributionPruneAt = 0;
-// No threshold observed yet; every real one is 0 or positive.
 let thresholdInEffectMs = -1;
 
 function reportKey(databasePath: string | undefined, nativeId: number, openedAt?: number): string {
@@ -73,6 +72,15 @@ function rebaseIfThresholdChanged(thresholdMs: number): void {
 	thresholdInEffectMs = thresholdMs;
 	sweepReports.clear();
 	attributionReports.clear();
+}
+
+/**
+ * Apply a live threshold at the start of every reporting pass, including one that finds no eligible
+ * holder. Otherwise a threshold raised above a holder's age leaves its old attribution backoff in
+ * place when the threshold is lowered again.
+ */
+export function rebaseLongLivedTransactionReports(thresholdMs: number): void {
+	rebaseIfThresholdChanged(thresholdMs);
 }
 
 /**
@@ -118,7 +126,7 @@ export function getReportThresholdMs(): number {
 export function runLongLivedTransactionSweep(): void {
 	try {
 		const thresholdMs = getReportThresholdMs();
-		rebaseIfThresholdChanged(thresholdMs);
+		rebaseLongLivedTransactionReports(thresholdMs);
 		if (thresholdMs === 0 || !registryStatusFn) return;
 		const status = registryStatusFn();
 		const seen = new Set<string>();
@@ -224,7 +232,7 @@ export function reportLongLivedHolder(holder: LongLivedHolder, reportBudget?: Lo
 	try {
 		if (!registryStatusFn) return;
 		const thresholdMs = reportBudget?.thresholdMs ?? getReportThresholdMs();
-		rebaseIfThresholdChanged(thresholdMs);
+		rebaseLongLivedTransactionReports(thresholdMs);
 		if (thresholdMs === 0) return;
 		const now = Date.now();
 		if (now - lastAttributionPruneAt >= ATTRIBUTION_PRUNE_INTERVAL_MS) {
@@ -334,12 +342,10 @@ export function describeHolderCandidates(
 	}
 }
 
-/** Test seam; undefined simulates a binding with no registryStatus(). */
 export function setRegistryStatusForTests(fn?: RegistryStatusFn): void {
 	registryStatusFn = fn;
 }
 
-/** Test seam: the backoff state, once-per-process warnings and armed sweep that outlive a single test. */
 export function resetLongLivedTransactionReportsForTests(): void {
 	sweepReports.clear();
 	attributionReports.clear();

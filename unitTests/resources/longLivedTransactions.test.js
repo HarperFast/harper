@@ -12,6 +12,7 @@ const {
 	createLongLivedHolderReportBudget,
 	finishLongLivedHolderReports,
 	getReportThresholdMs,
+	rebaseLongLivedTransactionReports,
 	reportLongLivedHolder,
 	resetLongLivedTransactionReportsForTests,
 	runLongLivedTransactionSweep,
@@ -69,9 +70,6 @@ describe('Long-lived transaction reporting (#2471)', () => {
 	});
 
 	describe('configuration', () => {
-		// New CONFIG_PARAMS entries are folded into CONFIG_PARAM_MAP by the loop in hdbTerms, which is
-		// what makes the parameter reachable from a config file / set_configuration rather than only
-		// from a literal lookup.
 		it('is reachable through the canonical config parameter map', function () {
 			assert.strictEqual(CONFIG_PARAM_MAP[THRESHOLD.toLowerCase()], THRESHOLD);
 		});
@@ -329,6 +327,16 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		it('does not carry backoff to a reattached handle that reuses its native id', function () {
 			reportLongLivedHolder(holder({ ageMs: 300000, openedAt: 1 }));
 			reportLongLivedHolder(holder({ ageMs: 300001, openedAt: 2 }));
+			assert.strictEqual(warningsMatching('Harper transaction has held').length, 2);
+		});
+
+		it('resets attribution backoff when a monitor pass changes the threshold before a holder qualifies', function () {
+			reportLongLivedHolder(holder({ ageMs: 600000 }));
+			env.setProperty(THRESHOLD, '30m');
+			rebaseLongLivedTransactionReports(getReportThresholdMs());
+			env.setProperty(THRESHOLD, '1m');
+			rebaseLongLivedTransactionReports(getReportThresholdMs());
+			reportLongLivedHolder(holder({ ageMs: 900000 }));
 			assert.strictEqual(warningsMatching('Harper transaction has held').length, 2);
 		});
 

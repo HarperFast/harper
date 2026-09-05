@@ -53,8 +53,6 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	// process-global singleton; see startTransactionLogCooling). Runs for all
 	// thread modes below, including the single-threaded (threadCount === 0) path.
 	startTransactionLogCooling();
-	// Same placement and same reason: the rocksdb-js transaction registry is process-global, so one
-	// main-thread sweep names every worker's long-lived handles instead of each worker naming them all.
 	startLongLivedTransactionReporting();
 	try {
 		if (dynamicThreads) {
