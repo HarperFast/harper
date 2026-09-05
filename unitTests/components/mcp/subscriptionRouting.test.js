@@ -93,6 +93,7 @@ describe('mcp/subscriptionRouting', () => {
 	it('accepts a correlated response only from the expected owner thread', async () => {
 		const bridge = fakeBridge((_target, event, listeners) => {
 			assert.equal(event.message.user.password, undefined, 'credentials must not cross the worker boundary');
+			assert.equal(event.message.user.customClaim, undefined, 'custom principal state must remain local');
 			assert.equal(event.message.user.username, '');
 			assert.equal(event.message.user.authExpiresAt, 12345);
 			assert.equal(event.message.user.role.role, '');
@@ -118,6 +119,7 @@ describe('mcp/subscriptionRouting', () => {
 				authExpiresAt: 12345,
 				role: { ...USER.role, role: '' },
 				password: 'do-not-forward',
+				customClaim: 'local-only',
 			},
 		});
 		assert.equal(result, 'success');
@@ -155,16 +157,38 @@ describe('mcp/subscriptionRouting', () => {
 		const bridge = fakeBridge();
 		bridge.available = false;
 		_setSubscriptionItcForTest(bridge);
+		_setSubscribeImplForTest(async () => ({
+			end() {},
+			[Symbol.asyncIterator]() {
+				return { next: () => new Promise(() => {}) };
+			},
+		}));
 		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
 		const record = registerSession(session.id, 'application', USER);
 		assert.equal(await claimSubscriptionOwner(session.id, record.streamToken), false);
 		assert.equal(
 			await routeResourceSubscription({
 				session: await loadSession(session.id),
-				operation: 'unsubscribe',
+				operation: 'subscribe',
 				uri: 'https://app.test/Product/1',
+				user: USER,
 			}),
 			'success'
+		);
+		assert.deepEqual((await loadSession(session.id)).subscriptions, ['https://app.test/Product/1']);
+	});
+
+	it('does not guess a local owner when worker routing is wired', async () => {
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		registerSession(session.id, 'application', USER);
+		assert.equal(
+			await routeResourceSubscription({
+				session: await loadSession(session.id),
+				operation: 'subscribe',
+				uri: 'https://app.test/Product/1',
+				user: USER,
+			}),
+			'no-live-stream'
 		);
 	});
 

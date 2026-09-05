@@ -299,6 +299,7 @@ export async function routeResourceSubscription(args: {
 		...(args.user ? { user: args.user } : {}),
 	};
 	if (!owner) {
+		if (ensureWired()) return 'no-live-stream';
 		const registered = getRegisteredSession(args.session.id);
 		if (!registered) return 'no-live-stream';
 		return executeLocalContained({
