@@ -602,7 +602,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			env.setProperty(THRESHOLD, '0.001');
 			// sourceApply is exempt from reaping, which is what keeps both links open long enough for the
 			// monitor to observe them — and is the #2471 shape besides.
-			const context = { sourceApply: true };
+			const context = { sourceApply: true, timeoutBudget: 5000 };
 			const trackedTxns = setTxnExpiration(20);
 			try {
 				await transaction(context, async () => {
@@ -694,7 +694,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 				env.setProperty(THRESHOLD, '0.05');
 				await waitFor(() => {
 					runLongLivedTransactionSweep();
-					return warningsMatching('Long-lived RocksDB transaction handle').length > 0;
+					return warningsMatching('Long-lived RocksDB transaction handle').some(([message]) => message.includes(dbPath));
 				}, 10000);
 				const reported = warningsMatching('Long-lived RocksDB transaction handle').filter(([message]) =>
 					message.includes(dbPath)
