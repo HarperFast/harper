@@ -47,6 +47,7 @@ import { dropSessionSubscriptions, restoreResourceSubscriptions } from './subscr
 import {
 	claimSubscriptionOwner,
 	routeResourceSubscription,
+	subscriptionUser,
 	withSessionSubscriptionLock,
 } from './subscriptionRouting.ts';
 import {
@@ -57,6 +58,7 @@ import {
 } from './serverRequests.ts';
 import {
 	registerSession,
+	getRegisteredSession,
 	touchRegisteredSession,
 	replaySince,
 	type SseEvent,
@@ -425,13 +427,23 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
 	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
 	// a URI that's no longer subscribable is dropped from the persisted list.
-	await withSessionSubscriptionLock(sessionId, () =>
-		updateSessionSubscriptions(sessionId, async (subscriptions) => {
-			if (!subscriptions.length) return subscriptions;
-			const restored = await restoreResourceSubscriptions(sessionId, subscriptions, effectiveUser(request));
-			return restored.length === subscriptions.length ? subscriptions : restored;
-		})
-	);
+	try {
+		await withSessionSubscriptionLock(sessionId, () =>
+			updateSessionSubscriptions(sessionId, async (subscriptions) => {
+				if (!subscriptions.length) return subscriptions;
+				const restored = await restoreResourceSubscriptions(
+					sessionId,
+					subscriptions,
+					subscriptionUser(effectiveUser(request))
+				);
+				return restored.length === subscriptions.length ? subscriptions : restored;
+			})
+		);
+	} catch (error) {
+		record.queue.emit('close');
+		throw error;
+	}
+	if (getRegisteredSession(sessionId) !== record) dropSessionSubscriptions(sessionId);
 	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
 	// the client missed (those with a higher id) before live frames flow. Re-sent
 	// raw so their original event ids are preserved. Best-effort + per-worker: the
@@ -985,9 +997,17 @@ async function dispatchResourcesUnsubscribe(
 	if (result === 'no-live-stream') {
 		// The live owner is already gone. Remove durable state locally so a later
 		// reconnect cannot restore the cancelled subscription.
-		await updateSessionSubscriptions(session.id, (subscriptions) =>
-			subscriptions.includes(uri) ? subscriptions.filter((subscription) => subscription !== uri) : subscriptions
-		);
+		try {
+			await updateSessionSubscriptions(session.id, (subscriptions) =>
+				subscriptions.includes(uri) ? subscriptions.filter((subscription) => subscription !== uri) : subscriptions
+			);
+		} catch (error) {
+			harperLogger.error('MCP resource unsubscribe durable update failed', error);
+			return jsonResponse(
+				200,
+				buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe failed; retry the request')
+			);
+		}
 	} else if (result === 'timeout') {
 		return jsonResponse(
 			200,
