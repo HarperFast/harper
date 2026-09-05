@@ -150,6 +150,8 @@ function countPendingForSession(sessionId: string): number {
 }
 
 function subscriptionUser(user: AuthedUser): AuthedUser {
+	// Cross-worker subscribe authorization may rely only on this data-only principal shape.
+	// Built-in checks consume role.permission; credentials and mutable user state stay local.
 	return {
 		...(user.username !== undefined ? { username: user.username } : {}),
 		...(user.authExpiresAt !== undefined ? { authExpiresAt: user.authExpiresAt } : {}),
@@ -217,6 +219,8 @@ async function executeLocal(command: Command): Promise<SubscriptionRouteResult> 
 	const registered = getRegisteredSession(command.sessionId);
 	if (!registered || registered.streamToken !== command.streamToken) return 'no-live-stream';
 	return withSessionSubscriptionLock(command.sessionId, async () => {
+		const current = getRegisteredSession(command.sessionId);
+		if (!current || current.streamToken !== command.streamToken) return 'no-live-stream';
 		if (command.operation === 'subscribe') {
 			if (!command.user) return 'internal-error';
 			const added = await addResourceSubscription(command.sessionId, command.uri, command.user);
@@ -243,14 +247,17 @@ async function executeLocal(command: Command): Promise<SubscriptionRouteResult> 
 	});
 }
 
-async function handleCommand(command: Command): Promise<void> {
-	let result: SubscriptionRouteResult;
+async function executeLocalContained(command: Command): Promise<SubscriptionRouteResult> {
 	try {
-		result = await executeLocal(command);
+		return await executeLocal(command);
 	} catch (error) {
 		harperLogger.error('MCP subscription owner failed to execute command', error);
-		result = 'internal-error';
+		return 'internal-error';
 	}
+}
+
+async function handleCommand(command: Command): Promise<void> {
+	const result = await executeLocalContained(command);
 	sendResponse(command, result);
 }
 
@@ -280,7 +287,12 @@ export async function routeResourceSubscription(args: {
 		...(args.user ? { user: subscriptionUser(args.user) } : {}),
 	};
 	if (owner.threadId === currentThreadId()) {
-		return executeLocal({ ...command, requestId: '', originator: currentThreadId(), streamToken: owner.token });
+		return executeLocalContained({
+			...command,
+			requestId: '',
+			originator: currentThreadId(),
+			streamToken: owner.token,
+		});
 	}
 	return routeRemote(owner, command);
 }

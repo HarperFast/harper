@@ -34,6 +34,7 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 1800;
  * is identical either way.)
  */
 const EVICTION_WINDOW_SECONDS = 60;
+const DEFAULT_SUBSCRIPTION_LOCK_TIMEOUT_MS = 10_000;
 
 export interface McpSessionRecord {
 	id: string;
@@ -68,6 +69,7 @@ export interface McpSessionRecord {
 }
 
 let _sessionTable: Table | undefined;
+let subscriptionLockTimeoutMs = DEFAULT_SUBSCRIPTION_LOCK_TIMEOUT_MS;
 
 /**
  * Lazily declare the system table. Called by `ensureSessionTable()` at
@@ -112,6 +114,10 @@ export function ensureSessionTable(): Table {
 /** Test seam: allow tests to inject a fake table without touching Harper. */
 export function _setSessionTableForTest(fake: Table | undefined): void {
 	_sessionTable = fake;
+}
+
+export function _setSubscriptionLockTimeoutForTest(value: number | undefined): void {
+	subscriptionLockTimeoutMs = value ?? DEFAULT_SUBSCRIPTION_LOCK_TIMEOUT_MS;
 }
 
 function getTable(): Table {
@@ -171,10 +177,23 @@ function subscriptionLockKey(id: string): string {
 
 function acquireSessionSubscriptionLock(store: Table['primaryStore'], key: string): Promise<void> {
 	return new Promise((resolve, reject) => {
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			reject(new Error('Timed out acquiring MCP subscription lock'));
+		}, subscriptionLockTimeoutMs);
 		const attempt = () => {
+			if (settled) return;
 			try {
-				if (store.tryLock(key, attempt)) resolve();
+				if (store.tryLock(key, attempt)) {
+					settled = true;
+					clearTimeout(timer);
+					resolve();
+				}
 			} catch (error) {
+				settled = true;
+				clearTimeout(timer);
 				reject(error);
 			}
 		};

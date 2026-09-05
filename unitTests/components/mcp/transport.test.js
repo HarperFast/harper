@@ -23,11 +23,9 @@ const {
 	_setHttpUrlPrefixForTest,
 	_setSubscribeImplForTest,
 } = require('#src/components/mcp/resources');
-const {
-	_setSubscriptionItcForTest,
-	_setSubscriptionTimeoutForTest,
-	_resetSubscriptionRoutingForTest,
-} = require('#src/components/mcp/subscriptionRouting');
+const subscriptionRouting = require('#src/components/mcp/subscriptionRouting');
+const { _setSubscriptionItcForTest, _setSubscriptionTimeoutForTest, _resetSubscriptionRoutingForTest } =
+	subscriptionRouting;
 
 function makeFakeResources(entries) {
 	const map = new Map();
@@ -251,6 +249,30 @@ describe('mcp/transport', () => {
 			);
 			assert.equal(res.status, 200, `SSE open succeeded: ${res.status}`);
 			assert.ok(res.sseIterable, 'SSE stream returned');
+		});
+
+		it('does not close a superseding GET stream when an earlier owner claim fails', async () => {
+			let replacement;
+			const originalClaim = subscriptionRouting.claimSubscriptionOwner;
+			subscriptionRouting.claimSubscriptionOwner = async () => {
+				replacement = registerSession(sessionId, 'application', {
+					username: 'alice',
+					role: { permission: { super_user: true } },
+				});
+				throw new Error('claim failed');
+			};
+			try {
+				const res = await handleMcpRequest(
+					makeReq({
+						method: 'GET',
+						headers: { 'mcp-session-id': sessionId, 'accept': 'text/event-stream' },
+					})
+				);
+				assert.equal(res.status, 500);
+				assert.equal(getRegisteredSession(sessionId), replacement);
+			} finally {
+				subscriptionRouting.claimSubscriptionOwner = originalClaim;
+			}
 		});
 
 		it('accepts a matching MCP-Protocol-Version and returns Method-not-found for unknown methods', async () => {
@@ -1255,6 +1277,37 @@ describe('mcp/transport', () => {
 				assert.deepEqual(res.jsonBody.result, {});
 				const saved = await loadSession(sessionId);
 				assert.ok(!(saved.subscriptions ?? []).includes(uri), 'URI dropped from the record');
+			});
+
+			it('reroutes unsubscribe when the stream owner changes during the first attempt', async () => {
+				const uri = 'https://app.test:9926/Product/3';
+				await patchSession(sessionId, { subscriptions: [uri] });
+				let calls = 0;
+				const originalRoute = subscriptionRouting.routeResourceSubscription;
+				subscriptionRouting.routeResourceSubscription = async ({ session }) => {
+					calls++;
+					if (calls === 1) {
+						await patchSession(sessionId, { streamOwner: { threadId: threadId + 1, token: 'new-owner' } });
+						return 'no-live-stream';
+					}
+					assert.deepEqual(session.streamOwner, { threadId: threadId + 1, token: 'new-owner' });
+					await patchSession(sessionId, { subscriptions: [] });
+					return 'success';
+				};
+				try {
+					const res = await handleMcpRequest(
+						makeReq({
+							body: jsonRpc(76, 'resources/unsubscribe', { uri }),
+							headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						})
+					);
+					assert.equal(res.status, 200);
+					assert.deepEqual(res.jsonBody.result, {});
+					assert.equal(calls, 2);
+					assert.deepEqual((await loadSession(sessionId)).subscriptions, []);
+				} finally {
+					subscriptionRouting.routeResourceSubscription = originalRoute;
+				}
 			});
 		});
 

@@ -6,6 +6,7 @@ const {
 	touchSession,
 	updateSessionSubscriptions,
 	_setSessionTableForTest,
+	_setSubscriptionLockTimeoutForTest,
 } = require('#src/components/mcp/session');
 
 function makeFakeTable() {
@@ -55,6 +56,7 @@ describe('mcp/session', () => {
 	});
 	afterEach(() => {
 		_setSessionTableForTest(undefined);
+		_setSubscriptionLockTimeoutForTest(undefined);
 	});
 
 	describe('createSession', () => {
@@ -124,6 +126,26 @@ describe('mcp/session', () => {
 	});
 
 	describe('updateSessionSubscriptions', () => {
+		it('times out without acquiring a lock later from a stale wake callback', async () => {
+			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			const key = `mcp-subscriptions:${session.id}`;
+			assert.equal(
+				fake.primaryStore.tryLock(key, () => {}),
+				true
+			);
+			_setSubscriptionLockTimeoutForTest(5);
+
+			await assert.rejects(
+				updateSessionSubscriptions(session.id, (subscriptions) => subscriptions),
+				/Timed out acquiring MCP subscription lock/
+			);
+			fake.primaryStore.unlock(key);
+			await new Promise(setImmediate);
+
+			await updateSessionSubscriptions(session.id, (subscriptions) => [...subscriptions, 'recovered']);
+			assert.deepEqual((await loadSession(session.id)).subscriptions, ['recovered']);
+		});
+
 		it('serializes concurrent read-modify-writes for the same session', async () => {
 			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
 			fake.store.get(session.id).subscriptions = ['first', 'second'];
