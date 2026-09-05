@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788599317963,
+  "lastUpdate": 1788599321602,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -18820,6 +18820,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 1963.9,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "9f469c079a0624a27ff66165078b98e9a4e1ec35",
+          "message": "Take install_node_modules off the npm registry so the Node 22 unit job stops timing out (#2501)\n\n* Take install_node_modules off the npm registry so the Node 22 unit job stops timing out\n\n`Unit Test (Node.js v22)` hit its 10-minute cap on every main run since\n2026-09-03T22:01Z, and GitHub reports a job that hits `timeout-minutes` as\n`cancelled` rather than `failure`, so the whole Node-22 unit suite was\nsilently skipped while the required check stayed non-red.\n\nThe leg stalls on the first non-dry-run test in `install_node_modules`. That\ntest runs a real `npm install --force --omit=dev --json` over a fixture whose\nonly dependency is a `file:` link. npm 10.9.x — bundled with Node 22, and only\nwith Node 22 — puts that link into its audit bulk request and POSTs it to the\nregistry; npm 11 (Node 24/26) sends an empty payload and makes no request.\nThe registry no longer answers that payload: measured directly, a bulk request\nfor `lodash` returns in 0.18s and one for the fixture's `local-dependency` does\nnot return within 60s. Nothing bounded the wait below the job cap —\n`.mocharc.json` sets `timeout: 0` and `nonInteractiveSpawn` defaults to an hour.\n\n`installModules` now passes `--no-audit --no-fund`, which the component install\npath in Application.ts has always done. With a purely local dependency graph\nthat takes the operation off the network entirely, and the suite drops from\nwedged-past-10-minutes to 202ms on Node 22.\n\nThe workflow now bounds its two long steps in their own right, mirroring the\nWindows job: a step that exceeds `timeout-minutes` fails, so this class of stall\ncan no longer be masked as a cancellation. The job cap moves to 20 minutes only\nto sit above the sum of those steps — the v22 leg measured ~10m05s of a\n10-minute budget even without the hang.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01RvaxoiBFwHTt9cDFAkfy98\n\n* Address pre-push review: bound every step, pin the flags by argv\n\n- The job cap sat below the sum of the step caps it was meant to backstop, so a\n  slow-but-healthy install followed by a wedged suite still ended as a silent\n  job `cancelled` — the exact failure mode this change targets. Every `run` step\n  now carries its own cap and the job sits above their sum (33 on the longest\n  leg), so a stall can only surface as a step failure.\n- The regression guard asserted on npm's `audit` output block, which passes\n  vacuously if npm stops emitting it. It now captures the spawned argv through a\n  PATH shim, the idiom applicationInstall.test.js already uses, and fails when\n  either flag is dropped (verified by removing them).\n- The flag comment claimed parity with the component install path, which also\n  passes `--ignore-scripts`; it now states the reason rather than the parity.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01RvaxoiBFwHTt9cDFAkfy98\n\n* Route install_node_modules through the shared package-manager arguments\n\nThe two npm entry points having separate argument lists is how this bug\narrived: one passed `--no-audit`, the other did not. `installModules` now\ncomposes its arguments with the same builder the automatic component install\nuses, exported and renamed `packageManagerInstallArguments`, so a\nregistry-avoidance flag can no longer be added to one path and missed by the\nother. The argv test pins the composed result, so a change to the shared builder\nsurfaces as a decision rather than as drift.\n\nAlso from the second review round:\n- The job cap still sat within two minutes of the sum of its step caps, and\n  `checkout`/`setup-node` were uncapped and spending the same budget. Both are\n  capped now and the backstop moves to 45.\n- `--no-fund` was described as keeping the install off the network; it only\n  suppresses the funding message. `--no-audit` is the one that matters.\n- The shim test carried its output path as text inside a `/bin/sh` script, so a\n  `$` in TMPDIR would have been expanded; it travels as an environment value\n  now, and the temp dir is removed in the `finally`.\n- These cases spawn real npm under `timeout: 0`, so the suite now sets its own\n  60s bound — a stalled registry fails the run instead of wedging it, in the\n  dev loop as well as in CI.\n- DESIGN.md recorded the flags as a property of automatic installation only.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01RvaxoiBFwHTt9cDFAkfy98\n\n* Trim the narrating comments the third review round flagged\n\nThe npm-10 audit rationale now lives once, in DESIGN.md; the code keeps only\nwhat it cannot say itself.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01RvaxoiBFwHTt9cDFAkfy98\n\n* Address review comments: strict assertion, cleanup-safe shim setup\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01RvaxoiBFwHTt9cDFAkfy98\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-04T17:21:31Z",
+          "url": "https://github.com/HarperFast/harper/commit/9f469c079a0624a27ff66165078b98e9a4e1ec35"
+        },
+        "date": 1788599320542,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 4255.75,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 4255.75,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 204.9,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 627.9,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 1256.6,
             "unit": "ms"
           }
         ]
