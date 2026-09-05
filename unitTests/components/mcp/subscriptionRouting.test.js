@@ -141,12 +141,28 @@ describe('mcp/subscriptionRouting', () => {
 		bridge.available = false;
 		_setSubscriptionItcForTest(bridge);
 		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
-		await claimSubscriptionOwner(session.id, 'first-stream');
+		await assert.rejects(claimSubscriptionOwner(session.id, 'first-stream'), /routing is unavailable/);
 		assert.equal(bridge.listeners.size, 0);
 		bridge.available = true;
 		await claimSubscriptionOwner(session.id, 'second-stream');
 		assert.equal(bridge.listeners.has(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND), true);
 		assert.equal(bridge.listeners.has(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_RESPONSE), true);
+	});
+
+	it('reports a send exception as an internal error rather than a missing stream', async () => {
+		_setSubscriptionItcForTest(
+			fakeBridge(() => {
+				throw new Error('could not clone command');
+			})
+		);
+		const result = await routeResourceSubscription({
+			session: await remoteSession(),
+			operation: 'subscribe',
+			uri: 'https://app.test/Product/1',
+			user: USER,
+		});
+		assert.equal(result, 'internal-error');
+		assert.equal(_pendingSubscriptionRouteCount(), 0);
 	});
 
 	it('bounds a sent command when the owner never responds', async () => {

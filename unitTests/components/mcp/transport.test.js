@@ -1363,6 +1363,34 @@ describe('mcp/transport', () => {
 				}
 			});
 
+			it('retains durable state when the unsubscribe owner keeps changing', async () => {
+				const uri = 'https://app.test:9926/Product/5';
+				await patchSession(sessionId, { subscriptions: [uri] });
+				let calls = 0;
+				const originalRoute = subscriptionRouting.routeResourceSubscription;
+				subscriptionRouting.routeResourceSubscription = async () => {
+					calls++;
+					await patchSession(sessionId, { streamOwner: { threadId: threadId + calls, token: `owner-${calls}` } });
+					return 'no-live-stream';
+				};
+				try {
+					const res = await handleMcpRequest(
+						makeReq({
+							body: jsonRpc(78, 'resources/unsubscribe', { uri }),
+							headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+						})
+					);
+					assert.equal(res.status, 200);
+					assert.equal(res.jsonBody.id, 78);
+					assert.equal(res.jsonBody.error.code, -32603);
+					assert.match(res.jsonBody.error.message, /retry/);
+					assert.equal(calls, 3);
+					assert.deepEqual((await loadSession(sessionId)).subscriptions, [uri]);
+				} finally {
+					subscriptionRouting.routeResourceSubscription = originalRoute;
+				}
+			});
+
 			it('contains a durable unsubscribe failure in the request JSON-RPC response', async () => {
 				const originalRoute = subscriptionRouting.routeResourceSubscription;
 				const originalUpdate = sessionModule.updateSessionSubscriptions;
