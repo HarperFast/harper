@@ -472,8 +472,12 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 	});
 
 	test('N5: resource subscription routes from a sibling POST worker to the GET-SSE owner', async (t) => {
-		if (process.platform === 'win32') {
-			t.skip('Harper forces one HTTP worker on Windows');
+		if (process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun') {
+			t.skip(
+				process.platform === 'win32'
+					? 'Harper forces one HTTP worker on Windows'
+					: 'Bun assigns pinned socket probes to one HTTP worker; Node CI covers cross-worker routing'
+			);
 			return;
 		}
 		const auth = adminAuth(ctx);
