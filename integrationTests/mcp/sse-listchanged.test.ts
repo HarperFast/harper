@@ -514,10 +514,10 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 				}
 			}
 			ok(postAgent && postConnected, 'created a POST keep-alive connection on a free local port');
-			if (postThreadId === getThreadId) {
-				t.skip(`runtime exposed one application HTTP worker to all socket probes (thread ${getThreadId})`);
-				return;
-			}
+			ok(
+				postThreadId !== getThreadId,
+				`expected a second application HTTP worker after 24 socket probes; all used thread ${getThreadId}`
+			);
 
 			const id = `cross_worker_${Date.now().toString(36)}`;
 			const uri = new URL(`/WorkItem/${id}`, ctx.harper.httpURL).href;
