@@ -15,7 +15,14 @@ const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
-import { describeHolderCandidates, getReportThresholdMs, reportLongLivedHolder } from './longLivedTransactions.ts';
+import {
+	createLongLivedHolderReportBudget,
+	describeHolderCandidates,
+	finishLongLivedHolderReports,
+	getReportThresholdMs,
+	reportLongLivedHolder,
+	type LongLivedHolderReportBudget,
+} from './longLivedTransactions.ts';
 
 const trackedTxns = new Set<DatabaseTransaction>();
 // Read options for a rotated generation's native transactions; shared because they never vary.
@@ -431,6 +438,7 @@ export class DatabaseTransaction implements Transaction {
 	// link with no writes that is being read in a loop would otherwise masquerade as write activity and
 	// keep a write-holding head immortal.
 	declare writeTimeout: number;
+	writeTick = -1;
 	timeoutBudget = 0;
 	// Initialized rather than `declare`d so the class shape stays monomorphic on the write path. One clock
 	// read per handle is what lets the monitor age a handle without calling into the registry every tick.
@@ -937,6 +945,7 @@ export class DatabaseTransaction implements Transaction {
 		// Independent write-recency signal for chainStillActive (see the field comment) — reads never
 		// touch this, only writes do.
 		this.writeTimeout = this.timeout;
+		this.writeTick = monitorTick;
 		this.linkWrite(operation);
 		this.writes.push(operation);
 		operation.stagedIn = this;
@@ -1902,7 +1911,7 @@ export function isJoinableScope(transaction: DatabaseTransaction | null | undefi
 }
 
 let timer;
-const MAX_LONG_LIVED_HOLDER_REPORTS_PER_TICK = 10;
+let monitorTick = 0;
 
 /**
  * True when a link other than `txn` in the same multi-store chain was written recently enough to
@@ -1932,7 +1941,7 @@ function reportLongLivedLink(
 	link: DatabaseTransaction,
 	thresholdMs: number,
 	now: number,
-	reportLimit: { remaining: number }
+	reportBudget: LongLivedHolderReportBudget
 ): void {
 	if (!link.transaction || link.handleOpenedAt === 0) return;
 	const ageMs = now - link.handleOpenedAt;
@@ -1942,12 +1951,13 @@ function reportLongLivedLink(
 	if (link.isReplay) states.push('replay');
 	if (link.committing) states.push('commit-phase');
 	if (link.open === TRANSACTION_STATE.CLOSED) states.push('closed-with-open-iterators');
-	if (link.writeTimeout > 0) states.push('active');
+	if (monitorTick - link.writeTick <= 1) states.push('active');
 	if (states.length === 0) states.push('over-limit');
 	reportLongLivedHolder(
 		{
 			databasePath: (link.db as any)?.rootStore?.path,
 			nativeId: link.transaction.id,
+			openedAt: link.handleOpenedAt,
 			ageMs,
 			databaseName: (link.db as any)?.rootStore?.databaseName,
 			tableName: (link.db as any)?.name,
@@ -1960,7 +1970,7 @@ function reportLongLivedLink(
 			timeoutBudget: link.timeoutBudget,
 			startedFrom: link.startedFrom,
 		},
-		reportLimit
+		reportBudget
 	);
 }
 
@@ -1974,28 +1984,30 @@ function reportIfLongLived(
 	txn: DatabaseTransaction,
 	thresholdMs: number,
 	now: number,
-	reportLimit: { remaining: number }
+	reportBudget: LongLivedHolderReportBudget
 ): void {
 	if (thresholdMs === 0) return;
 	for (let link: DatabaseTransaction = txn; link; link = link.next) {
 		if (link !== txn && trackedTxns.has(link)) break;
-		reportLongLivedLink(link, thresholdMs, now, reportLimit);
+		reportLongLivedLink(link, thresholdMs, now, reportBudget);
 	}
 }
 
 function startMonitoringTxns() {
 	timer = setInterval(function () {
+		monitorTick++;
 		const checkedCommitPhaseChains = new Set<DatabaseTransaction>();
-		const reportLimit = { remaining: MAX_LONG_LIVED_HOLDER_REPORTS_PER_TICK };
 		const reportThresholdMs = getReportThresholdMs();
+		const reportBudget = createLongLivedHolderReportBudget(reportThresholdMs);
 		const reportNow = performance.now();
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
 		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
 		for (const txn of trackedTxns)
-			monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow, reportLimit);
+			monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow, reportBudget);
 		for (const txn of supervisedWriteRoots)
 			if (!trackedTxns.has(txn))
-				monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow, reportLimit);
+				monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow, reportBudget);
+		finishLongLivedHolderReports(reportBudget);
 	}, txnExpiration).unref();
 
 	function monitorTransaction(
@@ -2003,9 +2015,9 @@ function startMonitoringTxns() {
 		checkedCommitPhaseChains: Set<DatabaseTransaction>,
 		reportThresholdMs: number,
 		reportNow: number,
-		reportLimit: { remaining: number }
+		reportBudget: LongLivedHolderReportBudget
 	) {
-		reportIfLongLived(txn, reportThresholdMs, reportNow, reportLimit);
+		reportIfLongLived(txn, reportThresholdMs, reportNow, reportBudget);
 		{
 			const commitChainHead = txn.commitChainHead ?? txn;
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`

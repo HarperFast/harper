@@ -9,6 +9,8 @@ const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS, CONFIG_PARAM_MAP } = require('#src/utility/hdbTerms');
 const {
 	describeHolderCandidates,
+	createLongLivedHolderReportBudget,
+	finishLongLivedHolderReports,
 	getReportThresholdMs,
 	reportLongLivedHolder,
 	resetLongLivedTransactionReportsForTests,
@@ -259,6 +261,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		const holder = (overrides) => ({
 			databasePath: '/db/alpha',
 			nativeId: 12,
+			openedAt: 1,
 			ageMs: 3600000,
 			databaseName: 'data',
 			tableName: 'Orders',
@@ -310,11 +313,22 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		});
 
 		it('defers an eligible holder when the monitor tick has used its report budget', function () {
-			const reportLimit = { remaining: 1 };
-			reportLongLivedHolder(holder({ nativeId: 1 }), reportLimit);
-			reportLongLivedHolder(holder({ nativeId: 2 }), reportLimit);
+			const reportBudget = createLongLivedHolderReportBudget(getReportThresholdMs());
+			reportBudget.remaining = 1;
+			reportLongLivedHolder(holder({ nativeId: 1 }), reportBudget);
+			reportLongLivedHolder(holder({ nativeId: 2 }), reportBudget);
+			reportLongLivedHolder(holder({ nativeId: 1 }), reportBudget);
 			assert.strictEqual(warningsMatching('Harper transaction has held').length, 1);
-			reportLongLivedHolder(holder({ nativeId: 2 }), { remaining: 1 });
+			assert.strictEqual(reportBudget.skipped, 1, 'only a due holder is deferred');
+			finishLongLivedHolderReports(reportBudget);
+			assert.strictEqual(warningsMatching('further Harper transaction holder').length, 1);
+			reportLongLivedHolder(holder({ nativeId: 2 }), createLongLivedHolderReportBudget(getReportThresholdMs()));
+			assert.strictEqual(warningsMatching('Harper transaction has held').length, 2);
+		});
+
+		it('does not carry backoff to a reattached handle that reuses its native id', function () {
+			reportLongLivedHolder(holder({ ageMs: 300000, openedAt: 1 }));
+			reportLongLivedHolder(holder({ ageMs: 300001, openedAt: 2 }));
 			assert.strictEqual(warningsMatching('Harper transaction has held').length, 2);
 		});
 
@@ -577,7 +591,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'v' }],
 			});
 			setRegistryStatusForTests(registryStatus);
-			env.setProperty(THRESHOLD, '0.02');
+			env.setProperty(THRESHOLD, '0.001');
 			// sourceApply is exempt from reaping, which is what keeps both links open long enough for the
 			// monitor to observe them — and is the #2471 shape besides.
 			const context = { sourceApply: true };
@@ -601,7 +615,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 						warningsMatching('Harper transaction has held').find(([message]) =>
 							message.includes('ChainSecondaryTable')
 						)?.[0];
-					await inspect(links, childLine, childId);
+					await inspect(links, childLine, childId, () => Secondary.put(1, { v: 'second' }, context));
 				});
 			} finally {
 				setTxnExpiration(30000);
@@ -611,29 +625,27 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		it('names a chain link reachable only through the root under its own native id', async function () {
 			this.timeout(15000);
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
-			await withChainLinks(async (links, childLine, childId) => {
+			await withChainLinks(async (links, childLine, childId, refreshChildWrite) => {
 				resetLongLivedTransactionReportsForTests();
 				warnings.length = 0;
+				await refreshChildWrite();
 				await waitFor(() => childLine() !== undefined, 10000);
 				assert.match(
 					childLine(),
 					new RegExp(`transaction ${childId}\\b`),
 					'the link must be named under its own native id, which is what the sweep line joins to'
 				);
-				// The link was just written, so its write recency is armed: hiding that would report a link
-				// the application is actively using as merely over-limit.
 				assert.match(childLine(), /state: [^,]*active/);
 			});
 		});
 
-		// `active` for a chain link must come from `writeTimeout`, the clock chainStillActive decays, not
-		// from `timeout`, which nothing decays for a link the tick never enters on — reading `timeout`
-		// would report a link idle for hours as actively writing, the inverse of the diagnosis.
+		// `active` must use a write tick rather than `timeout`, which can stay nonzero for an idle link.
 		it('does not call a chain link active once its write recency has decayed', async function () {
 			this.timeout(15000);
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 			await withChainLinks(async (links, childLine) => {
 				links[1].writeTimeout = 0;
+				links[1].writeTick = -1;
 				links[1].timeout = 60000;
 				resetLongLivedTransactionReportsForTests();
 				warnings.length = 0;

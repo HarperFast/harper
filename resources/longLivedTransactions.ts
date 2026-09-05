@@ -11,7 +11,7 @@ const SWEEP_INTERVAL_MS = 60000;
 // One line per over-age handle would, against a large leak, block the main thread's socket routing
 // for as long as it took to format them. The per-handle backoff below rotates the cap over the whole
 // set across passes, so every holder is still named eventually.
-const MAX_REPORTED_PER_SWEEP = 10;
+export const MAX_LONG_LIVED_TRANSACTION_REPORTS_PER_PASS = 10;
 const MAX_HOLDER_CANDIDATES = 3;
 // The sweep prunes against the handles it just enumerated; the attribution map has no such
 // enumeration, so its entries expire instead. Far longer than a sweep interval, so a still-live
@@ -36,8 +36,8 @@ let lastAttributionPruneAt = 0;
 // No threshold observed yet; every real one is 0 or positive.
 let thresholdInEffectMs = -1;
 
-function reportKey(databasePath: string | undefined, nativeId: number): string {
-	return `${databasePath ?? '?'} ${nativeId}`;
+function reportKey(databasePath: string | undefined, nativeId: number, openedAt?: number): string {
+	return `${databasePath ?? '?'} ${nativeId}${openedAt == null ? '' : ` ${openedAt}`}`;
 }
 
 /**
@@ -148,16 +148,16 @@ export function runLongLivedTransactionSweep(): void {
 		}
 		if (due.length === 0) return;
 		due.sort((a, b) => b.ageMs - a.ageMs);
-		for (const handle of due.slice(0, MAX_REPORTED_PER_SWEEP)) {
+		for (const handle of due.slice(0, MAX_LONG_LIVED_TRANSACTION_REPORTS_PER_PASS)) {
 			markReported(handle.state, handle.ageMs);
 			logger.warn?.(
 				`Long-lived RocksDB transaction handle: id ${handle.id} has been open for ${prettyDuration(handle.ageMs)} on database ${handle.path ?? '?'}. ` +
 					`A handle this old can hold write intents that park other writers' commits, and may pin a read snapshot that blocks version reclamation.`
 			);
 		}
-		if (due.length > MAX_REPORTED_PER_SWEEP) {
+		if (due.length > MAX_LONG_LIVED_TRANSACTION_REPORTS_PER_PASS) {
 			logger.warn?.(
-				`${due.length - MAX_REPORTED_PER_SWEEP} further RocksDB transaction handle(s) are open past the ${prettyDuration(thresholdMs)} reporting threshold and were not listed individually.`
+				`${due.length - MAX_LONG_LIVED_TRANSACTION_REPORTS_PER_PASS} further RocksDB transaction handle(s) are open past the ${prettyDuration(thresholdMs)} reporting threshold and were not listed individually.`
 			);
 		}
 	} catch (error) {
@@ -182,6 +182,7 @@ export function startLongLivedTransactionReporting(): void {
 export type LongLivedHolder = {
 	databasePath: string | undefined;
 	nativeId: number;
+	openedAt: number;
 	ageMs: number;
 	databaseName?: string;
 	tableName?: string;
@@ -194,15 +195,35 @@ export type LongLivedHolder = {
 	startedFrom?: { resourceName: string; method: string };
 };
 
+export type LongLivedHolderReportBudget = {
+	remaining: number;
+	skipped: number;
+	thresholdMs: number;
+};
+
+export function createLongLivedHolderReportBudget(thresholdMs: number): LongLivedHolderReportBudget {
+	return { remaining: MAX_LONG_LIVED_TRANSACTION_REPORTS_PER_PASS, skipped: 0, thresholdMs };
+}
+
+export function finishLongLivedHolderReports(reportBudget: LongLivedHolderReportBudget): void {
+	if (reportBudget.skipped === 0) return;
+	try {
+		logger.warn?.(
+			`${reportBudget.skipped} further Harper transaction holder(s) are open past the ${prettyDuration(reportBudget.thresholdMs)} reporting threshold and were deferred.`
+		);
+	} catch {}
+}
+
 /**
  * Report a handle this thread owns, with the attribution the registry sweep cannot supply. The native
  * id is the join key between the two: the sweep names an id, this names who holds it and which state
  * kept the open-transaction monitor from reaping it (harper#2471). Never throws — the monitor
  * interval that calls it has no handler.
  */
-export function reportLongLivedHolder(holder: LongLivedHolder, reportLimit?: { remaining: number }): void {
+export function reportLongLivedHolder(holder: LongLivedHolder, reportBudget?: LongLivedHolderReportBudget): void {
 	try {
-		const thresholdMs = getReportThresholdMs();
+		if (!registryStatusFn) return;
+		const thresholdMs = reportBudget?.thresholdMs ?? getReportThresholdMs();
 		rebaseIfThresholdChanged(thresholdMs);
 		if (thresholdMs === 0) return;
 		const now = Date.now();
@@ -214,14 +235,17 @@ export function reportLongLivedHolder(holder: LongLivedHolder, reportLimit?: { r
 		}
 		const state = observeHandle(
 			attributionReports,
-			reportKey(holder.databasePath, holder.nativeId),
+			reportKey(holder.databasePath, holder.nativeId, holder.openedAt),
 			holder.ageMs,
 			thresholdMs
 		);
 		if (holder.ageMs < state.nextReportAgeMs) return;
-		if (reportLimit && reportLimit.remaining <= 0) return;
+		if (reportBudget && reportBudget.remaining <= 0) {
+			reportBudget.skipped++;
+			return;
+		}
 		markReported(state, holder.ageMs);
-		if (reportLimit) reportLimit.remaining--;
+		if (reportBudget) reportBudget.remaining--;
 		const table = holder.tableName ? `.${holder.tableName}` : '';
 		logger.warn?.(
 			`Harper transaction has held RocksDB transaction ${holder.nativeId} for ${prettyDuration(holder.ageMs)} ` +
