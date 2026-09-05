@@ -428,17 +428,24 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
 	// a URI that's no longer subscribable is dropped from the persisted list.
 	try {
-		await withSessionSubscriptionLock(sessionId, () =>
-			updateSessionSubscriptions(sessionId, async (subscriptions) => {
-				if (!subscriptions.length) return subscriptions;
-				const restored = await restoreResourceSubscriptions(
-					sessionId,
-					subscriptions,
-					subscriptionUser(effectiveUser(request))
-				);
-				return restored.length === subscriptions.length ? subscriptions : restored;
-			})
-		);
+		await withSessionSubscriptionLock(sessionId, async () => {
+			const snapshot = await updateSessionSubscriptions(sessionId, (subscriptions) => subscriptions);
+			if (!snapshot) throw new Error('MCP session disappeared during subscription restore');
+			const attempted = snapshot.subscriptions ?? [];
+			if (!attempted.length) return;
+			const retained = await restoreResourceSubscriptions(
+				sessionId,
+				attempted,
+				subscriptionUser(effectiveUser(request))
+			);
+			if (retained.length === attempted.length) return;
+			const attemptedSet = new Set(attempted);
+			const retainedSet = new Set(retained);
+			await updateSessionSubscriptions(sessionId, (subscriptions) => {
+				const updated = subscriptions.filter((uri) => !attemptedSet.has(uri) || retainedSet.has(uri));
+				return updated.length === subscriptions.length ? subscriptions : updated;
+			});
+		});
 	} catch (error) {
 		record.queue.emit('close');
 		throw error;
@@ -981,18 +988,25 @@ async function dispatchResourcesUnsubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/unsubscribe requires params.uri')
 		);
 	}
-	let result = await routeResourceSubscription({ session, operation: 'unsubscribe', uri });
-	if (result === 'no-live-stream') {
+	let routedSession = session;
+	let result: Awaited<ReturnType<typeof routeResourceSubscription>> = 'no-live-stream';
+	let ownerChangedAfterFinalAttempt = false;
+	for (let attempt = 0; attempt < 3; attempt++) {
+		result = await routeResourceSubscription({ session: routedSession, operation: 'unsubscribe', uri });
+		if (result !== 'no-live-stream') break;
 		const currentSession = await loadSession(session.id);
-		const owner = session.streamOwner;
+		const owner = routedSession.streamOwner;
 		const currentOwner = currentSession?.streamOwner;
-		if (
-			currentSession &&
-			currentOwner &&
-			(!owner || currentOwner.threadId !== owner.threadId || currentOwner.token !== owner.token)
-		) {
-			result = await routeResourceSubscription({ session: currentSession, operation: 'unsubscribe', uri });
-		}
+		if (!currentSession || !currentOwner) break;
+		if (owner && currentOwner.threadId === owner.threadId && currentOwner.token === owner.token) break;
+		routedSession = currentSession;
+		ownerChangedAfterFinalAttempt = attempt === 2;
+	}
+	if (result === 'no-live-stream' && ownerChangedAfterFinalAttempt) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe owner changed; retry the request')
+		);
 	}
 	if (result === 'no-live-stream') {
 		// The live owner is already gone. Remove durable state locally so a later

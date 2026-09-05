@@ -110,10 +110,10 @@ export function _pendingSubscriptionRouteCount(): number {
 	return pending.size;
 }
 
-function ensureWired(): void {
-	if (wired) return;
+function ensureWired(): boolean {
+	if (wired) return true;
 	const itc = bridge();
-	if (itc.available === false) return;
+	if (itc.available === false) return false;
 	itc.onMessageByType(ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND, (event) => {
 		const command = event.message;
 		if (!isCommand(command)) {
@@ -136,10 +136,11 @@ function ensureWired(): void {
 		entry.resolve(response.result);
 	});
 	wired = true;
+	return true;
 }
 
 export async function claimSubscriptionOwner(sessionId: string, streamToken: string): Promise<void> {
-	ensureWired();
+	if (!ensureWired()) throw new Error('MCP subscription routing is unavailable');
 	await patchSession(sessionId, { streamOwner: { threadId: currentThreadId(), token: streamToken } });
 }
 
@@ -150,8 +151,8 @@ function countPendingForSession(sessionId: string): number {
 }
 
 export function subscriptionUser(user: AuthedUser): AuthedUser {
-	// Cross-worker subscribe authorization may rely only on this data-only principal shape.
-	// Built-in checks consume role.permission; credentials and mutable user state stay local.
+	// Preserve role permissions and scoped-token expiry for authorization rechecks;
+	// credentials and mutable user state must not cross the worker boundary.
 	return {
 		...(user.username !== undefined ? { username: user.username } : {}),
 		...(user.authExpiresAt !== undefined ? { authExpiresAt: user.authExpiresAt } : {}),
@@ -171,7 +172,7 @@ function routeRemote(
 	owner: NonNullable<McpSessionRecord['streamOwner']>,
 	command: Omit<Command, 'requestId' | 'originator' | 'streamToken'>
 ): Promise<SubscriptionRouteResult> {
-	ensureWired();
+	if (!ensureWired()) return Promise.resolve('no-live-stream');
 	if (pending.size >= MAX_PENDING || countPendingForSession(command.sessionId) >= MAX_PENDING_PER_SESSION) {
 		return Promise.resolve('internal-error');
 	}
@@ -184,18 +185,20 @@ function routeRemote(
 		timer.unref();
 		pending.set(requestId, { sessionId: command.sessionId, targetThreadId: owner.threadId, resolve, timer });
 		let sent = false;
+		let sendFailed = false;
 		try {
 			sent = bridge().sendToThread(owner.threadId, {
 				type: ITC_EVENT_TYPES.MCP_SUBSCRIPTION_COMMAND,
 				message: { ...command, requestId, originator: currentThreadId(), streamToken: owner.token },
 			});
 		} catch (error) {
+			sendFailed = true;
 			harperLogger.error('Unable to route MCP subscription command', error);
 		}
 		if (!sent) {
 			clearTimeout(timer);
 			pending.delete(requestId);
-			resolve('no-live-stream');
+			resolve(sendFailed ? 'internal-error' : 'no-live-stream');
 		}
 	});
 }
