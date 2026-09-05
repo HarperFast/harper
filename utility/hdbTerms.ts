@@ -956,6 +956,8 @@ export const ITC_EVENT_TYPES = {
 	// MCP §3.7: route a client's response to a server→client request back to the
 	// worker awaiting it (the response POST can land on any worker).
 	MCP_CLIENT_RESPONSE: 'mcp_client_response',
+	MCP_SUBSCRIPTION_COMMAND: 'mcp_subscription_command',
+	MCP_SUBSCRIPTION_RESPONSE: 'mcp_subscription_response',
 	// #1736: components load per-worker, so a `server.registerOperation()` made there lands in
 	// a worker-local OPERATION_FUNCTION_MAP the main-thread ops-API dispatcher can't see. A
 	// worker announces each registration (OPERATION_REGISTERED) so the main thread can forward

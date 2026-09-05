@@ -32,16 +32,23 @@ import { decodeCursor } from './pagination.ts';
 import { seedSessionSnapshot } from './listChanged.ts';
 import { tryAdmit, resolveClientIdentity } from './rateLimit.ts';
 import { checkDurableQuota } from './quota.ts';
-import { deleteSession, loadSession, saveSession, touchSession, type McpSessionRecord } from './session.ts';
+import {
+	deleteSession,
+	loadSession,
+	patchSession,
+	touchSession,
+	updateSessionSubscriptions,
+	type McpSessionRecord,
+} from './session.ts';
 import { listResources, listResourceTemplates, readResource, completeResourceArgument } from './resources.ts';
 import { ensureApplicationToolsFresh } from './tools/application.ts';
 import { getPrompt, listPrompts, completePromptArgument } from './promptRegistry.ts';
+import { dropSessionSubscriptions, restoreResourceSubscriptions } from './subscriptions.ts';
 import {
-	addResourceSubscription,
-	removeResourceSubscription,
-	dropSessionSubscriptions,
-	restoreResourceSubscriptions,
-} from './subscriptions.ts';
+	claimSubscriptionOwner,
+	routeResourceSubscription,
+	withSessionSubscriptionLock,
+} from './subscriptionRouting.ts';
 import {
 	sendServerRequest,
 	routeClientResponse,
@@ -50,8 +57,8 @@ import {
 } from './serverRequests.ts';
 import {
 	registerSession,
-	touchRegisteredSession,
 	getRegisteredSession,
+	touchRegisteredSession,
 	replaySince,
 	type SseEvent,
 } from './sessionRegistry.ts';
@@ -256,11 +263,8 @@ async function handlePost(request: NormRequest): Promise<NormResponse> {
 		return { status: 403, headers: {} };
 	}
 
-	// Sliding-window idle reset. Awaited (not fire-and-forget) so a concurrent
-	// DELETE that arrives mid-request can't be resurrected by a late put. Adopt
-	// the touched copy (fresh `lastActivity`) so any later save in this request
-	// — `handleInitialized`, `dispatchSetLevel` — persists the current activity
-	// time instead of rolling it back to the load-time value.
+	// Adopt the persisted sliding-window update so later writes cannot roll
+	// lastActivity back; loadSession rejects partial rows from DELETE/patch races.
 	session = await touchSession(session);
 
 	// A client's response to a server→client request (#3.7): route it to the
@@ -370,7 +374,7 @@ async function dispatchSetLevel(
 	// on the worker where the change fires. Cross-worker push is a separate,
 	// subsystem-wide design item (tracked in the MCP design-doc issue).
 	session.logLevel = level;
-	await saveSession(session);
+	await patchSession(session.id, { logLevel: level });
 	setSessionLogLevel(session.id, level);
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
@@ -403,6 +407,12 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 		};
 	}
 	const record = registerSession(sessionId, request.profile, effectiveUser(request));
+	try {
+		await claimSubscriptionOwner(sessionId, record.streamToken);
+	} catch (error) {
+		record.queue.emit('close');
+		throw error;
+	}
 	// Seed the live record with any previously-set logging level so a reconnect
 	// (or a setLevel that preceded this stream) keeps delivering notifications/message.
 	// (A fresh record's logLevel is already undefined, so a direct assign is safe.)
@@ -416,13 +426,31 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	record.queue.once('close', () => dropSessionSubscriptions(sessionId));
 	// Restore durable resource subscriptions (#3.6) on (re)connect. Best-effort:
 	// a URI that's no longer subscribable is dropped from the persisted list.
-	if (session.subscriptions?.length) {
-		const restored = await restoreResourceSubscriptions(sessionId, session.subscriptions, effectiveUser(request));
-		if (restored.length !== session.subscriptions.length) {
-			session.subscriptions = restored;
-			await saveSession(session);
+	try {
+		const sessionPresent = await withSessionSubscriptionLock(sessionId, async () => {
+			const snapshot = await updateSessionSubscriptions(sessionId, (subscriptions) => subscriptions);
+			if (!snapshot) return false;
+			const attempted = snapshot.subscriptions ?? [];
+			if (!attempted.length) return true;
+			const retained = await restoreResourceSubscriptions(sessionId, attempted, effectiveUser(request));
+			if (retained.length === attempted.length) return true;
+			const attemptedSet = new Set(attempted);
+			const retainedSet = new Set(retained);
+			await updateSessionSubscriptions(sessionId, (subscriptions) => {
+				const updated = subscriptions.filter((uri) => !attemptedSet.has(uri) || retainedSet.has(uri));
+				return updated.length === subscriptions.length ? subscriptions : updated;
+			});
+			return true;
+		});
+		if (!sessionPresent) {
+			record.queue.emit('close');
+			return { status: 404, headers: {} };
 		}
+	} catch (error) {
+		record.queue.emit('close');
+		throw error;
 	}
+	if (getRegisteredSession(sessionId) !== record) dropSessionSubscriptions(sessionId);
 	// Resumability (#3.8): on reconnect with Last-Event-ID, replay buffered frames
 	// the client missed (those with a higher id) before live frames flow. Re-sent
 	// raw so their original event ids are preserved. Best-effort + per-worker: the
@@ -917,26 +945,31 @@ async function dispatchResourcesSubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/subscribe requires params.uri')
 		);
 	}
-	// Require a live GET SSE stream: that's where notifications/resources/updated is
-	// delivered, and its 'close' is the only teardown hook for the subscription. A
-	// subscription opened without a stream would leak its audit-log iterator and
-	// drop every update silently.
-	if (!getRegisteredSession(session.id)) {
+	const result = await routeResourceSubscription({
+		session,
+		operation: 'subscribe',
+		uri,
+		user: effectiveUser(request),
+	});
+	if (result === 'no-live-stream') {
 		return jsonResponse(
 			200,
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'open the GET SSE stream before subscribing to resources')
 		);
 	}
-	const ok = await addResourceSubscription(session.id, uri, effectiveUser(request));
-	if (!ok) {
+	if (result === 'not-subscribable') {
 		// Only row-backed application resources are subscribable; synthetic harper://*
 		// URIs (and unknown URIs) have no change source.
 		return jsonResponse(200, buildError(messageId, ERROR_CODES.INVALID_PARAMS, `resource is not subscribable: ${uri}`));
 	}
-	// Persist the URI on the durable record so it survives an SSE reconnect.
-	if (!session.subscriptions?.includes(uri)) {
-		session.subscriptions = [...(session.subscriptions ?? []), uri];
-		await saveSession(session);
+	if (result === 'timeout') {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource subscription timed out; retry the request')
+		);
+	}
+	if (result === 'internal-error') {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource subscription failed'));
 	}
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
@@ -955,10 +988,47 @@ async function dispatchResourcesUnsubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/unsubscribe requires params.uri')
 		);
 	}
-	removeResourceSubscription(session.id, uri);
-	if (session.subscriptions?.includes(uri)) {
-		session.subscriptions = session.subscriptions.filter((u) => u !== uri);
-		await saveSession(session);
+	let routedSession = session;
+	let result: Awaited<ReturnType<typeof routeResourceSubscription>> = 'no-live-stream';
+	let ownerChangedAfterFinalAttempt = false;
+	for (let attempt = 0; attempt < 3; attempt++) {
+		result = await routeResourceSubscription({ session: routedSession, operation: 'unsubscribe', uri });
+		if (result !== 'no-live-stream') break;
+		const currentSession = await loadSession(session.id);
+		const owner = routedSession.streamOwner;
+		const currentOwner = currentSession?.streamOwner;
+		if (!currentSession || !currentOwner) break;
+		if (owner && currentOwner.threadId === owner.threadId && currentOwner.token === owner.token) break;
+		routedSession = currentSession;
+		ownerChangedAfterFinalAttempt = attempt === 2;
+	}
+	if (result === 'no-live-stream' && ownerChangedAfterFinalAttempt) {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe owner changed; retry the request')
+		);
+	}
+	if (result === 'no-live-stream') {
+		// The live owner is already gone. Remove durable state locally so a later
+		// reconnect cannot restore the cancelled subscription.
+		try {
+			await updateSessionSubscriptions(session.id, (subscriptions) =>
+				subscriptions.includes(uri) ? subscriptions.filter((subscription) => subscription !== uri) : subscriptions
+			);
+		} catch (error) {
+			harperLogger.error('MCP resource unsubscribe durable update failed', error);
+			return jsonResponse(
+				200,
+				buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe failed; retry the request')
+			);
+		}
+	} else if (result === 'timeout') {
+		return jsonResponse(
+			200,
+			buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe timed out; retry the request')
+		);
+	} else if (result === 'internal-error') {
+		return jsonResponse(200, buildError(messageId, ERROR_CODES.INTERNAL_ERROR, 'resource unsubscribe failed'));
 	}
 	return jsonResponse(200, buildSuccess(messageId, {}));
 }
