@@ -15,6 +15,15 @@ const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 import type { RootDatabaseKind } from './databases.ts';
 import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
+import {
+	createLongLivedHolderReportBudget,
+	describeHolderCandidates,
+	finishLongLivedHolderReports,
+	getReportThresholdMs,
+	rebaseLongLivedTransactionReports,
+	reportLongLivedHolder,
+	type LongLivedHolderReportBudget,
+} from './longLivedTransactions.ts';
 
 const trackedTxns = new Set<DatabaseTransaction>();
 // Read options for a rotated generation's native transactions; shared because they never vary.
@@ -24,7 +33,7 @@ const SNAPSHOT_FREE = Object.freeze({ disableSnapshot: true });
 // is what the read-queue-depth metric counts, while this holds one entry per logical transaction — the
 // chain root — so a chain child can never become its own timeout root (issue #2231).
 const supervisedWriteRoots = new Set<DatabaseTransaction>();
-const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
+let MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 45 seconds before we start rejecting them
 const DEBUG_LONG_TXNS = envMngr.get(CONFIG_PARAMS.STORAGE_DEBUGLONGTRANSACTIONS);
 export const TRANSACTION_STATE = {
 	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
@@ -430,7 +439,11 @@ export class DatabaseTransaction implements Transaction {
 	// link with no writes that is being read in a loop would otherwise masquerade as write activity and
 	// keep a write-holding head immortal.
 	declare writeTimeout: number;
+	writeTick = -1;
 	timeoutBudget = 0;
+	// Initialized rather than `declare`d so the class shape stays monomorphic on the write path. One clock
+	// read per handle is what lets the monitor age a handle without calling into the registry every tick.
+	handleOpenedAt = 0;
 	// save() only stages here; ImmediateTransaction overrides it to commit, which addWrite must not defer
 	saveCommits = false;
 	// True where save() puts the write into this transaction's native handle, which is what lets a scope
@@ -564,6 +577,7 @@ export class DatabaseTransaction implements Transaction {
 		this.transaction = transaction;
 		this.readTxnsUsed = 1;
 		this.baseReadRefConsumed = false;
+		this.handleOpenedAt = performance.now();
 	}
 
 	/**
@@ -604,6 +618,7 @@ export class DatabaseTransaction implements Transaction {
 		this.transaction = null;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
+		this.handleOpenedAt = 0;
 		return transaction;
 	}
 
@@ -862,7 +877,12 @@ export class DatabaseTransaction implements Transaction {
 							oldestOutstandingCommit.startedFrom,
 							oldestOutstandingCommit.nativeTransaction
 						) +
-						`. Further record updates and publishes from new application requests on this thread ` +
+						`.` +
+						describeHolderCandidates(
+							oldestOutstandingCommit.store?.rootStore?.path,
+							oldestOutstandingCommit.nativeTransaction?.id
+						) +
+						` Further record updates and publishes from new application requests on this thread ` +
 						`will be rejected with 503 until the commit settles or the process is restarted (deletes, ` +
 						`and writes applied from a canonical source, e.g. replication or a caching source, bypass this check).`
 				);
@@ -926,6 +946,7 @@ export class DatabaseTransaction implements Transaction {
 		// Independent write-recency signal for chainStillActive (see the field comment) — reads never
 		// touch this, only writes do.
 		this.writeTimeout = this.timeout;
+		this.writeTick = monitorTick;
 		this.linkWrite(operation);
 		this.writes.push(operation);
 		operation.stagedIn = this;
@@ -1618,7 +1639,9 @@ export class DatabaseTransaction implements Transaction {
 				`Abandoning a write transaction: its commit has been in write-intent conflict for ${elapsed}ms ` +
 					`(exceeds the ${budget}ms limit) across ${this.retries} retries, ` +
 					describeCommitIdentity(this.writes[0]?.store, this.startedFrom, headTransaction) +
-					`. Another transaction holds a conflicting write intent and has not completed; the request is ` +
+					`.` +
+					describeHolderCandidates(this.writes[0]?.store?.rootStore?.path, headTransaction?.id) +
+					` Another transaction holds a conflicting write intent and has not completed; the request is ` +
 					`failed with a 503${retryable ? '' : ' (not retryable — an earlier store in this transaction already committed)'} ` +
 					`rather than waiting further.`
 			);
@@ -1889,6 +1912,7 @@ export function isJoinableScope(transaction: DatabaseTransaction | null | undefi
 }
 
 let timer;
+let monitorTick = 0;
 
 /**
  * True when a link other than `txn` in the same multi-store chain was written recently enough to
@@ -1908,17 +1932,94 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
 	return false;
 }
 
+/**
+ * Name a chain link still holding its native handle past the reporting threshold, and why the
+ * branches below are not reaping it (harper#2471). Attribution only: it reads the recency clocks
+ * those branches maintain rather than calling `chainStillActive`, which would decay `writeTimeout`
+ * as a side effect, and it runs before them so it cannot reorder them.
+ */
+function reportLongLivedLink(
+	link: DatabaseTransaction,
+	thresholdMs: number,
+	now: number,
+	reportBudget: LongLivedHolderReportBudget
+): void {
+	if (!link.transaction || link.handleOpenedAt === 0) return;
+	const ageMs = now - link.handleOpenedAt;
+	if (ageMs < thresholdMs) return;
+	const states: string[] = [];
+	if (link.sourceApply) states.push('source-apply');
+	if (link.isReplay) states.push('replay');
+	if (link.committing) states.push('commit-phase');
+	if (link.open === TRANSACTION_STATE.CLOSED) states.push('closed-with-open-iterators');
+	if (monitorTick - link.writeTick <= 1) states.push('active');
+	if (states.length === 0) states.push('over-limit');
+	reportLongLivedHolder(
+		{
+			databasePath: (link.db as any)?.rootStore?.path,
+			nativeId: link.transaction.id,
+			openedAt: link.handleOpenedAt,
+			ageMs,
+			databaseName: (link.db as any)?.rootStore?.databaseName,
+			tableName: (link.db as any)?.name,
+			countPendingWrites: () => {
+				let pendingWrites = 0;
+				for (const write of link.writes) if (write) pendingWrites++;
+				return pendingWrites;
+			},
+			states,
+			timeoutBudget: link.timeoutBudget,
+			startedFrom: link.startedFrom,
+		},
+		reportBudget
+	);
+}
+
+/**
+ * Report every link of this logical transaction that holds its own native handle. A blind write to a
+ * second database attaches a handle to a `.next` link while only the root is supervised, so reporting
+ * the entry alone names an id the sweep's line can never be joined to when the child is the holder.
+ * Links that read are in `trackedTxns` and get their own visit from the tick.
+ */
+function reportIfLongLived(
+	txn: DatabaseTransaction,
+	thresholdMs: number,
+	now: number,
+	reportBudget: LongLivedHolderReportBudget
+): void {
+	if (thresholdMs === 0) return;
+	for (let link: DatabaseTransaction = txn; link; link = link.next) {
+		if (link !== txn && trackedTxns.has(link)) break;
+		reportLongLivedLink(link, thresholdMs, now, reportBudget);
+	}
+}
+
 function startMonitoringTxns() {
 	timer = setInterval(function () {
+		monitorTick++;
 		const checkedCommitPhaseChains = new Set<DatabaseTransaction>();
+		const reportThresholdMs = getReportThresholdMs();
+		rebaseLongLivedTransactionReports(reportThresholdMs);
+		const reportBudget = createLongLivedHolderReportBudget(reportThresholdMs);
+		const reportNow = performance.now();
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
 		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
-		for (const txn of trackedTxns) monitorTransaction(txn, checkedCommitPhaseChains);
+		for (const txn of trackedTxns)
+			monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow, reportBudget);
 		for (const txn of supervisedWriteRoots)
-			if (!trackedTxns.has(txn)) monitorTransaction(txn, checkedCommitPhaseChains);
+			if (!trackedTxns.has(txn))
+				monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow, reportBudget);
+		finishLongLivedHolderReports(reportBudget);
 	}, txnExpiration).unref();
 
-	function monitorTransaction(txn: DatabaseTransaction, checkedCommitPhaseChains: Set<DatabaseTransaction>) {
+	function monitorTransaction(
+		txn: DatabaseTransaction,
+		checkedCommitPhaseChains: Set<DatabaseTransaction>,
+		reportThresholdMs: number,
+		reportNow: number,
+		reportBudget: LongLivedHolderReportBudget
+	) {
+		reportIfLongLived(txn, reportThresholdMs, reportNow, reportBudget);
 		{
 			const commitChainHead = txn.commitChainHead ?? txn;
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
@@ -2026,6 +2127,12 @@ startMonitoringTxns();
  */
 export function resetReplayedWritesWarning() {
 	replayedWritesWarned = false;
+}
+
+export function setMaxOutstandingTxnDuration(ms: number): number {
+	const previous = MAX_OUTSTANDING_TXN_DURATION;
+	MAX_OUTSTANDING_TXN_DURATION = ms;
+	return previous;
 }
 
 /** Test seam: whether the monitor supervises this logical transaction for its writes. */

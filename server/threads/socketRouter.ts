@@ -3,6 +3,7 @@ import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
+import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
 import { isMainThread } from 'worker_threads';
 import { join } from 'path';
 
@@ -52,6 +53,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 	// process-global singleton; see startTransactionLogCooling). Runs for all
 	// thread modes below, including the single-threaded (threadCount === 0) path.
 	startTransactionLogCooling();
+	startLongLivedTransactionReporting();
 	try {
 		if (dynamicThreads) {
 			// No caller currently passes dynamicThreads. If one ever does, note that the main thread

@@ -693,6 +693,7 @@ export const CONFIG_PARAMS = {
 	STORAGE_MAXTRANSACTIONOPENTIME: 'storage_maxTransactionOpenTime',
 	STORAGE_MAX_READ_TRANSACTION_OPEN_TIME: 'storage_maxReadTransactionOpenTime',
 	STORAGE_DEBUGLONGTRANSACTIONS: 'storage_debugLongTransactions',
+	STORAGE_LONGTRANSACTIONREPORTTHRESHOLD: 'storage_longTransactionReportThreshold',
 	STORAGE_PATH: 'storage_path',
 	STORAGE_BACKUPPATH: 'storage_backupPath',
 	STORAGE_BLOBPATHS: 'storage_blobPaths',
