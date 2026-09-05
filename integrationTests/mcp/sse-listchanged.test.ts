@@ -478,22 +478,42 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 		}
 		const auth = adminAuth(ctx);
 		const session = await initialize(ctx.harper.httpURL, auth);
-		const firstLocalPort = 30000 + (process.pid % 10000);
-		const getAgent = new Agent({ keepAlive: true, maxSockets: 1 });
-		const getThreadId = await workerIdentity(ctx.harper.httpURL, auth, getAgent, firstLocalPort);
-		const sse = await openSseWithAgent(ctx.harper.httpURL, auth, getAgent, session, firstLocalPort);
+		const firstLocalPort = 20000 + (process.pid % 9000);
+		let getAgent;
+		let getThreadId;
+		let getLocalPort;
+		for (let attempt = 0; attempt < 25; attempt++) {
+			const candidateAgent = new Agent({ keepAlive: true, maxSockets: 1 });
+			try {
+				getLocalPort = firstLocalPort + attempt;
+				getThreadId = await workerIdentity(ctx.harper.httpURL, auth, candidateAgent, getLocalPort);
+				getAgent = candidateAgent;
+				break;
+			} catch (error) {
+				candidateAgent.destroy();
+				if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+			}
+		}
+		ok(getAgent && getThreadId !== undefined && getLocalPort !== undefined, 'found a free pinned GET socket');
+		const sse = await openSseWithAgent(ctx.harper.httpURL, auth, getAgent, session, getLocalPort);
 		let postAgent;
 		let postThreadId = getThreadId;
-		let postLocalPort = firstLocalPort;
+		let postLocalPort = getLocalPort;
+		let postConnected = false;
 		try {
 			strictEqual(sse.status, 200, 'pinned GET SSE establishes');
 			for (let attempt = 0; attempt < 24 && postThreadId === getThreadId; attempt++) {
 				postAgent?.destroy();
 				postAgent = new Agent({ keepAlive: true, maxSockets: 1 });
-				postLocalPort = firstLocalPort + attempt + 1;
-				postThreadId = await workerIdentity(ctx.harper.httpURL, auth, postAgent, postLocalPort);
+				postLocalPort = getLocalPort + attempt + 1;
+				try {
+					postThreadId = await workerIdentity(ctx.harper.httpURL, auth, postAgent, postLocalPort);
+					postConnected = true;
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+				}
 			}
-			ok(postAgent, 'created a POST keep-alive connection');
+			ok(postAgent && postConnected, 'created a POST keep-alive connection on a free local port');
 			if (postThreadId === getThreadId) {
 				t.skip(`runtime exposed one application HTTP worker to all socket probes (thread ${getThreadId})`);
 				return;

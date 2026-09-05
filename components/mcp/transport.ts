@@ -57,7 +57,6 @@ import {
 } from './serverRequests.ts';
 import {
 	registerSession,
-	unregisterSession,
 	touchRegisteredSession,
 	replaySince,
 	type SseEvent,
@@ -410,7 +409,7 @@ async function handleGet(request: NormRequest): Promise<NormResponse> {
 	try {
 		await claimSubscriptionOwner(sessionId, record.streamToken);
 	} catch (error) {
-		unregisterSession(sessionId);
+		record.queue.emit('close');
 		throw error;
 	}
 	// Seed the live record with any previously-set logging level so a reconnect
@@ -970,7 +969,19 @@ async function dispatchResourcesUnsubscribe(
 			buildError(messageId, ERROR_CODES.INVALID_PARAMS, 'resources/unsubscribe requires params.uri')
 		);
 	}
-	const result = await routeResourceSubscription({ session, operation: 'unsubscribe', uri });
+	let result = await routeResourceSubscription({ session, operation: 'unsubscribe', uri });
+	if (result === 'no-live-stream') {
+		const currentSession = await loadSession(session.id);
+		const owner = session.streamOwner;
+		const currentOwner = currentSession?.streamOwner;
+		if (
+			currentSession &&
+			currentOwner &&
+			(!owner || currentOwner.threadId !== owner.threadId || currentOwner.token !== owner.token)
+		) {
+			result = await routeResourceSubscription({ session: currentSession, operation: 'unsubscribe', uri });
+		}
+	}
 	if (result === 'no-live-stream') {
 		// The live owner is already gone. Remove durable state locally so a later
 		// reconnect cannot restore the cancelled subscription.

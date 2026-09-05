@@ -287,4 +287,62 @@ describe('mcp/subscriptionRouting', () => {
 		assert.equal(await subscribing, 'success');
 		assert.equal(subscribeStarted, true);
 	});
+
+	it('rechecks stream ownership after waiting for an earlier session operation', async () => {
+		_setSubscriptionThreadIdForTest(7);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		const registered = registerSession(session.id, 'application', USER);
+		await claimSubscriptionOwner(session.id, registered.streamToken);
+		let releaseEarlierOperation;
+		const earlierOperation = withSessionSubscriptionLock(
+			session.id,
+			() => new Promise((resolve) => (releaseEarlierOperation = resolve))
+		);
+		let subscribeStarted = false;
+		_setSubscribeImplForTest(async () => {
+			subscribeStarted = true;
+		});
+		const subscribing = routeResourceSubscription({
+			session: await loadSession(session.id),
+			operation: 'subscribe',
+			uri: 'https://app.test/Product/3',
+			user: USER,
+		});
+		await new Promise(setImmediate);
+		registerSession(session.id, 'application', USER);
+		releaseEarlierOperation();
+		await earlierOperation;
+
+		assert.equal(await subscribing, 'no-live-stream');
+		assert.equal(subscribeStarted, false);
+	});
+
+	it('normalizes local owner failures to an internal-error result', async () => {
+		_setSubscriptionThreadIdForTest(7);
+		const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+		const registered = registerSession(session.id, 'application', USER);
+		await claimSubscriptionOwner(session.id, registered.streamToken);
+		_setSubscribeImplForTest(async () => ({
+			end() {},
+			[Symbol.asyncIterator]() {
+				return { next: () => new Promise(() => {}) };
+			},
+		}));
+		const table = fakeTable();
+		await table.put(await loadSession(session.id));
+		table.patch = async () => {
+			throw new Error('write failed');
+		};
+		_setSessionTableForTest(table);
+
+		assert.equal(
+			await routeResourceSubscription({
+				session: await loadSession(session.id),
+				operation: 'subscribe',
+				uri: 'https://app.test/Product/4',
+				user: USER,
+			}),
+			'internal-error'
+		);
+	});
 });
