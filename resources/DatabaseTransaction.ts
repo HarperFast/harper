@@ -1902,6 +1902,7 @@ export function isJoinableScope(transaction: DatabaseTransaction | null | undefi
 }
 
 let timer;
+const MAX_LONG_LIVED_HOLDER_REPORTS_PER_TICK = 10;
 
 /**
  * True when a link other than `txn` in the same multi-store chain was written recently enough to
@@ -1927,7 +1928,12 @@ function chainStillActive(txn: DatabaseTransaction): boolean {
  * those branches maintain rather than calling `chainStillActive`, which would decay `writeTimeout`
  * as a side effect, and it runs before them so it cannot reorder them.
  */
-function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number, monitored: boolean, now: number): void {
+function reportLongLivedLink(
+	link: DatabaseTransaction,
+	thresholdMs: number,
+	now: number,
+	reportLimit: { remaining: number }
+): void {
 	if (!link.transaction || link.handleOpenedAt === 0) return;
 	const ageMs = now - link.handleOpenedAt;
 	if (ageMs < thresholdMs) return;
@@ -1936,30 +1942,26 @@ function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number, mon
 	if (link.isReplay) states.push('replay');
 	if (link.committing) states.push('commit-phase');
 	if (link.open === TRANSACTION_STATE.CLOSED) states.push('closed-with-open-iterators');
-	// Which clock says "still active" depends on how the monitor sees this link: the one this tick
-	// entered on has its idle `timeout` decayed below, while a link reached only through the chain has
-	// nothing decay its `timeout` at all — `chainStillActive` decays its `writeTimeout` instead. Reading
-	// `timeout` for the latter reports `active` forever for an idle link; ignoring it entirely hides one
-	// that is genuinely still being written.
-	if ((monitored ? link.timeout : link.writeTimeout) > 0) states.push('active');
+	if (link.writeTimeout > 0) states.push('active');
 	if (states.length === 0) states.push('over-limit');
-	reportLongLivedHolder({
-		databasePath: (link.db as any)?.rootStore?.path,
-		nativeId: link.transaction.id,
-		ageMs,
-		databaseName: (link.db as any)?.rootStore?.databaseName,
-		tableName: (link.db as any)?.name,
-		// This link's own writes, not the chain's: the count is reported beside this link's native id,
-		// which is the id the registry sweep names and the only one it can be joined to.
-		countPendingWrites: () => {
-			let pendingWrites = 0;
-			for (const write of link.writes) if (write) pendingWrites++;
-			return pendingWrites;
+	reportLongLivedHolder(
+		{
+			databasePath: (link.db as any)?.rootStore?.path,
+			nativeId: link.transaction.id,
+			ageMs,
+			databaseName: (link.db as any)?.rootStore?.databaseName,
+			tableName: (link.db as any)?.name,
+			countPendingWrites: () => {
+				let pendingWrites = 0;
+				for (const write of link.writes) if (write) pendingWrites++;
+				return pendingWrites;
+			},
+			states,
+			timeoutBudget: link.timeoutBudget,
+			startedFrom: link.startedFrom,
 		},
-		states,
-		timeoutBudget: link.timeoutBudget,
-		startedFrom: link.startedFrom,
-	});
+		reportLimit
+	);
 }
 
 /**
@@ -1968,33 +1970,42 @@ function reportLongLivedLink(link: DatabaseTransaction, thresholdMs: number, mon
  * the entry alone names an id the sweep's line can never be joined to when the child is the holder.
  * Links that read are in `trackedTxns` and get their own visit from the tick.
  */
-function reportIfLongLived(txn: DatabaseTransaction, thresholdMs: number, now: number): void {
+function reportIfLongLived(
+	txn: DatabaseTransaction,
+	thresholdMs: number,
+	now: number,
+	reportLimit: { remaining: number }
+): void {
 	if (thresholdMs === 0) return;
-	for (let link: DatabaseTransaction = txn; link; link = link.next)
-		if (link === txn || !trackedTxns.has(link)) reportLongLivedLink(link, thresholdMs, link === txn, now);
+	for (let link: DatabaseTransaction = txn; link; link = link.next) {
+		if (link !== txn && trackedTxns.has(link)) break;
+		reportLongLivedLink(link, thresholdMs, now, reportLimit);
+	}
 }
 
 function startMonitoringTxns() {
 	timer = setInterval(function () {
 		const checkedCommitPhaseChains = new Set<DatabaseTransaction>();
+		const reportLimit = { remaining: MAX_LONG_LIVED_HOLDER_REPORTS_PER_TICK };
 		const reportThresholdMs = getReportThresholdMs();
-		// One clock read for the whole tick: every link with a live handle is aged against it, and the
-		// threshold this feeds is minutes, so per-link precision buys nothing.
 		const reportNow = performance.now();
 		// Both registries, in sequence rather than as a union: a root can be in each (it read, and a
 		// later link blind-wrote), and the membership check is cheaper than allocating per tick.
-		for (const txn of trackedTxns) monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow);
+		for (const txn of trackedTxns)
+			monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow, reportLimit);
 		for (const txn of supervisedWriteRoots)
-			if (!trackedTxns.has(txn)) monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow);
+			if (!trackedTxns.has(txn))
+				monitorTransaction(txn, checkedCommitPhaseChains, reportThresholdMs, reportNow, reportLimit);
 	}, txnExpiration).unref();
 
 	function monitorTransaction(
 		txn: DatabaseTransaction,
 		checkedCommitPhaseChains: Set<DatabaseTransaction>,
 		reportThresholdMs: number,
-		reportNow: number
+		reportNow: number,
+		reportLimit: { remaining: number }
 	) {
-		reportIfLongLived(txn, reportThresholdMs, reportNow);
+		reportIfLongLived(txn, reportThresholdMs, reportNow, reportLimit);
 		{
 			const commitChainHead = txn.commitChainHead ?? txn;
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`

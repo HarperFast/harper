@@ -131,10 +131,6 @@ export function runLongLivedTransactionSweep(): void {
 				continue;
 			}
 			for (const handle of details) {
-				// `nextReportAgeMs` is seeded at the threshold and only grows, so a handle below it can never
-				// be due and the state kept for it can never change an outcome. Skipping it keeps a healthy
-				// node's pass allocation-free instead of paying a key, a state and two container entries per
-				// live handle per minute.
 				if (handle.ageMs < thresholdMs) continue;
 				const key = reportKey(database.path, handle.id);
 				seen.add(key);
@@ -156,7 +152,7 @@ export function runLongLivedTransactionSweep(): void {
 			markReported(handle.state, handle.ageMs);
 			logger.warn?.(
 				`Long-lived RocksDB transaction handle: id ${handle.id} has been open for ${prettyDuration(handle.ageMs)} on database ${handle.path ?? '?'}. ` +
-					`A handle this old can hold write intents that park other writers' commits, and pins a read snapshot that blocks version reclamation.`
+					`A handle this old can hold write intents that park other writers' commits, and may pin a read snapshot that blocks version reclamation.`
 			);
 		}
 		if (due.length > MAX_REPORTED_PER_SWEEP) {
@@ -204,7 +200,7 @@ export type LongLivedHolder = {
  * kept the open-transaction monitor from reaping it (harper#2471). Never throws — the monitor
  * interval that calls it has no handler.
  */
-export function reportLongLivedHolder(holder: LongLivedHolder): void {
+export function reportLongLivedHolder(holder: LongLivedHolder, reportLimit?: { remaining: number }): void {
 	try {
 		const thresholdMs = getReportThresholdMs();
 		rebaseIfThresholdChanged(thresholdMs);
@@ -223,7 +219,9 @@ export function reportLongLivedHolder(holder: LongLivedHolder): void {
 			thresholdMs
 		);
 		if (holder.ageMs < state.nextReportAgeMs) return;
+		if (reportLimit && reportLimit.remaining <= 0) return;
 		markReported(state, holder.ageMs);
+		if (reportLimit) reportLimit.remaining--;
 		const table = holder.tableName ? `.${holder.tableName}` : '';
 		logger.warn?.(
 			`Harper transaction has held RocksDB transaction ${holder.nativeId} for ${prettyDuration(holder.ageMs)} ` +
@@ -254,8 +252,6 @@ export function describeHolderCandidates(
 	databasePath: string | undefined,
 	excludeNativeId: number | undefined
 ): string {
-	// Honors the disable value for the same reason the other two surfaces do: an operator who set the
-	// threshold to 0 asked for no reporting, and this surface is reached from the write path.
 	if (!databasePath || !registryStatusFn) return '';
 	try {
 		if (getReportThresholdMs() === 0) return '';

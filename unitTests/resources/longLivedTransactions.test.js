@@ -32,9 +32,6 @@ const { waitFor } = require('../waitFor.js');
 
 const THRESHOLD = CONFIG_PARAMS.STORAGE_LONGTRANSACTIONREPORTTHRESHOLD;
 
-// Covers harper#2471: a transaction holding staged writes stayed open for hours on a production node
-// with nothing reporting it. These pin the three reporting surfaces and, above all, the load-bearing
-// claim that one main-thread sweep of the process-global registry sees a worker thread's handles.
 describe('Long-lived transaction reporting (#2471)', () => {
 	let warnings, errors, originalWarn, originalError, originalThreshold;
 
@@ -312,6 +309,15 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			assert.strictEqual(counted, 1, 'the suppressed report must not count staged writes');
 		});
 
+		it('defers an eligible holder when the monitor tick has used its report budget', function () {
+			const reportLimit = { remaining: 1 };
+			reportLongLivedHolder(holder({ nativeId: 1 }), reportLimit);
+			reportLongLivedHolder(holder({ nativeId: 2 }), reportLimit);
+			assert.strictEqual(warningsMatching('Harper transaction has held').length, 1);
+			reportLongLivedHolder(holder({ nativeId: 2 }), { remaining: 1 });
+			assert.strictEqual(warningsMatching('Harper transaction has held').length, 2);
+		});
+
 		it('re-measures an already-observed holder when the threshold changes', function () {
 			env.setProperty(THRESHOLD, '1h');
 			reportLongLivedHolder(holder({ ageMs: 120000 }));
@@ -501,9 +507,12 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		// The suffix is a diagnostic on the failure path: it must never become the failure.
 		it('still raises the 503 when the registry throws while building the suffix', async function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+			const errorLines = [];
+			let registryCalls = 0;
 			const originalError = harperLogger.error;
-			harperLogger.error = () => {};
+			harperLogger.error = (...args) => errorLines.push(args);
 			setRegistryStatusForTests(() => {
+				registryCalls++;
 				throw new Error('boom');
 			});
 			try {
@@ -514,9 +523,10 @@ describe('Long-lived transaction reporting (#2471)', () => {
 						return false;
 					} catch (error) {
 						assert.strictEqual(error.statusCode, 503);
-						return true;
+						return registryCalls > 0 && errorLines.length > 0;
 					}
 				}, 2000);
+				assert.strictEqual(registryCalls, 1, 'the suffix builder must run once');
 			} finally {
 				harperLogger.error = originalError;
 			}
@@ -636,21 +646,23 @@ describe('Long-lived transaction reporting (#2471)', () => {
 		});
 	});
 
-	// The whole design rests on registryStatus() being process-global rather than thread-local: one
-	// main-thread sweep must see a handle that only a worker ever created, and see it once. Nothing
-	// else in the suite proves that, and if it stops holding, the feature silently reports nothing.
 	describe('cross-thread visibility', () => {
 		it('reports a worker thread’s handle from the main thread, exactly once', async function () {
 			this.timeout(20000);
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 			const dbPath = path.join(os.tmpdir(), `harper-2471-${process.pid}-${Date.now()}`);
 			const worker = new Worker(
-				`const { RocksDatabase, Transaction, parentPort } = { ...require('@harperfast/rocksdb-js'), ...require('node:worker_threads') };
+				`const { RocksDatabase, Transaction } = require('@harperfast/rocksdb-js');
+				const { parentPort } = require('node:worker_threads');
 				const db = RocksDatabase.open(${JSON.stringify(dbPath)});
 				const txn = new Transaction(db.store, { coordinatedRetry: true });
 				txn.putSync('held', 'by the worker');
 				parentPort.postMessage(txn.id);
-				setInterval(() => {}, 1000);`,
+				parentPort.once('message', () => {
+					txn.abort();
+					db.close();
+					parentPort.postMessage('closed');
+				});`,
 				{ eval: true }
 			);
 			try {
@@ -669,6 +681,19 @@ describe('Long-lived transaction reporting (#2471)', () => {
 				);
 				assert.strictEqual(reported.length, 1, 'the worker-only handle must be reported exactly once');
 				assert.match(reported[0][0], new RegExp(`id ${nativeId}\\b`));
+				worker.postMessage('close');
+				await new Promise((resolve, reject) => {
+					worker.once('message', resolve);
+					worker.once('error', reject);
+				});
+				await waitFor(
+					() =>
+						!registryStatus().some(
+							(database) =>
+								database.path === dbPath && database.transactionDetails?.some((handle) => handle.id === nativeId)
+						),
+					5000
+				);
 			} finally {
 				await worker.terminate();
 				fs.rmSync(dbPath, { recursive: true, force: true });
