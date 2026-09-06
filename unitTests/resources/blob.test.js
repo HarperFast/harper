@@ -1638,6 +1638,57 @@ describe('Blob test', () => {
 			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
 		}
 	});
+	it('openStream() resolves for a healthy disk-backed blob and streams the full content', async () => {
+		const payload = randomBytes(20000);
+		const store = BlobTest.primaryStore.rootStore;
+		const blob = await createBlob(Readable.from(payload), { size: payload.length });
+		await decodeFromDatabase(() => saveBlob(blob).saving, store);
+		const streamed = await streamToBytes(await blob.openStream());
+		assert(streamed.equals(payload));
+		// a slice shares the same backing file and must stream just the slice content
+		const slicedStream = await blob.slice(300, 400).openStream();
+		assert((await streamToBytes(slicedStream)).equals(payload.subarray(300, 400)));
+	});
+	it('openStream() resolves for a small in-memory blob', async () => {
+		const payload = randomBytes(100);
+		const blob = await createBlob(payload);
+		const streamed = await streamToBytes(await blob.openStream());
+		assert(streamed.equals(payload));
+	});
+	it('openStream() rejects with a 404 for a cleanly-missing blob file, before any read', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		unlinkSync(filePath);
+		await assert.rejects(blob.openStream(), (error) => {
+			assert.strictEqual(error.statusCode, 404);
+			assert.strictEqual(error.code, 'ENOENT');
+			return true;
+		});
+	});
+	it('openStream() rejects with a 503 while a write is in flight', async () => {
+		const { blob, filePath, store } = await makeDiskBackedBlob();
+		const lockKey = getFileId(blob) + ':blob';
+		assert(store.tryLock(lockKey), 'should be able to take the blob write lock for the test');
+		try {
+			unlinkSync(filePath); // file gone while a "writer" still holds the lock
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, '150');
+			await assert.rejects(blob.openStream(), (error) => {
+				assert.strictEqual(error.statusCode, 503);
+				return true;
+			});
+		} finally {
+			store.unlock(lockKey);
+			env.setProperty(CONFIG_PARAMS.STORAGE_BLOBREADTIMEOUT, undefined);
+		}
+	});
+	it('openStream() rejects with a 500 for a blob truncated to a self-consistent smaller size', async () => {
+		const { blob, filePath } = await makeDiskBackedBlob();
+		truncateBlobConsistently(filePath, 256);
+		await assert.rejects(blob.openStream(), (error) => {
+			assert.strictEqual(error.statusCode, 500);
+			assert.match(error.message, /size mismatch/);
+			return true;
+		});
+	});
 	afterEach(function () {
 		setAuditRetention(60000);
 		setDeletionDelay(50); // restore shorter, but need to have it happen for the last test
