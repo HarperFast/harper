@@ -84,6 +84,8 @@ interface ApplicationConfig {
 	 * Per-application globals are a property of thread-level isolation, not of branching.
 	 */
 	branchedDatabases?: string[] | true;
+	/** Run in a worker thread of its own that loads no other application. */
+	isolated?: boolean;
 	// an application config can have other arbitrary properties
 	[key: string]: unknown;
 }
@@ -218,6 +220,11 @@ export function assertApplicationConfig(
 		}
 	}
 	assertBranchedDatabases(applicationName, applicationConfig.branchedDatabases);
+	if (applicationConfig.isolated !== undefined && typeof applicationConfig.isolated !== 'boolean') {
+		throw new TypeError(
+			`Invalid 'isolated' for application ${applicationName}: expected a boolean, got ${typeof applicationConfig.isolated}`
+		);
+	}
 }
 
 /**

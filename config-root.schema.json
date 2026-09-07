@@ -172,6 +172,10 @@
 					]
 				},
 				"maxHeapMemory": { "type": "number", "description": "Heap memory limit per thread (MB)." },
+				"maxIsolated": {
+					"type": "integer",
+					"description": "Most applications marked isolated that get a dedicated worker thread; the rest fail to load. Default 8."
+				},
 				"heapSnapshotNearLimit": { "type": "boolean", "description": "Take a heap snapshot when near the heap limit." },
 				"preload": {
 					"oneOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }],

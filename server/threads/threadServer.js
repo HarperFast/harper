@@ -26,6 +26,7 @@ const {
 	getShutdownDrainCeilingMs,
 } = require('../../components/shutdownDrain.ts');
 const { realExit } = require('./workerProcessGuard.ts');
+const { thisThreadsIsolatedApplication, applicationSocketName } = require('./isolatedApplications.ts');
 const { isBun } = require('../serverHelpers/Request.ts');
 const { getDomainSocketPathMaxBytes, isDomainSocketPathTooLong } = require('../../utility/domainSocket.ts');
 const { createTLSSelector, getEffectiveTlsCiphers } = require('../../security/keys.ts');
@@ -330,10 +331,15 @@ function listenOnPorts() {
 		const server = SERVERS[port];
 
 		// If server is unix domain socket
+		// A worker dedicated to an isolated application binds only its own per-thread mirrors: not the shared
+		// ports (the kernel would hand it every application's connections) and not a global domain socket
+		// such as the operations API's, which it would take from the main thread.
 		if (port.includes?.('/')) {
-			listening.push(listenOnDomainSocket(port, server));
+			if (!thisThreadsIsolatedApplication() || server.isPerThreadSocket)
+				listening.push(listenOnDomainSocket(port, server));
 			continue;
 		}
+		if (thisThreadsIsolatedApplication()) continue;
 		let listen_on;
 		let ownerWorkerIndex = 0; // lowest eligible worker index for this port
 		const threadRange = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
@@ -406,6 +412,7 @@ function listenOnPorts() {
 	if (uwsServeConfigs) {
 		for (const key in uwsServeConfigs) {
 			const cfg = uwsServeConfigs[key];
+			if (thisThreadsIsolatedApplication() && !cfg.socketPath) continue; // dedicated worker: mirrors only
 			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
 			const { createUwsServer } = require('../serverHelpers/uwsServer.ts');
 			listening.push(
@@ -455,7 +462,7 @@ async function listenOnPortsBun() {
 	for (let port in bunServeConfigs) {
 		const config = bunServeConfigs[port];
 		const threadRange = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
-		if (threadRange) {
+		if (threadRange && !thisThreadsIsolatedApplication()) {
 			let threadRangeArray = typeof threadRange === 'string' ? threadRange.split('-') : threadRange;
 			let threadIndex = getWorkerIndex();
 			if (threadIndex < threadRangeArray[0] || threadIndex > threadRangeArray[1]) {
@@ -532,15 +539,21 @@ async function listenOnPortsBun() {
 				delete serveOptions.port;
 			}
 			if (isNaN(serveOptions.port)) continue;
-			const bunServer = Bun.serve(serveOptions);
-			SERVERS[port] = bunServer;
-			harperLogger.trace('Bun listening on port ' + port, threadId);
+			// a dedicated worker binds no public port (see listenOnPorts); its UDS mirror below is its only surface
+			if (!(thisThreadsIsolatedApplication() && !String(port).includes('/'))) {
+				const bunServer = Bun.serve(serveOptions);
+				SERVERS[port] = bunServer;
+				harperLogger.trace('Bun listening on port ' + port, threadId);
+			}
 
 			// Create a corresponding Unix Domain Socket mirror for secure ports
 			if (config.isSecure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
 				const socketsDir = join(env.getHdbBasePath(), 'sockets');
 				mkdirSync(socketsDir, { recursive: true });
-				const socketName = `${getWorkerIndex()}-${port}`;
+				const isolatedApplication = thisThreadsIsolatedApplication();
+				const socketName = isolatedApplication
+					? applicationSocketName(isolatedApplication, port)
+					: `${getWorkerIndex()}-${port}`;
 				const udsPath = join(socketsDir, `${socketName}.sock`);
 				const yamlPath = join(socketsDir, `${socketName}.yaml`);
 				if (existsSync(udsPath)) unlinkSync(udsPath);
@@ -574,6 +587,7 @@ async function listenOnPortsBun() {
 		if (server?.stop || bunServeConfigs[port]) continue;
 		if (server?.listen) {
 			if (port.includes?.('/')) {
+				if (thisThreadsIsolatedApplication() && !server.isPerThreadSocket) continue; // as in listenOnPorts
 				listening.push(listenOnDomainSocket(port, server));
 			} else {
 				const lastColon = String(port).lastIndexOf(':');
@@ -673,7 +687,10 @@ function onSocket(listener, options) {
 		if (env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
 			const socketsDir = join(env.getHdbBasePath(), 'sockets');
 			mkdirSync(socketsDir, { recursive: true });
-			const socketName = `${getWorkerIndex()}-${options.securePort}`;
+			const isolatedApplication = thisThreadsIsolatedApplication();
+			const socketName = isolatedApplication
+				? applicationSocketName(isolatedApplication, options.securePort)
+				: `${getWorkerIndex()}-${options.securePort}`;
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 

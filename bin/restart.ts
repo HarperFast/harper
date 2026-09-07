@@ -10,6 +10,7 @@ import {
 	beginProcessShutdown,
 	restartWorkers,
 	isThreadRunning,
+	decodeRestartScope,
 	onMessageByType,
 	shutdownWorkersNow,
 } from '../server/threads/manageThreads.js';
@@ -35,8 +36,10 @@ export { restart, restartService };
 if (isMainThread) {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.RESTART, async (message, port) => {
 		try {
-			if (message.removeBranchesFor) await restartThenRemoveBranches(message.workerType, message.removeBranchesFor);
-			else if (message.workerType) await restartService({ service: message.workerType });
+			// `scope` stays in its wire form ('' pool, a name, absent = all) until restartService decodes it once
+			if (message.removeBranchesFor)
+				await restartThenRemoveBranches(message.workerType, message.removeBranchesFor, message.scope);
+			else if (message.workerType) await restartService({ service: message.workerType, scope: message.scope });
 			else restart({ operation: 'restart' });
 		} finally {
 			port.postMessage({ type: 'restart-complete' });
@@ -48,13 +51,13 @@ if (isMainThread) {
  * Restart, then remove the branches of an application dropped on a worker (which cannot outlive the
  * restart it asked for). The restart happens even if the component lock cannot be taken.
  */
-async function restartThenRemoveBranches(service: string, project: string): Promise<void> {
+async function restartThenRemoveBranches(service: string, project: string, scope: string | undefined): Promise<void> {
 	let restarted = false;
 	const restartHttpWorkers = async () => {
 		restarted = true;
 		processMan.expectedRestartOfChildren();
 		hdbLogger.notify('Restarting http_workers');
-		return restartWorkers('http');
+		return restartWorkers('http', undefined, true, null, decodeRestartScope({ scope }));
 	};
 	try {
 		const componentPath = path.join(getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT) as string, project);
@@ -89,7 +92,7 @@ async function restartThenRemoveBranches(service: string, project: string): Prom
 		);
 	} catch (error) {
 		hdbLogger.error(`Could not remove the branched database storage of ${project}`, error);
-		if (!restarted) await restartService({ service });
+		if (!restarted) await restartService({ service, scope });
 	}
 }
 
@@ -191,6 +194,7 @@ async function restartService(req: any) {
 		parentPort.postMessage({
 			type: hdbTerms.ITC_EVENT_TYPES.RESTART,
 			workerType: service,
+			scope: req.scope, // wire form, forwarded as received
 		});
 		parentPort.ref(); // don't let the parent thread exit until we're done
 		await new Promise<void>((resolve) => {
@@ -265,7 +269,8 @@ async function restartService(req: any) {
 			if (calledFromCli) {
 				await processMan.restart(hdbTerms.PROCESS_DESCRIPTORS.HDB);
 			} else {
-				await restartWorkers('http');
+				// scoped to one isolated application's worker when asked; otherwise every http worker
+				await restartWorkers('http', undefined, true, null, decodeRestartScope(req));
 			}
 			break;
 		default:

@@ -588,6 +588,42 @@ async function deployComponent(req) {
 	// replicated ciphertext (reference, not embed); already-reference entries pass through, and with
 	// no custody a literal token stays as a transient, this-node-only fallback (#1158). Peers
 	// re-running a replicated deploy already carry references and never re-ingest.
+	const { isIsolatedApplication } = require('../server/threads/isolatedApplications.ts');
+	// this thread's cached config may predate an earlier deploy that changed the entry without a restart
+	env.initSync(true);
+	const wasIsolated = isIsolatedApplication(req.project);
+	if (req.isolated !== undefined && !req.package) {
+		throw handleHDBError(
+			new Error(),
+			`'isolated' is only supported for package deployments; set it on the application's root config entry instead`,
+			HTTP_STATUS_CODES.BAD_REQUEST
+		);
+	}
+	// Admission is checked here, where the caller can be told, not only at worker start where a refusal
+	// is a log line: an isolated application nothing could reach, or one past threads.maxIsolated, does
+	// not deploy.
+	const nowIsolated = req.isolated ?? wasIsolated;
+	if (nowIsolated) {
+		const {
+			isolatedApplicationRefusal,
+			maxIsolatedApplications,
+		} = require('../server/threads/isolatedApplications.ts');
+		const { runningIsolatedApplications } = require('../server/threads/socketRouter.ts');
+		// counted like the reconcile counts: applications that actually hold a dedicated worker
+		const others = runningIsolatedApplications().filter((name) => name !== req.project).length;
+		const refusal =
+			isolatedApplicationRefusal(req.project) ??
+			(!wasIsolated && others >= maxIsolatedApplications()
+				? `the instance already runs ${maxIsolatedApplications()} isolated application(s) (threads.maxIsolated)`
+				: undefined);
+		if (refusal) {
+			throw handleHDBError(
+				new Error(),
+				`Cannot deploy '${req.project}' as an isolated application: ${refusal}`,
+				HTTP_STATUS_CODES.CONFLICT
+			);
+		}
+	}
 	const { ingestCredentials, resolveCredentials } = require('./secretOperations.ts');
 	req.credentials = await ingestCredentials(req, req.credentials, req.project);
 	// References are safe to persist (config + deployment row) and replicate; a no-custody literal
@@ -624,10 +660,13 @@ async function deployComponent(req) {
 		// application which believed it had a private fork resumes sharing the base after the next
 		// restart, with nothing in this operation to say so.
 		if (req.branchedDatabases !== undefined) applicationConfig.branchedDatabases = req.branchedDatabases;
+		// Kept across a redeploy that omits it: losing it would silently move the application onto the pool.
+		if (nowIsolated) applicationConfig.isolated = true;
 		// Persist credential references (never tokens) so every cold install of this component —
 		// reboot, new peer, rollback — re-resolves the credential from the store.
 		if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
 		await configUtils.addConfig(req.project, applicationConfig);
+		env.initSync(true); // addConfig writes the file, not this thread's cache
 	}
 
 	// Create a hdb_deployment row up front so the deploy is observable and auditable
@@ -803,6 +842,10 @@ async function deployComponent(req) {
 			// when the per-peer callback already fired for these.
 			recorder.recordPeers(response.replicated);
 		}
+		// A still-isolated application restarts only its own dedicated worker. Everything else restarts the
+		// pool: a shared application, and either direction of an isolation flip, where the reconcile in
+		// restartWorkers starts or stops the moving application's own worker.
+		const restartScope = wasIsolated && nowIsolated ? application.name : undefined;
 		if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
 			// Workers not yet replaced keep serving the pre-deploy component set, and where the OS lets
@@ -811,7 +854,7 @@ async function deployComponent(req) {
 			// never heard of it.
 			const { awaitRestart } = require('./awaitRestart.ts');
 			const restart = await awaitRestart((onProgress) =>
-				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
+				manageThreads.restartWorkers('http', undefined, undefined, onProgress, restartScope)
 			);
 			emit('phase', { phase: 'restart', status: 'done' });
 			logRestartOutcome(restart, `deploying ${application.name}`);
@@ -822,6 +865,7 @@ async function deployComponent(req) {
 			const jobResponse = await serverUtilities.executeJob({
 				operation: 'restart_service',
 				service: 'http',
+				scope: manageThreads.encodeRestartScope(restartScope),
 				replicated: true,
 			});
 			emit('phase', { phase: 'restart', status: 'done' });
@@ -1311,6 +1355,9 @@ async function dropComponent(req) {
 	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const componentPath = path.join(componentsRoot, project);
 	const pathToComponent = path.join(componentsRoot, projectPath);
+	// Read before the config entry goes: an isolated application's drop restarts only its own worker.
+	const { isIsolatedApplication } = require('../server/threads/isolatedApplications.ts');
+	const restartScope = isIsolatedApplication(project) ? project : undefined;
 
 	let response;
 	await withComponentPreparationLock(
@@ -1356,6 +1403,7 @@ async function dropComponent(req) {
 				parentPort.postMessage({
 					type: hdbTerms.ITC_EVENT_TYPES.RESTART,
 					workerType: 'http',
+					scope: manageThreads.encodeRestartScope(restartScope),
 					removeBranchesFor: file ? undefined : project,
 				});
 				if (branched) {
@@ -1366,7 +1414,7 @@ async function dropComponent(req) {
 			}
 			const { awaitRestart } = require('./awaitRestart.ts');
 			const restart = await awaitRestart((onProgress) =>
-				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
+				manageThreads.restartWorkers('http', undefined, undefined, onProgress, restartScope)
 			);
 			logRestartOutcome(restart, `dropping ${projectPath}`);
 			if (!branched) return;

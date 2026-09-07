@@ -2,7 +2,7 @@ import { basename, extname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseDocument } from 'yaml';
 import { Databases, databases, table, Tables, tables } from './databases.ts';
-import { getWorkerIndex } from '../server/threads/manageThreads';
+import { isApplicationPrimaryWorker } from '../server/threads/manageThreads';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -109,9 +109,8 @@ async function storeHash(
  * Set up file handlers for data files and loads them into the appropriate tables
  */
 export function handleApplication(scope) {
-	// Early return if this isn't worker zero
-	// Currently using getWorkerIndex() over server.workerIndex to appease ts. The latter defined in manageThreads.js.
-	if (getWorkerIndex() !== 0) {
+	// only the application's primary worker loads data: pool worker 0, or an isolated application's own worker
+	if (!isApplicationPrimaryWorker(scope.applicationScope?.name)) {
 		// debug and return
 		dataLoaderLogger.debug?.('Skipping data loader initialization on non-primary worker');
 		return;

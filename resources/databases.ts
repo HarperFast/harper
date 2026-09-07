@@ -1671,6 +1671,8 @@ export function openBranchDatabase(
 	openBranches.set(path, undefined);
 	retakeBranchIdentity(storeName);
 	try {
+		// before the open: table load schedules TTL, eviction and audit cleanup, which ask who owns this store
+		manageThreads.markBranchStorePath(path);
 		rootStore = readRocksMetaDb(path, null, databaseName, { destination: tables, storeName, openedStores });
 		// Pin the handle to the roots the caller proved this branch was published with, before it is
 		// handed out. A row's `storageIndex` is a position in that list, so resolving through current
@@ -1680,6 +1682,7 @@ export function openBranchDatabase(
 		if (blobRoots) databasePaths.set(rootStore as unknown as RootDatabase, blobRoots);
 	} catch (error) {
 		openBranches.delete(path);
+		manageThreads.markBranchStorePath(path, false);
 		releaseBranchIdentity(storeName);
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
@@ -1703,6 +1706,7 @@ export function openBranchDatabase(
 			openBranches.delete(path);
 			releaseBranchIdentity(storeName);
 			rocksdbDatabaseEnvs.delete(path);
+			manageThreads.markBranchStorePath(path, false);
 			closeBranchHandles(path, rootStore, openedStores, tables);
 		},
 	};
@@ -3093,7 +3097,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			expiration,
 			eviction,
 			scanInterval,
-		});
+			fromSchema: true, // the load path: every thread that opens the table sees it
+		} as any);
 	logger.trace(`${tableName} table loaded`);
 
 	return Table as TableResourceType;

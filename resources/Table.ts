@@ -90,7 +90,14 @@ import {
 } from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
-import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
+import {
+	getWorkerIndex,
+	applicationWorkerIndex,
+	ownsStoreMaintenance,
+	ownsStoreExpiration,
+	runsApplicationCodeSingletons,
+	isDedicatedWorker,
+} from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, LOCAL_ONLY, auditRetention, removeAuditEntry } from './auditStore.ts';
 import { derivedIndexWriteRejection, hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
@@ -535,6 +542,10 @@ export function makeTable(options) {
 		isBranch,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
+	// set when application code (not the schema at load) configured the TTL: the application's own worker
+	// then owns the scan even for a shared store, since no other thread has that configuration
+	let ttlConfiguredByApplication = false;
+	let ttlFromLoad = false; // true only around the creation-time call below
 	evictionMs ??= 0;
 	// Eviction without explicit expiration means expiration:0. Apply at construction so
 	// describe_all sees it on every worker, not just ones that ran setTTLExpiration.
@@ -575,7 +586,7 @@ export function makeTable(options) {
 	let nonPrefetchSequence = 2;
 	let cleanupInterval = 86400000;
 	let cleanupPriority = 0;
-	let lastCleanupInterval: number;
+	let lastCleanupInterval: number | undefined;
 	let cleanupTimer: NodeJS.Timeout;
 	let recordExpirationInterval: NodeJS.Timeout;
 	// a reclamation pass awaits a scheduled cleanup, which only settles from its timer
@@ -1013,8 +1024,8 @@ export function makeTable(options) {
 						omitCurrent: true,
 					};
 					const subscribeOnThisThread = source.subscribeOnThisThread
-						? source.subscribeOnThisThread(getWorkerIndex(), subscriptionOptions)
-						: getWorkerIndex() === 0;
+						? source.subscribeOnThisThread(applicationWorkerIndex(), subscriptionOptions)
+						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
 					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
 						let txnInProgress;
@@ -1551,6 +1562,11 @@ export function makeTable(options) {
 		static setTTLExpiration(opts: number | { expiration?: number; eviction?: number; scanInterval?: number }) {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
+			if (!ttlFromLoad && !(typeof opts === 'object' && (opts as any).fromSchema) && !ttlConfiguredByApplication) {
+				ttlConfiguredByApplication = true;
+				// the scan owner may have changed with this: re-evaluate even if the interval did not
+				lastCleanupInterval = undefined;
+			}
 			if (typeof opts === 'number') {
 				expirationMs = opts * 1000;
 			} else {
@@ -6331,7 +6347,14 @@ export function makeTable(options) {
 
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
-		if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
+		if (expirationMs) {
+			ttlFromLoad = true;
+			try {
+				TableResource.setTTLExpiration(expirationMs / 1000);
+			} finally {
+				ttlFromLoad = false;
+			}
+		}
 		if (expiresAtProperty) runRecordExpirationEviction();
 	} catch (error) {
 		TableResource.cleanup();
@@ -7446,7 +7469,7 @@ export function makeTable(options) {
 		// Periodically evict expired records and deleted records searching for records who expiresAt timestamp is before now
 		if (cleanupInterval === lastCleanupInterval && !runImmediately) return;
 		lastCleanupInterval = cleanupInterval;
-		if (getWorkerIndex() === getWorkerCount() - 1) {
+		if (ownsStoreMaintenance(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
 			if (!cleanupInterval) {
@@ -7588,7 +7611,7 @@ export function makeTable(options) {
 	}
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
-		if (getWorkerIndex() === 0) {
+		if (ownsStoreExpiration(primaryStore.path)) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
 			recordExpirationInterval = setInterval(async () => {
 				// go through each database and table and then search for expired entries

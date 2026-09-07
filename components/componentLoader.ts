@@ -34,6 +34,7 @@ import { trackScopeClose } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 import { assertBranchedDatabases } from './Application.ts';
 import { prepareBranches } from '../resources/branchDatabase.ts';
+import { isIsolatedApplication, shouldLoadApplicationHere } from '../server/threads/isolatedApplications.ts';
 import { toScopeMount, nestScopeMount, type ScopeMount } from './scopeMount.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
@@ -162,6 +163,26 @@ function rootConfigBranchedDatabases(appName: string): string[] | true | undefin
 }
 
 /**
+ * Whether this thread is the one that loads `appName` (harper#642, tier 2). An isolated application
+ * is loaded by its dedicated worker and by nothing else; every other thread loads only the
+ * applications that are not isolated. Decided before any of the application's modules are imported.
+ * With no worker threads at all there is nowhere for an isolated application to run, so it fails
+ * closed here rather than silently sharing the only thread.
+ */
+function placedOnThisThread(appName: string): boolean {
+	if (Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, appName)) return true;
+	if (isIsolatedApplication(appName) && isMainThread && getWorkerIndex() === 0) {
+		componentLifecycle.failed(
+			appName,
+			new Error(`Application '${appName}' is isolated, which needs a worker thread of its own, but threads.count is 0`),
+			`Component '${appName}' failed to load`
+		);
+		return false;
+	}
+	return shouldLoadApplicationHere(appName);
+}
+
+/**
  * Resolves the mount for `appName`, or reports the failure and returns `undefined` if the
  * configured `host`/`urlPath` is invalid. The caller must skip loading the application in that
  * case rather than loading it anyway: an invalid mount is a request to CONSTRAIN where the app is
@@ -268,6 +289,7 @@ export async function loadComponentDirectories(
 						}
 						return;
 					}
+					if (!placedOnThisThread(appName)) return;
 					const mountResult = tryRootConfigMount(appName);
 					if (!mountResult.ok) return;
 					const loadedModules = new Set<any>();
@@ -316,6 +338,7 @@ export async function loadComponentDirectories(
 				);
 				continue;
 			}
+			if (!placedOnThisThread(appName)) continue;
 			const appFolder = join(CF_ROUTES_DIR, appName);
 			const mountResult = tryRootConfigMount(appName);
 			if (!mountResult.ok) continue;
@@ -347,7 +370,7 @@ export async function loadComponentDirectories(
 	if (hdbAppFolder) {
 		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
 		const mountResult = tryRootConfigMount(basename(hdbAppFolder));
-		if (mountResult.ok) {
+		if (mountResult.ok && placedOnThisThread(basename(hdbAppFolder))) {
 			cfsLoaded.push(
 				serializeComponentLoad(hdbAppFolder, () =>
 					loadComponent(hdbAppFolder, cycleResources, hdbAppFolder, {
@@ -849,6 +872,9 @@ export async function loadComponent(
 			if (!componentConfig) continue;
 
 			// Initialize loading status for all components (applications and extensions)
+			// A root-config application (`package:`) is placed like a directory one: an isolated application
+			// loads only in its dedicated worker, and that worker loads no other application.
+			if (isRoot && componentConfig.package && !placedOnThisThread(componentName)) continue;
 			componentLifecycle.loading(componentStatusName);
 
 			const subApplicationScope = isRoot
@@ -1160,7 +1186,7 @@ export async function loadComponent(
 						// — not abort the loop and discard a pending follow-up, like the save that fixes it.
 						try {
 							await loadComponentDirectories();
-							await restartWorkers();
+							await restartWorkers(undefined, undefined, true, null, '*');
 						} catch (error) {
 							harperLogger.error('Error during component reload', error);
 						}

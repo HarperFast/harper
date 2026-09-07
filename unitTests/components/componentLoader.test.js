@@ -355,6 +355,62 @@ describe('ComponentLoader Status Integration', function () {
 		}
 	});
 
+	describe('isolated applications (harper#642 tier 2)', function () {
+		const { setMainIsWorker, getWorkerIndex } = require('#src/server/threads/manageThreads');
+		let mainWasWorker;
+		beforeEach(() => (mainWasWorker = getWorkerIndex() === 0));
+		const configUtils = require('#src/config/configUtils');
+		const isoName = 'isolated-probe';
+		const sharedName = 'shared-probe';
+		let isoStarts = 0;
+		let sharedStarts = 0;
+
+		beforeEach(async () => {
+			isoStarts = sharedStarts = 0;
+			for (const [name, plugin] of [
+				[isoName, 'isolatedProbePlugin'],
+				[sharedName, 'sharedProbePlugin'],
+			]) {
+				await fs.mkdir(path.join(tempDir, name), { recursive: true });
+				await fs.writeFile(path.join(tempDir, name, 'config.yaml'), `${plugin}: {}\n`);
+			}
+			componentLoader.TRUSTED_RESOURCE_PLUGINS.isolatedProbePlugin = { start: () => isoStarts++ };
+			componentLoader.TRUSTED_RESOURCE_PLUGINS.sharedProbePlugin = { start: () => sharedStarts++ };
+			configUtils.getConfigObj.returns({ [isoName]: { isolated: true } });
+		});
+		afterEach(async () => {
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS.isolatedProbePlugin;
+			delete componentLoader.TRUSTED_RESOURCE_PLUGINS.sharedProbePlugin;
+			componentLoader.loadedPaths.clear();
+			for (const name of [isoName, sharedName]) await fs.rm(path.join(tempDir, name), { recursive: true, force: true });
+		});
+
+		it('a thread that is not the dedicated worker never imports an isolated application', async function () {
+			setMainIsWorker(false); // the main thread of a multi-worker instance
+			try {
+				await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+			} finally {
+				setMainIsWorker(mainWasWorker); // other suites in this process rely on the previous mode
+			}
+			assert.strictEqual(sharedStarts, 1, 'the shared application loads here');
+			assert.strictEqual(isoStarts, 0, 'the isolated one is left to its own thread');
+			assert.ok(!lifecycle.failed.getCalls().some((call) => call.args[0] === isoName), 'and is not a failure');
+		});
+
+		it('fails an isolated application closed when the main thread is the only worker', async function () {
+			setMainIsWorker(true); // threads.count: 0
+			try {
+				await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+			} finally {
+				setMainIsWorker(mainWasWorker); // other suites in this process rely on the previous mode
+			}
+			assert.strictEqual(isoStarts, 0, 'never downgraded onto the shared thread');
+			const failure = lifecycle.failed.getCalls().find((call) => call.args[0] === isoName);
+			assert.ok(failure, 'reported as a failed load');
+			assert.match(failure.args[1].message, /threads\.count is 0/);
+		});
+	});
+
 	describe('deploy lifecycle listener lifecycle (#1462)', function () {
 		const { deployLifecycle } = require('#src/components/deployLifecycle');
 

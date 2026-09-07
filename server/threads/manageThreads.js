@@ -151,6 +151,18 @@ module.exports = {
 	workers,
 	setMonitorListener,
 	onMessageFromWorkers,
+	setIsolatedWorkerReconciler,
+	isApplicationPrimaryWorker,
+	applicationWorkerIndex,
+	runsApplicationCodeSingletons,
+	isDedicatedWorker,
+	markBranchStorePath,
+	ownsStoreMaintenance,
+	ownsStoreExpiration,
+	workersForApplication,
+	stopWorker,
+	encodeRestartScope,
+	decodeRestartScope,
 	onMessageByType,
 	broadcast,
 	broadcastWithAcknowledgement,
@@ -211,6 +223,101 @@ function setTerminateTimeout(newTimeout) {
 function getWorkerIndex() {
 	return workerData ? workerData.workerIndex : isMainWorker ? 0 : undefined;
 }
+/**
+ * The worker that owns `applicationName`'s per-application singletons (its scheduled jobs, its data
+ * files): pool worker 0 for a shared application and for root-level plugins (which pass no name), the
+ * dedicated worker for an isolated one -- never index 0, so node-wide duties stay on the pool, and
+ * never a dedicated worker for anything but its own application.
+ */
+function isApplicationPrimaryWorker(applicationName) {
+	if (workerData?.isolatedApplication !== undefined) return applicationName === workerData.isolatedApplication;
+	return getWorkerIndex() === 0;
+}
+/**
+ * Stores that exist only on this thread: the branch stores an isolated application opened in its
+ * dedicated worker. Registered by openBranchDatabase, so the ownership predicates below can tell them
+ * from the shared stores every thread has open.
+ */
+const branchStorePaths = new Set();
+function markBranchStorePath(path, isBranch = true) {
+	if (isBranch) branchStorePaths.add(path);
+	else branchStorePaths.delete(path);
+}
+/**
+ * Whether this thread runs the "last worker" per-store maintenance for `storePath` (TTL scans, storage
+ * reclamation, audit cleanup). Shared stores belong to the last pool worker; a dedicated worker
+ * maintains only its own branch stores, which no other thread has open.
+ */
+function ownsStoreMaintenance(storePath) {
+	if (workerData?.isolatedApplication !== undefined) return branchStorePaths.has(storePath);
+	return getWorkerIndex() === getWorkerCount() - 1;
+}
+/** The "worker 0" counterpart: expiration eviction for `storePath`. */
+function ownsStoreExpiration(storePath) {
+	if (workerData?.isolatedApplication !== undefined) return branchStorePaths.has(storePath);
+	return getWorkerIndex() === 0;
+}
+/**
+ * Whether a singleton set up by APPLICATION CODE runs here (a caching table's `sourcedFrom`
+ * subscription): pool worker 0, or a dedicated worker -- the only code that runs on one is its own
+ * application's, so whatever it sets up is that application's to run. Not for root-level plugins,
+ * which load on every thread and must use isApplicationPrimaryWorker(name).
+ */
+function runsApplicationCodeSingletons() {
+	return getWorkerIndex() === 0 || workerData?.isolatedApplication !== undefined;
+}
+/** Whether this thread is a worker dedicated to one isolated application. */
+function isDedicatedWorker() {
+	return workerData?.isolatedApplication !== undefined;
+}
+/** The worker index as the application sees it: a dedicated worker is its application's worker 0. */
+function applicationWorkerIndex() {
+	return workerData?.isolatedApplication !== undefined ? 0 : getWorkerIndex();
+}
+/** Every started worker dedicated to `application`, including a replacement still booting. */
+function workersForApplication(application) {
+	return workers.filter((worker) => worker.application === application);
+}
+/**
+ * Stop one worker for good: shut it down, honour the drain extension it may ask for, force it after
+ * the same backstop the rolling restart uses (FORCE_EXIT on Bun, where terminate() segfaults), and
+ * resolve once it has exited. Marked as shut down first so its exit does not start a replacement.
+ */
+function stopWorker(worker) {
+	worker.wasShutdown = true;
+	return new Promise((resolve) => {
+		const armTerminate = (delay) =>
+			setTimeout(() => {
+				harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
+				if (isBun) {
+					try {
+						worker.postMessage({ type: FORCE_EXIT });
+					} catch {}
+				} else {
+					worker.terminate();
+				}
+			}, delay).unref();
+		let timeout = armTerminate(threadTerminationTimeout * 2);
+		worker.extendTerminateDeadline = (deadlineMs) => {
+			clearTimeout(timeout);
+			const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
+			timeout = armTerminate(
+				boundedTerminateDelay(deadlineMs, Date.now(), threadTerminationTimeout * 2, getShutdownDrainCeilingMs())
+			);
+		};
+		worker.on('exit', () => {
+			clearTimeout(timeout);
+			worker.extendTerminateDeadline = undefined;
+			resolve();
+		});
+		try {
+			worker.postMessage({ restartNumber: module.exports.restartNumber, type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN });
+		} catch {
+			clearTimeout(timeout);
+			resolve(); // already gone
+		}
+	});
+}
 function getWorkerCount() {
 	return workerData ? workerData.workerCount : isMainWorker ? 1 : undefined;
 }
@@ -247,6 +354,7 @@ const RESERVED_WORKER_DATA_KEYS = [
 	'processIncarnation',
 	'ticketKeys',
 	'noServerStart',
+	'isolatedApplication',
 	'__proto__', // never a legitimate payload name; spread would define it as an own property
 ];
 const workerDataProviders = new Map();
@@ -300,14 +408,17 @@ function getTicketKeys() {
 	ticketKeys = isMainThread ? randomBytes(48) : workerData.ticketKeys;
 	return ticketKeys;
 }
+// What application code sees: a dedicated worker is its application's only worker, index 0 of 1, so
+// the documented partitioning idiom (`hash % server.workerCount === server.workerIndex`) covers
+// everything there. Node-wide duties keep using the raw getWorkerIndex/getWorkerCount.
 Object.defineProperty(server, 'workerIndex', {
 	get() {
-		return getWorkerIndex();
+		return applicationWorkerIndex();
 	},
 });
 Object.defineProperty(server, 'workerCount', {
 	get() {
-		return getWorkerCount();
+		return workerData?.isolatedApplication !== undefined ? 1 : getWorkerCount();
 	},
 });
 if (!parentPort) {
@@ -376,7 +487,7 @@ function startWorker(path, options = {}) {
 	availableMemory = Math.min(availableMemory, totalmem(), 20000 * MB);
 	const maxOldMemory =
 		resolveThreadHeapMemoryMb(envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_MAXHEAPMEMORY)) ??
-		Math.max(Math.floor(availableMemory / MB / (10 + (options.threadCount || 1) / 4)), 512);
+		Math.max(Math.floor(availableMemory / MB / (10 + (options.heapShareCount || options.threadCount || 1) / 4)), 512);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
 	// machines this will be 64MB (less for t3's). This is based on recommendations from:
 	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization594965
@@ -438,6 +549,7 @@ function startWorker(path, options = {}) {
 			workerIndex: options.workerIndex,
 			workerCount: (workerCount = options.threadCount),
 			name: options.name,
+			isolatedApplication: options.application,
 			restartNumber: module.exports.restartNumber,
 			processIncarnation: module.exports.processIncarnation,
 			ticketKeys: getTicketKeys(),
@@ -488,6 +600,7 @@ function startWorker(path, options = {}) {
 	startMonitoring();
 	if (options.onStarted) options.onStarted(worker); // notify that it is ready
 	worker.name = options.name;
+	worker.application = options.application; // the isolated application this worker is dedicated to, if any
 	return worker;
 }
 
@@ -509,11 +622,17 @@ const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
  * from a worker, nothing — the restart is handed to the main thread.
  */
 
+/**
+ * `application` selects which workers of the type restart: undefined restarts the shared pool only
+ * (workers dedicated to an isolated application keep running -- a redeploy of one application must not
+ * restart another), a name restarts only that application's dedicated worker, and '*' restarts all.
+ */
 async function restartWorkers(
 	name = null,
 	maxWorkersDown = Math.max(Math.floor(workerCount / 8), 1), // restart 1/8 of the threads at a time, but at least 1
 	startReplacementThreads = true,
-	onProgress = null
+	onProgress = null,
+	application = undefined
 ) {
 	if (isMainThread) {
 		// Declining is not the same as delegating: a caller reporting on the restart must not read this
@@ -527,6 +646,7 @@ async function restartWorkers(
 		} catch (e) {
 			harperLogger.error('Unable to reestablish current working directory', e);
 		}
+		const freshlyStarted = new Set(); // dedicated workers the reconcile just started: already on the new code
 		// problematic cyclic dependency, bind late
 		const { resetRestartNeeded } = require('../../components/requestRestart.ts');
 		resetRestartNeeded();
@@ -539,6 +659,13 @@ async function restartWorkers(
 			const loading = setInterval(() => onProgress?.(), RESTART_PROGRESS_HEARTBEAT_MS).unref();
 			try {
 				await loadRootComponents();
+				// isolated applications added or removed by the reload get their dedicated worker started or
+				// stopped; a crash-looping newcomer can take a while, so the heartbeat runs through this too
+				try {
+					for (const application of (await isolatedWorkerReconciler?.()) ?? []) freshlyStarted.add(application);
+				} catch (error) {
+					harperLogger.error('Could not reconcile isolated application workers', error);
+				}
 			} finally {
 				clearInterval(loading);
 			}
@@ -580,6 +707,8 @@ async function restartWorkers(
 			// Terminal shutdown: stop replacing workers mid-loop — the guard for every replacement start below.
 			if (processShuttingDown && startReplacementThreads) break;
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
+			if (application !== '*' && worker.application !== application) continue; // and by isolated application
+			if (worker.application && freshlyStarted.has(worker.application)) continue;
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
 			if (overlapping && startReplacementThreads && canPreStartReplacement) {
 				// Overlapping restart: start the replacement and wait until it is accepting connections
@@ -761,6 +890,7 @@ async function restartWorkers(
 		parentPort.postMessage({
 			type: RESTART_TYPE,
 			workerType: name,
+			scope: encodeRestartScope(application),
 		});
 	}
 }
@@ -810,7 +940,7 @@ function whenWorkerStarted(newWorker) {
 	});
 }
 function shutdownWorkers(name) {
-	return restartWorkers(name, Infinity, false);
+	return restartWorkers(name, Infinity, false, null, '*');
 }
 function beginProcessShutdown() {
 	processShuttingDown = true;
@@ -828,6 +958,24 @@ async function shutdownWorkersNow(name) {
 	} else {
 		await Promise.all(workers.map((worker) => worker.terminate()));
 	}
+}
+
+/**
+ * The restart scope on the wire: a worker cannot post `undefined` and have it mean "the pool" (a
+ * message with no scope at all means "everything", as every pre-existing sender intends).
+ */
+function encodeRestartScope(application) {
+	return application === undefined ? '' : application; // '' is not a legal application name
+}
+function decodeRestartScope(message) {
+	if (message.scope === undefined) return '*';
+	return message.scope === '' ? undefined : message.scope;
+}
+
+let isolatedWorkerReconciler = null;
+/** Registered by socketRouter: starts and stops dedicated workers to match the root config's isolated applications. */
+function setIsolatedWorkerReconciler(reconcile) {
+	isolatedWorkerReconciler = reconcile;
 }
 
 const messageListeners = [];
@@ -1096,6 +1244,7 @@ function getChildWorkerInfo() {
 	return workers.map((worker) => ({
 		threadId: worker.threadId,
 		name: worker.name,
+		application: worker.application,
 		heapTotal: worker.resources?.heapTotal,
 		heapUsed: worker.resources?.heapUsed,
 		externalMemory: worker.resources?.external,
@@ -1727,7 +1876,7 @@ if (isMainThread) {
 					if (queuedRestart) clearTimeout(queuedRestart);
 					queuedRestart = setTimeout(async () => {
 						if (beforeRestart) await beforeRestart();
-						await restartWorkers();
+						await restartWorkers(undefined, undefined, true, null, '*');
 						console.log('Reloaded Harper components, changed files:', Array.from(changedFiles));
 						changedFiles.clear();
 					}, 100);
