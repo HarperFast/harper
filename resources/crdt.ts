@@ -109,21 +109,21 @@ export function applyForward(record, update) {
  * against, and everything newer than the delete is irrelevant to a `timestamp` that precedes it (a
  * key that was deleted then re-inserted, see issue #1330).
  *
- * `fromVersion` is the newest pre-delete entry (the delete's previousVersion); the walk follows the
- * previousVersion chain from there. Entries newer than `timestamp` are skipped (the cutoff may fall
+ * `fromPosition` is the newest pre-delete audit position; the walk follows the previous links from
+ * there. Entries newer than `timestamp` are skipped (the cutoff may fall
  * between entries). Returns null if the record did not exist at `timestamp` (the nearest in-range
  * history boundary is a delete with no surviving writes, or there is no in-range history).
  */
-function reconstructForward(auditStore, store, tableId: number, recordId: any, fromVersion, timestamp) {
+function reconstructForward(auditStore, store, tableId: number, recordId: any, fromPosition, timestamp) {
 	// Collect the in-range entries (at or before `timestamp`) back to a base boundary, newest-first.
 	// The boundary is a full `put` (snapshot) or a `delete` (everything older is erased); a record
 	// whose first write was a `patch` has no put and bottoms out at the start of history. Only
 	// `put`/`patch` contribute to the value, matching the reverse walk's switch (other partial types
 	// such as `invalidate` are ignored).
 	const entries = [];
-	let auditTime = fromVersion;
+	let { txnLogKey: auditTime, nodeId: auditNodeId } = fromPosition;
 	while (auditTime > 0) {
-		const auditEntry = auditStore.get(auditTime, tableId, recordId);
+		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
 		if (!auditEntry) break;
 		if (auditEntry.type === 'delete') {
 			// A delete at or before `timestamp` bounds the history; the record is rebuilt from the
@@ -138,7 +138,9 @@ function reconstructForward(auditStore, store, tableId: number, recordId: any, f
 				entries.push(auditEntry);
 			}
 		}
-		auditTime = auditEntry.previousVersion;
+		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
+		auditTime = previousPosition.txnLogKey;
+		auditNodeId = previousPosition.nodeId;
 	}
 	if (entries.length === 0) return null; // record did not exist at `timestamp`
 	// Replay oldest-first. The base is the put if the chain reached one; otherwise an empty record
@@ -158,6 +160,38 @@ function reconstructForward(auditStore, store, tableId: number, recordId: any, f
 	return record;
 }
 
+function resolveAuditPosition(auditStore, tableId: number, recordId: any, version, nodeId, refs) {
+	if (!refs?.length) return { txnLogKey: version, nodeId };
+	const visited = new Set<string>();
+	const pending = refs.slice().reverse();
+	while (pending.length > 0) {
+		const ref = pending.pop();
+		const identity = `${ref.nodeId ?? 0}:${ref.version}`;
+		if (visited.has(identity)) continue;
+		visited.add(identity);
+		const entry = auditStore.get(ref.version, tableId, recordId, ref.nodeId);
+		if (!entry) continue;
+		if (entry.version === version && (nodeId == null || (entry.nodeId ?? 0) === nodeId))
+			return { txnLogKey: ref.version, nodeId: ref.nodeId };
+		const previousRefs = entry.previousAdditionalAuditRefs;
+		if (previousRefs) {
+			for (let index = previousRefs.length - 1; index >= 0; index--) pending.push(previousRefs[index]);
+		}
+	}
+	return { txnLogKey: version, nodeId };
+}
+
+function previousAuditPosition(auditStore, tableId: number, recordId: any, auditEntry) {
+	return resolveAuditPosition(
+		auditStore,
+		tableId,
+		recordId,
+		auditEntry.previousVersion,
+		auditEntry.previousNodeId,
+		auditEntry.previousAdditionalAuditRefs
+	);
+}
+
 /**
  * Reconstruct the record state at a given timestamp by going back through the audit history and reversing any changes
  * @param currentEntry
@@ -168,11 +202,20 @@ function reconstructForward(auditStore, store, tableId: number, recordId: any, f
 export function getRecordAtTime(currentEntry, timestamp, store, tableId: number, recordId: any) {
 	const auditStore = store.rootStore.auditStore;
 	let record = { ...currentEntry.value };
-	let auditTime = currentEntry.localTime;
+	const initialPosition = resolveAuditPosition(
+		auditStore,
+		tableId,
+		recordId,
+		currentEntry.version ?? currentEntry.localTime,
+		currentEntry.nodeId,
+		currentEntry.additionalAuditRefs
+	);
+	let auditTime = initialPosition.txnLogKey;
+	let auditNodeId = initialPosition.nodeId;
 	// Iterate in reverse through the record history, trying to reverse all changes
 	const unknowns = new Set<string>();
 	while (auditTime > timestamp) {
-		const auditEntry = auditStore.get(auditTime, tableId, recordId);
+		const auditEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
 		if (!auditEntry) break;
 		switch (auditEntry.type) {
 			case 'put':
@@ -185,15 +228,24 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 				// The reverse walk reached a delete that is newer than `timestamp`. There is no
 				// base record to keep reversing patches against, so reconstruct the pre-delete
 				// state forward instead (issue #1330: a key deleted then re-inserted).
-				return reconstructForward(auditStore, store, tableId, recordId, auditEntry.previousVersion, timestamp);
+				return reconstructForward(
+					auditStore,
+					store,
+					tableId,
+					recordId,
+					previousAuditPosition(auditStore, tableId, recordId, auditEntry),
+					timestamp
+				);
 		}
-		auditTime = auditEntry.previousVersion;
+		const previousPosition = previousAuditPosition(auditStore, tableId, recordId, auditEntry);
+		auditTime = previousPosition.txnLogKey;
+		auditNodeId = previousPosition.nodeId;
 	}
 	// If the most recent entry at or before `timestamp` is a delete, the record did not exist then.
 	// (A delete reached as a boundary — rather than crossed, which returns via reconstructForward —
 	// is otherwise missed, leaving `record` holding a newer re-inserted value. See issue #1330.)
 	if (auditTime > 0) {
-		const boundaryEntry = auditStore.get(auditTime, tableId, recordId);
+		const boundaryEntry = auditStore.get(auditTime, tableId, recordId, auditNodeId);
 		if (boundaryEntry?.type === 'delete') return null;
 	}
 	// A reversed patch that set a field to a plain value can't be undone (a plain set has no inverse),
@@ -204,7 +256,14 @@ export function getRecordAtTime(currentEntry, timestamp, store, tableId: number,
 	// single delta rather than the folded value at `timestamp`. If the history needed to reconstruct a
 	// key is unavailable (pruned), the key keeps its live value (best effort, as before).
 	if (unknowns.size > 0 && auditTime > 0) {
-		const priorRecord = reconstructForward(auditStore, store, tableId, recordId, auditTime, timestamp);
+		const priorRecord = reconstructForward(
+			auditStore,
+			store,
+			tableId,
+			recordId,
+			{ txnLogKey: auditTime, nodeId: auditNodeId },
+			timestamp
+		);
 		if (priorRecord) {
 			for (const key of unknowns) {
 				// Object.hasOwn, not `in`: an unknown field named like a prototype member (toString,

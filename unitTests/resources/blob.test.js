@@ -10,6 +10,7 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const {
 	blobFileMissingOrIncomplete,
+	blobFileMissingOrIncompleteAsync,
 	repairBlobFile,
 	getFilePathForBlob,
 	deleteBlob,
@@ -1217,6 +1218,44 @@ describe('Blob test', () => {
 		assert.equal(orphansDeleted, 0);
 	});
 
+	// harper#2412: the orphan sweep skips scanning an audit entry's value only when the primary record
+	// IS that entry's write, because the table pass already scanned it. Identifying that write by record
+	// version instead of log position deletes blobs a retained audit entry still references, since a
+	// version is legitimately non-unique.
+	it('scans an audit value whose record version matches a different write', async () => {
+		// A file on disk that only an audit entry references, and a live record for the same id whose
+		// version happens to equal that entry's. Identifying the entry's write by version would treat
+		// the live record as its output, skip scanning the entry, and unlink a referenced blob.
+		const { blob, filePath } = await makeDiskBackedBlob(4096);
+		const id = 'orphan-identity';
+		await BlobTest.put(id, { id, other: 'no blob here' });
+		const entry = BlobTest.primaryStore.getEntry(id);
+		const auditStore = BlobTest.primaryStore.rootStore.auditStore;
+		const originalGetRange = auditStore.getRange.bind(auditStore);
+		auditStore.getRange = function (options) {
+			if (options?.start !== 1) return originalGetRange(options);
+			return [
+				{
+					tableId: BlobTest.tableId,
+					recordId: id,
+					type: 'put',
+					version: entry.version,
+					txnLogKey: entry.localTime + 1,
+					nodeId: entry.nodeId ?? 0,
+					getValue: () => ({ blob }),
+				},
+			];
+		};
+		try {
+			await cleanupOrphans(getDatabases().test);
+			assert(existsSync(filePath), 'a blob referenced by a retained audit entry must survive the sweep');
+		} finally {
+			auditStore.getRange = originalGetRange;
+			if (existsSync(filePath)) unlinkSync(filePath);
+			await BlobTest.delete(id).catch(() => {});
+		}
+	});
+
 	// Helper: produce a blob backed ONLY by its on-disk file (no in-memory contentBuffer), the way a
 	// node reads a blob it didn't write itself — a fresh full-copy replica or a read after the record
 	// fell out of the in-memory cache. We save a blob to disk, encode it to its storage reference, then
@@ -2106,13 +2145,84 @@ describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
 	});
 
-	it('leaves a truncated compressed body for the asynchronous repair sweep to verify', async () => {
-		const payload = Buffer.from('truncated compressed blob '.repeat(2000));
-		await BlobRepairTest.put({ id: 'compressed-damage-probe', blob: createBlob(payload, { compress: true }) });
-		const { blob } = await BlobRepairTest.get('compressed-damage-probe');
+	async function savedCompressedBlob(id, payload) {
+		await BlobRepairTest.put({ id, blob: createBlob(payload, { compress: true }) });
+		const { blob } = await BlobRepairTest.get(id);
 		const filePath = getFilePathForBlob(blob);
-		truncateSync(filePath, statSync(filePath).size - 1);
+		const intact = readFileSync(filePath);
+		assert.strictEqual(intact[1], 1, 'precondition: stored deflated');
+		return { blob, filePath, intact };
+	}
+
+	it('classifies a compressed body by inflating it; the locked recheck confirms only the file the probe judged', async () => {
+		const payload = Buffer.from('truncated compressed blob '.repeat(2000));
+		const { blob, filePath, intact } = await savedCompressedBlob('compressed-damage-probe', payload);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), undefined, 'unprobed compressed body has no sync answer');
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), false, 'intact compressed body is healthy');
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), undefined, 'a healthy probe leaves nothing to confirm');
+		truncateSync(filePath, intact.length - 1);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), undefined, 'damage the probe has not seen is not confirmed');
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true, 'torn compressed body is damaged');
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true, 'the probed torn body is confirmed');
+		writeFileSync(filePath, intact);
+		assert.strictEqual(
+			blobFileMissingOrIncomplete(blob),
+			undefined,
+			'a file that changed since the probe is not confirmed'
+		);
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), false, 'restored body is healthy again');
+		// a header understating the size: the body inflates past the cap and is refused, not allocated
+		writeFileSync(filePath, Buffer.concat([makeBlobHeader(payload.length - 1, 1), intact.subarray(8)]));
+		blob.size = payload.length - 1;
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true, 'body inflating past the header is damaged');
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+		writeFileSync(filePath, intact);
+		blob.size = payload.length;
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), false);
+	});
+
+	it('blobFileMissingOrIncompleteAsync classifies an uncompressed body by length, and a missing file as damaged', async () => {
+		const { blob, filePath } = await savedBlob('async-uncompressed', Readable.from(Buffer.alloc(20000, 3)));
+		assert.strictEqual(readFileSync(filePath)[1], 0, 'precondition: stored uncompressed');
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), false);
+		truncateSync(filePath, 20000);
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true);
+		unlinkSync(filePath);
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true);
+	});
+
+	it('blobFileMissingOrIncompleteAsync has no answer for a blob that is not a stored file', async () => {
+		assert.strictEqual(
+			await blobFileMissingOrIncompleteAsync(await createBlob(Readable.from([Buffer.alloc(16)]))),
+			undefined
+		);
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(new Blob(['inline'])), undefined);
+	});
+
+	it('repairBlobFile heals a compressed body torn by an unclean shutdown once the probe has classified it', async () => {
+		const payload = Buffer.from('torn compressed blob '.repeat(2000));
+		const { blob, filePath } = await savedCompressedBlob('repair-torn-compressed', payload);
+		truncateSync(filePath, statSync(filePath).size - 64);
+		await assert.rejects(blob.bytes(), { statusCode: 500 });
+		assert.strictEqual(repairBlobFile(blob, Readable.from(payload), payload.length), undefined, 'declined unprobed');
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true);
+		const saving = repairBlobFile(blob, Readable.from(payload), payload.length);
+		assert.ok(saving, 'repair should start on a probed torn compressed blob');
+		await saving;
+		assert.strictEqual(getFilePathForBlob(blob), filePath);
+		assert.strictEqual(readFileSync(filePath).readUInt16BE(0), 0);
+		assert.deepStrictEqual(await blob.bytes(), payload);
 		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
+	});
+
+	it('repairBlobFile declines a compressed body that grew after the probe classified it', async () => {
+		const payload = Buffer.from('regrown compressed blob '.repeat(2000));
+		const { blob, filePath, intact } = await savedCompressedBlob('repair-regrown-compressed', payload);
+		truncateSync(filePath, intact.length - 64);
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true);
+		writeFileSync(filePath, intact);
+		assert.strictEqual(repairBlobFile(blob, Readable.from(payload), payload.length), undefined);
+		assert.deepStrictEqual(readFileSync(filePath), intact, 'the completed file is left alone');
 	});
 
 	it('repairBlobFile preserves the referenced PENDING file before a competing writer acquires the lock', async () => {

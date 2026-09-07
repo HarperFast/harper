@@ -1,0 +1,6 @@
+# QA-701 base fixture, pre-installed via setupHarperWithFixture. It exists only as a readiness
+# beacon — a real REST route to poll until routing is live. The payload tarballs actually under
+# test are deployed at runtime via deploy_component against throwaway fixtures.
+graphqlSchema:
+  files: '*.graphql'
+rest: true

@@ -24,7 +24,8 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 // @ts-expect-error no type declarations
 import { createApiClient } from './../apiTests/utils/client.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { WORKER_COUNT, assertMultiWorker, mapBounded } from './recordCachingWorkers.ts';
+import { WORKER_COUNT, assertMultiWorker, mapBounded, NO_MULTI_WORKER_HTTP } from './recordCachingWorkers.ts';
+import { fetchOnNewConnection } from '../utils/connectionPerRequest.ts';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'record-caching-coherence');
 const SKIP = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
@@ -38,15 +39,13 @@ interface Rec {
 	counter: number;
 }
 
-// Fresh connection per request so concurrent reads spray across the worker pool
-// (keep-alive would pin a client to a single worker and hide cross-worker divergence).
 function headers(auth: string): Record<string, string> {
-	return { 'Content-Type': 'application/json', 'Authorization': auth, 'Connection': 'close' };
+	return { 'Content-Type': 'application/json', 'Authorization': auth };
 }
 
 suite(
 	'record-caching point-read vs scan coherence [rocksdb] multi-worker',
-	{ skip: SKIP || process.platform === 'win32' },
+	{ skip: SKIP || NO_MULTI_WORKER_HTTP },
 	(ctx: ContextWithHarper) => {
 		let httpURL: string;
 		let authHeader: string;
@@ -63,7 +62,7 @@ suite(
 			let ready = false;
 			while (Date.now() < deadline) {
 				try {
-					const r = await fetch(`${httpURL}/CacheRecord/probe`, { headers: headers(authHeader) });
+					const r = await fetchOnNewConnection(`${httpURL}/CacheRecord/probe`, { headers: headers(authHeader) });
 					if (r.status < 500) {
 						ready = true;
 						break;
@@ -82,7 +81,7 @@ suite(
 		});
 
 		async function putRecord(id: string, name: string, counter: number): Promise<void> {
-			const r = await fetch(`${httpURL}/CacheRecord/${encodeURIComponent(id)}`, {
+			const r = await fetchOnNewConnection(`${httpURL}/CacheRecord/${encodeURIComponent(id)}`, {
 				method: 'PUT',
 				headers: headers(authHeader),
 				body: JSON.stringify({ id, name, counter }),
@@ -93,7 +92,7 @@ suite(
 		}
 
 		async function deleteRecord(id: string): Promise<void> {
-			const r = await fetch(`${httpURL}/CacheRecord/${encodeURIComponent(id)}`, {
+			const r = await fetchOnNewConnection(`${httpURL}/CacheRecord/${encodeURIComponent(id)}`, {
 				method: 'DELETE',
 				headers: headers(authHeader),
 			});
@@ -104,7 +103,9 @@ suite(
 
 		// Point-GET: exercises getEntry (cached path).
 		async function getRecord(id: string): Promise<Rec | null> {
-			const r = await fetch(`${httpURL}/CacheRecord/${encodeURIComponent(id)}`, { headers: headers(authHeader) });
+			const r = await fetchOnNewConnection(`${httpURL}/CacheRecord/${encodeURIComponent(id)}`, {
+				headers: headers(authHeader),
+			});
 			if (r.status === 404) return null;
 			if (r.status !== 200) throw new Error(`GET ${id} returned ${r.status}`);
 			return r.json() as Promise<Rec>;
@@ -112,7 +113,7 @@ suite(
 
 		// Filtered query by indexed `name`: exercises getRange/scan path (uncached, direct store read).
 		async function queryByName(name: string): Promise<Rec[]> {
-			const r = await fetch(`${httpURL}/CacheRecord/?name=${encodeURIComponent(name)}`, {
+			const r = await fetchOnNewConnection(`${httpURL}/CacheRecord/?name=${encodeURIComponent(name)}`, {
 				headers: headers(authHeader),
 			});
 			if (r.status !== 200) throw new Error(`query name=${name} returned ${r.status}`);

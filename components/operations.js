@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { isMainThread, parentPort } = require('node:worker_threads');
 const fs = require('fs-extra');
 const fg = require('fast-glob');
 const normalize = require('normalize-path');
@@ -435,18 +436,8 @@ async function packageComponent(req) {
 	return { project, payload };
 }
 
-/**
- * Load the built candidate to surface load-time errors. A load-ERROR PROBE, not a safety guarantee: it runs
- * the component's own top-level code with incomplete side-effect isolation.
- *
- * A no-op on the main thread, and the operations API deploys there — so operator deploys are unvalidated
- * (#2315 step 2). What this guarantees is ORDER: where validation runs, a rejected candidate never goes live.
- */
-// `componentLoader.setErrorReporter` is ONE process-global callback, so two components validating
-// concurrently on the same worker cross-attribute their failures: B installs its reporter while A is
-// loading, A's load error lands in B, and A then activates broken code while B rejects a good candidate.
-// Validation is serialized (it is already the slow path) and the previous reporter is restored, so the
-// global is only ever owned by one in-flight validation.
+const BRANCH_STORAGE_RETAINED =
+	'. Any branched database storage this application owns was left in place; drop it again with restart: true to discard that data';
 
 /** Report a restart outcome the operation's own success message cannot convey. */
 function logRestartOutcome(restart, what) {
@@ -1227,6 +1218,7 @@ async function dropComponent(req) {
 	const componentPath = path.join(componentsRoot, project);
 	const pathToComponent = path.join(componentsRoot, projectPath);
 
+	let response;
 	await withComponentPreparationLock(
 		componentPath,
 		async () => {
@@ -1251,20 +1243,56 @@ async function dropComponent(req) {
 			}
 
 			configUtils.deleteConfigFromFile([project]);
+			// The main thread's cached config still names the project; the restart below installs every
+			// package application in that cache, and installing this one would take the lock held here.
+			// (A worker's RESTART message refreshes main's config the same way.)
+			if (isMainThread) env.initSync(true);
+			response = await server.replication.replicateOperation(req);
+			const { applicationHasBranchStorage, removeBranchesForApplication } = require('../resources/branchDatabase.ts');
+			const branched = !file && applicationHasBranchStorage(project);
+			if (req.restart !== true) {
+				response.message = `Successfully dropped: ${projectPath}`;
+				if (branched) response.message += BRANCH_STORAGE_RETAINED;
+				return;
+			}
+			// The branches go after the restart, under this lock; a worker is one of the threads being
+			// replaced, so it hands both to the main thread.
+			response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
+			if (!isMainThread) {
+				parentPort.postMessage({
+					type: hdbTerms.ITC_EVENT_TYPES.RESTART,
+					workerType: 'http',
+					removeBranchesFor: file ? undefined : project,
+				});
+				if (branched) {
+					response.message +=
+						'; the main thread removes its branched database storage after the restart and logs the outcome';
+				}
+				return;
+			}
+			const { awaitRestart } = require('./awaitRestart.ts');
+			const restart = await awaitRestart((onProgress) =>
+				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
+			);
+			logRestartOutcome(restart, `dropping ${projectPath}`);
+			if (!branched) return;
+			if (restart.completed && !restart.workersKeptOnOldCode) {
+				try {
+					await removeBranchesForApplication(project);
+				} catch (error) {
+					log.error(`Branched database storage of ${project} could not be removed`, error);
+					throw new Error(
+						`Successfully dropped: ${projectPath}, but its branched database storage could not be removed and ` +
+							`was left in place: ${error.message}. Drop it again with restart: true to retry.`
+					);
+				}
+			} else {
+				log.warn(`Branched database storage of ${project} was left in place: the restart did not complete`);
+				response.message += BRANCH_STORAGE_RETAINED;
+			}
 		},
 		componentDropLockOptions(project)
 	);
-	const response = await server.replication.replicateOperation(req);
-	if (req.restart === true) {
-		// Same race as a deploy, in the removal direction: until a worker is replaced it still serves the
-		// dropped component's resources, so a caller that reads success as "it is gone" can be wrong.
-		const { awaitRestart } = require('./awaitRestart.ts');
-		const restart = await awaitRestart((onProgress) =>
-			manageThreads.restartWorkers('http', undefined, undefined, onProgress)
-		);
-		logRestartOutcome(restart, `dropping ${projectPath}`);
-		response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
-	} else response.message = `Successfully dropped: ${projectPath}`;
 	return response;
 }
 

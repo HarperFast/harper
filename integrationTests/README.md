@@ -100,6 +100,34 @@ This is how CI captures logs for failed jobs — the log directory is uploaded a
 
 The runner executes each file in its own process. For concurrent execution to be safe, every test file must be **independent** (no shared state with other files), **hermetic** (no external side-effects), and **deterministic** (same output for the same input, every time). See the [framework documentation](https://github.com/HarperFast/integration-testing-framework#testing-ethos) for more on why these properties matter.
 
+### Reading storage directly
+
+A test that reads the server's storage as an oracle must not open the **live** database directory.
+`RocksDatabase.open(dir, { readOnly: true })` maps to `rocksdb::DB::OpenForReadOnly`, which replays
+the MANIFEST into a file list and then opens those files holding no reference on any of them, so a
+compaction in the Harper process under test can unlink one inside that window. The open then fails
+naming the file that vanished, wrapped in RocksDB's generic "the MANIFEST may be corrupted" phrasing
+— nothing is corrupt, the reader raced a compaction ([rocksdb-js#812: `readOnly:true` open races a
+live writer's compaction](https://github.com/HarperFast/rocksdb-js/issues/812)). That was
+[#2500: delete-index-atomicity-rocksdb flakes](https://github.com/HarperFast/harper/issues/2500),
+and a loop measured it at 7% of opens against a directory under compaction.
+
+Have the fixture publish a checkpoint (`rootStore.createCheckpoint(path)`) and open that instead.
+Nothing writes to a checkpoint, so the window does not exist, and taking one flushes the memtable,
+which such a test needs anyway, since Harper opens table and index column families with `disableWAL`
+defaulting to true — a committed write can otherwise sit only in the writer's memtable and never
+reach an external reader.
+
+Two things the recipe depends on. Put the checkpoint outside every directory Harper scans for
+databases — the `storage.path` root, which is `database/` by default, and any per-database `path`
+the config sets: `resources/databases.ts` walks each of them and adopts any child holding a `CURRENT`
+and a `MANIFEST-*` as a database, so a checkpoint under one would be loaded as one. And close the
+handles and delete the previous checkpoint before taking the next — a checkpoint is hardlinked, so it
+is cheap to take but it also keeps every SST it names alive through the live database's compactions,
+and a suite that refreshes before each read would otherwise pin every historical file version for the
+length of the run.
+`database/delete-index-atomicity-rocksdb.test.ts` and its fixture are the worked example.
+
 ### Template
 
 ```ts

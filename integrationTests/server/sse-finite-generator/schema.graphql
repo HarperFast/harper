@@ -1,0 +1,5 @@
+# A jsResource fixture needs at least one @table/@export type to be a valid component; the
+# generator Resources under test need no table backing.
+type Placeholder @table @export {
+	id: ID @primaryKey
+}

@@ -27,9 +27,11 @@ on:
 
 jobs:
   validate:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@be549ad08aa6d34b909ea8b542a7ffebdaae1e81 # main 2026-08-25 (#90 cost gates: draft skip, mechanical-diff skip, effort-by-size, debounce; #89 defaults; #88 lenses)
+    permissions:
+      contents: read
+    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@af81872e56dd63da1160adb5eae82d359a456dde # main 2026-09-01 (#94 freshness-gated admission; #91 job-level cancellation; #90 cost gates; #89 defaults; #88 lenses)
     with:
       # Same SHA as the `uses:` ref above — the reusable uses this
       # to check out the validator script at the matching version.
       # Same SHA-twice pattern as the other caller workflows.
-      ai-review-prompts-ref: be549ad08aa6d34b909ea8b542a7ffebdaae1e81
+      ai-review-prompts-ref: af81872e56dd63da1160adb5eae82d359a456dde

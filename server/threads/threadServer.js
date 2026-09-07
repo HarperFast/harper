@@ -225,6 +225,7 @@ function startServers() {
 							})
 							.then(() => closeServers())
 							.then(() => whenScopesClosed())
+							.then(() => require('../../resources/databases.ts').closeBranchDatabases())
 							.then(() => {
 								realExit(0);
 							});

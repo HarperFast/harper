@@ -61,6 +61,9 @@ benchmarks/compression/results/
 # the repo root and a `git add -A` after a test run commits it
 test_export*.json
 
+# terminology export_local test artifact
+test_export_terminology_test.json
+
 # dev-mode boots (harper dev <fixture>) symlink node_modules/harper into the
 # fixture component dir; keep those out of commits
 integrationTests/**/node_modules/

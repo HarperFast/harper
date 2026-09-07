@@ -15,6 +15,10 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { ASIDE_STAGING_DIR } from '../components/Application.ts';
 import { COMPONENT_PREPARATION_LOCK_DIR } from '../components/componentPreparationLock.ts';
 import { restartNeeded } from '../components/requestRestart.ts';
+import {
+	assertNoDeferredCredentialRejection,
+	settleDeferredCredentialRejection,
+} from '../security/deferredAuthentication.ts';
 
 import { Request } from '../server/serverHelpers/Request.ts';
 import { RequestTarget } from '../resources/RequestTarget';
@@ -222,6 +226,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				}
 			}
 		}
+		const settledCredentialRejection = settleDeferredCredentialRejection(request);
+		if (settledCredentialRejection) return settledCredentialRejection;
 		if ((resource as any)?.isCaching) {
 			const cacheControl = headersObject['cache-control'];
 			if (cacheControl) {
@@ -553,6 +559,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 					// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
 					return ws.close(1011, `No resource was found to handle ${request.pathname}`);
 				} else {
+					assertNoDeferredCredentialRejection(request);
 					request.handlerPath = entry.path;
 					recordAction(
 						(action) => ({
