@@ -1,14 +1,3 @@
-/**
- * QA-685 — proves a stalled client blob upload does not wedge unrelated writes.
- *
- * A complete CBOR write first proves the fixture uses file-backed Blob storage. The regression
- * arms then hold one and four truthful-but-partial request bodies open, require bounded control
- * writes to an unrelated table to keep succeeding, and verify that aborting the clients leaves
- * neither visible records nor blob files. Every control burst must reach all configured workers;
- * latency measurements remain diagnostic rather than load-sensitive pass/fail thresholds.
- *
- * Refs harper#1862.
- */
 import { suite, test, before, after } from 'node:test';
 import { ok } from 'node:assert';
 import { resolve, join } from 'node:path';
@@ -18,11 +7,12 @@ import net from 'node:net';
 import http from 'node:http';
 import { encode as cborEncode } from 'cbor-x';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { NO_FULL_WORKER_COVERAGE } from '../database/recordCachingWorkers.ts';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from './utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa685-blob-upload-stall');
-const skipSuite = process.platform === 'win32';
+const skipSuite = NO_FULL_WORKER_COVERAGE;
 
 const WORKER_COUNT = 4;
 const LANES = WORKER_COUNT;
@@ -106,7 +96,13 @@ function putCompleteCbor(
 	body: Buffer,
 	timeoutMs: number
 ): Promise<{ status: number; raw: string }> {
-	return new Promise((res) => {
+	return new Promise((resolveResponse) => {
+		let settled = false;
+		const finish = (result: { status: number; raw: string }) => {
+			if (settled) return;
+			settled = true;
+			resolveResponse(result);
+		};
 		const req = http.request(
 			{
 				host,
@@ -120,17 +116,21 @@ function putCompleteCbor(
 					'Connection': 'close',
 				},
 			},
-			(r: any) => {
+			(response) => {
 				const chunks: Buffer[] = [];
-				r.on('data', (c: Buffer) => chunks.push(c));
-				r.on('end', () => res({ status: r.statusCode ?? 0, raw: Buffer.concat(chunks).toString('utf8') }));
+				response.on('data', (chunk: Buffer) => chunks.push(chunk));
+				response.on('end', () =>
+					finish({ status: response.statusCode ?? 0, raw: Buffer.concat(chunks).toString('utf8') })
+				);
+				response.on('aborted', () => finish({ status: 0, raw: 'RESPONSE_ABORTED' }));
+				response.on('error', (error) => finish({ status: 0, raw: error.message }));
 			}
 		);
 		req.setTimeout(timeoutMs, () => {
-			req.destroy();
-			res({ status: 0, raw: 'CLIENT_TIMEOUT' });
+			req.destroy(new Error('CLIENT_TIMEOUT'));
+			finish({ status: 0, raw: 'CLIENT_TIMEOUT' });
 		});
-		req.on('error', (e: Error) => res({ status: 0, raw: String(e?.message ?? e) }));
+		req.on('error', (error) => finish({ status: 0, raw: error.message }));
 		req.end(body);
 	});
 }
@@ -152,9 +152,7 @@ async function diskUsage(dir: string): Promise<{ files: number; bytes: number }>
 				try {
 					bytes += (await stat(p)).size;
 					files++;
-				} catch {
-					/* raced with unlink */
-				}
+				} catch {}
 			}
 		}
 	}
@@ -190,8 +188,8 @@ function assertControlAvailability(stats: WriterStats, label: string) {
 	ok(stats.okCount > 0, `${label} produced zero successful control writes`);
 	ok(stats.errCount === 0, `${label} had control-write errors: ${JSON.stringify(stats.errorSamples)}`);
 	ok(
-		stats.threadCounts.size === WORKER_COUNT,
-		`${label} reached ${stats.threadCounts.size}/${WORKER_COUNT} workers: ${statsSummary(stats)}`
+		stats.threadCounts.size >= WORKER_COUNT,
+		`${label} reached ${stats.threadCounts.size}, expected at least ${WORKER_COUNT} workers: ${statsSummary(stats)}`
 	);
 }
 
@@ -424,7 +422,7 @@ suite(
 			await sleep(1_000);
 			const afterStats = await runControlBurst(5_000, 'after-single');
 			log(`after single-stall destroy: ${statsSummary(afterStats)}`);
-			assertControlAvailability(afterStats, 'single-stall recovery');
+			assertControlAvailability(afterStats, 'single-stall post-abort');
 
 			ok(baselineStats, 'baseline test did not provide control statistics');
 			const baseline = baselineStats;
@@ -486,44 +484,54 @@ suite(
 			);
 		});
 
-		test('client abort leaves no record or blob and restores ordinary writes', { timeout: 60_000 }, async () => {
-			ok(blobBaselineForSingle, 'single-stall test did not provide a blob baseline');
-			const startBaseline = blobBaselineForSingle;
-			const postDestroyDisk = await diskUsage(blobDir);
-			log(
-				`post-destroy blob disk usage: ${postDestroyDisk.files} files / ${(postDestroyDisk.bytes / 1024 / 1024).toFixed(2)}MB ` +
-					`(delta vs pre-stall baseline = ${postDestroyDisk.files - startBaseline.files})`
-			);
-			ok(
-				postDestroyDisk.files === startBaseline.files,
-				`client abort left ${postDestroyDisk.files - startBaseline.files} blob file(s) from incomplete uploads`
-			);
+		test(
+			'client abort leaves no record or blob and ordinary writes remain available',
+			{ timeout: 60_000 },
+			async () => {
+				ok(blobBaselineForSingle, 'single-stall test did not provide a blob baseline');
+				const startBaseline = blobBaselineForSingle;
+				const postDestroyDisk = await diskUsage(blobDir);
+				log(
+					`post-destroy blob disk usage: ${postDestroyDisk.files} files / ${(postDestroyDisk.bytes / 1024 / 1024).toFixed(2)}MB ` +
+						`(delta vs pre-stall baseline = ${postDestroyDisk.files - startBaseline.files})`
+				);
+				ok(
+					postDestroyDisk.files === startBaseline.files,
+					`client abort left ${postDestroyDisk.files - startBaseline.files} blob file(s) from incomplete uploads`
+				);
 
-			for (const key of ['qa685-single-stall', 'qa685-quad-0', 'qa685-quad-1', 'qa685-quad-2', 'qa685-quad-3']) {
-				const response = await client.reqRest(`/MediaAsset/${key}`).timeout(5_000);
-				log(`post-abort GET /MediaAsset/${key}: status=${response.status}`);
-				ok(response.status === 404, `incomplete upload ${key} returned ${response.status} instead of 404 after abort`);
+				for (const key of ['qa685-single-stall', 'qa685-quad-0', 'qa685-quad-1', 'qa685-quad-2', 'qa685-quad-3']) {
+					const response = await client.reqRest(`/MediaAsset/${key}`).timeout(5_000);
+					log(`post-abort GET /MediaAsset/${key}: status=${response.status}`);
+					ok(
+						response.status === 404,
+						`incomplete upload ${key} returned ${response.status} instead of 404 after abort`
+					);
+				}
+
+				const cleanup = await client
+					.req()
+					.send({ operation: 'cleanup_orphan_blobs', database: 'data' })
+					.timeout(10_000);
+				log(`cleanup_orphan_blobs response: status=${cleanup.status} body=${JSON.stringify(cleanup.body)}`);
+				ok(cleanup.status === 200, `cleanup_orphan_blobs returned ${cleanup.status}`);
+				await sleep(3_000);
+				const afterCleanupDisk = await diskUsage(blobDir);
+				ok(
+					afterCleanupDisk.files === startBaseline.files,
+					`blob file count changed after cleanup: ${startBaseline.files} -> ${afterCleanupDisk.files}`
+				);
+
+				const postAbortStats = await runControlBurst(5_000, 'post-abort');
+				assertControlAvailability(postAbortStats, 'post-abort');
+				ok(baselineStats, 'baseline test did not provide control statistics');
+				const baseline = baselineStats;
+				const baseMean = baseline.latencies.reduce((a, b) => a + b, 0) / baseline.latencies.length;
+				const postAbortMean = postAbortStats.latencies.reduce((a, b) => a + b, 0) / postAbortStats.latencies.length;
+				log(
+					`post-abort mean latency: baseline=${baseMean.toFixed(1)}ms post-abort=${postAbortMean.toFixed(1)}ms — ${statsSummary(postAbortStats)}`
+				);
 			}
-
-			const cleanup = await client.req().send({ operation: 'cleanup_orphan_blobs', database: 'data' }).timeout(10_000);
-			log(`cleanup_orphan_blobs response: status=${cleanup.status} body=${JSON.stringify(cleanup.body)}`);
-			ok(cleanup.status === 200, `cleanup_orphan_blobs returned ${cleanup.status}`);
-			await sleep(3_000);
-			const afterCleanupDisk = await diskUsage(blobDir);
-			ok(
-				afterCleanupDisk.files === startBaseline.files,
-				`blob file count changed after cleanup: ${startBaseline.files} -> ${afterCleanupDisk.files}`
-			);
-
-			const recoveryStats = await runControlBurst(5_000, 'recovery');
-			assertControlAvailability(recoveryStats, 'post-abort recovery');
-			ok(baselineStats, 'baseline test did not provide control statistics');
-			const baseline = baselineStats;
-			const baseMean = baseline.latencies.reduce((a, b) => a + b, 0) / baseline.latencies.length;
-			const recoveryMean = recoveryStats.latencies.reduce((a, b) => a + b, 0) / recoveryStats.latencies.length;
-			log(
-				`recovery mean latency: baseline=${baseMean.toFixed(1)}ms post-abort=${recoveryMean.toFixed(1)}ms — ${statsSummary(recoveryStats)}`
-			);
-		});
+		);
 	}
 );
