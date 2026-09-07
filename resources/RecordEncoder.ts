@@ -104,6 +104,8 @@ export type Entry = {
 export const TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 4, 0x40, 0, 0]);
 // the first byte here indicates that we use the last timestamp
 export const LAST_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 1, 0, 0, 0]);
+// Never write this into an audit entry value: the substitution resolves to 2.0 when no previous time
+// was recorded, and the audit format reads a leading byte other than 0x42 as "no field here". See harper#2247.
 export const PREVIOUS_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 3, 0x40, 0, 0]);
 export const NEW_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 0, 0x40, 0, 0]);
 export const LOCAL_TIMESTAMP = Symbol('local-timestamp');

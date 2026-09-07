@@ -4,7 +4,7 @@ import { AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { convertToMS } from '../utility/common_utils.ts';
-import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder.ts';
+import { LAST_TIMESTAMP_PLACEHOLDER, HAS_STRUCTURE_UPDATE, PENDING_LOCAL_TIME } from './RecordEncoder.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getRecordAtTime } from './crdt.ts';
 import { decodeFromDatabase } from './blob.ts';
@@ -116,6 +116,13 @@ const MAX_CLEANUP_DELAY = 2 ** 31 - 1;
 // mint latch keyed per (table, type) so one entry type can't silence another's producer stack
 const warnedBodylessMints = new Set<string>();
 const warnedBodylessTables = new Set<number>();
+// legacy-format latches, mirroring the bodyless ones above: a range scan over millions of pre-#2247
+// entries must not turn a recovered read into a log flood. Recovery latches per table (the table is
+// known by then); an undecodable header has no table, so it latches once per process.
+const warnedRecoveredTables = new Set<number>();
+let warnedUndecodableHeader = false;
+// keyed per (table, type) like warnedBodylessMints, so one entry type cannot silence another's stack
+const warnedPendingPreviousVersion = new Set<string>();
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
 
@@ -482,6 +489,49 @@ const EVENT_TYPES = {
 	remoteSequenceUpdate: REMOTE_SEQUENCE_UPDATE,
 	[REMOTE_SEQUENCE_UPDATE]: 'remoteSequenceUpdate',
 };
+/**
+ * The LMDB audit entry states the presence of its leading 8-byte previousVersion field with that
+ * field's own first byte. The same test is what harperdb 4.x's reader uses and what both versions'
+ * replication senders use to strip the field before framing an entry for the wire, so it is a
+ * cross-version contract, not a local convention: a field written with any other leading byte is
+ * skipped by every reader and shifts action/nodeId/tableId/recordId/version by 8. See harper#2247.
+ */
+const PREVIOUS_VERSION_FIRST_BYTE = 66;
+/**
+ * Which first bytes can begin an action, and so cannot be a previousVersion field. Derived from what
+ * the encoding can express, not from the types defined today: nibbles 9-15 are reserved for future
+ * entry types, and a peer one version ahead must keep decoding rather than look corrupt here.
+ */
+const ACTION_FIRST_BYTE = new Uint8Array(256);
+// single-byte form; 0 is not an entry type, so a zero low nibble cannot start one
+for (let firstByte = 1; firstByte <= (HAS_RECORD | HAS_PARTIAL_RECORD | 0xf); firstByte++) {
+	if (firstByte & 0xf) ACTION_FIRST_BYTE[firstByte] = 1;
+}
+// extended form, written as `action | extendedType | 0xc0000000`; 0xff is the five-byte readInt form
+for (let firstByte = 0xc0; firstByte < 0xff; firstByte++) ACTION_FIRST_BYTE[firstByte] = 1;
+let knownActionFlags: number | undefined;
+/**
+ * Whether an action word decodes wholly into what this version understands. Consulted only to accept
+ * or reject a legacy prefix recovery — never to validate a normally-framed entry, where an unknown
+ * future flag must stay forwards-compatible rather than corrupt. The mask is built on first use
+ * because HAS_STRUCTURE_UPDATE crosses the RecordEncoder import cycle: read at module scope it
+ * resolves to undefined whenever RecordEncoder is the cycle's entry, silently dropping that bit.
+ */
+function isDecodableAction(action: number) {
+	knownActionFlags ??=
+		0xf |
+		HAS_RECORD |
+		HAS_PARTIAL_RECORD |
+		HAS_STRUCTURE_UPDATE |
+		HAS_CURRENT_RESIDENCY_ID |
+		HAS_PREVIOUS_RESIDENCY_ID |
+		HAS_ORIGINATING_OPERATION |
+		HAS_EXPIRATION_EXTENDED_TYPE |
+		HAS_BLOBS |
+		HAS_ADDITIONAL_AUDIT_REFS |
+		LOCAL_ONLY;
+	return (action & 0xf) !== 0 && !(action & ~knownActionFlags);
+}
 const ORIGINATING_OPERATIONS = {
 	insert: 1,
 	update: 2,
@@ -547,12 +597,43 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		}
 		action &= ~HAS_RECORD;
 	}
-	let position = start + 1;
-	if (previousVersion) {
-		if (previousVersion > 1) ENTRY_DATAVIEW.setFloat64(start, previousVersion);
-		else ENTRY_HEADER.set(PREVIOUS_TIMESTAMP_PLACEHOLDER, start);
-		position = start + 9;
+	let hasPreviousVersion: boolean;
+	if (start > 0) {
+		// RocksTransactionLogStore states presence with its own prelude flag, derived from this same
+		// truthiness, so this container's field stays unconditional and its value is unconstrained.
+		hasPreviousVersion = !!previousVersion;
+		if (hasPreviousVersion) ENTRY_DATAVIEW.setFloat64(start, previousVersion);
+	} else if (previousVersion == null || previousVersion === 0) {
+		// absence is stated, not inferred from truthiness: NaN is falsy and would otherwise be
+		// silently dropped rather than rejected below
+		hasPreviousVersion = false;
+	} else if (previousVersion === PENDING_LOCAL_TIME) {
+		// The previous entry has no log position yet, and a format whose presence signal is the value's
+		// own first byte cannot express "to be filled in at commit". The superseded code deferred to
+		// lmdb-js's instructed-write substitution, which resolves to 2.0 whenever no previous time was
+		// recorded — the unreadable entry behind harper-pro#737. It resolved correctly when one was, so
+		// this trades a lost link on that path for never minting the unreadable form. Not a throw: a
+		// pending previous is a producer state, unlike a value the format cannot hold.
+		hasPreviousVersion = false;
+		if (!warnedPendingPreviousVersion.has(`${tableId}:${type}`)) {
+			warnedPendingPreviousVersion.add(`${tableId}:${type}`);
+			warnContained(
+				`Audit entry (${type}) for record ${recordId} in table ${tableId} has a pending previous version; recording it without a previous-version link`,
+				new Error('pending audit previousVersion')
+			);
+		}
+	} else {
+		ENTRY_DATAVIEW.setFloat64(start, previousVersion);
+		if (ENTRY_HEADER[start] !== PREVIOUS_VERSION_FIRST_BYTE) {
+			throw new Error(
+				`Audit entry previousVersion ${previousVersion} for record ${recordId} in table ${tableId} is not representable. ` +
+					'The LMDB audit format signals this field with its own leading 0x42 byte, so only values in [2**33, 2**49) can be written; ' +
+					'writing any other value produces an entry every reader parses 8 bytes off.'
+			);
+		}
+		hasPreviousVersion = true;
 	}
+	let position = start + (hasPreviousVersion ? 9 : 1);
 	if (extendedType) {
 		if (extendedType & 0xff) {
 			throw new Error('Illegal extended type');
@@ -591,8 +672,9 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 
 	if (user) writeValue(user);
 	else ENTRY_HEADER[position++] = 0;
-	if (extendedType) ENTRY_DATAVIEW.setUint32(start + (previousVersion ? 8 : 0), action | extendedType | 0xc0000000);
-	else ENTRY_HEADER[start + (previousVersion ? 8 : 0)] = action;
+	const actionPosition = start + (hasPreviousVersion ? 8 : 0);
+	if (extendedType) ENTRY_DATAVIEW.setUint32(actionPosition, action | extendedType | 0xc0000000);
+	else ENTRY_HEADER[actionPosition] = action;
 	const header = ENTRY_HEADER.subarray(0, position);
 	if (encodedRecord) {
 		return Buffer.concat([header, encodedRecord]);
@@ -650,13 +732,40 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			((buffer as any).decoder = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 		decoder.position = start;
 		let previousVersion;
-		if (buffer[decoder.position] == 66) {
-			// 66 is the first byte in a date double.
+		let entryStart = start;
+		const firstByte = buffer[start];
+		if (firstByte === PREVIOUS_VERSION_FIRST_BYTE) {
 			previousVersion = decoder.readFloat64();
+		} else if (ACTION_FIRST_BYTE[firstByte] !== 1) {
+			// Written before the writer enforced the leading-0x42 contract (harper#2247): the field is
+			// physically here but does not announce itself, so the action sits 8 bytes further on.
+			// Recover only when the bytes cannot be anything else, and never for the RocksDB container,
+			// whose prelude flag already consumed its previousVersion before this offset.
+			if (start !== 0 || start + 9 > buffer.byteLength || ACTION_FIRST_BYTE[buffer[start + 8]] !== 1) {
+				return corruptEntry(buffer, start, end, firstByte);
+			}
+			// > 1 is exactly what the superseded writer's own guard could emit, the tightest available
+			// bound on "these bytes really are an old previousVersion"
+			if (!(decoder.getFloat64(start) > 1)) return corruptEntry(buffer, start, end, firstByte);
+			entryStart = decoder.position = start + 8;
+			// The value itself is dropped, not reported. It cannot lead with 0x42 (that is the branch
+			// above), and audit keys carry the same constraint, so it could never have addressed a
+			// retrievable entry; reporting it would only feed an unrepresentable value back to
+			// createAuditEntry through the resolveRecord re-mint in RecordEncoder, which now rejects it.
 		}
 		const action = decoder.readInt();
+		if (entryStart !== start && !isDecodableAction(action)) {
+			return corruptEntry(buffer, start, end, firstByte);
+		}
 		const nodeId = decoder.readInt();
 		const tableId = decoder.readInt();
+		if (entryStart !== start && !warnedRecoveredTables.has(tableId)) {
+			warnedRecoveredTables.add(tableId);
+			warnContained('Audit entry carries an unannounced previousVersion field; recovering its field offsets', {
+				tableId,
+				firstByte,
+			});
+		}
 		let length = decoder.readInt();
 		// A corrupt length field (e.g., a 0xff-prefixed uint32) would otherwise push
 		// decoder.position hundreds of megabytes past the buffer; the next readFloat64
@@ -742,10 +851,14 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				}
 			},
 			get encoded() {
-				return start ? buffer.subarray(start, end) : buffer;
+				// On a recovered entry this drops the unannounced prefix, so a replication sender —
+				// which strips by the same leading-0x42 test and frames by encoded.length — forwards a
+				// clean entry instead of passing the same misparse to the next hop.
+				return entryStart ? buffer.subarray(entryStart, end) : buffer;
 			},
 			get size() {
-				return start !== undefined && end !== undefined ? end - start : buffer.byteLength;
+				// only the recovered prefix is discounted; every other case keeps its existing basis
+				return (end !== undefined ? end - start : buffer.byteLength) - (entryStart - start);
 			},
 			getValue(store, fullRecord?, auditTime?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
@@ -792,6 +905,23 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		harperLogger.error('Reading audit entry error', error, buffer);
 		return createCorruptAuditSentinel(buffer, start, end);
 	}
+}
+
+/**
+ * Reject a header whose first byte can be neither an action nor a previousVersion field. Returns the
+ * sentinel directly rather than throwing into readAuditEntry's catch, whose error log is not
+ * contained: a throwing log sink there would escape the decoder and stall the iteration it runs in.
+ */
+function corruptEntry(buffer: Uint8Array, start: number, end: number | undefined, firstByte: number): AuditRecord {
+	if (!warnedUndecodableHeader) {
+		warnedUndecodableHeader = true;
+		warnContained('Audit entry header begins with neither an action nor a previousVersion; treating as corrupt', {
+			firstByte,
+			// the 8 prefix bytes plus the action byte: the classifying bytes, stopping before the recordId
+			header: Buffer.from(buffer.subarray(start, Math.min(start + 9, buffer.byteLength))).toString('hex'),
+		});
+	}
+	return createCorruptAuditSentinel(buffer, start, end);
 }
 
 /**
