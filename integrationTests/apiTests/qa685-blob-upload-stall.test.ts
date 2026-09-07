@@ -8,7 +8,7 @@
 import { suite, test, before, after } from 'node:test';
 import { ok } from 'node:assert';
 import { resolve, join } from 'node:path';
-import { readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import net from 'node:net';
 import http from 'node:http';
@@ -17,6 +17,8 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 import { NO_FULL_WORKER_COVERAGE } from '../database/recordCachingWorkers.ts';
 // @ts-expect-error no type declarations
 import { createApiClient } from './utils/client.mjs';
+// @ts-expect-error no type declarations
+import { waitFor } from './utils/operations.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa685-blob-upload-stall');
 const skipSuite = NO_FULL_WORKER_COVERAGE;
@@ -153,8 +155,9 @@ async function diskUsage(dir: string): Promise<{ files: number; bytes: number }>
 		let entries;
 		try {
 			entries = await readdir(d, { withFileTypes: true });
-		} catch {
-			return;
+		} catch (error) {
+			if (isEnoent(error)) return;
+			throw error;
 		}
 		for (const e of entries) {
 			const p = join(d, e.name);
@@ -163,12 +166,18 @@ async function diskUsage(dir: string): Promise<{ files: number; bytes: number }>
 				try {
 					bytes += (await stat(p)).size;
 					files++;
-				} catch {}
+				} catch (error) {
+					if (!isEnoent(error)) throw error;
+				}
 			}
 		}
 	}
 	await walk(dir);
 	return { files, bytes };
+}
+
+function isEnoent(error: unknown): boolean {
+	return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }
 
 interface WriterStats {
@@ -214,6 +223,7 @@ suite(
 		let auth: string;
 		let dataRootDir: string;
 		let blobDir: string;
+		let logDir: string;
 		let baselineStats: WriterStats | undefined;
 		let duringSingleStats: WriterStats | undefined;
 		let blobBaselineForSingle: { files: number; bytes: number } | undefined;
@@ -356,6 +366,7 @@ suite(
 			auth = client.headers.Authorization;
 			dataRootDir = ctx.harper.dataRootDir;
 			blobDir = join(dataRootDir, 'blobs');
+			logDir = ctx.harper.logDir ?? join(dataRootDir, 'log');
 
 			const deadline = Date.now() + 120_000;
 			let ready = false;
@@ -524,7 +535,22 @@ suite(
 					.timeout(10_000);
 				log(`cleanup_orphan_blobs response: status=${cleanup.status} body=${JSON.stringify(cleanup.body)}`);
 				ok(cleanup.status === 200, `cleanup_orphan_blobs returned ${cleanup.status}`);
-				await sleep(3_000);
+				const cleanupLog = await waitFor(
+					async () => {
+						try {
+							return await readFile(join(logDir, 'hdb.log'), 'utf8');
+						} catch (error) {
+							if (!isEnoent(error)) throw error;
+							return '';
+						}
+					},
+					{
+						until: (output: string) => output.includes('Cleaned Orphan Blobs from data'),
+						timeoutSeconds: 15,
+						intervalMs: 100,
+					}
+				);
+				ok(cleanupLog.includes('Cleaned Orphan Blobs from data'), 'orphan blob cleanup did not finish within 15s');
 				const afterCleanupDisk = await diskUsage(blobDir);
 				ok(
 					afterCleanupDisk.files === startBaseline.files,
