@@ -97,7 +97,13 @@ import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
-import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
+import {
+	Blob,
+	deleteBlobsInObject,
+	findBlobsInObject,
+	registerBlobOwnerTable,
+	startPreCommitBlobsForRecord,
+} from './blob.ts';
 import {
 	onStorageReclamation,
 	removeStorageReclamation,
@@ -531,7 +537,10 @@ export function makeTable(options) {
 		options;
 	if (!attributes) attributes = [];
 	if (!properties) properties = projectAttributesToProperties(attributes);
-	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
+	const updateRecord = recordUpdater(primaryStore, tableId, auditStore, tableName);
+	// The blob unlink drain resolves the owner recorded in a blob reference through this registry; a
+	// row staged by another process names a table id, and nothing else can turn that back into a store.
+	registerBlobOwnerTable(primaryStore.rootStore, tableName, primaryStore);
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
@@ -1676,7 +1685,13 @@ export function makeTable(options) {
 			}
 			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
-					deleteBlobsInObject(entry.value);
+					// A supersession like any other: the drop makes these records unreachable, and staging the
+					// intents durably is what keeps them from being lost if the process dies mid-drop.
+					// Batched, unlike a record write's supersession: this runs once per record over the
+					// whole table, and a synchronous commit each would block the loop for the length of it.
+					// A death mid-drop can then lose intents the batch had not flushed, which leaves those
+					// files to the orphan sweep — a leak, against blocking the thread for minutes.
+					deleteBlobsInObject(entry.value, undefined, { priorVersion: entry.version, synchronous: false });
 				}
 			}
 			if (databaseName === databasePath) {

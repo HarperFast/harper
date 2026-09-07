@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, getDatabases } = require('#src/resources/databases');
+const { table, getDatabases, dropDatabase } = require('#src/resources/databases');
 const { removeEntry } = require('#src/resources/RecordEncoder');
 const { Readable, PassThrough } = require('node:stream');
 const { EventEmitter } = require('node:events');
@@ -36,10 +36,14 @@ const {
 	isBlobReceiveInFlight,
 	createPendingMarkerBarrier,
 	watchInProgressFile,
+	drainBlobUnlinkQueue,
+	initBlobUnlinkQueue,
+	encodeBlobsWithFilePath,
 } = require('#src/resources/blob');
 const {
 	existsSync,
 	unlinkSync,
+	mkdirSync,
 	openSync,
 	writeSync,
 	ftruncateSync,
@@ -52,8 +56,8 @@ const {
 	renameSync,
 	rmSync,
 } = require('fs');
-const { dirname } = require('path');
-const { pack } = require('msgpackr');
+const { dirname, join } = require('path');
+const { pack, Packr } = require('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
 const env = require('#src/utility/environment/environmentManager');
@@ -525,16 +529,13 @@ describe('Blob test', () => {
 		const store = BlobTest.primaryStore.rootStore;
 
 		await BlobTest.put({ id: 304, blob: await createBlob(randomBytes(20000)) }); // queues reclamation
-		// Another worker writes a record referencing the original file again.
-		const { table, slot } = getBlobHoldStateForTesting(store, fileId);
-		Atomics.store(table, slot + 1, 1);
+		const intentKey = [Symbol.for('blob_unlink_queue'), fileId];
+		assert.ok(store.dbisDb.getSync(intentKey), 'the supersession commits the intent both workers act on');
+		// Another worker writes a record referencing the original file again. What crosses the worker
+		// boundary is the withdrawal of that intent, not anything in either worker's memory.
+		store.dbisDb.removeSync(intentKey);
 
-		// Wait for the reclaimer to consume the signal rather than sleeping a fixed span: an entry's
-		// deadline is clamped to the queue tail, so work queued by earlier tests can push this one out.
-		await waitFor(() => Atomics.load(table, slot + 1) === 0, {
-			timeout: 10000,
-			message: 'the re-reference signal should be consumed',
-		});
+		await delay(1000); // several times the retention window, so a drain would have run by now
 		assert(existsSync(filePath), 'a re-referenced blob must not be reclaimed');
 
 		await BlobTest.delete(304);
@@ -640,8 +641,10 @@ describe('Blob test', () => {
 		await delay(40);
 		assert(existsSync(filePath), 'blob must survive when the removal does not commit (#1364)');
 
-		// Removal that commits: the blob is unlinked.
-		removeEntry({ remove: () => Promise.resolve(true) }, entry, undefined);
+		// Removal that commits: the blob is unlinked. The real store, not a stub that resolves without
+		// removing anything — the drain re-reads the record the intent names before acting on it, so a
+		// record that is still there and still referencing the file is (correctly) left alone.
+		removeEntry(realStore, entry, undefined);
 		await waitFor(() => !existsSync(filePath), {
 			message: 'blob should be unlinked once the removal commits',
 		});
@@ -913,11 +916,14 @@ describe('Blob test', () => {
 	it('gates a local write on a manually started, still-streaming blob save', async () => {
 		// saveBlob assigns the fileId as soon as the save STARTS, so a fileId check alone would
 		// exempt a mid-save blob from the local-write gate and reopen the orphan-reference window
+		const store = BlobTest.primaryStore.rootStore;
 		const slow = new PassThrough();
 		const blob = createBlob(slow);
-		saveBlob(blob);
+		// saveBlob resolves the blob storage path from module-global currentStore; bind it via
+		// decodeFromDatabase (as the sibling #406 test does) so this test doesn't depend on a
+		// prior test leaving currentStore set.
+		decodeFromDatabase(() => saveBlob(blob), store);
 		slow.write('partial content');
-		const store = BlobTest.primaryStore.rootStore;
 		const preCommit = startPreCommitBlobsForRecord({ id: 8, blob }, store, false, false);
 		assert(preCommit && preCommit.blobs.includes(blob), 'mid-save blob must gate the commit');
 		let completed = false;
@@ -1214,8 +1220,28 @@ describe('Blob test', () => {
 		unlinkSync(getFilePathForBlob(completeBlob));
 	});
 	it('cleanupOrphans', async () => {
-		let orphansDeleted = await cleanupOrphans(getDatabases().test);
-		assert.equal(orphansDeleted, 0);
+		let { orphans, bytes } = await cleanupOrphans(getDatabases().test);
+		assert.equal(orphans, 0);
+		assert.equal(bytes, 0);
+	});
+
+	it('#1832: cleanupOrphans reports orphan count and bytes, and dryRun leaves the files in place', async () => {
+		// An orphan is a saved blob file no record references. Nothing surfaces that condition today, so
+		// dryRun must measure it without also reclaiming it.
+		const orphan = createBlob(Buffer.alloc(20000, 'z'));
+		await decodeFromDatabase(() => saveBlob(orphan).saving, BlobTest.primaryStore.rootStore);
+		const orphanPath = getFilePathForBlob(orphan);
+		assert(existsSync(orphanPath), 'orphan file must exist before the sweep');
+
+		const dryRun = await cleanupOrphans(getDatabases().test, 'test', true);
+		assert.equal(dryRun.orphans, 1, 'dryRun must report the orphan');
+		assert(dryRun.bytes > 0, `dryRun must report the orphan's bytes, got ${dryRun.bytes}`);
+		assert(existsSync(orphanPath), 'dryRun must NOT delete the orphan file');
+
+		const swept = await cleanupOrphans(getDatabases().test, 'test');
+		assert.equal(swept.orphans, 1, 'the real sweep must still reclaim the orphan');
+		assert.equal(swept.bytes, dryRun.bytes, 'the real sweep must report the same bytes the dryRun did');
+		assert(!existsSync(orphanPath), 'the real sweep must delete the orphan file');
 	});
 
 	// Helper: produce a blob backed ONLY by its on-disk file (no in-memory contentBuffer), the way a
@@ -2523,6 +2549,584 @@ describe('watchInProgressFile (in-progress read watcher fallback)', () => {
 
 		it('cannot drop the read to polling with a late error', () => {
 			superseded.emit('error', exhaustion());
+		});
+	});
+});
+
+describe('durable blob-unlink queue (#1832)', () => {
+	const UNLINK_QUEUE_KEY = Symbol.for('blob_unlink_queue');
+	const RECLAIMING = -1 << 20;
+	let QueueTest;
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		QueueTest = table({
+			table: 'BlobQueueTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+	afterEach(() => setDeletionDelay(500));
+
+	const rootStore = () => QueueTest.primaryStore.rootStore;
+	const queueDb = () => rootStore().dbisDb;
+	const queueRow = (fileId) => queueDb().getSync([UNLINK_QUEUE_KEY, fileId]);
+	const stageUnlink = (fileId) =>
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0 });
+
+	async function fileBackedBlob(id, size = 20000) {
+		await QueueTest.put({ id, blob: await createBlob(randomBytes(size)) });
+		const record = await QueueTest.get(id);
+		const filePath = getFilePathForBlob(record.blob);
+		assert.ok(filePath && existsSync(filePath), 'expected a file-backed blob on disk');
+		return { fileId: getFileId(record.blob), filePath };
+	}
+
+	it('executes an intent committed by a process that died before unlinking', async () => {
+		setDeletionDelay(600000); // no in-thread reclamation can reach this file; only the drain can
+		const { fileId, filePath } = await fileBackedBlob('recovered');
+		stageUnlink(fileId); // exactly what a prior life's reclamation committed before dying
+
+		drainBlobUnlinkQueue(rootStore());
+
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'a recovered intent must unlink its file',
+		});
+		await waitFor(() => queueRow(fileId) === undefined, {
+			timeout: 5000,
+			message: 'the row must be removed once the file is gone',
+		});
+	});
+
+	it('stands down when an ownerless intent is withdrawn after the drain has read it', async () => {
+		// A cancelling write withdraws the row and then tests the reclaim lock, so a drain that has
+		// already read the row must re-read it under that lock. Without that, a cancellation that took
+		// the lock first and handed it back is followed by this drain unlinking the file the write is
+		// committing a reference to.
+		const { fileId, filePath } = await fileBackedBlob('withdrawn-ownerless');
+		stageUnlink(fileId);
+
+		const db = queueDb();
+		const realGetSync = db.getSync;
+		db.getSync = function (key) {
+			// The withdrawal lands between the range read and the confirm.
+			if (Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) return undefined;
+			return realGetSync.apply(this, arguments);
+		};
+		try {
+			drainBlobUnlinkQueue(rootStore());
+			await delay(200);
+		} finally {
+			db.getSync = realGetSync;
+		}
+		assert.ok(existsSync(filePath), 'a withdrawn intent must never be executed');
+	});
+
+	it('commits the unlink to the queue before executing it', async () => {
+		// The durability guarantee itself: without it the deletion exists only as a timer, and a
+		// worker recycle loses it (the leak behind #1832).
+		setDeletionDelay(150);
+		const { fileId, filePath } = await fileBackedBlob('committed-first');
+		let sawRow = false;
+		const poll = setInterval(() => {
+			if (queueRow(fileId)) sawRow = true;
+		}, 5);
+		try {
+			await QueueTest.put({ id: 'committed-first', blob: await createBlob(randomBytes(20000)) });
+			await waitFor(() => !existsSync(filePath), {
+				timeout: 5000,
+				message: 'the superseded blob should be reclaimed',
+			});
+		} finally {
+			clearInterval(poll);
+		}
+		assert.ok(sawRow, 'the unlink must be durably committed before the file is removed');
+	});
+
+	it('abandons a row whose unlink can never succeed, handing back the reclaim slot', async () => {
+		const { fileId, filePath } = await fileBackedBlob('undeletable');
+		// A path unlink() can never remove, standing in for the EPERM/EACCES case the retry loop
+		// would otherwise repeat forever.
+		unlinkSync(filePath);
+		mkdirSync(filePath);
+		writeFileSync(join(filePath, 'occupied'), 'x');
+		const state = getBlobHoldStateForTesting(rootStore(), fileId);
+		Atomics.store(state.table, state.slot, RECLAIMING); // as reclamation leaves it when it enqueues
+		stageUnlink(fileId);
+
+		// Driven rather than slept through: the retries now back off, so a fixed number of fixed-length
+		// waits either races the unlink callback or has to be padded to the worst case.
+		await waitFor(
+			() => {
+				drainBlobUnlinkQueue(rootStore());
+				return queueRow(fileId) === undefined;
+			},
+			{ timeout: 30000, interval: 100, message: 'the row must be abandoned once the retry cap is reached' }
+		);
+
+		assert.equal(
+			Atomics.load(state.table, state.slot),
+			0,
+			'the hash-shared reclaim slot must not stay claimed by a retry that can never succeed'
+		);
+		rmSync(filePath, { recursive: true, force: true });
+	});
+
+	it('recovers stranded intents through the database-open hook, not just a direct drain', async () => {
+		// The hook is the only thing that reaches a prior process's rows; a refactor that drops it
+		// would otherwise leave every drain test still green.
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('startup-recovered');
+		stageUnlink(fileId);
+
+		initBlobUnlinkQueue(rootStore());
+
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'opening the database must drain intents left by a prior process',
+		});
+	});
+
+	it('never re-issues a file id that still has a queued unlink', async () => {
+		// A separate database, because the id allocator seeds once per store: the floor is only
+		// observable before anything has been written to it.
+		const FloorTest = table({
+			table: 'BlobFloorTest',
+			database: 'blobfloor',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+		const strandedId = (0xf0000).toString(16);
+		// due far out, so the drain leaves the row alone while the allocator seeds
+		FloorTest.primaryStore.rootStore.dbisDb.putSync([UNLINK_QUEUE_KEY, strandedId], {
+			due: Date.now() + 600000,
+			storageIndex: 0,
+		});
+
+		await FloorTest.put({ id: 1, blob: await createBlob(randomBytes(20000)) });
+		const record = await FloorTest.get(1);
+
+		assert.ok(
+			parseInt(getFileId(record.blob), 16) > 0xf0000,
+			'a stranded queue row must raise the allocator floor, or its later drain unlinks a live file'
+		);
+	});
+
+	it('leaves a file with an outstanding unlink intent for its drain, not for the orphan sweep', async () => {
+		// The post-restart shape: the durable row is the live claim and the in-memory map is empty, so
+		// the sweep's pendingReclamation exclusion cannot see it. Its own database, because the sweep
+		// reclaims every unreferenced file in the one it is pointed at.
+		const SweepTest = table({
+			table: 'BlobSweepTest',
+			database: 'blobsweep',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+		const sweepRoot = SweepTest.primaryStore.rootStore;
+		const claimed = createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(claimed).saving, sweepRoot);
+		const claimedPath = getFilePathForBlob(claimed);
+		const unclaimed = createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(unclaimed).saving, sweepRoot);
+		const unclaimedPath = getFilePathForBlob(unclaimed);
+		sweepRoot.dbisDb.putSync([UNLINK_QUEUE_KEY, getFileId(claimed)], {
+			due: Date.now() + 600000,
+			storageIndex: 0,
+		});
+
+		const swept = await cleanupOrphans(getDatabases().blobsweep, 'blobsweep');
+
+		assert.ok(existsSync(claimedPath), 'a file with an outstanding unlink intent must survive the sweep');
+		assert.ok(!existsSync(unclaimedPath), 'a genuinely unreferenced file must still be swept');
+		assert.equal(swept.orphans, 1, 'a queued file must not be counted as an orphan the sweep reclaimed');
+	});
+
+	it('fails the sweep rather than deleting while the set of claimed files is unknown', async () => {
+		const FailTest = table({
+			table: 'BlobSweepFailTest',
+			database: 'blobsweepfail',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+		const failRoot = FailTest.primaryStore.rootStore;
+		const candidate = createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(candidate).saving, failRoot);
+		const candidatePath = getFilePathForBlob(candidate);
+		const { getRange } = failRoot.dbisDb;
+		failRoot.dbisDb.getRange = () => {
+			throw new Error('queue unreadable');
+		};
+
+		try {
+			await assert.rejects(
+				() => cleanupOrphans(getDatabases().blobsweepfail, 'blobsweepfail'),
+				/queue unreadable/,
+				'an unreadable queue must fail the sweep, not silently narrow its exclusion set'
+			);
+			assert.ok(existsSync(candidatePath), 'nothing may be deleted while the claimed set is unknown');
+		} finally {
+			failRoot.dbisDb.getRange = getRange;
+		}
+	});
+
+	it('records the unlink intent when the record is superseded, not when the window closes', async () => {
+		// The durability claim itself. Before this, the intent existed only as an in-memory timer until
+		// the retention window had already elapsed, so a worker recycled inside that window — the case
+		// #1832 is about — took the only copy of it with them.
+		setDeletionDelay(4000);
+		const { fileId, filePath } = await fileBackedBlob('staged-at-supersede');
+		await QueueTest.put({ id: 'staged-at-supersede', blob: await createBlob(randomBytes(20000)) });
+
+		const row = queueRow(fileId);
+		assert.ok(row, 'the supersession must commit the intent before the retention window elapses');
+		assert.ok(row.due > Date.now() + 1000, 'the intent carries the retention deadline, it is not due on arrival');
+		assert.deepEqual(row.owner, ['BlobQueueTest', 'staged-at-supersede'], 'the intent must name its owner');
+
+		drainBlobUnlinkQueue(rootStore());
+		await delay(100);
+		assert.ok(existsSync(filePath), 'a drain before the deadline must leave the file alone');
+	});
+
+	it('drops an intent the write that staged it never earned', async () => {
+		// What a terminally failed write leaves behind: the prior row's blobs queued at encode time,
+		// and the prior row still committed and still referencing them.
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('never-earned');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+			due: Date.now() - 1,
+			storageIndex: 0,
+			owner: ['BlobQueueTest', 'never-earned'],
+			supersededAt: Date.now() - 5000,
+		});
+
+		drainBlobUnlinkQueue(rootStore());
+
+		await waitFor(() => queueRow(fileId) === undefined, {
+			timeout: 5000,
+			message: 'an intent whose owner still references the file must be dropped',
+		});
+		assert.ok(existsSync(filePath), 'the owning record still references these bytes');
+		const state = getBlobHoldStateForTesting(rootStore(), fileId);
+		assert.equal(Atomics.load(state.table, state.slot), 0, 'the reclaim claim must be handed back');
+	});
+
+	it('defers an intent whose owner still carries the version it was staged against', async () => {
+		// Pending and failed look identical from here, and both mean the file is live.
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('unsettled');
+		const priorVersion = QueueTest.primaryStore.getEntry('unsettled').version;
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+			due: Date.now() - 1,
+			storageIndex: 0,
+			owner: ['BlobQueueTest', 'unsettled'],
+			supersededAt: Date.now() - 5000,
+			priorVersion,
+		});
+
+		drainBlobUnlinkQueue(rootStore());
+		await delay(200);
+
+		assert.ok(queueRow(fileId), 'the intent must be kept, not executed and not discarded');
+		assert.ok(existsSync(filePath));
+		queueDb().removeSync([UNLINK_QUEUE_KEY, fileId]); // a row left here is retried for the whole run
+	});
+
+	// A table the catalog knows about but that this thread has not opened: the drain can neither read
+	// the record nor conclude the table is gone.
+	const withUnopenedTable = async (run) => {
+		queueDb().putSync('GhostTable/', { tableName: 'GhostTable' });
+		try {
+			await run();
+		} finally {
+			queueDb().removeSync('GhostTable/');
+		}
+	};
+
+	it('never executes an intent whose owning record it cannot read', async () => {
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('unresolvable');
+		await withUnopenedTable(async () => {
+			queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+				due: Date.now() - 1,
+				storageIndex: 0,
+				owner: ['GhostTable', 'unresolvable'],
+				supersededAt: Date.now() - 5000,
+			});
+
+			drainBlobUnlinkQueue(rootStore());
+			await delay(200);
+
+			assert.ok(existsSync(filePath), 'an owner that cannot be read is never read as "no longer referenced"');
+			assert.ok(queueRow(fileId), 'the intent stays for a drain that can resolve it');
+			queueDb().removeSync([UNLINK_QUEUE_KEY, fileId]); // a row left here is retried for the whole run
+		});
+	});
+
+	it('hands an intent it can never resolve to the orphan sweep once it ages out', async () => {
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('aged-out');
+		await withUnopenedTable(async () => {
+			queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+				due: Date.now() - 1,
+				storageIndex: 0,
+				owner: ['GhostTable', 'aged-out'],
+				supersededAt: Date.now() - 2_000_000, // past the retention age cap
+			});
+
+			drainBlobUnlinkQueue(rootStore());
+
+			await waitFor(() => queueRow(fileId) === undefined, {
+				timeout: 5000,
+				message: 'an intent that can never be resolved must not be retried forever',
+			});
+			assert.ok(existsSync(filePath), 'the bytes are left for cleanup_orphan_blobs, never deleted unproven');
+		});
+	});
+
+	it('executes an intent whose owning table has been dropped', async () => {
+		// Dropping a table reclaims its blob files today, and an intent naming a table the catalog no
+		// longer lists is not unresolvable — the record it names cannot exist.
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('dropped-owner');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+			due: Date.now() - 1,
+			storageIndex: 0,
+			owner: ['DroppedTable', 'dropped-owner'],
+			supersededAt: Date.now() - 5000,
+		});
+
+		drainBlobUnlinkQueue(rootStore());
+
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: "a dropped table's blob files must still be reclaimed",
+		});
+		await waitFor(() => queueRow(fileId) === undefined, { timeout: 5000, message: 'the row must be removed' });
+	});
+
+	it('executes an intent whose table is gone from the catalog but still readable through a handle', async () => {
+		// What a real drop_table looks like from the drain: dropping the column families does not stop
+		// a store handle a thread already holds from answering out of them, so the owning record reads
+		// back live, at the same version the intent was staged against. Read alone that is the drain's
+		// "the superseding write has not landed yet" case and it defers every one of the table's files
+		// to the age cap — while the orphan sweep skips them for having queued intents, so nothing
+		// reclaims them at all. The catalog, not a handle, is what says whether a table exists.
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('dropped-yet-readable');
+		const entry = QueueTest.primaryStore.getEntry('dropped-yet-readable');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+			due: Date.now() - 1,
+			storageIndex: 0,
+			owner: ['BlobQueueTest', 'dropped-yet-readable'],
+			supersededAt: Date.now() - 5000,
+			priorVersion: entry.version,
+		});
+		const catalogKey = 'BlobQueueTest/';
+		const catalogRow = queueDb().getSync(catalogKey);
+		assert.ok(catalogRow, 'the live table must have a catalog row to remove');
+		queueDb().removeSync(catalogKey);
+		try {
+			assert.ok(
+				QueueTest.primaryStore.getEntry('dropped-yet-readable')?.value,
+				'the record must still read back through the handle, as it does after a real drop'
+			);
+
+			drainBlobUnlinkQueue(rootStore());
+
+			await waitFor(() => !existsSync(filePath), {
+				timeout: 5000,
+				message: "a dropped table's blob files must be reclaimed even while its records still read",
+			});
+			await waitFor(() => queueRow(fileId) === undefined, { timeout: 5000, message: 'the row must be removed' });
+		} finally {
+			queueDb().putSync(catalogKey, catalogRow);
+		}
+	});
+
+	it('withdraws the intent when the record references the file again', async () => {
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('re-referenced');
+		const original = await QueueTest.get('re-referenced');
+		await QueueTest.put({ id: 're-referenced', blob: await createBlob(randomBytes(20000)) });
+		assert.ok(queueRow(fileId), 'the supersession stages an intent for the file it replaced');
+
+		await QueueTest.put({ id: 're-referenced', blob: original.blob });
+
+		assert.equal(queueRow(fileId), undefined, 'the intent must be withdrawn before the write commits');
+		assert.ok(existsSync(filePath));
+	});
+
+	it('drains a backlog larger than one batch to completion', async () => {
+		setDeletionDelay(600000);
+		const staged = [];
+		for (let i = 0; i < 70; i++) staged.push(await fileBackedBlob(`backlog-${i}`, 9000));
+		for (const { fileId } of staged) stageUnlink(fileId);
+
+		drainBlobUnlinkQueue(rootStore());
+
+		await waitFor(() => staged.every(({ filePath }) => !existsSync(filePath)), {
+			timeout: 15000,
+			message: 'a backlog past the per-pass batch limit must still drain to completion',
+		});
+	});
+});
+
+describe('blob file ownership (#1832)', () => {
+	let Owned, Sibling, Composite;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const attributes = [
+			{ name: 'id', isPrimaryKey: true },
+			{ name: 'blob', type: 'Blob' },
+		];
+		Owned = table({ table: 'BlobOwned', database: 'blobowner', attributes });
+		Sibling = table({ table: 'BlobOwnedSibling', database: 'blobowner', attributes });
+		Composite = table({ table: 'BlobOwnedComposite', database: 'blobowner', attributes });
+	});
+	beforeEach(() => setDeletionDelay(600000)); // nothing may be reclaimed while these tests run
+	afterEach(() => setDeletionDelay(500));
+
+	const ownerRoot = () => Owned.primaryStore.rootStore;
+
+	it('refuses to store one blob file in two records', async () => {
+		await Owned.put({ id: 'a', blob: await createBlob(randomBytes(20000)) });
+		const a = await Owned.get('a');
+		await assert.rejects(
+			async () => Owned.put({ id: 'b', blob: a.blob }),
+			/two different records/,
+			'aliasing survives a storage round trip today, and superseding either record deletes the other bytes'
+		);
+	});
+
+	it('refuses the same key in a different table', async () => {
+		// File ids are per DATABASE, so the record key alone does not identify an owner.
+		await Owned.put({ id: 'shared-key', blob: await createBlob(randomBytes(20000)) });
+		const owned = await Owned.get('shared-key');
+		await assert.rejects(async () => Sibling.put({ id: 'shared-key', blob: owned.blob }), /two different records/);
+	});
+
+	it('lets the owning record be written again with its own stored blob', async () => {
+		await Owned.put({ id: 'rewritten', blob: await createBlob(randomBytes(20000)) });
+		const first = await Owned.get('rewritten');
+		const filePath = getFilePathForBlob(first.blob);
+		await Owned.put({ id: 'rewritten', blob: first.blob });
+		assert.ok(existsSync(filePath), 'rewriting the owner must keep its file');
+		assert.equal(getFileId((await Owned.get('rewritten')).blob), getFileId(first.blob));
+	});
+
+	it('compares composite keys by value, not by identity', async () => {
+		// An owner restored from storage is a fresh array, so an identity comparison would reject every
+		// re-encode of a composite-key record.
+		await Composite.put({ id: ['tenant', 7], blob: await createBlob(randomBytes(20000)) });
+		const record = await Composite.get(['tenant', 7]);
+		await Composite.put({ id: ['tenant', 7], blob: record.blob });
+		assert.ok(existsSync(getFilePathForBlob(record.blob)));
+	});
+
+	it('never adopts a reference that arrived without an owner', async () => {
+		// The pre-upgrade shape. Two legacy records may already share this file, so stamping whichever
+		// one is rewritten first as its owner would license deleting bytes the other still references.
+		const root = ownerRoot();
+		const blob = await createBlob(randomBytes(20000));
+		// Its own Packr: the blob extension re-enters msgpackr's default instance, which would reset the
+		// shared target buffer underneath an outer encode using the same one.
+		const codec = new Packr();
+		// No table name — the shape `bin/copyDb.ts` writes, and the shape every pre-upgrade row has.
+		const legacy = Buffer.from(encodeBlobsWithFilePath(() => codec.pack({ blob }), 'legacy', root));
+		const decoded = decodeFromDatabase(() => codec.unpack(legacy), root);
+		const reEncoded = Buffer.from(
+			encodeBlobsWithFilePath(() => codec.pack({ blob: decoded.blob }), 'someone-else', root, 'BlobOwnedSibling')
+		);
+		const again = decodeFromDatabase(() => codec.unpack(reEncoded), root);
+		assert.equal(getFileId(again.blob), getFileId(decoded.blob), 're-encoding an ownerless reference must not fail');
+
+		setDeletionDelay(0); // the in-memory queue is process-wide and its deadlines are non-decreasing
+		deleteBlob(again.blob, { priorVersion: 1 });
+		assert.equal(
+			root.dbisDb.getSync([Symbol.for('blob_unlink_queue'), getFileId(again.blob)]),
+			undefined,
+			'an ownerless file must keep the pre-existing reclamation path, not gain a crash-surviving intent'
+		);
+	});
+
+	it('rejects a reference that arrived owned, under any other owner', async () => {
+		const root = ownerRoot();
+		const blob = await createBlob(randomBytes(20000));
+		const codec = new Packr();
+		const owned = Buffer.from(encodeBlobsWithFilePath(() => codec.pack({ blob }), 'owner-1', root, 'BlobOwned'));
+		const decoded = decodeFromDatabase(() => codec.unpack(owned), root);
+		assert.throws(
+			() => encodeBlobsWithFilePath(() => codec.pack({ blob: decoded.blob }), 'owner-2', root, 'BlobOwned'),
+			/two different records/
+		);
+	});
+});
+
+describe('durable unlink intents across multiple blob storage paths (#1832)', () => {
+	const UNLINK_QUEUE_KEY = Symbol.for('blob_unlink_queue');
+	let MultiPath;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const base = env.getHdbBasePath();
+		env.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [join(base, 'blobs-a'), join(base, 'blobs-b')]);
+		MultiPath = table({
+			table: 'BlobMultiPath',
+			database: 'blobmulti',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+	after(async () => {
+		// Dropped while the two-path config is still in force. The branch-preparation suite (harper#643)
+		// branches every database on the instance, and rejects one whose open base resolves through more
+		// blob roots than storage.blobPaths then provides — which is what this database becomes the
+		// moment the line below restores the single-path default.
+		await dropDatabase('blobmulti');
+		env.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, undefined);
+		setDeletionDelay(500);
+	});
+
+	it('condemns a file on the storage path it was actually written to', async () => {
+		// The intent has to carry the storage index, because the file id alone resolves to the first
+		// path: without it the drain unlinks nothing, drops the row, and the bytes stay on disk forever.
+		setDeletionDelay(600000);
+		const rootStore = MultiPath.primaryStore.rootStore;
+		const secondPath = join(env.getHdbBasePath(), 'blobs-b');
+		let target;
+		for (let i = 1; i <= 12 && !target; i++) {
+			await MultiPath.put({ id: i, blob: await createBlob(randomBytes(20000)) });
+			const record = await MultiPath.get(i);
+			const filePath = getFilePathForBlob(record.blob);
+			if (filePath.startsWith(secondPath)) target = { id: i, fileId: getFileId(record.blob), filePath };
+		}
+		assert.ok(target, 'expected at least one blob to land on the second storage path');
+
+		await MultiPath.put({ id: target.id, blob: await createBlob(randomBytes(20000)) });
+
+		const row = rootStore.dbisDb.getSync([UNLINK_QUEUE_KEY, target.fileId]);
+		assert.ok(row, 'the supersession must stage an intent');
+		assert.notEqual(row.storageIndex, 0, 'the intent must carry the storage index of the file it names');
+
+		setDeletionDelay(0);
+		rootStore.dbisDb.putSync([UNLINK_QUEUE_KEY, target.fileId], { ...row, due: Date.now() - 1 });
+		drainBlobUnlinkQueue(rootStore);
+		await waitFor(() => !existsSync(target.filePath), {
+			timeout: 5000,
+			message: 'the drain must resolve the file through the storage index the intent carries',
 		});
 	});
 });
