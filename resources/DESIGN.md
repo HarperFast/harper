@@ -101,6 +101,50 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 | How does post-ordering resolve vector distances safely?               | Each comparator owns its `Sort`, passes it directly to the custom-index resolver, and caches distances by that immutable per-query sort object.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | How is application row filtering applied?                             | Authorization admission happens in the resource operation before query work. The legacy `allow*` hook, when armed by the protocol, is evaluated once with its historical receiver semantics; overriding it never changes its scope. An operation override may add indexed conditions and/or attach the JavaScript-only synchronous `target.rowFilter(record, context)`. `Table.search` composes it with query filters and rechecks the final materialized cache/source record. `SubscriptionRequest.rowFilter` covers full-row events; `eventFilter(event, context)` explicitly handles tombstones/messages/raw events. Prefer indexed conditions because an opaque predicate may inspect every admitted candidate and `limit` applies after filtering.                                                                                                                                                                                                                                                                                                                                                           |
 
+**An audit record carries two clocks; never substitute one for the other (harper#2412 stage 0b).**
+`AuditRecord.version` is the originating write's record version — LWW ordering in
+`precedesExistingVersion`, `@updatedTime`, ETag/`Last-Modified`. Historical audit-only entries may
+carry the surviving version instead. `AuditRecord.txnLogKey` is that
+entry's key in the per-origin transaction log: write identity, the record→log lookup
+(`auditStore.get(logKey, tableId, id, nodeId)`), and every resume cursor. On LMDB these have always
+been distinct fields; on RocksDB the read surface used to overwrite `version` with the log key, and
+`#2409`'s `recordVersion` alias is now absorbed back into `version`.
+
+They hold the same value for every write whose record version is its own commit timestamp, which is
+every ordinary local write, so a bug that confuses them stays invisible until a **source fill**
+(`getFromSource`, core #2065): the record is stored at the source-reported version while its log
+entry is keyed at the fill's commit. A RocksDB record stores its version in the existing word and,
+when the clocks diverge, keeps its audit head in `additionalAuditRefs`; stage 2 can replace that
+compatibility pointer with a dedicated log-key word.
+
+Consequences worth knowing:
+
+- **Identity is `(nodeId, log key)`, never a version.** `isAuditEntryWrite` (`auditStore.ts`) is the
+  single predicate; `removeAuditEntry`'s tombstone removal and `blob.ts`'s orphan sweep both gate on
+  it, and both retain rather than delete when identity is unknown. A version compare there would let
+  one write authorize destroying another's tombstone or blob.
+- **A RocksDB applied write carries its own record version.** `TransactionWrite.recordVersion`, set from
+  `options.version` by every `_write*` builder and read in `save()` only when the transaction is
+  `sourceApply` or `isReplay`, is how a replication receiver stores the origin's version while the
+  transaction commits under the origin's log key — so a peer's copy of an origin's log stays in the
+  origin's clock. New audit entries persist that write version even when an out-of-order merge leaves
+  a newer record version in the primary store. `getAppliedWriteVersion` also bounds historical
+  overloaded values by `txnLogKey`. One frame can carry writes at different record versions, so this
+  cannot be a per-transaction value. Deprecated LMDB keeps its legacy transaction-version apply
+  behavior.
+- **`additionalAuditRefs[].version` is a log key, not a version.** Every consumer follows it straight
+  into `auditStore.get` (`Table.ts`'s `auditRefsToVisit`). The list carries folded out-of-order
+  branches and, when a RocksDB record version differs from its log key, the record's own audit head.
+  Under stage 2 the stored reference field can be renamed; until then, "fixing" it to the record
+  version silently unaddresses the entry it points at.
+- **Crash replay uses both.** `replayLogs` delimits transactions by `txnLogKey` (which is also what
+  `CorruptFrameStop.truncatedVersions` records) and replays each write at its stored `version`.
+  Stamping a replayed record at its log key would move its version forward and make a later
+  legitimate write look stale.
+- **Compatibility surfaces still report `localTime` as the transaction timestamp.** Subscription,
+  history, and pro-to-core replication event shapes predate this internal name and remain unchanged;
+  no on-disk or on-wire identifier changes in this stage.
+
 **QUERY admission uses the body projection.** `Resource.transactional` resolves an asynchronous HTTP QUERY body before resource resolution, recursively clones away client-supplied `checkPermission`, and copies the body's `select` onto the operation admission target before `allowRead`. After authorization, `Resource.query` transfers only the narrowed projection to the body target. This ensures a body-only relationship select is checked before `Table.search`; permission-control fields from QUERY data must never reach a search target.
 
 **Async false-mode read gates preserve the streaming contract.** `Table.search` returns an `ExtendedIterable` carrying the internal `SEARCH_AUTHORIZATION` promise. Static `Resource.search` and `query` await that verdict before returning a response; on success the wrapper initializes the real search before the transaction settles so its normal read snapshot stays reserved until iteration completes. The marker follows supported iterable transforms and retains `selectApplied`/`getColumns`, so async or mapped delegation cannot turn a denial into a truncated successful response.
