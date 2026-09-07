@@ -1652,7 +1652,7 @@ export function openBranchDatabase(
 		releaseBranchIdentity(storeName);
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
-		closeBranchHandles(path, stranded, openedStores);
+		closeBranchHandles(path, stranded, openedStores, tables);
 		throw error;
 	}
 	let closed = false;
