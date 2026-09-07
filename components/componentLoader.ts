@@ -34,12 +34,11 @@ import { trackScopeClose } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 import { assertBranchedDatabases } from './Application.ts';
 import { prepareBranches } from '../resources/branchDatabase.ts';
-import { assertTableTargetNotBranched } from '../resources/branchGuard.ts';
 import { toScopeMount, nestScopeMount, type ScopeMount } from './scopeMount.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
-import { table } from '../resources/databases.ts';
+import { scopedTableFactory } from '../resources/databases.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
@@ -937,12 +936,8 @@ export async function loadComponent(
 
 				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure module loader
 				const ensureTable = (options: any) => {
-					// Same fence as Scope.ensureTable: this legacy closure reaches the process-wide table()
-					// too, so without it a branched application's extension could still create the table in
-					// the base through its `start` / `startOnMainThread` hook.
-					assertTableTargetNotBranched(applicationScope.branches, options.database, options.table, 'ensureTable');
 					options.origin = origin;
-					return table(options);
+					return scopedTableFactory(applicationScope.branches)(options);
 				};
 				// call the main start hook
 				const network =

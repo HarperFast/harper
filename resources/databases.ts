@@ -712,9 +712,11 @@ export function hydrateBranchRelationships(branch: BranchDatabase, branches: Map
 		// data -- the fallback belongs to a database the application did not branch, never to one it did.
 		return targetBranch ? targetBranch.tables?.[target.table] : databases[target.database]?.[target.table];
 	};
-	for (const hydration of branch.pendingRelationships.splice(0)) {
+	// Kept, not drained, like the global list: a target declared later (on this or another thread) is
+	// picked up by the next pass, and `hydrateTableRelationships` is a no-op once everything resolves.
+	for (const hydration of branch.pendingRelationships) {
 		try {
-			hydrateTableRelationships(hydration, resolveTarget);
+			hydrateTableRelationships(hydration, resolveTarget, false);
 		} catch (error) {
 			logger.error(
 				`Unable to hydrate persisted relationships for branch table ${hydration.databaseName}.${hydration.tableName}`,
@@ -747,7 +749,8 @@ const resolveTargetGlobally: ResolveRelationshipTarget = (target) => databases[t
 
 function hydrateTableRelationships(
 	{ table, databaseName, tableName, definitions }: RelationshipHydration,
-	resolveTarget: ResolveRelationshipTarget = resolveTargetGlobally
+	resolveTarget: ResolveRelationshipTarget = resolveTargetGlobally,
+	announce = true
 ): void {
 	const hydratable: { definition: PersistedRelationship; targetTable: any }[] = [];
 	for (let index = 0; index < definitions.length; index++) {
@@ -796,7 +799,7 @@ function hydrateTableRelationships(
 	table.attributes.splice(0, table.attributes.length, ...attributes);
 	table.schemaVersion++;
 	table.updatedAttributes();
-	databaseEventsEmitter.emit('updateTable', table);
+	if (announce) databaseEventsEmitter.emit('updateTable', table);
 }
 
 function validRelationshipDefinition(definition: any, definitions: unknown[], index: number): boolean {
@@ -992,6 +995,7 @@ function initStores(
 		} else {
 			attributesDbi = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
+		openedStores?.push(attributesDbi);
 		rootStore.dbisDb = markInternalDbiNonVersioned(attributesDbi);
 	}
 
@@ -1350,6 +1354,19 @@ export function resolveBranchPath(baseName: string, appName: string): string {
 export interface BranchDatabase {
 	tables: Tables;
 	rootStore: RootDatabaseKind;
+	/** The realpath of the branch directory; what a schema-change signal names to address this branch. */
+	path: string;
+	/** The logical name the application uses (`data`); every Table class in `tables` carries it. */
+	databaseName: string;
+	/** The branch's own store identity, which its blob roots resolve from. */
+	storeName: string;
+	/**
+	 * Every column-family wrapper opened on this store -- by the open, by a reload, or by a table
+	 * declaration -- so `close()` can release them all. Recorded at acquisition rather than
+	 * reconstructed from `tables` at close: a re-declaration displaces the index and catalog wrappers it
+	 * replaces, and a failed declaration can leave one that no class ever held.
+	 */
+	openedStores: any[];
 	/**
 	 * Relationships this branch's tables declared, still un-hydrated. They cannot be resolved at open
 	 * time: a branch's definitions name the BASE database (its tables carry the base's logical names),
@@ -1357,6 +1374,11 @@ export interface BranchDatabase {
 	 * base. `hydrateBranchRelationships` finishes the job once the whole branch set is known.
 	 */
 	pendingRelationships: RelationshipHydration[];
+	/**
+	 * The application's whole branch set, once `prepareBranches` has opened it, so a reload can hydrate
+	 * a relationship whose target the application also branched against that branch.
+	 */
+	relatedBranches?: Map<string, BranchDatabase>;
 	close(): void;
 }
 
@@ -1562,10 +1584,10 @@ function branchDirectoryExistsFor(storeName: string): boolean {
  * worker's shutdown path, so a branch left open on an exiting worker does not linger in the
  * process-global RocksDB registry.
  *
- * NOT SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
- * `dropTable()` or equivalent through one resolves against the global schema and would delete the
- * live base Table class — which is why schema operations through a branch are refused
- * (branchGuard.ts).
+ * Schema changes reach a branch only through its own bound factory (`scopedTableFactory`): a
+ * declaration re-asserted against the branch's store. A branch's Table classes carry the base's
+ * logical name, so the Table statics (`dropTable()`, `addAttributes()`) — which resolve the global
+ * schema by that name and would act on the live base table — stay refused (`assertSchemaMutable`).
  *
  * A branch's blob roots are a hard-link clone of the base's, taken with the checkpoint, so a row
  * whose blob predates the branch reads back normally and the branch allocates new file ids in its own
@@ -1637,6 +1659,10 @@ export function openBranchDatabase(
 	const branch: BranchDatabase = {
 		tables,
 		rootStore,
+		path,
+		databaseName,
+		storeName,
+		openedStores,
 		pendingRelationships: relationshipsToHydrate.splice(queuedRelationshipsAt),
 		close() {
 			// guard on the handle, not on the registrations: those are keyed by path, and a closed
@@ -1646,7 +1672,7 @@ export function openBranchDatabase(
 			openBranches.delete(path);
 			releaseBranchIdentity(storeName);
 			rocksdbDatabaseEnvs.delete(path);
-			closeBranchHandles(path, rootStore, openedStores);
+			closeBranchHandles(path, rootStore, openedStores, tables);
 		},
 	};
 	openBranches.set(path, branch);
@@ -1662,17 +1688,32 @@ export function openBranchDatabase(
  * memoized blob roots in `databasePaths`. A real database is opened once per thread; harper#643
  * makes branch open/close routine, so both would grow with branch churn.
  */
-function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, openedStores: any[] = []): void {
+function closeBranchHandles(
+	path: string,
+	rootStore?: RootDatabaseKind,
+	openedStores: any[] = [],
+	tables: Tables = {}
+): void {
 	const reclamationPaths = new Set<string>([path]);
 	(rootStore as any)?.auditStore?.stopAuditCleanup?.();
 	const closeStore = (store: any, description: string) => {
-		if (store?.path) reclamationPaths.add(store.path);
+		if (!store || store.status === 'closed') return;
+		if (store.path) reclamationPaths.add(store.path);
 		try {
-			store?.close?.();
+			store.close?.();
 		} catch (error) {
 			logger.warn(`Error closing ${description} for branch database at ${path}`, error);
 		}
 	};
+	// the class, before its stores: an expiration timer or a reclamation handler on a closed store
+	// would otherwise keep firing against it for the life of the process
+	for (const tableName in tables) {
+		try {
+			tables[tableName]?.cleanup?.();
+		} catch (error) {
+			logger.warn(`Error releasing table ${tableName} of branch database at ${path}`, error);
+		}
+	}
 	for (const store of openedStores) closeStore(store, 'column family');
 	closeStore((rootStore as any)?.dbisDb, 'attributes store');
 	closeStore((rootStore as any)?.auditStore, 'audit store');
@@ -2225,6 +2266,102 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
  * @param replicate
  */
 export function table<TableResourceType>(tableDefinition: TableDefinition): TableResourceType {
+	return declareTable(GLOBAL_TARGET, tableDefinition);
+}
+
+/**
+ * Where a declaration lands. `table()` is bound to the global catalog; a branched application's
+ * declarations are bound to its branch (`scopedTableFactory`). Everything in `declareTable` that is
+ * global by construction -- the root store, the `tables` graph a class is published into, the reload
+ * after a lost create race, who owns the handles it opens -- goes through this, and nothing else does,
+ * so the unbranched path is the same code with the same objects behind it.
+ */
+interface TableTarget {
+	rootStore(databaseName: string, tableName: string): RootDatabaseKind;
+	tables(databaseName: string): Tables;
+	/** Another thread created the table this declaration was about to; make `tables` reflect it. */
+	reload(databaseName: string): void;
+	/** Records a column-family wrapper the declaration opened, for whoever closes the store. */
+	adopt(store: any): void;
+	/** Set for a branch: its Table classes refuse DDL, and its schema signals address it by path. */
+	branch?: BranchDatabase;
+}
+
+const GLOBAL_TARGET: TableTarget = {
+	rootStore: (databaseName, tableName) => database({ database: databaseName, table: tableName }),
+	tables: (databaseName) => databases[databaseName],
+	reload: () => resetDatabases(),
+	// a real database's stores live until the process (or `closeDatabase`, which walks the graph) ends
+	adopt: () => {},
+};
+
+/**
+ * The factory a branched application declares tables through: each declaration goes to the branch
+ * of the database it names, or to `table()` itself for a database the application did not branch.
+ * An unbranched application gets `table` by identity -- no wrapper, no per-call routing.
+ */
+export function scopedTableFactory(branches?: Map<string, BranchDatabase>): typeof table {
+	if (!branches?.size) return table;
+	return function scopedTable<TableResourceType>(tableDefinition: TableDefinition): TableResourceType {
+		// `||`, not `??`: `table()` resolves every falsy name to the default database
+		const branch = branches.get(tableDefinition.database || DEFAULT_DATABASE_NAME);
+		return branch ? declareTable(branchTarget(branch), tableDefinition) : table(tableDefinition);
+	};
+}
+
+function branchTarget(branch: BranchDatabase): TableTarget {
+	return {
+		rootStore: () => branch.rootStore,
+		tables: () => branch.tables,
+		reload: () => reloadBranch(branch),
+		adopt: (store) => branch.openedStores.push(store),
+		branch,
+	};
+}
+
+/**
+ * Re-read a branch's catalog into its `tables`: tables and indexes another thread declared since the
+ * open (or since the last reload) are opened here, the same way a schema-change rescan does for a
+ * real database. Existing classes are kept and their attribute lists refreshed.
+ */
+function reloadBranch(branch: BranchDatabase): void {
+	const { rootStore, tables, databaseName, storeName, openedStores } = branch;
+	const queuedRelationshipsAt = relationshipsToHydrate.length;
+	try {
+		initStores(rootStore.path, rootStore, databaseName, { destination: tables, storeName, openedStores });
+	} finally {
+		for (const hydration of relationshipsToHydrate.splice(queuedRelationshipsAt))
+			queueBranchHydration(branch, hydration);
+	}
+	// Until `prepareBranches` has the whole set, a cross-database target cannot be resolved without
+	// falling through to the base; it hydrates the complete set once. After that, every sibling is
+	// re-hydrated: the table this reload brought in may be the target a sibling's relationship waited for.
+	if (!branch.relatedBranches) return;
+	for (const sibling of branch.relatedBranches.values()) hydrateBranchRelationships(sibling, branch.relatedBranches);
+}
+
+/** One pending hydration per table: a re-declaration replaces the entry the earlier declaration queued. */
+function queueBranchHydration(branch: BranchDatabase, hydration: RelationshipHydration): void {
+	const existing = branch.pendingRelationships.findIndex(
+		(pending) => pending.databaseName === hydration.databaseName && pending.tableName === hydration.tableName
+	);
+	if (existing >= 0) branch.pendingRelationships[existing] = hydration;
+	else branch.pendingRelationships.push(hydration);
+}
+
+/**
+ * The receiving side of a branch's schema-change signal: a thread that holds this branch open reloads
+ * it, any other thread has nothing to do. Returns the branch's tables so the caller can address the
+ * table the signal named.
+ */
+export function reloadBranchAt(path: string): Tables | undefined {
+	const branch = openBranches.get(path);
+	if (!branch) return undefined;
+	reloadBranch(branch);
+	return branch.tables;
+}
+
+function declareTable<TableResourceType>(target: TableTarget, tableDefinition: TableDefinition): TableResourceType {
 	let {
 		table: tableName,
 		database: databaseName,
@@ -2263,8 +2400,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	if (isBranchIdentity(databaseName)) {
 		throw new ClientError(`'${databaseName}' is in use as a branch store identity and cannot be a database name`);
 	}
-	const rootStore = database({ database: databaseName, table: tableName });
-	const tables = databases[databaseName];
+	const rootStore = target.rootStore(databaseName, tableName);
+	const tables = target.tables(databaseName);
 	logger.trace(`Defining ${tableName} in ${databaseName}`);
 	let Table = tables?.[tableName];
 	if (rootStore.status === 'closed') {
@@ -2430,6 +2567,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					internalDbiInit as any
 				);
 			}
+			target.adopt(attributesDbi);
 			markInternalDbiNonVersioned(attributesDbi);
 
 			exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
@@ -2438,8 +2576,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// table was created while we were setting up; the lock is not reentrant, so release
 				// before the recursive reload
 				releaseLock();
-				resetDatabases();
-				return table(tableDefinition);
+				target.reload(databaseName);
+				return declareTable(target, tableDefinition);
 			}
 
 			let primaryStore;
@@ -2469,9 +2607,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
+			target.adopt(primaryStore);
 			unpublishedPrimaryStore = primaryStore;
 			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
-			rootStore.databaseName = databaseName;
+			// only a store no table has loaded yet is unnamed; a branch's store carries its own store
+			// identity here, which its blob roots resolve from, and must not take the logical name
+			rootStore.databaseName ??= databaseName;
 			primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
 			logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
 			if (!primaryStore.tableId) primaryStore.tableId = 1;
@@ -2479,6 +2620,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 
 			primaryKeyAttribute.tableId = primaryStore.tableId;
 			Table = makeTable({
+				isBranch: Boolean(target.branch),
 				primaryStore,
 				auditStore,
 				audit,
@@ -2517,6 +2659,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			} else {
 				(rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 			}
+			target.adopt((rootStore as any).dbisDb);
 			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 		}
 		Table.dbisDB = attributesDbi;
@@ -2623,6 +2766,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				} else {
 					if (attribute.indexed) {
 						const dbi = openIndex(dbiKey, rootStore, attribute);
+						target.adopt(dbi);
 						// Persisting the indexFormat openIndex just resolved adds a field the descriptor lacks
 						// rather than rewriting one it has. Without it an empty index resolves 'versioned', writes
 						// versioned nodes, then re-derives 'legacy' on the next load — see indexFormatNeedsPersist.
@@ -2686,6 +2830,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
+				target.adopt(dbi);
 				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on
@@ -2847,15 +2992,17 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		Table.updatedAttributes();
 	}
 	logger.trace(`${tableName} table loading, running index`);
+	const branchPath = target.branch?.path;
 	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
-		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove);
+		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove, branchPath);
 	} else if (hasChanges)
 		signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
+			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
 
 	Table.origin = origin;
-	if (hasChanges || refreshRelationshipAttributes) {
+	// scope-private: replication and other global subscribers must not learn of a branch class
+	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
 	if (expiration || eviction || scanInterval)
@@ -2977,11 +3124,11 @@ export function canonicalizeIndexOptions(value: any): any {
 }
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
-async function runIndexing(Table, attributes, indicesToRemove) {
+async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
 	try {
 		logger.info(`Indexing ${Table.tableName} attributes`, attributes);
 		await signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
+			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
 		let lastResolution;
 		for (const index of indicesToRemove) {
@@ -3145,7 +3292,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			await lastResolution;
 			// now notify all the threads that we are done and the index is ready to use
 			await signalling.signalSchemaChange(
-				new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName)
+				new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName, undefined, branchPath)
 			);
 			logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 		}

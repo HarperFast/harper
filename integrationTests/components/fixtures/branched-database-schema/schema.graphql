@@ -1,0 +1,4 @@
+type DeclaredInBranch @table(database: "data") @export {
+	id: ID @primaryKey
+	note: String
+}
