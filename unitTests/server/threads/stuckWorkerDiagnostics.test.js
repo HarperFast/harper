@@ -98,6 +98,16 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		assert.ok(/event loop active \+\d+ms idle \+0ms/.test(progress), progress);
 	});
 
+	it('reports a spinning worker as consuming CPU', async function () {
+		if (process.platform !== 'linux') this.skip();
+		const worker = await startFixtureWorker('spin');
+		started.push(worker);
+		await waitFor(() => worker.osThreadId !== undefined);
+		await broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 200);
+		const progress = await waitFor(() => logLine(`Worker thread ${worker.threadId} over the next`), { timeout: 5000 });
+		assert.ok(/cpuTicks \+[1-9]\d* /.test(progress), progress);
+	});
+
 	it('samples a sibling that failed to ack a worker-originated broadcast', async function () {
 		if (process.platform !== 'linux') this.skip();
 		const blocked = await startFixtureWorker('block');

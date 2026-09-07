@@ -16,3 +16,4 @@ parentPort.on('message', (message) => {
 setInterval(() => {}, 10000);
 parentPort.postMessage({ type: 'fixture-ready' });
 if (process.argv.includes('--block')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+if (process.argv.includes('--spin')) for (;;);

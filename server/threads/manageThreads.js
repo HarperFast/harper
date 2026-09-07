@@ -65,9 +65,7 @@ const RESTART_TYPE = 'restart';
 const RESTART_PROGRESS_HEARTBEAT_MS = 15000;
 const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';
-// Worker -> main, once at startup: the worker's Linux thread id (for /proc reads at ack timeout).
 const OS_THREAD_ID = 'os-thread-id';
-// Worker -> main: sibling worker thread ids that failed to ack this worker's broadcast.
 const STUCK_WORKER_REPORT = 'stuck-worker-report';
 const THREAD_INFO = 'thread_info';
 const ADDED_PORT = 'added-port';
@@ -1025,6 +1023,10 @@ function describeSnapshot(snapshot) {
 	return parts.join('; ');
 }
 
+function describeDelta(before, after) {
+	return Number.isFinite(before) && Number.isFinite(after) ? `+${after - before}` : '?';
+}
+
 function describeProgress(first, second) {
 	const parts = [];
 	if (first.eventLoop && second.eventLoop)
@@ -1035,14 +1037,13 @@ function describeProgress(first, second) {
 	const after = second.osThread;
 	if (before && after)
 		parts.push(
-			`cpuTicks +${after.cpuTicks - before.cpuTicks} ctxtSwitches +${after.voluntarySwitches - before.voluntarySwitches}/+${after.nonvoluntarySwitches - before.nonvoluntarySwitches} ${describeThreadState(after)}`
+			`cpuTicks ${describeDelta(before.cpuTicks, after.cpuTicks)} ctxtSwitches ${describeDelta(before.voluntarySwitches, after.voluntarySwitches)}/${describeDelta(before.nonvoluntarySwitches, after.nonvoluntarySwitches)} ${describeThreadState(after)}`
 		);
 	return parts.join('; ');
 }
 
 // A blocked event loop cannot report itself; two kernel-state samples a second apart separate
-// "parked on a lock" (no CPU ticks, no context switches) from "spinning". Concurrent timeouts on
-// one worker share a diagnostic; only the one-line warn repeats inside the cooldown.
+// "parked on a lock" (no CPU ticks, no context switches) from "spinning".
 const STUCK_WORKER_SAMPLE_INTERVAL_MS = 1000;
 const STUCK_WORKER_DIAGNOSTIC_COOLDOWN_MS = 30000;
 function logStuckWorkerDiagnostics(worker) {
