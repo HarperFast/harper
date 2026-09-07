@@ -1,0 +1,23 @@
+# QA-685 — media-asset blob upload stall blast radius (harper#1862).
+#
+# MediaAsset: file-backed Blob attribute — the target of the stalled uploads (raw socket,
+# headers + partial body, then silence, modeling a media-asset service accepting large
+# binary attachments over HTTP). The complete-write sanity check uses `data` well above
+# FILE_STORAGE_THRESHOLD so it creates a real file under {dataRootDir}/blobs.
+#
+# ControlWrite: unrelated table hit by a steady, independently-timed writer used to measure
+# whether ordinary writes elsewhere in the system keep completing (and how fast) while one
+# or more uploads sit stalled.
+type MediaAsset @table @export {
+	id: ID! @primaryKey
+	data: Blob
+	contentType: String
+	filename: String
+}
+
+type ControlWrite @table @export {
+	id: ID! @primaryKey
+	seq: Long
+	writer: Long
+	ts: Float
+}
