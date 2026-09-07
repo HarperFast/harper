@@ -65,9 +65,10 @@ const RESTART_TYPE = 'restart';
 const RESTART_PROGRESS_HEARTBEAT_MS = 15000;
 const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';
-// Worker -> main, once at startup: the worker's Linux thread id, so main can read that thread's
-// kernel state from /proc when the worker stops acknowledging broadcasts.
+// Worker -> main, once at startup: the worker's Linux thread id (for /proc reads at ack timeout).
 const OS_THREAD_ID = 'os-thread-id';
+// Worker -> main: sibling worker thread ids that failed to ack this worker's broadcast.
+const STUCK_WORKER_REPORT = 'stuck-worker-report';
 const THREAD_INFO = 'thread_info';
 const ADDED_PORT = 'added-port';
 const ACKNOWLEDGEMENT = 'ack';
@@ -314,6 +315,12 @@ if (!parentPort) {
 	});
 	onMessageByType(OS_THREAD_ID, (message, worker) => {
 		if (worker) worker.osThreadId = message.osThreadId;
+	});
+	onMessageByType(STUCK_WORKER_REPORT, (message) => {
+		for (const threadId of message.threadIds) {
+			const worker = workers.find((worker) => worker.threadId === threadId);
+			if (worker) logStuckWorkerDiagnostics(worker);
+		}
 	});
 	onMessageByType(AWAIT_PROCESS_GROUP_TERMINATION, async (message, worker) => {
 		if (!worker) return;
@@ -930,7 +937,12 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 				harperLogger.warn(
 					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; proceeding best-effort`
 				);
-				for (let port of stuck) logStuckWorkerDiagnostics(port);
+				if (isMainThread) for (let port of stuck) logStuckWorkerDiagnostics(port);
+				else if (parentPort) {
+					// Only main holds the Worker objects (and tids), so a worker-originated timeout is sampled there.
+					const threadIds = stuck.map((port) => port?.threadId).filter((threadId) => threadId > 0);
+					if (threadIds.length > 0) parentPort.postMessage({ type: STUCK_WORKER_REPORT, threadIds });
+				}
 			}, timeout);
 			timer.unref?.();
 		}
@@ -1028,32 +1040,31 @@ function describeProgress(first, second) {
 	return parts.join('; ');
 }
 
-// A worker that misses an ack while its port stays open is usually a blocked event loop, which
-// nothing inside that worker can report. Main can still read the thread's kernel state, and two
-// samples a second apart separate "parked on a lock" (no CPU ticks, no context switches) from
-// "spinning". One in-flight diagnostic per worker: concurrent timeouts share it, and repeats
-// inside the cooldown only get the one-line warn. Nothing here runs when acks arrive on time.
+// A blocked event loop cannot report itself; two kernel-state samples a second apart separate
+// "parked on a lock" (no CPU ticks, no context switches) from "spinning". Concurrent timeouts on
+// one worker share a diagnostic; only the one-line warn repeats inside the cooldown.
 const STUCK_WORKER_SAMPLE_INTERVAL_MS = 1000;
 const STUCK_WORKER_DIAGNOSTIC_COOLDOWN_MS = 30000;
 function logStuckWorkerDiagnostics(worker) {
-	if (!isMainThread || !worker || !workers.includes(worker)) return;
+	if (!worker || !workers.includes(worker)) return;
 	const now = Date.now();
 	if (worker.stuckDiagnosticAt !== undefined && now - worker.stuckDiagnosticAt < STUCK_WORKER_DIAGNOSTIC_COOLDOWN_MS)
 		return;
 	worker.stuckDiagnosticAt = now;
+	const threadId = worker.threadId; // Node resets it to -1 once the worker exits
 	const first = snapshotWorkerThread(worker);
-	harperLogger.warn(`Worker thread ${worker.threadId} at ack timeout: ${describeSnapshot(first)}`);
+	harperLogger.warn(`Worker thread ${threadId} at ack timeout: ${describeSnapshot(first)}`);
 	if (!first.eventLoop && !first.osThread) return;
 	setTimeout(() => {
 		if (!workers.includes(worker)) {
-			harperLogger.warn(`Worker thread ${worker.threadId} exited before its follow-up sample`);
+			harperLogger.warn(`Worker thread ${threadId} exited before its follow-up sample`);
 			return;
 		}
 		const second = snapshotWorkerThread(worker);
 		// A recycled tid after a thread exit would attribute another thread's activity to this worker.
 		if (second.osThread && second.osThread.startTime !== first.osThread?.startTime) second.osThread = undefined;
 		harperLogger.warn(
-			`Worker thread ${worker.threadId} over the next ${second.at - first.at}ms: ${describeProgress(first, second) || 'no further state available'}`
+			`Worker thread ${threadId} over the next ${second.at - first.at}ms: ${describeProgress(first, second) || 'no further state available'}`
 		);
 	}, STUCK_WORKER_SAMPLE_INTERVAL_MS).unref();
 }

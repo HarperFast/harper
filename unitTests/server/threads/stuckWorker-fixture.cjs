@@ -1,15 +1,18 @@
 'use strict';
 
 const { parentPort } = require('node:worker_threads');
-require('#js/server/threads/manageThreads');
+const { broadcastWithAcknowledgement } = require('#js/server/threads/manageThreads');
 
-if (process.argv.includes('--acknowledge')) {
-	parentPort.on('message', (message) => {
-		if (message.requestId) parentPort.postMessage({ type: 'ack', id: message.requestId });
-	});
-	parentPort.postMessage({ type: 'fixture-ready' });
-} else {
-	parentPort.postMessage({ type: 'fixture-ready' });
-	// Park the event loop for good, the way a native lock would.
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
-}
+parentPort.on('message', (message) => {
+	if (message.type === 'send-probe') {
+		broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, message.timeout).then(() =>
+			parentPort.postMessage({ type: 'probe-settled' })
+		);
+	} else if (message.requestId && process.argv.includes('--acknowledge')) {
+		parentPort.postMessage({ type: 'ack', id: message.requestId });
+	}
+});
+// manageThreads unrefs parentPort, so something must keep a non-blocking fixture alive.
+setInterval(() => {}, 10000);
+parentPort.postMessage({ type: 'fixture-ready' });
+if (process.argv.includes('--block')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
