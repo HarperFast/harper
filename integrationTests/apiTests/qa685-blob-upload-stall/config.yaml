@@ -1,5 +1,3 @@
-# QA-685 — media-asset blob upload stall blast radius. threads.count is set at the
-# test-call level to match the N=4 concurrent-stall leg.
 graphqlSchema:
   files: '*.graphql'
 jsResource:

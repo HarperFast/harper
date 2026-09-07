@@ -1,8 +1,3 @@
-// QA-685 — control-write target. A steady stream of these hits an UNRELATED table
-// (ControlWrite) while one or more raw-socket blob uploads sit stalled mid-body on
-// MediaAsset. Reports `threadId` (node:worker_threads) so the test can attribute each
-// write to the worker that served it.
-
 import { threadId } from 'node:worker_threads';
 
 const { ControlWrite } = tables;
