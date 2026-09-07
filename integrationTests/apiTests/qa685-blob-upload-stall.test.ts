@@ -1,3 +1,10 @@
+/**
+ * QA-685: partial Blob PUT bodies must leave unrelated writes available, records invisible, and
+ * blob-file counts unchanged during one and four concurrent stalls and after client abort. Latency
+ * is diagnostic only. Skips platforms without reliable full-worker HTTP distribution.
+ *
+ * https://github.com/HarperFast/harper/issues/1862
+ */
 import { suite, test, before, after } from 'node:test';
 import { ok } from 'node:assert';
 import { resolve, join } from 'node:path';
@@ -8,7 +15,7 @@ import http from 'node:http';
 import { encode as cborEncode } from 'cbor-x';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { NO_FULL_WORKER_COVERAGE } from '../database/recordCachingWorkers.ts';
-// @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
+// @ts-expect-error no type declarations
 import { createApiClient } from './utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa685-blob-upload-stall');
@@ -17,6 +24,7 @@ const skipSuite = NO_FULL_WORKER_COVERAGE;
 const WORKER_COUNT = 4;
 const LANES = WORKER_COUNT;
 const CONTROL_TIMEOUT_MS = 10_000;
+const CONTROL_INTERVAL_MS = 20;
 const BASELINE_MS = 5_000;
 const DURING_SINGLE_MS = 15_000;
 const DURING_QUAD_MS = 15_000;
@@ -71,9 +79,10 @@ function startStalledUpload(
 		});
 		socket.connect(port, host, () => {
 			connected = true;
+			const hostHeader = host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`;
 			const hdr = [
 				`PUT /MediaAsset/${key} HTTP/1.1`,
-				`Host: ${host}:${port}`,
+				`Host: ${hostHeader}`,
 				`Authorization: ${auth}`,
 				'Content-Type: application/cbor',
 				`Content-Length: ${fullBody.length}`,
@@ -122,7 +131,9 @@ function putCompleteCbor(
 				response.on('end', () =>
 					finish({ status: response.statusCode ?? 0, raw: Buffer.concat(chunks).toString('utf8') })
 				);
-				response.on('aborted', () => finish({ status: 0, raw: 'RESPONSE_ABORTED' }));
+				response.on('close', () => {
+					if (!response.complete) finish({ status: 0, raw: 'RESPONSE_ABORTED' });
+				});
 				response.on('error', (error) => finish({ status: 0, raw: error.message }));
 			}
 		);
@@ -289,6 +300,7 @@ suite(
 						if (errorSamples.length < 5) errorSamples.push({ error: r.error, elapsedMs: r.elapsedMs });
 					}
 					seq++;
+					await sleep(CONTROL_INTERVAL_MS);
 				}
 			}
 			return Promise.all(Array.from({ length: LANES }, (_, i) => lane(i))).then(() => ({
@@ -378,7 +390,6 @@ suite(
 					cborEncode({ id: 'qa685-sanity', data: payload, contentType: 'image/jpeg', filename: 'sanity.jpg' })
 				);
 				const r = await putCompleteCbor(host, port, '/MediaAsset/qa685-sanity', auth, body, 20_000);
-				await sleep(500);
 				const after = await diskUsage(blobDir);
 				log(
 					`SANITY complete CBOR blob PUT: status=${r.status}, blobDir files ${before.files} -> ${after.files} (bytes ${before.bytes} -> ${after.bytes})`
@@ -419,7 +430,6 @@ suite(
 			blobBaselineForSingle = blobBaseline;
 
 			upload.socket.destroy();
-			await sleep(1_000);
 			const afterStats = await runControlBurst(5_000, 'after-single');
 			log(`after single-stall destroy: ${statsSummary(afterStats)}`);
 			assertControlAvailability(afterStats, 'single-stall post-abort');
@@ -460,7 +470,6 @@ suite(
 			await assertUploadsPending(uploads, blobBaseline, 'concurrent stalls after control burst');
 
 			for (const upload of uploads) upload.socket.destroy();
-			await sleep(1_000);
 
 			ok(duringSingleStats, 'single-stall test did not provide control statistics');
 			ok(baselineStats, 'baseline test did not provide control statistics');
