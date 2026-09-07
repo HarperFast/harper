@@ -967,6 +967,11 @@ function readTaskFile(tid, name) {
 
 // Kernel-side view of one thread. Every field is best-effort and reported individually, since
 // wchan/syscall need ptrace read access that a hardened container may deny while stat is open.
+function finiteOrUndefined(value) {
+	const number = Number(value);
+	return Number.isFinite(number) ? number : undefined;
+}
+
 function readOsThreadState(tid) {
 	const thread = { tid };
 	const stat = readTaskFile(tid, 'stat');
@@ -974,7 +979,9 @@ function readOsThreadState(tid) {
 		// Fields after the parenthesized comm, so state is [0], utime/stime [11]/[12], starttime [19].
 		const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
 		thread.state = fields[0];
-		thread.cpuTicks = Number(fields[11]) + Number(fields[12]);
+		const utime = finiteOrUndefined(fields[11]);
+		const stime = finiteOrUndefined(fields[12]);
+		if (utime !== undefined && stime !== undefined) thread.cpuTicks = utime + stime;
 		thread.startTime = fields[19];
 	}
 	const wchan = readTaskFile(tid, 'wchan');
@@ -985,8 +992,8 @@ function readOsThreadState(tid) {
 	if (syscall !== undefined) thread.syscall = syscall.split(' ')[0];
 	const status = readTaskFile(tid, 'status');
 	if (status !== undefined) {
-		thread.voluntarySwitches = Number(/^voluntary_ctxt_switches:\s*(\d+)/m.exec(status)?.[1]);
-		thread.nonvoluntarySwitches = Number(/^nonvoluntary_ctxt_switches:\s*(\d+)/m.exec(status)?.[1]);
+		thread.voluntarySwitches = finiteOrUndefined(/^voluntary_ctxt_switches:\s*(\d+)/m.exec(status)?.[1]);
+		thread.nonvoluntarySwitches = finiteOrUndefined(/^nonvoluntary_ctxt_switches:\s*(\d+)/m.exec(status)?.[1]);
 	}
 	return thread;
 }
