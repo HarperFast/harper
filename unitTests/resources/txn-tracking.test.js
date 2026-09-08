@@ -19,6 +19,9 @@ const { RocksDatabase, registryStatus } = require('@harperfast/rocksdb-js');
 const { createBlob } = require('#src/resources/blob');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const { waitFor } = require('../waitFor.js');
+const { logger } = require('#src/utility/logging/logger');
+const env = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 function databaseTxns(context) {
 	const txns = [];
@@ -417,6 +420,43 @@ describe('Write txn timeout', () => {
 			});
 			assert.equal((await IndexedResource.get(401))?.t, 7, 'source-apply write should be preserved');
 		} finally {
+			setExpiration(30000);
+		}
+	});
+
+	// harper#2471: the exemption above is why a canonical-source apply can hold verification-table write
+	// intents indefinitely, and until now it did so with no log line at all — the branch that force-commits
+	// it logs nothing. The exemption stays; the silence does not.
+	it('names a source-apply txn that the monitor is not reaping, with its native id and origin', async function () {
+		if (isLMDB) this.skip();
+		const warnings = [];
+		const originalWarn = logger.warn;
+		const originalThreshold = env.get(CONFIG_PARAMS.STORAGE_LONGTRANSACTIONREPORTTHRESHOLD);
+		logger.warn = (...args) => warnings.push(args);
+		env.setProperty(CONFIG_PARAMS.STORAGE_LONGTRANSACTIONREPORTTHRESHOLD, '0.02');
+		setExpiration(20);
+		try {
+			const context = { sourceApply: true };
+			await transaction(context, async () => {
+				await IndexedResource.put(402, { t: 8 }, context);
+				await waitFor(
+					() =>
+						warnings.some(([message]) => String(message).includes('Harper transaction has held RocksDB transaction')),
+					2000
+				);
+			});
+			const reported = warnings.filter(([message]) =>
+				String(message).includes('Harper transaction has held RocksDB transaction')
+			);
+			assert.ok(reported.length > 0, 'the un-reaped source-apply holder must be named');
+			assert.match(reported[0][0], /state: [^,]*source-apply/);
+			assert.match(reported[0][0], /IndexedTxnTable/);
+			assert.match(reported[0][0], /transaction \d+/, 'the native id is the join key with the registry sweep');
+			// Attribution must not have changed the exemption it is reporting on.
+			assert.strictEqual((await IndexedResource.get(402))?.t, 8, 'source-apply write should still be preserved');
+		} finally {
+			logger.warn = originalWarn;
+			env.setProperty(CONFIG_PARAMS.STORAGE_LONGTRANSACTIONREPORTTHRESHOLD, originalThreshold);
 			setExpiration(30000);
 		}
 	});

@@ -519,6 +519,10 @@
 					"type": "string",
 					"description": "Max write queue time before rejecting (e.g. '45s')."
 				},
+				"longTransactionReportThreshold": {
+					"type": ["string", "number"],
+					"description": "How old a RocksDB transaction handle must be before it is reported in the log (e.g. '5m'). A handle this old can hold write intents that park other writers' commits and pin a read snapshot. Set to 0 to disable the reporting. Default: '5m'"
+				},
 				"noReadAhead": { "type": "boolean", "description": "Advise OS to not read ahead. Default: false" },
 				"randomAccessFields": {
 					"type": "boolean",

@@ -5,9 +5,12 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { getOutstandingCommits } = require('#src/resources/DatabaseTransaction');
+const { setRegistryStatusForTests } = require('#src/resources/longLivedTransactions');
+const harperLogger = require('#src/utility/logging/harper_logger');
 const { waitFor } = require('../waitFor');
 const { setTimeout: delay } = require('node:timers/promises');
-const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
+const { registryStatus, constants } = require('@harperfast/rocksdb-js');
+const RETRY_NOW_VALUE = constants.RETRY_NOW_VALUE;
 
 // rocksdb-js parks a coordinated-retry commit on a conflicting write intent and returns control
 // after a bounded wait even when the holder never releases, so Harper sees a long stream of
@@ -141,14 +144,34 @@ describe('request-path commits are abandoned once their conflict budget is spent
 
 	it('abandons a coordinated-retry commit with a retryable 503 once the budget is spent', async function () {
 		this.timeout(15000);
-		const { attempts } = conflictCommits(DeadlineA, 'retryNow');
-		const { outcome, error } = await outcomeOf(writePastBudget('retry-now', singleStoreWrite));
+		await delay(1100);
+		const errorLines = [];
+		const originalError = harperLogger.error;
+		harperLogger.error = (...args) => errorLines.push(args);
+		setRegistryStatusForTests(() => [
+			{
+				path: DeadlineA.primaryStore.rootStore.path,
+				transactionDetails: [{ id: 999, ageMs: 3600000 }],
+			},
+		]);
+		let attempts, outcome, error;
+		try {
+			({ attempts } = conflictCommits(DeadlineA, 'retryNow'));
+			({ outcome, error } = await outcomeOf(writePastBudget('retry-now', singleStoreWrite)));
+		} finally {
+			harperLogger.error = originalError;
+			setRegistryStatusForTests(registryStatus);
+		}
 		assert.strictEqual(outcome, 'rejected', 'the awaited transaction promise must reject, not hang or commit');
 		assert.strictEqual(error.statusCode, 503);
 		assert.strictEqual(error.code, 'TRANSACTION_COMMIT_CONFLICT_TIMEOUT');
 		assert.strictEqual(error.retryable, true, 'nothing of a single-store transaction landed, so a retry is safe');
 		assert.match(error.message, /exceeding the \d+ms limit/);
 		assert.strictEqual(attempts.length, 1, 'an already-spent budget must abandon at the first retry decision');
+		const abandonment = errorLines.find(([message]) => message.startsWith('Abandoning a write transaction'))?.[0];
+		assert.ok(abandonment, 'the deadline-abandonment path must emit its diagnostic');
+		assert.match(abandonment, /Live transaction handles, any of which could hold the write intent/);
+		assert.match(abandonment, /999 \(open 1h 0m 0s\)/);
 	});
 
 	it('abandons an ERR_BUSY conflict retry on the same budget', async function () {
