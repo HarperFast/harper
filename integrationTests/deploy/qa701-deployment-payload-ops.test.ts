@@ -51,7 +51,7 @@ const FORCED_RETENTION_MAX_SIZE = 200 * 1024 * 1024; // 200 MiB
 
 // Every fixture gets a DISTINCT payload size: countFilesNearSize() identifies the blob under test
 // by size alone, so two same-size deploys coexisting in the store would make one read as the
-// other's leak. The multi-MB non-terminal size is also what gives the 409 probe a real window.
+// other's leak.
 const SMALL_FIXTURE_KB = 4;
 const REDEPLOY_FIXTURE_KB = 16;
 const DELEGATION_FIXTURE_KB = 64;
@@ -60,10 +60,6 @@ const LARGE_FIXTURE_KB = 12 * 1024;
 
 // Mirrors TERMINAL_STATUSES in components/deploymentOperations.ts -- the set the 409 guard keys on.
 const TERMINAL_STATUSES = ['success', 'failed', 'rolled_back'];
-
-// ~2s of upload for the one probe that needs the deployment to still be installing while it runs.
-const UPLOAD_PACING_CHUNKS = 20;
-const UPLOAD_PACING_DELAY_MS = 100;
 
 function postMultipart(
 	url: URL,
@@ -247,20 +243,67 @@ async function packageToBuffer(fixtureDir: string): Promise<{ buffer: Buffer; sh
 	return { buffer, sha256 };
 }
 
-// Emits `buffer` as `chunks` pieces spaced `delayMs` apart. deploy_component creates the
-// deployment row before it ingests the payload stream (components/operations.js), so pacing the
-// upload holds the row in a non-terminal status for a known, host-speed-independent duration --
-// which is what lets the 409 probe below assert unconditionally instead of racing local I/O.
-function pacedStream(buffer: Buffer, chunks: number, delayMs: number): Readable {
-	const chunkSize = Math.ceil(buffer.length / chunks);
-	return Readable.from(
-		(async function* () {
-			for (let offset = 0; offset < buffer.length; offset += chunkSize) {
-				yield buffer.subarray(offset, offset + chunkSize);
-				await sleep(delayMs);
-			}
-		})()
+// How long the gate parks the deploy if the test never releases it, and the install timeout that
+// must outlast it. Neither is a race budget: the probe releases the gate as soon as its assertions
+// are done, and the `exited` marker below reports a gate that closed early rather than letting it
+// be misread as a guard failure.
+const GATE_MAX_HOLD_MS = 120_000;
+const GATE_INSTALL_TIMEOUT_MS = 180_000;
+
+// The 409 probe needs the deployment to be non-terminal while it runs, and it must be able to PROVE
+// it was: a window paced by wall clock (a slow upload, a `sleep` install) closes on a loaded runner
+// and then reports the miss as a guard failure. deploy_component awaits prepareApplication, which
+// awaits the component's install_command, so a component whose install command parks holds its row
+// non-terminal for exactly as long as the test wants it held -- the same lever
+// integrationTests/deploy/stage-swap-availability.test.ts uses to sample a mid-deploy state.
+//
+// This gate adds a third signal to that pattern: it writes `exited` on its way out, whatever the
+// reason. An ABSENT `exited` at the moment the delete response lands is what proves the install
+// command was still parked across the whole call -- i.e. that the row could not have gone terminal
+// underneath the probe -- which is what separates 'the window closed early' from 'the guard did not
+// fire'.
+function installGateScript(paths: { started: string; release: string; exited: string }): string {
+	return (
+		`const fs = require('node:fs');\n` +
+		`function leave(code) {\n` +
+		`\tfs.writeFileSync(${JSON.stringify(paths.exited)}, String(code));\n` +
+		`\tprocess.exit(code);\n` +
+		`}\n` +
+		`fs.writeFileSync(${JSON.stringify(paths.started)}, 'started');\n` +
+		// Self-releases inside install_timeout so a test that dies before writing the release file
+		// still lets the deploy, and the rest of the suite, finish.
+		`const deadline = Date.now() + ${GATE_MAX_HOLD_MS};\n` +
+		`(function wait() {\n` +
+		`\tif (fs.existsSync(${JSON.stringify(paths.release)})) return leave(0);\n` +
+		`\tif (Date.now() >= deadline) return leave(2);\n` +
+		`\tsetTimeout(wait, 10);\n` +
+		`})();\n`
 	);
+}
+
+// The probe's own failure modes read very differently depending on whether the deploy had already
+// finished, so say which it was rather than printing an empty serialized Error.
+function describeDeployResolution(
+	resolution: { value: Awaited<ReturnType<typeof deployBuffer>> } | { error: unknown } | undefined
+): string {
+	if (!resolution) return 'was still in flight';
+	if ('error' in resolution) return `had already failed: ${String(resolution.error)}`;
+	return `had already returned ${resolution.value.status}: ${resolution.value.raw.toString('utf8').slice(0, 300)}`;
+}
+
+// A fixture whose install_command parks on the gate. package.json is what makes installApplication
+// run the command at all (without a manifest it logs "skipping install"), and node_modules must be
+// absent for the same reason -- see installApplication in components/Application.ts.
+function buildGatedFixture(
+	kb: number,
+	marker: string,
+	project: string,
+	paths: { started: string; release: string; exited: string }
+): string {
+	const dir = buildFixture(kb, marker);
+	writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: project, version: '0.0.0', private: true }));
+	writeFileSync(join(dir, 'install-gate.js'), installGateScript(paths));
+	return dir;
 }
 
 async function deployBuffer(
@@ -269,15 +312,15 @@ async function deployBuffer(
 	buffer: Buffer,
 	restart: boolean,
 	auth = ctx.harper.admin,
-	pacing?: { chunks: number; delayMs: number }
+	extraFields?: Record<string, unknown>
 ): Promise<{ status: number; deploymentId: string | undefined; raw: Buffer }> {
 	const multipart = buildMultipartBody(
-		{ operation: 'deploy_component', project, restart },
+		{ operation: 'deploy_component', project, restart, ...extraFields },
 		{
 			name: 'payload',
 			filename: 'package.tar.gz',
 			contentType: 'application/gzip',
-			stream: pacing ? pacedStream(buffer, pacing.chunks, pacing.delayMs) : Readable.from(buffer),
+			stream: Readable.from(buffer),
 		}
 	);
 	const url = new URL(ctx.harper.operationsAPIURL);
@@ -454,53 +497,94 @@ suite(
 
 		test('3: delete_deployment_payload on a non-terminal deployment -> 409, blob untouched', async () => {
 			// deploy_component only responds once the row is terminal, so awaiting the deploy and then
-			// deleting can never reach the guard. The row is written before the payload is ingested,
-			// so uploading in paced chunks holds it non-terminal for a known duration regardless of
-			// how fast the host is -- without that, a quick loopback upload closes the window and the
-			// assertion silently skips, which is how this probe used to pass without ever running.
-			const fixtureDir = buildFixture(NONTERMINAL_FIXTURE_KB, 'QA-701 nonterminal');
-			const packaged = await packageToBuffer(fixtureDir);
-			const deployPromise = deployBuffer(ctx, 'qa701-nonterminal-app', packaged.buffer, false, ctx.harper.admin, {
-				chunks: UPLOAD_PACING_CHUNKS,
-				delayMs: UPLOAD_PACING_DELAY_MS,
-			});
+			// deleting can never reach the guard -- the delete has to be issued mid-deploy. Holding the
+			// window open with elapsed time (a paced upload, a `sleep` install) is what made this probe
+			// flaky: on a loaded runner the deploy finished first and the 200 read as a guard failure
+			// (nightly 2026-09-05, Bun shard). The install gate replaces that with a causal window --
+			// the deploy is parked inside install_command until this test releases it -- and the gate's
+			// 'exited' marker makes 'the window closed early' a DIFFERENT failure from 'the guard did
+			// not fire', so a future red run says which one happened.
+			const project = 'qa701-nonterminal-app';
+			// The signal files live outside the packaged tree, so the gate script's own component
+			// directory (staged, then renamed on swap) can never be what makes them appear.
+			const gateDir = mkdtempSync(join(tmpdir(), 'qa701-install-gate-'));
+			tempFixtureDirs.push(gateDir);
+			const gate = {
+				started: join(gateDir, 'install-started'),
+				release: join(gateDir, 'install-release'),
+				exited: join(gateDir, 'install-exited'),
+			};
 
-			let inFlightId: string | undefined;
-			let inFlightStatus: string | undefined;
-			const windowDeadline = Date.now() + 20_000;
-			while (Date.now() < windowDeadline) {
-				// A failed or malformed list response falls through to the next poll rather than ending
-				// the loop: a transient error must not quietly turn into a skipped assertion.
-				const listed = await callOperation(ctx, { operation: 'list_deployments' });
-				const row = (listed.body?.deployments ?? []).find(
-					(d: { project?: string; status?: string }) =>
-						d.project === 'qa701-nonterminal-app' && !TERMINAL_STATUSES.includes(d.status ?? '')
+			const fixtureDir = buildGatedFixture(NONTERMINAL_FIXTURE_KB, 'QA-701 nonterminal', project, gate);
+			const packaged = await packageToBuffer(fixtureDir);
+
+			let deployResolution: { value: Awaited<ReturnType<typeof deployBuffer>> } | { error: unknown } | undefined;
+			const deployPromise = deployBuffer(ctx, project, packaged.buffer, false, ctx.harper.admin, {
+				install_command: 'node install-gate.js',
+				install_timeout: GATE_INSTALL_TIMEOUT_MS,
+			}).then(
+				(value) => (deployResolution = { value }),
+				(error: unknown) => (deployResolution = { error })
+			);
+
+			try {
+				// Wait for the gate, not for a duration. A deploy that settles first can only mean the
+				// install command never ran (no package.json in the payload, or an install that was
+				// skipped), which is a broken probe rather than a guard failure -- say so.
+				const readyDeadline = Date.now() + 60_000;
+				while (!existsSync(gate.started) && !deployResolution && Date.now() < readyDeadline) await sleep(25);
+				ok(
+					existsSync(gate.started),
+					`the install gate never signalled that it was running, so the deployment was never held ` +
+						`non-terminal -- the deploy ${describeDeployResolution(deployResolution)}`
 				);
-				if (row) {
-					inFlightId = row.deployment_id;
-					inFlightStatus = row.status;
-					break;
-				}
-				await sleep(25);
+
+				// The gate is blocking install_command, so the deploy cannot have reached a terminal
+				// status -- this row read is an identification step, not a race window.
+				const listed = await callOperation(ctx, { operation: 'list_deployments', project });
+				const rows: Array<{ deployment_id: string; status?: string }> = listed.body?.deployments ?? [];
+				strictEqual(
+					rows.length,
+					1,
+					`expected exactly one '${project}' deployment row while the install gate holds it: ${JSON.stringify(listed.body)}`
+				);
+				const inFlight = rows[0];
+				ok(
+					!TERMINAL_STATUSES.includes(inFlight.status ?? ''),
+					`the row reported terminal status '${inFlight.status}' while its own install command was ` +
+						`still blocked -- the deployment record went terminal before the deploy finished`
+				);
+
+				const delResp = await callOperation(ctx, {
+					operation: 'delete_deployment_payload',
+					deployment_id: inFlight.deployment_id,
+				});
+				// Read the moment the response lands: the gate writes 'exited' before the install command
+				// returns, so an absent marker proves the deploy was still parked in install for the whole
+				// delete -- i.e. the row could not have gone terminal underneath it.
+				const gateExited = existsSync(gate.exited);
+				const after = await callOperation(ctx, { operation: 'get_deployment', deployment_id: inFlight.deployment_id });
+				ok(
+					!gateExited,
+					`the install gate released before the delete completed, so the non-terminal window was not ` +
+						`held open and this run proves nothing about the 409 guard (delete returned ${delResp.status}, ` +
+						`row status now '${after.body?.status}')`
+				);
+				strictEqual(
+					delResp.status,
+					409,
+					`delete on a non-terminal deployment (status '${inFlight.status}' at the list read, ` +
+						`'${after.body?.status}' after the delete, install command still blocked throughout) should ` +
+						`409, got ${delResp.status}: ${JSON.stringify(delResp.body)}`
+				);
+			} finally {
+				writeFileSync(gate.release, '');
+				await deployPromise;
 			}
 
-			ok(
-				inFlightId,
-				`the deployment never appeared in a non-terminal state despite a paced upload of ` +
-					`~${(UPLOAD_PACING_CHUNKS * UPLOAD_PACING_DELAY_MS) / 1000}s — either the row is no longer ` +
-					`written before payload ingest, or deploy_component stopped streaming its payload`
-			);
-			const delResp = await callOperation(ctx, {
-				operation: 'delete_deployment_payload',
-				deployment_id: inFlightId,
-			});
-			strictEqual(
-				delResp.status,
-				409,
-				`delete on a non-terminal deployment (status='${inFlightStatus}') should 409, got ${delResp.status}: ${JSON.stringify(delResp.body)}`
-			);
-
-			const deployed = await deployPromise;
+			if (!deployResolution || 'error' in deployResolution)
+				throw deployResolution?.error ?? new Error('deploy never settled');
+			const deployed = deployResolution.value;
 			strictEqual(
 				deployed.status,
 				200,

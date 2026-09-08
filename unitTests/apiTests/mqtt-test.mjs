@@ -5,6 +5,7 @@
 import assert from 'node:assert';
 import { once } from 'node:events';
 import { decode } from 'cbor-x';
+import { waitFor } from '../waitFor.js';
 import { callOperation } from './utility.js';
 import { setupTestApp, baseUrl, wsBaseUrl, mqttUrl, mqttsUrl, testHost } from './setupTestApp.mjs';
 import environmentManager from '#src/utility/environment/environmentManager';
@@ -196,7 +197,7 @@ describe('test MQTT connections and commands', function () {
 		});
 	});
 
-	it('can repeatedly publish', async () => {
+	it('can repeatedly publish', async function () {
 		const vus = 5;
 		const tableName = 'SimpleRecord';
 		let intervals = [];
@@ -242,10 +243,23 @@ describe('test MQTT connections and commands', function () {
 			});
 		}
 		await Promise.all(subscriptions);
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		for (let interval of intervals) clearInterval(interval);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		for (let client of clients) client.end();
+		// What this pins is that repeated publishes keep being delivered, not how many land inside a
+		// 200 ms sample: the publishers stay running until the eleventh delivery arrives. The backstop
+		// is derived from this test's own mocha timeout for the same reason as the retained-message
+		// test above -- a hardcoded one at the suite's 10 s would race it and lose the message.
+		const waitBudget = this.timeout() - 2000;
+		try {
+			await waitFor(() => received.length > 10, { timeout: waitBudget });
+		} catch (error) {
+			// Report the count reached, which is the number that says whether delivery stalled or merely
+			// ran slow -- waitFor's own `message` would be built before any message had arrived.
+			assert.fail(`only ${received.length} repeated MQTT publishes arrived within ${waitBudget}ms (${error.message})`);
+		} finally {
+			for (let interval of intervals) clearInterval(interval);
+			// Force close: a graceful end waits on every still-unacked QoS 1 publish, and teardown must
+			// not become the thing that hangs the test.
+			for (let client of clients) client.end(true);
+		}
 		assert(received.length > 10);
 		assert.equal(received[0].name, 'radbot 9000');
 	});
