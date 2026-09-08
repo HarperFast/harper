@@ -1036,10 +1036,9 @@ const ACTIVATION_JOURNAL_VERSION = 1;
 const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
 
 /**
- * How many dormant staged builds (`.complete`, tree present, no journal) may survive per component under
- * `.deploy-staging`. `deployment_stagingRetention_maxCount`; 0 keeps none. Same coercion as
- * `getPayloadRetentionMaxSize`: only a number or numeric string counts, so `true`/`[]`/blank cannot become
- * an accidental "keep nothing".
+ * How many dormant staged builds may survive per component under `.deploy-staging`
+ * (`deployment_stagingRetention_maxCount`; 0 keeps none). Only a number or numeric string counts, so
+ * `true`/`[]`/blank cannot become an accidental "keep nothing".
  */
 export function getStagingRetentionMaxCount(): number {
 	const configured = getConfigValue(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT);
@@ -1063,11 +1062,11 @@ async function presentOrAbsent(path: string): Promise<import('node:fs').Stats | 
 }
 
 /**
- * A journal-less deployment directory that holds a complete, validated tree nobody is activating — the only
- * kind retention may count or remove. Meaningful ONLY under the owner's preparation lock: activation writes
- * `.complete` moments before its journal while holding that lock, so without it a complete-and-journal-less
- * directory may be mid-swap. Anything else journal-less is residue. A stale `.unsettled` also makes it
- * residue, since workers read that marker as a verdict and only removing the directory clears it.
+ * A journal-less deployment directory holding a complete, validated tree nobody is activating — the only
+ * kind retention may count or remove. Activation writes `.complete` moments before its journal, both under
+ * the owner's preparation lock, so an unlocked read is a candidate for retention and a read under that lock
+ * is the verdict. A stale `.unsettled` makes it residue instead: workers read that marker as a verdict, and
+ * only removing the directory clears it.
  *
  * Only ENOENT is absence; any other read error propagates so the caller preserves the entry.
  */
@@ -1082,9 +1081,9 @@ async function dormantBuildAt(deploymentDirPath: string, owner: string): Promise
 
 /**
  * Remove the oldest dormant builds beyond `maxCount`, newest by `.complete` mtime surviving. Assumes the
- * caller holds the component's preparation lock. Each candidate is re-checked for a journal first: the
- * catalog may predate a deploy that ran between the scan and this lock. Never throws — the bound is disk
- * hygiene, and a failure here must neither fail a component closed at boot nor replace a deploy's own error.
+ * caller holds the component's preparation lock. Each eviction is re-derived under that lock — still
+ * dormant, still no journal — because the catalog may have been read unlocked or before a deploy ran. Never
+ * throws: a failure here must neither fail a component closed at boot nor replace a deploy's own error.
  */
 export async function pruneDormantBuilds(
 	componentName: string,
@@ -1097,6 +1096,7 @@ export async function pruneDormantBuilds(
 		.slice(Math.max(0, maxCount));
 	for (const build of evictions) {
 		try {
+			if (!(await dormantBuildAt(build.deploymentDirPath, componentName))) continue;
 			if (await presentOrAbsent(join(build.deploymentDirPath, ACTIVATION_JOURNAL))) continue;
 			await rm(build.deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 			logger.debug?.(
@@ -1110,6 +1110,35 @@ export async function pruneDormantBuilds(
 			);
 		}
 	}
+}
+
+/** Every dormant build a component owns. A directory that cannot be read is left out and logged. */
+async function dormantBuildsOf(componentsRootDirPath: string, componentName: string): Promise<DormantBuild[]> {
+	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
+	let deployments;
+	try {
+		deployments = await readdir(stagingRoot, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+		throw error;
+	}
+	const builds: DormantBuild[] = [];
+	for (const deployment of deployments) {
+		if (!deployment.isDirectory()) continue;
+		const deploymentDirPath = join(stagingRoot, deployment.name);
+		try {
+			if ((await candidateComponentName(deploymentDirPath)) !== componentName) continue;
+			if (await presentOrAbsent(join(deploymentDirPath, ACTIVATION_JOURNAL))) continue;
+			const build = await dormantBuildAt(deploymentDirPath, componentName);
+			if (build) builds.push(build);
+		} catch (error) {
+			logger.warn(
+				`Leaving deploy staging ${deploymentDirPath} out of retention; it could not be read:`,
+				errorForLog(error)
+			);
+		}
+	}
+	return builds;
 }
 
 /**
@@ -1501,8 +1530,6 @@ async function inProgressAsideRecords(asideStagingDir: string): Promise<string[]
  * still names the DISPLACED tree, so restoring it would put the old version back over the new one. That
  * pass refuses to restore against a surviving journal, but refusing is a stalled component; settling first
  * is what lets the deploy proceed.
- *
- * Retention rides the same scan so a deploy pays one traversal of the staging root, not two.
  */
 async function settleStagingForComponent(componentsRootDirPath: string, componentName: string): Promise<void> {
 	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
@@ -1759,14 +1786,6 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					activationToFail = undefined;
 					return;
 				}
-				// A complete, validated tree with no activation is a dormant build, kept for retention to bound
-				// after the scan rather than removed. Classified here, under the owner's lock, because that is
-				// what rules out "complete but about to be journaled".
-				const build = await dormantBuildAt(deploymentDirPath, owner!);
-				if (build) {
-					dormant.set(owner!, [...(dormant.get(owner!) ?? []), build]);
-					return;
-				}
 				// Cleanup, not settlement. There was no activation here — this is most often the residue a
 				// SUCCESSFUL settlement leaves when its own sweep failed — so a sweep that fails again cannot
 				// make anything unsettled, and recording it would refuse a live component on every worker
@@ -1790,6 +1809,28 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 						`ownership cannot be read: ${errorMessage(error)}`
 				);
 				continue;
+			}
+			// A dormant build — complete, tree present, nobody activating it — is catalogued WITHOUT the lock and
+			// left alone; only an owner over its retention bound takes the lock, once, below. Locking here per
+			// directory on every pass, forever, is what made a healthy component with retained builds lose the
+			// 250 ms probe to its sibling threads at boot and be deferred with nothing in progress.
+			if (owner) {
+				let build: DormantBuild | undefined;
+				try {
+					build = await dormantBuildAt(deploymentDirPath, owner);
+				} catch (error) {
+					logger.warn(
+						`Leaving deploy staging ${deploymentDirPath} in place; it could not be read:`,
+						errorForLog(error)
+					);
+					continue;
+				}
+				if (build) {
+					const builds = dormant.get(owner);
+					if (builds) builds.push(build);
+					else dormant.set(owner, [build]);
+					continue;
+				}
 			}
 			// Scoped to THIS deployment, like the journaled branch below: a lock timeout or an EIO here used to
 			// abort the entire scan, leaving every later deployment unsettled and unmarked.
@@ -1872,8 +1913,7 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				}
 			);
 		} catch (error) {
-			// A held lock is a deploy of this component that started after its directories were classified,
-			// which is exactly the signal the journal-less branch defers a load on; the same deferral applies.
+			// A held lock is a live deploy of this component: the same deferral the residue branch records.
 			// Anything else is hygiene that could not run, not a verdict.
 			const failure = error instanceof Error ? error : new Error(String(error));
 			if (failure instanceof ComponentPreparationLockTimeoutError) {
@@ -2722,6 +2762,16 @@ export async function dropComponentDirectory(
 		asideStagingDir,
 		new Set([droppedPath])
 	);
+	// Retention only runs on the component's next deploy, and a dropped component has none — the drop is
+	// what reclaims its dormant builds.
+	try {
+		await pruneDormantBuilds(componentName, await dormantBuildsOf(dirname(componentDirPath), componentName), 0);
+	} catch (error) {
+		componentLogger.warn(
+			`Dropped ${componentName} but could not reclaim its dormant staged builds:`,
+			errorForLog(error)
+		);
+	}
 }
 
 async function cleanupExtractionPaths(

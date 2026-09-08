@@ -665,14 +665,17 @@ Everything else journal-less — a partial tree, a directory whose tree already 
 window between `.complete` and the journal; #2315 step 6 (deploy from an existing aside) is the producer this
 bound exists for.
 
-The classification is meaningful **only under the owner's preparation lock**: activation writes `.complete`
-moments before its journal while holding that lock, so an unlocked read of "complete, no journal" may be a
-swap in progress. Boot recovery therefore classifies inside the same locked pass that removes residue, prunes
-per owner afterwards under the lock again, and treats a lock it cannot get as the same deferral the residue
-branch records — "do not delete" is not "safe to load". The deploy path prunes inside the settlement scan it
-already runs under the lock, before building, so a deploy pays one traversal of the staging root. Each
-eviction re-checks for a journal first, since the catalog may predate a deploy that ran between the scan
-and the prune. Only ENOENT is absence; any other read error keeps the entry and moves on. Pruning is disk
+Removal is decided **only under the owner's preparation lock**: activation writes `.complete` moments
+before its journal while holding that lock, so an unlocked read of "complete, no journal" is a candidate, not
+a verdict. Boot recovery catalogues dormant builds unlocked and leaves them alone; only an owner over its
+bound takes the lock, once, and every eviction is re-derived under it (still dormant, still no journal).
+It used to take the lock per journal-less directory, which was one-shot because the directory was removed —
+doing that for retained builds on every pass made a healthy component lose the 250 ms probe to its sibling
+threads at boot and be deferred with nothing in progress. A lock a live deploy holds is still recorded as
+that same deferral: "do not delete" is not "safe to load". The deploy path prunes inside the settlement scan
+it already runs under the lock, before building, so a deploy pays one traversal of the staging root.
+`dropComponentDirectory` reclaims the dropped component's dormant builds, since no later deploy of that
+name will. Only ENOENT is absence; any other read error keeps the entry and moves on. Pruning is disk
 hygiene: it never fails a component closed and never replaces a deploy's own error, so the bound is
 best-effort under filesystem failure and is not a storage quota — journaled, unsettled and unowned
 directories are preserved by design and can still fill a volume.

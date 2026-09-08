@@ -11,6 +11,7 @@ const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
 const {
+	dropComponentDirectory,
 	getStagingRetentionMaxCount,
 	prepareApplication,
 	pruneDormantBuilds,
@@ -171,6 +172,27 @@ describe('staged build retention', () => {
 			await fs.rm(root, { recursive: true, force: true });
 		});
 
+		it('takes no lock for a component within its bound, so a held lock does not defer it', async function () {
+			this.timeout(10000);
+			env.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, 2);
+			const root = await newRoot('steady-state');
+			await plant(root, 'web', 'd-1', { completedAt: 1_000 });
+			await plant(root, 'web', 'd-2', { completedAt: 2_000 });
+
+			let failures;
+			await withComponentPreparationLock(
+				path.join(root, 'web'),
+				async () => {
+					failures = await recoverInterruptedActivations(root);
+				},
+				{ purpose: 'test-deploy' }
+			);
+
+			assert.strictEqual(failures.size, 0, 'a component with nothing to prune is never deferred by retention');
+			assert.deepStrictEqual(await stagedIds(root), ['d-1', 'd-2']);
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
 		it('defers the component instead of pruning while a deploy holds its lock, and deletes nothing', async function () {
 			this.timeout(10000);
 			env.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, 1);
@@ -230,6 +252,22 @@ describe('staged build retention', () => {
 				await fs.chmod(staging, 0o700);
 			}
 			assert.deepStrictEqual(await stagedIds(root), ['d-stuck']);
+			await fs.rm(root, { recursive: true, force: true });
+		});
+	});
+
+	describe('on drop', () => {
+		it("reclaims the dropped component's dormant builds and leaves its neighbour's alone", async () => {
+			const root = await newRoot('drop');
+			await plant(root, 'web', 'd-web-1');
+			await plant(root, 'web', 'd-web-2');
+			await plant(root, 'api', 'd-api');
+			await fs.mkdir(path.join(root, 'web'), { recursive: true });
+
+			await dropComponentDirectory(path.join(root, 'web'), 'web');
+
+			assert.ok(!existsSync(path.join(root, 'web')));
+			assert.deepStrictEqual(await stagedIds(root), ['d-api']);
 			await fs.rm(root, { recursive: true, force: true });
 		});
 	});
