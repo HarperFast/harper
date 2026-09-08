@@ -23,7 +23,7 @@ export class Flush extends Resource {
 	}
 }
 
-export class StorageEngineInfo extends Resource {
+export class ReclaimState extends Resource {
 	static loadAsInstance = false;
 	async get() {
 		const table = tables.Telemetry;
@@ -31,6 +31,17 @@ export class StorageEngineInfo extends Resource {
 		const primaryPath = table.primaryStore?.path || table.primaryStore?.rootStore?.path || null;
 		const looksLikeLmdbPath = typeof primaryPath === 'string' && primaryPath.endsWith('.mdb');
 		const hasPurgeLogs = typeof table.primaryStore?.rootStore?.purgeLogs === 'function';
-		return { engineGuess: looksLikeLmdbPath ? 'lmdb' : hasPurgeLogs ? 'rocksdb' : 'unknown' };
+		const stats = table.auditStore?.log?.getStats?.();
+		if (!stats) throw new Error('Telemetry transaction-log statistics are unavailable');
+		return {
+			engineGuess: looksLikeLmdbPath ? 'lmdb' : hasPurgeLogs ? 'rocksdb' : 'unknown',
+			oldestSequenceNumber: stats.oldestSequenceNumber,
+			currentSequenceNumber: stats.currentSequenceNumber,
+			lastFlushedSequence: stats.lastFlushedPosition?.sequence,
+			purgeRuns: stats.totals?.purgeRuns,
+		};
 	}
 }
+
+// Retire background cleanup during component load so any later purge is attributable to restart replay.
+tables.Telemetry.auditStore.stopAuditCleanup();

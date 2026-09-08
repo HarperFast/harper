@@ -1,12 +1,9 @@
 /**
  * A RocksDB restart must return purged transaction-log blocks to the filesystem, not merely
- * remove their directory entries. The test rotates a real log, stops Harper before retention can
- * purge it, lets it age while no cleanup scheduler is running, and checks the startup purge with
- * both the visible files and `statfs`. The filesystem delta is reconciled with every visible
- * allocation change under the data root during boot, then must account for at least 75% of the
- * purged blocks; the remainder is tolerance for metadata and unrelated activity on the shared
- * filesystem. This promotes only P-643's restart-reclaim leg; continuous retention re-arming is
- * covered separately by audit-retention-rocks.test.ts.
+ * remove their directory entries. The test retires steady-state cleanup, rotates and flushes a
+ * real log, lets it age while Harper is stopped, and checks the one restart purge with both the
+ * visible files and `statfs`. The filesystem delta is reconciled with every visible allocation
+ * change under the data root during boot, then must account for at least 75% of the purged blocks.
  *
  * Refs harper#2337.
  */
@@ -25,9 +22,9 @@ import {
 } from '@harperfast/integration-testing';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'txnlog-restart-reclaim');
-const AUDIT_RETENTION_SECONDS = 30;
+const AUDIT_RETENTION_SECONDS = 2;
 const AUDIT_RETENTION_MS = AUDIT_RETENTION_SECONDS * 1000;
-const RETENTION_MARGIN_MS = 1000;
+const RETENTION_MARGIN_MS = 500;
 const MIN_RECLAIM_BYTES = 64 * 1024 * 1024;
 const MIN_RECLAIM_RATIO = 0.75;
 const VOLUME_RECORDS = 14_000;
@@ -42,6 +39,13 @@ const ENV = {
 };
 
 type FileAllocation = { path: string; bytes: number; allocatedBytes: number };
+type ReclaimState = {
+	engineGuess: string;
+	oldestSequenceNumber: number;
+	currentSequenceNumber: number;
+	lastFlushedSequence: number;
+	purgeRuns: number;
+};
 
 function authHeader(ctx: ContextWithHarper): string {
 	const { username, password } = ctx.harper.admin;
@@ -89,18 +93,27 @@ async function freeBytes(root: string): Promise<number> {
 	return stats.bavail * stats.bsize;
 }
 
-async function pollReadiness(ctx: ContextWithHarper): Promise<void> {
+async function waitForReclaimState(ctx: ContextWithHarper): Promise<ReclaimState> {
 	const deadline = Date.now() + 60_000;
 	while (Date.now() < deadline) {
+		let response: Response;
 		try {
-			const response = await fetch(`${ctx.harper.httpURL}/Telemetry/`, {
+			response = await fetch(`${ctx.harper.httpURL}/ReclaimState/`, {
 				headers: { Authorization: authHeader(ctx) },
 			});
-			if (response.status !== 404) return;
-		} catch {}
-		await sleep(250);
+		} catch {
+			await sleep(250);
+			continue;
+		}
+		const responseBody = await response.text();
+		if (response.status === 404) {
+			await sleep(250);
+			continue;
+		}
+		strictEqual(response.status, 200, `ReclaimState failed: ${responseBody.slice(0, 300)}`);
+		return JSON.parse(responseBody);
 	}
-	throw new Error('Telemetry route did not become ready within 60 seconds');
+	throw new Error('ReclaimState route did not become ready within 60 seconds');
 }
 
 async function createLogVolume(ctx: ContextWithHarper): Promise<void> {
@@ -122,13 +135,33 @@ async function flush(ctx: ContextWithHarper): Promise<void> {
 	strictEqual(response.status, 200, `Flush failed: ${(await response.text()).slice(0, 300)}`);
 }
 
+async function flushUntilPurgeable(ctx: ContextWithHarper): Promise<ReclaimState> {
+	const deadline = Date.now() + 30_000;
+	let state: ReclaimState;
+	do {
+		await flush(ctx);
+		state = await waitForReclaimState(ctx);
+		if (
+			state.oldestSequenceNumber < state.currentSequenceNumber &&
+			state.lastFlushedSequence > state.oldestSequenceNumber
+		)
+			return state;
+		await sleep(250);
+	} while (Date.now() < deadline);
+	throw new Error(
+		`transaction log did not become purgeable: oldest=${state.oldestSequenceNumber}, ` +
+			`current=${state.currentSequenceNumber}, lastFlushed=${state.lastFlushedSequence}`
+	);
+}
+
 suite(
 	'RocksDB restart returns purged transaction-log blocks to the filesystem (#2337)',
 	{ skip: process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun' },
 	(ctx: ContextWithHarper) => {
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: CONFIG, env: ENV });
-			await pollReadiness(ctx);
+			const initialState = await waitForReclaimState(ctx);
+			strictEqual(initialState.engineGuess, 'rocksdb');
 		});
 
 		after(async () => {
@@ -136,26 +169,14 @@ suite(
 		});
 
 		test('startup purge reclaims visible and filesystem-allocated bytes together', { timeout: 180_000 }, async () => {
-			const engineResponse = await fetch(`${ctx.harper.httpURL}/StorageEngineInfo/`, {
-				headers: { Authorization: authHeader(ctx) },
-			});
-			strictEqual(engineResponse.status, 200);
-			strictEqual((await engineResponse.json()).engineGuess, 'rocksdb');
-
-			const seedStartedAt = Date.now();
 			await createLogVolume(ctx);
-			await flush(ctx);
+			await flushUntilPurgeable(ctx);
 			const liveLogs = transactionLogsUnder(ctx.harper.dataRootDir);
 			ok(liveLogs.length > 1, `expected transaction-log rotation, found ${liveLogs.length} file(s)`);
 			ok(
 				liveLogs.reduce((total, file) => total + file.bytes, 0) > MIN_RECLAIM_BYTES,
 				`expected more than ${MIN_RECLAIM_BYTES} transaction-log bytes before restart`
 			);
-			ok(
-				Date.now() - seedStartedAt < AUDIT_RETENTION_MS,
-				'test setup exceeded the retention window, so live cleanup could have purged the target log'
-			);
-
 			await killHarper(ctx);
 			const stoppedLogs = transactionLogsUnder(ctx.harper.dataRootDir);
 			const stoppedPaths = new Set(stoppedLogs.map((file) => file.path));
@@ -175,7 +196,8 @@ suite(
 			const preBootFree = await freeBytes(ctx.harper.dataRootDir);
 
 			await startHarper(ctx, { config: CONFIG, env: ENV });
-			await pollReadiness(ctx);
+			const restartState = await waitForReclaimState(ctx);
+			strictEqual(restartState.purgeRuns, 1, 'expected the restart purge to be the only cleanup pass');
 
 			const postBootLogs = transactionLogsUnder(ctx.harper.dataRootDir);
 			const postBootPaths = new Set(postBootLogs.map((file) => file.path));
