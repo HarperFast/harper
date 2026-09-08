@@ -180,12 +180,23 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		const nodeResponse = this.#nodeResponse;
 		if (typeof nodeResponse?.setTimeout !== 'function') return this;
 		nodeResponse.setTimeout(msecs);
-		if (!this.#forwardsTimeout) {
-			this.#forwardsTimeout = true;
-			const forward = () => this.emit('timeout');
-			nodeResponse.on('timeout', forward);
-			this.once('close', () => nodeResponse.removeListener('timeout', forward));
-		}
+		if (this.#forwardsTimeout) return this;
+		this.#forwardsTimeout = true;
+		// Node destroys a timed-out socket only when no request, response or server listener handled the
+		// event, judged by emit()'s return value, so the forwarder exists exactly while this response has
+		// 'timeout' listeners of its own.
+		const forward = () => this.emit('timeout');
+		let forwarding = false;
+		const syncForwarding = (wanted: boolean) => {
+			if (wanted === forwarding) return;
+			forwarding = wanted;
+			if (wanted) nodeResponse.on('timeout', forward);
+			else nodeResponse.removeListener('timeout', forward);
+		};
+		this.on('newListener', (event) => event === 'timeout' && syncForwarding(true));
+		this.on('removeListener', (event) => event === 'timeout' && syncForwarding(this.listenerCount('timeout') > 0));
+		this.once('close', () => syncForwarding(false));
+		syncForwarding(this.listenerCount('timeout') > 0);
 		return this;
 	}
 	// Informational responses go to the real Node response when there is one; the uWS and Bun bridges

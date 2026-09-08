@@ -275,6 +275,47 @@ describe('withNodeAdapter with real Node middleware', function () {
 		);
 	});
 
+	it('destroys the connection when a timeout set without a listener fires, as Node does', async function () {
+		const closed = Promise.withResolvers();
+		await serve(
+			async (nodeRequest, nodeResponse) => {
+				const request = new Request(nodeRequest, nodeResponse);
+				const { status, headers, body } = await request.withNodeAdapter((req, res) => {
+					res.once('close', () => closed.resolve());
+					res.setTimeout(50);
+					res.write('partial');
+				});
+				nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
+				pipeBodyToResponse(body, nodeResponse, '/asset.txt', 'GET', performance.now());
+			},
+			async (port) => {
+				const response = await get(port);
+				await withTimeout(new Promise((resolve) => response.once('close', resolve)), 'the connection to drop');
+				assert.strictEqual(response.complete, false);
+				await withTimeout(closed.promise, "'close' on the adapter response");
+			}
+		);
+	});
+
+	it("delivers a timeout to the response's own listener and leaves the connection to it", async function () {
+		await serve(
+			async (nodeRequest, nodeResponse) => {
+				const request = new Request(nodeRequest, nodeResponse);
+				const { status, headers, body } = await request.withNodeAdapter((req, res) => {
+					res.setTimeout(50, () => res.end('late'));
+					res.write('partial,');
+				});
+				nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
+				pipeBodyToResponse(body, nodeResponse, '/asset.txt', 'GET', performance.now());
+			},
+			async (port) => {
+				const response = await get(port);
+				const received = await withTimeout(collect(response), 'the wire body');
+				assert.strictEqual(received.toString(), 'partial,late');
+			}
+		);
+	});
+
 	it('honors Writable backpressure and emits finish before close when a Readable is piped in', async function () {
 		const request = makeRequest();
 		const events = [];

@@ -178,10 +178,11 @@ export class Request {
 	 * status, headers, and body, resolving the returned promise as soon as headers are available with a
 	 * streaming body that can be piped back through the Harper middleware chain.
 	 *
-	 * The ServerResponse is the resolved `body` itself (a PassThrough), so a handler that destroys it
-	 * after headers, a rejected async handler, or a client disconnect leaves the body in an errored
-	 * state rather than hanging: consume it with `pipeline()`, `finished()` or async iteration, which
-	 * report that state; a later `.on('error')` alone would miss an error emitted before it was attached.
+	 * The ServerResponse is the resolved `body` itself (a PassThrough). A handler that destroys it with an
+	 * error after headers, or throws or rejects without ending it, leaves the body errored; a client
+	 * disconnect closes it without an error, as Node does. Neither hangs: consume the body with
+	 * `pipeline()`, `finished()` or async iteration, which report both the stored error and a premature
+	 * close, whereas a later `.on('error')` alone would miss an error emitted before it was attached.
 	 *
 	 * Example:
 	 *   server.http((request, next) =>
