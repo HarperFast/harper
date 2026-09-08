@@ -1,34 +1,23 @@
 /**
- * Hand-curated JSON Schemas for the operations-profile MCP tools.
+ * JSON Schemas attached to built-in operation registrations.
  *
- * Why hand-curated: Harper's server-side validators are Joi, which doesn't
+ * Harper's server-side validators are Joi, which doesn't
  * round-trip cleanly to JSON Schema. The MCP spec requires draft-07-ish
  * JSON Schema for tool inputSchema. Authoring these directly keeps the
- * schemas readable, easy to tweak per the LLM ergonomics we want, and
- * decoupled from server-side validation evolution.
+ * schemas readable and easy to tweak for client introspection.
  *
  * Each schema follows MCP convention: `type: 'object'` at the top, with
  * `properties` declared and a small `required` list when applicable.
  * Optional fields are listed but not required, so an LLM can call the
  * minimum-viable form.
  *
- * Coverage matches the v1 conservative `allow` default in the design
- * (#465 → Operations MCP). When operators expand `mcp.operations.allow`
- * beyond this list, ops without an entry here fall back to a permissive
- * `{ type: 'object' }` schema and a runtime-validates-as-it-goes posture
- * — better than silently dropping them from the tool surface.
+ * The live operation registry owns the schema paired with each handler;
+ * protocol adapters consume that metadata rather than maintaining their own
+ * operation-name lookup.
  */
 
-/** Permissive default for any opted-in operation that doesn't have a hand-curated schema yet. */
-export const PERMISSIVE_SCHEMA: object = {
-	type: 'object',
-	additionalProperties: true,
-	description: 'Free-form arguments — Harper validates server-side and returns a structured error if invalid.',
-};
-
 /**
- * Map of operation name → input schema. Lookup misses fall back to
- * `PERMISSIVE_SCHEMA`. Keys mirror `OPERATIONS_ENUM` values.
+ * Map of built-in operation name → input schema. Keys mirror `OPERATIONS_ENUM` values.
  */
 export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 	// ─── describe_* ───────────────────────────────────────────────────────
@@ -311,12 +300,6 @@ export const OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 			metric: { type: 'string', description: 'Metric name to describe (use list_metrics to discover).' },
 		},
 		required: ['metric'],
-	},
-	list_agent_sessions: {
-		type: 'object',
-		properties: {
-			limit: { type: 'integer', minimum: 1, description: 'Max sessions to return.' },
-		},
 	},
 	get_metrics: {
 		type: 'object',

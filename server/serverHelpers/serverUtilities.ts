@@ -52,6 +52,8 @@ import {
 } from './registeredOperations.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
+import { OPERATION_INPUT_SCHEMAS } from './operationInputSchemas.ts';
+import { normalizeOperationInputSchema } from './operationInputSchema.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -175,6 +177,8 @@ export type OperationDefinition = {
 	execute: (operation: any) => any | Promise<any>;
 	httpMethod?: 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT' | 'TRACE'; // method to use for REST
 	isJob?: boolean;
+	/** JSON Schema advertised by protocol adapters such as MCP. Distinct from legacy parametersSchema metadata. */
+	inputSchema?: object;
 	parametersSchema?: any[];
 	// When set, the operation declares its authorization requirement to the central verifyPerms
 	// system so it participates in the role `operations` allowlist (grantable to a scoped role)
@@ -198,7 +202,7 @@ const declaredPermissionNames = new Set<string>();
 server.registerOperation = (operationDefinition: OperationDefinition) => {
 	// A throwaway deploy-validation load must not register (or announce) operations onto the live worker.
 	if (isDeployValidating()) return;
-	const { name, execute, requiresSuperUser } = operationDefinition;
+	const { name, execute, inputSchema, requiresSuperUser } = operationDefinition;
 	let handler = execute;
 	if (requiresSuperUser === undefined) {
 		// A re-registration that drops the flag must also drop the entry the earlier one installed, or
@@ -219,7 +223,11 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 		opAuth.registerOperationPermission(name, { requiresSu: requiresSuperUser });
 		declaredPermissionNames.add(name);
 	}
-	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler));
+	const normalizedSchema = normalizeOperationInputSchema(inputSchema);
+	if (normalizedSchema.error) {
+		operationLog.warn(`Operation '${name}' inputSchema ignored: ${normalizedSchema.error}`);
+	}
+	OPERATION_FUNCTION_MAP.set(name as any, new OperationFunctionObject(handler, undefined, normalizedSchema.schema));
 	// Components load per-worker, so a registration made there is invisible to the main-thread
 	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
 	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that
@@ -689,6 +697,14 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_STATUS, new OperationFunctionObject(status.get));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SET_STATUS, new OperationFunctionObject(status.set));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEAR_STATUS, new OperationFunctionObject(status.clear));
+
+	for (const [name, operation] of opFuncMap) {
+		const normalizedSchema = normalizeOperationInputSchema(OPERATION_INPUT_SCHEMAS[name]);
+		if (normalizedSchema.error) {
+			operationLog.error(`Built-in operation '${name}' has an invalid inputSchema: ${normalizedSchema.error}`);
+		}
+		operation.inputSchema = normalizedSchema.schema;
+	}
 
 	return opFuncMap;
 }

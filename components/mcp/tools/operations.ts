@@ -45,7 +45,6 @@ import {
 	type ToolDef,
 	type ToolResult,
 } from '../toolRegistry.ts';
-import { OPERATION_INPUT_SCHEMAS, PERMISSIVE_SCHEMA } from './schemas/operations.ts';
 import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 
 // Resolved from Harper's server-helpers graph on demand. The map is built at
@@ -53,7 +52,8 @@ import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 // `startOnMainThread` — the provider below re-reads it per request rather than
 // snapshotting (#1562).
 type OperationFunction = (json: object) => unknown | Promise<unknown>;
-type OperationFunctionMap = Map<string, { operation_function: OperationFunction }>;
+type OperationFunctionEntry = { operation_function: OperationFunction; inputSchema?: object };
+type OperationFunctionMap = Map<string, OperationFunctionEntry>;
 
 type ChooseOperation = (body: object) => OperationFunction;
 type ProcessLocalTransaction = (req: { body: object }, fn: OperationFunction) => Promise<unknown>;
@@ -68,9 +68,11 @@ interface OperationsConfig {
 let _opMapOverride: OperationFunctionMap | undefined;
 let _chooseOperationOverride: ChooseOperation | undefined;
 let _processLocalTransactionOverride: ProcessLocalTransaction | undefined;
+const warnedMissingSchemas = new Set<string>();
 
 export function _setOperationFunctionMapForTest(m: OperationFunctionMap | undefined): void {
 	_opMapOverride = m;
+	warnedMissingSchemas.clear();
 }
 export function _setChooseOperationForTest(fn: ChooseOperation | undefined): void {
 	_chooseOperationOverride = fn;
@@ -386,23 +388,39 @@ export function makeOperationToolHandler(operationName: string) {
  * predicate, and handler don't depend on the allow/deny config, which only
  * decides *whether* the op is exposed, checked per request in the provider).
  * `tools/list` isn't a hot path, so the provider rebuilds defs per call rather
- * than caching (no module-level state to leak or stale-cache across tests).
+ * than caching them. The only module state deduplicates missing-schema warnings
+ * and is cleared with the operation-map test seam.
  */
-function buildOperationToolDef(operationName: string): ToolDef {
-	const inputSchema = OPERATION_INPUT_SCHEMAS[operationName] ?? PERMISSIVE_SCHEMA;
+function buildOperationToolDef(operationName: string, inputSchema: object): ToolDef {
 	const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
 	if (isReadOnly(operationName)) annotations.readOnlyHint = true;
 	if (isDestructive(operationName)) annotations.destructiveHint = true;
 	if (isIdempotent(operationName)) annotations.idempotentHint = true;
 	return {
 		name: operationName,
-		description: buildDescription(operationName, operationName in OPERATION_INPUT_SCHEMAS),
+		description: buildDescription(operationName, true),
 		inputSchema,
 		profile: 'operations',
 		...(Object.keys(annotations).length > 0 ? { annotations } : {}),
 		visibleTo: (user) => canRoleInvokeOperation(user, operationName),
 		handler: makeOperationToolHandler(operationName),
 	};
+}
+
+function buildRegisteredOperationToolDef(
+	operationName: string,
+	operation: OperationFunctionEntry
+): ToolDef | undefined {
+	if (!operation.inputSchema) {
+		if (!warnedMissingSchemas.has(operationName)) {
+			warnedMissingSchemas.add(operationName);
+			harperLogger.warn(
+				`MCP operations profile: '${operationName}' is allowed but has no inputSchema; register one to expose this tool`
+			);
+		}
+		return undefined;
+	}
+	return buildOperationToolDef(operationName, operation.inputSchema);
 }
 
 /**
@@ -419,17 +437,20 @@ const operationsToolProvider: ProfileToolProvider = {
 		}
 		const config = getOperationsConfig();
 		const defs: ToolDef[] = [];
-		for (const operationName of opMap.keys()) {
+		for (const [operationName, operation] of opMap) {
 			if (!isOperationAllowed(operationName, config)) continue;
-			defs.push(buildOperationToolDef(operationName));
+			const def = buildRegisteredOperationToolDef(operationName, operation);
+			if (def) defs.push(def);
 		}
 		return defs;
 	},
 	get(operationName: string): ToolDef | undefined {
 		const opMap = getOperationFunctionMap();
-		if (!opMap || !opMap.has(operationName)) return undefined;
+		if (!opMap) return undefined;
+		const operation = opMap.get(operationName);
+		if (!operation) return undefined;
 		if (!isOperationAllowed(operationName, getOperationsConfig())) return undefined;
-		return buildOperationToolDef(operationName);
+		return buildRegisteredOperationToolDef(operationName, operation);
 	},
 };
 

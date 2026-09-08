@@ -22,6 +22,14 @@ In reviewing the third party package or dependency, the following questions shou
 
 Generally, dependencies are added by simply adding them to the dependencies list in package.json. If the dependency is not necessary for the actual execution of the application (testing or building), it can be placed in devDependencies, or in optionalDependencies (we have done that with packages with binary compilations).
 
+## ajv
+
+- Need for usage: Validates JSON Schema metadata supplied when operations are registered, before that metadata can be exposed to MCP clients. This keeps a malformed component schema from breaking `tools/list` while preserving the operation handler.
+- Size and overlap: Ajv is already present transitively through Fastify and the MCP SDK; declaring it directly makes Harper's runtime use explicit and adds no new package family. Fastify's internal compiler is not a public standalone schema-validation API.
+- Performance and memory: Loaded once with the operation registry and compiles only schemas registered at boot or component load, never on the operation dispatch hot path.
+- Security and environment: Pure JavaScript, no native build or global mutation. Schema size is capped before compilation to bound component-controlled work.
+- Eventual removal: Remove the direct dependency if operation contracts move to a schema facility already owned by Harper or a stable public validator supplied by the runtime.
+
 ## react-native-fs (removed from the published tree, not a dependency)
 
 This is the inverse of the entries below — a dependency we take deliberate steps to _not_ ship.

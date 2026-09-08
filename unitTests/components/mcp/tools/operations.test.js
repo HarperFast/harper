@@ -13,8 +13,11 @@ const env = require('#src/utility/environment/environmentManager');
 
 function makeOpMap(entries) {
 	const m = new Map();
-	for (const [name, fn] of entries) {
-		m.set(name, { operation_function: fn ?? (async () => ({ ok: true })) });
+	for (const [name, fn, inputSchema = { type: 'object' }] of entries) {
+		m.set(name, {
+			operation_function: fn ?? (async () => ({ ok: true })),
+			inputSchema: inputSchema === null ? undefined : inputSchema,
+		});
 	}
 	return m;
 }
@@ -243,17 +246,28 @@ describe('mcp/tools/operations — registration', () => {
 		assert.equal(dropTable.annotations?.readOnlyHint, undefined);
 	});
 
-	it('falls back to a permissive schema for ops with no hand-curated entry', () => {
+	it('does not expose an allowed operation without registered schema metadata', () => {
 		envOverrides.mcp_operations_allow = ['nonstandard_op'];
-		_setOperationFunctionMapForTest(makeOpMap([['nonstandard_op', null]]));
+		_setOperationFunctionMapForTest(makeOpMap([['nonstandard_op', null, null]]));
 		registerOperationsTools();
-		const tool = getTool('nonstandard_op');
-		assert.equal(tool.inputSchema.type, 'object');
-		assert.equal(tool.inputSchema.additionalProperties, true);
+		assert.equal(getTool('nonstandard_op'), undefined);
+	});
+
+	it('exposes an allowed custom operation with its registered schema', () => {
+		const inputSchema = {
+			type: 'object',
+			properties: { message: { type: 'string' } },
+			required: ['message'],
+		};
+		envOverrides.mcp_operations_allow = ['nonstandard_op'];
+		_setOperationFunctionMapForTest(makeOpMap([['nonstandard_op', null, inputSchema]]));
+		registerOperationsTools();
+		assert.deepEqual(getTool('nonstandard_op').inputSchema, inputSchema);
 	});
 
 	it('exposes hand-curated schemas with required fields', () => {
-		_setOperationFunctionMapForTest(makeOpMap([['describe_table', null]]));
+		const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
+		_setOperationFunctionMapForTest(makeOpMap([['describe_table', null, OPERATION_INPUT_SCHEMAS.describe_table]]));
 		registerOperationsTools();
 		const tool = getTool('describe_table');
 		assert.equal(tool.inputSchema.type, 'object');
@@ -315,8 +329,14 @@ describe('mcp/tools/operations — registration', () => {
 
 		// A component registers new ops after registration ran. `list_agents` is
 		// allow-listed by default via `list_*`; `agent_prompt` is opted in explicitly.
-		opMap.set('list_agents', { operation_function: async () => ({ agents: [] }) });
-		opMap.set('agent_prompt', { operation_function: async () => ({ ok: true }) });
+		opMap.set('list_agents', {
+			operation_function: async () => ({ agents: [] }),
+			inputSchema: { type: 'object' },
+		});
+		opMap.set('agent_prompt', {
+			operation_function: async () => ({ ok: true }),
+			inputSchema: { type: 'object' },
+		});
 		envOverrides.mcp_operations_allow = ['describe_*', 'list_*', 'agent_prompt'];
 
 		names = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.map((t) => t.name);
@@ -332,7 +352,10 @@ describe('mcp/tools/operations — registration', () => {
 		assert.equal(getTool('agent_prompt'), undefined);
 
 		// Component registers it and the operator opts it in.
-		opMap.set('agent_prompt', { operation_function: async () => ({ ok: true }) });
+		opMap.set('agent_prompt', {
+			operation_function: async () => ({ ok: true }),
+			inputSchema: { type: 'object' },
+		});
 		envOverrides.mcp_operations_allow = ['describe_*', 'agent_prompt'];
 
 		const tool = getTool('agent_prompt');
@@ -359,7 +382,10 @@ describe('mcp/tools/operations — registration', () => {
 });
 
 describe('mcp/tools/operations — catalog coverage lint', () => {
-	const { OPERATION_INPUT_SCHEMAS } = require('#src/components/mcp/tools/schemas/operations');
+	const AjvModule = require('ajv');
+	const Ajv = AjvModule.default ?? AjvModule;
+	const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
+	const { AGENT_OPERATION_INPUT_SCHEMAS } = require('#src/agent/operationInputSchemas');
 	const { OPERATION_DESCRIPTIONS } = require('#src/components/mcp/tools/schemas/operationDescriptions');
 	const { OPERATIONS_ENUM } = require('#src/utility/hdbTerms');
 
@@ -382,8 +408,16 @@ describe('mcp/tools/operations — catalog coverage lint', () => {
 	});
 
 	it('every DEFAULT_ALLOW operation has an entry in OPERATION_INPUT_SCHEMAS', () => {
-		const missing = expandedAllow.filter((name) => !(name in OPERATION_INPUT_SCHEMAS));
+		const registeredSchemas = { ...OPERATION_INPUT_SCHEMAS, ...AGENT_OPERATION_INPUT_SCHEMAS };
+		const missing = expandedAllow.filter((name) => !Object.hasOwn(registeredSchemas, name));
 		assert.deepEqual(missing, [], `Operations on DEFAULT_ALLOW without an input schema: ${missing.join(', ')}`);
+	});
+
+	it('every built-in operation input schema is valid JSON Schema', () => {
+		const ajv = new Ajv({ addUsedSchema: false, strict: false, validateSchema: true });
+		for (const [name, schema] of Object.entries(OPERATION_INPUT_SCHEMAS)) {
+			assert.doesNotThrow(() => ajv.compile(schema), `${name} must have a valid JSON Schema`);
+		}
 	});
 
 	it('every DEFAULT_ALLOW operation has an entry in OPERATION_DESCRIPTIONS', () => {

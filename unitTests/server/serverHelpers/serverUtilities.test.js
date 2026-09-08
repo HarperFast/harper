@@ -33,6 +33,21 @@ describe('Test serverUtilities.js module ', () => {
 		sandbox.restore();
 	});
 
+	it('attaches every built-in operation schema to its live registry entry', function () {
+		const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
+		let matched = 0;
+		for (const [name, operation] of serverUtilities.OPERATION_FUNCTION_MAP) {
+			if (!Object.hasOwn(OPERATION_INPUT_SCHEMAS, name)) continue;
+			matched++;
+			assert.deepEqual(
+				operation.inputSchema,
+				OPERATION_INPUT_SCHEMAS[name],
+				`expected '${name}' to carry its registered schema`
+			);
+		}
+		assert.ok(matched >= 5, `expected at least five schema-bearing built-in operations, got ${matched}`);
+	});
+
 	describe(`Test chooseOperation`, function () {
 		it('Nominal path with insert operation.', function () {
 			let test_result;
@@ -1017,6 +1032,40 @@ describe('Test serverUtilities.js module ', () => {
 			// ...and the caller's own function object is left untouched.
 			assert.equal(def.execute, original);
 			assert.notEqual(original.name, 'test_name_pinning_op');
+		});
+
+		it('stores a validated clone of registered operation inputSchema metadata', function () {
+			const name = 'test_schema_metadata_op';
+			const inputSchema = { type: 'object', properties: { value: { type: 'string' } } };
+			server.registerOperation({ name, execute: async () => ({}), inputSchema });
+			inputSchema.properties.value.type = 'number';
+
+			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, {
+				type: 'object',
+				properties: { value: { type: 'string' } },
+			});
+			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+		});
+
+		it('keeps the operation registered when inputSchema metadata is invalid', function () {
+			for (const [name, inputSchema] of [
+				['test_invalid_schema_metadata_op', { type: 'not-a-json-schema-type' }],
+				['test_oversized_schema_metadata_op', { type: 'object', description: 'x'.repeat(64 * 1024) }],
+				[
+					'test_circular_schema_metadata_op',
+					(() => {
+						const schema = { type: 'object' };
+						schema.self = schema;
+						return schema;
+					})(),
+				],
+			]) {
+				assert.doesNotThrow(() => server.registerOperation({ name, execute: async () => ({}), inputSchema }));
+				const registered = serverUtilities.OPERATION_FUNCTION_MAP.get(name);
+				assert.ok(registered);
+				assert.equal(registered.inputSchema, undefined);
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+			}
 		});
 
 		it('does not corrupt authz when one handler function is shared across two op names', function () {
