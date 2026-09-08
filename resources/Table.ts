@@ -2267,7 +2267,7 @@ export function makeTable(options) {
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
 					write.skipped = false; // reset on each retry; cleanup happens after commit if still true
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) {
+					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) {
 						write.skipped = true;
 						return;
 					}
@@ -2329,7 +2329,7 @@ export function makeTable(options) {
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
-					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
+					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) < 0) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let newRecord = null;
