@@ -99,7 +99,8 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 	setHeaders(headers: Headers | Map<string, number | string | readonly string[]>) {
 		let cookies: string[] | undefined;
 		for (const [name, value] of headers) {
-			if (name === 'set-cookie') (cookies ??= []).push(...(Array.isArray(value) ? value : [String(value)]));
+			if (name.toLowerCase() === 'set-cookie')
+				(cookies ??= []).push(...(Array.isArray(value) ? value : [String(value)]));
 			else this.setHeader(name, value);
 		}
 		if (cookies) this.setHeader('set-cookie', cookies);
@@ -116,7 +117,7 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 	}
 	getHeaders() {
 		const headers: OutgoingHttpHeaders = Object.create(null);
-		for (const [name, [, value]] of this.#headers.entries()) headers[name] = value;
+		for (const [name, value] of this.#headers) headers[name.toLowerCase()] = value;
 		return headers;
 	}
 	getHeaderNames() {

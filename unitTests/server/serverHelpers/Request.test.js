@@ -918,15 +918,16 @@ describe('Request class', function () {
 					res.setHeaders(
 						new Map([
 							['x-a', '1'],
-							['set-cookie', ['a=1', 'b=2']],
+							['Set-Cookie', ['a=1', 'b=2']],
 						])
 					);
+					res.setHeaders(new Map([['set-cookie', 'c=3']]));
 					res.end();
 				});
 
 				const { headers } = await responsePromise;
 				assert.strictEqual(headers.get('x-a'), '1');
-				assert.deepStrictEqual(headers.get('set-cookie'), ['a=1', 'b=2']);
+				assert.deepStrictEqual(headers.get('set-cookie'), ['c=3']);
 			});
 
 			it('removeHeader is case-insensitive', function () {
