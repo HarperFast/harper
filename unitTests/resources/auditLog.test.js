@@ -13,6 +13,7 @@ const {
 	ENTRY_DATAVIEW,
 } = require('#src/resources/auditStore');
 const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
+const { clearCorruptFrameReports } = require('#src/resources/replayLogsGuards');
 const { CorruptFrameError, RocksDatabase } = require('@harperfast/rocksdb-js');
 const {
 	removeStorageReclamation,
@@ -1420,6 +1421,10 @@ describe('Audit log', () => {
 		});
 
 		describe('onCorruptFrame', () => {
+			// The corrupt-frame reporter dedupes per break site in process-global state, so whether
+			// it logs at all depends on what ran before. Clear it so each case sees a first sighting.
+			beforeEach(clearCorruptFrameReports);
+
 			function corruptLogNamed(name, good, resyncPosition) {
 				const error = new CorruptFrameError(
 					'Corrupt transaction log entry at position 3e8 of log 1',
@@ -1712,10 +1717,13 @@ describe('Audit log', () => {
 						versions.push(record.version);
 					}
 					assert.deepStrictEqual(versions, [1, 2]);
-					await waitFor(() => logged.length === 1, { timeout: 2000, message: 'the rejected hook was not logged' });
+					const [message, error] = await waitFor(
+						() => logged.find(([logged]) => logged.startsWith('onCorruptFrame hook failed')),
+						{ timeout: 2000, message: 'the rejected hook was not logged' }
+					);
 					assert.deepStrictEqual(unhandled, []);
-					assert.match(logged[0][0], /onCorruptFrame hook failed for transaction log "corrupt"/);
-					assert.strictEqual(logged[0][1].message, 'async hook failure');
+					assert.match(message, /onCorruptFrame hook failed for transaction log "corrupt"/);
+					assert.strictEqual(error.message, 'async hook failure');
 				} finally {
 					harperLogger.error = originalError;
 					process.off('unhandledRejection', onUnhandled);
