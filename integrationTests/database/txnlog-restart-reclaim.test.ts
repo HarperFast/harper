@@ -1,13 +1,12 @@
 /**
  * A RocksDB restart must return purged transaction-log blocks to the filesystem, not merely
- * remove their directory entries. The `statfs` delta is reconciled with every visible allocation
- * change under the isolated data root and must account for at least 75% of the purged blocks.
+ * remove their directory entries.
  *
  * Refs harper#2337.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statfsSync, statSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -30,6 +29,7 @@ const CHURN_BATCH_RECORDS = 500;
 const PAYLOAD = 'p'.repeat(5000);
 const RECLAIM_FILESYSTEM_ROOT = '/dev/shm';
 const TMPFS_MAGIC = 0x01021994;
+const MIN_FILESYSTEM_FREE_BYTES = 512 * 1024 * 1024;
 const CONFIG = {
 	threads: { count: 1 },
 	logging: { auditLog: true, auditRetention: AUDIT_RETENTION_SECONDS, level: 'error' as const },
@@ -47,6 +47,21 @@ type ReclaimState = {
 	lastFlushedSequence: number;
 	purgeRuns: number;
 };
+
+function reclaimSkipReason(): string | false {
+	if (process.platform !== 'linux') return 'requires Linux tmpfs semantics';
+	if (process.env.HARPER_RUNTIME === 'bun') return 'requires the Node.js RocksDB runtime';
+	if (!existsSync(RECLAIM_FILESYSTEM_ROOT)) return `${RECLAIM_FILESYSTEM_ROOT} is unavailable`;
+	try {
+		const filesystem = statfsSync(RECLAIM_FILESYSTEM_ROOT);
+		if (filesystem.type !== TMPFS_MAGIC) return `${RECLAIM_FILESYSTEM_ROOT} is not tmpfs`;
+		const freeBytes = filesystem.bavail * filesystem.bsize;
+		if (freeBytes < MIN_FILESYSTEM_FREE_BYTES) return `${RECLAIM_FILESYSTEM_ROOT} has only ${freeBytes} free bytes`;
+	} catch (error) {
+		return `cannot inspect ${RECLAIM_FILESYSTEM_ROOT}: ${(error as Error).message}`;
+	}
+	return false;
+}
 
 function authHeader(ctx: ContextWithHarper): string {
 	const { username, password } = ctx.harper.admin;
@@ -159,9 +174,7 @@ async function flushUntilPurgeable(ctx: ContextWithHarper): Promise<ReclaimState
 
 suite(
 	'RocksDB restart returns purged transaction-log blocks to the filesystem (#2337)',
-	{
-		skip: process.platform !== 'linux' || process.env.HARPER_RUNTIME === 'bun' || !existsSync(RECLAIM_FILESYSTEM_ROOT),
-	},
+	{ skip: reclaimSkipReason() },
 	(ctx: ContextWithHarper) => {
 		before(async () => {
 			const previousInstallParent = process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR;
