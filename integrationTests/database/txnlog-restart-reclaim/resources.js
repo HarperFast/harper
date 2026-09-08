@@ -1,10 +1,12 @@
 export class Churn extends Resource {
 	static loadAsInstance = false;
 	async post(_query, body) {
+		const start = Number(body?.start);
 		const count = Number(body?.count);
 		const payload = String(body?.payload || '');
+		if (!Number.isSafeInteger(start) || start < 0) throw new Error('start must be a non-negative integer');
 		if (!Number.isSafeInteger(count) || count < 1) throw new Error('count must be a positive integer');
-		for (let sequence = 0; sequence < count; sequence++) {
+		for (let sequence = start; sequence < start + count; sequence++) {
 			await tables.Telemetry.put({ id: 'hot-record', sequence, payload });
 		}
 		return { count };
@@ -43,5 +45,4 @@ export class ReclaimState extends Resource {
 	}
 }
 
-// Retire background cleanup during component load so any later purge is attributable to restart replay.
 tables.Telemetry.auditStore.stopAuditCleanup();

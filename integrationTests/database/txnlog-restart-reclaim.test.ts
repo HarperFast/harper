@@ -1,9 +1,7 @@
 /**
  * A RocksDB restart must return purged transaction-log blocks to the filesystem, not merely
- * remove their directory entries. The test retires steady-state cleanup, rotates and flushes a
- * real log, lets it age while Harper is stopped, and checks the one restart purge with both the
- * visible files and `statfs`. The filesystem delta is reconciled with every visible allocation
- * change under the data root during boot, then must account for at least 75% of the purged blocks.
+ * remove their directory entries. The `statfs` delta is reconciled with every visible allocation
+ * change under the isolated data root and must account for at least 75% of the purged blocks.
  *
  * Refs harper#2337.
  */
@@ -27,8 +25,11 @@ const AUDIT_RETENTION_MS = AUDIT_RETENTION_SECONDS * 1000;
 const RETENTION_MARGIN_MS = 500;
 const MIN_RECLAIM_BYTES = 64 * 1024 * 1024;
 const MIN_RECLAIM_RATIO = 0.75;
-const VOLUME_RECORDS = 14_000;
+const VOLUME_RECORDS = 20_000;
+const CHURN_BATCH_RECORDS = 500;
 const PAYLOAD = 'p'.repeat(5000);
+const RECLAIM_FILESYSTEM_ROOT = '/dev/shm';
+const TMPFS_MAGIC = 0x01021994;
 const CONFIG = {
 	threads: { count: 1 },
 	logging: { auditLog: true, auditRetention: AUDIT_RETENTION_SECONDS, level: 'error' as const },
@@ -117,14 +118,16 @@ async function waitForReclaimState(ctx: ContextWithHarper): Promise<ReclaimState
 }
 
 async function createLogVolume(ctx: ContextWithHarper): Promise<void> {
-	const response = await fetch(`${ctx.harper.httpURL}/Churn/`, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json', 'Authorization': authHeader(ctx) },
-		body: JSON.stringify({ count: VOLUME_RECORDS, payload: PAYLOAD }),
-		signal: AbortSignal.timeout(120_000),
-	});
-	const responseBody = await response.text();
-	strictEqual(response.status, 200, `transaction-log churn failed: ${responseBody.slice(0, 300)}`);
+	for (let start = 0; start < VOLUME_RECORDS; start += CHURN_BATCH_RECORDS) {
+		const response = await fetch(`${ctx.harper.httpURL}/Churn/`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'Authorization': authHeader(ctx) },
+			body: JSON.stringify({ start, count: Math.min(CHURN_BATCH_RECORDS, VOLUME_RECORDS - start), payload: PAYLOAD }),
+			signal: AbortSignal.timeout(120_000),
+		});
+		const responseBody = await response.text();
+		strictEqual(response.status, 200, `transaction-log churn at ${start} failed: ${responseBody.slice(0, 300)}`);
+	}
 }
 
 async function flush(ctx: ContextWithHarper): Promise<void> {
@@ -156,10 +159,20 @@ async function flushUntilPurgeable(ctx: ContextWithHarper): Promise<ReclaimState
 
 suite(
 	'RocksDB restart returns purged transaction-log blocks to the filesystem (#2337)',
-	{ skip: process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun' },
+	{
+		skip: process.platform !== 'linux' || process.env.HARPER_RUNTIME === 'bun' || !existsSync(RECLAIM_FILESYSTEM_ROOT),
+	},
 	(ctx: ContextWithHarper) => {
 		before(async () => {
-			await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: CONFIG, env: ENV });
+			const previousInstallParent = process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR;
+			process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR = RECLAIM_FILESYSTEM_ROOT;
+			try {
+				await setupHarperWithFixture(ctx, FIXTURE_PATH, { config: CONFIG, env: ENV });
+			} finally {
+				if (previousInstallParent === undefined) delete process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR;
+				else process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR = previousInstallParent;
+			}
+			strictEqual((await statfs(ctx.harper.dataRootDir)).type, TMPFS_MAGIC, 'reclaim test requires a tmpfs data root');
 			const initialState = await waitForReclaimState(ctx);
 			strictEqual(initialState.engineGuess, 'rocksdb');
 		});
