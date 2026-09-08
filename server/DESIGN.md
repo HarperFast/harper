@@ -204,6 +204,13 @@ extending that message, not reading a registry that main never populated. Granta
 mirror because it only widens what an allowlist may _name_; enforcement stays on the worker's
 `chooseOperation`.
 
+An operation intended for protocol introspection should pass a JSON Schema object as
+`inputSchema` to `server.registerOperation()`. MCP does not advertise an allowed operation without
+this metadata, and direct calls by name are unavailable through MCP as well; the operation remains
+available through the operations API. Registration clones and validates the schema without changing
+the handler's own input validation. `parametersSchema` is legacy REST metadata and is not used for
+MCP tools.
+
 ## Resource ↔ HTTP boundary
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.

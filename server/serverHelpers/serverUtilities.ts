@@ -177,7 +177,7 @@ export type OperationDefinition = {
 	execute: (operation: any) => any | Promise<any>;
 	httpMethod?: 'DELETE' | 'GET' | 'HEAD' | 'OPTIONS' | 'PATCH' | 'POST' | 'PUT' | 'TRACE'; // method to use for REST
 	isJob?: boolean;
-	/** JSON Schema advertised by protocol adapters such as MCP. Distinct from legacy parametersSchema metadata. */
+	/** JSON Schema for protocol introspection; use this instead of legacy REST parametersSchema for MCP tools. */
 	inputSchema?: object;
 	parametersSchema?: any[];
 	// When set, the operation declares its authorization requirement to the central verifyPerms
@@ -699,11 +699,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEAR_STATUS, new OperationFunctionObject(status.clear));
 
 	for (const [name, operation] of opFuncMap) {
-		const normalizedSchema = normalizeOperationInputSchema(OPERATION_INPUT_SCHEMAS[name]);
-		if (normalizedSchema.error) {
-			operationLog.error(`Built-in operation '${name}' has an invalid inputSchema: ${normalizedSchema.error}`);
-		}
-		operation.inputSchema = normalizedSchema.schema;
+		operation.inputSchema = Object.hasOwn(OPERATION_INPUT_SCHEMAS, name) ? OPERATION_INPUT_SCHEMAS[name] : undefined;
 	}
 
 	return opFuncMap;

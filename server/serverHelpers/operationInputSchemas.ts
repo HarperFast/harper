@@ -1,19 +1,15 @@
 /**
  * JSON Schemas attached to built-in operation registrations.
  *
- * Harper's server-side validators are Joi, which doesn't
- * round-trip cleanly to JSON Schema. The MCP spec requires draft-07-ish
- * JSON Schema for tool inputSchema. Authoring these directly keeps the
- * schemas readable and easy to tweak for client introspection.
+ * Operation validation is distributed across Joi and legacy validators and
+ * cannot currently be projected mechanically to JSON Schema. These schemas
+ * are hand-authored for protocol introspection.
  *
  * Each schema follows MCP convention: `type: 'object'` at the top, with
  * `properties` declared and a small `required` list when applicable.
  * Optional fields are listed but not required, so an LLM can call the
  * minimum-viable form.
  *
- * The live operation registry owns the schema paired with each handler;
- * protocol adapters consume that metadata rather than maintaining their own
- * operation-name lookup.
  */
 
 /**

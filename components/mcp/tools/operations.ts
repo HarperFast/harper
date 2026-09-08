@@ -270,7 +270,7 @@ function matchesAny(operation: string, patterns: readonly string[] | undefined):
 	return false;
 }
 
-function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
+export function isOperationAllowed(operation: string, config: OperationsConfig): boolean {
 	const usingDefaultAllow = !(config.allow && config.allow.length > 0);
 	if (usingDefaultAllow && DEFAULT_EXCLUDED.has(operation)) return false;
 	const allowList = usingDefaultAllow ? DEFAULT_ALLOW : config.allow;
@@ -288,14 +288,12 @@ function getOperationsConfig(): OperationsConfig {
 	};
 }
 
-function buildDescription(operationName: string, hasCuratedSchema: boolean): string {
-	const curated = OPERATION_DESCRIPTIONS[operationName];
+function buildDescription(operationName: string): string {
+	const curated = Object.hasOwn(OPERATION_DESCRIPTIONS, operationName)
+		? OPERATION_DESCRIPTIONS[operationName]
+		: undefined;
 	if (curated) return curated;
-	const base = `Harper operation '${operationName}'.`;
-	const schemaNote = hasCuratedSchema
-		? ' Arguments validated against the curated schema below.'
-		: ' Arguments forwarded as-is; the server validates and returns a structured error on rejection.';
-	return base + schemaNote;
+	return `Harper operation '${operationName}'. Arguments are described by its registered schema and validated by the operation handler.`;
 }
 
 /**
@@ -398,7 +396,7 @@ function buildOperationToolDef(operationName: string, inputSchema: object): Tool
 	if (isIdempotent(operationName)) annotations.idempotentHint = true;
 	return {
 		name: operationName,
-		description: buildDescription(operationName, true),
+		description: buildDescription(operationName),
 		inputSchema,
 		profile: 'operations',
 		...(Object.keys(annotations).length > 0 ? { annotations } : {}),

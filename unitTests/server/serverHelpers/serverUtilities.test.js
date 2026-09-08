@@ -34,18 +34,11 @@ describe('Test serverUtilities.js module ', () => {
 	});
 
 	it('attaches every built-in operation schema to its live registry entry', function () {
-		const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
-		let matched = 0;
+		const { isOperationAllowed } = require('#src/components/mcp/tools/operations');
 		for (const [name, operation] of serverUtilities.OPERATION_FUNCTION_MAP) {
-			if (!Object.hasOwn(OPERATION_INPUT_SCHEMAS, name)) continue;
-			matched++;
-			assert.deepEqual(
-				operation.inputSchema,
-				OPERATION_INPUT_SCHEMAS[name],
-				`expected '${name}' to carry its registered schema`
-			);
+			if (!isOperationAllowed(name, {})) continue;
+			assert.ok(operation.inputSchema, `default-allowed operation '${name}' must carry an input schema`);
 		}
-		assert.ok(matched >= 5, `expected at least five schema-bearing built-in operations, got ${matched}`);
 	});
 
 	describe(`Test chooseOperation`, function () {
@@ -1045,6 +1038,23 @@ describe('Test serverUtilities.js module ', () => {
 				properties: { value: { type: 'string' } },
 			});
 			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+		});
+
+		it('accepts common JSON Schema dialects on registered operations', function () {
+			for (const [name, schemaId] of [
+				['test_draft_06_schema_op', 'http://json-schema.org/draft-06/schema#'],
+				['test_draft_07_schema_op', 'https://json-schema.org/draft-07/schema'],
+				['test_draft_2019_schema_op', 'https://json-schema.org/draft/2019-09/schema'],
+				['test_draft_2020_schema_op', 'https://json-schema.org/draft/2020-12/schema'],
+			]) {
+				server.registerOperation({
+					name,
+					execute: async () => ({}),
+					inputSchema: { $schema: schemaId, type: 'object' },
+				});
+				assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema.$schema, schemaId);
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+			}
 		});
 
 		it('keeps the operation registered when inputSchema metadata is invalid', function () {
