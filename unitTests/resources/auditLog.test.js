@@ -1486,11 +1486,11 @@ describe('Audit log', () => {
 				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
 				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3)]));
 				const reports = [];
-				const versions = [];
+				const logKeys = [];
 				for (const record of store.getRange({ onCorruptFrame: (error, logName) => reports.push({ error, logName }) })) {
-					versions.push(record.version);
+					logKeys.push(record.txnLogKey);
 				}
-				assert.deepStrictEqual(versions, [1, 2, 3]);
+				assert.deepStrictEqual(logKeys, [1, 2, 3]);
 				assert.strictEqual(reports.length, 1, 'the hook fires once per corrupt log, not once per poll');
 				assert.strictEqual(reports[0].logName, 'corrupt');
 				assert.strictEqual(reports[0].error, corrupt.error, 'the engine error object itself is passed, fields intact');
@@ -1502,14 +1502,14 @@ describe('Audit log', () => {
 				const corrupt = corruptLogNamed('corrupt', [entry(1), entry(2)]);
 				const store = storeWith(corrupt);
 				const reports = [];
-				const versions = [];
+				const logKeys = [];
 				for (const record of store.getRange({
 					log: 'corrupt',
 					onCorruptFrame: (error, logName) => reports.push({ error, logName }),
 				})) {
-					versions.push(record.version);
+					logKeys.push(record.txnLogKey);
 				}
-				assert.deepStrictEqual(versions, [1, 2]);
+				assert.deepStrictEqual(logKeys, [1, 2]);
 				assert.deepStrictEqual(
 					reports.map((report) => [report.logName, report.error, report.error.resyncPosition]),
 					[['corrupt', corrupt.error, undefined]]
@@ -1520,7 +1520,7 @@ describe('Audit log', () => {
 				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
 				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2)]));
 				let hookCalls = 0;
-				const versions = [];
+				const logKeys = [];
 				assert.doesNotThrow(() => {
 					for (const record of store.getRange({
 						onCorruptFrame: () => {
@@ -1528,10 +1528,10 @@ describe('Audit log', () => {
 							throw new Error('hook failure');
 						},
 					})) {
-						versions.push(record.version);
+						logKeys.push(record.txnLogKey);
 					}
 				});
-				assert.deepStrictEqual(versions, [1, 2]);
+				assert.deepStrictEqual(logKeys, [1, 2]);
 				assert.strictEqual(hookCalls, 1);
 				assert.strictEqual(corrupt.nextCalls(), 2);
 			});
@@ -1539,9 +1539,9 @@ describe('Audit log', () => {
 			it('without a hook the corrupt log still ends cleanly', () => {
 				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
 				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2)]));
-				const versions = [];
-				for (const record of store.getRange({})) versions.push(record.version);
-				assert.deepStrictEqual(versions, [1, 2]);
+				const logKeys = [];
+				for (const record of store.getRange({})) logKeys.push(record.txnLogKey);
+				assert.deepStrictEqual(logKeys, [1, 2]);
 			});
 
 			it('a removeLog requested from the hook is applied after the poll, without dropping another log entry', () => {
@@ -1552,9 +1552,9 @@ describe('Audit log', () => {
 					excludeLogs,
 					onCorruptFrame: (error, logName) => iterable.removeLog(logName),
 				});
-				const versions = [];
-				for (const record of iterable) versions.push(record.version);
-				assert.deepStrictEqual(versions, [1, 2, 3]);
+				const logKeys = [];
+				for (const record of iterable) logKeys.push(record.txnLogKey);
+				assert.deepStrictEqual(logKeys, [1, 2, 3]);
 				assert.deepStrictEqual(excludeLogs, [], 'dynamic exclusions are private to this iterable');
 			});
 
@@ -1565,10 +1565,10 @@ describe('Audit log', () => {
 				const options = Object.freeze({ onCorruptFrame: (error, logName) => iterable.removeLog(logName) });
 				iterable = store.getRange(options);
 				const iterator = iterable[Symbol.iterator]();
-				const versions = [iterator.next().value.version];
+				const logKeys = [iterator.next().value.txnLogKey];
 				store.updates++;
-				for (let result = iterator.next(); !result.done; result = iterator.next()) versions.push(result.value.version);
-				assert.deepStrictEqual(versions, [1, 2, 3]);
+				for (let result = iterator.next(); !result.done; result = iterator.next()) logKeys.push(result.value.txnLogKey);
+				assert.deepStrictEqual(logKeys, [1, 2, 3]);
 				assert.strictEqual(corrupt.nextCalls(), 2, 'the removed corrupt log is not re-added on refresh');
 				assert.strictEqual(Object.hasOwn(options, 'excludeLogs'), false);
 			});
@@ -1582,9 +1582,9 @@ describe('Audit log', () => {
 				store.nodeLogs.push(future);
 				store.logByName.set(future.name, future);
 				store.updates++;
-				const versions = [];
-				for (const record of iterable) versions.push(record.version);
-				assert.deepStrictEqual(versions, [2]);
+				const logKeys = [];
+				for (const record of iterable) logKeys.push(record.txnLogKey);
+				assert.deepStrictEqual(logKeys, [2]);
 				assert.strictEqual(future.nextCalls(), 0, 'the future peer is excluded before its iterator is created');
 			});
 
@@ -1603,7 +1603,7 @@ describe('Audit log', () => {
 						nested = iterable[Symbol.iterator]().next();
 					},
 				});
-				assert.strictEqual(iterable[Symbol.iterator]().next().value.version, 1);
+				assert.strictEqual(iterable[Symbol.iterator]().next().value.txnLogKey, 1);
 				assert.deepStrictEqual(nested, { done: true, value: undefined });
 				assert.strictEqual(future.nextCalls(), 0, 'the nested refresh cannot mount the excluded peer');
 			});
@@ -1621,9 +1621,9 @@ describe('Audit log', () => {
 					},
 				});
 				assert.deepStrictEqual(reports, [], 'the report is held until the caller can hold the iterable');
-				const versions = [];
-				for (const record of iterable) versions.push(record.version);
-				assert.deepStrictEqual(versions, [2, 3]);
+				const logKeys = [];
+				for (const record of iterable) logKeys.push(record.txnLogKey);
+				assert.deepStrictEqual(logKeys, [2, 3]);
 				assert.deepStrictEqual(reports, ['corrupt']);
 				assert.strictEqual(hookSawIterable, true);
 				assert.strictEqual(corrupt.nextCalls(), 1, 'the latched iterator is not re-polled');
@@ -1632,19 +1632,19 @@ describe('Audit log', () => {
 			it('a hook that re-enters next() gets the following entry, and its removal waits for the outermost call', () => {
 				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
 				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3), entry(4)]));
-				const nestedVersions = [];
+				const nestedLogKeys = [];
 				const iterable = store.getRange({
 					excludeLogs: [],
 					onCorruptFrame: (error, logName) => {
 						iterable.removeLog(logName);
 						const nested = iterable[Symbol.iterator]().next();
-						if (!nested.done) nestedVersions.push(nested.value.version);
+						if (!nested.done) nestedLogKeys.push(nested.value.txnLogKey);
 					},
 				});
-				const versions = [];
-				for (const record of iterable) versions.push(record.version);
-				assert.deepStrictEqual(nestedVersions, [2]);
-				assert.deepStrictEqual(versions, [1, 3, 4]);
+				const logKeys = [];
+				for (const record of iterable) logKeys.push(record.txnLogKey);
+				assert.deepStrictEqual(nestedLogKeys, [2]);
+				assert.deepStrictEqual(logKeys, [1, 3, 4]);
 			});
 
 			it('defers a re-poll report until its rebuilt buffer is stable for a re-entering hook', () => {
@@ -1680,22 +1680,22 @@ describe('Audit log', () => {
 					on: () => null,
 				};
 				const store = storeWith(corrupt, healthy);
-				const nestedVersions = [];
+				const nestedLogKeys = [];
 				let iterable;
 				iterable = store.getRange({
 					onCorruptFrame: () => {
 						const nested = iterable[Symbol.iterator]().next();
-						if (!nested.done) nestedVersions.push(nested.value.version);
+						if (!nested.done) nestedLogKeys.push(nested.value.txnLogKey);
 					},
 				});
 				const iterator = iterable[Symbol.iterator]();
-				assert.strictEqual(iterator.next().value.version, 1);
+				assert.strictEqual(iterator.next().value.txnLogKey, 1);
 				pendingEntries.push(entry(2), entry(3), entry(4));
 				corruptOnPoll = true;
-				const versions = [];
-				for (let result = iterator.next(); !result.done; result = iterator.next()) versions.push(result.value.version);
-				assert.deepStrictEqual(nestedVersions, [3]);
-				assert.deepStrictEqual(versions, [2, 4]);
+				const logKeys = [];
+				for (let result = iterator.next(); !result.done; result = iterator.next()) logKeys.push(result.value.txnLogKey);
+				assert.deepStrictEqual(nestedLogKeys, [3]);
+				assert.deepStrictEqual(logKeys, [2, 4]);
 			});
 
 			it('a rejecting async hook is contained and logged with the log name', async () => {
@@ -1708,15 +1708,15 @@ describe('Audit log', () => {
 				const onUnhandled = (reason) => unhandled.push(reason);
 				process.on('unhandledRejection', onUnhandled);
 				try {
-					const versions = [];
+					const logKeys = [];
 					for (const record of store.getRange({
 						onCorruptFrame: async () => {
 							throw new Error('async hook failure');
 						},
 					})) {
-						versions.push(record.version);
+						logKeys.push(record.txnLogKey);
 					}
-					assert.deepStrictEqual(versions, [1, 2]);
+					assert.deepStrictEqual(logKeys, [1, 2]);
 					const [message, error] = await waitFor(
 						() => logged.find(([logged]) => logged.startsWith('onCorruptFrame hook failed')),
 						{ timeout: 2000, message: 'the rejected hook was not logged' }
@@ -1748,16 +1748,16 @@ describe('Audit log', () => {
 					throw new Error('logger failure');
 				};
 				try {
-					const versions = [];
+					const logKeys = [];
 					for (const record of store.getRange({
 						onCorruptFrame: () => {
 							hookCalls++;
 							throw new Error('hook failure');
 						},
 					})) {
-						versions.push(record.version);
+						logKeys.push(record.txnLogKey);
 					}
-					assert.deepStrictEqual(versions, [1, 2]);
+					assert.deepStrictEqual(logKeys, [1, 2]);
 					assert.strictEqual(logCalls, 2, 'the corrupt-frame report and hook-failure report both run');
 					assert.strictEqual(hookCalls, 1);
 				} finally {
