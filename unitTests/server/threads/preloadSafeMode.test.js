@@ -18,7 +18,7 @@ async function getWorkerReport() {
 				name: 'safe-mode-preload-test',
 				autoRestart: false,
 				onStarted(spawned) {
-					spawned.once('message', resolve);
+					spawned.on('message', (message) => message.type !== 'os-thread-id' && resolve(message));
 					spawned.once('error', reject);
 					spawned.once('exit', (code) => reject(new Error(`Worker exited before reporting (code ${code})`)));
 				},

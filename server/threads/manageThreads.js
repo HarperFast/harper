@@ -7,7 +7,7 @@ const { realExit } = require('./workerProcessGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { spawn, spawnSync } = require('node:child_process');
-const { readdirSync, readFileSync } = require('node:fs');
+const { readdirSync, readFileSync, readlinkSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { join, isAbsolute, extname } = require('path');
 const { pathToFileURL } = require('url');
@@ -65,6 +65,8 @@ const RESTART_TYPE = 'restart';
 const RESTART_PROGRESS_HEARTBEAT_MS = 15000;
 const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';
+const OS_THREAD_ID = 'os-thread-id';
+const STUCK_WORKER_REPORT = 'stuck-worker-report';
 const THREAD_INFO = 'thread_info';
 const ADDED_PORT = 'added-port';
 const ACKNOWLEDGEMENT = 'ack';
@@ -308,6 +310,15 @@ if (!parentPort) {
 	});
 	onMessageByType(RESOURCE_REPORT, (message, worker) => {
 		if (worker) recordResourceReport(worker, message);
+	});
+	onMessageByType(OS_THREAD_ID, (message, worker) => {
+		if (worker) worker.osThreadId = message.osThreadId;
+	});
+	onMessageByType(STUCK_WORKER_REPORT, (message) => {
+		for (const threadId of message.threadIds) {
+			const worker = workers.find((worker) => worker.threadId === threadId);
+			if (worker) logStuckWorkerDiagnostics(worker);
+		}
 	});
 	onMessageByType(AWAIT_PROCESS_GROUP_TERMINATION, async (message, worker) => {
 		if (!worker) return;
@@ -918,16 +929,152 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 				timer = undefined;
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
-					stuck.push(ackHandler.port?.threadId);
+					stuck.push(ackHandler.port);
 					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
 				}
 				harperLogger.warn(
-					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.join(', ')} within ${timeout}ms; proceeding best-effort`
+					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; proceeding best-effort`
 				);
+				if (isMainThread) for (let port of stuck) logStuckWorkerDiagnostics(port);
+				else if (parentPort) {
+					// Only main holds the Worker objects (and tids), so a worker-originated timeout is sampled there.
+					const threadIds = stuck.map((port) => port?.threadId).filter((threadId) => threadId > 0);
+					if (threadIds.length > 0) parentPort.postMessage({ type: STUCK_WORKER_REPORT, threadIds });
+				}
 			}, timeout);
 			timer.unref?.();
 		}
 	});
+}
+
+// Linux only: /proc/thread-self resolves to <pid>/task/<tid> for the calling thread.
+function getOsThreadId() {
+	try {
+		const tid = Number(readlinkSync('/proc/thread-self').split('/').pop());
+		return Number.isInteger(tid) && tid > 0 ? tid : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function readTaskFile(tid, name) {
+	try {
+		return readFileSync(`/proc/self/task/${tid}/${name}`, 'utf8').trim();
+	} catch {
+		return undefined;
+	}
+}
+
+// Kernel-side view of one thread. Every field is best-effort and reported individually, since
+// wchan/syscall need ptrace read access that a hardened container may deny while stat is open.
+function finiteOrUndefined(value) {
+	const number = Number(value);
+	return Number.isFinite(number) ? number : undefined;
+}
+
+function readOsThreadState(tid) {
+	const thread = { tid };
+	const stat = readTaskFile(tid, 'stat');
+	if (stat !== undefined) {
+		// Fields after the parenthesized comm, so state is [0], utime/stime [11]/[12], starttime [19].
+		const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+		thread.state = fields[0];
+		const utime = finiteOrUndefined(fields[11]);
+		const stime = finiteOrUndefined(fields[12]);
+		if (utime !== undefined && stime !== undefined) thread.cpuTicks = utime + stime;
+		thread.startTime = fields[19];
+	}
+	const wchan = readTaskFile(tid, 'wchan');
+	if (wchan !== undefined) thread.wchan = wchan;
+	// First token only: the syscall number, "running", or -1 (blocked outside a syscall). The
+	// remainder is argument registers and the stack/instruction pointers, which don't belong in a log.
+	const syscall = readTaskFile(tid, 'syscall');
+	if (syscall !== undefined) thread.syscall = syscall.split(' ')[0];
+	const status = readTaskFile(tid, 'status');
+	if (status !== undefined) {
+		thread.voluntarySwitches = finiteOrUndefined(/^voluntary_ctxt_switches:\s*(\d+)/m.exec(status)?.[1]);
+		thread.nonvoluntarySwitches = finiteOrUndefined(/^nonvoluntary_ctxt_switches:\s*(\d+)/m.exec(status)?.[1]);
+	}
+	return thread;
+}
+
+function snapshotWorkerThread(worker) {
+	const snapshot = { at: Date.now() };
+	if (worker.resources?.updated) snapshot.sinceResourceReport = snapshot.at - worker.resources.updated;
+	const eventLoop = worker.performance?.eventLoopUtilization?.();
+	if (eventLoop) snapshot.eventLoop = { idle: eventLoop.idle, active: eventLoop.active };
+	if (worker.osThreadId) snapshot.osThread = readOsThreadState(worker.osThreadId);
+	return snapshot;
+}
+
+function describeThreadState(thread) {
+	return `state=${thread.state ?? '?'} wchan=${thread.wchan ?? '?'} syscall=${thread.syscall ?? '?'}`;
+}
+
+function describeSnapshot(snapshot) {
+	const parts = [
+		snapshot.sinceResourceReport === undefined
+			? 'no resource report received'
+			: `last resource report ${snapshot.sinceResourceReport}ms ago`,
+	];
+	if (snapshot.eventLoop)
+		parts.push(
+			`event loop active ${Math.round(snapshot.eventLoop.active)}ms idle ${Math.round(snapshot.eventLoop.idle)}ms`
+		);
+	const thread = snapshot.osThread;
+	if (!thread) parts.push('os thread state unavailable');
+	else
+		parts.push(
+			`os tid ${thread.tid} ${describeThreadState(thread)} cpuTicks=${thread.cpuTicks ?? '?'} ctxtSwitches=${thread.voluntarySwitches ?? '?'}/${thread.nonvoluntarySwitches ?? '?'}`
+		);
+	return parts.join('; ');
+}
+
+function describeDelta(before, after) {
+	return Number.isFinite(before) && Number.isFinite(after) ? `+${after - before}` : '?';
+}
+
+function describeProgress(first, second) {
+	const parts = [];
+	if (first.eventLoop && second.eventLoop)
+		parts.push(
+			`event loop active +${Math.round(second.eventLoop.active - first.eventLoop.active)}ms idle +${Math.round(second.eventLoop.idle - first.eventLoop.idle)}ms`
+		);
+	const before = first.osThread;
+	const after = second.osThread;
+	if (before && after)
+		parts.push(
+			`cpuTicks ${describeDelta(before.cpuTicks, after.cpuTicks)} ctxtSwitches ${describeDelta(before.voluntarySwitches, after.voluntarySwitches)}/${describeDelta(before.nonvoluntarySwitches, after.nonvoluntarySwitches)} ${describeThreadState(after)}`
+		);
+	return parts.join('; ');
+}
+
+// A blocked event loop cannot report itself; two kernel-state samples a second apart separate
+// "parked on a lock" (no CPU ticks, no context switches) from "spinning".
+const STUCK_WORKER_SAMPLE_INTERVAL_MS = 1000;
+const STUCK_WORKER_DIAGNOSTIC_COOLDOWN_MS = 30000;
+function logStuckWorkerDiagnostics(worker) {
+	if (!worker || !workers.includes(worker)) return;
+	const now = Date.now();
+	if (worker.stuckDiagnosticAt !== undefined && now - worker.stuckDiagnosticAt < STUCK_WORKER_DIAGNOSTIC_COOLDOWN_MS)
+		return;
+	worker.stuckDiagnosticAt = now;
+	const threadId = worker.threadId; // Node resets it to -1 once the worker exits
+	const first = snapshotWorkerThread(worker);
+	harperLogger.warn(`Worker thread ${threadId} at ack timeout: ${describeSnapshot(first)}`);
+	if (!first.eventLoop && !first.osThread) return;
+	setTimeout(() => {
+		if (!workers.includes(worker)) {
+			harperLogger.warn(`Worker thread ${threadId} exited before its follow-up sample`);
+			return;
+		}
+		const second = snapshotWorkerThread(worker);
+		// A recycled tid after a thread exit would attribute another thread's activity to this worker.
+		if (second.osThread && second.osThread.startTime !== first.osThread?.startTime) second.osThread = undefined;
+		harperLogger.warn(
+			`Worker thread ${threadId} over the next ${second.at - first.at}ms: ${describeProgress(first, second) || 'no further state available'}`
+		);
+	}, STUCK_WORKER_SAMPLE_INTERVAL_MS).unref();
 }
 
 function sendThreadInfo(targetWorker) {
@@ -1002,6 +1149,8 @@ if (parentPort && workerData?.addPorts) {
 	// parentPort so sendToThread(0, ...) and similar lookups can route back to main.
 	parentPort.threadId = 0;
 	addPort(parentPort);
+	const osThreadId = getOsThreadId();
+	if (osThreadId !== undefined) parentPort.postMessage({ type: OS_THREAD_ID, osThreadId });
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];
 		port.threadId = workerData.addThreadIds[i];
