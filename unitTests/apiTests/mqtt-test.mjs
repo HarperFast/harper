@@ -5,6 +5,7 @@
 import assert from 'node:assert';
 import { once } from 'node:events';
 import { decode } from 'cbor-x';
+import { waitFor } from '../waitFor.js';
 import { callOperation } from './utility.js';
 import { setupTestApp, baseUrl, wsBaseUrl, mqttUrl, mqttsUrl, testHost } from './setupTestApp.mjs';
 import environmentManager from '#src/utility/environment/environmentManager';
@@ -196,28 +197,33 @@ describe('test MQTT connections and commands', function () {
 		});
 	});
 
-	it('can repeatedly publish', async () => {
+	it('can repeatedly publish', async function () {
+		// Captured before the five serial connects, so the delivery wait below is budgeted from what is
+		// LEFT of this test's own mocha timeout.
+		const deadline = Date.now() + this.timeout();
 		const vus = 5;
 		const tableName = 'SimpleRecord';
 		let intervals = [];
 		let clients = [];
 		let received = [];
 		let subscriptions = [];
-		for (let x = 1; x < vus + 1; x++) {
-			const topic = `${tableName}/1`;
+		// The whole setup is inside the try: a connect that throws part-way would otherwise leave the
+		// clients it did create publishing every 1 ms into every test that follows.
+		try {
+			for (let x = 1; x < vus + 1; x++) {
+				const topic = `${tableName}/1`;
 
-			/** @type {MqttClient} */
-			const client = await connectAsync({
-				clientId: `vu${x}`,
-				host: testHost,
-				clean: true,
-				connectTimeout: 2000,
-				protocol: 'mqtt',
-				protocolVersion: 4,
-			});
-			clients.push(client);
-			subscriptions.push(
-				(async () => {
+				/** @type {MqttClient} */
+				const client = await connectAsync({
+					clientId: `vu${x}`,
+					host: testHost,
+					clean: true,
+					connectTimeout: 2000,
+					protocol: 'mqtt',
+					protocolVersion: 4,
+				});
+				clients.push(client);
+				const subscription = (async () => {
 					await client.subscribeAsync(topic);
 					intervals.push(
 						setInterval(() => {
@@ -227,25 +233,40 @@ describe('test MQTT connections and commands', function () {
 							});
 						}, 1)
 					);
-				})()
-			);
+				})();
+				// Marks it handled now; the await below is the real handler. Without this, a subscribe that
+				// rejects while the loop is still connecting the next client is an unhandled rejection, which
+				// takes the runner down instead of failing this test.
+				subscription.catch(() => {});
+				subscriptions.push(subscription);
 
-			client.on('message', function (topic, message) {
-				// message is Buffer
-				let obj = JSON.parse(message.toString());
-				received.push(obj);
-			});
+				client.on('message', function (topic, message) {
+					// message is Buffer
+					let obj = JSON.parse(message.toString());
+					received.push(obj);
+				});
 
-			client.on('error', function (error) {
-				// message is Buffer
-				console.error(error);
-			});
+				client.on('error', function (error) {
+					// message is Buffer
+					console.error(error);
+				});
+			}
+			await Promise.all(subscriptions);
+			// The publishers stay running until the eleventh delivery lands. Never past the deadline: an
+			// overrunning wait would be abandoned by mocha with the publishers still going.
+			const waitBudget = Math.max(0, deadline - Date.now() - 2000);
+			try {
+				await waitFor(() => received.length > 10, { timeout: waitBudget });
+			} catch (error) {
+				assert.fail(
+					`only ${received.length} repeated MQTT publishes arrived within ${waitBudget}ms (${error.message})`
+				);
+			}
+		} finally {
+			for (let interval of intervals) clearInterval(interval);
+			// Forced: a graceful end waits on every still-unacked QoS 1 publish.
+			for (let client of clients) client.end(true);
 		}
-		await Promise.all(subscriptions);
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		for (let interval of intervals) clearInterval(interval);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		for (let client of clients) client.end();
 		assert(received.length > 10);
 		assert.equal(received[0].name, 'radbot 9000');
 	});
