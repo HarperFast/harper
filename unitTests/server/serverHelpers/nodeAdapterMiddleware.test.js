@@ -396,7 +396,7 @@ describe('withNodeAdapter with real Node middleware', function () {
 		await withTimeout(closed.promise, "'close' on the response");
 	});
 
-	it('errors the body when the client disconnects during a stalled write', async function () {
+	it('closes the body without an error when the client disconnects during a stalled write', async function () {
 		const request = makeRequest();
 		const stalled = Promise.withResolvers();
 		const responsePromise = request.withNodeAdapter((req, res) => {
@@ -408,6 +408,7 @@ describe('withNodeAdapter with real Node middleware', function () {
 		const { body } = await withTimeout(responsePromise, 'response headers');
 		await withTimeout(stalled.promise, 'the producer to stall');
 		request._abort();
-		await assert.rejects(withTimeout(collect(body), 'the response body'), { name: 'AbortError' });
+		await assert.rejects(withTimeout(collect(body), 'the response body'), { code: 'ERR_STREAM_PREMATURE_CLOSE' });
+		assert.strictEqual(body.errored, null);
 	});
 });

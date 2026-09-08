@@ -188,14 +188,19 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		}
 		return this;
 	}
+	// Informational responses go to the real Node response when there is one; the uWS and Bun bridges
+	// have none, and a handler awaiting the callback must not hang there.
 	writeContinue(callback?: () => void) {
-		this.#nodeResponse?.writeContinue?.(callback);
+		if (typeof this.#nodeResponse?.writeContinue === 'function') this.#nodeResponse.writeContinue(callback);
+		else callback?.();
 	}
 	writeProcessing(callback?: () => void) {
-		this.#nodeResponse?.writeProcessing?.(callback);
+		if (typeof this.#nodeResponse?.writeProcessing === 'function') this.#nodeResponse.writeProcessing(callback);
+		else callback?.();
 	}
 	writeEarlyHints(hints: Record<string, string | string[]>, callback?: () => void) {
-		this.#nodeResponse?.writeEarlyHints?.(hints, callback);
+		if (typeof this.#nodeResponse?.writeEarlyHints === 'function') this.#nodeResponse.writeEarlyHints(hints, callback);
+		else callback?.();
 	}
 	// Trailers need chunked encoding on the wire, which Harper's response layer owns; dropping one silently (a Digest, say) is worse than failing.
 	addTrailers(): never {

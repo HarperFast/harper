@@ -962,6 +962,18 @@ describe('Request class', function () {
 				assert.strictEqual(nodeResponse.listenerCount('timeout'), 0);
 			});
 
+			it('informational responses call back even when the transport has no Node response', function () {
+				const request = new Request({ ...mockNodeRequest }, {});
+				let calledBack = 0;
+				request.withNodeAdapter((req, res) => {
+					res.writeContinue(() => calledBack++);
+					res.writeProcessing(() => calledBack++);
+					res.writeEarlyHints({ link: '</style.css>; rel=preload' }, () => calledBack++);
+					res.end();
+				});
+				assert.strictEqual(calledBack, 3);
+			});
+
 			it('refuses trailers instead of dropping them', function () {
 				const request = makeRequest();
 				request.withNodeAdapter((req, res) => {

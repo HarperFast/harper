@@ -213,11 +213,13 @@ export class Request {
 			nodeRes = new NodeAdapterResponse(nodeReq, this._nodeResponse, resolve, reject);
 		});
 
-		// Client disconnect reaches the handler as 'close', as it would from Node's server.
+		// Client disconnect reaches the handler as 'close', as it would from Node's server: once headers are
+		// out the response is destroyed without an error, so pipeline() reports the premature close that
+		// pipeBodyToResponse already treats as routine; before that the promise rejects with the reason.
 		const signal = this.signal;
-		if (signal.aborted) nodeRes.destroy(signal.reason);
+		const onAbort = () => nodeRes.destroy(nodeRes.headersSent ? undefined : signal.reason);
+		if (signal.aborted) onAbort();
 		else {
-			const onAbort = () => nodeRes.destroy(signal.reason);
 			signal.addEventListener('abort', onAbort, { once: true });
 			nodeRes.once('close', () => signal.removeEventListener('abort', onAbort));
 		}
