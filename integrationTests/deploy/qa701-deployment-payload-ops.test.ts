@@ -488,9 +488,7 @@ suite(
 
 		test('3: delete_deployment_payload on a non-terminal deployment -> 409, blob untouched', async () => {
 			// deploy_component only responds once the row is terminal, so the delete has to be issued
-			// mid-deploy; the install gate is what holds it there. Failing on the gate's `exited` marker
-			// separately from the 409 keeps 'the window closed early' distinguishable from 'the guard
-			// did not fire' -- the two the old elapsed-time window could not tell apart.
+			// mid-deploy; the install gate is what holds it there.
 			const project = 'qa701-nonterminal-app';
 			// Outside the packaged tree: the component directory is staged and renamed on swap.
 			const gateDir = mkdtempSync(join(tmpdir(), 'qa701-install-gate-'));
@@ -514,7 +512,6 @@ suite(
 			);
 
 			try {
-				// A deploy that settles first means the install command never ran -- a broken probe.
 				const readyDeadline = Date.now() + 60_000;
 				while (!existsSync(gate.started) && !deployResolution && Date.now() < readyDeadline) await sleep(25);
 				ok(
@@ -523,7 +520,6 @@ suite(
 						`non-terminal -- the deploy ${describeDeployResolution(deployResolution)}`
 				);
 
-				// An identification step, not a race window: the gate still holds install_command.
 				const listed = await callOperation(ctx, { operation: 'list_deployments', project });
 				const rows: Array<{ deployment_id: string; status?: string }> = listed.body?.deployments ?? [];
 				strictEqual(
@@ -542,9 +538,8 @@ suite(
 					operation: 'delete_deployment_payload',
 					deployment_id: inFlight.deployment_id,
 				});
-				// Both proofs, sampled the instant the response lands. The marker is written before the
-				// install command returns; the unsettled deploy covers the case it cannot -- a child
-				// killed without running its `finally` leaves no marker either.
+				// Sampled the instant the response lands. The marker alone is not enough: a child killed
+				// without running its `finally` leaves none either, so the deploy must also be unsettled.
 				const windowHeld = !existsSync(gate.exited) && !deployResolution;
 				const after = await callOperation(ctx, { operation: 'get_deployment', deployment_id: inFlight.deployment_id });
 				ok(
