@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788852311357,
+  "lastUpdate": 1788852313906,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -13050,6 +13050,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 170.64,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "38fcbf1cad3f89a54a4f8e8ef924881de4664e14",
+          "message": "feat(branches): remove an application's branched databases on drop_component (#644) (#2517)\n\nA branch is durable, so undeploying the application is the only point at which its private data\ncan be discarded -- and it was never discarded, so a redeploy under the same name adopted the\nprevious tenant's rows.\n\nRemoval is now the last step of a fixed sequence, and refuses to run in any other order:\n\n  1. drop_component removes the application, so nothing will load the branch again;\n  2. the workers are restarted, so the threads that had it open are gone;\n  3. rocksdb-js's process-global registry is consulted for open references to the store --\n     a check that can fail, and then nothing is deleted;\n  4. only then is the checkpoint, its blob roots and its claim unlinked, as drop_database would.\n\nThe removal runs on the thread that saw the restart through. The operations API runs on the main\nthread, which performs the restart itself and removes once it has completed; a drop executed on a\nworker (a replicated operation) asks the main thread to restart and remove, since the worker is one\nof the threads being replaced. HTTP workers now release their branch stores explicitly on shutdown\nso the reference check never depends on native teardown timing. The removing thread closes its own\nhandles first -- it loaded the application too -- and any reference held elsewhere refuses.\n\nRemoval publishes its intent first by renaming the branch to a `removing` sibling (a backtick, not\na dot: no database name can carry one, so it can never collide with another branch), so a removal\ninterrupted by a crash is finished on the next load or the next undeploy rather than read as\ndamage. A blob root that cannot be deleted keeps that tombstone and fails the undeploy instead of\nreporting success with data still on disk. A drop_component whose restart did not complete, or\nwithout restart, leaves the storage and says so.\n\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-07T12:59:15Z",
+          "url": "https://github.com/HarperFast/harper/commit/38fcbf1cad3f89a54a4f8e8ef924881de4664e14"
+        },
+        "date": 1788852313357,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.23,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 15.7,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 17.99,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 19.73,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 25.16,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 18.65,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 37.21,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 16.09,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 18.84,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 44.95,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 199.15,
             "unit": "ms"
           }
         ]
