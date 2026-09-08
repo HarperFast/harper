@@ -486,6 +486,8 @@ export function startModelsConfigHotReload(options?: {
 	debounceMs?: number;
 	/** Test seam: invoked when a watcher snapshot is observed, before its settle timer is armed. */
 	onSnapshotObserved?: () => void;
+	/** Test seam: subscribe to this instance (caller-owned) instead of constructing or sharing. */
+	watcher?: RootConfigWatcher;
 }): boolean {
 	if (modelsConfigWatcher) return true;
 	const pinnedBy = envLayerNamingModels();
@@ -498,10 +500,10 @@ export function startModelsConfigHotReload(options?: {
 	// One watcher per isolate: logging already opens one, and a second per worker doubles the
 	// native-watcher/FD footprint and the read+parse work on every config write. A test-supplied
 	// path gets a private instance, owned (and closed) by this module.
-	ownsModelsConfigWatcher = options?.configFilePath !== undefined;
-	modelsConfigWatcher = ownsModelsConfigWatcher
-		? new RootConfigWatcher(options?.configFilePath)
-		: getSharedRootConfigWatcher();
+	ownsModelsConfigWatcher = options?.watcher === undefined && options?.configFilePath !== undefined;
+	modelsConfigWatcher =
+		options?.watcher ??
+		(ownsModelsConfigWatcher ? new RootConfigWatcher(options?.configFilePath) : getSharedRootConfigWatcher());
 	// An 'error' event with no listener would take the worker down; and `ready` is an events.once
 	// promise that rejects on a pre-ready 'error', so it must be observed too.
 	modelsConfigWatcher.on('error', modelsWatcherErrorListener);
@@ -525,6 +527,11 @@ export function startModelsConfigHotReload(options?: {
 	modelsConfigWatcher.on('ready', applyFromFile);
 	modelsConfigWatcher.on('change', applyFromFile);
 	modelsApplyListener = applyFromFile;
+	// The shared watcher's one-time 'ready' may predate this subscription (logging usually
+	// constructs the singleton first, and EventEmitter does not replay). A snapshot it already
+	// holds is applied directly, so a rewrite landing before this subscription is not invisible
+	// until the next write.
+	if (modelsConfigWatcher.config !== undefined) applyFromFile(modelsConfigWatcher.config);
 	return true;
 }
 

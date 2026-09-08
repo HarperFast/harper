@@ -10,7 +10,7 @@ const { join } = require('node:path');
 const { writeFileSync, mkdtempSync, rmSync } = require('node:fs');
 const { stringify } = require('yaml');
 const { waitFor } = require('../../waitFor.js');
-const { getSharedRootConfigWatcher } = require('#src/config/RootConfigWatcher');
+const { getSharedRootConfigWatcher, RootConfigWatcher } = require('#src/config/RootConfigWatcher');
 const {
 	bootstrapModels,
 	applyModelsConfig,
@@ -720,6 +720,34 @@ describe('models config hot reload (#2344)', () => {
 			process.env.HARPER_SET_CONFIG = JSON.stringify({ 'models.embedding.default': { backend: 'openai' } });
 
 			assert.equal(startModelsConfigHotReload(), false, 'dotted keys compose into models and pin it');
+		});
+
+		it('applies a snapshot the watcher already holds, when ready pre-fired the subscription', async function () {
+			this.timeout(10000);
+			// The shared singleton's one-time 'ready' usually fires for the logger before models
+			// subscribes; a pre-warmed watcher's snapshot must be applied directly or a rewrite in
+			// that gap stays invisible until the next write.
+			const fixture = mkdtempSync(join(tmpdir(), 'harper.unit-test.models-reload-'));
+			const configFilePath = join(fixture, 'config.yaml');
+			try {
+				writeFileSync(configFilePath, stringify({ models: block({ early: openaiEntry('sk-early') }) }));
+				// Pre-warm the instance models will subscribe to, consuming its one-time 'ready' first —
+				// exactly the shared-singleton situation where logging constructed the watcher earlier.
+				const prewarmed = new RootConfigWatcher(configFilePath);
+				prewarmed.ready.catch(() => {});
+				await waitFor(() => prewarmed.config !== undefined, { message: 'watcher never became ready' });
+
+				await bootstrapModels({ models: block({}) });
+				assert.equal(startModelsConfigHotReload({ watcher: prewarmed, debounceMs: 10 }), true);
+
+				await waitFor(() => getBackend('embedding', 'early') !== undefined, {
+					message: 'the pre-subscription snapshot never applied',
+				});
+				prewarmed.close();
+			} finally {
+				stopModelsConfigHotReload();
+				rmSync(fixture, { recursive: true, force: true });
+			}
 		});
 
 		it('subscribes to the isolate-shared watcher and unsubscribes without closing it', () => {
