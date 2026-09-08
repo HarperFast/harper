@@ -118,6 +118,16 @@ export function onStorageReclamation(
 		if (!reclamationTimer) reclamationTimer = setTimeout(runReclamationHandlers, RECLAMATION_INTERVAL).unref();
 	}
 }
+
+/**
+ * Drop every reclamation handler registered for `path`. Registration is process-global and keyed by
+ * storage path with no lifetime of its own, so a store that is closed and discarded leaves both its
+ * handler and the closure holding the closed store alive for the life of the process, and every
+ * re-open of the same path appends another.
+ */
+export function removeStorageReclamation(path: string): boolean {
+	return reclamationHandlers.delete(path);
+}
 let reclamationTimer: NodeJS.Timeout;
 
 export type StorageSpaceStats = {

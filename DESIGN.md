@@ -193,6 +193,70 @@ The cross-thread subscription path (default `crossThreads`) drives every `Table.
 - **`notifyScheduled` + `setImmediate`** in the `'committed'` listener defers the iteration off the commit microtask. Multiple `'committed'` events that land in the same event-loop turn collapse into one notify pass. `notifyScheduled` stays set for the entire drain — including across yield-and-resume turns — so a re-entry from a new `'committed'` event cannot spawn a second concurrent notify on the same iterator.
 - **Batched yielding** in `notifyFromTransactionData` (`NOTIFY_BATCH_SIZE`) is gated by `allowYield`. The `'committed'` path passes `allowYield = true`; the `listenToCommits` (same-thread `aftercommit`) path does not, because that path holds an inter-thread `'thread-local-writes'` lock that must not span event-loop turns. `subscribersWithTxns` is carried across yields via `subscriptions.pendingTxnSubscribers` so the `end_txn` signal fires exactly once when the iterator truly drains. When `activeCount` drops to zero mid-yield, the next continuation drops the carry-over to avoid invoking ended subscribers' listeners.
 
+## Audit retention cleanup is a self-rearming, engine-independent lifecycle
+
+One call to `scheduleAuditCleanup` establishes a retention cadence that ends when the root store closes
+(or immediately in process-wide read-only mode). Storage-engine selection changes the work inside each pass, not whether the timer,
+serialization barrier, error containment, and re-arm exist. LMDB removes bounded batches of audit
+entries; RocksDB asks rocksdb-js to purge conservatively eligible log segments before the same time
+cutoff. Disk-pressure callbacks may accelerate the next pass and shorten the effective window, but
+ordinary retention progress must not depend on pressure.
+
+The two engines do not share a cadence rule, because their units of progress differ. LMDB's adaptive
+backoff reads a per-entry delete count: it speeds up while entries are being removed and doubles while
+idle. Rocks reclaims whole segments whose eligibility changes only on rotation/flush, so the same
+signal would only make it rescan the same files — its delay is instead a pure function of the
+pressure-adjusted retention window (a tenth of it, floored at `DEFAULT_AUDIT_CLEANUP_DELAY`).
+
+Exactly one Rocks purge loop exists per store, and that is owned by the **arming** sites, not the
+re-arm: `onStorageReclamation` registers its handler only on the last worker (it takes no
+`skipThreadCheck`), and the store-open arm gates on the same index. The last-worker conjunct on the
+re-arm is therefore unreachable through either of those paths; it is a backstop for a direct caller
+of the exported `scheduleAuditCleanup`, because a store-wide segment purge looping on every worker is
+duplicated work. If a future change passes `skipThreadCheck: true` at the registration site, that
+backstop — not the registration — becomes the thing keeping the loop single.
+
+Both re-arm guards are **Rocks-only**, deliberately: the LMDB arm keeps `origin/main`'s unconditional
+re-arm, so it neither yields to an already-pending pass (a pressure-armed 100ms pass can be cancelled
+and replaced by the idle backoff) nor restricts itself to one worker. Those are pre-existing LMDB
+behaviours, not invariants this section establishes — don't read the paragraphs above as
+engine-independent.
+
+Two things a purge does **not** need to coordinate, both load-bearing for the continuous cadence.
+Unlinking a segment a consumer has mapped is safe **on POSIX**: the inode outlives the unlink, and the
+mapping cache (`_logBuffers`) holds `WeakRef`s, with a strong ref only on the newest segment, which is
+never purge-eligible — so nothing pins a purged inode and no cross-worker cache invalidation is
+required. Windows does not share that property: deleting a mapped segment raises a sharing violation,
+so the purge throws, is warn-logged, re-arms, and makes no progress for as long as a consumer holds the
+mapping. The continuous cadence therefore turns a Windows retention stall into a steady state rather
+than a one-off, and nothing covers it — the Rocks retention integration test skips win32.
+What is _not_ covered is the segment a lagging consumer has not mapped yet: `TransactionLog.query()`'s
+iterator returns `done` when its next segment cannot be mapped, indistinguishable from being caught up
+(rocksdb-js `src/transaction-log-reader.ts`). A consumer that far behind needs a full copy rather than
+log replay, so the gap is a missing escalation signal in the reader, not a reason to hold retention —
+tracked as HarperFast/rocksdb-js#805. Continuous retention is what moves it from unreachable-in-steady-state
+to routine: a peer offline longer than `logging.auditRetention` now resumes into a purged prefix and is
+recorded as caught up, and `txnlogReplayGapBytes` observes the gap without escalating on it.
+
+Retirement is two things, and teardown needs both. `stopAuditCleanup()` latches the loop closed and
+cancels the pending timer, and it **returns a drain barrier** — a promise that settles once the pass
+already running has finished. The barrier is what makes closing stores safe: lmdb-js stamps the DBI
+number into its write instruction synchronously and the native writer consumes it later
+(`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
+delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
+transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
+`closeDatabase()` is synchronous and cannot; what covers it is that every
+environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
+re-checks `rootStore.status`, plus the fact that its production callers reach it only for RocksDB
+stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.
+`resetDatabases()` closes LMDB roots with no retirement call at all, so that re-check is a routine
+path rather than a defensive one.
+
+The last-removed marker is retained until it commits. A rejected write is logged and carried to the
+next pass rather than dropped: a pass that deletes nothing never reaches the write again, so one
+transient failure would otherwise leave the recorded boundary permanently behind the entries that
+were already removed.
+
 ## `createBlob(readable)` and `table.put()` don't synchronously drain the source
 
 When a blob attribute is created from a Node `Readable` (e.g. `createBlob(stream)` then `row.payload_blob = blob; await table.put(row)`), the put does **not** wait for the underlying stream to fully drain into the file before resolving. Internally `saveBlob` kicks off a `writeBlobWithStream` pipeline whose `storageInfo.saving` promise is tracked separately. The put resolves once encoding has captured the blob reference; the bytes finish writing concurrently.

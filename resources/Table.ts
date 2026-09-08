@@ -86,7 +86,7 @@ import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
-import { onStorageReclamation, getStorageSpaceStats } from '../server/storageReclamation.ts';
+import { onStorageReclamation, removeStorageReclamation, getStorageSpaceStats } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { throttle } from '../server/throttle.ts';
@@ -1564,7 +1564,12 @@ export function makeTable(options) {
 					if (removeTombstonedCatalog()) await dbisDb.committed;
 				}
 			} else {
-				// legacy table per database
+				// legacy table per database. The store to retire is this table's own audit store: nothing
+				// assigns `primaryStore.auditStore` — openAuditStore() assigns `rootStore.auditStore`, and
+				// this is the reference makeTable() was handed. Awaited so a pass suspended mid-removal has
+				// released the primary DBI before it is closed and unlinked.
+				await auditStore?.stopAuditCleanup?.();
+				removeStorageReclamation(primaryStore.path);
 				await primaryStore.close();
 				fs.unlinkSync(primaryStore.path);
 			}
