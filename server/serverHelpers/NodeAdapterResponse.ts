@@ -31,17 +31,12 @@ class UnsupportedResponseMethodError extends Error {
 const ignoreError = () => {};
 
 /**
- * The `ServerResponse` that `Request.withNodeAdapter()` hands to a Node handler. It is the body
- * `PassThrough` the adapter resolves with, so `write()`'s return value, 'drain', 'finish' and 'close'
- * are Node's own Writable semantics rather than forwarded events, with Node's status/header API
- * layered over a Harper `Headers` map. Headers are committed (the adapter's promise resolves) on the
- * first of `writeHead()`, `flushHeaders()`, `write()` or `end()`, always via `this.writeHead` so a
- * `writeHead` replaced on the instance by `on-headers` runs its listeners first; after that, header
- * mutation throws `ERR_HTTP_HEADERS_SENT` as Node does.
- *
- * A destroy error after commitment stays in the stream's `errored` state for `pipeline()`,
- * `finished()` or async iteration to report; the adapter listens for 'error' itself because the
- * event can fire before the awaiting caller has received the body.
+ * The `ServerResponse` that `Request.withNodeAdapter()` hands to a Node handler: the body `PassThrough`
+ * the adapter resolves with, so backpressure and lifecycle events are Node's own. Two contracts real
+ * middleware depends on: headers commit via `this.writeHead` so a `writeHead` replaced on the instance
+ * by `on-headers` runs its listeners first, and the adapter owns the 'error' listener because a destroy
+ * right after `writeHead()` emits before the awaiting caller can attach one (the error stays in the
+ * stream's `errored` state for `pipeline()`, `finished()` or async iteration).
  */
 export class NodeAdapterResponse extends PassThrough implements NodeServerResponse {
 	statusCode = 200;
@@ -57,6 +52,7 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 	#committedStatus: number | undefined;
 	#headerText: string | undefined;
 	#nodeResponse: NodeServerResponse | undefined;
+	#forwardsTimeout = false;
 	#resolve: (response: AdaptedResponse) => void;
 	#reject: (reason: unknown) => void;
 
@@ -180,7 +176,16 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 	}
 
 	setTimeout(msecs: number, callback?: () => void) {
-		this.socket?.setTimeout(msecs, callback);
+		if (callback) this.on('timeout', callback);
+		const nodeResponse = this.#nodeResponse;
+		if (typeof nodeResponse?.setTimeout !== 'function') return this;
+		nodeResponse.setTimeout(msecs);
+		if (!this.#forwardsTimeout) {
+			this.#forwardsTimeout = true;
+			const forward = () => this.emit('timeout');
+			nodeResponse.on('timeout', forward);
+			this.once('close', () => nodeResponse.removeListener('timeout', forward));
+		}
 		return this;
 	}
 	writeContinue(callback?: () => void) {
@@ -192,7 +197,7 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 	writeEarlyHints(hints: Record<string, string | string[]>, callback?: () => void) {
 		this.#nodeResponse?.writeEarlyHints?.(hints, callback);
 	}
-	// Trailers need chunked encoding on the wire, which the Harper response layer owns; dropping them silently would lose e.g. a Digest trailer.
+	// Trailers need chunked encoding on the wire, which Harper's response layer owns; dropping one silently (a Digest, say) is worse than failing.
 	addTrailers(): never {
 		throw new UnsupportedResponseMethodError('addTrailers');
 	}

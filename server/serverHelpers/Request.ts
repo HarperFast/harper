@@ -178,10 +178,10 @@ export class Request {
 	 * status, headers, and body, resolving the returned promise as soon as headers are available with a
 	 * streaming body that can be piped back through the Harper middleware chain.
 	 *
-	 * **Important:** The resolved `body` PassThrough must have an `error` listener attached (or be piped
-	 * to a destination that handles errors) before it is consumed. If the underlying connection is reset
-	 * after headers are sent, the body stream is destroyed with an error — without a listener, Node.js
-	 * will throw an uncaught exception.
+	 * The ServerResponse is the resolved `body` itself (a PassThrough), so a handler that destroys it
+	 * after headers, a rejected async handler, or a client disconnect leaves the body in an errored
+	 * state rather than hanging: consume it with `pipeline()`, `finished()` or async iteration, which
+	 * report that state; a later `.on('error')` alone would miss an error emitted before it was attached.
 	 *
 	 * Example:
 	 *   server.http((request, next) =>
@@ -213,8 +213,7 @@ export class Request {
 			nodeRes = new NodeAdapterResponse(nodeReq, this._nodeResponse, resolve, reject);
 		});
 
-		// Client disconnect reaches the handler as 'close' on its response, as it would from Node's
-		// server; before the body is handed over nothing else would destroy it.
+		// Client disconnect reaches the handler as 'close', as it would from Node's server.
 		const signal = this.signal;
 		if (signal.aborted) nodeRes.destroy(signal.reason);
 		else {
@@ -223,10 +222,16 @@ export class Request {
 			nodeRes.once('close', () => signal.removeEventListener('abort', onAbort));
 		}
 
-		const handlerResult = handler(nodeReq, nodeRes);
+		// A handler that fails without ending the response would otherwise leave it open forever.
+		let handlerResult: void | Promise<void>;
+		try {
+			handlerResult = handler(nodeReq, nodeRes);
+		} catch (error) {
+			if (nodeRes.writableEnded) throw error;
+			nodeRes.destroy(error as Error);
+			return response;
+		}
 		if (typeof (handlerResult as Promise<void>)?.then === 'function') {
-			// A rejected handler that never ended the response would otherwise leave it open forever:
-			// before headers this rejects the promise, after them it errors the body.
 			(handlerResult as Promise<void>).catch((error: Error) => {
 				if (!nodeRes.writableEnded) nodeRes.destroy(error);
 			});

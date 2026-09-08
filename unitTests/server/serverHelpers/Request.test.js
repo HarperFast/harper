@@ -2,6 +2,7 @@
 
 const assert = require('node:assert');
 const sinon = require('sinon');
+const { EventEmitter } = require('node:events');
 
 describe('Request class', function () {
 	let Request;
@@ -938,12 +939,73 @@ describe('Request class', function () {
 				});
 			});
 
+			it('setTimeout configures the Node response and delivers its timeout to this response only', async function () {
+				const nodeResponse = Object.assign(new EventEmitter(), {
+					timeouts: [],
+					setTimeout(msecs) {
+						this.timeouts.push(msecs);
+					},
+				});
+				const request = new Request({ ...mockNodeRequest }, nodeResponse);
+				let fired = 0;
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.setTimeout(250, () => fired++);
+					nodeResponse.emit('timeout');
+					res.end();
+				});
+
+				assert.deepStrictEqual(nodeResponse.timeouts, [250]);
+				assert.strictEqual(fired, 1);
+				const { body } = await responsePromise;
+				for await (const chunk of body) void chunk;
+				if (!body.closed) await new Promise((resolve) => body.once('close', resolve));
+				assert.strictEqual(nodeResponse.listenerCount('timeout'), 0);
+			});
+
 			it('refuses trailers instead of dropping them', function () {
 				const request = makeRequest();
 				request.withNodeAdapter((req, res) => {
 					assert.throws(() => res.addTrailers({ Digest: 'x' }), /addTrailers\(\) is not supported/);
 					res.end();
 				});
+			});
+		});
+
+		describe('synchronous handler failure', function () {
+			it('rejects the response promise instead of throwing when the handler throws before headers', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter(() => {
+					throw new Error('sync failure');
+				});
+
+				await assert.rejects(() => responsePromise, /sync failure/);
+				// a later disconnect finds the response already settled
+				request._abort();
+			});
+
+			it('errors the body when the handler throws after a partial write', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.write('partial');
+					throw new Error('sync failure');
+				});
+
+				const { body } = await responsePromise;
+				await assert.rejects(async () => {
+					for await (const chunk of body) void chunk;
+				}, /sync failure/);
+			});
+
+			it('rethrows when the handler throws after ending the response', function () {
+				const request = makeRequest();
+				assert.throws(
+					() =>
+						request.withNodeAdapter((req, res) => {
+							res.end('done');
+							throw new Error('after end');
+						}),
+					/after end/
+				);
 			});
 		});
 

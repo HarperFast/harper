@@ -3,7 +3,7 @@
 const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -67,8 +67,25 @@ async function waitUntil(condition, waitingFor) {
 	}
 }
 
-// Writes BODY in CHUNK_SIZE pieces the way Next.js's response writer does: wait for 'drain' after
-// every write() that returns false. Returns how many writes reported backpressure.
+async function serve(handler, run) {
+	const server = http.createServer(handler);
+	await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+	try {
+		return await run(server.address().port);
+	} finally {
+		server.close();
+	}
+}
+
+function get(port, headers = {}) {
+	return withTimeout(
+		new Promise((resolve, reject) =>
+			http.get({ host: '127.0.0.1', port, path: '/asset.txt', headers }, resolve).on('error', reject)
+		),
+		'the HTTP response'
+	);
+}
+
 async function writeInChunks(res) {
 	let backpressured = 0;
 	let drained;
@@ -145,16 +162,16 @@ describe('withNodeAdapter with real Node middleware', function () {
 				});
 
 				const { status, headers, body } = await withTimeout(responsePromise, 'response headers');
-				assert.equal(status, 200);
-				assert.equal(headers.get('content-encoding'), 'gzip');
-				assert.equal(headers.get('content-length'), undefined);
+				assert.strictEqual(status, 200);
+				assert.strictEqual(headers.get('content-encoding'), 'gzip');
+				assert.strictEqual(headers.get('content-length'), undefined);
 				assert.match(String(headers.get('vary')), /Accept-Encoding/);
 				// Nothing reads yet, so the producer must stall on the response stream itself, not only on zlib.
 				await waitUntil(() => responseBackpressure.backpressured, 'the response stream to report backpressure');
 
 				const received = await withTimeout(collectSlowly(body), 'the response body');
 				assert.ok(zlibBackpressure > 0, 'res.write() never returned false');
-				assert.deepEqual(zlib.gunzipSync(received), BODY);
+				assert.deepStrictEqual(zlib.gunzipSync(received), BODY);
 			});
 
 			it('serves a file past the high-water mark through send() without on-finished tearing it down', async function () {
@@ -172,16 +189,20 @@ describe('withNodeAdapter with real Node middleware', function () {
 				});
 
 				const { status, headers, body } = await withTimeout(responsePromise, 'response headers');
-				assert.equal(status, 200);
+				assert.strictEqual(status, 200);
 				assert.match(headers.get('content-type'), /^text\/plain/);
 				assert.ok(headers.get('etag'));
-				assert.equal(headers.get('content-encoding'), 'gzip');
-				assert.equal(headers.get('content-length'), undefined, 'send() set Content-Length; compression removed it');
+				assert.strictEqual(headers.get('content-encoding'), 'gzip');
+				assert.strictEqual(
+					headers.get('content-length'),
+					undefined,
+					'send() set Content-Length; compression removed it'
+				);
 
 				const received = await withTimeout(collectSlowly(body), 'the response body');
-				assert.deepEqual(zlib.gunzipSync(received), BODY);
-				assert.equal(await withTimeout(finished.promise, 'on-finished'), null);
-				assert.equal(finishedEarly, false, 'on-finished ran before the response ended');
+				assert.deepStrictEqual(zlib.gunzipSync(received), BODY);
+				assert.strictEqual(await withTimeout(finished.promise, 'on-finished'), null);
+				assert.strictEqual(finishedEarly, false, 'on-finished ran before the response ended');
 			});
 
 			it('passes a response the client cannot decode through unchanged', async function () {
@@ -195,46 +216,64 @@ describe('withNodeAdapter with real Node middleware', function () {
 				});
 
 				const { headers, body } = await withTimeout(responsePromise, 'response headers');
-				assert.equal(headers.get('content-encoding'), undefined);
+				assert.strictEqual(headers.get('content-encoding'), undefined);
 				await waitUntil(() => backpressured === undefined && body.writableNeedDrain, 'the producer to stall');
 				const received = await withTimeout(collectSlowly(body), 'the response body');
 				assert.ok(backpressured > 0, 'res.write() never returned false');
-				assert.deepEqual(received, BODY);
+				assert.deepStrictEqual(received, BODY);
 			});
 
 			it('delivers gzip bytes on the wire through ServerResponse and pipeBodyToResponse', async function () {
-				const server = http.createServer(async (nodeRequest, nodeResponse) => {
-					const request = new Request(nodeRequest, nodeResponse);
-					const { status, headers, body } = await request.withNodeAdapter((req, res) => {
-						compression()(req, res, () => {
-							send(req, '/asset.txt', { root: fileDir }).pipe(res);
+				await serve(
+					async (nodeRequest, nodeResponse) => {
+						const request = new Request(nodeRequest, nodeResponse);
+						const { status, headers, body } = await request.withNodeAdapter((req, res) => {
+							compression()(req, res, () => {
+								send(req, '/asset.txt', { root: fileDir }).pipe(res);
+							});
 						});
-					});
-					nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
-					pipeBodyToResponse(body, nodeResponse, '/asset.txt', 'GET', performance.now());
-				});
-				await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-				try {
-					const { port } = server.address();
-					const response = await withTimeout(
-						new Promise((resolve, reject) =>
-							http
-								.get({ host: '127.0.0.1', port, path: '/asset.txt', headers: { 'accept-encoding': 'gzip' } }, resolve)
-								.on('error', reject)
-						),
-						'the HTTP response'
-					);
-					assert.equal(response.statusCode, 200);
-					assert.equal(response.headers['content-encoding'], 'gzip');
-					assert.equal(response.headers['content-length'], undefined);
-					const received = await withTimeout(collectSlowly(response), 'the wire body');
-					assert.deepEqual(zlib.gunzipSync(received), BODY);
-				} finally {
-					server.close();
-				}
+						nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
+						pipeBodyToResponse(body, nodeResponse, '/asset.txt', 'GET', performance.now());
+					},
+					async (port) => {
+						const response = await get(port, { 'accept-encoding': 'gzip' });
+						assert.strictEqual(response.statusCode, 200);
+						assert.strictEqual(response.headers['content-encoding'], 'gzip');
+						assert.strictEqual(response.headers['content-length'], undefined);
+						const received = await withTimeout(collectSlowly(response), 'the wire body');
+						assert.deepStrictEqual(zlib.gunzipSync(received), BODY);
+					}
+				);
 			});
 		});
 	}
+
+	it('destroys the response and fires on-finished when the client disconnects mid-transfer on the wire', async function () {
+		const closed = Promise.withResolvers();
+		const finished = Promise.withResolvers();
+		let request;
+		await serve(
+			async (nodeRequest, nodeResponse) => {
+				request = new Request(nodeRequest, nodeResponse);
+				const { status, headers, body } = await request.withNodeAdapter((req, res) => {
+					onFinished(res, (error) => finished.resolve(error));
+					res.once('close', () => closed.resolve());
+					res.setHeader('Content-Type', 'application/octet-stream');
+					res.write(BODY.subarray(0, CHUNK_SIZE));
+				});
+				nodeResponse.writeHead(status, toWriteHeadHeaders(headers));
+				pipeBodyToResponse(body, nodeResponse, '/asset.txt', 'GET', performance.now());
+			},
+			async (port) => {
+				const response = await get(port);
+				await withTimeout(new Promise((resolve) => response.once('data', resolve)), 'the first chunk');
+				response.destroy();
+				await withTimeout(closed.promise, "'close' on the adapter response");
+				await withTimeout(finished.promise, 'on-finished');
+				assert.strictEqual(request.signal.aborted, true);
+			}
+		);
+	});
 
 	it('honors Writable backpressure and emits finish before close when a Readable is piped in', async function () {
 		const request = makeRequest();
@@ -254,10 +293,10 @@ describe('withNodeAdapter with real Node middleware', function () {
 		const { body } = await withTimeout(responsePromise, 'response headers');
 		await waitUntil(() => backpressure.backpressured, 'the response stream to report backpressure');
 		const received = await withTimeout(collectSlowly(body), 'the response body');
-		assert.deepEqual(received, BODY);
+		assert.deepStrictEqual(received, BODY);
 		assert.ok(backpressure.backpressured, 'write() never returned false');
 		await sleep(1);
-		assert.deepEqual(events, ['finish', 'close']);
+		assert.deepStrictEqual(events, ['finish', 'close']);
 	});
 
 	it('runs on-headers listeners inside _implicitHeader() before the headers resolve', async function () {
@@ -269,19 +308,19 @@ describe('withNodeAdapter with real Node middleware', function () {
 				res.setHeader('X-From-Listener', 'yes');
 			});
 			res.setHeader('Content-Type', 'text/plain');
-			assert.equal(res.headersSent, false);
-			assert.equal(res._header, null);
+			assert.strictEqual(res.headersSent, false);
+			assert.strictEqual(res._header, null);
 			res._implicitHeader();
 			order.push('after _implicitHeader');
-			assert.equal(res.headersSent, true);
+			assert.strictEqual(res.headersSent, true);
 			assert.match(res._header, /^HTTP\/1\.1 200 OK\r\nContent-Type: text\/plain\r\nX-From-Listener: yes\r\n\r\n$/);
 			res.end('ok');
 		});
 
 		const { headers } = await withTimeout(responsePromise, 'response headers');
 		order.push('resolved');
-		assert.deepEqual(order, ['listener', 'after _implicitHeader', 'resolved']);
-		assert.equal(headers.get('x-from-listener'), 'yes');
+		assert.deepStrictEqual(order, ['listener', 'after _implicitHeader', 'resolved']);
+		assert.strictEqual(headers.get('x-from-listener'), 'yes');
 	});
 
 	it('accumulates appendHeader values and routes writeHead flat arrays through on-headers', async function () {
@@ -296,17 +335,17 @@ describe('withNodeAdapter with real Node middleware', function () {
 		});
 
 		const { status, headers } = await withTimeout(responsePromise, 'response headers');
-		assert.equal(status, 201);
-		assert.deepEqual(headers.get('set-cookie'), ['a=1', 'b=2']);
-		assert.equal(headers.get('x-single'), 'one');
-		assert.deepEqual(headers.get('x-flat'), ['1', '2']);
+		assert.strictEqual(status, 201);
+		assert.deepStrictEqual(headers.get('set-cookie'), ['a=1', 'b=2']);
+		assert.strictEqual(headers.get('x-single'), 'one');
+		assert.deepStrictEqual(headers.get('x-flat'), ['1', '2']);
 	});
 
 	it('exposes request headers on a plain object with Object.prototype', async function () {
 		const request = makeRequest();
 		const responsePromise = request.withNodeAdapter((req, res) => {
-			assert.equal(Object.getPrototypeOf(req.headers), Object.prototype);
-			assert.equal(Object.hasOwn(req.headers, 'accept-encoding'), true);
+			assert.strictEqual(Object.getPrototypeOf(req.headers), Object.prototype);
+			assert.strictEqual(Object.hasOwn(req.headers, 'accept-encoding'), true);
 			res.end();
 		});
 		await withTimeout(responsePromise, 'response headers');
@@ -328,10 +367,10 @@ describe('withNodeAdapter with real Node middleware', function () {
 
 		const { status, headers, body } = await withTimeout(responsePromise, 'response headers');
 		await withTimeout(collect(body), 'the response body');
-		assert.equal(status, 200);
-		assert.equal(headers.get('content-type'), 'text/plain');
-		assert.equal(headers.get('x-late'), undefined);
-		assert.equal(headers.get('content-length'), undefined);
+		assert.strictEqual(status, 200);
+		assert.strictEqual(headers.get('content-type'), 'text/plain');
+		assert.strictEqual(headers.get('x-late'), undefined);
+		assert.strictEqual(headers.get('content-length'), undefined);
 	});
 
 	it('survives a destroy immediately after writeHead and reports it through the body', async function () {
