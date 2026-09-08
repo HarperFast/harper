@@ -1035,11 +1035,7 @@ const UNSETTLED_MARKER = '.unsettled';
 const ACTIVATION_JOURNAL_VERSION = 1;
 const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
 
-/**
- * How many dormant staged builds may survive per component under `.deploy-staging`
- * (`deployment_stagingRetention_maxCount`; 0 keeps none). Only a number or numeric string counts, so
- * `true`/`[]`/blank cannot become an accidental "keep nothing".
- */
+/** `deployment_stagingRetention_maxCount`; 0 keeps none. Only a number or numeric string counts, so `true`/`[]`/blank cannot become "keep nothing". */
 export function getStagingRetentionMaxCount(): number {
 	const configured = getConfigValue(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT);
 	if (typeof configured !== 'number' && typeof configured !== 'string') return DEFAULT_STAGING_RETENTION_MAX_COUNT;
@@ -1062,12 +1058,9 @@ async function presentOrAbsent(path: string): Promise<import('node:fs').Stats | 
 }
 
 /**
- * A journal-less deployment directory holding a complete, validated tree nobody is activating — the only
- * kind retention may count or remove. Activation writes `.complete` moments before its journal, both under
- * the owner's preparation lock, so an unlocked read is a candidate for retention and a read under that lock
- * is the verdict. A stale `.unsettled` makes it residue instead: workers read that marker as a verdict, and
- * only removing the directory clears it.
- *
+ * A dormant build: complete, tree present, no journal. Activation writes `.complete` moments before its
+ * journal under the owner's preparation lock, so only a read under that lock is a verdict. A stale
+ * `.unsettled` makes it residue instead, since only removing the directory clears that marker for workers.
  * Only ENOENT is absence; any other read error propagates so the caller preserves the entry.
  */
 async function dormantBuildAt(deploymentDirPath: string, owner: string): Promise<DormantBuild | undefined> {
@@ -1080,10 +1073,9 @@ async function dormantBuildAt(deploymentDirPath: string, owner: string): Promise
 }
 
 /**
- * Remove the oldest dormant builds beyond `maxCount`, newest by `.complete` mtime surviving. Assumes the
- * caller holds the component's preparation lock. Each eviction is re-derived under that lock — still
- * dormant, still no journal — because the catalog may have been read unlocked or before a deploy ran. Never
- * throws: a failure here must neither fail a component closed at boot nor replace a deploy's own error.
+ * Remove the oldest dormant builds beyond `maxCount`. The caller must hold the component's preparation lock;
+ * each eviction is re-derived under it. Never throws: a failure must neither fail a component closed nor
+ * replace a deploy's own error.
  */
 export async function pruneDormantBuilds(
 	componentName: string,
@@ -1092,7 +1084,11 @@ export async function pruneDormantBuilds(
 ): Promise<void> {
 	const evictions = builds
 		.slice()
-		.sort((left, right) => right.completedAt - left.completedAt || left.deploymentId.localeCompare(right.deploymentId))
+		.sort(
+			(left, right) =>
+				right.completedAt - left.completedAt ||
+				(left.deploymentId < right.deploymentId ? -1 : left.deploymentId > right.deploymentId ? 1 : 0)
+		)
 		.slice(Math.max(0, maxCount));
 	for (const build of evictions) {
 		try {
@@ -1112,7 +1108,7 @@ export async function pruneDormantBuilds(
 	}
 }
 
-/** Every dormant build a component owns. A directory that cannot be read is left out and logged. */
+/** Every dormant build a component owns; an unreadable directory is left out and logged. */
 async function dormantBuildsOf(componentsRootDirPath: string, componentName: string): Promise<DormantBuild[]> {
 	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
 	let deployments;
@@ -1810,10 +1806,8 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				);
 				continue;
 			}
-			// A dormant build — complete, tree present, nobody activating it — is catalogued WITHOUT the lock and
-			// left alone; only an owner over its retention bound takes the lock, once, below. Locking here per
-			// directory on every pass, forever, is what made a healthy component with retained builds lose the
-			// 250 ms probe to its sibling threads at boot and be deferred with nothing in progress.
+			// Catalogued WITHOUT the lock and left alone: a retained build is never removed here, so a per-directory
+			// lock would recur on every pass and contend with sibling threads for a component nothing is deploying.
 			if (owner) {
 				let build: DormantBuild | undefined;
 				try {
@@ -1905,7 +1899,9 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 		try {
 			await withComponentPreparationLock(
 				join(componentsRootDirPath, owner),
-				() => pruneDormantBuilds(owner, builds, maxCount),
+				// Re-catalogued under the lock: a build activated or staged since the unlocked scan would otherwise
+				// hold or miss a kept slot.
+				async () => pruneDormantBuilds(owner, await dormantBuildsOf(componentsRootDirPath, owner), maxCount),
 				{
 					purpose: 'activation-recovery',
 					...RECOVERY_LOCK_WAIT,
@@ -2762,8 +2758,7 @@ export async function dropComponentDirectory(
 		asideStagingDir,
 		new Set([droppedPath])
 	);
-	// Retention only runs on the component's next deploy, and a dropped component has none — the drop is
-	// what reclaims its dormant builds.
+	// A dropped component has no next deploy to bound its dormant builds.
 	try {
 		await pruneDormantBuilds(componentName, await dormantBuildsOf(dirname(componentDirPath), componentName), 0);
 	} catch (error) {
