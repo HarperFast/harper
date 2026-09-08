@@ -84,7 +84,9 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 			config: {
 				threads: { count: 2 },
 				logging: { console: true, level: 'error' },
-				mcp: { operations: { mountPath: '/mcp', allow: ['component_registered_echo'] } },
+				mcp: {
+					operations: { mountPath: '/mcp', allow: ['component_registered_echo', 'component_registered_stream'] },
+				},
 			},
 		});
 	});
@@ -128,6 +130,11 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 			properties: { value: { type: 'string' } },
 			required: ['value'],
 		});
+		strictEqual(
+			body.result.tools.some(({ name }) => name === 'component_registered_stream'),
+			false,
+			'schema-less operations must not be advertised'
+		);
 	});
 
 	test('repeated calls keep working (round-robin across registering workers)', async () => {

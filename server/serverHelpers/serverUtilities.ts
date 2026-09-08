@@ -53,7 +53,7 @@ import {
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
 import { OPERATION_INPUT_SCHEMAS } from './operationInputSchemas.ts';
-import { normalizeOperationInputSchema } from './operationInputSchema.ts';
+import { normalizeOperationInputSchema } from './validateOperationInputSchema.ts';
 
 const pSearchSearch = util.promisify(search.search);
 let pEvaluateSql: (sql: string) => Promise<any>;
@@ -223,7 +223,9 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 		opAuth.registerOperationPermission(name, { requiresSu: requiresSuperUser });
 		declaredPermissionNames.add(name);
 	}
-	const normalizedSchema = normalizeOperationInputSchema(inputSchema);
+	const schemaMetadata =
+		inputSchema ?? (Object.hasOwn(OPERATION_INPUT_SCHEMAS, name) ? OPERATION_INPUT_SCHEMAS[name] : undefined);
+	const normalizedSchema = normalizeOperationInputSchema(schemaMetadata);
 	if (normalizedSchema.error) {
 		operationLog.warn(`Operation '${name}' inputSchema ignored: ${normalizedSchema.error}`);
 	}

@@ -35,6 +35,9 @@ function getValidator(dialect: { key: string; module: string }): any {
 
 export function normalizeOperationInputSchema(inputSchema: unknown): { schema?: object; error?: string } {
 	if (inputSchema === undefined) return {};
+	if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) {
+		return { error: 'inputSchema must be a JSON object' };
+	}
 
 	try {
 		const serialized = JSON.stringify(inputSchema);

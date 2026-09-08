@@ -1,4 +1,4 @@
-export const AGENT_OPERATION_INPUT_SCHEMAS: Record<string, object> = {
+export const AGENT_OPERATION_INPUT_SCHEMAS = {
 	agent_prompt: {
 		type: 'object',
 		properties: {
@@ -43,4 +43,4 @@ export const AGENT_OPERATION_INPUT_SCHEMAS: Record<string, object> = {
 			systemPromptAppend: { type: 'string' },
 		},
 	},
-};
+} as const satisfies Record<string, object>;

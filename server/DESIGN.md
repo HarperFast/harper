@@ -205,11 +205,12 @@ mirror because it only widens what an allowlist may _name_; enforcement stays on
 `chooseOperation`.
 
 An operation intended for protocol introspection should pass a JSON Schema object as
-`inputSchema` to `server.registerOperation()`. MCP does not advertise an allowed operation without
-this metadata, and direct calls by name are unavailable through MCP as well; the operation remains
-available through the operations API. Registration clones and validates the schema without changing
-the handler's own input validation. `parametersSchema` is legacy REST metadata and is not used for
-MCP tools.
+`inputSchema` to `server.registerOperation()`. When the caller omits it, registration uses the schema
+shipped for that operation name, if one exists. MCP does not advertise an allowed operation without
+either source of metadata, and direct calls by name are unavailable through MCP as well; the
+operation remains available through the operations API. Registration clones and validates component
+schema metadata without changing the handler's own input validation. `parametersSchema` is legacy
+REST metadata and is not used for MCP tools.
 
 ## Resource ↔ HTTP boundary
 

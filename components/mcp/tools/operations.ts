@@ -385,9 +385,7 @@ export function makeOperationToolHandler(operationName: string) {
  * function of the operation name (its schema, description, annotations, RBAC
  * predicate, and handler don't depend on the allow/deny config, which only
  * decides *whether* the op is exposed, checked per request in the provider).
- * `tools/list` isn't a hot path, so the provider rebuilds defs per call rather
- * than caching them. The only module state deduplicates missing-schema warnings
- * and is cleared with the operation-map test seam.
+ * `tools/list` isn't a hot path, so the provider rebuilds defs per call.
  */
 function buildOperationToolDef(operationName: string, inputSchema: object): ToolDef {
 	const annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean } = {};
@@ -407,13 +405,15 @@ function buildOperationToolDef(operationName: string, inputSchema: object): Tool
 
 function buildRegisteredOperationToolDef(
 	operationName: string,
-	operation: OperationFunctionEntry
+	operation: OperationFunctionEntry,
+	config: OperationsConfig
 ): ToolDef | undefined {
 	if (!operation.inputSchema) {
 		if (!warnedMissingSchemas.has(operationName)) {
 			warnedMissingSchemas.add(operationName);
+			const source = config.allow?.length ? ' is named by mcp.operations.allow but' : '';
 			harperLogger.warn(
-				`MCP operations profile: '${operationName}' is allowed but has no inputSchema; register one to expose this tool`
+				`MCP operations profile: '${operationName}'${source} was registered without inputSchema; pass inputSchema to server.registerOperation() to expose it`
 			);
 		}
 		return undefined;
@@ -437,7 +437,7 @@ const operationsToolProvider: ProfileToolProvider = {
 		const defs: ToolDef[] = [];
 		for (const [operationName, operation] of opMap) {
 			if (!isOperationAllowed(operationName, config)) continue;
-			const def = buildRegisteredOperationToolDef(operationName, operation);
+			const def = buildRegisteredOperationToolDef(operationName, operation, config);
 			if (def) defs.push(def);
 		}
 		return defs;
@@ -447,8 +447,9 @@ const operationsToolProvider: ProfileToolProvider = {
 		if (!opMap) return undefined;
 		const operation = opMap.get(operationName);
 		if (!operation) return undefined;
-		if (!isOperationAllowed(operationName, getOperationsConfig())) return undefined;
-		return buildRegisteredOperationToolDef(operationName, operation);
+		const config = getOperationsConfig();
+		if (!isOperationAllowed(operationName, config)) return undefined;
+		return buildRegisteredOperationToolDef(operationName, operation, config);
 	},
 };
 

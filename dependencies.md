@@ -27,7 +27,7 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Need for usage: Validates JSON Schema metadata supplied when operations are registered, before that metadata can be exposed to MCP clients. This keeps a malformed component schema from breaking `tools/list` while preserving the operation handler.
 - Size and overlap: Ajv is already present transitively through Fastify; declaring it directly makes Harper's runtime use explicit and adds no new package family. Fastify's internal compiler is not a public standalone schema-validation API. The direct declaration hoists Ajv 8, so major upgrades must be checked against Fastify's compiler too.
 - Performance and memory: Loaded lazily when a component supplies schema metadata and never on the operation dispatch hot path. Built-in schemas are checked in CI and attached without runtime validation.
-- Security and environment: Pure JavaScript, no native build or global mutation. Component schemas are capped at 64 KiB before cloning and meta-validation, and are not passed through Ajv's code generator.
+- Security and environment: Pure JavaScript, no native build or global mutation. Component schemas larger than 64 KiB are rejected before parsing and meta-validation, and are not passed through Ajv's code generator.
 - Eventual removal: Remove the direct dependency if operation contracts move to a schema facility already owned by Harper or a stable public validator supplied by the runtime.
 
 ## react-native-fs (removed from the published tree, not a dependency)

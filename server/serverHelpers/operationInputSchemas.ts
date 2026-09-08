@@ -9,7 +9,6 @@
  * `properties` declared and a small `required` list when applicable.
  * Optional fields are listed but not required, so an LLM can call the
  * minimum-viable form.
- *
  */
 
 /**

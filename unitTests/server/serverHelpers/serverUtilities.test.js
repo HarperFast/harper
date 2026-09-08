@@ -1040,6 +1040,16 @@ describe('Test serverUtilities.js module ', () => {
 			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
 		});
 
+		it('uses the shipped schema when a named operation omits inputSchema', function () {
+			const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
+			const name = 'get_metrics';
+			server.registerOperation({ name, execute: async () => ({}) });
+
+			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, OPERATION_INPUT_SCHEMAS[name]);
+			assert.notEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, OPERATION_INPUT_SCHEMAS[name]);
+			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+		});
+
 		it('accepts common JSON Schema dialects on registered operations', function () {
 			for (const [name, schemaId] of [
 				['test_draft_06_schema_op', 'http://json-schema.org/draft-06/schema#'],
