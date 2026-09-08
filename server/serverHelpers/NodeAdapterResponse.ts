@@ -197,8 +197,8 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		syncForwarding(this.listenerCount('timeout') > 0);
 		return this;
 	}
-	// Informational responses go to the real Node response when there is one; the uWS and Bun bridges
-	// have none, and a handler awaiting the callback must not hang there.
+	// Informational responses go to the real Node response; a Request built without one still gets the
+	// callback so a handler awaiting it cannot hang.
 	writeContinue(callback?: () => void) {
 		if (typeof this.#nodeResponse?.writeContinue === 'function') this.#nodeResponse.writeContinue(callback);
 		else callback?.();

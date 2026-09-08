@@ -257,7 +257,7 @@ describe('withNodeAdapter with real Node middleware', function () {
 				request = new Request(nodeRequest, nodeResponse);
 				const { status, headers, body } = await request.withNodeAdapter((req, res) => {
 					onFinished(res, (error) => finished.resolve(error));
-					res.once('close', () => closed.resolve());
+					res.once('close', () => closed.resolve(res.errored));
 					res.setHeader('Content-Type', 'application/octet-stream');
 					res.write(BODY.subarray(0, CHUNK_SIZE));
 				});
@@ -268,7 +268,7 @@ describe('withNodeAdapter with real Node middleware', function () {
 				const response = await get(port);
 				await withTimeout(new Promise((resolve) => response.once('data', resolve)), 'the first chunk');
 				response.destroy();
-				await withTimeout(closed.promise, "'close' on the adapter response");
+				assert.strictEqual(await withTimeout(closed.promise, "'close' on the adapter response"), null);
 				await withTimeout(finished.promise, 'on-finished');
 				assert.strictEqual(request.signal.aborted, true);
 			}
