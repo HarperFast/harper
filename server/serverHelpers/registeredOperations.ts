@@ -10,8 +10,8 @@
  * itc/serverHandlers.js), with one deliberate difference: executing an operation is side-effecting,
  * so a request is sent to exactly ONE registering worker (never broadcast-first-wins).
  *
- *  - Worker: `registerOperation()` announces the name and schema (OPERATION_REGISTERED) to all
- *    threads; only the main thread records them, plus `grantable`.
+ *  - Worker: `registerOperation()` sends the name, schema, and `grantable` flag directly to main
+ *    (OPERATION_REGISTERED).
  *  - Main: on an OPERATION_FUNCTION_MAP miss, `getRemoteOperationFunction()` supplies a forwarding
  *    function that sends the request body (OPERATION_EXECUTE_REQUEST) to one live registering
  *    worker and awaits the correlated OPERATION_EXECUTE_RESPONSE.
@@ -76,9 +76,8 @@ let nextRequestId = 1;
 let mainListenersAttached = false;
 
 /**
- * Worker side: announce a registration so the main thread can forward calls here. Fire-and-forget —
- * a lost announcement just means the op stays unreachable (the pre-#1736 status quo), and the
- * broadcast has its own ack timeout.
+ * Worker side: send a registration directly to main so calls can be forwarded here. A missing main
+ * port is logged and leaves the operation unreachable there (the pre-#1736 status quo).
  */
 export function announceRegisteredOperation(name: string, grantable = false, inputSchema?: object) {
 	if (isMainThread) return;
@@ -94,7 +93,7 @@ export function announceRegisteredOperation(name: string, grantable = false, inp
 }
 
 /**
- * ITC handler (all threads receive the broadcast; only main records it).
+ * Main-thread ITC handler for direct worker registration announcements.
  */
 export function operationRegisteredHandler(event: {
 	message?: { name?: string; grantable?: boolean; inputSchema?: object; originator?: number };
@@ -115,10 +114,15 @@ export function operationRegisteredHandler(event: {
 	workerIds.add(originator);
 	let workerSchemas = inputSchemaByWorker.get(name);
 	if (!workerSchemas) inputSchemaByWorker.set(name, (workerSchemas = new Map()));
-	workerSchemas.set(originator, {
-		inputSchema,
-		canonical: inputSchema ? canonicalJson(inputSchema) : undefined,
-	});
+	let workerSchema: WorkerSchema = {};
+	if (inputSchema) {
+		try {
+			workerSchema = { inputSchema, canonical: canonicalJson(inputSchema) };
+		} catch (error) {
+			operationLog.warn(`Ignoring invalid inputSchema announced for '${name}' by thread ${originator}`, error);
+		}
+	}
+	workerSchemas.set(originator, workerSchema);
 	// Mirroring only widens what an allowlist may name; enforcement stays on the worker's
 	// chooseOperation. A re-announcement that drops the permission retracts this thread's claim.
 	setWorkerGrantable(name, originator, grantable === true);

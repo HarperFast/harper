@@ -191,7 +191,7 @@
 		"@turf/distance": "6.5.0",
 		"@turf/helpers": "6.5.0",
 		"@turf/length": "6.5.0",
-		"ajv": "^8.17.1",
+		"ajv": "8.18.0",
 		"alasql": "4.19.0",
 		"amaro": "^1.1.8",
 		"argon2": "0.45.1",

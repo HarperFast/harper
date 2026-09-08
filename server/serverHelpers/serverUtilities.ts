@@ -173,6 +173,7 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 }
 
 export const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
+const BUILT_IN_OPERATION_NAMES = new Set(OPERATION_FUNCTION_MAP.keys());
 
 server.operation = operation;
 export type OperationDefinition = {
@@ -228,7 +229,7 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 	}
 	const schemaMetadata =
 		inputSchema ??
-		(!OPERATION_FUNCTION_MAP.has(name as any) && Object.hasOwn(OPERATION_INPUT_SCHEMAS, name)
+		(!BUILT_IN_OPERATION_NAMES.has(name as any) && Object.hasOwn(OPERATION_INPUT_SCHEMAS, name)
 			? OPERATION_INPUT_SCHEMAS[name]
 			: undefined);
 	const normalizedSchema = normalizeOperationInputSchema(schemaMetadata);

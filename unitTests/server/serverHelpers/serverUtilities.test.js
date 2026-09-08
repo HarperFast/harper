@@ -276,6 +276,7 @@ describe('Test serverUtilities.js module ', () => {
 		const ROLLING_SCHEMA_THREAD = 9_000_092;
 		const MISSING_SCHEMA_THREAD = 9_000_093;
 		const REORDERED_SCHEMA_THREAD = 9_000_094;
+		const INVALID_SCHEMA_THREAD = 9_000_095;
 
 		after(function () {
 			for (const op of [GRANTABLE, PLAIN, SHARED, ROLLED, RETRACTED, ZOMBIE, FAILED_SEND, SCHEMA]) {
@@ -333,6 +334,18 @@ describe('Test serverUtilities.js module ', () => {
 			});
 			assert.deepEqual(registeredOperations.getRemoteOperationInputSchema(SCHEMA), { issue: 'missing' });
 			manageThreads.notifyThreadExit(MISSING_SCHEMA_THREAD);
+		});
+
+		it('does not throw when a worker announces an uncanonicalizable schema', function () {
+			const circular = { type: 'object' };
+			circular.self = circular;
+			assert.doesNotThrow(() =>
+				registeredOperations.operationRegisteredHandler({
+					message: { name: SCHEMA, inputSchema: circular, originator: INVALID_SCHEMA_THREAD },
+				})
+			);
+			assert.deepEqual(registeredOperations.getRemoteOperationInputSchema(SCHEMA), { issue: 'missing' });
+			manageThreads.notifyThreadExit(INVALID_SCHEMA_THREAD);
 		});
 
 		it('makes a worker-announced declared op grantable on the main thread', function () {
@@ -1103,6 +1116,8 @@ describe('Test serverUtilities.js module ', () => {
 
 			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, OPERATION_INPUT_SCHEMAS[name]);
 			assert.notEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, OPERATION_INPUT_SCHEMAS[name]);
+			server.registerOperation({ name, execute: async () => ({}) });
+			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, OPERATION_INPUT_SCHEMAS[name]);
 			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
 		});
 
@@ -1160,6 +1175,8 @@ describe('Test serverUtilities.js module ', () => {
 		it('keeps the operation registered when inputSchema metadata is invalid', function () {
 			for (const [name, inputSchema] of [
 				['test_invalid_schema_metadata_op', { type: 'not-a-json-schema-type' }],
+				['test_missing_object_type_schema_op', { properties: { value: { type: 'string' } } }],
+				['test_array_schema_op', { type: 'array', items: { type: 'string' } }],
 				['test_untrusted_schema_uri_op', { $schema: 'https://example.com/json-schema.org/draft-07/schema' }],
 				['test_oversized_schema_metadata_op', { type: 'object', description: 'x'.repeat(64 * 1024) }],
 				[

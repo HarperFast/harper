@@ -49,6 +49,7 @@ export function normalizeOperationInputSchema(inputSchema: unknown): { schema?: 
 		if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
 			return { error: 'inputSchema must be a JSON object' };
 		}
+		if (schema.type !== 'object') return { error: "inputSchema must declare type: 'object'" };
 		const dialect = getDialect(schema.$schema);
 		if ('error' in dialect) return dialect;
 		const validator = getValidator(dialect);

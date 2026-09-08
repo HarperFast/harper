@@ -451,6 +451,7 @@ describe('mcp/tools/operations — catalog coverage lint', () => {
 	it('every built-in operation input schema is valid JSON Schema', () => {
 		const ajv = new Ajv({ addUsedSchema: false, strict: false, validateSchema: true });
 		for (const [name, schema] of Object.entries(OPERATION_INPUT_SCHEMAS)) {
+			assert.equal(schema.type, 'object', `${name} must declare an object input schema`);
 			assert.doesNotThrow(() => ajv.compile(schema), `${name} must have a valid JSON Schema`);
 		}
 	});
