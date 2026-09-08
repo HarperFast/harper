@@ -31,12 +31,10 @@ class UnsupportedResponseMethodError extends Error {
 const ignoreError = () => {};
 
 /**
- * The `ServerResponse` that `Request.withNodeAdapter()` hands to a Node handler: the body `PassThrough`
- * the adapter resolves with, so backpressure and lifecycle events are Node's own. Two contracts real
- * middleware depends on: headers commit via `this.writeHead` so a `writeHead` replaced on the instance
- * by `on-headers` runs its listeners first, and the adapter owns the 'error' listener because a destroy
- * right after `writeHead()` emits before the awaiting caller can attach one (the error stays in the
- * stream's `errored` state for `pipeline()`, `finished()` or async iteration).
+ * The `ServerResponse` a `withNodeAdapter()` handler receives, and the body the adapter resolves with.
+ * Headers commit via `this.writeHead` so a `writeHead` that `on-headers` replaced on the instance runs
+ * first; the adapter owns the 'error' listener because a destroy right after `writeHead()` emits
+ * before the awaiting caller can attach one.
  */
 export class NodeAdapterResponse extends PassThrough implements NodeServerResponse {
 	statusCode = 200;
@@ -139,7 +137,7 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		statusMessageOrHeaders?: string | OutgoingHttpHeaders | OutgoingHttpHeader[],
 		headers?: OutgoingHttpHeaders | OutgoingHttpHeader[]
 	) {
-		if (this.headersSent) return this;
+		if (this.headersSent) throw new HeadersSentError('write');
 		this.statusCode = statusCode;
 		if (typeof statusMessageOrHeaders === 'string') this.statusMessage = statusMessageOrHeaders;
 		else {

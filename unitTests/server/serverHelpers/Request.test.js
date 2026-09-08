@@ -575,11 +575,11 @@ describe('Request class', function () {
 				assert.strictEqual(resolved.headers.get('content-type'), 'application/json');
 			});
 
-			it('is idempotent — second writeHead call is a no-op', async function () {
+			it('throws ERR_HTTP_HEADERS_SENT on a second writeHead call, as Node does', async function () {
 				const request = makeRequest();
 				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.writeHead(200, { 'x-first': 'yes' });
-					res.writeHead(500, { 'x-first': 'overwritten' });
+					assert.throws(() => res.writeHead(500, { 'x-first': 'overwritten' }), { code: 'ERR_HTTP_HEADERS_SENT' });
 					res.end();
 				});
 
@@ -1008,16 +1008,15 @@ describe('Request class', function () {
 				}, /sync failure/);
 			});
 
-			it('rethrows when the handler throws after ending the response', function () {
+			it('keeps the completed response when the handler throws after ending it', async function () {
 				const request = makeRequest();
-				assert.throws(
-					() =>
-						request.withNodeAdapter((req, res) => {
-							res.end('done');
-							throw new Error('after end');
-						}),
-					/after end/
-				);
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.end('done');
+					throw new Error('after end');
+				});
+
+				const { status } = await responsePromise;
+				assert.strictEqual(status, 200);
 			});
 		});
 

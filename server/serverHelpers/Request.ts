@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import { Headers as ResponseHeaders } from './Headers.ts';
 import { NodeAdapterResponse, type AdaptedResponse } from './NodeAdapterResponse.ts';
 import type { ConnectionInfo } from './proxyProtocol.ts';
+import harperLogger from '../../utility/logging/harper_logger.ts';
 
 export const isBun = typeof globalThis.Bun !== 'undefined';
 
@@ -192,8 +193,7 @@ export class Request {
 	withNodeAdapter(
 		handler: (request: NodeIncomingMessage, response: NodeServerResponse) => void | Promise<void>
 	): Promise<AdaptedResponse> {
-		// Flat headers object matching IncomingMessage.headers (lowercase keys). A plain object rather
-		// than Object.create(null): middleware calls headers.hasOwnProperty().
+		// Lowercase keys on a plain object, as IncomingMessage.headers is (middleware calls hasOwnProperty).
 		const reqHeaders: Record<string, string | string[]> = {};
 		for (const [key, value] of this.headers) reqHeaders[key.toLowerCase()] = value;
 
@@ -214,9 +214,8 @@ export class Request {
 			nodeRes = new NodeAdapterResponse(nodeReq, this._nodeResponse, resolve, reject);
 		});
 
-		// Client disconnect reaches the handler as 'close', as it would from Node's server: once headers are
-		// out the response is destroyed without an error, so pipeline() reports the premature close that
-		// pipeBodyToResponse already treats as routine; before that the promise rejects with the reason.
+		// Client disconnect: after headers a plain premature close, as from Node's server (pipeBodyToResponse
+		// treats it as routine); before them the promise rejects with the abort reason.
 		const signal = this.signal;
 		const onAbort = () => nodeRes.destroy(nodeRes.headersSent ? undefined : signal.reason);
 		if (signal.aborted) onAbort();
@@ -225,19 +224,20 @@ export class Request {
 			nodeRes.once('close', () => signal.removeEventListener('abort', onAbort));
 		}
 
-		// A handler that fails without ending the response would otherwise leave it open forever.
+		// A failure after the handler ended the response cannot reach the client or the promise.
+		const onHandlerFailure = (error: Error) => {
+			if (!nodeRes.writableEnded) nodeRes.destroy(error);
+			else harperLogger.warn('withNodeAdapter handler failed after ending its response', error);
+		};
 		let handlerResult: void | Promise<void>;
 		try {
 			handlerResult = handler(nodeReq, nodeRes);
 		} catch (error) {
-			if (nodeRes.writableEnded) throw error;
-			nodeRes.destroy(error as Error);
+			onHandlerFailure(error as Error);
 			return response;
 		}
 		if (typeof (handlerResult as Promise<void>)?.then === 'function') {
-			(handlerResult as Promise<void>).catch((error: Error) => {
-				if (!nodeRes.writableEnded) nodeRes.destroy(error);
-			});
+			(handlerResult as Promise<void>).catch(onHandlerFailure);
 		}
 		return response;
 	}
