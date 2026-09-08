@@ -1177,7 +1177,11 @@ describe('Test serverUtilities.js module ', () => {
 				['test_invalid_schema_metadata_op', { type: 'not-a-json-schema-type' }],
 				['test_missing_object_type_schema_op', { properties: { value: { type: 'string' } } }],
 				['test_array_schema_op', { type: 'array', items: { type: 'string' } }],
-				['test_untrusted_schema_uri_op', { $schema: 'https://example.com/json-schema.org/draft-07/schema' }],
+				[
+					'test_untrusted_schema_uri_op',
+					{ type: 'object', $schema: 'https://example.com/json-schema.org/draft-07/schema' },
+				],
+				['test_meta_invalid_schema_op', { type: 'object', required: 'value' }],
 				['test_oversized_schema_metadata_op', { type: 'object', description: 'x'.repeat(64 * 1024) }],
 				[
 					'test_circular_schema_metadata_op',
