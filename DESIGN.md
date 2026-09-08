@@ -654,6 +654,29 @@ briefly absent (in-memory resources are unaffected, but a component that opens i
 request can still see a gap); validation does not run on the main-thread deploy path; and config
 publication is not yet an effect of this transaction, as above.
 
+### Retention of dormant staged builds
+
+A journal-less deployment directory holding `.complete` and the owner's tree is a **dormant build**: built
+and validated, activated by nobody. Recovery used to remove every owned journal-less directory; it now keeps
+dormant builds and bounds them per component to `deployment_stagingRetention_maxCount` (default 5, 0 keeps
+none), newest by `.complete` mtime, ties broken by deployment id so concurrent passes pick the same victims.
+Everything else journal-less — a partial tree, a directory whose tree already moved live, a stale
+`.unsettled` — is still residue and still removed. Nothing here produces a dormant build yet beyond the crash
+window between `.complete` and the journal; #2315 step 6 (deploy from an existing aside) is the producer this
+bound exists for.
+
+The classification is meaningful **only under the owner's preparation lock**: activation writes `.complete`
+moments before its journal while holding that lock, so an unlocked read of "complete, no journal" may be a
+swap in progress. Boot recovery therefore classifies inside the same locked pass that removes residue, prunes
+per owner afterwards under the lock again, and treats a lock it cannot get as the same deferral the residue
+branch records — "do not delete" is not "safe to load". The deploy path prunes inside the settlement scan it
+already runs under the lock, before building, so a deploy pays one traversal of the staging root. Each
+eviction re-checks for a journal first, since the catalog may predate a deploy that ran between the scan
+and the prune. Only ENOENT is absence; any other read error keeps the entry and moves on. Pruning is disk
+hygiene: it never fails a component closed and never replaces a deploy's own error, so the bound is
+best-effort under filesystem failure and is not a storage quota — journaled, unsettled and unowned
+directories are preserved by design and can still fill a volume.
+
 ## Component preparation is serialized across worker threads
 
 `prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" below). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
