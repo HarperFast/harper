@@ -31,7 +31,7 @@ import type {
 } from './ResourceInterface.ts';
 import type { User } from '../security/user.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
+import { PATCH_IF_EXISTS, Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -385,6 +385,18 @@ export interface Table {
 	description?: string;
 	properties?: Record<string, JsonSchemaFragment>;
 	hidden?: boolean;
+}
+
+export function patchIfExists(TableClass: any, target: RequestTargetOrId, updates: object) {
+	if (TableClass.source || TableClass.replicate !== false)
+		throw new Error(
+			`Conditional patches require a local, source-free table; ${TableClass.databaseName}.${TableClass.tableName} is ineligible`
+		);
+	return TableClass[PATCH_IF_EXISTS](target, updates, newIsolatedWriteContext());
+}
+
+function newIsolatedWriteContext(): Context {
+	return {};
 }
 type ResidencyDefinition = number | string[] | void;
 
@@ -2037,8 +2049,8 @@ export function makeTable(options) {
 		 */
 		update(updates: Record & RecordObject, fullUpdate: true);
 		update(updates: Partial<Record & RecordObject>, target?: RequestTarget);
-		update(target: RequestTarget, updates?: any);
-		update(target: any, updates?: any) {
+		update(target: RequestTarget, updates?: any, options?: { ifExists?: boolean });
+		update(target: any, updates?: any, options?: { ifExists?: boolean }) {
 			let id: Id;
 			// determine if it is a legacy call
 			const directInstance =
@@ -2097,12 +2109,12 @@ export function makeTable(options) {
 							this.#changes = updates;
 							// `when` awaits the embed hook (when `@embed` is active) before resolving,
 							// so the caller's `save()` doesn't run before the write is staged.
-							return when(this._writeUpdate(id, this.#changes, false), () => this);
+							return when(this._writeUpdate(id, this.#changes, false, options), () => this);
 						});
 					});
 				}
 			}
-			return when(this._writeUpdate(id, this.#changes, fullUpdate), () => this);
+			return when(this._writeUpdate(id, this.#changes, fullUpdate, options), () => this);
 		}
 
 		/**
@@ -2870,6 +2882,7 @@ export function makeTable(options) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			const transaction = txnForContext(context);
+			const ifExists = !fullUpdate && options?.ifExists === true;
 			const replaying = transaction.isReplay === true;
 			checkValidId(id);
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
@@ -3028,6 +3041,7 @@ export function makeTable(options) {
 					const priorStagedOp = priorStagedWrite(write);
 					const priorStaged = priorStagedOp?.stagedEntry;
 					const existingRecord = priorStaged ? priorStaged.value : existingEntry?.value;
+					const skipMissingRecord = ifExists && existingRecord == null;
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
 							context.lastModified = existingEntry.version;
@@ -3042,6 +3056,11 @@ export function makeTable(options) {
 
 					this.#savingOperation = null;
 					write.stagedIn = undefined; // nothing may pin this write's transaction past its commit
+					// validate() runs only on the first attempt, so retries must recheck existence in commit.
+					if (skipMissingRecord) {
+						write.skipped = true;
+						return;
+					}
 					let omitLocalRecord = false;
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
@@ -3632,6 +3651,7 @@ export function makeTable(options) {
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
 								// local-only marks the record so the replication send path skips it (see LOCAL_ONLY)
 								localOnly: options?.localOnly,
+								ifExists,
 							},
 							type,
 							false,

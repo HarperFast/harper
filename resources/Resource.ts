@@ -30,6 +30,7 @@ import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
+export const PATCH_IF_EXISTS = Symbol('patchIfExists');
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -179,6 +180,13 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 					? resource.patch(query, data)
 					: resource.patch(data, query)
 				: missingMethod(resource, 'patch');
+		},
+		{ hasContent: true, type: 'update', method: 'patch' }
+	);
+
+	static [PATCH_IF_EXISTS] = transactional(
+		function (resource: any, query: RequestTarget, _request: Context, data: any) {
+			return when(resource.update(query, data, { ifExists: true }), () => when(resource.save(), () => undefined));
 		},
 		{ hasContent: true, type: 'update', method: 'patch' }
 	);

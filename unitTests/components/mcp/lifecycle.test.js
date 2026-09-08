@@ -9,25 +9,10 @@ const {
 	handleInitialized,
 } = require('#src/components/mcp/lifecycle');
 const { _setSessionTableForTest, loadSession } = require('#src/components/mcp/session');
-
-function makeFakeTable() {
-	const store = new Map();
-	return {
-		async put(record) {
-			store.set(record.id, { ...record });
-		},
-		async get(id) {
-			const r = store.get(id);
-			return r ? { ...r } : undefined;
-		},
-		async delete(id) {
-			store.delete(id);
-		},
-	};
-}
+const { makeFakeSessionTable } = require('./fakeSessionTable');
 
 describe('mcp/lifecycle', () => {
-	beforeEach(() => _setSessionTableForTest(makeFakeTable()));
+	beforeEach(() => _setSessionTableForTest(makeFakeSessionTable()));
 	afterEach(() => _setSessionTableForTest(undefined));
 
 	describe('exported constants', () => {

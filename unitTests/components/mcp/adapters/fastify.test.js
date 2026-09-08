@@ -1,22 +1,7 @@
 const assert = require('node:assert');
 const { createFastifyHandler } = require('#src/components/mcp/adapters/fastify');
 const { _setSessionTableForTest, loadSession } = require('#src/components/mcp/session');
-
-function makeFakeTable() {
-	const store = new Map();
-	return {
-		async put(record) {
-			store.set(record.id, { ...record });
-		},
-		async get(id) {
-			const r = store.get(id);
-			return r ? { ...r } : undefined;
-		},
-		async delete(id) {
-			store.delete(id);
-		},
-	};
-}
+const { makeFakeSessionTable } = require('../fakeSessionTable');
 
 function makeReply() {
 	const reply = {
@@ -40,7 +25,7 @@ function makeReply() {
 }
 
 describe('mcp/adapters/fastify', () => {
-	beforeEach(() => _setSessionTableForTest(makeFakeTable()));
+	beforeEach(() => _setSessionTableForTest(makeFakeSessionTable()));
 	afterEach(() => _setSessionTableForTest(undefined));
 
 	it('forwards an initialize request and writes 200 + JSON body back to Fastify', async () => {

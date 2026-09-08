@@ -22,6 +22,8 @@ const {
 	_setHttpUrlPrefixForTest,
 	_setSubscribeImplForTest,
 } = require('#src/components/mcp/resources');
+const { _liveSubscriptionCount, _resetSubscriptionsForTest } = require('#src/components/mcp/subscriptions');
+const { makeFakeSessionTable } = require('./fakeSessionTable');
 
 function makeFakeResources(entries) {
 	const map = new Map();
@@ -38,23 +40,6 @@ function makeFakeResources(entries) {
 		return best;
 	};
 	return map;
-}
-
-function makeFakeTable() {
-	const store = new Map();
-	return {
-		store,
-		async put(record) {
-			store.set(record.id, { ...record });
-		},
-		async get(id) {
-			const r = store.get(id);
-			return r ? { ...r } : undefined;
-		},
-		async delete(id) {
-			store.delete(id);
-		},
-	};
 }
 
 function makeReq(overrides = {}) {
@@ -77,6 +62,7 @@ function jsonRpc(id, method, params) {
 
 describe('mcp/transport', () => {
 	let envOverrides;
+	let fakeSessionTable;
 	const envStub = {
 		get(key) {
 			return envOverrides[key];
@@ -86,7 +72,8 @@ describe('mcp/transport', () => {
 	beforeEach(() => {
 		envOverrides = {};
 		transport_mod.__set__('env', envStub);
-		_setSessionTableForTest(makeFakeTable());
+		fakeSessionTable = makeFakeSessionTable();
+		_setSessionTableForTest(fakeSessionTable);
 		_resetRegistryForTest();
 		_resetPromptRegistryForTest();
 		_setResourcesForTest(makeFakeResources([]));
@@ -101,6 +88,7 @@ describe('mcp/transport', () => {
 		_setResourcesForTest(undefined);
 		_setOpenApiGeneratorForTest(undefined);
 		_setHttpUrlPrefixForTest(undefined);
+		_setSubscribeImplForTest(undefined);
 	});
 
 	describe('POST initialize', () => {
@@ -271,12 +259,26 @@ describe('mcp/transport', () => {
 			assert.equal(session.logLevel, 'warning');
 		});
 
+		it('logging/setLevel persists without mutating a frozen loaded session', async () => {
+			const get = fakeSessionTable.get;
+			fakeSessionTable.get = async (id) => Object.freeze(await get(id));
+			const res = await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(2, 'logging/setLevel', { level: 'warning' }),
+					headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+
+			assert.equal(res.status, 200);
+			assert.equal((await loadSession(sessionId)).logLevel, 'warning');
+		});
+
 		it('does not roll back lastActivity when persisting the level (touchSession adopted)', async () => {
 			// Force a known-old lastActivity, then setLevel: the request's touchSession
 			// must advance it, and the level-persisting saveSession must NOT write the
 			// stale load-time value back (root fix — handlePost adopts the touched copy).
 			const stale = await loadSession(sessionId);
-			await saveSession({ ...stale, lastActivity: 1 });
+			await saveSession(stale.id, { lastActivity: 1 });
 			await handleMcpRequest(
 				makeReq({
 					body: jsonRpc(2, 'logging/setLevel', { level: 'info' }),
@@ -1198,6 +1200,29 @@ describe('mcp/transport', () => {
 				const saved = await loadSession(sessionId);
 				assert.ok(!(saved.subscriptions ?? []).includes(uri), 'URI dropped from the record');
 			});
+
+			it('subscribes and unsubscribes without mutating a frozen loaded session', async () => {
+				const get = fakeSessionTable.get;
+				fakeSessionTable.get = async (id) => Object.freeze(await get(id));
+				const uri = 'https://app.test:9926/Product/3';
+
+				const subscribe = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(76, 'resources/subscribe', { uri }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				const unsubscribe = await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(77, 'resources/unsubscribe', { uri }),
+						headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+
+				assert.equal(subscribe.status, 200);
+				assert.equal(unsubscribe.status, 200);
+				assert.ok(!(await loadSession(sessionId)).subscriptions.includes(uri));
+			});
 		});
 
 		describe('completion/complete', () => {
@@ -1409,6 +1434,24 @@ describe('mcp/transport', () => {
 			assert.equal(res.headers['Content-Type'], 'text/event-stream');
 			assert.ok(res.sseIterable, 'sseIterable returned for the SSE channel');
 		});
+
+		it('prunes unavailable subscriptions from a frozen persisted session', async () => {
+			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			await saveSession(session.id, { subscriptions: ['https://app.test:9926/nope/1'] });
+			_setSubscribeImplForTest(async () => null);
+			const get = fakeSessionTable.get;
+			fakeSessionTable.get = async (id) => Object.freeze(await get(id));
+
+			const res = await handleMcpRequest(
+				makeReq({
+					method: 'GET',
+					headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+
+			assert.equal(res.status, 200);
+			assert.deepEqual((await loadSession(session.id)).subscriptions, []);
+		});
 	});
 
 	describe('DELETE /mcp', () => {
@@ -1422,9 +1465,61 @@ describe('mcp/transport', () => {
 		it('terminates the session and returns 204 when allowClientDelete is true', async () => {
 			envOverrides.mcp_session_allowClientDelete = true;
 			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			registerSession(session.id, 'application', {
+				username: 'alice',
+				role: { permission: { super_user: true } },
+			});
+			_setSubscribeImplForTest(async () => ({
+				end() {},
+				[Symbol.asyncIterator]() {
+					return { next: () => new Promise(() => {}), return: () => Promise.resolve({ done: true }) };
+				},
+			}));
+			await handleMcpRequest(
+				makeReq({
+					body: jsonRpc(89, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+					headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+				})
+			);
+			assert.equal(_liveSubscriptionCount(session.id), 1);
+
 			const res = await handleMcpRequest(makeReq({ method: 'DELETE', headers: { 'mcp-session-id': session.id } }));
 			assert.equal(res.status, 204);
 			assert.equal(await loadSession(session.id), null);
+			assert.equal(_liveSubscriptionCount(session.id), 0);
+		});
+
+		it('keeps live subscriptions when storage deletion fails', async () => {
+			envOverrides.mcp_session_allowClientDelete = true;
+			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			registerSession(session.id, 'application', {
+				username: 'alice',
+				role: { permission: { super_user: true } },
+			});
+			_setSubscribeImplForTest(async () => ({
+				end() {},
+				[Symbol.asyncIterator]() {
+					return { next: () => new Promise(() => {}), return: () => Promise.resolve({ done: true }) };
+				},
+			}));
+			try {
+				await handleMcpRequest(
+					makeReq({
+						body: jsonRpc(90, 'resources/subscribe', { uri: 'https://app.test:9926/Product/1' }),
+						headers: { 'mcp-session-id': session.id, 'mcp-protocol-version': '2025-06-18' },
+					})
+				);
+				assert.equal(_liveSubscriptionCount(session.id), 1);
+				fakeSessionTable.delete = async () => {};
+
+				const res = await handleMcpRequest(makeReq({ method: 'DELETE', headers: { 'mcp-session-id': session.id } }));
+
+				assert.equal(res.status, 500);
+				assert.ok(await loadSession(session.id));
+				assert.equal(_liveSubscriptionCount(session.id), 1);
+			} finally {
+				_resetSubscriptionsForTest();
+			}
 		});
 
 		it('returns 400 when allowClientDelete is true but session-id is missing', async () => {

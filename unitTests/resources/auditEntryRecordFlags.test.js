@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { createAuditEntry, readAuditEntry } = require('#src/resources/auditStore');
+const { CONDITIONAL_PATCH, createAuditEntry, readAuditEntry } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 
@@ -44,6 +44,17 @@ describe('Audit entry record flags match the body (#2153)', () => {
 		// the empty body is guarded on read: no decode attempt, no throw, stable across calls
 		assert.equal(read.getValue({}), undefined);
 		assert.equal(read.getValue({}), undefined);
+	});
+
+	it('preserves a conditional patch flag through audit encoding', () => {
+		const entry = createAuditEntry({
+			...baseRecord,
+			type: 'patch',
+			extendedType: CONDITIONAL_PATCH,
+			encodedRecord: Buffer.from([0x81, 0xa1, 0x61, 0x01]),
+		});
+		const read = readAuditEntry(Buffer.from(entry));
+		assert.equal(read.extendedType & CONDITIONAL_PATCH, CONDITIONAL_PATCH);
 	});
 
 	it('a raw-content read of a bodyless partial returns undefined, not a reconstruction', () => {
