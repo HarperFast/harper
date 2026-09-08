@@ -22,6 +22,15 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	let Plain, Filled, auditStore;
 	let reportedVersion;
 
+	// Origin log keys for applied writes. Each must be unique on the local log: auditStore.get reads
+	// only the contiguous run of entries at a key, so a second transaction at the same key hides
+	// whatever was written after it. Anchors are 100 s apart so the offsets tests subtract from one
+	// (at most 60 s) never reach the previous anchor.
+	let lastAnchor = Date.now() - 3 * 3_600_000;
+	function originClock() {
+		return (lastAnchor += 100_000);
+	}
+
 	// Every audit entry this suite's tables produced, newest last.
 	function auditEntriesFor(TableClass, id) {
 		const entries = [];
@@ -149,7 +158,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('an applied write keeps the origin version and takes the origin log key', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'applied-1';
-		const logKey = Date.now();
+		const logKey = originClock();
 		const version = logKey - 30_000;
 		await applyFromOrigin(Plain, id, { id, name: 'from-origin' }, { logKey, version });
 		assert.equal(Plain.primaryStore.getEntry(id).version, version, 'the peer stores the origin record version');
@@ -161,7 +170,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('keeps a log-key pointer to the audit head when the stored version differs', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'applied-head-1';
-		const baseVersion = Date.now() - 60_000;
+		const baseVersion = originClock() - 60_000;
 		await applyFromOrigin(
 			Plain,
 			id,
@@ -206,9 +215,9 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('distinguishes equal record versions from distinct log-key writes', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'equal-version-distinct-log-key-1';
-		const version = Date.now() - 30_000;
+		const version = originClock() - 30_000;
 		await applyFromOrigin(Plain, id, { id, name: 'base', count: 0 }, { logKey: version, version, nodeId: 0 });
-		const logKey = Date.now();
+		const logKey = originClock();
 		await applyFromOrigin(
 			Plain,
 			id,
@@ -226,7 +235,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('keeps a log-key pointer to an applied delete whose version differs', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'applied-delete-head-1';
-		const writeLogKey = Date.now() - 10_000;
+		const writeLogKey = originClock() - 10_000;
 		const writeVersion = writeLogKey - 30_000;
 		await applyFromOrigin(
 			Plain,
@@ -257,14 +266,14 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('keeps a log-key pointer to an applied invalidation whose version differs', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'applied-invalidate-head-1';
-		const baseVersion = Date.now() - 30_000;
+		const baseVersion = originClock() - 30_000;
 		await applyFromOrigin(
 			Plain,
 			id,
 			{ id, name: 'present' },
 			{ logKey: baseVersion, version: baseVersion, nodeId: 0, isCopyApply: true }
 		);
-		const logKey = Date.now() + 20;
+		const logKey = originClock();
 		const version = baseVersion;
 		await invalidateFromOrigin(Plain, id, { id, name: 'present' }, { logKey, version, nodeId: 0 });
 		const invalidated = Plain.primaryStore.getEntry(id);
@@ -283,14 +292,14 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('keeps a log-key pointer to an applied relocation whose version differs', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'applied-relocate-head-1';
-		const baseVersion = Date.now() - 30_000;
+		const baseVersion = originClock() - 30_000;
 		await applyFromOrigin(
 			Plain,
 			id,
 			{ id, name: 'present' },
 			{ logKey: baseVersion, version: baseVersion, nodeId: 0, isCopyApply: true }
 		);
-		const logKey = Date.now() + 21;
+		const logKey = originClock();
 		const version = baseVersion;
 		await relocateFromOrigin(Plain, id, { logKey, version, nodeId: 0 });
 		const relocated = Plain.primaryStore.getEntry(id);
@@ -309,7 +318,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('does not point a copy-applied record at an audit entry that was never written', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'copy-head-1';
-		const logKey = Date.now() + 11;
+		const logKey = originClock();
 		await applyFromOrigin(
 			Plain,
 			id,
@@ -328,7 +337,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('does not let an audit-only fold displace an ordinary audit head', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'ordinary-fold-head-1';
-		const head = Date.now() - 10_000;
+		const head = originClock() - 10_000;
 		await applyFromOrigin(Plain, id, { id, name: 'newer' }, { logKey: head, version: head, nodeId: 0 });
 		await applyFromOrigin(
 			Plain,
@@ -345,7 +354,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('bounds an applied record version by the originating transaction-log key', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'applied-out-of-order-1';
-		const logKey = Date.now();
+		const logKey = originClock();
 		const survivingVersion = logKey + 30_000;
 		await applyFromOrigin(Plain, id, { id, name: 'from-origin' }, { logKey, version: survivingVersion });
 		assert.equal(Plain.primaryStore.getEntry(id).version, logKey);
@@ -358,7 +367,7 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		if (isLMDB) return this.skip();
 		// A sender frames by log key, so entries committed together — a fill and an ordinary write —
 		// reach the receiver in one transaction with different record versions. Each has to keep its own.
-		const logKey = Date.now() + 1;
+		const logKey = originClock();
 		const olderVersion = logKey - 45_000;
 		const context = { source: {}, sourceApply: true, timestamp: logKey };
 		await transaction(context, async () => {
@@ -399,11 +408,13 @@ describe('Dual-clock audit records (harper#2412)', () => {
 	it('delivers a subscriber event whose version is the record version and localTime the log position', async function () {
 		if (isLMDB) return this.skip();
 		const id = 'transport-1';
-		const subscription = await Plain.subscribe({});
+		// omitCurrent skips the replay that would otherwise raise the subscription's high-water mark
+		// above every fabricated key; live forwarding then accepts any key.
+		const subscription = await Plain.subscribe({ omitCurrent: true });
 		const events = [];
 		subscription.on('data', (event) => events.push(event));
 		try {
-			const logKey = Date.now() + 2;
+			const logKey = originClock();
 			const version = logKey - 90_000;
 			await applyFromOrigin(Plain, id, { id, name: 'delivered' }, { logKey, version });
 			await waitFor(() => events.some((event) => event.id === id), {
@@ -440,8 +451,8 @@ describe('Dual-clock audit records (harper#2412)', () => {
 		// auditStore.get(key, ...) walks the entries at one log key; a fill's entry sits at its commit
 		// key while the record itself stores the source version, so keying by version must not find it.
 		const id = 'lookup-1';
-		const logKey = Date.now() + 1_000;
-		const version = logKey - 120_000;
+		const logKey = originClock();
+		const version = logKey - 30_000;
 		// nodeId 0 so the entry lands in — and is read back from — the one log a single-node test has
 		await applyFromOrigin(Plain, id, { id, name: 'lookup' }, { logKey, version, nodeId: 0 });
 		const found = auditStore.get(logKey, Plain.tableId, id, 0);
