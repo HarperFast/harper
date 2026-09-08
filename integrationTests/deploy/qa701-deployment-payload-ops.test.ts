@@ -243,25 +243,19 @@ async function packageToBuffer(fixtureDir: string): Promise<{ buffer: Buffer; sh
 	return { buffer, sha256 };
 }
 
-// How long the gate parks the deploy if the test never releases it, and the install timeout that
-// must outlast it. Neither is a race budget: the probe releases the gate as soon as its assertions
-// are done, and the `exited` marker below reports a gate that closed early rather than letting it
-// be misread as a guard failure.
+// The gate holds the deploy for at most GATE_MAX_HOLD_MS if the test never releases it; the install
+// timeout must outlast that. Neither is a race budget -- the probe releases the gate as soon as its
+// assertions are done.
 const GATE_MAX_HOLD_MS = 120_000;
 const GATE_INSTALL_TIMEOUT_MS = 180_000;
 
-// The 409 probe needs the deployment to be non-terminal while it runs, and it must be able to PROVE
-// it was: a window paced by wall clock (a slow upload, a `sleep` install) closes on a loaded runner
-// and then reports the miss as a guard failure. deploy_component awaits prepareApplication, which
-// awaits the component's install_command, so a component whose install command parks holds its row
-// non-terminal for exactly as long as the test wants it held -- the same lever
-// integrationTests/deploy/stage-swap-availability.test.ts uses to sample a mid-deploy state.
-//
-// This gate adds a third signal to that pattern: it writes `exited` on its way out, whatever the
-// reason. An ABSENT `exited` at the moment the delete response lands is what proves the install
-// command was still parked across the whole call -- i.e. that the row could not have gone terminal
-// underneath the probe -- which is what separates 'the window closed early' from 'the guard did not
-// fire'.
+// deploy_component awaits prepareApplication, which awaits the component's install_command, so a
+// component whose install command parks holds its row non-terminal for as long as the test wants --
+// the lever integrationTests/deploy/stage-swap-availability.test.ts uses to sample a mid-deploy
+// state. An elapsed-time window (a paced upload, a `sleep` install) cannot: whether the operation
+// is even dispatched before the request body completes is runtime-dependent, and under Bun it is
+// not. The `exited` marker is this gate's addition -- absent, it proves the install command had not
+// returned, so the row cannot have gone terminal.
 function installGateScript(paths: { started: string; release: string; exited: string }): string {
 	return (
 		`const fs = require('node:fs');\n` +
@@ -281,8 +275,6 @@ function installGateScript(paths: { started: string; release: string; exited: st
 	);
 }
 
-// The probe's own failure modes read very differently depending on whether the deploy had already
-// finished, so say which it was rather than printing an empty serialized Error.
 function describeDeployResolution(
 	resolution: { value: Awaited<ReturnType<typeof deployBuffer>> } | { error: unknown } | undefined
 ): string {
@@ -291,9 +283,8 @@ function describeDeployResolution(
 	return `had already returned ${resolution.value.status}: ${resolution.value.raw.toString('utf8').slice(0, 300)}`;
 }
 
-// A fixture whose install_command parks on the gate. package.json is what makes installApplication
-// run the command at all (without a manifest it logs "skipping install"), and node_modules must be
-// absent for the same reason -- see installApplication in components/Application.ts.
+// installApplication runs a custom install command only for a tree that has a package.json and no
+// node_modules; without the manifest it logs "skipping install" and the gate never runs.
 function buildGatedFixture(
 	kb: number,
 	marker: string,
@@ -496,17 +487,12 @@ suite(
 		});
 
 		test('3: delete_deployment_payload on a non-terminal deployment -> 409, blob untouched', async () => {
-			// deploy_component only responds once the row is terminal, so awaiting the deploy and then
-			// deleting can never reach the guard -- the delete has to be issued mid-deploy. Holding the
-			// window open with elapsed time (a paced upload, a `sleep` install) is what made this probe
-			// flaky: on a loaded runner the deploy finished first and the 200 read as a guard failure
-			// (nightly 2026-09-05, Bun shard). The install gate replaces that with a causal window --
-			// the deploy is parked inside install_command until this test releases it -- and the gate's
-			// 'exited' marker makes 'the window closed early' a DIFFERENT failure from 'the guard did
-			// not fire', so a future red run says which one happened.
+			// deploy_component only responds once the row is terminal, so the delete has to be issued
+			// mid-deploy; the install gate is what holds it there. Failing on the gate's `exited` marker
+			// separately from the 409 keeps 'the window closed early' distinguishable from 'the guard
+			// did not fire' -- the two the old elapsed-time window could not tell apart.
 			const project = 'qa701-nonterminal-app';
-			// The signal files live outside the packaged tree, so the gate script's own component
-			// directory (staged, then renamed on swap) can never be what makes them appear.
+			// Outside the packaged tree: the component directory is staged and renamed on swap.
 			const gateDir = mkdtempSync(join(tmpdir(), 'qa701-install-gate-'));
 			tempFixtureDirs.push(gateDir);
 			const gate = {
@@ -528,9 +514,7 @@ suite(
 			);
 
 			try {
-				// Wait for the gate, not for a duration. A deploy that settles first can only mean the
-				// install command never ran (no package.json in the payload, or an install that was
-				// skipped), which is a broken probe rather than a guard failure -- say so.
+				// A deploy that settles first means the install command never ran -- a broken probe.
 				const readyDeadline = Date.now() + 60_000;
 				while (!existsSync(gate.started) && !deployResolution && Date.now() < readyDeadline) await sleep(25);
 				ok(
@@ -539,8 +523,7 @@ suite(
 						`non-terminal -- the deploy ${describeDeployResolution(deployResolution)}`
 				);
 
-				// The gate is blocking install_command, so the deploy cannot have reached a terminal
-				// status -- this row read is an identification step, not a race window.
+				// An identification step, not a race window: the gate still holds install_command.
 				const listed = await callOperation(ctx, { operation: 'list_deployments', project });
 				const rows: Array<{ deployment_id: string; status?: string }> = listed.body?.deployments ?? [];
 				strictEqual(
@@ -559,16 +542,17 @@ suite(
 					operation: 'delete_deployment_payload',
 					deployment_id: inFlight.deployment_id,
 				});
-				// Read the moment the response lands: the gate writes 'exited' before the install command
-				// returns, so an absent marker proves the deploy was still parked in install for the whole
-				// delete -- i.e. the row could not have gone terminal underneath it.
-				const gateExited = existsSync(gate.exited);
+				// Both proofs, sampled the instant the response lands. The marker is written before the
+				// install command returns; the unsettled deploy covers the case it cannot -- a child
+				// killed without running its `finally` leaves no marker either.
+				const windowHeld = !existsSync(gate.exited) && !deployResolution;
 				const after = await callOperation(ctx, { operation: 'get_deployment', deployment_id: inFlight.deployment_id });
 				ok(
-					!gateExited,
-					`the install gate released before the delete completed, so the non-terminal window was not ` +
-						`held open and this run proves nothing about the 409 guard (delete returned ${delResp.status}, ` +
-						`row status now '${after.body?.status}')`
+					windowHeld,
+					`the deploy left its install gate before the delete completed, so the non-terminal window was ` +
+						`not held open and this run proves nothing about the 409 guard (delete returned ` +
+						`${delResp.status}, row status now '${after.body?.status}', deploy ` +
+						`${describeDeployResolution(deployResolution)})`
 				);
 				strictEqual(
 					delResp.status,

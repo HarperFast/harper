@@ -198,6 +198,10 @@ describe('test MQTT connections and commands', function () {
 	});
 
 	it('can repeatedly publish', async function () {
+		// Captured before the five serial connects: the delivery wait must be budgeted from what is LEFT
+		// of this test's mocha timeout, or teardown lands after mocha has abandoned the test and the
+		// publishers keep running into the next one.
+		const deadline = Date.now() + this.timeout();
 		const vus = 5;
 		const tableName = 'SimpleRecord';
 		let intervals = [];
@@ -243,21 +247,16 @@ describe('test MQTT connections and commands', function () {
 			});
 		}
 		await Promise.all(subscriptions);
-		// What this pins is that repeated publishes keep being delivered, not how many land inside a
-		// 200 ms sample: the publishers stay running until the eleventh delivery arrives. The backstop
-		// is derived from this test's own mocha timeout for the same reason as the retained-message
-		// test above -- a hardcoded one at the suite's 10 s would race it and lose the message.
-		const waitBudget = this.timeout() - 2000;
+		// The publishers stay running until the eleventh delivery lands, leaving 2s for teardown.
+		const waitBudget = Math.max(1000, deadline - Date.now() - 2000);
 		try {
 			await waitFor(() => received.length > 10, { timeout: waitBudget });
 		} catch (error) {
-			// Report the count reached, which is the number that says whether delivery stalled or merely
-			// ran slow -- waitFor's own `message` would be built before any message had arrived.
+			// waitFor's own `message` is built before any message has arrived, so it cannot carry the count.
 			assert.fail(`only ${received.length} repeated MQTT publishes arrived within ${waitBudget}ms (${error.message})`);
 		} finally {
 			for (let interval of intervals) clearInterval(interval);
-			// Force close: a graceful end waits on every still-unacked QoS 1 publish, and teardown must
-			// not become the thing that hangs the test.
+			// Forced: a graceful end waits on every still-unacked QoS 1 publish.
 			for (let client of clients) client.end(true);
 		}
 		assert(received.length > 10);
