@@ -25,7 +25,6 @@ import * as terms from '../../utility/hdbTerms.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
-import { sendItcEvent } from '../threads/itc.js';
 import { hasThreadExited, onMessageByType, onThreadExit } from '../threads/manageThreads.js';
 import {
 	registerWorkerGrantableOperation,
@@ -63,7 +62,9 @@ export function setLocalOperationDispatch(dispatch: typeof localDispatch) {
 
 /** name -> threadIds of workers that registered it (main thread only) */
 const registeredByWorker = new Map<string, Set<number>>();
-const inputSchemaByWorker = new Map<string, Map<number, object | undefined>>();
+type WorkerSchema = { inputSchema?: object; canonical?: string };
+export type RemoteOperationSchema = { inputSchema?: object; issue?: 'missing' | 'inconsistent' };
+const inputSchemaByWorker = new Map<string, Map<number, WorkerSchema>>();
 // Per originator, not per name: a rolling deploy whose new generation drops `requiresSuperUser`
 // must keep routing the name while retracting grantability, which a name-level flag cannot express.
 const grantableByWorker = new Map<string, Set<number>>();
@@ -81,10 +82,15 @@ let mainListenersAttached = false;
  */
 export function announceRegisteredOperation(name: string, grantable = false, inputSchema?: object) {
 	if (isMainThread) return;
-	sendItcEvent({
-		type: terms.ITC_EVENT_TYPES.OPERATION_REGISTERED,
-		message: { name, grantable, inputSchema },
-	}).catch((error) => operationLog.error(`Failed to announce registered operation '${name}'`, error));
+	try {
+		const sent = threads.sendToThread(0, {
+			type: terms.ITC_EVENT_TYPES.OPERATION_REGISTERED,
+			message: { name, grantable, inputSchema, originator: threadId },
+		});
+		if (!sent) operationLog.error(`Failed to announce registered operation '${name}' to the main thread`);
+	} catch (error) {
+		operationLog.error(`Failed to announce registered operation '${name}' to the main thread`, error);
+	}
 }
 
 /**
@@ -109,7 +115,10 @@ export function operationRegisteredHandler(event: {
 	workerIds.add(originator);
 	let workerSchemas = inputSchemaByWorker.get(name);
 	if (!workerSchemas) inputSchemaByWorker.set(name, (workerSchemas = new Map()));
-	workerSchemas.set(originator, inputSchema);
+	workerSchemas.set(originator, {
+		inputSchema,
+		canonical: inputSchema ? canonicalJson(inputSchema) : undefined,
+	});
 	// Mirroring only widens what an allowlist may name; enforcement stays on the worker's
 	// chooseOperation. A re-announcement that drops the permission retracts this thread's claim.
 	setWorkerGrantable(name, originator, grantable === true);
@@ -160,27 +169,39 @@ function dropRegistration(name: string) {
 	unregisterWorkerGrantableOperation(name);
 }
 
-export function getRemoteOperationInputSchemas(): Array<[string, object | undefined]> {
+export function getRemoteOperationInputSchemas(): Array<[string, RemoteOperationSchema]> {
 	if (!isMainThread) return [];
-	return [...registeredByWorker.keys()].map((name) => [name, getConsistentInputSchema(name)]);
+	return [...registeredByWorker.keys()].map((name) => [name, getRemoteOperationInputSchema(name)!]);
 }
 
-function getConsistentInputSchema(name: string): object | undefined {
+export function getRemoteOperationInputSchema(name: string): RemoteOperationSchema | undefined {
+	if (!isMainThread || !registeredByWorker.has(name)) return undefined;
 	const schemas = inputSchemaByWorker.get(name);
-	if (!schemas?.size) return undefined;
+	if (!schemas?.size) return { issue: 'missing' };
 	let firstSchema: object | undefined;
-	let serialized: string | undefined;
-	for (const schema of schemas.values()) {
-		if (!schema) return undefined;
-		const candidate = JSON.stringify(schema);
-		if (serialized === undefined) {
-			firstSchema = schema;
-			serialized = candidate;
-		} else if (candidate !== serialized) {
-			return undefined;
+	let canonical: string | undefined;
+	for (const workerSchema of schemas.values()) {
+		if (!workerSchema.inputSchema) return { issue: 'missing' };
+		if (canonical === undefined) {
+			firstSchema = workerSchema.inputSchema;
+			canonical = workerSchema.canonical;
+		} else if (workerSchema.canonical !== canonical) {
+			return { issue: 'inconsistent' };
 		}
 	}
-	return firstSchema;
+	return { inputSchema: firstSchema };
+}
+
+function canonicalJson(value: object): string {
+	return JSON.stringify(value, (_key, nested) =>
+		nested && typeof nested === 'object' && !Array.isArray(nested)
+			? Object.fromEntries(
+					Object.keys(nested)
+						.sort()
+						.map((key) => [key, nested[key]])
+				)
+			: nested
+	);
 }
 
 let rotation = 0;

@@ -271,7 +271,7 @@ describe('mcp/tools/operations — registration', () => {
 		const inputSchema = { type: 'object', properties: { message: { type: 'string' } } };
 		envOverrides.mcp_operations_allow = ['worker_op'];
 		_setOperationFunctionMapForTest(new Map());
-		_setRemoteOperationInputSchemasForTest([['worker_op', inputSchema]]);
+		_setRemoteOperationInputSchemasForTest([['worker_op', { inputSchema }]]);
 		registerOperationsTools();
 
 		assert.deepEqual(getTool('worker_op').inputSchema, inputSchema);
@@ -279,6 +279,25 @@ describe('mcp/tools/operations — registration', () => {
 			listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.map(({ name }) => name),
 			['worker_op']
 		);
+	});
+
+	it('allows an operator to opt a named schema-less operation into the permissive contract', () => {
+		envOverrides.mcp_operations_allow = ['insert'];
+		envOverrides.mcp_operations_allowSchemaless = ['insert'];
+		_setOperationFunctionMapForTest(makeOpMap([['insert', null, null]]));
+		registerOperationsTools();
+
+		assert.deepEqual(getTool('insert').inputSchema, { type: 'object' });
+	});
+
+	it('does not let allowSchemaless override conflicting worker schemas', () => {
+		envOverrides.mcp_operations_allow = ['worker_op'];
+		envOverrides.mcp_operations_allowSchemaless = ['worker_op'];
+		_setOperationFunctionMapForTest(new Map());
+		_setRemoteOperationInputSchemasForTest([['worker_op', { issue: 'inconsistent' }]]);
+		registerOperationsTools();
+
+		assert.equal(getTool('worker_op'), undefined);
 	});
 
 	it('exposes hand-curated schemas with required fields', () => {

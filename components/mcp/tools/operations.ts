@@ -60,13 +60,15 @@ type ProcessLocalTransaction = (req: { body: object }, fn: OperationFunction) =>
 
 interface OperationsConfig {
 	allow?: readonly string[];
+	allowSchemaless?: readonly string[];
 	deny?: readonly string[];
 }
+type RemoteOperationSchema = { inputSchema?: object; issue?: 'missing' | 'inconsistent' };
 
 // Test seams. Avoids importing Harper's heavy server-helpers graph from unit
 // tests that only want to exercise the registration logic.
 let _opMapOverride: OperationFunctionMap | undefined;
-let _remoteSchemasOverride: Array<[string, object | undefined]> | undefined;
+let _remoteSchemasOverride: Array<[string, RemoteOperationSchema]> | undefined;
 let _chooseOperationOverride: ChooseOperation | undefined;
 let _processLocalTransactionOverride: ProcessLocalTransaction | undefined;
 const warnedMissingSchemas = new Set<string>();
@@ -75,7 +77,9 @@ export function _setOperationFunctionMapForTest(m: OperationFunctionMap | undefi
 	_opMapOverride = m;
 	warnedMissingSchemas.clear();
 }
-export function _setRemoteOperationInputSchemasForTest(schemas: Array<[string, object | undefined]> | undefined): void {
+export function _setRemoteOperationInputSchemasForTest(
+	schemas: Array<[string, RemoteOperationSchema]> | undefined
+): void {
 	_remoteSchemasOverride = schemas;
 }
 export function _setChooseOperationForTest(fn: ChooseOperation | undefined): void {
@@ -89,7 +93,8 @@ function loadServerUtilities():
 	| {
 			OPERATION_FUNCTION_MAP?: OperationFunctionMap;
 			chooseOperation?: ChooseOperation;
-			getRemoteOperationInputSchemas?: () => Array<[string, object | undefined]>;
+			getRemoteOperationInputSchema?: (name: string) => RemoteOperationSchema | undefined;
+			getRemoteOperationInputSchemas?: () => Array<[string, RemoteOperationSchema]>;
 			processLocalTransaction?: ProcessLocalTransaction;
 	  }
 	| undefined {
@@ -111,10 +116,16 @@ function getOperationFunctionMap(): OperationFunctionMap | undefined {
 	return utils?.OPERATION_FUNCTION_MAP;
 }
 
-function getRemoteOperationInputSchemas(): Array<[string, object | undefined]> {
+function getRemoteOperationInputSchemas(): Array<[string, RemoteOperationSchema]> {
 	if (_remoteSchemasOverride) return _remoteSchemasOverride;
 	if (_opMapOverride) return [];
 	return loadServerUtilities()?.getRemoteOperationInputSchemas?.() ?? [];
+}
+
+function getRemoteOperationInputSchema(name: string): RemoteOperationSchema | undefined {
+	if (_remoteSchemasOverride) return _remoteSchemasOverride.find(([operationName]) => operationName === name)?.[1];
+	if (_opMapOverride) return undefined;
+	return loadServerUtilities()?.getRemoteOperationInputSchema?.(name);
 }
 
 function getChooseOperation(): ChooseOperation | undefined {
@@ -292,9 +303,11 @@ export function isOperationAllowed(operation: string, config: OperationsConfig):
 
 function getOperationsConfig(): OperationsConfig {
 	const allow = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOW);
+	const allowSchemaless = env.get(CONFIG_PARAMS.MCP_OPERATIONS_ALLOWSCHEMALESS);
 	const deny = env.get(CONFIG_PARAMS.MCP_OPERATIONS_DENY);
 	return {
 		allow: Array.isArray(allow) ? (allow as readonly string[]) : undefined,
+		allowSchemaless: Array.isArray(allowSchemaless) ? (allowSchemaless as readonly string[]) : undefined,
 		deny: Array.isArray(deny) ? (deny as readonly string[]) : undefined,
 	};
 }
@@ -417,18 +430,27 @@ function buildOperationToolDef(operationName: string, inputSchema: object): Tool
 function buildRegisteredOperationToolDef(
 	operationName: string,
 	operation: OperationFunctionEntry,
-	config: OperationsConfig
+	config: OperationsConfig,
+	issue: RemoteOperationSchema['issue'] = 'missing'
 ): ToolDef | undefined {
 	if (!operation.inputSchema) {
-		if (!warnedMissingSchemas.has(operationName)) {
-			warnedMissingSchemas.add(operationName);
+		if (issue !== 'inconsistent' && matchesAny(operationName, config.allowSchemaless)) {
+			return buildOperationToolDef(operationName, { type: 'object' });
+		}
+		const warningKey = `${operationName}:${issue}`;
+		if (!warnedMissingSchemas.has(warningKey)) {
+			warnedMissingSchemas.add(warningKey);
 			const source = config.allow?.length ? ' is named by mcp.operations.allow but' : '';
-			harperLogger.warn(
-				`MCP operations profile: '${operationName}'${source} was registered without inputSchema; pass inputSchema to server.registerOperation() to expose it`
-			);
+			const message =
+				issue === 'inconsistent'
+					? `MCP operations profile: '${operationName}' is registered by workers with different inputSchema values; withholding it until they agree`
+					: `MCP operations profile: '${operationName}'${source} was registered without inputSchema; pass inputSchema to server.registerOperation() or add it to mcp.operations.allowSchemaless`;
+			harperLogger.warn(message);
 		}
 		return undefined;
 	}
+	warnedMissingSchemas.delete(`${operationName}:missing`);
+	warnedMissingSchemas.delete(`${operationName}:inconsistent`);
 	return buildOperationToolDef(operationName, operation.inputSchema);
 }
 
@@ -451,9 +473,14 @@ const operationsToolProvider: ProfileToolProvider = {
 			const def = buildRegisteredOperationToolDef(operationName, operation, config);
 			if (def) defs.push(def);
 		}
-		for (const [operationName, inputSchema] of getRemoteOperationInputSchemas()) {
+		for (const [operationName, remoteSchema] of getRemoteOperationInputSchemas()) {
 			if (opMap.has(operationName) || !isOperationAllowed(operationName, config)) continue;
-			const def = buildRegisteredOperationToolDef(operationName, { inputSchema } as OperationFunctionEntry, config);
+			const def = buildRegisteredOperationToolDef(
+				operationName,
+				{ inputSchema: remoteSchema.inputSchema },
+				config,
+				remoteSchema.issue
+			);
 			if (def) defs.push(def);
 		}
 		return defs;
@@ -462,14 +489,18 @@ const operationsToolProvider: ProfileToolProvider = {
 		const opMap = getOperationFunctionMap();
 		if (!opMap) return undefined;
 		let operation = opMap.get(operationName);
+		let issue: RemoteOperationSchema['issue'];
 		if (!operation) {
-			const remote = getRemoteOperationInputSchemas().find(([name]) => name === operationName);
-			if (remote) operation = { inputSchema: remote[1] };
+			const remote = getRemoteOperationInputSchema(operationName);
+			if (remote) {
+				operation = { inputSchema: remote.inputSchema };
+				issue = remote.issue;
+			}
 		}
 		if (!operation) return undefined;
 		const config = getOperationsConfig();
 		if (!isOperationAllowed(operationName, config)) return undefined;
-		return buildRegisteredOperationToolDef(operationName, operation, config);
+		return buildRegisteredOperationToolDef(operationName, operation, config, issue);
 	},
 };
 

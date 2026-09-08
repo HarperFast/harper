@@ -47,11 +47,12 @@ import { contextStorage } from '../../resources/transaction.ts';
 import { isMainThread } from 'node:worker_threads';
 import {
 	announceRegisteredOperation,
+	getRemoteOperationInputSchema,
 	getRemoteOperationInputSchemas,
 	getRemoteOperationFunction,
 	setLocalOperationDispatch,
 } from './registeredOperations.ts';
-export { getRemoteOperationInputSchemas };
+export { getRemoteOperationInputSchema, getRemoteOperationInputSchemas };
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
 import { OPERATION_INPUT_SCHEMAS } from './operationInputSchemas.ts';
@@ -226,7 +227,10 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 		declaredPermissionNames.add(name);
 	}
 	const schemaMetadata =
-		inputSchema ?? (Object.hasOwn(OPERATION_INPUT_SCHEMAS, name) ? OPERATION_INPUT_SCHEMAS[name] : undefined);
+		inputSchema ??
+		(!OPERATION_FUNCTION_MAP.has(name as any) && Object.hasOwn(OPERATION_INPUT_SCHEMAS, name)
+			? OPERATION_INPUT_SCHEMAS[name]
+			: undefined);
 	const normalizedSchema = normalizeOperationInputSchema(schemaMetadata);
 	if (normalizedSchema.error) {
 		operationLog.warn(`Operation '${name}' inputSchema ignored: ${normalizedSchema.error}`);

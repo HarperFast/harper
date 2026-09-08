@@ -212,6 +212,12 @@ operation remains available through the operations API. Registration clones and 
 schema metadata without changing the handler's own input validation. `parametersSchema` is legacy
 REST metadata and is not used for MCP tools.
 
+Before v5.3, an operation named by `mcp.operations.allow` was exposed with a permissive object schema
+when no curated schema existed. Existing deployments that need that behavior can name the affected
+operations in `mcp.operations.allowSchemaless`; the explicit opt-in advertises `{ type: 'object' }`
+and leaves validation to the operation handler. It never overrides conflicting schemas announced by
+live workers during a rolling deploy.
+
 ## Resource ↔ HTTP boundary
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.

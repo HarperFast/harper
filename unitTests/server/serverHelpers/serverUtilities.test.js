@@ -274,6 +274,8 @@ describe('Test serverUtilities.js module ', () => {
 		const SENDER_THREAD = 9_000_081;
 		const SCHEMA_THREAD = 9_000_091;
 		const ROLLING_SCHEMA_THREAD = 9_000_092;
+		const MISSING_SCHEMA_THREAD = 9_000_093;
+		const REORDERED_SCHEMA_THREAD = 9_000_094;
 
 		after(function () {
 			for (const op of [GRANTABLE, PLAIN, SHARED, ROLLED, RETRACTED, ZOMBIE, FAILED_SEND, SCHEMA]) {
@@ -291,7 +293,7 @@ describe('Test serverUtilities.js module ', () => {
 
 			assert.deepEqual(
 				registeredOperations.getRemoteOperationInputSchemas().find(([name]) => name === SCHEMA),
-				[SCHEMA, inputSchema]
+				[SCHEMA, { inputSchema }]
 			);
 		});
 
@@ -300,19 +302,37 @@ describe('Test serverUtilities.js module ', () => {
 				message: {
 					name: SCHEMA,
 					inputSchema: { type: 'object', properties: { changed: { type: 'boolean' } } },
+					originator: REORDERED_SCHEMA_THREAD,
+				},
+			});
+			assert.deepEqual(registeredOperations.getRemoteOperationInputSchema(SCHEMA), { issue: 'inconsistent' });
+
+			manageThreads.notifyThreadExit(REORDERED_SCHEMA_THREAD);
+			assert.deepEqual(registeredOperations.getRemoteOperationInputSchema(SCHEMA), {
+				inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+			});
+		});
+
+		it('treats schemas with different key order as equivalent', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: {
+					name: SCHEMA,
+					inputSchema: { properties: { value: { type: 'string' } }, type: 'object' },
 					originator: ROLLING_SCHEMA_THREAD,
 				},
 			});
-			assert.equal(
-				registeredOperations.getRemoteOperationInputSchemas().find(([name]) => name === SCHEMA)?.[1],
-				undefined
-			);
-
-			manageThreads.notifyThreadExit(ROLLING_SCHEMA_THREAD);
-			assert.deepEqual(registeredOperations.getRemoteOperationInputSchemas().find(([name]) => name === SCHEMA)?.[1], {
-				type: 'object',
-				properties: { value: { type: 'string' } },
+			assert.deepEqual(registeredOperations.getRemoteOperationInputSchema(SCHEMA), {
+				inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
 			});
+			manageThreads.notifyThreadExit(ROLLING_SCHEMA_THREAD);
+		});
+
+		it('withholds a schema when one live worker has none', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: { name: SCHEMA, originator: MISSING_SCHEMA_THREAD },
+			});
+			assert.deepEqual(registeredOperations.getRemoteOperationInputSchema(SCHEMA), { issue: 'missing' });
+			manageThreads.notifyThreadExit(MISSING_SCHEMA_THREAD);
 		});
 
 		it('makes a worker-announced declared op grantable on the main thread', function () {
@@ -1093,6 +1113,15 @@ describe('Test serverUtilities.js module ', () => {
 
 			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, inputSchema);
 			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+		});
+
+		it('does not inherit a built-in schema when a component replaces that operation', function () {
+			const name = 'search_by_value';
+			const original = serverUtilities.OPERATION_FUNCTION_MAP.get(name);
+			server.registerOperation({ name, execute: async () => ({}) });
+
+			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, undefined);
+			serverUtilities.OPERATION_FUNCTION_MAP.set(name, original);
 		});
 
 		it('accepts common JSON Schema dialects on registered operations', function () {

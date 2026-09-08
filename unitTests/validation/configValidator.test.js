@@ -786,6 +786,7 @@ describe('Test configValidator module', () => {
 				operations: {
 					mountPath: '/mcp',
 					allow: ['describe_*', 'list_*'],
+					allowSchemaless: ['insert'],
 					deny: [],
 					maxTools: 200,
 					rateLimit: {
