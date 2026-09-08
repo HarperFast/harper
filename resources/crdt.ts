@@ -202,14 +202,19 @@ function previousAuditPosition(auditStore, tableId: number, recordId: any, audit
 export function getRecordAtTime(currentEntry, timestamp, store, tableId: number, recordId: any) {
 	const auditStore = store.rootStore.auditStore;
 	let record = { ...currentEntry.value };
-	const initialPosition = resolveAuditPosition(
-		auditStore,
-		tableId,
-		recordId,
-		currentEntry.version ?? currentEntry.localTime,
-		currentEntry.nodeId,
-		currentEntry.additionalAuditRefs
-	);
+	// `localTime` is the record's audit head on both engines: the audit-store key on LMDB, where it
+	// is a different clock than the record version, and the transaction-log key on RocksDB. Only a
+	// RocksDB record carrying `additionalAuditRefs` needs its head resolved from the version.
+	const initialPosition = currentEntry.additionalAuditRefs?.length
+		? resolveAuditPosition(
+				auditStore,
+				tableId,
+				recordId,
+				currentEntry.version,
+				currentEntry.nodeId,
+				currentEntry.additionalAuditRefs
+			)
+		: { txnLogKey: currentEntry.localTime ?? currentEntry.version, nodeId: currentEntry.nodeId };
 	let auditTime = initialPosition.txnLogKey;
 	let auditNodeId = initialPosition.nodeId;
 	// Iterate in reverse through the record history, trying to reverse all changes

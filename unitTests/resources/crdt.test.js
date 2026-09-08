@@ -267,6 +267,33 @@ describe('crdt getRecordAtTime', () => {
 		});
 	});
 
+	it('starts the reverse walk from the audit-store key when the record version is a different clock (LMDB)', () => {
+		// On LMDB the audit-store key (`localTime`) and the record version are separate clocks and
+		// the entry carries no additionalAuditRefs. Seeding the walk from `version` misses the head
+		// entry and returns the live record for every historical timestamp (harper#2275).
+		const events = [
+			{ txnLogKey: 100, version: 7, type: 'put', value: { id: 'L', name: 'first', count: 1 }, previousVersion: 0 },
+			{
+				txnLogKey: 200,
+				version: 8,
+				type: 'patch',
+				value: { name: 'update 2', count: { __op__: 'add', value: 1 } },
+				previousVersion: 100,
+			},
+			{
+				txnLogKey: 300,
+				version: 9,
+				type: 'patch',
+				value: { name: 'update 3', count: { __op__: 'add', value: 1 } },
+				previousVersion: 200,
+			},
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'L', name: 'update 3', count: 3 }, 300, { version: 9 });
+		assert.deepStrictEqual(getRecordAtTime(current, 200, store, 1, 'L'), { id: 'L', name: 'update 2', count: 2 });
+		assert.deepStrictEqual(getRecordAtTime(current, 100, store, 1, 'L'), { id: 'L', name: 'first', count: 1 });
+	});
+
 	it('reconstructs a counter later overwritten by a plain set without leaking the op object', () => {
 		// put(count:5) -> patch(+3) [count=8] -> patch(count:100, plain overwrite) -> current.
 		// The reverse walk marks `count` unknown at the plain set (a plain set has no inverse). Filling
