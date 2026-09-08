@@ -848,6 +848,105 @@ describe('Request class', function () {
 			});
 		});
 
+		describe('nodeResponse — ServerResponse contract', function () {
+			it('reports finished with writableEnded, before writableFinished', async function () {
+				const request = makeRequest();
+				let capturedRes;
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					capturedRes = res;
+					assert.strictEqual(res.finished, false);
+					res.end('body');
+					assert.strictEqual(res.finished, true);
+					assert.strictEqual(res.writableFinished, false);
+				});
+
+				const { body } = await responsePromise;
+				if (!body.writableFinished) await new Promise((resolve) => body.once('finish', resolve));
+				assert.strictEqual(capturedRes.writableFinished, true);
+			});
+
+			it('marks headersSent and _header once headers are committed', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					assert.strictEqual(res.headersSent, false);
+					assert.strictEqual(res._header, null);
+					res.setHeader('X-A', '1');
+					res.writeHead(404, 'Gone Missing');
+					assert.strictEqual(res.headersSent, true);
+					assert.strictEqual(res.statusMessage, 'Gone Missing');
+					assert.strictEqual(res._header, 'HTTP/1.1 404 Gone Missing\r\nX-A: 1\r\n\r\n');
+					res.end();
+				});
+
+				const { status } = await responsePromise;
+				assert.strictEqual(status, 404);
+			});
+
+			it('getHeaders() and getHeaderNames() use lowercase names, as Node does', function () {
+				const request = makeRequest();
+				request.withNodeAdapter((req, res) => {
+					res.setHeader('Content-Type', 'text/html');
+					res.setHeader('Set-Cookie', ['a=1', 'b=2']);
+					const headers = res.getHeaders();
+					assert.strictEqual(Object.getPrototypeOf(headers), null);
+					assert.deepStrictEqual(headers, {
+						'__proto__': null,
+						'content-type': 'text/html',
+						'set-cookie': ['a=1', 'b=2'],
+					});
+					assert.deepStrictEqual(res.getHeaderNames(), ['content-type', 'set-cookie']);
+					res.end();
+				});
+			});
+
+			it('appendHeader sets a new header and grows an existing one into an array', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.appendHeader('X-Multi', 'one');
+					res.appendHeader('X-Multi', ['two', 'three']);
+					res.end();
+				});
+
+				const { headers } = await responsePromise;
+				assert.deepStrictEqual(headers.get('x-multi'), ['one', 'two', 'three']);
+			});
+
+			it('setHeaders() applies a Map and groups set-cookie entries', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.setHeaders(
+						new Map([
+							['x-a', '1'],
+							['set-cookie', ['a=1', 'b=2']],
+						])
+					);
+					res.end();
+				});
+
+				const { headers } = await responsePromise;
+				assert.strictEqual(headers.get('x-a'), '1');
+				assert.deepStrictEqual(headers.get('set-cookie'), ['a=1', 'b=2']);
+			});
+
+			it('removeHeader is case-insensitive', function () {
+				const request = makeRequest();
+				request.withNodeAdapter((req, res) => {
+					res.setHeader('Content-Length', '10');
+					res.removeHeader('content-length');
+					assert.strictEqual(res.hasHeader('Content-Length'), false);
+					res.end();
+				});
+			});
+
+			it('refuses trailers instead of dropping them', function () {
+				const request = makeRequest();
+				request.withNodeAdapter((req, res) => {
+					assert.throws(() => res.addTrailers({ Digest: 'x' }), /addTrailers\(\) is not supported/);
+					res.end();
+				});
+			});
+		});
+
 		describe('async handler', function () {
 			it('rejects the response promise when async handler throws before writing headers', async function () {
 				const request = makeRequest();
@@ -857,6 +956,20 @@ describe('Request class', function () {
 				});
 
 				await assert.rejects(() => responsePromise, /async handler failed/);
+			});
+
+			it('errors the body when an async handler rejects after headers were sent without ending', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter(async (req, res) => {
+					res.write('partial');
+					throw new Error('handler failed mid-stream');
+				});
+
+				const { body } = await responsePromise;
+				const chunks = [];
+				await assert.rejects(async () => {
+					for await (const chunk of body) chunks.push(chunk);
+				}, /handler failed mid-stream/);
 			});
 
 			it('does not double-reject after headers are flushed when async handler throws', async function () {

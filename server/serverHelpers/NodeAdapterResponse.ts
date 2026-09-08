@@ -1,0 +1,205 @@
+import { STATUS_CODES } from 'node:http';
+import type {
+	IncomingMessage as NodeIncomingMessage,
+	OutgoingHttpHeader,
+	OutgoingHttpHeaders,
+	ServerResponse as NodeServerResponse,
+} from 'node:http';
+import type { Socket } from 'node:net';
+import { PassThrough } from 'node:stream';
+import { Headers as ResponseHeaders, applyWriteHeadHeaders } from './Headers.ts';
+
+export interface AdaptedResponse {
+	status: number;
+	headers: ResponseHeaders;
+	body: PassThrough;
+}
+
+class HeadersSentError extends Error {
+	code = 'ERR_HTTP_HEADERS_SENT';
+	constructor(action: string) {
+		super(`Cannot ${action} headers after they are sent to the client`);
+	}
+}
+
+class UnsupportedResponseMethodError extends Error {
+	constructor(method: string) {
+		super(`${method}() is not supported on a withNodeAdapter() response`);
+	}
+}
+
+const ignoreError = () => {};
+
+/**
+ * The `ServerResponse` that `Request.withNodeAdapter()` hands to a Node handler. It is the body
+ * `PassThrough` the adapter resolves with, so `write()`'s return value, 'drain', 'finish' and 'close'
+ * are Node's own Writable semantics rather than forwarded events, with Node's status/header API
+ * layered over a Harper `Headers` map. Headers are committed (the adapter's promise resolves) on the
+ * first of `writeHead()`, `flushHeaders()`, `write()` or `end()`, always via `this.writeHead` so a
+ * `writeHead` replaced on the instance by `on-headers` runs its listeners first; after that, header
+ * mutation throws `ERR_HTTP_HEADERS_SENT` as Node does.
+ *
+ * A destroy error after commitment stays in the stream's `errored` state for `pipeline()`,
+ * `finished()` or async iteration to report; the adapter listens for 'error' itself because the
+ * event can fire before the awaiting caller has received the body.
+ */
+export class NodeAdapterResponse extends PassThrough implements NodeServerResponse {
+	statusCode = 200;
+	statusMessage = '';
+	strictContentLength = false;
+	chunkedEncoding = false;
+	shouldKeepAlive = true;
+	useChunkedEncodingByDefault = true;
+	sendDate = true;
+	readonly req: NodeIncomingMessage;
+	readonly socket: Socket | null;
+	#headers = new ResponseHeaders();
+	#committedStatus: number | undefined;
+	#headerText: string | undefined;
+	#nodeResponse: NodeServerResponse | undefined;
+	#resolve: (response: AdaptedResponse) => void;
+	#reject: (reason: unknown) => void;
+
+	constructor(
+		req: NodeIncomingMessage,
+		nodeResponse: NodeServerResponse | undefined,
+		resolve: (response: AdaptedResponse) => void,
+		reject: (reason: unknown) => void
+	) {
+		super();
+		this.req = req;
+		this.socket = req.socket ?? null;
+		this.#nodeResponse = nodeResponse;
+		this.#resolve = resolve;
+		this.#reject = reject;
+		this.on('error', ignoreError);
+	}
+
+	get headersSent() {
+		return this.#committedStatus !== undefined;
+	}
+	get finished() {
+		return this.writableEnded;
+	}
+	get connection() {
+		return this.socket;
+	}
+	// `compression` <= 1.7 (the version Next.js vendors) tests `_header` on every write
+	get _header(): string | null {
+		if (this.#committedStatus === undefined) return null;
+		if (this.#headerText === undefined) {
+			let text = `HTTP/1.1 ${this.#committedStatus} ${this.statusMessage}\r\n`;
+			for (const [name, value] of this.#headers) {
+				for (const entry of Array.isArray(value) ? value : [value]) text += `${name}: ${entry}\r\n`;
+			}
+			this.#headerText = text + '\r\n';
+		}
+		return this.#headerText;
+	}
+
+	setHeader(name: string, value: number | string | readonly string[]) {
+		if (this.headersSent) throw new HeadersSentError('set');
+		this.#headers.set(name, value);
+		return this;
+	}
+	setHeaders(headers: Headers | Map<string, number | string | readonly string[]>) {
+		let cookies: string[] | undefined;
+		for (const [name, value] of headers) {
+			if (name === 'set-cookie') (cookies ??= []).push(...(Array.isArray(value) ? value : [String(value)]));
+			else this.setHeader(name, value);
+		}
+		if (cookies) this.setHeader('set-cookie', cookies);
+		return this;
+	}
+	appendHeader(name: string, value: string | readonly string[]) {
+		if (this.headersSent) throw new HeadersSentError('append');
+		if (Array.isArray(value)) for (const entry of value) this.#headers.append(name, entry);
+		else this.#headers.append(name, value);
+		return this;
+	}
+	getHeader(name: string) {
+		return this.#headers.get(name);
+	}
+	getHeaders() {
+		const headers: OutgoingHttpHeaders = Object.create(null);
+		for (const [name, [, value]] of this.#headers.entries()) headers[name] = value;
+		return headers;
+	}
+	getHeaderNames() {
+		return [...this.#headers.keys()];
+	}
+	hasHeader(name: string) {
+		return this.#headers.has(name);
+	}
+	removeHeader(name: string) {
+		if (this.headersSent) throw new HeadersSentError('remove');
+		this.#headers.delete(name);
+	}
+
+	writeHead(statusCode: number, statusMessage?: string, headers?: OutgoingHttpHeaders | OutgoingHttpHeader[]): this;
+	writeHead(statusCode: number, headers?: OutgoingHttpHeaders | OutgoingHttpHeader[]): this;
+	writeHead(
+		statusCode: number,
+		statusMessageOrHeaders?: string | OutgoingHttpHeaders | OutgoingHttpHeader[],
+		headers?: OutgoingHttpHeaders | OutgoingHttpHeader[]
+	) {
+		if (this.headersSent) return this;
+		this.statusCode = statusCode;
+		if (typeof statusMessageOrHeaders === 'string') this.statusMessage = statusMessageOrHeaders;
+		else {
+			this.statusMessage ||= STATUS_CODES[statusCode] || 'unknown';
+			headers = statusMessageOrHeaders;
+		}
+		if (headers) applyWriteHeadHeaders(this, headers);
+		this.#committedStatus = statusCode;
+		this.#resolve({ status: statusCode, headers: this.#headers, body: this });
+		return this;
+	}
+	_implicitHeader() {
+		this.writeHead(this.statusCode);
+	}
+	flushHeaders() {
+		if (!this.headersSent) this._implicitHeader();
+	}
+
+	write(
+		chunk: unknown,
+		encoding?: BufferEncoding | ((error?: Error | null) => void),
+		callback?: (error?: Error | null) => void
+	) {
+		if (!this.headersSent) this._implicitHeader();
+		return super.write(chunk, encoding as BufferEncoding, callback);
+	}
+	end(chunk?: unknown, encoding?: BufferEncoding | (() => void), callback?: () => void) {
+		if (!this.headersSent) this._implicitHeader();
+		return super.end(chunk, encoding as BufferEncoding, callback);
+	}
+	_destroy(error: Error | null, callback: (error?: Error | null) => void) {
+		if (!this.headersSent) this.#reject(error ?? new Error('Response destroyed before headers were sent'));
+		callback(error);
+	}
+
+	setTimeout(msecs: number, callback?: () => void) {
+		this.socket?.setTimeout(msecs, callback);
+		return this;
+	}
+	writeContinue(callback?: () => void) {
+		this.#nodeResponse?.writeContinue?.(callback);
+	}
+	writeProcessing(callback?: () => void) {
+		this.#nodeResponse?.writeProcessing?.(callback);
+	}
+	writeEarlyHints(hints: Record<string, string | string[]>, callback?: () => void) {
+		this.#nodeResponse?.writeEarlyHints?.(hints, callback);
+	}
+	// Trailers need chunked encoding on the wire, which the Harper response layer owns; dropping them silently would lose e.g. a Digest trailer.
+	addTrailers(): never {
+		throw new UnsupportedResponseMethodError('addTrailers');
+	}
+	assignSocket(): never {
+		throw new UnsupportedResponseMethodError('assignSocket');
+	}
+	detachSocket(): never {
+		throw new UnsupportedResponseMethodError('detachSocket');
+	}
+}

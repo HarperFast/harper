@@ -58,6 +58,17 @@ describe('Test Headers', () => {
 			headers.append(789, 'appended-value');
 			assert.equal(headers.get(789), 'appended-value');
 		});
+		it('should delete case-insensitively', function () {
+			const headers = new Headers();
+			headers.set('Content-Length', '10');
+			assert.equal(headers.delete('content-LENGTH'), true);
+			assert.equal(headers.has('Content-Length'), false);
+			assert.equal(headers.delete('content-length'), false);
+			headers.set(123, 'value');
+			assert.equal(headers.delete(123), true);
+			assert.equal(headers.has('123'), false);
+		});
+
 		it('should handle append with commas', async function () {
 			const headers = new Headers();
 			headers.append('name-with-commas', 'value', true);
