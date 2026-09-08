@@ -254,8 +254,8 @@ const GATE_INSTALL_TIMEOUT_MS = 180_000;
 // the lever integrationTests/deploy/stage-swap-availability.test.ts uses to sample a mid-deploy
 // state. An elapsed-time window (a paced upload, a `sleep` install) cannot: whether the operation
 // is even dispatched before the request body completes is runtime-dependent, and under Bun it is
-// not. The `exited` marker is this gate's addition -- absent, it proves the install command had not
-// returned, so the row cannot have gone terminal.
+// not. The gate also writes `exited` on its way out, whatever the reason, so an absent marker when
+// the delete response lands means the install command had not returned.
 function installGateScript(paths: { started: string; release: string; exited: string }): string {
 	return (
 		`const fs = require('node:fs');\n` +
@@ -521,13 +521,17 @@ suite(
 				);
 
 				const listed = await callOperation(ctx, { operation: 'list_deployments', project });
-				const rows: Array<{ deployment_id: string; status?: string }> = listed.body?.deployments ?? [];
-				strictEqual(
-					rows.length,
-					1,
-					`expected exactly one '${project}' deployment row while the install gate holds it: ${JSON.stringify(listed.body)}`
+				const rows: Array<{ deployment_id: string; status?: string; started_at?: number }> =
+					listed.body?.deployments ?? [];
+				ok(
+					rows.length > 0,
+					`no '${project}' deployment row exists while its own install gate holds it: ${JSON.stringify(listed.body)}`
 				);
-				const inFlight = rows[0];
+				// Newest rather than "there is exactly one": the row this test started is the one the gate
+				// holds, and an unrelated leftover must not be what the assertion below reads.
+				const inFlight = rows.reduce((newest, row) =>
+					(row.started_at ?? 0) >= (newest.started_at ?? 0) ? row : newest
+				);
 				ok(
 					!TERMINAL_STATUSES.includes(inFlight.status ?? ''),
 					`the row reported terminal status '${inFlight.status}' while its own install command was ` +

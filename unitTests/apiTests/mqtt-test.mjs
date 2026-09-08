@@ -223,19 +223,22 @@ describe('test MQTT connections and commands', function () {
 					protocolVersion: 4,
 				});
 				clients.push(client);
-				subscriptions.push(
-					(async () => {
-						await client.subscribeAsync(topic);
-						intervals.push(
-							setInterval(() => {
-								client.publish(topic, JSON.stringify({ name: 'radbot 9000', pub_time: Date.now() }), {
-									qos: 1,
-									retain: false,
-								});
-							}, 1)
-						);
-					})()
-				);
+				const subscription = (async () => {
+					await client.subscribeAsync(topic);
+					intervals.push(
+						setInterval(() => {
+							client.publish(topic, JSON.stringify({ name: 'radbot 9000', pub_time: Date.now() }), {
+								qos: 1,
+								retain: false,
+							});
+						}, 1)
+					);
+				})();
+				// Marks it handled now; the await below is the real handler. Without this, a subscribe that
+				// rejects while the loop is still connecting the next client is an unhandled rejection, which
+				// takes the runner down instead of failing this test.
+				subscription.catch(() => {});
+				subscriptions.push(subscription);
 
 				client.on('message', function (topic, message) {
 					// message is Buffer
