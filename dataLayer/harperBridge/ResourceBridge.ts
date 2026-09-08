@@ -579,7 +579,9 @@ export class ResourceBridge extends BridgeMethods {
 						let operation = normalizeHistoryOperation(auditRecord.operation, auditRecord.type);
 						return {
 							operation,
-							timestamp: auditRecord.version,
+							// the transaction's position in the log, which is what this field has always
+							// reported on RocksDB and what groups an atomic transaction (harper#2412)
+							timestamp: auditRecord.localTime,
 							user_name: auditRecord.user,
 							ids: [id],
 							records: [auditRecord.value],
@@ -775,7 +777,7 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 	let count = 0;
 	for await (const entry of table.getHistory(start, end)) {
 		let operation = normalizeHistoryOperation(entry.operation, entry.type);
-		const { id, version: timestamp, value } = entry;
+		const { id, localTime: timestamp, value } = entry;
 		if (enqueued?.timestamp === timestamp) {
 			enqueued.ids.push(id);
 			enqueued.records.push(value);

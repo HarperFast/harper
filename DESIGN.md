@@ -711,7 +711,11 @@ A package-manager timeout must not release this lock while npm descendants are s
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
 
-Automatic npm component installation is production-only and uses `--omit=dev --no-audit --no-fund`.
+Every npm install Harper invokes directly — automatic component installation and the deprecated
+`install_node_modules` operation alike — composes its arguments in `packageManagerInstallArguments()`,
+which is production-only and adds `--omit=dev --no-audit --no-fund`. `--no-audit` is load-bearing, not
+hygiene: npm 10 puts even a `file:` link into its audit bulk request, and the registry's answer to that
+is unbounded from Harper's side.
 `installApplication()` skips the package-manager child entirely when the root manifest declares no
 production dependencies, non-empty workspaces, or enabled install lifecycle. An explicitly selected
 non-npm manager still runs so it can discover workspace configuration outside `package.json`, and it
@@ -1901,3 +1905,7 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
 - `estimatedEntryCount` reads `estimate-num-keys` (O(1)) rather than iterating; it skews high on
   overwrite/delete-heavy data until compaction, which is acceptable for the relative-ordering and
   explicitly-estimated consumers it feeds (and it is a divisor — keep the ≥1 floor).
+
+## A worker that misses an ITC ack gets its OS thread state logged (`server/threads/manageThreads.js`)
+
+`broadcastWithAcknowledgement` already times out (30 s) on a worker whose port stays open but never acks, and that shape is almost always a blocked event loop — a native lock, a runaway synchronous call — which nothing inside the worker can report (harper-pro#788: a restarted node's single http worker went byte-silent while main kept serving `cluster_status`, and the app log only said "not acknowledged by worker thread(s) 2"). So each worker posts its Linux thread id (`readlink /proc/thread-self`) to main once at startup, before anything else runs on it, and the timeout branch reads that thread's kernel state from `/proc/self/task/<tid>`: state, `wchan`, the syscall number (the first token only — the rest of that file is argument registers and stack/instruction pointers), CPU ticks, and context-switch counts, plus two cross-platform signals main already has, `worker.performance.eventLoopUtilization()` and the age of the last 1 s resource report. It samples again a second later and logs the deltas: no CPU ticks, no context switches and `event loop active +1000ms` is "parked on a lock"; ticks climbing with state `R` is "spinning". It is deliberately main-thread-only and best-effort: `workers` and the tid live on the main thread's `Worker` objects, every `/proc` field is reported individually (a hardened container may deny `wchan`/`syscall` while `stat` stays readable), a follow-up sample whose `starttime` differs from the first is discarded (the tid may have been recycled), one diagnostic runs per worker with a 30 s cooldown so concurrent timeouts on the same worker don't multiply reads, and nothing here runs when acks arrive on time. It does not name the lock owner; that still needs a native stack from the next occurrence.

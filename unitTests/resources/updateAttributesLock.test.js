@@ -242,7 +242,7 @@ describe('update-attributes exclusive lock', () => {
 			withUpdateAttributesLock(rootStore, `table '${TEST_DB}.FastWait'`, () => 0);
 			assert.strictEqual(warnings.length, 0, 'an uncontended acquisition must stay silent');
 			const held = await new Promise((resolve, reject) => {
-				workerThread.once('message', resolve);
+				workerThread.on('message', (message) => message.type === 'held' && resolve(message));
 				workerThread.once('error', reject);
 				workerThread.postMessage({ type: 'hold-lock' });
 			});
@@ -267,7 +267,7 @@ describe('update-attributes exclusive lock', () => {
 		});
 		try {
 			const held = await new Promise((resolve, reject) => {
-				workerThread.once('message', resolve);
+				workerThread.on('message', (message) => message.type === 'held' && resolve(message));
 				workerThread.once('error', reject);
 				workerThread.postMessage({ type: 'hold-lock' });
 			});

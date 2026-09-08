@@ -1373,6 +1373,13 @@ const openBranchIdentities = new Set<string>();
  * delete what it resolves to.
  */
 const BRANCH_STAGING_SUFFIX = '.staging';
+/**
+ * Suffix of the sibling a branch is renamed to while being removed. A backtick, not a dot:
+ * `schemaRegex` excludes 0x60, so no database can be named such that `<db>` + this suffix is another
+ * branch's directory (with `.removing`, an application branching both `data` and `data.removing`, both
+ * legal names, would destroy one by opening the other).
+ */
+export const BRANCH_REMOVING_SUFFIX = '`removing`';
 function branchIdentityPair(storeName: string): string[] {
 	return [storeName, storeName + BRANCH_STAGING_SUFFIX];
 }
@@ -1532,7 +1539,8 @@ function branchDirectoryExistsFor(storeName: string): boolean {
 	const baseName = storeName.slice(prefix[0].length + appLength + 2);
 	if (!baseName) return false;
 	try {
-		return existsSync(resolveBranchPath(baseName, appName));
+		const branchPath = resolveBranchPath(baseName, appName);
+		return existsSync(branchPath) || existsSync(branchPath + BRANCH_REMOVING_SUFFIX);
 	} catch {
 		// Not a name a branch path could hold, so no branch owns it.
 		return false;
@@ -1550,8 +1558,9 @@ function branchDirectoryExistsFor(storeName: string): boolean {
  * base's.
  *
  * The caller owns the returned handle; the only thing that closes it on the caller's behalf is
- * `closeBranchDatabases`, which `closeLoadedDatabases` runs at thread teardown so a branch left open
- * on an exiting worker does not leak its handles into the process-global RocksDB registry.
+ * `closeBranchDatabases`, run by an exiting job worker (via `closeLoadedDatabases`) and by an HTTP
+ * worker's shutdown path, so a branch left open on an exiting worker does not linger in the
+ * process-global RocksDB registry.
  *
  * NOT SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
  * `dropTable()` or equivalent through one resolves against the global schema and would delete the

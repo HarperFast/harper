@@ -3301,7 +3301,7 @@ function polyfillBlob() {
  * @param database
  */
 export async function cleanupOrphans(database: any, databaseName?: string) {
-	const { HAS_BLOBS } = await import('./auditStore.ts');
+	const { HAS_BLOBS, isAuditEntryWrite } = await import('./auditStore.ts');
 	let store: RootDatabase;
 	let auditStore: RootDatabase;
 	let orphansDeleted = 0;
@@ -3383,7 +3383,10 @@ export async function cleanupOrphans(database: any, databaseName?: string) {
 				const primaryStore = (auditStore as any).tableStores[(auditRecord as any).tableId];
 				if (!primaryStore) continue;
 				const entry = primaryStore?.getEntry((auditRecord as any).recordId);
-				if (!entry || entry.version !== auditRecord.version || !entry.value) {
+				// Only the write this audit record describes had its blobs scanned by the table loop above.
+				// Identity is the log key, not the version: a version match can name a different write and
+				// would skip an audit value whose blobs are still referenced.
+				if (!entry?.value || !isAuditEntryWrite(entry, auditRecord as any)) {
 					checkObjectForReferences((auditRecord as any).getValue(primaryStore));
 				}
 				// slow this down a bit to reduce excessive load, this runs approximately at 10k per second

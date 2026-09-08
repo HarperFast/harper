@@ -1,14 +1,16 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { mkdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative } from 'node:path';
 import logger from '../utility/logging/harper_logger.ts';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 import { commonValidators } from '../validation/common_validators.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import { copyTree } from '../dataLayer/blobBackup.ts';
 import { getBlobPathsForDatabaseName, getRootBlobPathsForDB } from './blob.ts';
-import type { RocksDatabase } from '@harperfast/rocksdb-js';
+import { registryStatus, type RocksDatabase } from '@harperfast/rocksdb-js';
 import {
+	BRANCH_REMOVING_SUFFIX,
+	BRANCH_ROOT_DIR,
 	type BranchDatabase,
 	database,
 	databases,
@@ -20,6 +22,7 @@ import {
 	releaseBranchIdentity,
 	reserveBranchIdentity,
 	resolveBranchPath,
+	resolveDatabaseStorageRoot,
 	retakeBranchIdentity,
 } from './databases.ts';
 import { replayLogs, replayTimeBudgetMs } from './replayLogs.ts';
@@ -461,6 +464,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 					// every restart after the first the directory is already here. What it is, though, is a
 					// question -- the blob roots are published separately from the directory, so existence
 					// alone proves nothing and the marker is what has to be read.
+					await finishInterruptedRemoval(branchPath, storeName, { identityHeld: true });
 					const existing = readBranchState(branchPath, storeName);
 					if (existing.state === 'damaged' || existing.state === 'unmarked') {
 						const problem = existing.state === 'damaged' ? existing.problem : existing.why;
@@ -575,34 +579,58 @@ async function closeBranchAt(branchPath: string): Promise<void> {
 }
 
 /**
- * Release the handle and delete the directory. A branch is durable, so nothing calls this on
- * shutdown; it is how an application's data is discarded deliberately — undeploying it, or a test
- * cleaning up — and it is only safe once nothing else is using the directory.
+ * Open references to this branch's store anywhere in the process (rocksdb-js's registry spans worker
+ * threads). A registry read that fails propagates and refuses the removal rather than reading as zero.
  */
-async function removeBranchAt(branchPath: string): Promise<void> {
-	const pending = branchesByPath.get(branchPath);
-	branchesByPath.delete(branchPath);
-	const opened = await pending?.catch(() => null);
+function branchReferenceCount(branchPath: string): number {
+	let resolved = branchPath;
+	try {
+		resolved = realpathSync(branchPath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+		throw error;
+	}
+	return (
+		registryStatus().find((entry: any) => entry.path === resolved || canonicalOrSelf(entry.path) === resolved)
+			?.refCount ?? 0
+	);
+}
+
+function canonicalOrSelf(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
+}
+
+/**
+ * Destroy a branch's storage: checkpoint, blob roots and claim, the way `dropDatabase` does for a real
+ * database. Only safe as the last step of the undeploy sequence -- component dropped, workers
+ * restarted -- and it does not take that on trust: any remaining open reference to the store refuses
+ * the removal before anything is unlinked.
+ *
+ * The branch is first renamed to its `removing` sibling so a removal cut short by a crash is finished
+ * later instead of being read as damage. `opened` is the handle this thread held, if any, already closed.
+ */
+async function destroyBranchStorage(branchPath: string, opened: OpenBranch | null): Promise<void> {
+	const held = branchReferenceCount(branchPath);
+	if (held > 0) {
+		throw new Error(
+			`Cannot remove the branch at ${branchPath}: ${held} open reference(s) to its store remain in this ` +
+				`process. Restart the workers that loaded the application first; removing it now would unlink ` +
+				`storage out from under a live reader.`
+		);
+	}
+
 	const storeName = branchStoreNameFor(branchPath);
-	// What this branch owns is what it published, not what is configured now: an entry appended to
-	// `storage.blobPaths` since may already hold a `<storeName>` directory this branch never wrote.
-	// The open handle is already pinned to them; otherwise the marker still on disk names them.
 	const blobRoots = opened?.blobRoots ?? recordedBlobRootsAt(branchPath, storeName);
-	// The identity has to be held for every deletion below, not just checked before them:
-	// `isBranchIdentity` is what stops `table()` claiming this name, and once the directory is gone its
-	// on-disk half sees nothing either, so the reservation is the only thing left holding the name while
-	// the blob roots are still being removed.
 	let holdsIdentity = true;
 	let blobRootsStranded = false;
 	if (opened) {
-		opened.branch.close();
-		// Same turn as the close that released it, so nothing can slip into the gap.
 		retakeBranchIdentity(storeName);
-		Atomics.store(opened.claimState, CLAIM_STATE, UNCLAIMED);
-		wakeWaiters(opened.claimState);
+		releaseClaim(opened.claimState);
 	} else {
-		// Never opened here, so the name has to be claimed outright. Failing means something else already
-		// answers to it, and then the blob root it resolves to is not ours to delete.
 		try {
 			reserveBranchIdentity(storeName);
 		} catch (error) {
@@ -610,29 +638,36 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 			logger.warn?.(`Leaving the blob roots of the branch at ${branchPath} in place: its identity is in use`, error);
 		}
 	}
+	branchesByPath.delete(branchPath);
+	const removing = `${branchPath}${BRANCH_REMOVING_SUFFIX}`;
 	try {
-		await rm(branchPath, { recursive: true, force: true }).catch((error) =>
-			logger.warn?.(`Could not remove branch directory ${branchPath}`, error)
-		);
-		// The clone gives a branch blob roots of its own, outside its directory, so removing only the
-		// directory strands them -- and because they are hard links, the bytes survive the base deleting
-		// its own copies. Only once the directory is actually gone: removing them while it survives (a
-		// held handle, permissions) would leave a branch that still looks adoptable but whose allocator
-		// restarts from an empty root and remints ids its own rows hold. Leaking them the other way round
-		// is recoverable; that is not.
+		await rm(removing, { recursive: true, force: true });
+		if (existsSync(branchPath)) await rename(branchPath, removing);
 		if (holdsIdentity && !existsSync(branchPath)) {
-			// A root that survived still holds this branch's blob files, so the name is not handed back to
-			// a database: one taking it would resolve its own new file ids onto them.
 			if (!(await removeBlobRoots(blobRoots))) {
 				blobRootsStranded = true;
 				logger.warn?.(
 					`Refusing '${storeName}' to new databases on this worker for the life of the process: the ` +
 						`branch at ${branchPath} left blob files behind and a database under that name would ` +
-						`resolve onto them. Other workers no longer see the branch directory, so remove those ` +
-						`files by hand to make the name safe again`
+						`resolve onto them`
 				);
 			}
 		}
+		// only while the base exists: `claimStateFor` goes through `database()`, which recreates a dropped one
+		if (!opened && databases[basename(branchPath)]) {
+			try {
+				releaseClaim(claimStateFor(basename(branchPath), branchPath));
+			} catch (error) {
+				logger.warn?.(`Could not release the branch claim for ${branchPath}`, error);
+			}
+		}
+		if (blobRootsStranded) {
+			throw new Error(
+				`The branch at ${branchPath} was not fully removed: one or more of its blob roots could not be ` +
+					`deleted. Its \`removing\` tombstone was kept; retry the removal once the cause is fixed.`
+			);
+		}
+		await rm(removing, { recursive: true, force: true });
 		await pruneEmptyParents(branchRootOf(branchPath), branchPath);
 	} finally {
 		if (holdsIdentity) {
@@ -640,6 +675,70 @@ async function removeBranchAt(branchPath: string): Promise<void> {
 			else releaseBranchIdentity(storeName);
 		}
 	}
+}
+
+/**
+ * Finish a removal that was interrupted; a `removing` sibling can only mean that.
+ *
+ * `identityHeld`: the caller already reserved the store identity (the load path does). Otherwise it is
+ * reserved here, and a database that already took the name owns the root it resolves to.
+ */
+async function finishInterruptedRemoval(
+	branchPath: string,
+	storeName: string,
+	{ identityHeld }: { identityHeld: boolean }
+): Promise<void> {
+	const removing = `${branchPath}${BRANCH_REMOVING_SUFFIX}`;
+	if (!existsSync(removing)) return;
+	logger.warn?.(`Finishing an interrupted removal of the branch at ${branchPath}`);
+	if (!identityHeld) reserveBranchIdentity(storeName);
+	let stranded = false;
+	try {
+		// Only what the tombstone's own marker names. The marker goes with the final delete, after the
+		// roots have; a tombstone without one had its roots removed already, or lost the record of them
+		// -- and guessing from configuration would take a same-named directory on a volume this branch
+		// never wrote.
+		const published = readBranchState(removing, storeName);
+		if (published.state === 'complete' || published.state === 'damaged') {
+			const configured = getBlobPathsForDatabaseName(storeName);
+			if (!(await removeBlobRoots(published.blobRoots.filter((root) => configured.includes(root))))) {
+				stranded = true;
+				throw new Error(
+					`Could not finish removing the branch at ${branchPath}: its blob roots could not be deleted; ` +
+						`the \`removing\` tombstone was kept`
+				);
+			}
+		} else {
+			stranded = true;
+			logger.warn?.(
+				`The removal tombstone of the branch at ${branchPath} no longer names its blob roots; leaving any ` +
+					`that remain in place and refusing '${storeName}' to new databases`
+			);
+		}
+		await rm(removing, { recursive: true, force: true });
+	} finally {
+		if (stranded) quarantineBranchIdentity(storeName);
+		else if (!identityHeld) releaseBranchIdentity(storeName);
+	}
+}
+
+/**
+ * Hand a branch's claim back, but only from READY: a CREATING word belongs to a loader that won the
+ * claim since, and must not be clobbered into making a second waiter the creator.
+ */
+function releaseClaim(claimState: BigInt64Array): void {
+	if (Atomics.compareExchange(claimState, CLAIM_STATE, READY, UNCLAIMED) === READY) wakeWaiters(claimState);
+}
+
+/**
+ * Release this thread's handle, then destroy the storage. Deliberate removal only.
+ */
+async function removeBranchAt(branchPath: string): Promise<void> {
+	const pending = branchesByPath.get(branchPath);
+	branchesByPath.delete(branchPath);
+	const opened = (await pending?.catch(() => null)) ?? null;
+	opened?.branch.close();
+	await destroyBranchStorage(branchPath, opened);
 }
 
 /**
@@ -669,6 +768,89 @@ function branchStoreNameFor(branchPath: string): string {
  */
 export async function removeBranches(): Promise<void> {
 	for (const branchPath of [...branchesByPath.keys()]) await removeBranchAt(branchPath);
+}
+
+/** Every branch directory and removal tombstone an application owns, under every storage root a database could have. */
+function branchDirectoriesFor(appName: string): { branches: string[]; tombstones: string[]; failures: string[] } {
+	if (!appName || appName.includes('/') || appName.includes('\\') || appName === '.' || appName === '..') {
+		throw new Error(`Invalid application name for branch removal: ${JSON.stringify(appName)}`);
+	}
+	getDatabases();
+	const branches: string[] = [];
+	const tombstones: string[] = [];
+	const failures: string[] = [];
+	const fail = (what: string, error: unknown) => failures.push(`${what} (${(error as Error).message})`);
+	const baseNames = new Set<string>([
+		...Object.keys(databases),
+		DEFAULT_DATABASE_NAME,
+		// a dropped base with a dedicated path has left `databases`, not its branches
+		...Object.keys(env.get(CONFIG_PARAMS.DATABASES) ?? {}),
+	]);
+	const branchRoots = new Set<string>();
+	for (const baseName of baseNames) {
+		try {
+			branchRoots.add(join(resolveDatabaseStorageRoot(baseName), BRANCH_ROOT_DIR));
+		} catch (error) {
+			fail(`the storage root of database '${baseName}'`, error);
+		}
+	}
+	for (const root of branchRoots) {
+		const appDirectory = join(root, appName);
+		let entries;
+		try {
+			entries = readdirSync(appDirectory, { withFileTypes: true });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') fail(appDirectory, error);
+			continue;
+		}
+		for (const entry of entries) {
+			if (!entry.isDirectory()) continue;
+			const entryPath = join(appDirectory, entry.name);
+			if (entry.name.endsWith(BRANCH_REMOVING_SUFFIX))
+				tombstones.push(entryPath.slice(0, -BRANCH_REMOVING_SUFFIX.length));
+			else if (entry.name.includes('`'))
+				fail(entryPath, new Error('not a branch directory and not a known control path'));
+			else branches.push(entryPath);
+		}
+	}
+	return { branches, tombstones, failures };
+}
+
+/** Whether undeploying this application would leave branched database storage behind. */
+export function applicationHasBranchStorage(appName: string): boolean {
+	const { branches, tombstones, failures } = branchDirectoriesFor(appName);
+	return branches.length > 0 || tombstones.length > 0 || failures.length > 0;
+}
+
+/**
+ * Discard every branch an application owns: what undeploying it means for its private data. A branch is
+ * durable, so if this does not happen nothing else ever will, and a redeploy under the same name would
+ * adopt the previous tenant's rows.
+ *
+ * Runs on the thread that saw the worker restart through, after it completed. Own handles are closed
+ * first; any reference held elsewhere refuses. Every failure is collected and thrown: an undeploy must
+ * not answer "dropped" with private data still on disk.
+ */
+export async function removeBranchesForApplication(appName: string): Promise<void> {
+	const { branches, tombstones, failures } = branchDirectoriesFor(appName);
+	const fail = (what: string, error: unknown) => failures.push(`${what} (${(error as Error).message})`);
+	for (const branchPath of tombstones) {
+		try {
+			await finishInterruptedRemoval(branchPath, branchStoreNameFor(branchPath), { identityHeld: false });
+		} catch (error) {
+			fail(`${branchPath}${BRANCH_REMOVING_SUFFIX}`, error);
+		}
+	}
+	for (const branchPath of branches) {
+		try {
+			await removeBranchAt(branchPath);
+		} catch (error) {
+			fail(branchPath, error);
+		}
+	}
+	if (failures.length) {
+		throw new Error(`Could not remove branch storage for application '${appName}': ${failures.join('; ')}`);
+	}
 }
 
 /**

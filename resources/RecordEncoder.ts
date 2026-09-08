@@ -105,6 +105,8 @@ export type Entry = {
 export const TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 4, 0x40, 0, 0]);
 // the first byte here indicates that we use the last timestamp
 export const LAST_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 1, 0, 0, 0]);
+// Never write this into an audit entry value: the substitution resolves to 2.0 when no previous time
+// was recorded, and the audit format reads a leading byte other than 0x42 as "no field here". See harper#2247.
 export const PREVIOUS_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 3, 0x40, 0, 0]);
 export const NEW_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 0, 0x40, 0, 0]);
 export const LOCAL_TIMESTAMP = Symbol('local-timestamp');
@@ -909,9 +911,9 @@ export function recordUpdater(store, tableId, auditStore) {
 				metadataInNextEncoding |= HAS_RESIDENCY_ID;
 				extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			} else residencyIdAtNextEncoding = 0;
-			const nodeId = options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
-			if (nodeId >= 0) {
-				nodeIdAtNextEncoding = nodeId;
+			const recordNodeId = options?.recordNodeId ?? options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
+			if (recordNodeId >= 0) {
+				nodeIdAtNextEncoding = recordNodeId;
 				metadataInNextEncoding |= HAS_NODE_ID;
 			} else nodeIdAtNextEncoding = -1;
 			const additionalAuditRefs = options?.additionalAuditRefs;
@@ -985,8 +987,22 @@ export function recordUpdater(store, tableId, auditStore) {
 				const nodeId = options?.nodeId ?? getThisNodeId(auditStore) ?? 0;
 				const viaNodeId = options?.viaNodeId ?? nodeId;
 				if (resolveRecord && existingEntry?.localTime) {
-					const replacingId = existingEntry?.localTime;
-					const replacingEntry = auditStore.get(replacingId, tableId, id);
+					let replacingId = existingEntry.localTime;
+					let replacingEntry;
+					if (isRocksDB && existingEntry.additionalAuditRefs) {
+						for (const ref of existingEntry.additionalAuditRefs) {
+							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId);
+							if (
+								candidate?.version === existingEntry.version &&
+								(candidate.nodeId ?? 0) === (existingEntry.nodeId ?? 0)
+							) {
+								replacingId = ref.version;
+								replacingEntry = candidate;
+								break;
+							}
+						}
+					}
+					replacingEntry ??= auditStore.get(replacingId, tableId, id, existingEntry.nodeId);
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
 						result = auditStore[isRocksDB ? 'putSync' : 'put'](
@@ -1015,7 +1031,7 @@ export function recordUpdater(store, tableId, auditStore) {
 				result = auditStore[isRocksDB ? 'putSync' : 'put'](
 					record === undefined ? NEW_TIMESTAMP_PLACEHOLDER : LAST_TIMESTAMP_PLACEHOLDER,
 					{
-						version: newVersion,
+						version: options?.recordVersion ?? newVersion,
 						tableId,
 						recordId: id,
 						previousVersion: isRocksDB ? existingEntry?.version : existingEntry?.localTime,

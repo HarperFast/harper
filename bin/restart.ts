@@ -9,6 +9,7 @@ import { compactOnStart } from './copyDb.ts';
 import {
 	beginProcessShutdown,
 	restartWorkers,
+	isThreadRunning,
 	onMessageByType,
 	shutdownWorkersNow,
 } from '../server/threads/manageThreads.js';
@@ -16,6 +17,8 @@ import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.ts';
 const { HTTP_STATUS_CODES } = hdbErrors;
 import * as envMgr from '../utility/environment/environmentManager.ts';
 import * as path from 'node:path';
+import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
+import { withComponentPreparationLock } from '../components/componentPreparationLock.ts';
 import { rmSync } from 'node:fs';
 import { getThisNodeName } from '../server/nodeName.ts';
 import { armRestartExitWatchdog } from './restartExitWatchdog.ts';
@@ -31,10 +34,63 @@ export { restart, restartService };
 // Add ITC event listener to main thread which will be called from child that receives restart request.
 if (isMainThread) {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.RESTART, async (message, port) => {
-		if (message.workerType) await restartService({ service: message.workerType });
-		else restart({ operation: 'restart' });
-		port.postMessage({ type: 'restart-complete' });
+		try {
+			if (message.removeBranchesFor) await restartThenRemoveBranches(message.workerType, message.removeBranchesFor);
+			else if (message.workerType) await restartService({ service: message.workerType });
+			else restart({ operation: 'restart' });
+		} finally {
+			port.postMessage({ type: 'restart-complete' });
+		}
 	});
+}
+
+/**
+ * Restart, then remove the branches of an application dropped on a worker (which cannot outlive the
+ * restart it asked for). The restart happens even if the component lock cannot be taken.
+ */
+async function restartThenRemoveBranches(service: string, project: string): Promise<void> {
+	let restarted = false;
+	const restartHttpWorkers = async () => {
+		restarted = true;
+		processMan.expectedRestartOfChildren();
+		hdbLogger.notify('Restarting http_workers');
+		return restartWorkers('http');
+	};
+	try {
+		const componentPath = path.join(getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT) as string, project);
+		await withComponentPreparationLock(
+			componentPath,
+			async () => {
+				const outcome: any = await restartHttpWorkers();
+				if (!outcome || outcome.declined || outcome.workersKeptOnOldCode) {
+					hdbLogger.warn(
+						`Branched database storage of ${project} was left in place: the restart did not replace every worker`
+					);
+					return;
+				}
+				// The worker's drop lock was released before this one was taken; a same-name deploy that landed
+				// in between owns these branches now.
+				if (getConfigObj()?.[project]) {
+					hdbLogger.warn(`${project} was deployed again since it was dropped; leaving its branched databases in place`);
+					return;
+				}
+				const { removeBranchesForApplication } = await import('../resources/branchDatabase.ts');
+				await removeBranchesForApplication(project);
+			},
+			{
+				timeoutMs: 5 * 60 * 1000,
+				onWait: (owner) =>
+					hdbLogger.debug?.(
+						`Waiting to restart after dropping ${project}` +
+							(owner ? ` behind process ${owner.pid}, thread ${owner.threadId}` : '')
+					),
+				isOwnerAlive: (owner) => owner.pid !== process.pid || isThreadRunning(owner.threadId),
+			}
+		);
+	} catch (error) {
+		hdbLogger.error(`Could not remove the branched database storage of ${project}`, error);
+		if (!restarted) await restartService({ service });
+	}
 }
 
 /**

@@ -95,7 +95,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
  * subscription and get the initial state.
  */
 class Subscription extends IterableEventQueue {
-	listener: (recordId: Id, auditEntry: any, localTime: number, beginTxn: boolean) => void;
+	listener: (recordId: Id, auditEntry: any, txnLogKey: number, beginTxn: boolean) => void;
 	subscriptions: any;
 	startTime?: number;
 	includeDescendants?: boolean;
@@ -178,10 +178,10 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			}
 			if (result.done) break;
 			const auditRecord = result.value;
-			const timestamp: number = auditRecord.localTime ?? auditRecord.version;
+			const timestamp: number = auditRecord.txnLogKey;
 			subscriptions.lastTxnTime = timestamp;
 			// the transaction extent: RocksDB entries committed together share the log key (record
-			// versions may differ); LMDB's localTime is a per-entry audit key, so version delimits there
+			// versions may differ); LMDB's transaction-log key is per-entry, so version delimits there
 			const txnKey = auditStore.reusableIterable ? timestamp : auditRecord.version;
 			if (ACTIONS_OF_INTEREST.includes(auditRecord.type)) {
 				const tableSubscriptions = subscriptions[auditRecord.tableId];

@@ -212,6 +212,7 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 								tableId: replayTable.tableId,
 								recordId: conditionalId,
 								version,
+								txnLogKey: version,
 								extendedType: 5 | 32 | CONDITIONAL_PATCH,
 								getValue: () => ({ value: 2 }),
 							},
@@ -220,6 +221,7 @@ describeUnlessLmdb('branch lifecycle (harper#643)', () => {
 								tableId: replayTable.tableId,
 								recordId: localOnlyId,
 								version,
+								txnLogKey: version,
 								extendedType: 5 | 32 | LOCAL_ONLY,
 								getValue: () => ({ value: 2 }),
 							},
@@ -1082,7 +1084,9 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 
 		chmodSync(volume, 0o500);
 		try {
-			await removeBranches();
+			// The removal fails rather than reporting success with the root still on disk, and keeps its
+			// tombstone as the record of what is still owed.
+			await assert.rejects(removeBranches(), /blob roots could not be deleted/);
 			assert.ok(existsSync(root), 'sanity: the blob root outlived the branch directory');
 			assert.throws(
 				() => table({ table: 'Squatter', database: STORE, attributes: [{ name: 'id', isPrimaryKey: true }] }),
@@ -1093,9 +1097,15 @@ describeUnlessLmdb('branch blob-root safety (harper#644)', () => {
 			chmodSync(volume, 0o700);
 		}
 
-		// Materializing replaces those roots wholesale, so the branch is the one holder that may take the
-		// name back; otherwise one transient EBUSY makes the application unloadable for the process life.
+		// The next load finishes the interrupted removal (the roots can go now) and materializes afresh, so
+		// the branch is the one holder that may take the name back; otherwise one transient EBUSY makes
+		// the application unloadable for the process life.
 		const rebuilt = await getOrCreateBranch('safebase', 'safeApp');
+		assert.strictEqual(
+			existsSync(`${resolveBranchPath('safebase', 'safeApp')}\`removing\``),
+			false,
+			'the interrupted removal was finished on the way'
+		);
 		assert.ok(await rebuilt.tables.Safe.get('seed'), 'the application loads again');
 	});
 
@@ -1499,5 +1509,370 @@ describe('the claim budget follows the winner (harper#644)', () => {
 
 		reportClaimProgress(claimState);
 		assert.ok(deadline() > first, 'a unit of work finished buys the waiters another full budget');
+	});
+});
+
+describeUnlessLmdb('the undeploy sequence (harper#644)', () => {
+	const { rmSync, mkdirSync, existsSync: exists } = require('node:fs');
+	const { getBlobPathsForDatabaseName, createBlob } = require('#src/resources/blob');
+	const { removeBranchesForApplication } = require('#src/resources/branchDatabase');
+	const { database } = require('#src/resources/databases');
+	const STORE = `${'cycleApp'.length}_cycleApp__cyclebase`;
+
+	before(async function () {
+		this.timeout(30000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		table({
+			table: 'Cycle',
+			database: 'cyclebase',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'payload', type: 'Blob' },
+			],
+		});
+		await databases.cyclebase.Cycle.put({ id: 'seed', payload: await createBlob(Buffer.alloc(64 * 1024, 'z')) });
+	});
+
+	afterEach(async function () {
+		await removeBranches().catch(() => {});
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		rmSync(branchPath, { recursive: true, force: true });
+		rmSync(`${branchPath}\`removing\``, { recursive: true, force: true });
+		for (const root of getBlobPathsForDatabaseName(STORE)) rmSync(root, { recursive: true, force: true });
+	});
+
+	it('refuses to remove a branch while a reference it does not own is still held', async function () {
+		this.timeout(30000);
+		const { openBranchDatabase } = require('#src/resources/databases');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		await branch.tables.Cycle.put({ id: 'held', kept: true });
+		branch.close();
+		// A holder this thread's cache knows nothing about, standing in for another thread's handle.
+		const foreign = openBranchDatabase(branchPath, 'cyclebase', STORE);
+		try {
+			await assert.rejects(removeBranchesForApplication('cycleApp'), /open reference\(s\) to its store remain/);
+			assert.ok(exists(branchPath), 'the checkpoint is untouched');
+			assert.ok(
+				getBlobPathsForDatabaseName(STORE).some((root) => exists(root)),
+				'and so are its blob roots'
+			);
+		} finally {
+			foreign.close();
+		}
+		const reopened = await getOrCreateBranch('cyclebase', 'cycleApp');
+		assert.ok(await reopened.tables.Cycle.get('held'), 'the refused branch is still fully usable');
+	});
+
+	it('closes its own handle, then removes the branch, its blob roots and its claim', async function () {
+		this.timeout(30000);
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const claimWord = () =>
+			new BigInt64Array(
+				database({ database: 'cyclebase', table: undefined }).getUserSharedBuffer(
+					`branch-claim:${branchPath}`,
+					new BigInt64Array([0n]).buffer
+				)
+			);
+		await getOrCreateBranch('cyclebase', 'cycleApp');
+		// Not closed here: the removing thread loaded the application too, and its own handle is the one
+		// reference that is not evidence of a live reader.
+		Atomics.store(claimWord(), 0, 2n); // READY, as the worker that created it left it
+
+		await removeBranchesForApplication('cycleApp');
+
+		assert.strictEqual(exists(branchPath), false, 'the checkpoint is gone');
+		assert.ok(
+			getBlobPathsForDatabaseName(STORE).every((root) => !exists(root)),
+			'so are its blob roots'
+		);
+		assert.strictEqual(Atomics.load(claimWord(), 0), 0n, 'and the claim is released');
+		assert.ok(exists(getBlobPathsForDatabaseName('cyclebase')[0]), "the base's blob root is untouched");
+
+		const redeployed = await getOrCreateBranch('cyclebase', 'cycleApp');
+		assert.ok(await redeployed.tables.Cycle.get('seed'), 'a redeploy materializes cleanly');
+	});
+
+	it('publishes its intent before unlinking anything, so a removal cut short is finished, not lost', async function () {
+		this.timeout(30000);
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip(); // root ignores the permission that stands in for the crash
+		const { chmodSync, writeFileSync } = require('node:fs');
+		const { join } = require('node:path');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const removing = `${branchPath}\`removing\``;
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		branch.close();
+		// Standing in for a crash part-way through: an entry the final delete cannot unlink. Removal must
+		// already have moved the directory to its tombstone by then -- deleting in place would leave a
+		// half-gone branch that reads as damaged, with no record of what was being removed.
+		const hold = join(branchPath, 'hold');
+		mkdirSync(hold);
+		writeFileSync(join(hold, 'keep'), '');
+		chmodSync(hold, 0o555);
+		try {
+			await assert.rejects(removeBranchesForApplication('cycleApp'), /Could not remove branch storage/);
+			assert.strictEqual(exists(branchPath), false, 'the branch directory was renamed away, not deleted in place');
+			assert.ok(exists(removing), 'and the tombstone says which removal was interrupted');
+		} finally {
+			for (const dir of [join(removing, 'hold'), hold]) if (exists(dir)) chmodSync(dir, 0o755);
+		}
+
+		const redeployed = await getOrCreateBranch('cyclebase', 'cycleApp');
+		assert.strictEqual(exists(removing), false, 'the next load finished the removal');
+		assert.ok(await redeployed.tables.Cycle.get('seed'), 'and then materialized afresh');
+	});
+
+	it('finishes an interrupted removal rather than refusing the branch forever', async function () {
+		this.timeout(30000);
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		await getOrCreateBranch('cyclebase', 'cycleApp');
+		await removeBranches();
+
+		// The state a crash between the rename and the delete leaves. Only the removal path can produce
+		// this name, so it is unambiguous -- which is the point: without it, a half-removed branch reads
+		// as damaged and is refused forever, needing an operator with a shell.
+		mkdirSync(`${branchPath}\`removing\``, { recursive: true });
+
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		assert.ok(await branch.tables.Cycle.get('seed'), 'the branch materializes rather than refusing');
+		assert.strictEqual(exists(`${branchPath}\`removing\``), false, 'and the interrupted removal is finished');
+	});
+
+	it('removes a branch this thread never opened, and hands back only a READY claim', async function () {
+		this.timeout(30000);
+		const { rename: mv, mkdir: mkd } = require('node:fs/promises');
+		const { join } = require('node:path');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const claimWord = () =>
+			new BigInt64Array(
+				database({ database: 'cyclebase', table: undefined }).getUserSharedBuffer(
+					`branch-claim:${branchPath}`,
+					new BigInt64Array([0n]).buffer
+				)
+			);
+		// Published by a previous boot, as the main thread sees a branch of an application it never loaded.
+		const staging = `${branchPath}.staging`;
+		await mkd(join(branchPath, '..'), { recursive: true });
+		await database({ database: 'cyclebase', table: undefined }).createCheckpoint(staging);
+		await mv(staging, branchPath);
+		publishHandBuiltBranch(branchPath, 'cycleApp', 'cyclebase');
+		for (const root of getBlobPathsForDatabaseName(STORE)) mkdirSync(root, { recursive: true });
+
+		// A loader that won the claim since must not be turned back into a waiter's opening.
+		Atomics.store(claimWord(), 0, 1n); // CREATING
+		await removeBranchesForApplication('cycleApp');
+		assert.strictEqual(exists(branchPath), false);
+		assert.strictEqual(Atomics.load(claimWord(), 0), 1n, 'a CREATING claim is left to its owner');
+
+		Atomics.store(claimWord(), 0, 2n); // READY, as the worker that created it left it
+		await mkd(join(branchPath, '..'), { recursive: true });
+		await database({ database: 'cyclebase', table: undefined }).createCheckpoint(staging);
+		await mv(staging, branchPath);
+		publishHandBuiltBranch(branchPath, 'cycleApp', 'cyclebase');
+		await removeBranchesForApplication('cycleApp');
+		assert.strictEqual(exists(branchPath), false, 'the never-opened branch is gone');
+		assert.ok(
+			getBlobPathsForDatabaseName(STORE).every((root) => !exists(root)),
+			'and its roots with it'
+		);
+		assert.strictEqual(Atomics.load(claimWord(), 0), 0n, 'a READY claim is handed back');
+	});
+
+	it('knows whether an application has branch storage to lose, tombstones included', async function () {
+		this.timeout(30000);
+		const { renameSync } = require('node:fs');
+		const { applicationHasBranchStorage } = require('#src/resources/branchDatabase');
+		assert.strictEqual(applicationHasBranchStorage('neverBranched'), false);
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		assert.strictEqual(applicationHasBranchStorage('cycleApp'), true);
+		branch.close();
+		renameSync(branchPath, `${branchPath}\`removing\``);
+		assert.strictEqual(applicationHasBranchStorage('cycleApp'), true, 'a tombstone still owes storage');
+		await removeBranchesForApplication('cycleApp');
+		assert.strictEqual(applicationHasBranchStorage('cycleApp'), false);
+	});
+
+	it('deletes no blob roots for a tombstone that lost its marker', async function () {
+		this.timeout(30000);
+		const { renameSync, rmSync: rmS, writeFileSync } = require('node:fs');
+		const { join } = require('node:path');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const removing = `${branchPath}\`removing\``;
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		branch.close();
+		renameSync(branchPath, removing);
+		// The final delete removed the marker and then died, leaving a marker-less tombstone. A same-named
+		// directory on a configured volume, from a restore say, is not this branch's to delete.
+		rmS(join(removing, '.branch-complete'));
+		const [root] = getBlobPathsForDatabaseName(STORE);
+		mkdirSync(root, { recursive: true });
+		writeFileSync(join(root, 'not-ours'), '');
+
+		await removeBranchesForApplication('cycleApp');
+
+		assert.strictEqual(exists(removing), false, 'the tombstone itself is cleared');
+		assert.ok(exists(join(root, 'not-ours')), 'but nothing outside it was touched');
+		rmS(root, { recursive: true, force: true });
+	});
+
+	it('finishes a removal tombstone during the undeploy walk instead of skipping it', async function () {
+		this.timeout(30000);
+		const { renameSync } = require('node:fs');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const removing = `${branchPath}\`removing\``;
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		branch.close();
+		// A crash after the tombstone rename and before the blob roots went.
+		renameSync(branchPath, removing);
+		assert.ok(
+			getBlobPathsForDatabaseName(STORE).some((root) => exists(root)),
+			'roots still present'
+		);
+
+		await removeBranchesForApplication('cycleApp');
+
+		assert.strictEqual(exists(removing), false, 'the tombstone was finished');
+		assert.ok(
+			getBlobPathsForDatabaseName(STORE).every((root) => !exists(root)),
+			'and its blob roots went with it'
+		);
+	});
+
+	it('keeps the store identity guarded while only the tombstone is on disk', async function () {
+		this.timeout(30000);
+		const { renameSync } = require('node:fs');
+		const { table, isBranchIdentity } = require('#src/resources/databases');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const removing = `${branchPath}\`removing\``;
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		branch.close();
+		renameSync(branchPath, removing);
+		// The blob roots the tombstone points at are still this branch's, so a database under the same
+		// name would mint its own file ids onto them.
+		assert.ok(isBranchIdentity(STORE), 'a tombstone is still a branch on disk');
+		assert.throws(
+			() => table({ table: 'Squatter', database: STORE, attributes: [{ name: 'id', isPrimaryKey: true }] }),
+			/branch store identity/
+		);
+		await removeBranchesForApplication('cycleApp');
+		assert.strictEqual(exists(removing), false);
+	});
+
+	it('will not finish a tombstone whose identity a database has since taken', async function () {
+		this.timeout(30000);
+		const { renameSync, rmSync: rmS } = require('node:fs');
+		const { resolveDatabasePath } = require('#src/resources/databases');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const removing = `${branchPath}\`removing\``;
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		branch.close();
+		renameSync(branchPath, removing);
+		// A database directory under the identity's name (created outside this process's guard, say by a
+		// restore) owns the blob root the tombstone still points at.
+		const squatter = resolveDatabasePath(STORE);
+		mkdirSync(squatter, { recursive: true });
+		try {
+			await assert.rejects(removeBranchesForApplication('cycleApp'), /already in use/);
+			assert.ok(exists(removing), 'the tombstone is kept');
+			assert.ok(
+				getBlobPathsForDatabaseName(STORE).some((root) => exists(root)),
+				"and the root, now the database's, is untouched"
+			);
+		} finally {
+			rmS(squatter, { recursive: true, force: true });
+		}
+		await removeBranchesForApplication('cycleApp');
+		assert.strictEqual(exists(removing), false, 'finished once the name is free again');
+	});
+
+	it('keeps the tombstone and fails when a blob root cannot be removed', async function () {
+		this.timeout(30000);
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
+		const { chmodSync, writeFileSync } = require('node:fs');
+		const { join } = require('node:path');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const removing = `${branchPath}\`removing\``;
+		await getOrCreateBranch('cyclebase', 'cycleApp');
+		const [root] = getBlobPathsForDatabaseName(STORE);
+		mkdirSync(root, { recursive: true });
+		writeFileSync(join(root, 'stuck'), '');
+		chmodSync(root, 0o555);
+		try {
+			await assert.rejects(removeBranchesForApplication('cycleApp'), /blob roots could not be deleted/);
+			assert.strictEqual(exists(branchPath), false, 'the checkpoint directory was renamed away');
+			assert.ok(exists(removing), 'and the tombstone records what is still owed');
+		} finally {
+			chmodSync(root, 0o755);
+		}
+
+		await removeBranchesForApplication('cycleApp');
+		assert.strictEqual(exists(removing), false, 'a retry finishes it');
+		assert.strictEqual(exists(root), false);
+	});
+
+	it('reports an application directory it cannot read instead of treating it as empty', async function () {
+		this.timeout(30000);
+		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
+		const { chmodSync } = require('node:fs');
+		const { dirname } = require('node:path');
+		const branchPath = resolveBranchPath('cyclebase', 'cycleApp');
+		const branch = await getOrCreateBranch('cyclebase', 'cycleApp');
+		branch.close();
+		const appDirectory = dirname(branchPath);
+		chmodSync(appDirectory, 0o000);
+		try {
+			await assert.rejects(removeBranchesForApplication('cycleApp'), /EACCES/);
+		} finally {
+			chmodSync(appDirectory, 0o755);
+		}
+		assert.ok(exists(branchPath), 'nothing was removed');
+		await removeBranchesForApplication('cycleApp');
+	});
+});
+
+describeUnlessLmdb('branch control paths cannot be spelled as a database name (harper#644)', () => {
+	const { rmSync } = require('node:fs');
+	const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		// Both are legal database names -- `schemaRegex` permits `.` -- and one is the other plus what
+		// used to be the removal suffix.
+		for (const db of ['collide', 'collide.removing']) {
+			table({ table: 'Row', database: db, attributes: [{ name: 'id', isPrimaryKey: true }] });
+		}
+	});
+
+	afterEach(async function () {
+		await removeBranches().catch(() => {});
+		for (const db of ['collide', 'collide.removing']) {
+			rmSync(resolveBranchPath(db, 'collideApp'), { recursive: true, force: true });
+			for (const root of getBlobPathsForDatabaseName(`${'collideApp'.length}_collideApp__${db}`)) {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}
+	});
+
+	it('opens a branch of `x` without destroying the branch of `x.removing`', async function () {
+		this.timeout(30000);
+		const other = await getOrCreateBranch('collide.removing', 'collideApp');
+		await other.tables.Row.put({ id: 'belongs-to-the-other-branch' });
+
+		// Deriving a control path by suffixing a user-chosen name made the ordinary load path destructive:
+		// opening the branch of `collide` saw `<app>/collide.removing` -- a healthy branch of a different
+		// database -- read it as an interrupted removal, and deleted it along with its blob roots.
+		await getOrCreateBranch('collide', 'collideApp');
+
+		assert.ok(existsSync(resolveBranchPath('collide.removing', 'collideApp')), 'the other branch survives');
+		assert.ok(await other.tables.Row.get('belongs-to-the-other-branch'), 'with its rows intact');
+		assert.ok(
+			getBlobPathsForDatabaseName(`${'collideApp'.length}_collideApp__collide.removing`).every((root) =>
+				existsSync(root)
+			),
+			'and its blob roots were not deleted either'
+		);
 	});
 });
