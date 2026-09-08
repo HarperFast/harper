@@ -265,18 +265,54 @@ describe('Test serverUtilities.js module ', () => {
 		const RETRACTED = 'test_cross_thread_retracted_op';
 		const ZOMBIE = 'test_cross_thread_zombie_op';
 		const FAILED_SEND = 'test_cross_thread_failed_send_op';
+		const SCHEMA = 'test_cross_thread_schema_op';
 		// Thread-exit tombstones are permanent and process-global, so synthetic ids must be ones the
 		// runtime will never assign to a real worker.
 		const DECLARING_THREAD = 9_000_061;
 		const ROUTING_THREAD = 9_000_062;
 		const DEAD_THREAD = 9_000_071;
 		const SENDER_THREAD = 9_000_081;
+		const SCHEMA_THREAD = 9_000_091;
+		const ROLLING_SCHEMA_THREAD = 9_000_092;
 
 		after(function () {
-			for (const op of [GRANTABLE, PLAIN, SHARED, ROLLED, RETRACTED, ZOMBIE, FAILED_SEND]) {
+			for (const op of [GRANTABLE, PLAIN, SHARED, ROLLED, RETRACTED, ZOMBIE, FAILED_SEND, SCHEMA]) {
 				unregisterWorkerGrantableOperation(op);
 				unregisterGrantableOperation(op);
 			}
+			manageThreads.notifyThreadExit(SCHEMA_THREAD);
+		});
+
+		it('mirrors a worker operation input schema to the main thread', function () {
+			const inputSchema = { type: 'object', properties: { value: { type: 'string' } } };
+			registeredOperations.operationRegisteredHandler({
+				message: { name: SCHEMA, inputSchema, originator: SCHEMA_THREAD },
+			});
+
+			assert.deepEqual(
+				registeredOperations.getRemoteOperationInputSchemas().find(([name]) => name === SCHEMA),
+				[SCHEMA, inputSchema]
+			);
+		});
+
+		it('withholds a schema while live workers disagree during a rolling deploy', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: {
+					name: SCHEMA,
+					inputSchema: { type: 'object', properties: { changed: { type: 'boolean' } } },
+					originator: ROLLING_SCHEMA_THREAD,
+				},
+			});
+			assert.equal(
+				registeredOperations.getRemoteOperationInputSchemas().find(([name]) => name === SCHEMA)?.[1],
+				undefined
+			);
+
+			manageThreads.notifyThreadExit(ROLLING_SCHEMA_THREAD);
+			assert.deepEqual(registeredOperations.getRemoteOperationInputSchemas().find(([name]) => name === SCHEMA)?.[1], {
+				type: 'object',
+				properties: { value: { type: 'string' } },
+			});
 		});
 
 		it('makes a worker-announced declared op grantable on the main thread', function () {
@@ -1050,19 +1086,44 @@ describe('Test serverUtilities.js module ', () => {
 			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
 		});
 
+		it('prefers an explicit inputSchema over the shipped schema', function () {
+			const name = 'get_metrics';
+			const inputSchema = { type: 'object', properties: { custom: { type: 'string' } } };
+			server.registerOperation({ name, execute: async () => ({}), inputSchema });
+
+			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, inputSchema);
+			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+		});
+
 		it('accepts common JSON Schema dialects on registered operations', function () {
-			for (const [name, schemaId] of [
-				['test_draft_06_schema_op', 'http://json-schema.org/draft-06/schema#'],
-				['test_draft_07_schema_op', 'https://json-schema.org/draft-07/schema'],
-				['test_draft_2019_schema_op', 'https://json-schema.org/draft/2019-09/schema'],
-				['test_draft_2020_schema_op', 'https://json-schema.org/draft/2020-12/schema'],
+			for (const [name, schemaId, canonicalSchemaId] of [
+				[
+					'test_draft_06_schema_op',
+					'http://json-schema.org/draft-06/schema#',
+					'http://json-schema.org/draft-06/schema#',
+				],
+				[
+					'test_draft_07_schema_op',
+					'https://json-schema.org/draft-07/schema',
+					'http://json-schema.org/draft-07/schema#',
+				],
+				[
+					'test_draft_2019_schema_op',
+					'https://json-schema.org/draft/2019-09/schema',
+					'https://json-schema.org/draft/2019-09/schema',
+				],
+				[
+					'test_draft_2020_schema_op',
+					'https://json-schema.org/draft/2020-12/schema',
+					'https://json-schema.org/draft/2020-12/schema',
+				],
 			]) {
 				server.registerOperation({
 					name,
 					execute: async () => ({}),
 					inputSchema: { $schema: schemaId, type: 'object' },
 				});
-				assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema.$schema, schemaId);
+				assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema.$schema, canonicalSchemaId);
 				serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
 			}
 		});
@@ -1070,6 +1131,7 @@ describe('Test serverUtilities.js module ', () => {
 		it('keeps the operation registered when inputSchema metadata is invalid', function () {
 			for (const [name, inputSchema] of [
 				['test_invalid_schema_metadata_op', { type: 'not-a-json-schema-type' }],
+				['test_untrusted_schema_uri_op', { $schema: 'https://example.com/json-schema.org/draft-07/schema' }],
 				['test_oversized_schema_metadata_op', { type: 'object', description: 'x'.repeat(64 * 1024) }],
 				[
 					'test_circular_schema_metadata_op',

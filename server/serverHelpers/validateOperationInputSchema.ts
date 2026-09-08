@@ -5,16 +5,16 @@ const validators = new Map<string, any>();
 function getDialect(schemaId: unknown): { key: string; module: string; schemaId?: string } | { error: string } {
 	if (schemaId === undefined) return { key: 'draft-07', module: 'ajv' };
 	if (typeof schemaId !== 'string') return { error: '$schema must be a string' };
-	if (/json-schema\.org\/draft-0?6\/schema#?$/.test(schemaId)) {
+	if (/^https?:\/\/json-schema\.org\/draft-0?6\/schema#?$/.test(schemaId)) {
 		return { key: 'draft-06', module: 'ajv', schemaId: 'http://json-schema.org/draft-06/schema#' };
 	}
-	if (/json-schema\.org\/draft-0?7\/schema#?$/.test(schemaId)) {
+	if (/^https?:\/\/json-schema\.org\/draft-0?7\/schema#?$/.test(schemaId)) {
 		return { key: 'draft-07', module: 'ajv', schemaId: 'http://json-schema.org/draft-07/schema#' };
 	}
-	if (/json-schema\.org\/draft\/2019-09\/schema#?$/.test(schemaId)) {
+	if (/^https?:\/\/json-schema\.org\/draft\/2019-09\/schema#?$/.test(schemaId)) {
 		return { key: '2019-09', module: 'ajv/dist/2019', schemaId: 'https://json-schema.org/draft/2019-09/schema' };
 	}
-	if (/json-schema\.org\/draft\/2020-12\/schema#?$/.test(schemaId)) {
+	if (/^https?:\/\/json-schema\.org\/draft\/2020-12\/schema#?$/.test(schemaId)) {
 		return { key: '2020-12', module: 'ajv/dist/2020', schemaId: 'https://json-schema.org/draft/2020-12/schema' };
 	}
 	return { error: `unsupported JSON Schema dialect '${schemaId}'` };
@@ -56,7 +56,7 @@ export function normalizeOperationInputSchema(inputSchema: unknown): { schema?: 
 		if (!validator.validateSchema(schemaToValidate)) {
 			return { error: validator.errorsText(validator.errors) };
 		}
-		return { schema };
+		return { schema: schemaToValidate };
 	} catch (error) {
 		return { error: error instanceof Error ? error.message : String(error) };
 	}

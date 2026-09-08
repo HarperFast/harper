@@ -196,13 +196,13 @@ payload.
 
 `server.registerOperation()` runs per-worker, so anything the **main** thread must later know about a
 registered op has to ride the OPERATION_REGISTERED announcement — a module-local registry populated
-during registration exists only in the worker that registered. The bridge carries two such facts
-today: name→thread routing (for execution forwarding) and `grantable` (so `validateOperations` on
-main will accept the name in a role's `operations` allowlist, for add_role/alter_role, impersonation,
-and OIDC trust policies). Adding a third main-thread consumer of a worker-registered fact means
-extending that message, not reading a registry that main never populated. Grantability is safe to
-mirror because it only widens what an allowlist may _name_; enforcement stays on the worker's
-`chooseOperation`.
+during registration exists only in the worker that registered. The bridge carries name→thread
+routing (for execution forwarding), `grantable` (so `validateOperations` on main will accept the
+name in a role's `operations` allowlist), and normalized `inputSchema` metadata for main-thread MCP
+introspection. Grantability only widens what an allowlist may _name_; enforcement stays on the
+worker's `chooseOperation`. MCP exposes a worker-registered operation only while every live worker
+advertises the same schema, so a rolling deploy cannot pair one generation's schema with another
+generation's handler.
 
 An operation intended for protocol introspection should pass a JSON Schema object as
 `inputSchema` to `server.registerOperation()`. When the caller omits it, registration uses the schema

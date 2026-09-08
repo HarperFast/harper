@@ -47,9 +47,11 @@ import { contextStorage } from '../../resources/transaction.ts';
 import { isMainThread } from 'node:worker_threads';
 import {
 	announceRegisteredOperation,
+	getRemoteOperationInputSchemas,
 	getRemoteOperationFunction,
 	setLocalOperationDispatch,
 } from './registeredOperations.ts';
+export { getRemoteOperationInputSchemas };
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 import { stripSuppliedParsedSqlObject } from './requestSanitization.ts';
 import { OPERATION_INPUT_SCHEMAS } from './operationInputSchemas.ts';
@@ -234,7 +236,7 @@ server.registerOperation = (operationDefinition: OperationDefinition) => {
 	// ops-API dispatcher (each thread has its own OPERATION_FUNCTION_MAP instance). Announce it
 	// so the main thread can forward calls here (#1736), and can mirror the role-allowlist mark that
 	// registerOperationPermission above made only in this thread's scope.
-	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined);
+	if (!isMainThread) announceRegisteredOperation(name, requiresSuperUser !== undefined, normalizedSchema.schema);
 };
 
 // Register the durable MCP quota policy as a function (see components/mcp/quota.ts). Worker-local,

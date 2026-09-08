@@ -52,7 +52,7 @@ import { OPERATION_DESCRIPTIONS } from './schemas/operationDescriptions.ts';
 // `startOnMainThread` — the provider below re-reads it per request rather than
 // snapshotting (#1562).
 type OperationFunction = (json: object) => unknown | Promise<unknown>;
-type OperationFunctionEntry = { operation_function: OperationFunction; inputSchema?: object };
+type OperationFunctionEntry = { inputSchema?: object };
 type OperationFunctionMap = Map<string, OperationFunctionEntry>;
 
 type ChooseOperation = (body: object) => OperationFunction;
@@ -66,6 +66,7 @@ interface OperationsConfig {
 // Test seams. Avoids importing Harper's heavy server-helpers graph from unit
 // tests that only want to exercise the registration logic.
 let _opMapOverride: OperationFunctionMap | undefined;
+let _remoteSchemasOverride: Array<[string, object | undefined]> | undefined;
 let _chooseOperationOverride: ChooseOperation | undefined;
 let _processLocalTransactionOverride: ProcessLocalTransaction | undefined;
 const warnedMissingSchemas = new Set<string>();
@@ -73,6 +74,9 @@ const warnedMissingSchemas = new Set<string>();
 export function _setOperationFunctionMapForTest(m: OperationFunctionMap | undefined): void {
 	_opMapOverride = m;
 	warnedMissingSchemas.clear();
+}
+export function _setRemoteOperationInputSchemasForTest(schemas: Array<[string, object | undefined]> | undefined): void {
+	_remoteSchemasOverride = schemas;
 }
 export function _setChooseOperationForTest(fn: ChooseOperation | undefined): void {
 	_chooseOperationOverride = fn;
@@ -85,6 +89,7 @@ function loadServerUtilities():
 	| {
 			OPERATION_FUNCTION_MAP?: OperationFunctionMap;
 			chooseOperation?: ChooseOperation;
+			getRemoteOperationInputSchemas?: () => Array<[string, object | undefined]>;
 			processLocalTransaction?: ProcessLocalTransaction;
 	  }
 	| undefined {
@@ -104,6 +109,12 @@ function getOperationFunctionMap(): OperationFunctionMap | undefined {
 	if (_opMapOverride) return _opMapOverride;
 	const utils = loadServerUtilities();
 	return utils?.OPERATION_FUNCTION_MAP;
+}
+
+function getRemoteOperationInputSchemas(): Array<[string, object | undefined]> {
+	if (_remoteSchemasOverride) return _remoteSchemasOverride;
+	if (_opMapOverride) return [];
+	return loadServerUtilities()?.getRemoteOperationInputSchemas?.() ?? [];
 }
 
 function getChooseOperation(): ChooseOperation | undefined {
@@ -440,12 +451,21 @@ const operationsToolProvider: ProfileToolProvider = {
 			const def = buildRegisteredOperationToolDef(operationName, operation, config);
 			if (def) defs.push(def);
 		}
+		for (const [operationName, inputSchema] of getRemoteOperationInputSchemas()) {
+			if (opMap.has(operationName) || !isOperationAllowed(operationName, config)) continue;
+			const def = buildRegisteredOperationToolDef(operationName, { inputSchema } as OperationFunctionEntry, config);
+			if (def) defs.push(def);
+		}
 		return defs;
 	},
 	get(operationName: string): ToolDef | undefined {
 		const opMap = getOperationFunctionMap();
 		if (!opMap) return undefined;
-		const operation = opMap.get(operationName);
+		let operation = opMap.get(operationName);
+		if (!operation) {
+			const remote = getRemoteOperationInputSchemas().find(([name]) => name === operationName);
+			if (remote) operation = { inputSchema: remote[1] };
+		}
 		if (!operation) return undefined;
 		const config = getOperationsConfig();
 		if (!isOperationAllowed(operationName, config)) return undefined;

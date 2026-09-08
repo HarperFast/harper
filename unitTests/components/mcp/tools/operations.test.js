@@ -5,6 +5,7 @@ const {
 	DEFAULT_ALLOW,
 	DEFAULT_EXCLUDED,
 	_setOperationFunctionMapForTest,
+	_setRemoteOperationInputSchemasForTest,
 	_setChooseOperationForTest,
 	_setProcessLocalTransactionForTest,
 } = require('#src/components/mcp/tools/operations');
@@ -38,6 +39,7 @@ describe('mcp/tools/operations — registration', () => {
 	afterEach(() => {
 		_resetRegistryForTest();
 		_setOperationFunctionMapForTest(undefined);
+		_setRemoteOperationInputSchemasForTest(undefined);
 		_setChooseOperationForTest(undefined);
 		_setProcessLocalTransactionForTest(undefined);
 		env.get = originalEnvGet;
@@ -263,6 +265,20 @@ describe('mcp/tools/operations — registration', () => {
 		_setOperationFunctionMapForTest(makeOpMap([['nonstandard_op', null, inputSchema]]));
 		registerOperationsTools();
 		assert.deepEqual(getTool('nonstandard_op').inputSchema, inputSchema);
+	});
+
+	it('exposes an allowed worker-registered operation with its mirrored schema', () => {
+		const inputSchema = { type: 'object', properties: { message: { type: 'string' } } };
+		envOverrides.mcp_operations_allow = ['worker_op'];
+		_setOperationFunctionMapForTest(new Map());
+		_setRemoteOperationInputSchemasForTest([['worker_op', inputSchema]]);
+		registerOperationsTools();
+
+		assert.deepEqual(getTool('worker_op').inputSchema, inputSchema);
+		assert.deepEqual(
+			listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 }).tools.map(({ name }) => name),
+			['worker_op']
+		);
 	});
 
 	it('exposes hand-curated schemas with required fields', () => {
