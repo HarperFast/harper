@@ -161,6 +161,20 @@ describe('staged build retention', () => {
 			await fs.rm(root, { recursive: true, force: true });
 		});
 
+		it('settles a journaled activation rather than retaining it, however dormant it looks', async () => {
+			const root = await newRoot('journaled');
+			await plant(root, 'web', 'd-activating', { journal: true });
+			await fs.mkdir(path.join(root, 'web'), { recursive: true });
+			await fs.writeFile(path.join(root, 'web', 'index.js'), 'LIVE\n');
+
+			const failures = await recoverInterruptedActivations(root);
+
+			assert.strictEqual(failures.size, 0);
+			assert.strictEqual(await fs.readFile(path.join(root, 'web', 'index.js'), 'utf8'), 'LIVE\n');
+			assert.deepStrictEqual(await stagedIds(root), [], 'live present with a candidate: the journal path discards it');
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
 		it('removes a complete build carrying a stale unsettled verdict, so workers stop refusing it', async () => {
 			const root = await newRoot('stale-verdict');
 			await plant(root, 'web', 'd-verdict', { unsettled: true });

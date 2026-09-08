@@ -1074,16 +1074,28 @@ async function dormantBuildAt(deploymentDirPath: string, owner: string): Promise
 
 /**
  * Remove the oldest dormant builds beyond `maxCount`. The caller must hold the component's preparation lock;
- * each eviction is re-derived under it. Never throws: a failure must neither fail a component closed nor
- * replace a deploy's own error.
+ * every catalogued build is re-derived under it before the kept set is chosen, so a catalog read unlocked
+ * cannot hold or miss a slot. Never throws: a failure must neither fail a component closed nor replace a
+ * deploy's own error.
  */
 export async function pruneDormantBuilds(
 	componentName: string,
 	builds: DormantBuild[],
 	maxCount: number
 ): Promise<void> {
-	const evictions = builds
-		.slice()
+	const current: DormantBuild[] = [];
+	for (const build of builds) {
+		try {
+			const fresh = await dormantBuildAt(build.deploymentDirPath, componentName);
+			if (fresh && !(await presentOrAbsent(join(build.deploymentDirPath, ACTIVATION_JOURNAL)))) current.push(fresh);
+		} catch (error) {
+			logger.warn(
+				`Leaving deploy staging ${build.deploymentDirPath} out of retention; it could not be read:`,
+				errorForLog(error)
+			);
+		}
+	}
+	const evictions = current
 		.sort(
 			(left, right) =>
 				right.completedAt - left.completedAt ||
@@ -1092,8 +1104,6 @@ export async function pruneDormantBuilds(
 		.slice(Math.max(0, maxCount));
 	for (const build of evictions) {
 		try {
-			if (!(await dormantBuildAt(build.deploymentDirPath, componentName))) continue;
-			if (await presentOrAbsent(join(build.deploymentDirPath, ACTIVATION_JOURNAL))) continue;
 			await rm(build.deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 			logger.debug?.(
 				`Pruned dormant staged build ${build.deploymentId} of ${componentName} beyond deployment_stagingRetention_maxCount=${maxCount}`
@@ -1899,9 +1909,9 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 		try {
 			await withComponentPreparationLock(
 				join(componentsRootDirPath, owner),
-				// Re-catalogued under the lock: a build activated or staged since the unlocked scan would otherwise
-				// hold or miss a kept slot.
-				async () => pruneDormantBuilds(owner, await dormantBuildsOf(componentsRootDirPath, owner), maxCount),
+				// Only this owner's catalogued directories are re-read under the lock, never the whole staging
+				// root: sibling threads probe these locks for 250 ms.
+				() => pruneDormantBuilds(owner, builds, maxCount),
 				{
 					purpose: 'activation-recovery',
 					...RECOVERY_LOCK_WAIT,
