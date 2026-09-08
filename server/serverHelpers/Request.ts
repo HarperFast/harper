@@ -237,7 +237,7 @@ export class Request {
 			return response;
 		}
 		if (typeof (handlerResult as Promise<void>)?.then === 'function') {
-			(handlerResult as Promise<void>).catch(onHandlerFailure);
+			Promise.resolve(handlerResult).catch(onHandlerFailure);
 		}
 		return response;
 	}
