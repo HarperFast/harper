@@ -1020,8 +1020,8 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 				} finally {
 					customIndex.searchLayer = originalSearchLayer;
 				}
-				// The comparison below cannot catch the optimization being removed: hand the upper
-				// layers the full ef and both of its sides search identically.
+				// Hand the upper layers the full ef and both sides of the greedy-vs-full comparison
+				// below search identically, so only this assertion notices the optimization going away.
 				assert.deepStrictEqual(
 					[...routingEfs],
 					[ROUTING_EF],
