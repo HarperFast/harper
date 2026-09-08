@@ -1737,14 +1737,14 @@ describe('Audit log', () => {
 				);
 				const originalError = harperLogger.error;
 				const originalWarn = harperLogger.warn;
-				let logCalls = 0;
+				const logged = [];
 				let hookCalls = 0;
-				harperLogger.error = () => {
-					logCalls++;
+				harperLogger.error = (message) => {
+					logged.push(message);
 					throw new Error('logger failure');
 				};
-				harperLogger.warn = () => {
-					logCalls++;
+				harperLogger.warn = (message) => {
+					logged.push(message);
 					throw new Error('logger failure');
 				};
 				try {
@@ -1758,7 +1758,13 @@ describe('Audit log', () => {
 						logKeys.push(record.txnLogKey);
 					}
 					assert.deepStrictEqual(logKeys, [1, 2]);
-					assert.strictEqual(logCalls, 2, 'the corrupt-frame report and hook-failure report both run');
+					// The decoder's undecodable-header warning is latched per process, so whether it
+					// lands here depends on run order: count only the reports naming this log.
+					assert.strictEqual(
+						logged.filter((message) => message.includes('logger-failure-corrupt')).length,
+						2,
+						'the corrupt-frame report and hook-failure report both run'
+					);
 					assert.strictEqual(hookCalls, 1);
 				} finally {
 					harperLogger.error = originalError;
