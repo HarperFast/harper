@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788938757194,
+  "lastUpdate": 1788938759845,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -13184,6 +13184,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 199.15,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1a5067e1bfa4d003c981e324000c5dc2700fcb06",
+          "message": "fix(sql): wire sql.engine/allowFullScan/maxSortRows/maxHashRows to real config (#2484)\n\n* fix(sql): wire sql.* config keys to the real config layer\n\nsqlEngine/config.ts read engine/allowFullScan/maxSortRows/maxHashRows\nfrom globalThis.harperConfig.sql, which nothing in production ever\nassigned — only three unit-test files set it as scaffolding. A value\nset under sql.* in harperdb-config.yaml never reached the SQL engine;\nsql.engine only appeared to work because it also has a\nHARPER_SQL_ENGINE env fallback.\n\nRegister the four keys in CONFIG_PARAMS (utility/hdbTerms.ts) and read\nthem via configUtils.getConfigValue(), the same accessor every other\nconfig domain uses. getConfigValue() returns undefined pre-boot rather\nthan eagerly initializing from disk, preserving the \"works without a\nfully booted config\" property the globalThis branch existed for, and\nit self-initializes correctly per worker thread with no new boot hook\nto wire in. Delete the globalThis branch entirely.\n\nSwitch the three scaffolding test files (join/mutation/aggregate) from\nmutating globalThis.harperConfig to configUtils.updateConfigObject(),\nthe already-sanctioned in-memory config override unit tests use\nelsewhere. Add router.test.js coverage proving sql.engine/allowFullScan/\nmaxSortRows/maxHashRows are actually read from Harper config (not just\nthe env var), and that the env var still wins for sql.engine.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012ytbJQ44LZsFyZ1C1fFdNk\n\n* fix(sql): validate sql.* config and harden tests per plan review\n\nAddresses a plan-mode cross-model review (Framing-Verdict:\nbetter-alternative-exists) of the prior commit's accessor-swap fix:\n\n- Add a scoped `sql` Joi schema (validation/configValidator.ts) so a\n  malformed sql.* value (bad engine enum, wrong-typed allowFullScan,\n  non-positive/non-integer row caps, an unknown key) is rejected loudly\n  at boot or on set_configuration, instead of silently keeping the\n  default — the top-level schema's allowUnknown:true previously let an\n  entire malformed `sql:` section through unvalidated.\n- Correct sqlEngine/PLAN.md's stale `sql.engine.allowFullScan` /\n  `sql.engine.maxSortRows` / `sql.engine.maxHashRows` phrasing to match\n  the actual sibling-key shape SqlEngineConfig has always used — the\n  review flagged this as a real doc/code contradiction an operator\n  could be misled by.\n- Switch the sql.* test scaffolding (join/mutation/aggregate.test.js,\n  and this fix's own router.test.js coverage) from blindly resetting to\n  `undefined` to snapshot/restore, so a suite doesn't clobber a value\n  set by another one sharing the same mocha process.\n- Add getSqlEngineConfig() coverage for wrong-typed/unrecognized config\n  values (defense-in-depth: Joi's coercion at validate time is never\n  written back into flatConfigObj, so the accessor's own typeof guards\n  are what actually protect a live read).\n- Add registration + set_configuration rejection tests\n  (unitTests/config/setConfigurationSql.test.js) and Joi schema tests\n  (unitTests/validation/configValidator.test.js), following existing\n  precedents (replicationReceiveQueueParam.test.js's registration\n  pattern, the blob-gap-floor schema tests) rather than exercising\n  setConfiguration()'s full success path, which would write to this\n  box's shared on-disk test config.\n\nDeliberately not adopted, with disqualifiers recorded in the PR body's\n\"For the human reviewer\" section: resolving one config snapshot per\nSQL statement (the review's hot-path suggestion), and a full HTTP\nintegration boot test for sql.engine/allowFullScan specifically (the\n'auto' engine's legacy fallback masks the config-driven difference at\nthe HTTP-observable level, so a naive version of that test would pass\non both the fixed and the reverted code).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012ytbJQ44LZsFyZ1C1fFdNk\n\n* fix(sql): close full-review findings on the sql.* config validation\n\nAdopts the concrete, fixable findings from the full pre-push review\n(gemini + cursor-composer + Harper domain adjudication) of the\nprevious two commits:\n\n- sqlSchema now sets convert:false, so a quoted allowFullScan:\"true\"\n  or maxSortRows:\"500\" in harperdb-config.yaml is REJECTED at boot\n  instead of silently passing Joi (which coerces it) and then being\n  dropped by getSqlEngineConfig()'s typeof guard — validateConfig()\n  never writes the coerced value back into configDoc for sql the way\n  it does for threads/logging/storage, so leaving convert:true on\n  would have made the new schema's strictness a no-op for exactly the\n  scenario it exists to catch.\n- Tighten maxSortRows/maxHashRows's defense-in-depth guard from\n  typeof === 'number' to isPositiveInteger (rejects NaN/negative/\n  fractional caps too — NaN in particular defeats PhysicalSort's\n  `buf.length >= cap` guard entirely, since every comparison against\n  NaN is false).\n- router.test.js: clear the four sql.* keys before each test instead\n  of only snapshotting, so the default-value assertions can't go red\n  on a machine whose own harper-config.yaml already sets one of them;\n  add a flattenConfig() unit test covering the nested-to-flat key\n  derivation the other tests bypass via updateConfigObject().\n- join.test.js: drop three per-test SQL_ALLOWFULLSCAN=true\n  reassignments already covered by the describe's beforeEach.\n- Trim added comments that narrated intent/history rather than\n  documenting a non-obvious invariant, per Harper's zero-new-comments\n  default.\n\nNot adopted, both already covered as open decisions carried into the\nPR body's \"For the human reviewer\": resolving one config snapshot per\nSQL statement instead of per-call reads (unchanged from the plan\nreview — no per-statement context exists at the router/optimizer\nlayer to hang it on), and registering sql_engine's bare-env-var\nreachability (SQL_ENGINE), which the domain leg flagged as colliding\nwith a common external convention (e.g. Django) — a real, if\ngraduated, availability risk shared in kind with ~150 other existing\nbare CONFIG_PARAMS names, surfaced to the task owner rather than\nresolved unilaterally.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012ytbJQ44LZsFyZ1C1fFdNk\n\n* chore(sql): trim comments narrating history per delta-review nits\n\nBoth the codex and gemini legs of the delta review flagged several\nadded comments as narrating test/bug history or restating what the\ntest names already say rather than documenting a non-obvious\ninvariant. Trims those; keeps the two comments codex specifically\ncalled out as explaining a real invariant (the sql Joi schema's\nconvert:false rationale, and why the set_configuration rejection test\nneeds no on-disk config fixture).\n\nAlso independently re-verified (not adopted) two other delta-round\ngemini findings against the actual code and the passing test suite:\nthe claimed ReferenceError from bare string/boolean/number in\nconfigValidator.ts (destructured from Joi.types() at the top of the\nfile — 508 tests exercising that schema all pass) and the claimed\nJoi abortEarly:true truncating the maxSortRows/maxHashRows rejection\ntest (validateConfig() explicitly passes abortEarly: false — the test\nasserting both messages together already passes).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012ytbJQ44LZsFyZ1C1fFdNk\n\n* chore(sql): drop the last narrating comment (delta review round 3)\n\nCodex's third delta round flagged the remaining setConfigurationSql.test.js\npreamble as restating what the parameterized test names already say.\nAlso independently verified (not adopted) gemini's round-3 \"blocker\"\nclaim that getConfigValue()/flattenConfig() have a casing mismatch —\nboth explicitly lowercase before the flatConfigObj lookup\n(config/configUtils.ts's getConfigValue return line and flattenConfig's\nsquashObj), and this PR's own flattenConfig() derivation test already\nexercises and passes that exact path.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012ytbJQ44LZsFyZ1C1fFdNk\n\n* fix(sql): use plain node:assert per repo style (gemini bot review)\n\ngemini-code-assist flagged unitTests/config/setConfigurationSql.test.js's\nnode:assert/strict import as against repo house style (.gemini/styleguide.md:\nplain node:assert + explicit assert.strictEqual/deepStrictEqual). The file\nalready only calls .strictEqual/.rejects, so the swap is semantically a\nno-op.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_012ytbJQ44LZsFyZ1C1fFdNk\n\n* test(sql): isolate config tests from ambient state\n\nSnapshot and clear HARPER_SQL_ENGINE alongside the sql.* config keys so external environment settings cannot override the config-integration assertions. Also isolate the existing router tests from a machine-local sql.engine value now that the router reads live Harper config.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* fix(sql): reserve `sql` as a component name so a deploy cannot break boot\n\n`sql` is now a validated core config section, but the root config namespace is\nshared with application entries: `deploy_component project=sql package=x` wrote\n`sql: {package: x}` and reported success, and the next restart failed config\nvalidation with no way out but hand-editing the YAML.\n\nReserve the name at every ingress that creates a component under it — the\ndeploy/add validators, `set_component_file` (creation only), and\n`set_configuration`'s `<component>_package`/`_port` escape, which maps straight\ninto a root entry without passing through either operation. `force` does not buy\nthe name: there is no core component to overwrite, only config to break.\n\nAn application deployed under the name before it was reserved still boots. The\n`sql` entry validates as an application entry when it carries one of the keys a\ndeploy writes, and as the settings schema otherwise, so a typo'd setting still\nfails loudly; boot warns to rename. The two shapes cannot be mixed.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(sql): close the remaining component-creation ingresses for a reserved name\n\nReview round 2. `set_env_value` creates the project directory the same way\n`set_component_file` does, and `harper deploy setup=true` would seal a credential\nfor a component name the server then refuses — both now go through the\nreservation. The grandfather check treats an unresolvable components root as\n\"not there\" so it fails closed to the reservation instead of erroring, which is\nalso what the Windows unit job (no ambient install) exercises.\n\nWidens the legacy-application key list to every deployment key componentLoader\nreads off a root entry, so a grandfathered entry cannot be mistaken for engine\nsettings and fail boot. Drops the sinon/rewire tests the house style forbids: the\ndeploy handler cases now call the real operation, and the file-writer cases pin\na temporary components root and cover both sides of the grandfather check.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(sql): keep a disabled `sql` entry bootable and tighten the reservation\n\nReview round 3. `sql: false` (and `sql:`) is how componentLoader spells a\ndisabled component, so an operator who had already turned a pre-reservation\n`sql` application off would have hit the very boot failure this change exists to\nprevent; both are now accepted. The reservation matches case, like the config\nparam lookup it protects.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n* fix(sql): keep the reservation case-sensitive, like the YAML key it protects\n\nReview round 4: matching case-insensitively refused a redeploy of an existing\ncomponent named `SQL` — a distinct root key that collides with nothing — and did\nit with a message naming a configuration section that does not exist.\n\nCo-Authored-By: Claude Opus <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-09-09T05:10:23Z",
+          "url": "https://github.com/HarperFast/harper/commit/1a5067e1bfa4d003c981e324000c5dc2700fcb06"
+        },
+        "date": 1788938759251,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.65,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 16.11,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 18.61,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 20.19,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 25.99,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 19.06,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 37.85,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 16.76,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 19.55,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 47.19,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 207.85,
             "unit": "ms"
           }
         ]
