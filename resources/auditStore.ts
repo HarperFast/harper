@@ -35,6 +35,8 @@ initSync();
 export type AuditRecord = {
 	version: number; // the record's own version: LWW ordering, @updatedTime, ETag
 	txnLogKey: number; // position in the origin's transaction log
+	/** Physical transaction log that yielded this entry, populated only when requested by the reader. */
+	logName?: string;
 	type: string;
 	encodedRecord?: Buffer;
 	extendedType?: number;
@@ -840,6 +842,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			// reserved); the flag bits (HAS_RECORD, HAS_PARTIAL_RECORD, …) sit above it. `& 0xf` is
 			// identical to the historical `& 7` for every pre-reload entry (bit 3 was always clear).
 			type: EVENT_TYPES[action & 0xf],
+			logName: undefined,
 			tableId,
 			nodeId,
 			get recordId() {
@@ -956,6 +959,7 @@ function corruptEntry(buffer: Uint8Array, start: number, end: number | undefined
 function createCorruptAuditSentinel(buffer: Uint8Array, start: number, end: number | undefined): AuditRecord {
 	return {
 		type: undefined,
+		logName: undefined,
 		tableId: undefined,
 		nodeId: undefined,
 		recordId: undefined,

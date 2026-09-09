@@ -123,6 +123,9 @@ Stage 1 adds an opt-in `includeLogName` value to `RocksTransactionLogStore.getRa
 reuses its existing aggregate iterator, per-log corrupt-frame tracking, new-log discovery, and
 timestamp merge. `AuditRecord.logName` is initialized to `undefined` on both decoded and sentinel
 entries so existing hot consumers keep one stable object shape; it is assigned only when requested.
+The returned iterable also exposes `failedLogs`, naming any physical iterator that ended on an
+unexpected non-corruption error; a derived-index runner treats either that signal or the existing
+corrupt-frame signal as an availability failure and never advances its cursor through it.
 A runner starts the aggregate with its backend's `startByLog` vector and preserves the physical log
 name on every result. Entries from one physical log are assembled through `endTxn`; a drain budget
 is checked only between complete transactions, never in the middle of one.

@@ -29,10 +29,13 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 };
 
 type TrackedIterator = IterableIterator<TransactionEntry> & { lastVersion?: number; lastEndTxn?: boolean };
+type NamedTransactionEntry = TransactionEntry & { logName?: string };
 
 export type TransactionLogIterable = Iterable<AuditRecord> & {
 	/** Corrupt frames that ended a log's iteration during this range. */
 	corruptFrameStop: CorruptFrameStop;
+	/** Physical logs whose iterators ended with an unexpected, non-corruption error. */
+	failedLogs: Set<string>;
 };
 
 const reportCorruptFrame = createCorruptFrameReporter(harperLogger);
@@ -242,6 +245,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 	getRange(options: {
 		start?: number;
 		exactStart?: boolean;
+		exclusiveStart?: boolean;
 		end?: number;
 		log?: string | number;
 		excludeLogs?: string[];
@@ -249,6 +253,8 @@ export class RocksTransactionLogStore extends EventEmitter {
 		startByLog?: Map<string, number>;
 		startFromLastFlushed?: boolean;
 		readUncommitted?: boolean;
+		/** Include the source transaction-log name on each returned audit record. */
+		includeLogName?: boolean;
 		/**
 		 * Track which version a break truncated, in `corruptFrameStop.truncatedVersions`. Costs two
 		 * property stores per yielded entry (see below), so it defaults off: only boot replay reads
@@ -262,6 +268,21 @@ export class RocksTransactionLogStore extends EventEmitter {
 		let singleLogIterator: TrackedIterator;
 		const attributeCorruption = options.trackCorruptTransactions === true;
 		const corruptFrameStop: CorruptFrameStop = { breaks: 0, truncatedVersions: new Set(), midLogBreak: false };
+		const failedLogs = new Set<string>();
+		const failedIterators = new WeakSet<IterableIterator<TransactionEntry>>();
+		const safeNext = (iterator: IterableIterator<TransactionEntry>, log: TransactionLog) => {
+			if (failedIterators.has(iterator)) return { value: undefined, done: true } as IteratorResult<TransactionEntry>;
+			try {
+				return iterator.next();
+			} catch (error) {
+				failedIterators.add(iterator);
+				failedLogs.add(log.name);
+				harperLogger.error('Transaction log iterator failed; terminating this log', error, {
+					log: log.name,
+				});
+				return { value: undefined, done: true } as IteratorResult<TransactionEntry>;
+			}
+		};
 		// Each log's iterator carries the version and endTxn of the last entry it yielded, so a break
 		// can be attributed to the source transaction whose remaining entries it swallowed — unless
 		// that entry's own endTxn already closed the transaction, in which case the break fell after
@@ -301,7 +322,20 @@ export class RocksTransactionLogStore extends EventEmitter {
 			}
 			const queryIterator = trackCorruptFrames(log, options);
 			singleLogIterator = queryIterator;
-			iterable.iterate = () => queryIterator;
+			iterable.iterate = options.includeLogName
+				? () => ({
+						next: () => {
+							const result = queryIterator.next();
+							if (!result.done) (result.value as NamedTransactionEntry).logName = log.name;
+							return result;
+						},
+						return: (value?: any) => queryIterator.return?.(value) ?? { value, done: true },
+						throw: (error?: any) => {
+							if (queryIterator.throw) return queryIterator.throw(error);
+							throw error;
+						},
+					})
+				: () => queryIterator;
 		} else {
 			const onlyKeys = options.onlyKeys;
 			let logs: TransactionLog[] = [];
@@ -309,30 +343,6 @@ export class RocksTransactionLogStore extends EventEmitter {
 			let nextEntries: any[];
 			let latestUpdates: number;
 			const iterators: TrackedIterator[] = [];
-			// Iterators that have permanently failed (corrupt entry stuck at the same
-			// position). Tracked by identity so the retry-poll path in next() and
-			// updateIterators() never calls .next() on them again — otherwise every
-			// subsequent drain cycle would re-throw the same RangeError, spamming logs
-			// and burning CPU.
-			const failedIterators = new WeakSet<IterableIterator<TransactionEntry>>();
-			// Per-log advance that converts a thrown corrupt-entry error from rocksdb-js
-			// into a clean `done: true` for that iterator. The reader's RangeError leaves
-			// `position` at the bad entry; re-calling next() would re-throw indefinitely.
-			// Terminating just this log lets the aggregate keep draining the other peers'
-			// logs and prevents the throw from escaping into setImmediate-scheduled
-			// consumers (notifyFromTransactionData) where it becomes an uncaughtException.
-			const safeNext = (iterator: IterableIterator<TransactionEntry>, log?: TransactionLog) => {
-				if (failedIterators.has(iterator)) return { value: undefined, done: true };
-				try {
-					return iterator.next();
-				} catch (error) {
-					failedIterators.add(iterator);
-					harperLogger.error('Transaction log iterator failed; terminating this log', error, {
-						log: log?.name,
-					});
-					return { value: undefined, done: true };
-				}
-			};
 			const updateIterators = () => {
 				if (latestUpdates !== this.updates) {
 					const latestLogs = (this.nodeLogs || this.loadLogs()).filter(
@@ -408,6 +418,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 							}
 						}
 						if (earliestIndex >= 0) {
+							if (options.includeLogName) (earliest as NamedTransactionEntry).logName = logs[earliestIndex].name;
 							if (attributeCorruption) {
 								// before the refill, which is where a break surfaces and needs this entry's version
 								iterators[earliestIndex].lastVersion = earliest.timestamp;
@@ -445,7 +456,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			};
 			iterable.iterate = () => aggregateIterator;
 		}
-		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn }: TransactionEntry) => {
+		const mappedAggregateIterable = iterable.map(({ timestamp, data, endTxn, logName }: NamedTransactionEntry) => {
 			// A break surfaces on the pull after this entry, so recording it here is in time to attribute
 			// that break to this entry's transaction. The aggregate branch records its own, per source
 			// log, because there this callback cannot tell which log an entry came from.
@@ -478,6 +489,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					position += 8;
 				}
 				const auditRecord = readAuditEntry(data, position, undefined);
+				if (options.includeLogName) auditRecord.logName = logName;
 				auditRecord.txnLogKey = timestamp;
 				auditRecord.endTxn = endTxn;
 				auditRecord.previousResidencyId = previousResidencyId;
@@ -493,6 +505,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 					// the log key is all this entry still yields; its record version is undecodable
 					version: timestamp,
 					txnLogKey: timestamp,
+					logName: options.includeLogName ? logName : undefined,
 					endTxn,
 					type: undefined,
 					tableId: undefined,
@@ -509,6 +522,7 @@ export class RocksTransactionLogStore extends EventEmitter {
 			mappedAggregateIterable.removeLog = aggregateIterator.removeLog;
 		}
 		mappedAggregateIterable.corruptFrameStop = corruptFrameStop;
+		mappedAggregateIterable.failedLogs = failedLogs;
 		return mappedAggregateIterable as TransactionLogIterable;
 	}
 	getKeys(_options?: any) {
