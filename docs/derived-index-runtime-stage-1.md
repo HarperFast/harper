@@ -547,7 +547,8 @@ boundary derived from staged or uncommitted positions is out of scope (see
 [Approaches considered](#approaches-considered)). Every `reload` marker committed before the
 boundary capture — the one that triggered the rebuild and any older retained one — is treated as
 progress-only by that rebuild's replay, since the scan that follows the capture covers it; markers
-are `LOCAL_ONLY`, so the capture time is compared against the local log's transaction timestamps. A
+are `LOCAL_ONLY`, so the wall-clock capture time (`Date.now()`, the clock transaction timestamps
+use, not the injectable budget clock) is compared against the local log's transaction timestamps. A
 reload committed after the capture triggers another rebuild. Residual: a reload staged before the
 capture and committed after it, with a timestamp below the capture, is skipped; that is the same
 staged-transaction window the conservative boundary accepts for ordinary entries.
@@ -562,12 +563,16 @@ reaching `ready` resets it. An owner that acquires while the shared state is `ne
 `rebuilding` rebuilds rather than trusting a format-valid durable cursor: a previous owner
 condemned that generation. `requestRebuild` from a non-owning worker sets a request word in the
 shared record that the owner consumes on its next drain turn and any acquisition consumes first,
-so a request reaches an owner that never idles; a request arriving during a rebuild is absorbed by
-it (the rebuild consumes the word when it starts and again when it completes). A non-owning worker
-never writes the readiness record itself: only the lock holder publishes. A projection that throws a 4xx-classified error (`ClientError`) for one
-record yields `state: { kind: 'unindexable' }` — the backend removes any entry and counts it — in
-live delivery and rebuild alike, so one malformed record cannot loop a rebuild; any other exception
-stays fail-closed.
+so a request reaches an owner that never idles or is parked on backpressure or backoff (the word
+bypasses those wake gates at the owner's next wake of any kind); a request arriving during a
+rebuild is absorbed by it (the rebuild consumes the word when it starts and again when it
+completes). A non-owning worker never writes the readiness record itself: only the lock holder
+publishes. A budget a previous owner already exhausted is honoured without one more attempt, and
+a backend that cannot rebuild parks on a condemned generation instead of resuming from its cursor. A projection that throws a 4xx-classified error (`ClientError`) for one
+record yields `state: { kind: 'unindexable' }` whose `reason` is the error's class and status only,
+never its message (validation messages can quote record values) — the backend removes any entry and
+counts it — in live delivery and rebuild alike, so one malformed record cannot loop a rebuild; any
+other exception stays fail-closed.
 
 ### Generation fencing and cancellation
 
@@ -588,7 +593,8 @@ reset the index. Three mechanisms close it:
   runner's backend settled, so an eviction committed during the drain still writes the marker the
   next owner replays. The runner that holds a lock after a failed shutdown can be revived by
   `requestRebuild`, which resumes under the same epoch and retries that epoch's quiescence before
-  minting a successor and resetting; there is no automatic bounded hold.
+  minting a successor and resetting; there is no automatic bounded hold. A failed shutdown stays in
+  the runtime-wide `stop()` wait, so a later `stop()` keeps reporting it.
 - **Epoch fence.** `attach(host)` gives the backend `isOwnerEpoch(epoch)`, an `Atomics` read of the
   shared owner-epoch counter. The backend checks it before each apply, after each await, and in
   flush completions; a completion for a superseded epoch is dropped. Each rebuild attempt mints a

@@ -1,16 +1,6 @@
 /**
  * Benchmark: the shared derived-index runtime feeding a backend with a synthetic per-mutation cost
- * and a fixed-cost durability barrier, shaped like a native (HNSW/Tantivy) index.
- *
- * Run via: npx mocha unitTests/resources/derivedIndexRuntime.bench.js
- *
- * Three questions, each answered with numbers rather than a share:
- *   1. coalescing — how many backend applies a window of repeated keys costs with and without the
- *      coalesced `records` view;
- *   2. queue-and-accept — event-loop delay while a large batch is applied inline in deliver() versus
- *      applied asynchronously in bounded slices;
- *   3. independently paced arrivals — write→durable latency, indexed throughput, peak queued bytes,
- *      maximum durability age and barrier count under three flush cadences.
+ * and a fixed-cost durability barrier. Run via: npx mocha unitTests/resources/derivedIndexRuntime.bench.js
  */
 const { EventEmitter } = require('node:events');
 const { performance } = require('node:perf_hooks');
