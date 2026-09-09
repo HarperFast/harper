@@ -1647,6 +1647,20 @@ describe('Audit log', () => {
 				assert.deepStrictEqual(logKeys, [1, 3, 4]);
 			});
 
+			it('lets a hook re-add a log it removed in the same call, rather than replaying the removal over it', () => {
+				const corrupt = corruptLogNamed('corrupt', [entry(1)], 2048);
+				const store = storeWith(corrupt, healthyLogNamed('healthy', [entry(2), entry(3), entry(4)]));
+				const iterable = store.getRange({
+					onCorruptFrame: () => {
+						iterable.removeLog('healthy');
+						iterable.addLog('healthy');
+					},
+				});
+				const logKeys = [];
+				for (const record of iterable) logKeys.push(record.txnLogKey);
+				assert.deepStrictEqual(logKeys, [1, 2, 3, 4]);
+			});
+
 			it('defers a re-poll report until its rebuilt buffer is stable for a re-entering hook', () => {
 				const error = new CorruptFrameError('Corrupt transaction log entry at position 3e8 of log 1', 1, 1000, 2048);
 				let corruptOnPoll = false;
