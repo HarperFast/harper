@@ -9,10 +9,10 @@
  * carried the new password as its credential), which made non-interactive user provisioning against
  * a deployed instance impossible.
  *
- * Pinned here: `auth_username=`/`auth_password=` win the auth leg; env-var credentials and
- * target-URL userinfo both beat the payload; each source is all-or-nothing, so an incomplete
- * explicit pair is fatal rather than completed from the next source; and the legacy payload
- * fallback survives for operations where those args genuinely ARE the credentials.
+ * `auth_username=`/`auth_password=` win the auth leg; env-var credentials and target-URL userinfo
+ * both beat the payload; each source is all-or-nothing, so an incomplete explicit pair is fatal
+ * rather than completed from the next source; and the legacy payload fallback survives for
+ * operations where those args genuinely ARE the credentials.
  * unitTests/bin/cliOperations.test.js owns the field-stripping half of the fix, which has no
  * server-observable effect.
  *
@@ -59,6 +59,11 @@ const ENV_AUTH_USER = 'qa627_env_created';
 const ENV_AUTH_PW = 'Qa627-Env-Pw!1';
 const ARGS_AUTH_USER = 'qa627_args_created';
 const ARGS_AUTH_PW = 'Qa627-Args-Pw!1';
+const URL_AUTH_ADMIN = 'qa627_url_admin';
+// Deliberately alphanumeric: `new URL()` percent-encodes userinfo while extractTargetCredentials
+// (bin/cliCredentials.ts) returns it undecoded, so `:` `;` `=` `@` in a password all break the
+// target= form. This arm pins auth precedence, not that pre-existing decoding gap.
+const URL_AUTH_ADMIN_PW = 'Qa627UrlAdminPw1';
 const URL_AUTH_USER = 'qa627_url_created';
 const URL_AUTH_PW = 'Qa627-Url-Pw!1';
 const FATAL_USER = 'qa627_never_created';
@@ -79,6 +84,7 @@ suite(
 	(ctx: ContextWithHarper) => {
 		let client: ReturnType<typeof createApiClient>;
 		let cliHome: string;
+		let superUserRole: string;
 
 		/** A child process, never in-process: cliOperations() calls process.exit(). */
 		async function runCli(args: string[], env: Record<string, string> = {}): Promise<CliResult> {
@@ -145,6 +151,11 @@ suite(
 				.req()
 				.send({ operation: 'add_role', role: ROLE, permission: { super_user: false } })
 				.expect(200);
+
+			const users = await client.req().send({ operation: 'list_users' }).expect(200);
+			const admin = (users.body as any[]).find((u) => u.username === ctx.harper.admin.username);
+			assert.ok(admin?.role?.role, `expected to find the harness admin '${ctx.harper.admin.username}' in list_users`);
+			superUserRole = admin.role.role;
 		});
 
 		after(async () => {
@@ -217,19 +228,23 @@ suite(
 		});
 
 		test('admin credentials embedded in the target= URL authenticate add_user', async () => {
-			// Built by hand rather than through URL setters, which percent-encode userinfo while
-			// extractTargetCredentials (bin/cliCredentials.ts) returns url.password UNDECODED — so a
-			// round trip would send `pw%40x` for a password containing `@` and this arm would report a
-			// #1873 regression that did not happen. The guard fails loudly if a future harness default
-			// makes the literal form ambiguous instead of letting it read as a product failure.
-			const { username, password } = ctx.harper.admin;
-			assert.doesNotMatch(
-				`${username}:${password}`,
-				/[@/?#[\]%\s]/,
-				'the harness admin credentials must be literal-safe in URL userinfo for this arm to mean anything'
-			);
+			// A dedicated super_user with a URL-safe password, rather than the harness admin: the
+			// credential travels through `new URL()` inside the CLI, which percent-encodes userinfo
+			// that extractTargetCredentials then returns undecoded, so an ambient password containing
+			// `:` `;` `=` or `@` would fail this arm for a reason that has nothing to do with #1873.
+			await client
+				.req()
+				.send({
+					operation: 'add_user',
+					role: superUserRole,
+					username: URL_AUTH_ADMIN,
+					password: URL_AUTH_ADMIN_PW,
+					active: true,
+				})
+				.expect(200);
+
 			const url = new URL(ctx.harper.operationsAPIURL);
-			const targetUrl = `${url.protocol}//${username}:${password}@${url.host}${url.pathname}`;
+			const targetUrl = `${url.protocol}//${URL_AUTH_ADMIN}:${URL_AUTH_ADMIN_PW}@${url.host}${url.pathname}`;
 
 			const { code, stdout, stderr } = await runCli([
 				'add_user',
@@ -244,7 +259,7 @@ suite(
 			assert.strictEqual(
 				code,
 				0,
-				`target= userinfo should have authenticated as admin. stdout=${stdout} stderr=${stderr}`
+				`target= userinfo should have authenticated as ${URL_AUTH_ADMIN}. stdout=${stdout} stderr=${stderr}`
 			);
 			assert.ok((await listUsernames()).has(URL_AUTH_USER), `${URL_AUTH_USER} should have been created`);
 			assert.strictEqual(

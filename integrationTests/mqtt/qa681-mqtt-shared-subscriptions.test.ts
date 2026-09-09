@@ -7,10 +7,10 @@
  * `$share` is never a table, so the lookup misses, addSubscription() throws a 404, and
  * server/mqtt.ts maps it to SUBACK reason 0x8f on MQTT v5 and 0x80 on v3.1.1.
  *
- * The promotable fact is that the subscription is REFUSED rather than accepted as an inert filter.
- * If a future change silently accepted `$share`, subscribers would begin receiving the FULL fan-out
- * where the application expected each message to reach exactly one worker — so both the refusal and
- * the absence of delivery are asserted, and either drift fails this file.
+ * The subscription is REFUSED, not accepted as an inert filter. Were `$share` ever silently
+ * accepted, subscribers would begin receiving the FULL fan-out where the application expected each
+ * message to reach exactly one worker; both the refusal and the absence of delivery are asserted,
+ * so either drift fails this file.
  *
  * On a rejected SUBACK mqtt.js's `granted` callback argument echoes the client's own request rather
  * than the broker's grant, so the reason code is read from `err.packet.granted`. Reading `granted`

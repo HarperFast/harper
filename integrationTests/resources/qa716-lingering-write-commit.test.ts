@@ -6,12 +6,11 @@
  * index agrees with the base store — immediately, not eventually — even though the request left a
  * read iterator open past its own commit.
  *
- * Why an integration anchor on top of unitTests/resources/lingeringWriteCommit.test.js, which
- * shipped with the fix: that covers the single-table case against the transaction object in
- * isolation. Here the same mechanism runs through the whole request path with the factors a real
- * fulfillment endpoint combines — writes staged across three tables in one request transaction, a
- * paged secondary-index iterator the handler never drains or closes, TTL eviction racing the
- * deferred commit, and four worker threads.
+ * unitTests/resources/lingeringWriteCommit.test.js shipped with the fix and covers the single-table
+ * case against the transaction object in isolation. This runs the same mechanism through the whole
+ * request path with the factors a real fulfillment endpoint combines: writes staged across three
+ * tables in one request transaction, a paged secondary-index iterator the handler never drains or
+ * closes, TTL eviction racing the deferred commit, and four worker threads.
  *
  * Pre-#1860, commit() saw readTxnsUsed > 0 from the abandoned iterator, set open=LINGERING and
  * returned WITHOUT committing; the writes could only be flushed from doneReadTxn(), which nothing
