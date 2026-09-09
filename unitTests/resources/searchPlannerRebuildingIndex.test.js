@@ -6,7 +6,7 @@
  */
 
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { estimateCondition } = require('#src/resources/search');
@@ -59,7 +59,7 @@ describe('the query planner treats a rebuilding index as unavailable (harper#253
 			};
 		});
 		for (const [comparator, estimate] of Object.entries(estimates))
-			assert.equal(
+			assert.strictEqual(
 				estimate,
 				Infinity,
 				`a "${comparator}" condition on a rebuilding index must not rank as usable (got ${estimate})`
@@ -87,7 +87,7 @@ describe('the query planner treats a rebuilding index as unavailable (harper#253
 				found.push(record);
 			return found;
 		});
-		assert.deepEqual(
+		assert.deepStrictEqual(
 			rows.map((row) => row.id),
 			['k-7'],
 			'the sibling index must lead so the rebuilding attribute is applied as a record filter'

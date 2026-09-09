@@ -11,7 +11,7 @@
  */
 
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');
@@ -76,13 +76,13 @@ describe('an index build that ends without completing is marked and recovered', 
 
 		await catalogFlushed(Rebuilding);
 		const descriptor = Rebuilding.dbisDB.getSync(`${tableName}/tag`);
-		assert.equal(
+		assert.strictEqual(
 			descriptor.indexingFailed,
 			true,
 			'a backfill that returned without completing must leave a durable failure marker, or nothing re-triggers it'
 		);
 		assert.ok(descriptor.indexingPID, 'the build must still read as incomplete so queries keep refusing');
-		assert.equal(
+		assert.strictEqual(
 			Rebuilding.indices.tag.isIndexing,
 			true,
 			'the index must stay marked as rebuilding after an abandoned build'
@@ -90,48 +90,74 @@ describe('an index build that ends without completing is marked and recovered', 
 		const reported = warnings
 			.map(([message]) => message)
 			.filter((message) => typeof message === 'string' && message.includes(`${tableName}.tag`));
-		assert.equal(reported.length, 1, `the abandoned build must be reported above debug: ${JSON.stringify(warnings)}`);
+		assert.strictEqual(
+			reported.length,
+			1,
+			`the abandoned build must be reported above debug: ${JSON.stringify(warnings)}`
+		);
 
 		// The marker is what the next load acts on.
 		const Recovered = seed(tableName, true);
 		assert.ok(Recovered.indexingOperation, 'the persisted marker must re-trigger the backfill on the next load');
 		await Recovered.indexingOperation;
 		await catalogFlushed(Recovered);
-		assert.equal(
+		assert.strictEqual(
 			Recovered.dbisDB.getSync(`${tableName}/tag`).indexingPID,
 			undefined,
 			'the recovered build must complete and clear the descriptor'
 		);
-		assert.equal(Recovered.indices.tag.isIndexing, false, 'the recovered index must be usable again');
+		assert.strictEqual(Recovered.indices.tag.isIndexing, false, 'the recovered index must be usable again');
 	});
 
-	it('does not mark a build the settle handler no longer owns', async () => {
+	it('does not mark a build a replacement claimed between the settle handler check and its write', async () => {
 		const tableName = 'IndexAbandonNotOwned';
-		const Seeded = seed(tableName, true);
+		const key = `${tableName}/tag`;
+		const Seeded = seed(tableName, false);
 		let lastPut;
 		for (let i = 0; i < 10; i++) lastPut = Seeded.put({ id: `k-${i}`, tag: i % 2 ? 'odd' : 'even' });
 		await lastPut;
-		if (Seeded.indexingOperation) await Seeded.indexingOperation;
-		await catalogFlushed(Seeded);
 
-		// A descriptor re-armed by a later owner, exactly as a replacement worker generation would leave
-		// it: the settled handler must not write a failure marker over a build that is not its own.
-		const key = `${tableName}/tag`;
-		const descriptor = Seeded.dbisDB.getSync(key);
-		const written = Seeded.dbisDB.put(key, {
-			...descriptor,
-			indexingPID: process.pid,
-			restartNumber: (manageThreads.restartNumber ?? 1) + 1,
-			indexingIncarnation: manageThreads.processIncarnation,
-		});
-		if (written?.then) await written;
+		const Rebuilding = seed(tableName, true);
+		const ownBuildId = Rebuilding.dbisDB.getSync(key).indexingBuildId;
+		assert.ok(ownBuildId, 'the trigger must stamp a build id for the settle handler to fence on');
 
-		await Seeded.indexingOperation;
-		await catalogFlushed(Seeded);
-		assert.equal(
-			Seeded.dbisDB.getSync(key).indexingFailed,
+		// The settle handler re-reads under the exclusive catalog lock; report a replacement's claim on
+		// that read, which is the window a replacement worker generation actually claims the build in.
+		const dbisDB = Rebuilding.dbisDB;
+		const originalGetSync = dbisDB.getSync.bind(dbisDB);
+		let reads = 0;
+		dbisDB.getSync = (readKey, ...rest) => {
+			const value = originalGetSync(readKey, ...rest);
+			if (readKey === key && ++reads === 2) return { ...value, indexingBuildId: 'a-replacement-build' };
+			return value;
+		};
+		const rootStore = Rebuilding.primaryStore.rootStore;
+		const originalStatus = Object.getOwnPropertyDescriptor(rootStore, 'status');
+		const originalGetRange = Rebuilding.primaryStore.getRange;
+		Rebuilding.primaryStore.getRange = () => {
+			throw new Error('Database not open');
+		};
+		Object.defineProperty(rootStore, 'status', { value: 'closed', configurable: true, writable: true });
+		try {
+			await Rebuilding.indexingOperation;
+		} finally {
+			Rebuilding.primaryStore.getRange = originalGetRange;
+			if (originalStatus) Object.defineProperty(rootStore, 'status', originalStatus);
+			else delete rootStore.status;
+			dbisDB.getSync = originalGetSync;
+		}
+
+		assert.ok(reads >= 2, 'the settle handler must re-read the descriptor after its first check');
+		await catalogFlushed(Rebuilding);
+		assert.strictEqual(
+			originalGetSync(key).indexingFailed,
 			undefined,
-			'the settle handler marked a build owned by a newer generation as failed'
+			'the settle handler marked a build that a replacement had already claimed'
+		);
+		assert.strictEqual(
+			originalGetSync(key).indexingBuildId,
+			ownBuildId,
+			'the settle handler must not write its own stale descriptor snapshot back over the catalog'
 		);
 	});
 
@@ -165,23 +191,23 @@ describe('an index build that ends without completing is marked and recovered', 
 			if (written?.then) await written;
 
 			const Recovered = seed(tableName, true);
-			assert.notEqual(
+			assert.notStrictEqual(
 				Recovered.indexingOperation,
 				completedBuild,
 				`an armed build ${label} must be re-triggered, not trusted`
 			);
 			await Recovered.indexingOperation;
 			await catalogFlushed(Recovered);
-			assert.equal(
+			assert.strictEqual(
 				Recovered.dbisDB.getSync(key).indexingPID,
 				undefined,
 				`the recovered build (${label}) must complete and clear the descriptor`
 			);
-			assert.equal(Recovered.indices.tag.isIndexing, false, `the recovered index (${label}) must be usable`);
+			assert.strictEqual(Recovered.indices.tag.isIndexing, false, `the recovered index (${label}) must be usable`);
 			const odds = [];
 			for await (const record of Recovered.search({ conditions: [{ attribute: 'tag', value: 'odd' }] }))
 				odds.push(record);
-			assert.equal(odds.length, 5, `the recovered backfill (${label}) must index every record`);
+			assert.strictEqual(odds.length, 5, `the recovered backfill (${label}) must index every record`);
 		}
 	});
 
@@ -208,7 +234,7 @@ describe('an index build that ends without completing is marked and recovered', 
 		if (written?.then) await written;
 
 		const Live = seed(tableName, true);
-		assert.equal(Live.indexingOperation, completedBuild, 'a live build in this process must not be re-triggered');
-		assert.equal(Live.indices.tag.isIndexing, true, 'a live build must still read as incomplete');
+		assert.strictEqual(Live.indexingOperation, completedBuild, 'a live build in this process must not be re-triggered');
+		assert.strictEqual(Live.indices.tag.isIndexing, true, 'a live build must still read as incomplete');
 	});
 });

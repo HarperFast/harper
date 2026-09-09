@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { randomBytes } from 'node:crypto';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
@@ -448,13 +449,11 @@ function applyDurableDeclaration(attribute: any, descriptor: any) {
 }
 
 /**
- * True when a descriptor claims an index build that no live operation in this process can own, so the
- * trigger must rebuild it rather than trust it. Beyond the PID and worker-generation checks this has
- * always made, it compares the process incarnation: a container restart reuses PID 1 and resets the
- * in-memory restart generation to 1 while the persisted one is higher, so those two alone can never
- * detect a process restart there. A descriptor carrying no incarnation predates the field, so it too
- * belongs to an earlier process. A thread that was started without an incarnation of its own cannot
- * judge, and falls back to the PID and generation checks rather than declaring a live build dead.
+ * True when a descriptor claims an index build no live operation in this process can own. The PID and
+ * worker generation cannot answer that alone: a container reuses PID 1 and starts the in-memory
+ * generation back at 1 while the persisted one is higher. A descriptor with no incarnation was written
+ * before the field existed, so it belongs to an earlier process; a thread started without one of its
+ * own cannot judge, and falls back rather than declaring a live build dead.
  */
 function isAbandonedIndexBuild(descriptor: any, currentRestartGeneration: number): boolean {
 	if (!descriptor) return false;
@@ -1221,10 +1220,8 @@ function initStores(
 						indices[attribute.name] = dbi;
 						indices[attribute.name].indexNulls = attribute.indexNulls;
 					}
-					// The descriptor owns whether the index is complete; this is the only path a thread that
-					// never declares the schema (the main and operations threads) takes to reach Table.indices,
-					// so without it such a thread holds isIndexing = false and serves a partially-built index.
-					// Assigned, not just set: the same reload is what must clear the flag once a build finishes.
+					// The catalog owns index completeness, and this reload is the only way a thread that never
+					// declares the schema reaches Table.indices. Assigned, not set: the same reload clears it.
 					indices[attribute.name].isIndexing = !!attribute.indexingPID;
 					const existingAttribute = existingAttributes.find(
 						(existingAttribute) => existingAttribute.name === attribute.name
@@ -2928,10 +2925,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							// the new process reuses the old PID. Cleared on clean completion; left in place
 							// on failure/crash so the next, higher-numbered restart re-triggers the backfill.
 							attribute.restartNumber = currentRestartGeneration;
-							// Alongside them, the incarnation of the process that owns this build; see
-							// isAbandonedIndexBuild for why the PID and the generation cannot identify it alone.
 							if (manageThreads.processIncarnation != null)
 								attribute.indexingIncarnation = manageThreads.processIncarnation;
+							// Identifies this build itself, so its settle handler cannot mark a later one failed.
+							attribute.indexingBuildId = randomBytes(8).toString('hex');
 							delete attribute.indexingFailed; // clear failure flag for the new run
 							dbi.isIndexing = true;
 							Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
@@ -2971,6 +2968,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						// change doesn't drop it and break the crash-recovery trigger for the running backfill.
 						attribute.restartNumber = attributeDescriptor.restartNumber;
 						attribute.indexingIncarnation = attributeDescriptor.indexingIncarnation;
+						attribute.indexingBuildId = attributeDescriptor.indexingBuildId;
 						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
 					}
 					attributesDbi.put(dbiKey, attribute);
@@ -3035,16 +3033,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	logger.trace(`${tableName} table loading, running index`);
 	const branchPath = target.branch?.path;
 	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
-		const buildGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
-		// runIndexing swallows its own errors, so both arms run the same marker pass; awaiting it inside
-		// the tracked operation is what keeps its writes from becoming an unobserved rejection.
-		const markSettled = () =>
-			markAbandonedIndexBuild(Table, attributesToIndex, buildGeneration, () => Table.indexingOperation === operation);
-		const operation: Promise<void> = runIndexing(Table, attributesToIndex, indicesToRemove, branchPath).then(
+		// The ids the arming block just wrote, captured before the backfill can rewrite the attributes.
+		const buildIds = new Map(attributesToIndex.map((attribute) => [attribute, attribute.indexingBuildId]));
+		// runIndexing resolves on every path it takes, including its silent returns, so both arms run the
+		// same pass; it is awaited inside the tracked operation so its writes cannot reject unobserved.
+		const markSettled = () => markAbandonedIndexBuild(Table, rootStore, buildIds);
+		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove, branchPath).then(
 			markSettled,
 			markSettled
 		);
-		Table.indexingOperation = operation;
 	} else if (hasChanges)
 		signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
@@ -3218,44 +3215,56 @@ export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 }
 
 /**
- * A backfill can end without running either of runIndexing's own exit paths — the restart-interrupt
- * return inside the loop and the closed-store return in its catch — leaving the descriptor claiming an
- * armed, in-progress build with no failure marker, nothing logged above debug, and nothing to
- * re-trigger it. Persist that marker once the operation settles.
+ * runIndexing has two returns that write nothing — the restart-interrupt return in its loop and the
+ * closed-store return in its catch — leaving a descriptor that claims an armed build with no failure
+ * marker and nothing to re-trigger it. Persist that marker when the operation settles.
  *
- * Only for the exact build this call scheduled: a replacement worker generation can claim the build
- * under the catalog lock before the exiting generation's promise settles, and marking that would fail a
- * live build. The PID, incarnation and generation fence the cross-generation case; `isCurrentOperation`
- * fences successive builds on this thread, where the generation is unchanged.
+ * `indexingBuildId` is what makes this safe: a replacement worker generation, or another thread
+ * declaring different index options, can claim the attribute before an outgoing build's promise
+ * settles, and marking that would fail a live build. The re-read and the write share the exclusive
+ * catalog lock the declaration takes, so the claim cannot land between them. The locked section stays
+ * synchronous (see acquireUpdateAttributesLock); the write is awaited after the release.
  */
-async function markAbandonedIndexBuild(
-	Table,
-	attributes: any[],
-	buildGeneration: number,
-	isCurrentOperation: () => boolean
-) {
-	for (const attribute of attributes) {
+async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, string>) {
+	for (const [attribute, buildId] of buildIds) {
+		let pending;
+		let marked;
+		let releaseExclusiveLock;
 		try {
+			if (buildId == null || Table.dbisDB.getSync(attribute.key)?.indexingBuildId !== buildId) continue;
+			if (rootStore instanceof RocksDatabase) {
+				acquireUpdateAttributesLock(rootStore, `abandoned index build '${Table.tableName}.${attribute.name}'`);
+				releaseExclusiveLock = () => releaseUpdateAttributesLock(rootStore);
+			} else {
+				rootStore.transactionSync(() => ({
+					then(callback) {
+						releaseExclusiveLock = callback;
+					},
+				}));
+			}
 			const descriptor = Table.dbisDB.getSync(attribute.key);
-			if (
-				!descriptor?.indexingPID ||
-				descriptor.indexingFailed ||
-				descriptor.indexingPID !== process.pid ||
-				descriptor.restartNumber !== buildGeneration ||
-				descriptor.indexingIncarnation !== manageThreads.processIncarnation ||
-				!isCurrentOperation()
-			)
-				continue;
-			await Table.dbisDB.put(attribute.key, { ...descriptor, indexingFailed: true });
+			if (descriptor?.indexingBuildId === buildId && !descriptor.indexingFailed) {
+				pending = Table.dbisDB.put(attribute.key, { ...descriptor, indexingFailed: true });
+				marked = true;
+			}
+		} catch (error) {
+			// A store closed by shutdown is the common case, and it cannot be written to at all.
+			logger.debug(`Could not mark the abandoned index build of ${Table.tableName}.${attribute.name}`, error);
+		} finally {
+			if (releaseExclusiveLock) releaseExclusiveLock();
+		}
+		try {
+			if (pending?.then) await pending;
+		} catch (error) {
+			marked = false;
+			logger.debug(`Could not persist the abandoned index build of ${Table.tableName}.${attribute.name}`, error);
+		}
+		if (marked)
 			logger.warn(
 				`Indexing of ${Table.databaseName}.${Table.tableName}.${attribute.name} ended without completing. ` +
 					`The index stays incomplete and every query on the attribute reports it as not indexed yet; ` +
 					`the next load of the table retries the backfill from the last checkpoint (indexingFailed=true).`
 			);
-		} catch (error) {
-			// A store closed by shutdown is the common case here, and it cannot be written to at all.
-			logger.debug(`Could not mark the abandoned index build of ${Table.tableName}.${attribute.name}`, error);
-		}
 	}
 }
 async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
@@ -3459,6 +3468,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				delete attribute.indexingFailed;
 				delete attribute.restartNumber;
 				delete attribute.indexingIncarnation;
+				delete attribute.indexingBuildId;
 				attribute.dbi.isIndexing = false;
 				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
 				// differ from attribute.dbi if a resetDatabases() call during this migration

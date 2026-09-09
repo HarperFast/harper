@@ -4137,9 +4137,9 @@ export function makeTable(options) {
 					}
 				} else {
 					// if we had to add an aligned condition that isn't first, we remove it and do ordering later.
-					// Only the pseudo-condition we added: a caller's own condition on the sort attribute is a
-					// filter the result must still satisfy, and dropping it returned rows that do not match.
-					if (syntheticOrderCondition) conditions.splice(conditions.indexOf(syntheticOrderCondition), 1);
+					// Only the one we added: a caller's own condition on the sort attribute is still a filter.
+					const syntheticIndex = syntheticOrderCondition ? conditions.indexOf(syntheticOrderCondition) : -1;
+					if (syntheticIndex >= 0) conditions.splice(syntheticIndex, 1);
 					postOrdering = sort;
 				}
 			}

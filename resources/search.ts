@@ -1103,7 +1103,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
 			!isPrimaryKey && // no need to use index for primary keys, since we will be iterating over the primary keys
-			!!(Table && usableIndex(Table, attribute)) && // is there an index for this attribute, and is it complete
+			!!(Table && usableIndex(Table, attribute)) && // is there a usable (complete) index for this attribute
 			estimatedIncomingCount > 3; // do we have a valid estimate of multiple incoming records (that is worth using an index for)
 		if (canUseIndex) {
 			if (searchCondition.estimated_count == undefined) estimateCondition(Table)(searchCondition);
@@ -1169,7 +1169,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 function estimateRangeCondition(table, condition, searchType, fraction) {
 	const attributeName = condition[0] ?? condition.attribute;
 	const isPrimaryKey = attributeName === table.primaryKey;
-	const store = isPrimaryKey ? table.primaryStore : table.indices[attributeName];
+	const store = isPrimaryKey ? table.primaryStore : usableIndex(table, attributeName);
 	// LMDB-backed and custom index stores do not implement estimateCount
 	if (typeof store?.estimateCount !== 'function') return undefined;
 	let value = condition[1] ?? condition.value;
@@ -1246,14 +1246,18 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 }
 
 /**
- * The index a condition would be driven by, or undefined when there is none usable. searchByIndex
- * refuses a rebuilding index (IndexRebuildingError), so the planner has to see it as absent too: a
- * condition ranked by a partially-built index's cardinality can win the lead and then be refused, when
- * leading with a sibling and applying this one as a record filter answers the query completely.
+ * The index a condition can actually be driven by. searchByIndex refuses a rebuilding one, so the
+ * planner has to rank it as absent or it can win the lead and then be refused.
  */
 function usableIndex(table, attributeName): any {
-	const index = table.indices[attributeName];
+	const index = attributeName == null ? undefined : table.indices[attributeName];
 	return index?.isIndexing ? undefined : index;
+}
+
+/** The attribute a condition would drive an index on. A single-element path names one attribute. */
+function drivingAttribute(condition): any {
+	const attributeName = condition[0] ?? condition.attribute;
+	return Array.isArray(attributeName) ? (attributeName.length === 1 ? attributeName[0] : undefined) : attributeName;
 }
 
 export function estimateCondition(table) {
@@ -1285,12 +1289,8 @@ export function estimateCondition(table) {
 			// skip if it is cached
 			let searchType = condition.comparator || condition.search_type;
 			searchType = ALTERNATE_COMPARATOR_NAMES[searchType] || searchType;
-			const conditionAttribute = condition[0] ?? condition.attribute;
-			if (
-				typeof conditionAttribute === 'string' &&
-				conditionAttribute !== table.primaryKey &&
-				table.indices[conditionAttribute]?.isIndexing
-			) {
+			const conditionAttribute = drivingAttribute(condition);
+			if (conditionAttribute !== table.primaryKey && table.indices[conditionAttribute]?.isIndexing) {
 				// Assigned here rather than left to the per-comparator branches: several of them fall back to
 				// a finite table-fraction heuristic, which can still beat an available index and take the lead.
 				condition.estimated_count = Infinity;
@@ -1316,23 +1316,24 @@ export function estimateCondition(table) {
 							attribute: attribute_name.length > 2 ? attribute_name.slice(1) : attribute_name[1],
 							comparator: 'equals',
 						});
-						const fromIndex = usableIndex(table, attribute.relationship?.from);
+						const fromIndex = table.indices[attribute.relationship?.from];
 						// the estimated count is sum of the estimate of the related table and the estimate of the index
-						condition.estimated_count =
-							estimate +
-							(fromIndex
-								? (estimate * estimatedEntryCount(table.indices[attribute.relationship.from])) /
-									(estimatedEntryCount(relatedTable.primaryStore) || 1)
-								: estimate);
+						condition.estimated_count = table.indices[attribute.relationship?.from]?.isIndexing
+							? Infinity // the join would be driven by an index searchByIndex will refuse
+							: estimate +
+								(fromIndex
+									? (estimate * estimatedEntryCount(table.indices[attribute.relationship.from])) /
+										(estimatedEntryCount(relatedTable.primaryStore) || 1)
+									: estimate);
 					}
 				} else {
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
-					const index = table.indices[attribute_name];
+					const index = usableIndex(table, attribute_name);
 					condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
 				}
 			} else if (searchType === 'contains' || searchType === 'ends_with' || searchType === 'ne') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (condition.value === null && searchType === 'ne') {
 					condition.estimated_count = Math.max(
 						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0),
@@ -1341,7 +1342,7 @@ export function estimateCondition(table) {
 				} else condition.estimated_count = Infinity;
 			} else if (searchType === 'in') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (Array.isArray(condition.value) && index) {
 					// Sum of per-value matches (over-counts duplicates but is a fine ceiling)
 					let estimate = 0;
@@ -1362,7 +1363,7 @@ export function estimateCondition(table) {
 					BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (searchType === 'sort') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (index?.customIndex?.estimateCountAsSort)
 					// allow custom index to define its own estimation of counts
 					condition.estimated_count = index.customIndex.estimateCountAsSort(condition);
@@ -1370,7 +1371,7 @@ export function estimateCondition(table) {
 			} else {
 				// for the search types that use the broadest range, try do them last
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (index?.customIndex?.estimateCount)
 					// allow custom index to define its own estimation of counts
 					condition.estimated_count = index.customIndex.estimateCount(condition.value);

@@ -11,7 +11,7 @@
  */
 
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
@@ -57,28 +57,36 @@ describe('an index being rebuilt is incomplete on every thread (harper#2537)', f
 			]);
 		// every exit from here must terminate the worker, or it stays blocked in Atomics.wait
 		try {
+			// Waits on the acknowledged step rather than on Atomics.wait's return: a reader that acks
+			// before this thread reaches the wait makes it return 'not-equal', which is success, not failure.
 			const release = (step) => {
 				Atomics.store(phase, 0, step);
 				Atomics.notify(phase, 0);
-				return Atomics.wait(ack, 0, step - 1, WAIT_MS);
+				const deadline = Date.now() + WAIT_MS;
+				while (Atomics.load(ack, 0) < step) {
+					const remaining = deadline - Date.now();
+					if (remaining <= 0) return false;
+					Atomics.wait(ack, 0, step - 1, remaining);
+				}
+				return true;
 			};
 
-			assert.equal(release(1), 'ok', 'the reader thread never finished its pre-rebuild load');
+			assert.ok(release(1), 'the reader thread never finished its pre-rebuild load');
 			const before = await probed(1);
 
 			const Table = trigger();
 			assert.ok(Table.indexingOperation, 'the rebuild was not triggered, so nothing is held');
 			// Blocking here keeps the backfill suspended at runIndexing's first await, so the reader
 			// observes an armed descriptor over an index with nothing written to it yet.
-			assert.equal(release(2), 'ok', 'the reader thread never finished its mid-rebuild load');
+			assert.ok(release(2), 'the reader thread never finished its mid-rebuild load');
 			const during = await probed(2);
 
 			await Table.indexingOperation;
-			assert.equal(release(3), 'ok', 'the reader thread never finished its post-rebuild load');
+			assert.ok(release(3), 'the reader thread never finished its post-rebuild load');
 			const after = await probed(3);
 
 			for (const probe of [before, during, after])
-				assert.equal(probe.failure, undefined, `reader thread failed at step ${probe.step}: ${probe.failure}`);
+				assert.strictEqual(probe.failure, undefined, `reader thread failed at step ${probe.step}: ${probe.failure}`);
 			return { before, during, after };
 		} finally {
 			await worker.terminate();
@@ -114,13 +122,13 @@ describe('an index being rebuilt is incomplete on every thread (harper#2537)', f
 		);
 
 		assert.ok(before.loaded, 'the reader thread must have loaded the table before the rebuild');
-		assert.equal(before.isIndexing, null, 'there is no index on the attribute before the rebuild');
+		assert.strictEqual(before.isIndexing, null, 'there is no index on the attribute before the rebuild');
 
 		assert.ok(
 			during.foundById,
 			'the probe record must be readable by primary key while the rebuild is held, or the test proves nothing'
 		);
-		assert.equal(
+		assert.strictEqual(
 			during.isIndexing,
 			true,
 			'a thread that loaded the table before the rebuild was triggered held isIndexing = false and served the partial index'
@@ -131,9 +139,9 @@ describe('an index being rebuilt is incomplete on every thread (harper#2537)', f
 			`a read of a rebuilding index must refuse, not return ${during.hits} rows for a record that exists`
 		);
 
-		assert.equal(after.isIndexing, false, 'the reload after completion must clear isIndexing');
-		assert.equal(after.searchError, null, 'the completed index must serve reads');
-		assert.equal(after.hits, 1, 'the completed index must return the seeded record');
+		assert.strictEqual(after.isIndexing, false, 'the reload after completion must clear isIndexing');
+		assert.strictEqual(after.searchError, null, 'the completed index must serve reads');
+		assert.strictEqual(after.hits, 1, 'the completed index must return the seeded record');
 	});
 
 	it('a handle the reader already holds is re-stamped, not left at its previous state', async () => {
@@ -157,10 +165,10 @@ describe('an index being rebuilt is incomplete on every thread (harper#2537)', f
 			})
 		);
 
-		assert.equal(before.isIndexing, false, 'the completed index must be usable before the rebuild');
-		assert.equal(before.hits, 1, 'the completed index must return the seeded record before the rebuild');
+		assert.strictEqual(before.isIndexing, false, 'the completed index must be usable before the rebuild');
+		assert.strictEqual(before.hits, 1, 'the completed index must return the seeded record before the rebuild');
 
-		assert.equal(
+		assert.strictEqual(
 			during.isIndexing,
 			true,
 			'a handle already open on the reader thread must be re-stamped as rebuilding'
@@ -171,7 +179,11 @@ describe('an index being rebuilt is incomplete on every thread (harper#2537)', f
 			'a reused handle must also refuse reads while rebuilding'
 		);
 
-		assert.equal(after.isIndexing, false, 'the reload after completion must clear isIndexing on the reused handle');
-		assert.equal(after.hits, 1, 'the rebuilt index must return the seeded record');
+		assert.strictEqual(
+			after.isIndexing,
+			false,
+			'the reload after completion must clear isIndexing on the reused handle'
+		);
+		assert.strictEqual(after.hits, 1, 'the rebuilt index must return the seeded record');
 	});
 });

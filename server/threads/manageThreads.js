@@ -173,11 +173,10 @@ module.exports = {
 	isThreadRunning,
 	waitUntilConfirmedGone,
 	restartNumber: workerData?.restartNumber || 1,
-	// Identifies this process incarnation to every thread in it. Minted once on the main thread and
-	// carried to workers through workerData, so all threads agree on it — a value each thread derived
-	// for itself (from clocks, or its own randomness) would disagree between live siblings. `undefined`
-	// on a worker started without it: consumers must fall back rather than treat that as a mismatch.
-	// PID cannot serve this role: a container restart reuses PID 1.
+	// Identifies this process incarnation, where the PID cannot: a container reuses PID 1. Minted once
+	// on the main thread and carried to workers, so live siblings agree on it — one derived per thread
+	// would not. `undefined` on a worker started without it; consumers must fall back, not treat that
+	// as a mismatch.
 	processIncarnation: workerData ? workerData.processIncarnation : randomBytes(8).toString('hex'),
 };
 

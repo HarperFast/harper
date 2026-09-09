@@ -8,7 +8,7 @@
  */
 
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -46,7 +46,7 @@ describe('a sort does not drop a condition on the sorted attribute', function ()
 
 	it('applies a condition on the sort attribute even when another condition leads', async () => {
 		// `rare` matches one row and leads; `common` carries both the sort and a condition that excludes it
-		assert.deepEqual(
+		assert.deepStrictEqual(
 			await ids({
 				conditions: [
 					{ attribute: 'rare', value: 'needle' },
@@ -57,7 +57,7 @@ describe('a sort does not drop a condition on the sorted attribute', function ()
 			[],
 			'the only row matching "rare" has common=left, so a common=right condition must exclude it'
 		);
-		assert.deepEqual(
+		assert.deepStrictEqual(
 			await ids({
 				conditions: [
 					{ attribute: 'rare', value: 'needle' },
@@ -80,6 +80,6 @@ describe('a sort does not drop a condition on the sorted attribute', function ()
 		});
 		assert.ok(ordered.length > 1, 'the fixture must return several rows for the ordering to be observable');
 		const sorted = [...ordered].sort().reverse();
-		assert.deepEqual(ordered, sorted, 'the results must still be ordered by the sort attribute, descending');
+		assert.deepStrictEqual(ordered, sorted, 'the results must still be ordered by the sort attribute, descending');
 	});
 });
