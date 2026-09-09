@@ -92,7 +92,6 @@ const skipLmdbArm = process.platform === 'win32';
 // in the contrast arm actually rotates/removes whole .txnlog files instead of a no-op.
 const RANGE_COUNT = 6000;
 const BATCH_SIZE = 500;
-const SEED_BATCH_TIMEOUT = 120_000;
 const PAYLOAD_PAD = 'y'.repeat(1780);
 function payloadFor(i: number): string {
 	return `seq${i}:${PAYLOAD_PAD}`;
@@ -217,7 +216,7 @@ async function seedRange(ctx: ContextWithHarper, start: number, count: number, b
 		for (let i = s; i < Math.min(s + BATCH_SIZE, start + count); i++) {
 			records.push({ id: `k${i}`, seq: i, bucket, payload: payloadFor(i) });
 		}
-		const r = await rawOp(ctx, { operation: 'insert', schema: SCHEMA, table: TABLE, records }, SEED_BATCH_TIMEOUT);
+		const r = await rawOp(ctx, { operation: 'insert', schema: SCHEMA, table: TABLE, records });
 		ok(r.status === 200, `insert batch@${s} should succeed, got ${r.status}: ${r.text.slice(0, 300)}`);
 	}
 }
