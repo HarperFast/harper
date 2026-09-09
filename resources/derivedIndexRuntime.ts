@@ -81,28 +81,36 @@ interface DerivedIndexBackendBase {
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
 	onStateChange(wake: (change?: DerivedIndexBackendStateChange) => void): () => void;
-	/** Destroy index state and the durable cursor; `getDurableCursor()` must return `undefined` afterwards. */
+	/**
+	 * Destroy index state and the durable cursor; `getDurableCursor()` must return `undefined`
+	 * afterwards. Crash safety is the backend's: its first durable action must invalidate the cursor
+	 * (or the generation the cursor belongs to) before anything destructive, so an interrupted reset
+	 * reopens as cursorless rather than as a valid cursor over partially destroyed state. Shared
+	 * readiness is process memory and is no evidence after a restart.
+	 */
 	reset?(ownerEpoch: bigint): void | Promise<void>;
 }
 
 /**
- * A backend whose `deliver()` applies the batch before returning and leaves no work behind at
- * release. Its durable cursor may still trail offered progress; it must never apply or publish
- * after the runner released the lock.
+ * A backend with no asynchronous effects: `deliver()` applies and makes the batch durable before
+ * returning, `flush` (if any) completes before returning, and nothing it does survives a method
+ * return, so nothing of its can publish after the runner released the lock.
  */
 export interface SynchronousDerivedIndexBackend extends DerivedIndexBackendBase {
-	queued?: false;
+	asynchronous?: false;
 	attach?(host: DerivedIndexBackendHost): void;
-	flush?(reason: DerivedIndexFlushReason): void | Promise<void>;
+	flush?(reason: DerivedIndexFlushReason): void;
 	shutdown?(ownerEpoch: bigint): void | Promise<void>;
 }
 
 /**
- * A backend whose `deliver()` enqueues and applies asynchronously. Registration rejects it unless it
- * provides the fence, the barrier request and the quiescence handshake the handoff protocol needs.
+ * A backend with asynchronous effects — a queued apply, a barrier that completes later, or a
+ * durable cursor that trails delivery. Work that survives a method return is the safety boundary,
+ * so registration rejects it unless it provides the fence, the barrier request and the quiescence
+ * handshake the handoff protocol needs.
  */
-export interface QueuedDerivedIndexBackend extends DerivedIndexBackendBase {
-	readonly queued: true;
+export interface AsynchronousDerivedIndexBackend extends DerivedIndexBackendBase {
+	readonly asynchronous: true;
 	/** Receives the epoch fence and readiness reader before any delivery. */
 	attach(host: DerivedIndexBackendHost): void;
 	/** Request a durability barrier; the backend runs it asynchronously and wakes through `onStateChange`. */
@@ -114,7 +122,7 @@ export interface QueuedDerivedIndexBackend extends DerivedIndexBackendBase {
 	shutdown(ownerEpoch: bigint): void | Promise<void>;
 }
 
-export type DerivedIndexBackend = SynchronousDerivedIndexBackend | QueuedDerivedIndexBackend;
+export type DerivedIndexBackend = SynchronousDerivedIndexBackend | AsynchronousDerivedIndexBackend;
 
 export type DerivedIndexBackendStateChange = 'changed' | 'accepted-work-lost' | 'failed';
 
@@ -245,10 +253,12 @@ export class DerivedIndexRuntime {
 	register(registration: DerivedIndexRegistration): () => Promise<void> {
 		if (this.#stopped) throw new Error('Derived index runtime is stopped');
 		if (!registration.backend.id) throw new Error('Derived index backend id is required');
-		if (registration.backend.queued === true) {
+		if (registration.backend.asynchronous === true) {
 			for (const hook of ['attach', 'flush', 'shutdown'] as const) {
 				if (typeof registration.backend[hook] !== 'function')
-					throw new TypeError(`Queued derived index backend '${registration.backend.id}' must implement ${hook}()`);
+					throw new TypeError(
+						`Asynchronous derived index backend '${registration.backend.id}' must implement ${hook}()`
+					);
 			}
 		}
 		if (this.#runners.has(registration.backend.id))
@@ -397,7 +407,6 @@ type OfferedProgress = { cursor: DerivedIndexCursor; bytes: number; mutations: n
 
 type CollectedKey = { recordId: Id; logVersion: number; sizeHint: number | undefined };
 
-/** Identities read from the log for one transaction, resolved only after every occurrence in its chunk was read. */
 type CollectedTransaction = {
 	logName: string;
 	timestamp: number;
@@ -412,7 +421,6 @@ type Chunk = {
 	started: number;
 };
 
-/** Signals a turn that read part of an oversized transaction but has nothing to deliver yet. */
 const CONTINUE = null;
 
 class DerivedIndexRunner {
@@ -433,7 +441,6 @@ class DerivedIndexRunner {
 	#unanchoredMutations = 0;
 	#unanchoredAcceptedAt = 0;
 	#pendingBatch?: DerivedIndexBatch;
-	/** Collected but unresolved transactions; the last one may still be open (incomplete). */
 	#carried: CollectedTransaction[] = [];
 	#latestSeen = new Map<string, number>();
 	#stalledSince?: number;
@@ -508,13 +515,18 @@ class DerivedIndexRunner {
 		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => {
 			if (this.#owned) this.wake(true);
 		});
-		registration.backend.attach?.({
-			isOwnerEpoch: (epoch) => Atomics.load(this.#epochWords(), 0) === epoch,
-			getReadiness: () => this.getReadiness(),
-		});
-		this.#unsubscribeBackend = registration.backend.onStateChange((change = 'changed') =>
-			this.#backendStateChanged(change)
-		);
+		try {
+			registration.backend.attach?.({
+				isOwnerEpoch: (epoch) => Atomics.load(this.#epochWords(), 0) === epoch,
+				getReadiness: () => this.getReadiness(),
+			});
+			this.#unsubscribeBackend = registration.backend.onStateChange((change = 'changed') =>
+				this.#backendStateChanged(change)
+			);
+		} catch (error) {
+			this.#readinessBuffer.cancel?.();
+			throw error;
+		}
 		this.#unregisterTables = registerDerivedIndexTables(
 			logStore,
 			registration.projections.keys(),
@@ -527,20 +539,25 @@ class DerivedIndexRunner {
 	 * are cached only once the memory is actually shared; until then every use re-fetches.
 	 */
 	#epochWords(): BigInt64Array {
-		if (this.#epochView && this.#epochView.buffer instanceof SharedArrayBuffer) return this.#epochView;
-		const buffer = this.#logStore.getUserSharedBuffer(`derived-index:${this.id}:owner-epoch`, new ArrayBuffer(8));
-		this.#epochView = new BigInt64Array(buffer);
-		return this.#epochView;
+		return (this.#epochView ??= new BigInt64Array(
+			this.#logStore.getUserSharedBuffer(`derived-index:${this.id}:owner-epoch`, new ArrayBuffer(8))
+		));
 	}
 
 	#shared(): SharedViews {
-		if (this.#sharedViews && this.#sharedViews.words.buffer instanceof SharedArrayBuffer) return this.#sharedViews;
-		this.#sharedViews = sharedViewsOf(readinessBuffer(this.#logStore, this.id));
-		return this.#sharedViews;
+		return (this.#sharedViews ??= sharedViewsOf(readinessBuffer(this.#logStore, this.id)));
+	}
+
+	/** Off the write path: re-fetch cached views that still point at unshared memory. */
+	#refreshShared() {
+		if (this.#epochView && !(this.#epochView.buffer instanceof SharedArrayBuffer)) this.#epochView = undefined;
+		if (this.#sharedViews && !(this.#sharedViews.words.buffer instanceof SharedArrayBuffer))
+			this.#sharedViews = undefined;
 	}
 
 	wake(fromBackend = false) {
 		if (this.#stopped || this.#rebuilding) return;
+		this.#refreshShared();
 		if (this.status.state === 'unavailable') {
 			if (
 				this.#heldLock ||
@@ -974,11 +991,20 @@ class DerivedIndexRunner {
 		if (!flush) return;
 		const generation = this.#generation;
 		try {
-			const result = flush.call(this.#registration.backend, reason);
-			if (result && typeof result.then === 'function')
+			const result = flush.call(this.#registration.backend, reason) as void | Promise<void>;
+			if (result && typeof result.then === 'function') {
+				if (this.#registration.backend.asynchronous !== true) {
+					result.then(undefined, () => {});
+					this.#fail(
+						'backend declared no asynchronous effects but returned a promise from flush',
+						new Error('undeclared asynchronous flush')
+					);
+					return;
+				}
 				result.then(undefined, (error: unknown) => {
 					if (this.#live(generation)) this.#fail('backend flush request rejected', error);
 				});
+			}
 		} catch (error) {
 			this.#fail('backend flush request threw', error);
 			return;
@@ -1712,15 +1738,16 @@ class DerivedIndexRunner {
 			this.#publishReadiness('unavailable', shared);
 			this.#admitWrites();
 		};
+		let flushed: void | Promise<void>;
 		try {
-			const flushed = backend.flush?.('shutdown');
-			if (flushed && typeof flushed.then === 'function') flushed.then(undefined, () => {});
+			flushed = backend.flush?.('shutdown') as void | Promise<void>;
 		} catch (error) {
 			logger.warn?.(`Derived index '${backend.id}' shutdown flush request threw`, error);
 		}
-		// An in-flight destructive reset must finish before its epoch is quiesced and the lock released.
-		const resetting = (this.#resetting ?? Promise.resolve()).then(undefined, () => {});
-		this.#releasing = resetting.then(() => this.#quiesce(epoch)).then(unlock, hold);
+		// Nothing that can still write — an in-flight reset, the shutdown flush — may outlive the
+		// epoch's quiescence and the unlock that follows it.
+		const settling = Promise.allSettled([this.#resetting, flushed]).then(() => undefined);
+		this.#releasing = settling.then(() => this.#quiesce(epoch)).then(unlock, hold);
 	}
 }
 
