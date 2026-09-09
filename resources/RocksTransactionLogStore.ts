@@ -30,9 +30,9 @@ type TransactionLogIterator = Iterator<TransactionEntry | number> & {
 };
 
 /**
- * Called once per mounted log when a corrupt frame ends that log's query iterator early (a new
- * `getRange`, or an `addLog` that remounts a log this iterable had removed, reports a still-broken log
- * again), synchronously from inside the iterable's `next()`; on the aggregate path a `removeLog`
+ * Called once per mounted log when a corrupt frame ends that log's query iterator early (a
+ * still-broken log reports again on each fresh mount, whether from a new `getRange` or a remount
+ * within this one), synchronously from inside the iterable's `next()`; on the aggregate path a `removeLog`
  * requested from the hook is applied once that `next()` returns, unless the hook re-added that log
  * first. It covers framing breaks only: a reader that dies with another error ends its log through
  * the aggregate path's own containment (see `safeNext`) without a report. Core only reports; what to
