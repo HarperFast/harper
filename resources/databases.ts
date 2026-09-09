@@ -3223,26 +3223,23 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 	for (const [attribute, buildId] of buildIds) {
 		try {
 			let marked;
-			let releaseExclusiveLock;
-			try {
-				if (buildId == null || Table.dbisDB.getSync(attribute.key)?.indexingBuildId !== buildId) continue;
-				if (rootStore instanceof RocksDatabase) {
-					acquireUpdateAttributesLock(rootStore, `abandoned index build '${Table.tableName}.${attribute.name}'`);
-					releaseExclusiveLock = () => releaseUpdateAttributesLock(rootStore);
-				} else {
-					rootStore.transactionSync(() => ({
-						then(callback) {
-							releaseExclusiveLock = callback;
-						},
-					}));
-				}
+			if (buildId == null || Table.dbisDB.getSync(attribute.key)?.indexingBuildId !== buildId) continue;
+			const markIfOwned = () => {
 				const descriptor = Table.dbisDB.getSync(attribute.key);
 				if (descriptor?.indexingBuildId === buildId && !descriptor.indexingFailed) {
 					Table.dbisDB.putSync(attribute.key, { ...descriptor, indexingFailed: true });
 					marked = true;
 				}
-			} finally {
-				if (releaseExclusiveLock) releaseExclusiveLock();
+			};
+			if (rootStore instanceof RocksDatabase) {
+				acquireUpdateAttributesLock(rootStore, `abandoned index build '${Table.tableName}.${attribute.name}'`);
+				try {
+					markIfOwned();
+				} finally {
+					releaseUpdateAttributesLock(rootStore);
+				}
+			} else {
+				rootStore.transactionSync(markIfOwned);
 			}
 			if (marked)
 				logger.warn(

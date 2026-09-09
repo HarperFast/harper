@@ -188,6 +188,52 @@ describe('an index build that ends without completing is marked and recovered', 
 		);
 	});
 
+	it('aborts the LMDB catalog transaction when persisting the failure marker throws', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') this.skip();
+		const tableName = 'IndexAbandonMarkerAbort';
+		const key = `${tableName}/tag`;
+		const Seeded = seed(tableName, false);
+		let lastPut;
+		for (let i = 0; i < 10; i++) lastPut = Seeded.put({ id: `k-${i}`, tag: i % 2 ? 'odd' : 'even' });
+		await lastPut;
+
+		const Rebuilding = seed(tableName, true);
+		const dbisDB = Rebuilding.dbisDB;
+		const originalPut = dbisDB.put;
+		const originalPutSync = dbisDB.putSync;
+		function throwAfterMarkerWrite(write) {
+			return function (writeKey, value, ...rest) {
+				const result = write.call(this, writeKey, value, ...rest);
+				if (writeKey === key && value?.indexingFailed) throw new Error('marker write failed after staging');
+				return result;
+			};
+		}
+		dbisDB.put = throwAfterMarkerWrite(originalPut);
+		dbisDB.putSync = throwAfterMarkerWrite(originalPutSync);
+		const rootStore = Rebuilding.primaryStore.rootStore;
+		const originalStatus = Object.getOwnPropertyDescriptor(rootStore, 'status');
+		const originalGetRange = Rebuilding.primaryStore.getRange;
+		Rebuilding.primaryStore.getRange = () => {
+			throw new Error('Database not open');
+		};
+		Object.defineProperty(rootStore, 'status', { value: 'closed', configurable: true, writable: true });
+		try {
+			await Rebuilding.indexingOperation;
+		} finally {
+			Rebuilding.primaryStore.getRange = originalGetRange;
+			if (originalStatus) Object.defineProperty(rootStore, 'status', originalStatus);
+			else delete rootStore.status;
+			dbisDB.put = originalPut;
+			dbisDB.putSync = originalPutSync;
+		}
+
+		assert.strictEqual(
+			dbisDB.getSync(key).indexingFailed,
+			undefined,
+			'a failed marker write must abort instead of committing its staged catalog change'
+		);
+	});
+
 	it('re-triggers a build whose process incarnation is not this process, including one that has none', async () => {
 		const tableName = 'IndexAbandonIncarnation';
 		const Seeded = seed(tableName, true);
