@@ -904,7 +904,11 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	const taskQueueLatency = (async () => {
 		const start = performance.now();
 		// measure how long it takes to enqueue and get a callback from a simple/fast task:
-		await stat(getLogFilePath());
+		// The result is discarded — only the round trip is being measured — so a missing file is not a
+		// failure. It rejects whenever the probe races a rotation, which the write-path size guard
+		// makes a routine event rather than a once-a-minute one, and an unhandled rejection here takes
+		// the process down over a latency measurement.
+		await stat(getLogFilePath()).catch(() => {});
 		const delay = performance.now() - start;
 		if (delay > 5000) {
 			log.warn?.('Unusually high task queue latency on the main thread of ' + Math.round(delay) + 'ms');
