@@ -431,8 +431,10 @@ async function applyModels(block: ModelsConfig | null | undefined, isBoot: boole
 		}
 		installedSlots.delete(key);
 		// A removed entry may have been shadowing a factory helper of the same name; put the
-		// helper back, so the live registry matches a restart with this final config.
-		if (slot.backend) restoreSuppressedHelper(slot.kind, slot.logicalName);
+		// helper back, so the live registry matches a restart with this final config. Not gated on
+		// slot.backend: the claim suppressed the helper before this entry's swap was known to win, so
+		// a lost swap must still release it (a no-op while the name is held or nothing is suppressed).
+		restoreSuppressedHelper(slot.kind, slot.logicalName);
 	}
 	// Rebuild fallback routing from scratch each apply so a removed/changed `fallback:` (or a
 	// removed `models:` block) doesn't leave stale routing behind (#1326).

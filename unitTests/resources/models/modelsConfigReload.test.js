@@ -22,6 +22,7 @@ const {
 	clearRegistry,
 	getBackend,
 	setEmbedding,
+	removeIfCurrent,
 	resolveEmbedding,
 	ModelBackendNotFoundError,
 } = require('#src/resources/models/backendRegistry');
@@ -361,6 +362,30 @@ describe('models config hot reload (#2344)', () => {
 			const restored = getBackend('embedding', 'default-helper');
 			assert.ok(restored, 'the helper is back the moment the claiming entry is removed');
 			assert.notEqual(restored, winner, 'and it is the factory helper, not the removed entry');
+		});
+
+		it('releases a helper whose claiming entry never won the name, once that entry is removed', async () => {
+			// The claim suppresses the helper before the entry's own swap is known to win. When an
+			// application override already holds the name the swap loses, and dropping the entry later
+			// must still hand the name back to the helper — otherwise its record stays suppressed forever.
+			const helperModule = join(__dirname, 'fixtures', 'helper-backend-module.cjs');
+			await bootstrapModels({ models: block({ default: { backend: helperModule, model: 'm1' } }) });
+			const helper = getBackend('embedding', 'default-helper');
+			assert.ok(helper && helper.name === 'helper', 'the factory helper serves its name at boot');
+
+			const appOwned = { name: 'app-policy-backend', capabilities: () => ({ embed: true }) };
+			setEmbedding('default-helper', appOwned);
+			await applyModelsConfig(
+				block({ 'default': { backend: helperModule, model: 'm1' }, 'default-helper': openaiEntry('sk-own') })
+			);
+			assert.equal(getBackend('embedding', 'default-helper'), appOwned, 'the config entry lost to the override');
+
+			// The override retires, then the config drops the entry that claimed the name.
+			assert.ok(removeIfCurrent('embedding', 'default-helper', appOwned));
+			await applyModelsConfig(block({ default: { backend: helperModule, model: 'm1' } }));
+
+			const restored = getBackend('embedding', 'default-helper');
+			assert.ok(restored && restored.name === 'helper', 'the helper is back once its claimant is gone');
 		});
 
 		it('lets a config entry claim a name held by a projection-installed helper', async () => {
