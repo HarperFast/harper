@@ -2875,13 +2875,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							// resumes rather than restarts. Canonicalized to match structurallyChanged above.
 							const indexOptionsChanged =
 								canonicalIndexKey(attributeDescriptor?.indexed) !== canonicalIndexKey(attribute.indexed);
-							// Only a checkpoint runIndexing stamped as certified resumes: earlier releases advanced
-							// lastIndexedKey past failed and unflushed index writes, so an unstamped one is a full rebuild.
+							// Only a checkpoint runIndexing stamped with its own key resumes: earlier releases advanced
+							// lastIndexedKey past failed and unflushed index writes, so any other is a full rebuild.
+							const uncertifiedCheckpoint =
+								attributeDescriptor?.lastIndexedKey !== undefined &&
+								compareKeys(attributeDescriptor.checkpointCertified, attributeDescriptor.lastIndexedKey) !== 0;
 							attribute.lastIndexedKey =
-								indexOptionsChanged || !attributeDescriptor?.checkpointCertified
+								indexOptionsChanged || uncertifiedCheckpoint
 									? undefined
-									: (attributeDescriptor.lastIndexedKey ?? undefined);
-							if (attribute.lastIndexedKey !== undefined) attribute.checkpointCertified = true;
+									: (attributeDescriptor?.lastIndexedKey ?? undefined);
+							if (attribute.lastIndexedKey !== undefined) attribute.checkpointCertified = attribute.lastIndexedKey;
 							// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
 							// object store to the versioned, VT-cacheable format. A full rebuild from scratch
 							// (lastIndexedKey === undefined) clears the store and rewrites every node, so the
@@ -2918,6 +2921,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							if (attributeDescriptor?.indexingPID && attributeDescriptor.indexingPID !== process.pid)
 								reindexReasons.push(`crash-recovery(pid=${attributeDescriptor.indexingPID})`);
 							if (attributeDescriptor?.restartNumber < currentRestartGeneration) reindexReasons.push('restart-number');
+							if (uncertifiedCheckpoint) reindexReasons.push('uncertified-checkpoint');
 							logger.info(
 								`reindex ${databaseName}.${tableName}.${attribute.name}: reason=${reindexReasons.join(',') || 'unknown'}`
 							);
@@ -2931,7 +2935,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						// workers / a reload would treat the still-partial index as ready and return incomplete results.
 						attribute.indexingPID = attributeDescriptor.indexingPID;
 						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
-						if (attributeDescriptor.checkpointCertified) attribute.checkpointCertified = true;
+						if (attributeDescriptor.checkpointCertified !== undefined)
+							attribute.checkpointCertified = attributeDescriptor.checkpointCertified;
 						// Carry the in-progress restart generation too, so persisting this metadata-only
 						// change doesn't drop it and break the crash-recovery trigger for the running backfill.
 						attribute.restartNumber = attributeDescriptor.restartNumber;
@@ -3139,17 +3144,25 @@ export function setIndexingCheckpointPeriod(ms: number): number {
 	return previous;
 }
 const yieldEventTurn = () => new Promise((resolve) => setImmediate(resolve));
-// Index stores have no WAL, so a flush is what makes a checkpoint's entries durable; one flush per root
-// store at a time, shared by every backfill running on that database.
-const indexingFlushes = new WeakMap<object, Promise<void>>();
+// Index stores have no WAL, so a flush is what makes a checkpoint's entries durable. A flush only covers
+// writes issued before it started, so a caller never joins one in flight: it joins the next one, which
+// every backfill on that database asking meanwhile shares — at most one in flight and one queued.
+const indexingFlushes = new WeakMap<object, { inFlight?: Promise<void>; queued?: Promise<void> }>();
 function flushIndexStores(rootStore: any): Promise<void> | undefined {
 	if (!(rootStore instanceof RocksDatabase)) return;
-	let flush = indexingFlushes.get(rootStore);
-	if (!flush) {
-		flush = rootStore.flush().finally(() => indexingFlushes.delete(rootStore));
-		indexingFlushes.set(rootStore, flush);
-	}
-	return flush;
+	let flushes = indexingFlushes.get(rootStore);
+	if (!flushes) indexingFlushes.set(rootStore, (flushes = {}));
+	if (flushes.queued) return flushes.queued;
+	const start = () => {
+		flushes.queued = undefined;
+		const flush = rootStore.flush().finally(() => {
+			if (flushes.inFlight === flush) flushes.inFlight = undefined;
+		});
+		flushes.inFlight = flush;
+		return flush;
+	};
+	if (!flushes.inFlight) return start();
+	return (flushes.queued = flushes.inFlight.then(start, start));
 }
 export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 	let start: any;
@@ -3193,7 +3206,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			// A resumed scan starts at the checkpoint, so it must only name a key whose every predecessor is
 			// durably indexed: it is persisted once the writes it covers have settled and the index stores are
 			// flushed, it stops advancing after any record has failed so the retry re-covers that record, and
-			// checkpointCertified marks it as written under these rules (an unstamped checkpoint is ignored).
+			// checkpointCertified repeats the key to mark it as written under these rules (a checkpoint
+			// without a matching stamp is ignored).
 			const persistCheckpoint = async (key) => {
 				if (hadIndexingErrors) return;
 				try {
@@ -3201,7 +3215,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					const puts = [];
 					for (const attribute of attributes) {
 						attribute.lastIndexedKey = key;
-						attribute.checkpointCertified = true;
+						attribute.checkpointCertified = key;
 						puts.push(Table.dbisDB.put(attribute.key, attribute));
 					}
 					await Promise.all(puts);
@@ -3315,6 +3329,16 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
 		// before we decide whether to mark indexing as complete.
 		await new Promise((resolve) => setImmediate(resolve));
+		// the ready descriptor is WAL-backed while the index entries are not: flush the tail written since
+		// the last checkpoint before announcing the index complete, and park it if that flush fails
+		if (!hadIndexingErrors) {
+			try {
+				await flushIndexStores(Table.primaryStore.rootStore);
+			} catch (error) {
+				hadIndexingErrors = true;
+				logger.error(`Could not flush the indexes of ${Table.tableName} before marking them complete`, error);
+			}
+		}
 		if (hadIndexingErrors) {
 			// Some records failed to index. Persist the failure marker in the descriptor so
 			// the next call to table() (including after a restart with a fresh PID) re-triggers

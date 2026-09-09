@@ -167,7 +167,7 @@ describe('index backfill convergence (#2536)', () => {
 			const parked = findDescriptor(Tbl, name);
 			assert.strictEqual(parked?.value.indexingFailed, true, `${name}: interrupted backfill should be parked`);
 			assert.strictEqual(parked.value.lastIndexedKey, checkpoint, `${name}: checkpoint should be persisted`);
-			assert.strictEqual(parked.value.checkpointCertified, true, `${name}: checkpoint should be stamped`);
+			assert.strictEqual(parked.value.checkpointCertified, checkpoint, `${name}: checkpoint should be stamped`);
 		}
 
 		// The parked descriptor retriggers the backfill; it must open its scan at the checkpoint.
@@ -348,7 +348,7 @@ describe('index backfill convergence (#2536)', () => {
 				if (lastIndexedKey === undefined) delete value.lastIndexedKey;
 				else {
 					value.lastIndexedKey = lastIndexedKey;
-					if (certified) value.checkpointCertified = true;
+					if (certified) value.checkpointCertified = lastIndexedKey;
 				}
 				Tbl.dbisDB.putSync(key, value);
 			}
@@ -435,6 +435,7 @@ describe('index backfill convergence (#2536)', () => {
 				TABLE,
 				markerPath,
 				String(N),
+				'kill-at-checkpoint',
 			],
 			{ stdio: ['ignore', 'ignore', 'pipe'] }
 		);
@@ -495,6 +496,122 @@ describe('index backfill convergence (#2536)', () => {
 			closeDatabase(DATABASE);
 			env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasesConfig);
 		}
+	});
+
+	it('flushes the tail written since the last checkpoint before announcing the index complete', async () => {
+		const DATABASE = 'backfillcomplete';
+		const TABLE = 'BackfillComplete';
+		const N = 10000;
+		const dbPath = setupTestDBPath();
+		setMainIsWorker(true);
+		const crashDir = path.join(dbPath, 'backfill-complete');
+		rmSync(crashDir, { recursive: true, force: true });
+		const markerPath = path.join(crashDir, 'complete.marker');
+		const databasesConfig = env.get(terms.CONFIG_PARAMS.DATABASES);
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {
+			...databasesConfig,
+			[DATABASE]: { path: path.join(crashDir, 'shared') },
+		});
+
+		// a long period means the whole index is the unflushed tail when the ready descriptor lands
+		const child = spawn(
+			process.execPath,
+			[
+				path.join(__dirname, 'indexBackfillConvergence-crash.js'),
+				path.join(crashDir, 'child-root'),
+				path.join(crashDir, 'shared'),
+				DATABASE,
+				TABLE,
+				markerPath,
+				String(N),
+				'kill-after-complete',
+			],
+			{ stdio: ['ignore', 'ignore', 'pipe'] }
+		);
+		let stderr = '';
+		child.stderr.on('data', (chunk) => (stderr += chunk));
+		const [code, signal] = await new Promise((resolve, reject) => {
+			child.once('error', reject);
+			child.once('exit', (code, signal) => resolve([code, signal]));
+		});
+		assert.strictEqual(
+			signal,
+			'SIGKILL',
+			`the child should have killed itself once complete (exit ${code}): ${stderr}`
+		);
+		assert.strictEqual(readFileSync(markerPath, 'utf8'), 'COMPLETED');
+
+		const Tbl = table({
+			table: TABLE,
+			database: DATABASE,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		try {
+			assert.strictEqual(Tbl.indexingOperation, undefined, 'a completed index must not retrigger');
+			let total = 0;
+			for (let i = 0; i < 7; i++) {
+				total += (await collect(Tbl.search({ conditions: [{ attribute: 'tag', value: 't-' + i }] }))).length;
+			}
+			assert.strictEqual(total, N, 'every index entry must survive a kill right after completion');
+		} finally {
+			closeDatabase(DATABASE);
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasesConfig);
+		}
+	});
+
+	it('parks the index instead of certifying a checkpoint or completing when the flush fails', async function () {
+		if (LMDB) return this.skip(); // LMDB commits in order and never flushes
+		const TABLE = 'BackfillFlushFails';
+		const N = 300;
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: 't-' + (i % 3) });
+		await last;
+
+		resetDatabases();
+		Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
+		const rootStore = Tbl.primaryStore.rootStore;
+		const originalFlush = rootStore.flush;
+		rootStore.flush = () => Promise.reject(new Error('simulated flush failure'));
+		try {
+			await Tbl.indexingOperation;
+		} finally {
+			rootStore.flush = originalFlush;
+		}
+		const parked = findDescriptor(Tbl, 'tag');
+		assert.strictEqual(parked.value.indexingFailed, true, 'the index must stay parked when it cannot be flushed');
+		assert.strictEqual(parked.value.lastIndexedKey, undefined, 'no checkpoint may be certified without a flush');
+
+		resetDatabases();
+		const Tbl2 = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(Tbl2.indexingOperation, 'the parked index should retrigger');
+		await Tbl2.indexingOperation;
+		assert.strictEqual(findDescriptor(Tbl2, 'tag').value.indexingFailed, undefined, 'the retry should complete');
 	});
 
 	it('yields the event loop at a bounded record interval on a plain index whose put resolves synchronously', async () => {

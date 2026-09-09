@@ -1,11 +1,11 @@
-// Child-process half of the crash-resume case in indexBackfillConvergence.test.js: seed a table,
-// start an index backfill, and die with SIGKILL as soon as its first checkpoint is persisted,
-// leaving the checkpoint key in the marker file. Loaded by the mocha glob too, hence the entry guard.
+// Child-process half of the crash cases in indexBackfillConvergence.test.js: seed a table, start an
+// index backfill, and die with SIGKILL at its first persisted checkpoint or right after the ready
+// descriptor, leaving what it saw in the marker file. Loaded by the mocha glob too, hence the guard.
 const path = require('node:path');
 const { mkdirSync, writeFileSync } = require('node:fs');
 
 if (require.main === module) {
-	const [rootPath, databasePath, database, tableName, markerPath, rowCount] = process.argv.slice(2);
+	const [rootPath, databasePath, database, tableName, markerPath, rowCount, mode] = process.argv.slice(2);
 	const env = require('#src/utility/environment/environmentManager');
 	const terms = require('#src/utility/hdbTerms');
 	// A private root keeps this process off the parent's system database (RocksDB's lock is
@@ -16,7 +16,9 @@ if (require.main === module) {
 	const { table, resetDatabases, setIndexingCheckpointPeriod } = require('#src/resources/databases');
 	const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 	setMainIsWorker(true);
-	setIndexingCheckpointPeriod(0);
+	// kill-at-checkpoint: die at the first persisted checkpoint (checkpoint on every interval);
+	// kill-after-complete: never checkpoint, die once the ready descriptor is persisted
+	setIndexingCheckpointPeriod(mode === 'kill-after-complete' ? 3600000 : 0);
 
 	mkdirSync(path.join(rootPath, 'database'), { recursive: true });
 	const seed = async () => {
@@ -52,6 +54,7 @@ if (require.main === module) {
 				}
 				if (!value.indexingPID) {
 					writeFileSync(markerPath, 'COMPLETED');
+					if (mode === 'kill-after-complete') process.kill(process.pid, 'SIGKILL');
 					process.exit(0);
 				}
 			}
