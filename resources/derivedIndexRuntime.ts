@@ -475,6 +475,7 @@ class DerivedIndexRunner {
 	#quiescing?: { epoch: bigint; promise: Promise<void>; since: number };
 	#condemned = false;
 	#unreadSince?: number;
+	#reachedEndOfLog = false;
 	#rebuilding = false;
 	#rebuildRequested = false;
 	#boundaryPending = false;
@@ -569,8 +570,7 @@ class DerivedIndexRunner {
 
 	wake(fromBackend = false) {
 		if (this.#stopped || this.#rebuilding) return;
-		// A commit wake may carry unread work; the next drain that reaches the end of the log clears it.
-		if (!fromBackend) this.#unreadSince ??= this.#options.now();
+		if (!fromBackend && this.#lagBudget > 0) this.#unreadSince ??= this.#options.now();
 		if (this.status.state === 'unavailable') {
 			if (
 				this.#heldLock ||
@@ -689,8 +689,8 @@ class DerivedIndexRunner {
 	 * work not yet durable (a backend that accepts but never barriers cannot hide). All four are zero
 	 * for a caught-up owner sitting idle and stay within drain latency plus flush age for a runner
 	 * keeping up under sustained ingest. The trip survives discard and handoff: a successor clears it
-	 * only after proving catch-up itself (a durable advance or an idle pass with durable == offered),
-	 * below half the budget.
+	 * only after proving catch-up itself — a durable advance and the end of the log both reached since
+	 * it acquired, so an inherited backlog cannot be cleared by one barrier — below half the budget.
 	 */
 	#publishLag() {
 		const max = this.#lagBudget;
@@ -708,7 +708,7 @@ class DerivedIndexRunner {
 		if (!tripped && lag >= max) {
 			Atomics.store(words, READINESS_LAG_EXCEEDED, 1);
 			logger.warn?.(`Derived index '${this.id}' is ${Math.round(lag)} ms behind; rejecting writes until it catches up`);
-		} else if (tripped && lag < max / 2 && this.#lastCaughtUpAt !== undefined) {
+		} else if (tripped && lag < max / 2 && this.#lastCaughtUpAt !== undefined && this.#reachedEndOfLog) {
 			Atomics.store(words, READINESS_LAG_EXCEEDED, 0);
 			logger.info?.(`Derived index '${this.id}' caught up; admitting writes again`);
 		}
@@ -799,6 +799,7 @@ class DerivedIndexRunner {
 		this.#generation++;
 		this.#lastCaughtUpAt = undefined;
 		this.#unreadSince = this.#options.now();
+		this.#reachedEndOfLog = false;
 		try {
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
@@ -815,7 +816,7 @@ class DerivedIndexRunner {
 				this.#rebuildRequested = true;
 				this.#rebuildAttempts = 0;
 			} else if (!this.#rebuildRequested) this.#rebuildAttempts = shared.rebuildAttempts;
-			if (this.#rebuildRequested) {
+			if (this.#rebuildRequested && this.#canRebuild()) {
 				this.#startRebuild();
 				return;
 			}
@@ -1342,6 +1343,7 @@ class DerivedIndexRunner {
 	#finishIdlePass() {
 		this.#stalledSince = undefined;
 		this.#unreadSince = undefined;
+		this.#reachedEndOfLog = true;
 		if (this.#rebuilding || !this.#offered) return;
 		const durable = this.#registration.backend.getDurableCursor();
 		if (durable === undefined && this.#boundaryPending) {
@@ -1449,10 +1451,7 @@ class DerivedIndexRunner {
 		}
 	}
 
-	/**
-	 * A condemnation the store refused stays a shared `needs-rebuild` and the lock is released, so
-	 * whichever runner acquires next retries the write before any reset; no attempt is spent on it.
-	 */
+	/** No rebuild attempt is spent on a refused marker; the next acquirer retries it before any reset. */
 	#deferForCondemnation(shared: string) {
 		logger.error(`Derived index '${this.id}' condemnation could not be persisted; retrying at the next wake`);
 		const reason = this.status.state === 'needs-rebuild' ? this.status.reason : shared;
@@ -1559,6 +1558,7 @@ class DerivedIndexRunner {
 		this.#stalledSince = undefined;
 		this.#lastCaughtUpAt = undefined;
 		this.#unreadSince = this.#options.now();
+		this.#reachedEndOfLog = false;
 		this.#offered = undefined;
 		this.#pendingBatch = undefined;
 		this.#carried = [];
