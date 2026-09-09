@@ -1103,7 +1103,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
 			!isPrimaryKey && // no need to use index for primary keys, since we will be iterating over the primary keys
-			Table?.indices[attribute] && // is there an index for this attribute
+			!!(Table && usableIndex(Table, attribute)) && // is there an index for this attribute, and is it complete
 			estimatedIncomingCount > 3; // do we have a valid estimate of multiple incoming records (that is worth using an index for)
 		if (canUseIndex) {
 			if (searchCondition.estimated_count == undefined) estimateCondition(Table)(searchCondition);
@@ -1245,6 +1245,17 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	return Math.max(1, Math.round(confidence * count + (1 - confidence) * heuristic));
 }
 
+/**
+ * The index a condition would be driven by, or undefined when there is none usable. searchByIndex
+ * refuses a rebuilding index (IndexRebuildingError), so the planner has to see it as absent too: a
+ * condition ranked by a partially-built index's cardinality can win the lead and then be refused, when
+ * leading with a sibling and applying this one as a record filter answers the query completely.
+ */
+function usableIndex(table, attributeName): any {
+	const index = table.indices[attributeName];
+	return index?.isIndexing ? undefined : index;
+}
+
 export function estimateCondition(table) {
 	function estimateConditionForTable(condition) {
 		if (condition.estimated_count === undefined) {
@@ -1274,7 +1285,16 @@ export function estimateCondition(table) {
 			// skip if it is cached
 			let searchType = condition.comparator || condition.search_type;
 			searchType = ALTERNATE_COMPARATOR_NAMES[searchType] || searchType;
-			if (condition.negated) {
+			const conditionAttribute = condition[0] ?? condition.attribute;
+			if (
+				typeof conditionAttribute === 'string' &&
+				conditionAttribute !== table.primaryKey &&
+				table.indices[conditionAttribute]?.isIndexing
+			) {
+				// Assigned here rather than left to the per-comparator branches: several of them fall back to
+				// a finite table-fraction heuristic, which can still beat an available index and take the lead.
+				condition.estimated_count = Infinity;
+			} else if (condition.negated) {
 				// a negated condition always executes as a full scan (searchByIndex forces
 				// needFullScan), so follow the filter-only convention used by contains/ends_with:
 				// estimate Infinity so its positive-range estimate can never win the driving-condition
@@ -1296,7 +1316,7 @@ export function estimateCondition(table) {
 							attribute: attribute_name.length > 2 ? attribute_name.slice(1) : attribute_name[1],
 							comparator: 'equals',
 						});
-						const fromIndex = table.indices[attribute.relationship?.from];
+						const fromIndex = usableIndex(table, attribute.relationship?.from);
 						// the estimated count is sum of the estimate of the related table and the estimate of the index
 						condition.estimated_count =
 							estimate +
