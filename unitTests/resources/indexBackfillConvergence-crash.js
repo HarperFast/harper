@@ -1,6 +1,5 @@
-// Child-process half of the crash cases in indexBackfillConvergence.test.js: seed a table, start an
-// index backfill, and die with SIGKILL at its first persisted checkpoint or right after the ready
-// descriptor, leaving what it saw in the marker file. Loaded by the mocha glob too, hence the guard.
+// Child-process half of the crash cases in indexBackfillConvergence.test.js; the mocha glob loads it
+// too, hence the entry guard.
 const path = require('node:path');
 const { mkdirSync, writeFileSync } = require('node:fs');
 
@@ -18,7 +17,7 @@ if (require.main === module) {
 	setMainIsWorker(true);
 	// kill-at-checkpoint: die at the first persisted checkpoint (checkpoint on every interval);
 	// kill-after-complete: never checkpoint, die once the ready descriptor is persisted
-	setIndexingCheckpointPeriod(mode === 'kill-after-complete' ? 3600000 : 0);
+	setIndexingCheckpointPeriod(mode === 'kill-after-complete' ? 3600000 : 0, 0);
 
 	mkdirSync(path.join(rootPath, 'database'), { recursive: true });
 	const seed = async () => {

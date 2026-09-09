@@ -53,6 +53,25 @@ async function settledCheckpoint(Tbl, attrName) {
 	return findDescriptor(Tbl, attrName).value.lastIndexedKey;
 }
 
+// Run the crash fixture as a child process; it is expected to SIGKILL itself, so a child that never
+// reaches its marker is killed by the parent instead of wedging the run (.mocharc.json has timeout 0).
+async function runCrashChild(args) {
+	const child = spawn(process.execPath, [path.join(__dirname, 'indexBackfillConvergence-crash.js'), ...args], {
+		stdio: ['ignore', 'ignore', 'pipe'],
+	});
+	let stderr = '';
+	child.stderr.on('data', (chunk) => (stderr += chunk));
+	const timer = setTimeout(() => child.kill('SIGTERM'), 60000);
+	try {
+		return await new Promise((resolve, reject) => {
+			child.once('error', reject);
+			child.once('exit', (code, signal) => resolve({ code, signal, stderr }));
+		});
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 // Wrap Table.primaryStore.getRange so the test can observe the range runIndexing actually opens
 // (its `start` option and every key it visits) and optionally abort the scan partway. runIndexing
 // only reads the store after awaiting a schema-change signal and an event turn, so wrapping right
@@ -116,12 +135,12 @@ describe('resumeStartKey: minimum resume checkpoint across the attributes being 
 
 describe('index backfill convergence (#2536)', () => {
 	// checkpoint at every yield interval instead of every few seconds, so small tables checkpoint
-	let checkpointPeriod;
+	let checkpointPolicy;
 	before(() => {
-		checkpointPeriod = setIndexingCheckpointPeriod(0);
+		checkpointPolicy = setIndexingCheckpointPeriod(0, 0);
 	});
 	after(() => {
-		setIndexingCheckpointPeriod(checkpointPeriod);
+		setIndexingCheckpointPeriod(checkpointPolicy.ms, checkpointPolicy.minRecords);
 	});
 
 	it('resumes an interrupted backfill from its persisted checkpoint, not from the first record', async () => {
@@ -213,46 +232,52 @@ describe('index backfill convergence (#2536)', () => {
 	// A failed index write must freeze the checkpoint before that record whether it throws
 	// synchronously (RocksDB) or a non-last value's put rejects asynchronously (LMDB), since only a
 	// record's last put is awaited.
-	for (const [failure, tagOf, failPut] of [
-		[
-			'throws synchronously',
-			(i) => 't-' + (i % 3),
-			() => {
+	for (const { failure, tagOf, failPut, secondAttribute } of [
+		{
+			failure: 'throws synchronously',
+			tagOf: (i) => 't-' + (i % 3),
+			failPut: () => {
 				throw new Error('simulated transient index put failure');
 			},
-		],
-		[
-			'rejects asynchronously on a non-last value',
-			(i) => ['t-' + (i % 3), 'u-' + (i % 5)],
-			() => new Promise((_, reject) => setImmediate(() => reject(new Error('simulated async index put failure')))),
-		],
+		},
+		{
+			failure: 'rejects asynchronously on a non-last value',
+			tagOf: (i) => ['t-' + (i % 3), 'u-' + (i % 5)],
+			failPut: () =>
+				new Promise((_, reject) => setImmediate(() => reject(new Error('simulated async index put failure')))),
+		},
+		{
+			failure: "rejects asynchronously while a later attribute's put resolves",
+			tagOf: (i) => 't-' + (i % 3),
+			failPut: () =>
+				new Promise((_, reject) => setImmediate(() => reject(new Error('simulated async index put failure')))),
+			secondAttribute: true,
+		},
 	]) {
 		it(`does not advance the checkpoint past a record whose index write ${failure}, so the retry re-covers it`, async () => {
-			const TABLE = 'BackfillFailedRecord' + (Array.isArray(tagOf(0)) ? 'Multi' : '');
+			const TABLE = 'BackfillFailedRecord' + (Array.isArray(tagOf(0)) ? 'Multi' : secondAttribute ? 'Two' : '');
 			const N = 600;
 			const FAILING_ID = 'k-' + pad(250);
 			const failingValue = [].concat(tagOf(250))[0];
+			const indexedAttributes = [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+				{ name: 'group', indexed: !!secondAttribute },
+			];
 			setupTestDBPath();
 			setMainIsWorker(true);
 
 			let Tbl = table({
 				table: TABLE,
 				database: DB,
-				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+				attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }, { name: 'group' }],
 			});
 			let last;
-			for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: tagOf(i) });
+			for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: tagOf(i), group: 'g-' + (i % 2) });
 			await last;
 
 			resetDatabases();
-			Tbl = table({
-				table: TABLE,
-				database: DB,
-				attributes: [
-					{ name: 'id', isPrimaryKey: true },
-					{ name: 'tag', indexed: true },
-				],
-			});
+			Tbl = table({ table: TABLE, database: DB, attributes: indexedAttributes });
 			assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
 			const tagIndex = Tbl.indices.tag;
 			const originalPut = tagIndex.put;
@@ -285,14 +310,7 @@ describe('index backfill convergence (#2536)', () => {
 			}
 
 			resetDatabases();
-			const Tbl2 = table({
-				table: TABLE,
-				database: DB,
-				attributes: [
-					{ name: 'id', isPrimaryKey: true },
-					{ name: 'tag', indexed: true },
-				],
-			});
+			const Tbl2 = table({ table: TABLE, database: DB, attributes: indexedAttributes });
 			assert.ok(Tbl2.indexingOperation, 'a parked backfill should retrigger');
 			const resumed = observeRange(Tbl2);
 			try {
@@ -425,26 +443,15 @@ describe('index backfill convergence (#2536)', () => {
 			[DATABASE]: { path: path.join(crashDir, 'shared') },
 		});
 
-		const child = spawn(
-			process.execPath,
-			[
-				path.join(__dirname, 'indexBackfillConvergence-crash.js'),
-				path.join(crashDir, 'child-root'),
-				path.join(crashDir, 'shared'),
-				DATABASE,
-				TABLE,
-				markerPath,
-				String(N),
-				'kill-at-checkpoint',
-			],
-			{ stdio: ['ignore', 'ignore', 'pipe'] }
-		);
-		let stderr = '';
-		child.stderr.on('data', (chunk) => (stderr += chunk));
-		const [code, signal] = await new Promise((resolve, reject) => {
-			child.once('error', reject);
-			child.once('exit', (code, signal) => resolve([code, signal]));
-		});
+		const { code, signal, stderr } = await runCrashChild([
+			path.join(crashDir, 'child-root'),
+			path.join(crashDir, 'shared'),
+			DATABASE,
+			TABLE,
+			markerPath,
+			String(N),
+			'kill-at-checkpoint',
+		]);
 		assert.strictEqual(
 			signal,
 			'SIGKILL',
@@ -514,26 +521,15 @@ describe('index backfill convergence (#2536)', () => {
 		});
 
 		// a long period means the whole index is the unflushed tail when the ready descriptor lands
-		const child = spawn(
-			process.execPath,
-			[
-				path.join(__dirname, 'indexBackfillConvergence-crash.js'),
-				path.join(crashDir, 'child-root'),
-				path.join(crashDir, 'shared'),
-				DATABASE,
-				TABLE,
-				markerPath,
-				String(N),
-				'kill-after-complete',
-			],
-			{ stdio: ['ignore', 'ignore', 'pipe'] }
-		);
-		let stderr = '';
-		child.stderr.on('data', (chunk) => (stderr += chunk));
-		const [code, signal] = await new Promise((resolve, reject) => {
-			child.once('error', reject);
-			child.once('exit', (code, signal) => resolve([code, signal]));
-		});
+		const { code, signal, stderr } = await runCrashChild([
+			path.join(crashDir, 'child-root'),
+			path.join(crashDir, 'shared'),
+			DATABASE,
+			TABLE,
+			markerPath,
+			String(N),
+			'kill-after-complete',
+		]);
 		assert.strictEqual(
 			signal,
 			'SIGKILL',

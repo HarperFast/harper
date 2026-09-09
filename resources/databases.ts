@@ -2879,7 +2879,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							// lastIndexedKey past failed and unflushed index writes, so any other is a full rebuild.
 							const uncertifiedCheckpoint =
 								attributeDescriptor?.lastIndexedKey !== undefined &&
-								compareKeys(attributeDescriptor.checkpointCertified, attributeDescriptor.lastIndexedKey) !== 0;
+								(attributeDescriptor.checkpointCertified === undefined ||
+									compareKeys(attributeDescriptor.checkpointCertified, attributeDescriptor.lastIndexedKey) !== 0);
 							attribute.lastIndexedKey =
 								indexOptionsChanged || uncertifiedCheckpoint
 									? undefined
@@ -3135,18 +3136,22 @@ export function canonicalizeIndexOptions(value: any): any {
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
 const INDEXING_YIELD_INTERVAL = 100;
-// RocksDB index stores have no WAL (openRocksDatabase defaults disableWAL), so a resumable checkpoint is
-// only written after a flush; the period bounds both the flush rate and the work a crash can lose.
+// A resumable checkpoint is written only after a flush (see flushIndexStores), at most once per period
+// and never before this many more records: the flush seals every column family in the database, so a
+// slow backfill must not impose the period's flush rate on unrelated tables.
 let indexingCheckpointPeriodMs = 5000;
-export function setIndexingCheckpointPeriod(ms: number): number {
-	const previous = indexingCheckpointPeriodMs;
+let indexingCheckpointMinRecords = 10000;
+export function setIndexingCheckpointPeriod(ms: number, minRecords = indexingCheckpointMinRecords) {
+	const previous = { ms: indexingCheckpointPeriodMs, minRecords: indexingCheckpointMinRecords };
 	indexingCheckpointPeriodMs = ms;
+	indexingCheckpointMinRecords = minRecords;
 	return previous;
 }
 const yieldEventTurn = () => new Promise((resolve) => setImmediate(resolve));
-// Index stores have no WAL, so a flush is what makes a checkpoint's entries durable. A flush only covers
-// writes issued before it started, so a caller never joins one in flight: it joins the next one, which
-// every backfill on that database asking meanwhile shares — at most one in flight and one queued.
+// RocksDB index stores have no WAL (openRocksDatabase defaults disableWAL), so a flush is what makes the
+// entries a checkpoint certifies durable. A flush only covers writes issued before it started, so a caller
+// never joins one in flight: it joins the next one, which every backfill on that database asking meanwhile
+// shares — at most one in flight and one queued.
 const indexingFlushes = new WeakMap<object, { inFlight?: Promise<void>; queued?: Promise<void> }>();
 function flushIndexStores(rootStore: any): Promise<void> | undefined {
 	if (!(rootStore instanceof RocksDatabase)) return;
@@ -3173,7 +3178,15 @@ export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 	return start;
 }
 async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
-	let checkpointing; // at most one flush-gated checkpoint in flight
+	let checkpointing;
+	let hadIndexingErrors = false;
+	let asyncRejectionReported = false;
+	const onIndexPutRejected = (error) => {
+		hadIndexingErrors = true;
+		if (asyncRejectionReported) return;
+		asyncRejectionReported = true;
+		logger.error(`Error indexing ${Table.tableName}`, error);
+	};
 	try {
 		logger.info(`Indexing ${Table.tableName} attributes`, attributes);
 		await signalling.signalSchemaChange(
@@ -3182,18 +3195,18 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		let lastResolution;
 		for (const index of indicesToRemove) {
 			lastResolution = index.drop();
+			if (lastResolution?.then) lastResolution.then(undefined, onIndexPutRejected);
 		}
 		let interrupted;
-		let hadIndexingErrors = false;
 		const attributeErrorReported = {};
 		let indexed = 0;
 		const attributesLength = attributes.length;
 		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
 		if (attributesLength > 0) {
 			const start = resumeStartKey(attributes);
-			for (const attribute of attributes) {
-				if (attribute.lastIndexedKey == undefined) {
-					// if we are starting from the beginning, clear out any previous index entries since we are rewriting
+			if (start === undefined) {
+				// a full scan rewrites every index it builds, so clear them all first
+				for (const attribute of attributes) {
 					if (attribute.dbi.clearAsync) {
 						// LMDB, note that we don't need to wait for this to complete, just gets enqueued in front of the other writes
 						attribute.dbi.clearAsync();
@@ -3204,10 +3217,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			}
 			let outstanding = 0;
 			// A resumed scan starts at the checkpoint, so it must only name a key whose every predecessor is
-			// durably indexed: it is persisted once the writes it covers have settled and the index stores are
-			// flushed, it stops advancing after any record has failed so the retry re-covers that record, and
-			// checkpointCertified repeats the key to mark it as written under these rules (a checkpoint
-			// without a matching stamp is ignored).
+			// durably indexed: persisted once the writes it covers have settled and flushed, frozen after any
+			// record fails so the retry re-covers it, and stamped with its own key (see the trigger in table()).
 			const persistCheckpoint = async (key) => {
 				if (hadIndexingErrors) return;
 				try {
@@ -3220,14 +3231,11 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					}
 					await Promise.all(puts);
 				} catch (error) {
-					logger.debug(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
+					logger.warn(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
 				}
 			};
-			const onIndexPutRejected = (error) => {
-				hadIndexingErrors = true;
-				logger.error(error);
-			};
 			let nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
+			let nextCheckpointRecord = indexingCheckpointMinRecords;
 			// this means that a new attribute has been introduced that needs to be indexed
 			for (const { key, value: record } of Table.primaryStore.getRange({
 				start,
@@ -3264,8 +3272,6 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 							if (values) {
 								for (let i = 0, l = values.length; i < l; i++) {
 									lastResolution = index.put(values[i], key);
-									// only the last put's settlement is awaited below; a rejection of any other must
-									// still stop the checkpoint
 									if (lastResolution?.then) lastResolution.then(undefined, onIndexPutRejected);
 								}
 							}
@@ -3302,8 +3308,9 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					await persistCheckpoint(key);
 					return;
 				}
-				if (atInterval && performance.now() >= nextCheckpointAt) {
+				if (atInterval && indexed >= nextCheckpointRecord && performance.now() >= nextCheckpointAt) {
 					nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
+					nextCheckpointRecord = indexed + indexingCheckpointMinRecords;
 					await checkpointing;
 					checkpointing = when(
 						lastResolution,
@@ -3312,7 +3319,6 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					);
 				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
-				// RocksDB puts and custom indexes complete synchronously and never raise `outstanding`
 				if (atInterval || didSynchronousIndexing || outstanding > MIN_OUTSTANDING_INDEXING) await yieldEventTurn();
 			}
 		}
@@ -3329,8 +3335,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
 		// before we decide whether to mark indexing as complete.
 		await new Promise((resolve) => setImmediate(resolve));
-		// the ready descriptor is WAL-backed while the index entries are not: flush the tail written since
-		// the last checkpoint before announcing the index complete, and park it if that flush fails
+		// the tail since the last checkpoint is not durable until flushed; announcing the index complete
+		// before that would outlive a crash that loses it
 		if (!hadIndexingErrors) {
 			try {
 				await flushIndexStores(Table.primaryStore.rootStore);
