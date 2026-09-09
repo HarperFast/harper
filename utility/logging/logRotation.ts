@@ -53,8 +53,7 @@ export function resolveRotatedLogDir(logPath: string, configuredPath?: string) {
 // counter is per-isolate, so pid+seq alone cannot keep two threads' archives apart.
 let rotationSequence = 0;
 
-// The archive directory defaults to the log's own directory, so it holds live logs alongside
-// archives and anything scanning it to destroy files has to tell the two apart.
+// A configured rotation path may also contain live logs, so destructive scans must identify archives.
 const ARCHIVE_NAME = /-[0-9a-f]{8}-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z-\d+-\d+-\d+\.log(\.gz)?$/;
 
 export function isArchiveName(file: string) {
@@ -100,9 +99,8 @@ export function rotateLogFileSync(logPath: string, rotatedLogDir: string, closeL
 }
 
 /**
- * Publish an archived generation: tell every other writer to release it, then compress it if asked.
- * The plain archive is only ever unlinked once that release is proven — an unlinked inode a peer is
- * still appending to loses those records outright, and no size comparison can rule that out.
+ * Publish an archived generation: ask every enumerable in-process peer to release it, then compress
+ * it if requested. The plain archive is only unlinked once that release is proven.
  */
 export async function publishArchivedGeneration(generation: any, compress?: boolean) {
 	if (!(await requestGenerationClose(generation))) {
@@ -129,19 +127,20 @@ export function isArchivePendingQuiescence(archivePath: string) {
 	return unprovenArchives.has(archivePath);
 }
 
-// Bounded per pass: a peer that never answers must not let the retry queue outlive the audit
-// interval and starve retention, which is the only thing that bounds the rotated directory.
+// Bounded per pass: a peer that never answers must not let the retry queue starve the audit work.
 const MAX_RETRIES_PER_PASS = 4;
 
-export async function retryPendingGenerations() {
+export async function retryPendingGenerations(options: any = {}) {
+	const { deadline = Infinity, shouldStop = () => false } = options;
 	let attempts = 0;
 	for (const [archivePath, pending] of [...unprovenArchives]) {
+		if (shouldStop() || Date.now() >= deadline) return;
 		if (attempts++ >= MAX_RETRIES_PER_PASS) return;
 		if (!existsSync(archivePath)) {
 			unprovenArchives.delete(archivePath);
 			continue;
 		}
-		if (!(await requestGenerationClose(pending.generation))) continue;
+		if (!(await requestGenerationClose(pending.generation, deadline))) continue;
 		unprovenArchives.delete(archivePath);
 		// One archive that will not compress must not stop the rest of the queue.
 		if (pending.compress) await compressArchive(archivePath).catch(() => {});
@@ -155,26 +154,36 @@ export async function retryPendingGenerations() {
  * the life of the process however the operator configured `compress`.
  * Only safe to call once quiescence has been proven for exactly this listing.
  */
-export async function compressPendingArchives(rotatedLogDir: string, files: string[], liveLogPaths: Set<string>) {
+export async function compressPendingArchives(
+	rotatedLogDir: string,
+	files: string[],
+	liveLogPaths: Set<string>,
+	options: any = {}
+) {
+	const { deadline = Infinity, shouldStop = () => false } = options;
 	const present = new Set(files);
-	let worked = 0;
+	let firstError;
 	for (const file of files) {
+		if (shouldStop() || Date.now() >= deadline) break;
 		if (!file.endsWith('.log') || !isArchiveName(file)) continue;
 		const archivePath = join(rotatedLogDir, file);
 		if (liveLogPaths.has(resolve(archivePath)) || unprovenArchives.has(archivePath)) continue;
-		// Counted after the skips, not before: the archive directory holds the live logs too, and
-		// spending the pass's budget on files it then skips is what leaves a backlog standing.
-		if (worked++ >= MAX_RETRIES_PER_PASS) return;
-		if (present.has(`${file}.gz`)) {
-			// Both representations of one generation: a crash between the .gz rename and the source
-			// unlink leaves the plain copy behind, and every later pass skipped it as already done, so
-			// it survived until retention aged it out — or forever, retention being unset by default.
-			// The .gz is renamed into place whole, and this pass already proved every peer released it.
-			await fsProm.unlink(archivePath).catch(() => {});
-			continue;
+		try {
+			if (present.has(`${file}.gz`)) {
+				// Both representations of one generation: a crash between the .gz rename and the source
+				// unlink leaves the plain copy behind, and every later pass skipped it as already done, so
+				// it survived until retention aged it out — or forever, retention being unset by default.
+				// The .gz is renamed into place whole, and this pass already proved every peer released it.
+				await fsProm.unlink(archivePath);
+				continue;
+			}
+			const result = await tryCompressArchive(archivePath);
+			if (!result.compressed) break;
+		} catch (error) {
+			if (error.code !== 'ENOENT' && !firstError) firstError = { error, file };
 		}
-		await compressArchive(archivePath).catch(() => {});
 	}
+	return firstError;
 }
 
 // One compression at a time per rotated directory. A small maxSize on a busy instance rotates
@@ -182,18 +191,22 @@ export async function compressPendingArchives(rotatedLogDir: string, files: stri
 // before retention could run.
 const compressionByDirectory = new Map<string, Promise<any>>();
 
-export function compressArchive(archivePath: string) {
+export async function compressArchive(archivePath: string) {
+	return (await tryCompressArchive(archivePath)).path;
+}
+
+async function tryCompressArchive(archivePath: string) {
 	const directory = dirname(archivePath);
 	// Declined rather than queued: chaining would grow an unbounded list of pending jobs whenever
 	// rotation outruns gzip. The archive is left for the tick's bounded sweep, which is where an
 	// uncompressed rotation leaves it anyway. The slot is released by the promise this returns, not by
 	// a detached continuation, because that sweep awaits each call before making the next.
-	if (compressionByDirectory.has(directory)) return Promise.resolve(archivePath);
+	if (compressionByDirectory.has(directory)) return { path: archivePath, compressed: false };
 	const chain: Promise<any> = compressOneArchive(archivePath).finally(() => {
 		if (compressionByDirectory.get(directory) === chain) compressionByDirectory.delete(directory);
 	});
 	compressionByDirectory.set(directory, chain);
-	return chain;
+	return { path: await chain, compressed: true };
 }
 
 async function compressOneArchive(archivePath: string) {

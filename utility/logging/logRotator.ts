@@ -80,7 +80,10 @@ function logRotator({
 	let lastRotationTime = Date.now();
 	hdbLogger.trace('Log rotate enabled, maxSize:', maxSize, 'interval:', interval);
 	let tickInFlight = false;
+	let ended = false;
 	let releaseProofStalled = false;
+	const auditIntervalMs = auditInterval ?? LOG_AUDIT_INTERVAL;
+	const compressionBudgetMs = Math.max(1, Math.floor(auditIntervalMs / 4));
 	/**
 	 * rename() reports ENOENT for a missing destination directory as well as a missing source, and
 	 * only the second is the benign lost race. The directory is created once at rotator start, so a
@@ -99,8 +102,9 @@ function logRotator({
 	const setIntervalId = setInterval(async () => {
 		// setInterval does not await the callback, and one pass can now wait on peers; overlapping
 		// passes would work the same archive twice and double-compress it.
-		if (tickInFlight) return;
+		if (tickInFlight || ended) return;
 		tickInFlight = true;
+		const tickDeadline = Date.now() + auditIntervalMs;
 		// The tick is async but setInterval doesn't await it, so any error that escapes this callback
 		// becomes an unhandled rejection rather than surfacing anywhere useful — and since it isn't
 		// caught, it also skips the retention cleanup below. Contain everything here and report via
@@ -165,7 +169,7 @@ function logRotator({
 					if (err.code !== 'ENOENT') hdbLogger.error('Error reading rotated log directory', rotatedLogDir, err);
 					candidates = [];
 				}
-				const { released, liveLogPaths } = await requestStaleDescriptorRelease();
+				const { released, liveLogPaths } = await requestStaleDescriptorRelease(tickDeadline);
 				// A peer whose event loop is blocked never answers, and the whole pass then destroys
 				// nothing — correct, but it is also the only thing bounding the rotated directory, so an
 				// operator who configured retention has to be able to see that it has stopped. Latched
@@ -181,20 +185,19 @@ function logRotator({
 				}
 				const liveLogs = new Set([...liveLogPaths, logger.path].map((p) => path.resolve(p)));
 
-				if (released && compressArchives) await compressPendingArchives(rotatedLogDir, candidates, liveLogs);
-
 				if (released && (retention || reclamationPriority)) {
 					// remove old logs after retention time
 					// adjust retention time if there is a reclamation priority in place
 					const retentionMs = convertToMS(retention ?? '1M') / (1 + reclamationPriority);
-					reclamationPriority = 0; // reset it after use
+					let retentionCompleted = true;
 					for (const file of candidates) {
+						if (ended || Date.now() >= tickDeadline) {
+							retentionCompleted = false;
+							break;
+						}
 						try {
 							const archivePath = path.join(rotatedLogDir, file);
-							// The rotated directory defaults to the log directory itself
-							// (`logging.rotation.path` defaults to `log`, as does `logging.root`), so it also
-							// holds the logs currently being written — including a component's, which loads in
-							// a worker and is only known here because the peers reported it.
+							// An explicitly configured rotation path may contain live component logs too.
 							if (liveLogs.has(path.resolve(archivePath))) continue;
 							// Unlinking an inode a stalled writer still holds loses whatever it writes next
 							// just as surely as compressing over it would.
@@ -204,23 +207,35 @@ function logRotator({
 								await fsProm.unlink(archivePath);
 							}
 						} catch (err) {
-							// The compression sweep above unlinks archives from this same listing.
 							if (err.code !== 'ENOENT') hdbLogger.error('Error trying to remove log', file, err);
 						}
 					}
+					if (retentionCompleted) reclamationPriority = 0;
+				}
+
+				if (released && compressArchives && !ended) {
+					const compressionFailure = await compressPendingArchives(rotatedLogDir, candidates, liveLogs, {
+						deadline: Math.min(tickDeadline, Date.now() + compressionBudgetMs),
+						shouldStop: () => ended,
+					});
+					if (compressionFailure)
+						hdbLogger.error('Error compressing rotated log', compressionFailure.file, compressionFailure.error);
 				}
 			}
-			// Last: retention is what bounds the rotated directory, so a stranded generation waiting on a
-			// peer must never be ahead of it.
-			await retryPendingGenerations();
 		} catch (err) {
 			hdbLogger.error('Error during log rotation audit tick for', logger.path, err);
 		} finally {
+			try {
+				await retryPendingGenerations({ deadline: tickDeadline, shouldStop: () => ended });
+			} catch (err) {
+				hdbLogger.error('Error retrying pending log generations for', logger.path, err);
+			}
 			tickInFlight = false;
 		}
-	}, auditInterval ?? LOG_AUDIT_INTERVAL).unref();
+	}, auditIntervalMs).unref();
 	return {
 		end() {
+			ended = true;
 			clearInterval(setIntervalId);
 		},
 		getLastRotatedLogPath() {
