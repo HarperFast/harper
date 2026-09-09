@@ -145,7 +145,13 @@ function releaseLocally(message: any) {
 function releaseStaleDescriptors() {
 	for (const [logPath, sink] of sinksByPath) {
 		const identity = sink.identity();
-		if (!identity) continue;
+		// No identity is not the same as no descriptor: openLogFile() leaves the descriptor open when
+		// its fstat fails. Skipping the sink and still answering "released" is what lets an archive be
+		// unlinked under it, so close it here as the per-generation path already does.
+		if (!identity) {
+			sink.close();
+			continue;
+		}
 		let live;
 		try {
 			live = statSync(logPath);

@@ -82,7 +82,7 @@ describe('Test logRotator module', () => {
 			timeout: 5000,
 			message: 'Expected the audit tick to compress an archive left plain by another isolate',
 		});
-		expect(fs.pathExistsSync(stranded)).to.be.false;
+		assert.strictEqual(fs.pathExistsSync(stranded), false, 'the plain archive must be gone once it is compressed');
 	}).timeout(TEST_TIMEOUT);
 
 	it('Never deletes or compresses a live log sharing the rotated directory (#1877)', async () => {
@@ -99,8 +99,8 @@ describe('Test logRotator module', () => {
 
 		await runRotator({ maxSize: '1G', retention: '1H', compress: true });
 
-		expect(fs.pathExistsSync(companion), 'a live component log must survive retention').to.be.true;
-		expect(fs.pathExistsSync(`${companion}.gz`), 'a live component log must not be compressed').to.be.false;
+		assert.ok(fs.pathExistsSync(companion), 'a live component log must survive retention');
+		assert.strictEqual(fs.pathExistsSync(`${companion}.gz`), false, 'a live component log must not be compressed');
 		companionLogger.closeLogFile();
 	}).timeout(TEST_TIMEOUT);
 
