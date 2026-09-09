@@ -2276,11 +2276,11 @@ export function makeTable(options) {
 			});
 		}
 		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
-			assertDerivedIndexAdmission(options, txnForContext(this.getContext())?.isReplay === true);
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
+			assertDerivedIndexAdmission(options, transaction.isReplay === true);
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -2335,11 +2335,11 @@ export function makeTable(options) {
 			transaction.addWrite(write);
 		}
 		_writeRelocate(id: Id, options: any) {
-			assertDerivedIndexAdmission(options, txnForContext(this.getContext())?.isReplay === true);
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
+			assertDerivedIndexAdmission(options, transaction.isReplay === true);
 			const write: any = {
 				key: id,
 				store: primaryStore,
