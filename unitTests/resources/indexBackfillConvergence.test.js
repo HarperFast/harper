@@ -6,9 +6,15 @@
  * ran as one uninterrupted turn.
  */
 require('../testUtils');
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
+const path = require('node:path');
+const { readFileSync, rmSync } = require('node:fs');
+const { spawn } = require('node:child_process');
 const { setupTestDBPath } = require('../testUtils');
-const { table, resetDatabases, resumeStartKey } = require('#src/resources/databases');
+const { waitFor } = require('../waitFor');
+const env = require('#src/utility/environment/environmentManager');
+const terms = require('#src/utility/hdbTerms');
+const { table, resetDatabases, closeDatabase, resumeStartKey } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const DB = 'test';
@@ -75,24 +81,24 @@ function observeRange(Tbl, { onKey, abortAfter } = {}) {
 
 describe('resumeStartKey: minimum resume checkpoint across the attributes being built (#2536)', () => {
 	it('returns the shared checkpoint when every attribute checkpointed at the same key', () => {
-		assert.equal(resumeStartKey([{ lastIndexedKey: 'k-0500' }, { lastIndexedKey: 'k-0500' }]), 'k-0500');
+		assert.strictEqual(resumeStartKey([{ lastIndexedKey: 'k-0500' }, { lastIndexedKey: 'k-0500' }]), 'k-0500');
 	});
 
 	it('returns the minimum when the attributes checkpointed at different keys', () => {
-		assert.equal(
+		assert.strictEqual(
 			resumeStartKey([{ lastIndexedKey: 'k-0700' }, { lastIndexedKey: 'k-0300' }, { lastIndexedKey: 'k-0500' }]),
 			'k-0300'
 		);
-		assert.equal(resumeStartKey([{ lastIndexedKey: 42 }, { lastIndexedKey: 7 }]), 7);
+		assert.strictEqual(resumeStartKey([{ lastIndexedKey: 42 }, { lastIndexedKey: 7 }]), 7);
 	});
 
 	it('returns undefined (full scan) when any attribute has never checkpointed', () => {
-		assert.equal(resumeStartKey([{ lastIndexedKey: 'k-0700' }, {}]), undefined);
-		assert.equal(resumeStartKey([{ lastIndexedKey: 'k-0700' }, { lastIndexedKey: undefined }]), undefined);
+		assert.strictEqual(resumeStartKey([{ lastIndexedKey: 'k-0700' }, {}]), undefined);
+		assert.strictEqual(resumeStartKey([{ lastIndexedKey: 'k-0700' }, { lastIndexedKey: undefined }]), undefined);
 	});
 
 	it('returns the checkpoint of a single attribute', () => {
-		assert.equal(resumeStartKey([{ lastIndexedKey: 'k-0900' }]), 'k-0900');
+		assert.strictEqual(resumeStartKey([{ lastIndexedKey: 'k-0900' }]), 'k-0900');
 	});
 });
 
@@ -132,11 +138,14 @@ describe('index backfill convergence (#2536)', () => {
 		} finally {
 			firstPass.restore();
 		}
-		assert.equal(firstPass.keys.length, ABORT_AFTER, 'the first pass should have been aborted partway');
+		assert.strictEqual(firstPass.keys.length, ABORT_AFTER, 'the first pass should have been aborted partway');
 		// runIndexing checkpoints every 100 entries it visits (LMDB yields a leading structures entry
 		// too), but only once the index writes the checkpoint covers have settled; LMDB commits them
-		// asynchronously, so the persisted checkpoint may lag one interval behind the abort point.
-		const checkpoint = findDescriptor(Tbl, 'tag').value.lastIndexedKey;
+		// asynchronously, so the persisted checkpoint may lag one interval behind the abort point and
+		// land after the interruption itself was recorded.
+		const checkpoint = await waitFor(() => findDescriptor(Tbl, 'tag').value.lastIndexedKey, {
+			message: 'a checkpoint should be persisted after the interrupted pass',
+		});
 		const expectedCheckpoints = LMDB ? [firstPass.keys[99], firstPass.keys[199]] : [firstPass.keys[199]];
 		assert.ok(
 			expectedCheckpoints.includes(checkpoint),
@@ -144,8 +153,8 @@ describe('index backfill convergence (#2536)', () => {
 		);
 		for (const name of ['tag', 'group']) {
 			const parked = findDescriptor(Tbl, name);
-			assert.equal(parked?.value.indexingFailed, true, `${name}: interrupted backfill should be parked`);
-			assert.equal(parked.value.lastIndexedKey, checkpoint, `${name}: checkpoint should be persisted`);
+			assert.strictEqual(parked?.value.indexingFailed, true, `${name}: interrupted backfill should be parked`);
+			assert.strictEqual(parked.value.lastIndexedKey, checkpoint, `${name}: checkpoint should be persisted`);
 		}
 
 		// The parked descriptor retriggers the backfill; it must open its scan at the checkpoint.
@@ -167,9 +176,9 @@ describe('index backfill convergence (#2536)', () => {
 			resumed.restore();
 		}
 
-		assert.equal(resumed.start, checkpoint, 'the resumed scan should start at the persisted checkpoint');
-		assert.equal(resumed.keys[0], checkpoint, 'the first key visited after resume should be the checkpoint');
-		assert.equal(
+		assert.strictEqual(resumed.start, checkpoint, 'the resumed scan should start at the persisted checkpoint');
+		assert.strictEqual(resumed.keys[0], checkpoint, 'the first key visited after resume should be the checkpoint');
+		assert.strictEqual(
 			resumed.keys.length,
 			N - Number(checkpoint.slice(2)),
 			'the resumed scan should only cover the checkpoint and the records after it'
@@ -177,14 +186,14 @@ describe('index backfill convergence (#2536)', () => {
 
 		for (const name of ['tag', 'group']) {
 			const done = findDescriptor(Tbl2, name);
-			assert.equal(done.value.indexingFailed, undefined, `${name}: indexingFailed cleared after completion`);
-			assert.equal(done.value.lastIndexedKey, undefined, `${name}: checkpoint cleared after completion`);
+			assert.strictEqual(done.value.indexingFailed, undefined, `${name}: indexingFailed cleared after completion`);
+			assert.strictEqual(done.value.lastIndexedKey, undefined, `${name}: checkpoint cleared after completion`);
 		}
 		let total = 0;
 		for (const v of ['t-0', 't-1', 't-2']) {
 			total += (await collect(Tbl2.search({ conditions: [{ attribute: 'tag', value: v }] }))).length;
 		}
-		assert.equal(total, N, 'every row should be indexed once the resumed backfill completes');
+		assert.strictEqual(total, N, 'every row should be indexed once the resumed backfill completes');
 	});
 
 	it('does not advance the checkpoint past a record whose index write failed, so the retry re-covers it', async () => {
@@ -229,14 +238,14 @@ describe('index backfill convergence (#2536)', () => {
 		const failedAt = firstPass.keys.indexOf(FAILING_ID);
 		const lastSafeCheckpoint = firstPass.keys[Math.floor(failedAt / 100) * 100 - 1];
 		const parked = findDescriptor(Tbl, 'tag');
-		assert.equal(parked?.value.indexingFailed, true, 'a backfill with a failed record should be parked');
+		assert.strictEqual(parked?.value.indexingFailed, true, 'a backfill with a failed record should be parked');
 		const persisted = parked.value.lastIndexedKey;
 		if (LMDB) {
 			// checkpoints wait for their writes to commit, so a failure that lands first withholds them
 			const safe = [undefined, ...firstPass.keys.slice(0, failedAt).filter((_, i) => i % 100 === 99)];
 			assert.ok(safe.includes(persisted), `checkpoint ${persisted} must not pass the failed record`);
 		} else {
-			assert.equal(
+			assert.strictEqual(
 				persisted,
 				lastSafeCheckpoint,
 				'the checkpoint must stop at the last one written before the failed record'
@@ -259,9 +268,13 @@ describe('index backfill convergence (#2536)', () => {
 		} finally {
 			resumed.restore();
 		}
-		assert.equal(resumed.start, persisted, 'the retry should resume from the persisted safe checkpoint');
+		assert.strictEqual(resumed.start, persisted, 'the retry should resume from the persisted safe checkpoint');
 		assert.ok(resumed.keys.includes(FAILING_ID), 'the retry must revisit the record that failed');
-		assert.equal(findDescriptor(Tbl2, 'tag').value.indexingFailed, undefined, 'the retry should complete cleanly');
+		assert.strictEqual(
+			findDescriptor(Tbl2, 'tag').value.indexingFailed,
+			undefined,
+			'the retry should complete cleanly'
+		);
 		const viaIndex = await collect(Tbl2.search({ conditions: [{ attribute: 'tag', value: 't-' + (250 % 3) }] }));
 		assert.ok(
 			viaIndex.some((row) => row.id === FAILING_ID),
@@ -313,8 +326,8 @@ describe('index backfill convergence (#2536)', () => {
 		} finally {
 			resumed.restore();
 		}
-		assert.equal(resumed.start, 'k-' + pad(200), 'the scan should start at the lower checkpoint');
-		assert.equal(resumed.keys[0], 'k-' + pad(200));
+		assert.strictEqual(resumed.start, 'k-' + pad(200), 'the scan should start at the lower checkpoint');
+		assert.strictEqual(resumed.keys[0], 'k-' + pad(200));
 
 		park(Tbl2, { tag: 'k-' + pad(300), group: undefined });
 		resetDatabases();
@@ -326,16 +339,99 @@ describe('index backfill convergence (#2536)', () => {
 		} finally {
 			resumed.restore();
 		}
-		assert.equal(resumed.start, undefined, 'an attribute with no checkpoint forces a full scan');
-		assert.equal(
+		assert.strictEqual(resumed.start, undefined, 'an attribute with no checkpoint forces a full scan');
+		assert.strictEqual(
 			resumed.keys.find((key) => typeof key === 'string'),
 			'k-' + pad(0)
 		);
 		for (const name of ['tag', 'group']) {
-			assert.equal(findDescriptor(Tbl2, name).value.lastIndexedKey, undefined, `${name}: completed`);
+			assert.strictEqual(findDescriptor(Tbl2, name).value.lastIndexedKey, undefined, `${name}: completed`);
 		}
 		const evens = await collect(Tbl2.search({ conditions: [{ attribute: 'group', value: 'g-0' }] }));
-		assert.equal(evens.length, N / 2, 'the cleared index should be fully repopulated');
+		assert.strictEqual(evens.length, N / 2, 'the cleared index should be fully repopulated');
+	});
+
+	it('resumes from the checkpoint a process killed mid-backfill left behind, after it flushed', async () => {
+		const DATABASE = 'backfillcrash';
+		const TABLE = 'BackfillCrash';
+		const N = 50000;
+		const dbPath = setupTestDBPath();
+		setMainIsWorker(true);
+		// The database under test lives outside storage.path and is opened only by the child until
+		// it is dead, so no store is ever shared between the two processes.
+		const crashDir = path.join(dbPath, 'backfill-crash');
+		rmSync(crashDir, { recursive: true, force: true });
+		const markerPath = path.join(crashDir, 'checkpoint.marker');
+		const databasesConfig = env.get(terms.CONFIG_PARAMS.DATABASES);
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {
+			...databasesConfig,
+			[DATABASE]: { path: path.join(crashDir, 'shared') },
+		});
+
+		const child = spawn(
+			process.execPath,
+			[
+				path.join(__dirname, 'indexBackfillConvergence-crash.js'),
+				path.join(crashDir, 'child-root'),
+				path.join(crashDir, 'shared'),
+				DATABASE,
+				TABLE,
+				markerPath,
+				String(N),
+			],
+			{ stdio: ['ignore', 'ignore', 'pipe'] }
+		);
+		let stderr = '';
+		child.stderr.on('data', (chunk) => (stderr += chunk));
+		const [code, signal] = await new Promise((resolve, reject) => {
+			child.once('error', reject);
+			child.once('exit', (code, signal) => resolve([code, signal]));
+		});
+		assert.strictEqual(
+			signal,
+			'SIGKILL',
+			`the child should have killed itself at its first checkpoint (exit ${code}): ${stderr}`
+		);
+		const checkpoint = readFileSync(markerPath, 'utf8');
+		assert.match(checkpoint, /^c-\d{6}$/, 'the child should have recorded a durable checkpoint');
+
+		// The dead process's PID on the descriptor is the crash-recovery trigger.
+		const Tbl = table({
+			table: TABLE,
+			database: DATABASE,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		try {
+			assert.ok(Tbl.indexingOperation, 'reopening after the crash should retrigger the backfill');
+			const resumed = observeRange(Tbl);
+			try {
+				await Tbl.indexingOperation;
+			} finally {
+				resumed.restore();
+			}
+			assert.strictEqual(
+				resumed.start,
+				checkpoint,
+				"the resumed scan should start at the crashed process's checkpoint"
+			);
+			assert.strictEqual(resumed.keys[0], checkpoint);
+			assert.strictEqual(
+				findDescriptor(Tbl, 'tag').value.indexingPID,
+				undefined,
+				'the resumed backfill should complete'
+			);
+			let total = 0;
+			for (let i = 0; i < 7; i++) {
+				total += (await collect(Tbl.search({ conditions: [{ attribute: 'tag', value: 't-' + i }] }))).length;
+			}
+			assert.strictEqual(total, N, 'every row should be indexed after the resumed backfill');
+		} finally {
+			closeDatabase(DATABASE);
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasesConfig);
+		}
 	});
 
 	it('yields the event loop at a bounded record interval on a plain index whose put resolves synchronously', async () => {
@@ -388,18 +484,27 @@ describe('index backfill convergence (#2536)', () => {
 			observed.restore();
 		}
 
-		assert.equal(ticksPerKey.length, N, 'the backfill should visit every record');
+		assert.strictEqual(ticksPerKey.length, N, 'the backfill should visit every record');
 		let longestRun = 0;
 		let run = 0;
 		for (let i = 0; i < ticksPerKey.length; i++) {
 			run = i > 0 && ticksPerKey[i] === ticksPerKey[i - 1] ? run + 1 : 1;
 			if (run > longestRun) longestRun = run;
 		}
-		assert.ok(
-			longestRun <= INDEXING_YIELD_INTERVAL,
-			`backfill ran ${longestRun} records without yielding the event loop (bound ${INDEXING_YIELD_INTERVAL})`
-		);
+		// LMDB index puts are asynchronous, so the pre-existing backpressure branch yields more often there
+		if (LMDB) {
+			assert.ok(
+				longestRun <= INDEXING_YIELD_INTERVAL,
+				`backfill ran ${longestRun} records without yielding the event loop (bound ${INDEXING_YIELD_INTERVAL})`
+			);
+		} else {
+			assert.strictEqual(
+				longestRun,
+				INDEXING_YIELD_INTERVAL,
+				`backfill should yield the event loop every ${INDEXING_YIELD_INTERVAL} records, ran ${longestRun}`
+			);
+		}
 		const complete = await collect(Tbl.search({ conditions: [{ attribute: 'tag', value: 't-0' }] }));
-		assert.equal(complete.length, N / 5, 'the backfill should still index every row');
+		assert.strictEqual(complete.length, N / 5, 'the backfill should still index every row');
 	});
 });

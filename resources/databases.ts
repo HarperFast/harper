@@ -3124,11 +3124,10 @@ export function canonicalizeIndexOptions(value: any): any {
 }
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
-// Records scanned between event-loop yields, and between resume checkpoints.
 const INDEXING_YIELD_INTERVAL = 100;
 const yieldEventTurn = () => new Promise((resolve) => setImmediate(resolve));
 // The primary-store key a resumed backfill scans from: the minimum persisted checkpoint across the
-// attributes being built, or undefined (scan everything) when any attribute has none. Exported for tests.
+// attributes being built, or undefined (scan everything) when any attribute has none.
 export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 	let start: any;
 	for (const attribute of attributes) {
@@ -3236,10 +3235,9 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					interrupted = true;
 				}
 				if (atInterval || interrupted) {
-					// Checkpoint our progress so a crash can resume. A resumed scan starts at the checkpoint, so
-					// it must only ever name a key whose every predecessor was indexed: wait for the writes it
-					// covers to settle, and stop advancing it once any record has failed so the retry re-covers
-					// that record.
+					// A resumed scan starts at the checkpoint, so it must only name a key whose every predecessor
+					// was indexed: persist it once the writes it covers have settled, and stop advancing it after
+					// any record has failed so the retry re-covers that record.
 					when(
 						lastResolution,
 						() => {
@@ -3250,7 +3248,6 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 									Table.dbisDB.put(attribute.key, attribute);
 								}
 							} catch (error) {
-								// a lost checkpoint only costs the retry a rescan of this stretch
 								logger.debug(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
 							}
 						},
@@ -3259,7 +3256,10 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					if (interrupted) return;
 				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
-				else if (outstanding > MIN_OUTSTANDING_INDEXING || didSynchronousIndexing || atInterval) await yieldEventTurn(); // custom indexes (e.g. HNSW) index synchronously and a RocksDB put resolves synchronously, so neither raises `outstanding`; without this yield a large backfill runs in a single event-loop turn, starving keepalive/replication and queries and never letting the isIndexing flag be observed
+				// A RocksDB put resolves synchronously and custom indexes (e.g. HNSW) index synchronously, so
+				// neither raises `outstanding`; without a yield of its own a large backfill would run as one
+				// event-loop turn, starving keepalive, replication and queries.
+				if (atInterval || didSynchronousIndexing || outstanding > MIN_OUTSTANDING_INDEXING) await yieldEventTurn();
 			}
 		}
 		// Await the last pending put. If it rejects, that is also an indexing error.
