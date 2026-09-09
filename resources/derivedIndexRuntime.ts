@@ -199,7 +199,6 @@ type ResolvedRunnerOptions = Required<DerivedIndexRunnerOptions> & {
 	now: () => number;
 };
 
-const UNINDEXABLE_CIRCUIT = 32;
 const ELIGIBLE_ACTIONS = new Set(['put', 'patch', 'delete', 'invalidate', 'relocate', 'evict']);
 
 const READINESS_STATES: DerivedIndexReadinessState[] = [
@@ -471,17 +470,17 @@ class DerivedIndexRunner {
 	#rebuildAttempts = 0;
 	#rebuiltRecords = 0;
 	#unindexableRecords = 0;
+	#allUnindexableWarned = false;
 	#rebuildWaiter?: () => void;
 	#rebuildWakePending = false;
 	#unsubscribeBackend: () => void;
 	#unregisterTables: () => void;
 	#ownerEpoch?: bigint;
-	#epochView?: BigInt64Array;
+	#epochView: BigInt64Array;
 	#readinessBuffer: SharedReadinessBuffer;
-	#sharedViews?: SharedViews;
-	#sharedFetchedAt = 0;
-	#epochFetchedAt = 0;
+	#sharedViews: SharedViews;
 	#resetting?: Promise<void>;
+	#undeclaredAsync?: Promise<void>;
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
 
 	get id() {
@@ -519,9 +518,13 @@ class DerivedIndexRunner {
 		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => {
 			if (this.#owned) this.wake(true);
 		});
+		this.#sharedViews = sharedViewsOf(this.#readinessBuffer);
+		this.#epochView = new BigInt64Array(
+			logStore.getUserSharedBuffer(`derived-index:${registration.backend.id}:owner-epoch`, new ArrayBuffer(8))
+		);
 		try {
 			registration.backend.attach?.({
-				isOwnerEpoch: (epoch) => Atomics.load(this.#epochWordsForRead(), 0) === epoch,
+				isOwnerEpoch: (epoch) => Atomics.load(this.#epochView, 0) === epoch,
 				getReadiness: () => this.getReadiness(),
 			});
 			this.#unsubscribeBackend = registration.backend.onStateChange((change = 'changed') =>
@@ -539,43 +542,12 @@ class DerivedIndexRunner {
 	}
 
 	/**
-	 * The binding hands back a process-private ArrayBuffer until a second thread asks for the key, so a
-	 * view is cached only once its memory is a SharedArrayBuffer. Until then the epoch mint and every
-	 * owner publish re-fetch on each use, while reads — the fence, the admission word, wake gating —
-	 * re-fetch at most every 100 ms: a worker booting mid-rebuild takes far longer than that to
-	 * acquire and reset, and a single-worker process must not pay a native call per apply.
+	 * rocksdb-js wraps one process-wide native allocation per key in a new external ArrayBuffer on every
+	 * call and never re-seeds an existing entry, so each view is fetched once and held for the runner's
+	 * life; the held wrapper keeps the allocation alive.
 	 */
-	#epochWords(): BigInt64Array {
-		if (this.#epochView?.buffer instanceof SharedArrayBuffer) return this.#epochView;
-		this.#epochView = new BigInt64Array(
-			this.#logStore.getUserSharedBuffer(`derived-index:${this.id}:owner-epoch`, new ArrayBuffer(8))
-		);
-		this.#epochFetchedAt = this.#options.now();
-		return this.#epochView;
-	}
-
-	#epochWordsForRead(): BigInt64Array {
-		const view = this.#epochView;
-		if (view && (view.buffer instanceof SharedArrayBuffer || this.#options.now() - this.#epochFetchedAt < 100))
-			return view;
-		return this.#epochWords();
-	}
-
 	#shared(): SharedViews {
-		if (this.#sharedViews?.words.buffer instanceof SharedArrayBuffer) return this.#sharedViews;
-		this.#sharedViews = sharedViewsOf(readinessBuffer(this.#logStore, this.id));
-		this.#sharedFetchedAt = this.#options.now();
-		// The owner's own publish goes through here; readers on this worker must see the same memory at once.
-		if (this.#sharedViews.words.buffer instanceof SharedArrayBuffer)
-			cachedReadinessViews(this.#logStore).set(this.id, this.#sharedViews);
 		return this.#sharedViews;
-	}
-
-	#sharedForRead(): SharedViews {
-		const views = this.#sharedViews;
-		if (views && (views.words.buffer instanceof SharedArrayBuffer || this.#options.now() - this.#sharedFetchedAt < 100))
-			return views;
-		return this.#shared();
 	}
 
 	wake(fromBackend = false) {
@@ -589,7 +561,7 @@ class DerivedIndexRunner {
 			this.status = { state: 'idle' };
 		}
 		// A shared rebuild request must reach an owner parked on backpressure or backoff at its next wake.
-		const requested = Atomics.load(this.#sharedForRead().words, READINESS_REBUILD_REQUEST) === 1;
+		const requested = Atomics.load(this.#shared().words, READINESS_REBUILD_REQUEST) === 1;
 		if (!requested) {
 			if (this.status.state === 'needs-rebuild' && (this.#rebuildTimer || !this.#rebuildRequested)) return;
 			if (!fromBackend && (this.status.state === 'deferred' || this.status.state === 'waiting-durable')) return;
@@ -632,7 +604,7 @@ class DerivedIndexRunner {
 	}
 
 	getReadiness(): DerivedIndexReadiness {
-		const views = this.#sharedForRead();
+		const views = this.#shared();
 		return readReadiness(views.words, views.epoch, views.bytes);
 	}
 
@@ -675,7 +647,7 @@ class DerivedIndexRunner {
 	}
 
 	#writeRejection(): string | undefined {
-		if (Atomics.load(this.#sharedForRead().words, READINESS_LAG_EXCEEDED) !== 1) return;
+		if (Atomics.load(this.#shared().words, READINESS_LAG_EXCEEDED) !== 1) return;
 		return `derived index '${this.id}' is more than ${this.#lagBudget} ms behind; retry this write`;
 	}
 
@@ -704,7 +676,7 @@ class DerivedIndexRunner {
 			Atomics.store(words, READINESS_LAG_EXCEEDED, 0);
 			logger.info?.(`Derived index '${this.id}' caught up; admitting writes again`);
 		}
-		if (this.#lagTimer) clearTimeout(this.#lagTimer);
+		if (this.#lagTimer) return;
 		this.#lagTimer = setTimeout(
 			() => {
 				this.#lagTimer = undefined;
@@ -835,7 +807,7 @@ class DerivedIndexRunner {
 	}
 
 	#mintEpoch(): bigint {
-		return Atomics.add(this.#epochWords(), 0, 1n) + 1n;
+		return Atomics.add(this.#epochView, 0, 1n) + 1n;
 	}
 
 	#resetFromDurableCursor() {
@@ -1013,7 +985,7 @@ class DerivedIndexRunner {
 			const result = flush.call(this.#registration.backend, reason) as void | Promise<void>;
 			if (result && typeof result.then === 'function') {
 				if (this.#registration.backend.asynchronous !== true) {
-					result.then(undefined, () => {});
+					this.#noteUndeclaredAsync(result);
 					this.#fail(
 						'backend declared no asynchronous effects but returned a promise from flush',
 						new Error('undeclared asynchronous flush')
@@ -1201,7 +1173,7 @@ class DerivedIndexRunner {
 				];
 			}
 		}
-		this.#assertNotAllUnindexable(chunk);
+		this.#noteChunkProjection(chunk);
 		if (completed === 0 && chunk.batch.records.length === 0) return CONTINUE;
 		chunk.batch.through = through;
 		return chunk.batch;
@@ -1235,12 +1207,28 @@ class DerivedIndexRunner {
 		return record;
 	}
 
-	/** Rejecting every record of a sizeable chunk is a projection or schema fault; fail closed instead of emptying the index. */
-	#assertNotAllUnindexable(chunk: Chunk) {
+	/**
+	 * A backend that declared no asynchronous effects but returned a promise has work that may still
+	 * write; nothing may unlock or reset under it, so the epoch's quiescence waits for it to settle.
+	 * A never-settling promise then holds the lock, which is the safe failure.
+	 */
+	#noteUndeclaredAsync(pending: Promise<void>) {
+		this.#undeclaredAsync = Promise.allSettled([this.#undeclaredAsync, pending]).then(() => undefined);
+	}
+
+	/** A chunk the projection rejected outright is worth one warning per streak, never an outage. */
+	#noteChunkProjection(chunk: Chunk) {
 		const records = chunk.batch.records;
-		const floor = Math.min(UNINDEXABLE_CIRCUIT, this.#options.maxChunkRecords);
-		if (records.length < floor || records.some((record) => record.state.kind !== 'unindexable')) return;
-		throw new Error(`projection rejected every record of a ${records.length}-record chunk`);
+		if (records.length === 0) return;
+		if (records.some((record) => record.state.kind !== 'unindexable')) {
+			this.#allUnindexableWarned = false;
+			return;
+		}
+		if (this.#allUnindexableWarned) return;
+		this.#allUnindexableWarned = true;
+		logger.warn?.(
+			`Derived index '${this.#registration.backend.id}' could not project any of the ${records.length} records in a chunk; they are counted in unindexableRecords`
+		);
 	}
 
 	#project(
@@ -1567,29 +1555,26 @@ class DerivedIndexRunner {
 		const options = this.#options;
 		let chunk = this.#newChunk(true);
 		let indexed = 0;
-		let rejected = 0;
 		for (const [tableId] of this.#registration.projections) {
 			for (const record of this.#scanRecords!(tableId)) {
-				const added = this.#addScanRecord(chunk, tableId, record);
-				if (!added) continue;
-				indexed++;
-				if (added.state.kind === 'unindexable') rejected++;
+				if (this.#addScanRecord(chunk, tableId, record)) indexed++;
+				// Filtered entries (tombstones, symbol keys) count against the turn too: a long run of them
+				// must yield without delivering an empty chunk.
 				if (
 					chunk.batch.records.length >= options.maxChunkRecords ||
 					chunk.batch.bytes >= options.maxChunkBytes ||
 					options.now() - chunk.started >= options.maxMillisecondsPerTurn
 				) {
-					this.#assertNotAllUnindexable(chunk);
-					await this.#deliverRebuildChunk(chunk, generation);
+					if (chunk.batch.records.length > 0) {
+						this.#noteChunkProjection(chunk);
+						await this.#deliverRebuildChunk(chunk, generation);
+					} else await new Promise<void>((resolve) => setImmediate(resolve));
 					if (!this.#live(generation)) return;
 					chunk = this.#newChunk(true);
 				}
 			}
 		}
-		this.#assertNotAllUnindexable(chunk);
-		// A scan that rejects every record it found is a projection fault, whatever the chunk sizes were.
-		if (indexed > 0 && rejected === indexed)
-			throw new Error(`projection rejected every one of the ${indexed} records scanned`);
+		this.#noteChunkProjection(chunk);
 		chunk.batch.through = boundary;
 		await this.#deliverRebuildChunk(chunk, generation);
 		if (!this.#live(generation)) return;
@@ -1700,8 +1685,9 @@ class DerivedIndexRunner {
 	#quiesce(epoch: bigint): Promise<void> {
 		if (this.#quiescing?.epoch === epoch) return this.#quiescing.promise;
 		let promise: Promise<void>;
+		const shutdown = () => this.#registration.backend.shutdown?.(epoch);
 		try {
-			promise = Promise.resolve(this.#registration.backend.shutdown?.(epoch));
+			promise = this.#undeclaredAsync ? this.#undeclaredAsync.then(shutdown) : Promise.resolve(shutdown());
 		} catch (error) {
 			promise = Promise.reject(error);
 		}
@@ -1772,9 +1758,7 @@ class DerivedIndexRunner {
 		try {
 			flushed = backend.flush?.('shutdown') as void | Promise<void>;
 			if (flushed && typeof flushed.then === 'function' && backend.asynchronous !== true) {
-				// A backend that declared no asynchronous effects gets no wait: nothing it started may
-				// legitimately outlive the call, and a never-settling promise must not hold the lock.
-				flushed.then(undefined, () => {});
+				this.#noteUndeclaredAsync(flushed);
 				flushed = undefined;
 				logger.error(
 					`Derived index '${backend.id}' declared no asynchronous effects but returned a promise from flush`
@@ -1814,7 +1798,6 @@ type SharedViews = {
 	epoch: BigInt64Array;
 	reloads: BigInt64Array;
 	bytes: Uint8Array;
-	fetchedAt: number;
 };
 
 function sharedViewsOf(buffer: ArrayBufferLike): SharedViews {
@@ -1823,17 +1806,10 @@ function sharedViewsOf(buffer: ArrayBufferLike): SharedViews {
 		epoch: new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
 		reloads: new BigInt64Array(buffer, READINESS_RELOADS_OFFSET, 1),
 		bytes: new Uint8Array(buffer, READINESS_REASON_OFFSET),
-		fetchedAt: Date.now(),
 	};
 }
 
 const readinessViews = new WeakMap<object, Map<string, SharedViews>>();
-
-function cachedReadinessViews(logStore: object): Map<string, SharedViews> {
-	let byBackend = readinessViews.get(logStore);
-	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
-	return byBackend;
-}
 
 function readReadiness(words: Int32Array, epoch: BigInt64Array, bytes: Uint8Array): DerivedIndexReadiness {
 	for (let spin = 0; spin < 256; spin++) {
@@ -1861,12 +1837,10 @@ export function readDerivedIndexReadiness(
 	logStore: RocksTransactionLogStore,
 	backendId: string
 ): DerivedIndexReadiness {
-	const byBackend = cachedReadinessViews(logStore);
+	let byBackend = readinessViews.get(logStore);
+	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
 	let views = byBackend.get(backendId);
-	if (!views || (!(views.words.buffer instanceof SharedArrayBuffer) && Date.now() - views.fetchedAt >= 100)) {
-		views = sharedViewsOf(readinessBuffer(logStore, backendId));
-		byBackend.set(backendId, views);
-	}
+	if (!views) byBackend.set(backendId, (views = sharedViewsOf(readinessBuffer(logStore, backendId))));
 	return readReadiness(views.words, views.epoch, views.bytes);
 }
 
