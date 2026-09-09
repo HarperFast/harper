@@ -1,7 +1,10 @@
+require('../testUtils');
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 const { waitFor } = require('../waitFor');
+const { setupTestDBPath } = require('../testUtils');
 const { ClientError } = require('#src/utility/errors/hdbError');
+const { hasDerivedIndexRegistration } = require('#src/resources/derivedIndexRegistry');
 const {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
@@ -581,7 +584,8 @@ describe('DerivedIndexRuntime for native backends', () => {
 		});
 		const backend = new AsyncBackend('held-revive', { cursor: cursor(7), applyDelay: 2 });
 		let settle = false;
-		backend.shutdown = async () => {
+		backend.shutdown = async (epoch) => {
+			backend.shutdowns.push(epoch);
 			if (!settle) throw new Error('native queue did not drain');
 		};
 		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 5 });
@@ -593,8 +597,61 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(runtime.requestRebuild('held-revive'), true);
 		await waitFor(() => runtime.getReadiness('held-revive').state === 'ready', { timeout: 5000 });
 		assert.strictEqual(backend.resets.length, 1);
+		const heldEpoch = backend.shutdowns[0];
+		assert.deepStrictEqual(
+			backend.shutdowns.slice(0, 2),
+			[heldEpoch, heldEpoch],
+			'the held epoch is quiesced again first'
+		);
+		assert(backend.resets[0] > heldEpoch, 'reset runs under a successor epoch only after the held one settled');
 		await runtime.stop();
 		assert.strictEqual(store.locks.size, 0);
+	});
+
+	it('returns one cleanup promise for repeated stop() and waits for every backend', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const failing = new AsyncBackend('cleanup-failing', { cursor: cursor(10) });
+		failing.shutdown = () => Promise.reject(new Error('native queue did not drain'));
+		const draining = new AsyncBackend('cleanup-draining', { cursor: cursor(10) });
+		let releaseDrain;
+		draining.shutdown = () => new Promise((resolve) => (releaseDrain = resolve));
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		runtime.register(registration(failing));
+		runtime.register(registration(draining));
+		await waitFor(() => store.locks.size === 2);
+
+		const first = runtime.stop();
+		const second = runtime.stop();
+		assert.strictEqual(second, first);
+		await sleep(20);
+		assert.strictEqual(store.locks.size, 2, 'stop() must not settle while a backend is still draining');
+		releaseDrain();
+		await assert.rejects(first, /native queue did not drain/);
+		assert.strictEqual(store.locks.size, 1, 'the drained backend released; the failed one keeps its lock');
+		await assert.rejects(runtime.stop(), /native queue did not drain/);
+	});
+
+	it('keeps tables registered until the backend has settled its shutdown', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const backend = new AsyncBackend('registered-until-settled', { cursor: cursor(10) });
+		let releaseShutdown;
+		backend.shutdown = () => new Promise((resolve) => (releaseShutdown = resolve));
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		const unregister = runtime.register(registration(backend));
+		await waitFor(() => store.locks.size === 1);
+
+		const unregistered = unregister();
+		assert.strictEqual(unregister(), unregistered);
+		await sleep(10);
+		assert.strictEqual(
+			hasDerivedIndexRegistration(store, 1),
+			true,
+			'an eviction during the drain must still write its marker'
+		);
+		releaseShutdown();
+		await unregistered;
+		assert.strictEqual(hasDerivedIndexRegistration(store, 1), false);
+		await runtime.stop();
 	});
 
 	it('never publishes ready between a fault found mid-drain and the destructive reset', async () => {
@@ -680,6 +737,61 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(peerBackend.resets.length, 0);
 		await peer.stop();
 		await owner.stop();
+	});
+
+	it('absorbs a peer rebuild request that arrives during a rebuild and never publishes from the peer', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
+		});
+		const ownerBackend = new AsyncBackend('absorbed', { applyDelay: 2, capacity: 0 });
+		const peerBackend = new AsyncBackend('absorbed');
+		const owner = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		const peer = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		owner.register(registration(ownerBackend, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => owner.getStatus('absorbed').state === 'rebuilding' && ownerBackend.deliveries.length === 1);
+		peer.register(registration(peerBackend));
+		const published = readDerivedIndexReadiness(store, 'absorbed');
+		assert.strictEqual(peer.requestRebuild('absorbed'), true);
+		assert.deepStrictEqual(
+			readDerivedIndexReadiness(store, 'absorbed'),
+			published,
+			'a non-owner never writes the shared record'
+		);
+
+		ownerBackend.capacity = Infinity;
+		ownerBackend.stateChange('changed');
+		await waitFor(() => owner.getReadiness('absorbed').state === 'ready', { timeout: 5000 });
+		await sleep(30);
+		assert.strictEqual(ownerBackend.resets.length, 1, 'the in-flight rebuild absorbs the request');
+		assert.strictEqual(owner.getReadiness('absorbed').state, 'ready');
+		await peer.stop();
+		await owner.stop();
+	});
+
+	it('ignores a superseded flush rejection and keeps asking a backend that coalesced a request', async () => {
+		const records = new Map([['1:a', { version: 20, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const backend = new AsyncBackend('flush-liveness', { cursor: cursor(10) });
+		let rejectSuperseded;
+		let dropped = 0;
+		const realFlush = backend.flush.bind(backend);
+		backend.flush = (reason) => {
+			if (dropped++ === 0) {
+				backend.flushes.push(reason);
+				return new Promise((_resolve, reject) => (rejectSuperseded = reject));
+			}
+			return realFlush(reason);
+		};
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 1000 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 10 }));
+
+		await waitFor(() => backend.cursor.logs.local === 20 && runtime.getStatus('flush-liveness').state === 'idle');
+		assert(backend.flushes.length >= 2, 'the age timer re-arms while accepted work is not durable');
+		await runtime.stop();
+		rejectSuperseded(new Error('cancelled by shutdown'));
+		await sleep(10);
+		assert.notStrictEqual(readDerivedIndexReadiness(store, 'flush-liveness').state, 'needs-rebuild');
 	});
 
 	it('does not spend rebuild attempts on reload markers the scan already covered', async () => {
@@ -889,5 +1001,63 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(backend.resets.length, 1);
 		assert.deepStrictEqual(backend.cursor, cursor(9));
 		await runtime.stop();
+	});
+});
+
+describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let runtime;
+	before(() => {
+		setupTestDBPath();
+		require('#js/server/threads/manageThreads').setMainIsWorker(true);
+	});
+	after(() => runtime?.stop());
+
+	it('rebuilds from the primary store on the retained log boundary and replays to the head', async () => {
+		const { table } = require('#src/resources/databases');
+		const Product = table({
+			database: 'derived-index-rebuild-rocks',
+			table: 'Product',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+		});
+		for (const id of ['p1', 'p2', 'p3']) await Product.put(id, { title: `title ${id}` });
+		await Product.delete('p2');
+
+		const backend = new AsyncBackend('rocks-rebuild', { applyDelay: 2 });
+		runtime = new DerivedIndexRuntime(
+			Product.auditStore,
+			(tableId, recordId) => {
+				const entry = Product.primaryStore.getEntry(recordId);
+				return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+			},
+			{
+				idleGraceMilliseconds: 60_000,
+				scanRecords: () =>
+					Product.primaryStore.getRange({ versions: true }).map((entry) => ({
+						recordId: entry.key,
+						version: entry.version,
+						value: entry.value,
+					})),
+			}
+		);
+		runtime.register({
+			backend,
+			projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
+			options: { maxFlushAgeMilliseconds: 10, maxChunkRecords: 2 },
+		});
+
+		await waitFor(() => runtime.getReadiness('rocks-rebuild').state === 'ready', { timeout: 10_000 });
+		assert.deepStrictEqual([...backend.applied.keys()].sort(), ['p1', 'p3']);
+		const oldest = Product.auditStore.getRange({ log: 'local', start: 0 })[Symbol.iterator]().next().value.txnLogKey;
+		const scanChunks = backend.deliveries.filter((batch) => batch.rebuild);
+		assert.strictEqual(scanChunks.at(-1).through.logs.local, oldest, 'the boundary is the oldest retained transaction');
+		assert.strictEqual(backend.cursor.format, 1);
+		assert(backend.cursor.logs.local >= oldest);
+
+		await Product.put('p4', { title: 'title p4' });
+		await waitFor(() => backend.applied.has('p4'), { timeout: 5000 });
+		assert.deepStrictEqual(backend.applied.get('p4').projection, { title: 'title p4' });
+		assert.strictEqual(runtime.getMetrics('rocks-rebuild').rebuildAttempts, 0);
 	});
 });
