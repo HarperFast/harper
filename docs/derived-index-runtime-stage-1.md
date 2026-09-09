@@ -607,8 +607,9 @@ a backend that cannot rebuild parks on a condemned generation instead of resumin
 record yields `state: { kind: 'unindexable' }` whose `reason` is the error's class and status only,
 never its message (validation messages can quote record values) — the backend removes any entry and
 counts it — in live delivery and rebuild alike, so one malformed record cannot loop a rebuild; any
-other exception stays fail-closed, and so does a chunk of 32 or more records in which the projection
-rejected every one, since that is a schema or projection fault that would otherwise empty the
+other exception stays fail-closed, and so does a chunk (of at least 32 records or the chunk bound,
+whichever is smaller) in which the projection rejected every one, or a rebuild scan that rejected
+every record it found, since that is a schema or projection fault that would otherwise empty the
 index.
 
 ### Generation fencing and cancellation
@@ -659,7 +660,10 @@ runtime's own description, never the backend error's message, which can quote re
 message stays in the owner's local status and log. A runner that latched a shared `unavailable`
 drops the latch on its next wake once the shared state has moved on, so a peer's revival does not
 strand the other workers. `ready` is published on a validated acquisition and after
-a rebuild's final barrier; `rebuilding` before the destructive reset. A fault detected in the middle
+a rebuild's final barrier; `rebuilding` before the destructive reset. rocksdb-js hands back a plain
+`ArrayBuffer` for a key until another thread has asked for it, so the runtime caches its views of
+the readiness and owner-epoch records only once the memory is a `SharedArrayBuffer` and re-fetches
+on every use before that; a single-threaded process simply keeps re-fetching. A fault detected in the middle
 of a drain turn (a corrupt frame surfacing from the iterator) starts the rebuild from inside that
 turn; the turn's generation check prevents its end-of-log path from publishing `ready` over the
 `rebuilding` just written.
@@ -674,7 +678,10 @@ durable == offered) — because a slow reader that never idles cannot hide from 
 samples on every drain turn, idle pass and age tick and on its own lag timer while parked, and
 publishes a lag-exceeded word in the shared readiness buffer: set at `lag >= budget`, cleared only
 once this owner has proved catch-up and lag is below half the budget, so the policy neither flaps
-nor clears on an ownership handoff before the successor has caught up.
+nor clears on an ownership handoff before the successor has caught up. The unproven-catch-up clock
+restarts whenever an owner discards progress, so a rebuild or lost accepted work does not turn the
+owner's age into fabricated lag. An index that becomes `unavailable` — no owner will catch it up —
+clears the word, because shedding writes forever would protect nothing.
 
 Every worker's runner registers an admission check for the index's tables
 (`registerDerivedIndexTables(store, tableIds, admission)`); `derivedIndexWriteRejection(store,

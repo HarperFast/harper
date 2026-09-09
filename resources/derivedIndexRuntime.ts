@@ -437,7 +437,7 @@ class DerivedIndexRunner {
 	#carried: CollectedTransaction[] = [];
 	#latestSeen = new Map<string, number>();
 	#stalledSince?: number;
-	#acquiredAt?: number;
+	#unprovenSince?: number;
 	#lastCaughtUpAt?: number;
 	#lagTimer?: NodeJS.Timeout;
 	#lagBudget: number;
@@ -468,12 +468,9 @@ class DerivedIndexRunner {
 	#unsubscribeBackend: () => void;
 	#unregisterTables: () => void;
 	#ownerEpoch?: bigint;
-	#epochCounter: BigInt64Array;
+	#epochView?: BigInt64Array;
 	#readinessBuffer: SharedReadinessBuffer;
-	#readinessWords: Int32Array;
-	#readinessBytes: Uint8Array;
-	#readinessEpoch: BigInt64Array;
-	#readinessReloads: BigInt64Array;
+	#sharedViews?: SharedViews;
 	#resetting?: Promise<void>;
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
 
@@ -508,19 +505,11 @@ class DerivedIndexRunner {
 		this.#options = options;
 		this.#lockKey = `derived-index:${registration.backend.id}:runner`;
 		this.#lagBudget = effectiveLagBudget(options);
-		this.#epochCounter = new BigInt64Array(
-			logStore.getUserSharedBuffer(`derived-index:${registration.backend.id}:owner-epoch`, new ArrayBuffer(8))
-		);
 		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => {
 			if (this.#owned) this.wake(true);
 		});
-		const readiness = this.#readinessBuffer;
-		this.#readinessWords = new Int32Array(readiness, 0, READINESS_WORDS);
-		this.#readinessEpoch = new BigInt64Array(readiness, READINESS_EPOCH_OFFSET, 1);
-		this.#readinessReloads = new BigInt64Array(readiness, READINESS_RELOADS_OFFSET, 1);
-		this.#readinessBytes = new Uint8Array(readiness, READINESS_REASON_OFFSET);
 		registration.backend.attach?.({
-			isOwnerEpoch: (epoch) => Atomics.load(this.#epochCounter, 0) === epoch,
+			isOwnerEpoch: (epoch) => Atomics.load(this.#epochWords(), 0) === epoch,
 			getReadiness: () => this.getReadiness(),
 		});
 		this.#unsubscribeBackend = registration.backend.onStateChange((change = 'changed') =>
@@ -533,18 +522,35 @@ class DerivedIndexRunner {
 		);
 	}
 
+	/**
+	 * The binding hands back a plain ArrayBuffer until another thread has asked for the key, so views
+	 * are cached only once the memory is actually shared; until then every use re-fetches.
+	 */
+	#epochWords(): BigInt64Array {
+		if (this.#epochView && this.#epochView.buffer instanceof SharedArrayBuffer) return this.#epochView;
+		const buffer = this.#logStore.getUserSharedBuffer(`derived-index:${this.id}:owner-epoch`, new ArrayBuffer(8));
+		this.#epochView = new BigInt64Array(buffer);
+		return this.#epochView;
+	}
+
+	#shared(): SharedViews {
+		if (this.#sharedViews && this.#sharedViews.words.buffer instanceof SharedArrayBuffer) return this.#sharedViews;
+		this.#sharedViews = sharedViewsOf(readinessBuffer(this.#logStore, this.id));
+		return this.#sharedViews;
+	}
+
 	wake(fromBackend = false) {
 		if (this.#stopped || this.#rebuilding) return;
 		if (this.status.state === 'unavailable') {
 			if (
 				this.#heldLock ||
-				Atomics.load(this.#readinessWords, READINESS_STATE) === READINESS_STATES.indexOf('unavailable')
+				Atomics.load(this.#shared().words, READINESS_STATE) === READINESS_STATES.indexOf('unavailable')
 			)
 				return;
 			this.status = { state: 'idle' };
 		}
 		// A shared rebuild request must reach an owner parked on backpressure or backoff at its next wake.
-		const requested = Atomics.load(this.#readinessWords, READINESS_REBUILD_REQUEST) === 1;
+		const requested = Atomics.load(this.#shared().words, READINESS_REBUILD_REQUEST) === 1;
 		if (!requested) {
 			if (this.status.state === 'needs-rebuild' && (this.#rebuildTimer || !this.#rebuildRequested)) return;
 			if (!fromBackend && (this.status.state === 'deferred' || this.status.state === 'waiting-durable')) return;
@@ -589,7 +595,8 @@ class DerivedIndexRunner {
 	}
 
 	getReadiness(): DerivedIndexReadiness {
-		return readReadiness(this.#readinessWords, this.#readinessEpoch, this.#readinessBytes);
+		const views = this.#shared();
+		return readReadiness(views.words, views.epoch, views.bytes);
 	}
 
 	getMetrics(): DerivedIndexRunnerMetrics {
@@ -631,7 +638,7 @@ class DerivedIndexRunner {
 	}
 
 	#writeRejection(): string | undefined {
-		if (Atomics.load(this.#readinessWords, READINESS_LAG_EXCEEDED) !== 1) return;
+		if (Atomics.load(this.#shared().words, READINESS_LAG_EXCEEDED) !== 1) return;
 		return `derived index '${this.id}' is more than ${this.#lagBudget} ms behind; retry this write`;
 	}
 
@@ -645,18 +652,18 @@ class DerivedIndexRunner {
 		const max = this.#lagBudget;
 		if (max <= 0 || !this.#owned) return;
 		const now = this.#options.now();
-		const unproven = this.#lastCaughtUpAt ?? this.#acquiredAt ?? now;
+		const unproven = this.#lastCaughtUpAt ?? this.#unprovenSince ?? now;
 		const lag = Math.max(
 			this.#cursorLag(),
 			this.#stalledSince === undefined ? 0 : now - this.#stalledSince,
 			now - unproven
 		);
-		const tripped = Atomics.load(this.#readinessWords, READINESS_LAG_EXCEEDED) === 1;
+		const tripped = Atomics.load(this.#shared().words, READINESS_LAG_EXCEEDED) === 1;
 		if (!tripped && lag >= max) {
-			Atomics.store(this.#readinessWords, READINESS_LAG_EXCEEDED, 1);
+			Atomics.store(this.#shared().words, READINESS_LAG_EXCEEDED, 1);
 			logger.warn?.(`Derived index '${this.id}' is ${Math.round(lag)} ms behind; rejecting writes until it catches up`);
 		} else if (tripped && lag < max / 2 && this.#lastCaughtUpAt !== undefined) {
-			Atomics.store(this.#readinessWords, READINESS_LAG_EXCEEDED, 0);
+			Atomics.store(this.#shared().words, READINESS_LAG_EXCEEDED, 0);
 			logger.info?.(`Derived index '${this.id}' caught up; admitting writes again`);
 		}
 		if (this.#lagTimer) clearTimeout(this.#lagTimer);
@@ -694,14 +701,14 @@ class DerivedIndexRunner {
 		}
 		// The owner may be another worker that never idles: leave the request where every runner looks,
 		// and notify whoever holds the buffer's callback.
-		Atomics.store(this.#readinessWords, READINESS_REBUILD_REQUEST, 1);
+		Atomics.store(this.#shared().words, READINESS_REBUILD_REQUEST, 1);
 		this.#readinessBuffer.notify?.();
 		this.wake(true);
 		return true;
 	}
 
 	#takeSharedRebuildRequest(): boolean {
-		return Atomics.exchange(this.#readinessWords, READINESS_REBUILD_REQUEST, 0) === 1;
+		return Atomics.exchange(this.#shared().words, READINESS_REBUILD_REQUEST, 0) === 1;
 	}
 
 	#canRebuild(): boolean {
@@ -727,7 +734,9 @@ class DerivedIndexRunner {
 			if (!this.#logStore.tryLock(this.#lockKey, retry)) return;
 		} catch (error) {
 			this.#waitingForLock = false;
-			this.#fail('failed to acquire the runner lock', error);
+			logger.error(`Derived index '${this.id}' could not attempt the runner lock; retrying`, error);
+			const retryLater = setTimeout(() => this.wake(true), this.#options.rebuildBackoffMilliseconds);
+			retryLater.unref?.();
 			return;
 		}
 		this.#waitingForLock = false;
@@ -739,13 +748,13 @@ class DerivedIndexRunner {
 		this.#releaseFailure = undefined;
 		this.#owned = true;
 		this.#generation++;
-		this.#acquiredAt = this.#options.now();
+		this.#unprovenSince = this.#options.now();
 		this.#lastCaughtUpAt = undefined;
 		try {
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			const shared = this.getReadiness();
-			const reloadsThrough = Number(Atomics.load(this.#readinessReloads, 0));
+			const reloadsThrough = Number(Atomics.load(this.#shared().reloads, 0));
 			if (reloadsThrough > 0)
 				for (const logName of this.#logStore.rootStore.listLogs())
 					this.#reloadsHandledThrough.set(
@@ -766,11 +775,11 @@ class DerivedIndexRunner {
 					reason: shared.reason ?? 'index unavailable',
 					ownerEpoch: this.#ownerEpoch,
 				};
+				this.#admitWrites();
 				this.#release();
 				return;
 			}
 			if (shared.state === 'needs-rebuild' || shared.state === 'rebuilding') {
-				// A previous owner condemned this generation; a format-valid cursor does not overrule it.
 				if (this.#canRebuild()) this.#startRebuild();
 				else {
 					this.status = {
@@ -790,7 +799,7 @@ class DerivedIndexRunner {
 	}
 
 	#mintEpoch(): bigint {
-		return Atomics.add(this.#epochCounter, 0, 1n) + 1n;
+		return Atomics.add(this.#epochWords(), 0, 1n) + 1n;
 	}
 
 	#resetFromDurableCursor() {
@@ -1183,7 +1192,8 @@ class DerivedIndexRunner {
 	/** Rejecting every record of a sizeable chunk is a projection or schema fault; fail closed instead of emptying the index. */
 	#assertNotAllUnindexable(chunk: Chunk) {
 		const records = chunk.batch.records;
-		if (records.length < UNINDEXABLE_CIRCUIT || records.some((record) => record.state.kind !== 'unindexable')) return;
+		const floor = Math.min(UNINDEXABLE_CIRCUIT, this.#options.maxChunkRecords);
+		if (records.length < floor || records.some((record) => record.state.kind !== 'unindexable')) return;
 		throw new Error(`projection rejected every record of a ${records.length}-record chunk`);
 	}
 
@@ -1316,8 +1326,6 @@ class DerivedIndexRunner {
 		this.#boundaryPending = false;
 		if (offeredIndex > 0) {
 			this.#offeredCursors.splice(0, offeredIndex);
-			// A durable advance certifies a complete prefix; under sustained ingest there may never be an
-			// idle pass, so readiness (and the retry budget) settle here as well.
 			if (!this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
 		}
 		return true;
@@ -1325,7 +1333,7 @@ class DerivedIndexRunner {
 
 	#settleReady() {
 		this.#rebuildAttempts = 0;
-		if (Atomics.load(this.#readinessWords, READINESS_STATE) !== READINESS_STATES.indexOf('ready'))
+		if (Atomics.load(this.#shared().words, READINESS_STATE) !== READINESS_STATES.indexOf('ready'))
 			this.#publishReadiness('ready');
 	}
 
@@ -1395,13 +1403,20 @@ class DerivedIndexRunner {
 		);
 		this.status = { state: 'unavailable', reason, ownerEpoch: this.#ownerEpoch };
 		this.#publishReadiness('unavailable', shared);
+		this.#admitWrites();
 		this.#release();
+	}
+
+	/** An index no owner will catch up must not keep shedding writes. */
+	#admitWrites() {
+		if (this.#lagBudget > 0) Atomics.store(this.#shared().words, READINESS_LAG_EXCEEDED, 0);
 	}
 
 	#discardProgress() {
 		this.#generation++;
 		this.#stalledSince = undefined;
 		this.#lastCaughtUpAt = undefined;
+		this.#unprovenSince = this.#options.now();
 		this.#offered = undefined;
 		this.#pendingBatch = undefined;
 		this.#carried = [];
@@ -1485,8 +1500,6 @@ class DerivedIndexRunner {
 
 	async #runRebuild(generation: number) {
 		const backend = this.#registration.backend;
-		// Work accepted under the previous epoch must be quiescent before anything destructive; a new
-		// epoch then fences any completion that still arrives for it.
 		await this.#quiesce(this.#ownerEpoch!);
 		if (!this.#live(generation)) return;
 		this.#ownerEpoch = this.#mintEpoch();
@@ -1504,15 +1517,19 @@ class DerivedIndexRunner {
 		const options = this.#options;
 		let chunk = this.#newChunk(true);
 		let indexed = 0;
+		let rejected = 0;
 		for (const [tableId] of this.#registration.projections) {
 			for (const record of this.#scanRecords!(tableId)) {
-				this.#addScanRecord(chunk, tableId, record);
+				const added = this.#addScanRecord(chunk, tableId, record);
+				if (!added) continue;
 				indexed++;
+				if (added.state.kind === 'unindexable') rejected++;
 				if (
 					chunk.batch.records.length >= options.maxChunkRecords ||
 					chunk.batch.bytes >= options.maxChunkBytes ||
 					options.now() - chunk.started >= options.maxMillisecondsPerTurn
 				) {
+					this.#assertNotAllUnindexable(chunk);
 					await this.#deliverRebuildChunk(chunk, generation);
 					if (!this.#live(generation)) return;
 					chunk = this.#newChunk(true);
@@ -1520,6 +1537,9 @@ class DerivedIndexRunner {
 			}
 		}
 		this.#assertNotAllUnindexable(chunk);
+		// A scan that rejects every record it found is a projection fault, whatever the chunk sizes were.
+		if (indexed > 0 && rejected === indexed)
+			throw new Error(`projection rejected every one of the ${indexed} records scanned`);
 		chunk.batch.through = boundary;
 		await this.#deliverRebuildChunk(chunk, generation);
 		if (!this.#live(generation)) return;
@@ -1529,8 +1549,7 @@ class DerivedIndexRunner {
 		logger.info?.(`Rebuilt derived index '${backend.id}' from ${indexed} records; replaying the retained log`);
 	}
 
-	#addScanRecord(chunk: Chunk, tableId: number, record: DerivedIndexScanRecord) {
-		// Symbol keys are Harper-internal store entries (id allocation and the like), never records.
+	#addScanRecord(chunk: Chunk, tableId: number, record: DerivedIndexScanRecord): DerivedIndexMutation | undefined {
 		if (record.value == null || typeof record.recordId === 'symbol') return;
 		const key = writeKeyId(record.recordId);
 		let byRecord = chunk.resolved.get(tableId);
@@ -1544,6 +1563,7 @@ class DerivedIndexRunner {
 		};
 		byRecord.set(key, mutation);
 		chunk.batch.records.push(mutation);
+		return mutation;
 	}
 
 	async #deliverRebuildChunk(chunk: Chunk, generation: number) {
@@ -1583,7 +1603,7 @@ class DerivedIndexRunner {
 		// Compared against transaction timestamps, which are wall-clock milliseconds; the injectable
 		// budget clock may be monotonic and must not be used here.
 		const captured = Date.now();
-		Atomics.store(this.#readinessReloads, 0, BigInt(Math.floor(captured)));
+		Atomics.store(this.#shared().reloads, 0, BigInt(Math.floor(captured)));
 		for (const logName of this.#logStore.rootStore.listLogs()) {
 			this.#reloadsHandledThrough.set(logName, Math.max(this.#reloadsHandledThrough.get(logName) ?? 0, captured));
 			let first: number | undefined;
@@ -1641,15 +1661,15 @@ class DerivedIndexRunner {
 	}
 
 	#publishReadiness(state: DerivedIndexReadinessState, reason = '') {
-		const words = this.#readinessWords;
+		const words = this.#shared().words;
 		// Force the sequence odd rather than incrementing, so a publication abandoned by a dead owner is repaired.
 		const sequence = Atomics.load(words, READINESS_SEQUENCE) | 1;
 		Atomics.store(words, READINESS_SEQUENCE, sequence);
-		const encoded = textEncoder.encodeInto(reason, this.#readinessBytes);
+		const encoded = textEncoder.encodeInto(reason, this.#shared().bytes);
 		Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf(state));
 		Atomics.store(words, READINESS_REASON_LENGTH, encoded.written);
 		Atomics.store(words, READINESS_ATTEMPTS, state === 'ready' ? 0 : this.#rebuildAttempts);
-		Atomics.store(this.#readinessEpoch, 0, this.#ownerEpoch ?? 0n);
+		Atomics.store(this.#shared().epoch, 0, this.#ownerEpoch ?? 0n);
 		Atomics.store(words, READINESS_SEQUENCE, sequence + 1);
 	}
 
@@ -1681,8 +1701,6 @@ class DerivedIndexRunner {
 				logger.error(`Failed to release derived index runner '${backend.id}'`, error);
 			}
 		};
-		// A backend that cannot prove its queued work is quiescent keeps the lock: handing the index to
-		// another owner while the old epoch may still write into it is the unsafe outcome.
 		const hold = (error: unknown) => {
 			this.#releasing = undefined;
 			this.#heldLock = true;
@@ -1692,6 +1710,7 @@ class DerivedIndexRunner {
 			this.#releaseFailure = new Error(reason, { cause: error });
 			this.status = { state: 'unavailable', reason, ownerEpoch: epoch };
 			this.#publishReadiness('unavailable', shared);
+			this.#admitWrites();
 		};
 		try {
 			const flushed = backend.flush?.('shutdown');
@@ -1724,7 +1743,18 @@ function readinessBuffer(
 	) as SharedReadinessBuffer;
 }
 
-const readinessViews = new WeakMap<object, Map<string, [Int32Array, BigInt64Array, Uint8Array]>>();
+type SharedViews = { words: Int32Array; epoch: BigInt64Array; reloads: BigInt64Array; bytes: Uint8Array };
+
+function sharedViewsOf(buffer: ArrayBufferLike): SharedViews {
+	return {
+		words: new Int32Array(buffer, 0, READINESS_WORDS),
+		epoch: new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
+		reloads: new BigInt64Array(buffer, READINESS_RELOADS_OFFSET, 1),
+		bytes: new Uint8Array(buffer, READINESS_REASON_OFFSET),
+	};
+}
+
+const readinessViews = new WeakMap<object, Map<string, SharedViews>>();
 
 function readReadiness(words: Int32Array, epoch: BigInt64Array, bytes: Uint8Array): DerivedIndexReadiness {
 	for (let spin = 0; spin < 256; spin++) {
@@ -1756,15 +1786,10 @@ export function readDerivedIndexReadiness(
 	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
 	let views = byBackend.get(backendId);
 	if (!views) {
-		const buffer = readinessBuffer(logStore, backendId);
-		views = [
-			new Int32Array(buffer, 0, READINESS_WORDS),
-			new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
-			new Uint8Array(buffer, READINESS_REASON_OFFSET),
-		];
-		byBackend.set(backendId, views);
+		views = sharedViewsOf(readinessBuffer(logStore, backendId));
+		if (views.words.buffer instanceof SharedArrayBuffer) byBackend.set(backendId, views);
 	}
-	return readReadiness(views[0], views[1], views[2]);
+	return readReadiness(views.words, views.epoch, views.bytes);
 }
 
 function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is DerivedIndexCursor {
