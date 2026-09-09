@@ -27,12 +27,10 @@ jobs:
   unit-test:
     name: Unit Test (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    # Covers install, build and all four serial `test:unit:all` legs. `main` itself runs
-    # 8m13s-9m09s here, so the 10 minutes this was left 51s-1m47s of headroom - less than the
-    # runner variance the job actually sees: `npm install` has taken 132s against a ~20s norm,
-    # and `install_node_modules > installs when dry_run is false` 196s against 300ms. Both
-    # cancelled a leg of #2191 that was not otherwise over. Raised to bound a hung run rather
-    # than a slow one; a genuine wedge (`.mocharc.json` sets `timeout: 0`) still ends here.
+    # Covers install, build and all four serial `test:unit:all` legs, of which `main` itself
+    # spends 8m13s-9m09s. `.mocharc.json` sets `timeout: 0`, so this is the only bound on a
+    # wedged run; keep it above the runner variance (a 132s `npm install` has been seen) or it
+    # cancels legs that were never over.
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -77,7 +75,11 @@ jobs:
 
         run: node --enable-source-maps ./dist/bin/harper.js install
 
+      # Bounded below the job for the reason `unit-test-windows` gives below: a wedged run fails
+      # this step, keeping mocha's output and reporting as a failure, where the job cap expiring
+      # reports `cancelled` — which reads as neither pass nor fail to a human or to the shepherd.
       - name: Run tests
+        timeout-minutes: 12
         run: npm run test:unit:all
 
   # Windows had no unit-level coverage at all before this job: every job above pins
