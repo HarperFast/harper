@@ -827,7 +827,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const first = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
 		const firstBackend = new AsyncBackend('reload-handoff', { cursor: cursor(7), applyDelay: 2, capacity: 0 });
 		first.register(registration(firstBackend, { maxFlushAgeMilliseconds: 5 }));
-		await waitFor(() => firstBackend.resets.length === 1 && firstBackend.deliveries.length === 1);
+		await waitFor(() => firstBackend.resets.length === 1 && firstBackend.deliveries.length >= 1);
 		// The boundary is captured; the first owner leaves before its replay passes the marker.
 		firstBackend.capacity = Infinity;
 		await first.stop();
@@ -910,7 +910,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const backend = new AsyncBackend('dangling', { applyDelay: 2, capacity: 0 });
 		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 5 });
 		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
-		await waitFor(() => runtime.getStatus('dangling').state === 'rebuilding' && backend.deliveries.length === 1);
+		await waitFor(() => runtime.getStatus('dangling').state === 'rebuilding' && backend.deliveries.length >= 1);
 		assert.strictEqual(runtime.requestRebuild('dangling'), true);
 		backend.capacity = Infinity;
 		backend.stateChange('changed');
@@ -959,7 +959,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const owner = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
 		const peer = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
 		owner.register(registration(ownerBackend, { maxFlushAgeMilliseconds: 5 }));
-		await waitFor(() => owner.getStatus('absorbed').state === 'rebuilding' && ownerBackend.deliveries.length === 1);
+		await waitFor(() => owner.getStatus('absorbed').state === 'rebuilding' && ownerBackend.deliveries.length >= 1);
 		peer.register(registration(peerBackend));
 		const published = readDerivedIndexReadiness(store, 'absorbed');
 		assert.strictEqual(peer.requestRebuild('absorbed'), true);

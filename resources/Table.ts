@@ -748,7 +748,7 @@ export function makeTable(options) {
 		}
 		return { txnLogKey: version, nodeId };
 	}
-	// Every local write converges on _writeUpdate/_writeDelete; replication apply (isNotification),
+	// Every local write converges on the _write* staging methods; replication apply (isNotification),
 	// replay and origin cache fills (updateRecord directly) must never be shed, only user writes.
 	function assertDerivedIndexAdmission(options: any, replaying: boolean) {
 		if (options?.isNotification || replaying) return;
@@ -2276,6 +2276,7 @@ export function makeTable(options) {
 			});
 		}
 		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
+			assertDerivedIndexAdmission(options, txnForContext(this.getContext())?.isReplay === true);
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			checkValidId(id);
@@ -2334,6 +2335,7 @@ export function makeTable(options) {
 			transaction.addWrite(write);
 		}
 		_writeRelocate(id: Id, options: any) {
+			assertDerivedIndexAdmission(options, txnForContext(this.getContext())?.isReplay === true);
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			checkValidId(id);

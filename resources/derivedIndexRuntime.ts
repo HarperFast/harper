@@ -478,6 +478,7 @@ class DerivedIndexRunner {
 	#epochView?: BigInt64Array;
 	#readinessBuffer: SharedReadinessBuffer;
 	#sharedViews?: SharedViews;
+	#sharedFetchedAt = 0;
 	#resetting?: Promise<void>;
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
 
@@ -538,26 +539,36 @@ class DerivedIndexRunner {
 	 * The binding hands back a plain ArrayBuffer until another thread has asked for the key, so views
 	 * are cached only once the memory is actually shared; until then every use re-fetches.
 	 */
+	/**
+	 * The binding hands back a process-private ArrayBuffer until a second thread asks for the key, so a
+	 * view is cached only once its memory is a SharedArrayBuffer. Until then the fence, the epoch mint
+	 * and every owner publish re-fetch on each use (a worker booting mid-rebuild must be seen at once),
+	 * while the hot admission read re-fetches at most every 100 ms.
+	 */
 	#epochWords(): BigInt64Array {
-		return (this.#epochView ??= new BigInt64Array(
+		if (this.#epochView?.buffer instanceof SharedArrayBuffer) return this.#epochView;
+		this.#epochView = new BigInt64Array(
 			this.#logStore.getUserSharedBuffer(`derived-index:${this.id}:owner-epoch`, new ArrayBuffer(8))
-		));
+		);
+		return this.#epochView;
 	}
 
 	#shared(): SharedViews {
-		return (this.#sharedViews ??= sharedViewsOf(readinessBuffer(this.#logStore, this.id)));
+		if (this.#sharedViews?.words.buffer instanceof SharedArrayBuffer) return this.#sharedViews;
+		this.#sharedViews = sharedViewsOf(readinessBuffer(this.#logStore, this.id));
+		this.#sharedFetchedAt = this.#options.now();
+		return this.#sharedViews;
 	}
 
-	/** Off the write path: re-fetch cached views that still point at unshared memory. */
-	#refreshShared() {
-		if (this.#epochView && !(this.#epochView.buffer instanceof SharedArrayBuffer)) this.#epochView = undefined;
-		if (this.#sharedViews && !(this.#sharedViews.words.buffer instanceof SharedArrayBuffer))
-			this.#sharedViews = undefined;
+	#sharedForRead(): SharedViews {
+		const views = this.#sharedViews;
+		if (views && (views.words.buffer instanceof SharedArrayBuffer || this.#options.now() - this.#sharedFetchedAt < 100))
+			return views;
+		return this.#shared();
 	}
 
 	wake(fromBackend = false) {
 		if (this.#stopped || this.#rebuilding) return;
-		this.#refreshShared();
 		if (this.status.state === 'unavailable') {
 			if (
 				this.#heldLock ||
@@ -601,8 +612,6 @@ class DerivedIndexRunner {
 			logger.warn?.(`Derived index '${this.id}' cleanup hook threw`, error);
 		}
 		this.#release();
-		// Tables stay registered until the backend has settled, so an eviction committed during the
-		// drain still writes the marker the next owner replays.
 		this.#stopResult = (this.#releasing ?? Promise.resolve()).then(() => {
 			this.#unregisterTables();
 			if (this.#releaseFailure) throw this.#releaseFailure;
@@ -612,7 +621,7 @@ class DerivedIndexRunner {
 	}
 
 	getReadiness(): DerivedIndexReadiness {
-		const views = this.#shared();
+		const views = this.#sharedForRead();
 		return readReadiness(views.words, views.epoch, views.bytes);
 	}
 
@@ -655,7 +664,7 @@ class DerivedIndexRunner {
 	}
 
 	#writeRejection(): string | undefined {
-		if (Atomics.load(this.#shared().words, READINESS_LAG_EXCEEDED) !== 1) return;
+		if (Atomics.load(this.#sharedForRead().words, READINESS_LAG_EXCEEDED) !== 1) return;
 		return `derived index '${this.id}' is more than ${this.#lagBudget} ms behind; retry this write`;
 	}
 
@@ -667,7 +676,7 @@ class DerivedIndexRunner {
 	 */
 	#publishLag() {
 		const max = this.#lagBudget;
-		if (max <= 0 || !this.#owned) return;
+		if (max <= 0 || !this.#owned || this.#rebuilding) return;
 		const now = this.#options.now();
 		const unproven = this.#lastCaughtUpAt ?? this.#unprovenSince ?? now;
 		const lag = Math.max(
@@ -710,8 +719,6 @@ class DerivedIndexRunner {
 			return true;
 		}
 		if (this.#heldLock) {
-			// Still holding the lock from a shutdown that failed to settle: resume under the same epoch so
-			// the rebuild retries that epoch's quiescence before minting a successor.
 			this.#rebuildRequested = true;
 			this.#acquired(true);
 			return true;
@@ -1485,6 +1492,10 @@ class DerivedIndexRunner {
 		this.#rebuildRequested = false;
 		this.#takeSharedRebuildRequest();
 		this.#rebuilding = true;
+		if (this.#lagTimer) {
+			clearTimeout(this.#lagTimer);
+			this.#lagTimer = undefined;
+		}
 		this.#rebuildWakePending = false;
 		if (this.#idleTimer) {
 			clearTimeout(this.#idleTimer);
@@ -1609,13 +1620,17 @@ class DerivedIndexRunner {
 		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
 
+	/** A dropped backend wake must not park a rebuild forever: re-offer after a flush age at most. */
 	#waitForBackend(): Promise<void> {
 		if (this.#rebuildWakePending) {
 			this.#rebuildWakePending = false;
 			return Promise.resolve();
 		}
 		return new Promise<void>((resolve) => {
+			const timer = setTimeout(() => this.#rebuildWaiter?.(), Math.max(1, this.#options.maxFlushAgeMilliseconds));
+			timer.unref?.();
 			this.#rebuildWaiter = () => {
+				clearTimeout(timer);
 				this.#rebuildWaiter = undefined;
 				resolve();
 			};
@@ -1718,7 +1733,7 @@ class DerivedIndexRunner {
 		}
 		this.#discardProgress();
 		const backend = this.#registration.backend;
-		const epoch = this.#ownerEpoch!;
+		const epoch = this.#ownerEpoch;
 		const unlock = () => {
 			this.#releasing = undefined;
 			try {
@@ -1747,7 +1762,7 @@ class DerivedIndexRunner {
 		// Nothing that can still write — an in-flight reset, the shutdown flush — may outlive the
 		// epoch's quiescence and the unlock that follows it.
 		const settling = Promise.allSettled([this.#resetting, flushed]).then(() => undefined);
-		this.#releasing = settling.then(() => this.#quiesce(epoch)).then(unlock, hold);
+		this.#releasing = settling.then(() => (epoch === undefined ? undefined : this.#quiesce(epoch))).then(unlock, hold);
 	}
 }
 
