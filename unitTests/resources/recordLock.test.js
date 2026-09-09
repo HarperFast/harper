@@ -1082,7 +1082,31 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write from s.save() landed');
 		});
 
-		it('scoped→hold upgrade detaches its scoped write behind a static write', async function () {
+		it('scoped→hold upgrade detaches its scoped write behind a staged same-key write', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0, name: 'before' });
+			let holder;
+			await transaction(async () => {
+				const scoped = await LockTest.lock(recordId);
+				scoped.set('n', 1);
+				// staged behind the scoped write and left for the commit sweep, like the scoped write itself
+				const other = await LockTest.update(recordId);
+				other.name = 'static';
+				holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
+			});
+			const afterUpgrade = await LockTest.get(recordId);
+			assert.strictEqual(afterUpgrade.n, 0, 'unsaved scoped change did not auto-commit');
+			assert.strictEqual(afterUpgrade.name, 'static', 'intervening staged write landed');
+			holder.set('n', 2);
+			await holder.save();
+			await holder.unlock();
+			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'explicit hold write landed');
+		});
+
+		it('a static same-key write saved explicitly runs the pending scoped change first', async function () {
+			// program order (harper#2553): the scoped change precedes the static write, so it lands and the
+			// later scoped→hold upgrade has nothing left to detach
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0, name: 'before' });
@@ -1091,11 +1115,16 @@ describe('Record locks (harper#483)', () => {
 				const scoped = await LockTest.lock(recordId);
 				scoped.set('n', 1);
 				await LockTest.patch(recordId, { name: 'static' });
+				assert.deepStrictEqual(
+					(({ n, name }) => ({ n, name }))(await LockTest.get(recordId)),
+					{ n: 1, name: 'static' },
+					'read-your-writes after the static write'
+				);
 				holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
 			});
 			const afterUpgrade = await LockTest.get(recordId);
-			assert.strictEqual(afterUpgrade.n, 0, 'unsaved scoped change did not auto-commit');
-			assert.strictEqual(afterUpgrade.name, 'static', 'intervening static write landed');
+			assert.strictEqual(afterUpgrade.n, 1, 'scoped change landed ahead of the static write');
+			assert.strictEqual(afterUpgrade.name, 'static', 'static write landed on top of it');
 			holder.set('n', 2);
 			await holder.save();
 			await holder.unlock();

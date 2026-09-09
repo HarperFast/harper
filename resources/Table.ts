@@ -2176,6 +2176,9 @@ export function makeTable(options) {
 			}
 		}
 		#saveOperation(operation: any) {
+			// already executed, pulled forward by a later same-key write's save (DatabaseTransaction.save):
+			// it belongs to the transaction that ran it, so it is neither re-run nor taken over
+			if (operation.saved) return operation.innerCommit ?? operation.promise ?? operation.result;
 			const transaction = txnForContext(this.getContext());
 			const holder = operation.stagedIn;
 			// never-drop-on-conflict lives on the transaction and would not travel with the write, so an
@@ -2914,6 +2917,7 @@ export function makeTable(options) {
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
 				deferSave: true,
+				chainsStagedState: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
 				recordVersion: options?.version,
 				// Include the lock handle (if any) so the expired-handle guard in

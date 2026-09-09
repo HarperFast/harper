@@ -1,7 +1,4 @@
-// create() stages its write and leaves it for the commit loop; patch() stages and saves explicitly.
-// The explicit save ran the patch's commit handler before the create's, so the patch composed onto
-// the pre-transaction record (nothing), and the commit loop then ran the create's full put over it:
-// the awaited patch returned success and the committed record lacked its fields (harper#2553).
+// A later same-key write's explicit save() must not run ahead of an earlier staged write (harper#2553).
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -41,9 +38,9 @@ describe('create followed by patch on the same key in one transaction', () => {
 		if (Inst.indexingOperation) await Inst.indexingOperation;
 	});
 
-	async function idsIndexedUnder(status) {
+	async function isIndexedUnder(status, id) {
 		const rows = await collect(Inst.search({ conditions: [{ attribute: 'status', value: status }] }));
-		return rows.map((row) => row.id).sort();
+		return rows.some((row) => row.id === id);
 	}
 
 	it('commits the created record with the patch applied', async () => {
@@ -62,6 +59,7 @@ describe('create followed by patch on the same key in one transaction', () => {
 			{ id: 'a', status: 'queued', metadata: 'required-value', count: undefined },
 			'committed record'
 		);
+		assert.strictEqual(await isIndexedUnder('queued', 'a'), true);
 	});
 
 	it('composes repeated patches and an indexed-field change in program order', async () => {
@@ -79,9 +77,9 @@ describe('create followed by patch on the same key in one transaction', () => {
 			});
 		});
 		assert.deepStrictEqual(fields(await Inst.get('b')), { id: 'b', status: 'done', metadata: 'second', count: 1 });
-		assert.deepStrictEqual(await idsIndexedUnder('queued'), []);
-		assert.deepStrictEqual(await idsIndexedUnder('running'), []);
-		assert.deepStrictEqual(await idsIndexedUnder('done'), ['b']);
+		assert.strictEqual(await isIndexedUnder('queued', 'b'), false);
+		assert.strictEqual(await isIndexedUnder('running', 'b'), false);
+		assert.strictEqual(await isIndexedUnder('done', 'b'), true);
 	});
 
 	it('rolls back the create and the patch together', async () => {
@@ -90,12 +88,18 @@ describe('create followed by patch on the same key in one transaction', () => {
 			transaction(context, async () => {
 				await Inst.create({ id: 'c', status: 'queued' }, context);
 				await Inst.patch('c', { metadata: 'required-value' }, context);
+				assert.deepStrictEqual(fields(await Inst.get('c', context)), {
+					id: 'c',
+					status: 'queued',
+					metadata: 'required-value',
+					count: undefined,
+				});
 				throw new Error('abort');
 			}),
 			/abort/
 		);
 		assert.equal(await Inst.get('c'), null);
-		assert.deepStrictEqual(await idsIndexedUnder('queued'), []);
+		assert.strictEqual(await isIndexedUnder('queued', 'c'), false);
 	});
 
 	it('an instance update staged before a patch to the same key still lands its changes', async () => {
@@ -113,5 +117,34 @@ describe('create followed by patch on the same key in one transaction', () => {
 			metadata: 'required-value',
 			count: 2,
 		});
+	});
+
+	it('a delete between the create and the patch keeps program order', async () => {
+		const context = {};
+		await transaction(context, async () => {
+			await Inst.create({ id: 'e', status: 'queued', count: 1 }, context);
+			await Inst.delete('e', context);
+			await Inst.patch('e', { metadata: 'required-value' }, context);
+		});
+		const record = await Inst.get('e');
+		assert.strictEqual(record.metadata, 'required-value');
+		assert.strictEqual(record.status, undefined, 'the delete ran after the create');
+		assert.strictEqual(await isIndexedUnder('queued', 'e'), false);
+	});
+
+	it('put after create replaces the created record', async () => {
+		const context = {};
+		await transaction(context, async () => {
+			await Inst.create({ id: 'f', status: 'queued', count: 1 }, context);
+			await Inst.put({ id: 'f', status: 'done' }, context);
+		});
+		assert.deepStrictEqual(fields(await Inst.get('f')), {
+			id: 'f',
+			status: 'done',
+			metadata: undefined,
+			count: undefined,
+		});
+		assert.strictEqual(await isIndexedUnder('queued', 'f'), false);
+		assert.strictEqual(await isIndexedUnder('done', 'f'), true);
 	});
 });

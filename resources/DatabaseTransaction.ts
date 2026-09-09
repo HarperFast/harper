@@ -984,6 +984,35 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
+		// Staging order is execution order for a write that composes on staged state: an explicit save of
+		// a later same-key write runs the earlier ones it would otherwise overtake first (harper#2553).
+		// addWrite's deferral covers the eager trigger; this covers save() itself. Oldest first, iteratively.
+		if (operation.chainsStagedState === true && operation.priorWrite) {
+			let predecessors: TransactionWrite[] | undefined;
+			for (let prior = operation.priorWrite; prior; prior = prior.priorWrite) {
+				if (!prior.saved) (predecessors ??= []).push(prior);
+				// an executed chaining write ran everything before it; an eager non-chaining one says nothing
+				else if (prior.chainsStagedState === true) break;
+			}
+			if (predecessors) {
+				let index = predecessors.length;
+				const saveNext = (): any => {
+					while (index > 0) {
+						const predecessor = predecessors[--index];
+						// a predecessor's immediate commit (CLOSED transaction) sweeps `writes`, running the rest
+						if (predecessor.saved) continue;
+						const result: any = this.#saveOne(predecessor, transaction, reloadEntry, options);
+						if (result?.then) return result.then(saveNext);
+					}
+					if (!operation.saved) return this.#saveOne(operation, transaction, reloadEntry, options);
+				};
+				return saveNext();
+			}
+		}
+		return this.#saveOne(operation, transaction, reloadEntry, options);
+	}
+
+	#saveOne(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
 		const lockHandle = operation.lockHandle;
 		// Guard: a write staged through an expired or released lock handle must not land.
 		// The handle's lease timer already unlocked the native key; another holder may have taken it.
