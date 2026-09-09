@@ -49,6 +49,14 @@ const DEFAULT_CONFIG_FILE = join(PACKAGE_ROOT, 'static', hdbTerms.HDB_DEFAULT_CO
 
 const CLOSE_LOG_FD_TIMEOUT = 10000;
 
+// Above the module-scope initLogSettings() call below, which reaches getFileLogger: a const
+// declared after it is still in its temporal dead zone when the file sink first reads one.
+const LOG_TIME_USAGE_THRESHOLD = 100;
+// How long to write straight to stdio after the log file refuses an append.
+const APPEND_RETRY_COOLDOWN = 5000;
+// Ceiling on how often a failing rotation may report itself; the failure repeats every check point.
+const ROTATION_REPORT_INTERVAL = 60000;
+
 let logConsole;
 let log_to_file;
 let logToStdstreams;
@@ -776,11 +784,6 @@ export function createLogger(options: any = {} as any) {
 	}
 	return logger;
 }
-const LOG_TIME_USAGE_THRESHOLD = 100;
-// How long to write straight to stdio after the log file refuses an append.
-const APPEND_RETRY_COOLDOWN = 5000;
-// Ceiling on how often a failing rotation may report itself; the failure repeats every check point.
-const ROTATION_REPORT_INTERVAL = 60000;
 /**
  * Get the file logger for the given path. If it doesn't exist, create it.
  * @param path

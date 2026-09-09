@@ -146,9 +146,12 @@ export async function retryPendingGenerations() {
  * Only safe to call once quiescence has been proven for exactly this listing.
  */
 export async function compressPendingArchives(rotatedLogDir: string, files: string[], liveLogPaths: Set<string>) {
+	// A Set: the archive rate is write-rate/maxSize, so this listing is unbounded between retention
+	// passes and a per-file includes() over it is quadratic.
+	const present = new Set(files);
 	let compressed = 0;
 	for (const file of files) {
-		if (!file.endsWith('.log') || !isArchiveName(file) || files.includes(`${file}.gz`)) continue;
+		if (!file.endsWith('.log') || !isArchiveName(file) || present.has(`${file}.gz`)) continue;
 		if (compressed++ >= MAX_RETRIES_PER_PASS) return;
 		const archivePath = join(rotatedLogDir, file);
 		if (liveLogPaths.has(resolve(archivePath)) || unprovenArchives.has(archivePath)) continue;
@@ -201,11 +204,16 @@ async function compressOneArchive(archivePath: string) {
 export function createRotationGuard(options: any) {
 	const { logPath, maxBytes, rotatedLogDir, compress, getLogIdentity, closeLogFile, report, onRotated } = options;
 	const checkQuantum = Math.max(1, Math.floor(maxBytes / CHECK_QUANTUM_DIVISOR));
+	const logDir = dirname(logPath);
 	mkdirSync(rotatedLogDir, { recursive: true });
+	// The sink creates this one lazily, on the first append that gets ENOENT, and rotatedLogDir is not
+	// always under it — so without this the stat below throws ENOENT on a directory that is about to
+	// exist, and rotation stays off for the life of the process.
+	mkdirSync(logDir, { recursive: true });
 	// Rotation is a rename, and a rename across devices can never succeed. Refusing to build the guard
 	// here turns a misconfiguration that would otherwise fail closed on every write — ending file
 	// logging for the life of the process — into one startup error and today's unrotated behavior.
-	if (statSync(rotatedLogDir).dev !== statSync(dirname(logPath)).dev) {
+	if (statSync(rotatedLogDir).dev !== statSync(logDir).dev) {
 		throw new Error(`the rotation directory ${rotatedLogDir} is on a different filesystem than ${logPath}`);
 	}
 	let bytesUntilCheck = checkQuantum;

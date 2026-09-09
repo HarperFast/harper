@@ -3,7 +3,9 @@
 const assert = require('node:assert');
 const fs = require('fs-extra');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { Worker } = require('node:worker_threads');
+const hdbTerms = require('#src/utility/hdbTerms');
 const hdbLogger = require('#src/utility/logging/harper_logger');
 const { parseMaxSize } = require('#src/utility/logging/logRotation');
 const { requestGenerationClose } = require('#src/utility/logging/logGenerationCoordinator');
@@ -13,6 +15,7 @@ const { waitFor } = require('../../waitFor.js');
 // Long enough that the audit tick can never fire, so every assertion below is about the write path.
 const NEVER_TICKS = 3600000;
 const TEST_ROOT = path.join(__dirname, 'rotationGuardLogs');
+const PACKAGE_ROOT = path.resolve(__dirname, '../../..');
 
 describe('Test log rotation on the write path (#1877)', () => {
 	let restoreLogConfig;
@@ -111,6 +114,58 @@ describe('Test log rotation on the write path (#1877)', () => {
 		logger.error('first write after restart');
 		assert.strictEqual(archives(rotatedDir).length, 1, 'expected exactly one archive after one write');
 		assert.ok(activeSize(logPath) < 4000, 'expected a fresh, small active log');
+	});
+
+	it('rotates when the log directory does not exist yet and the archives go elsewhere', () => {
+		// logging.rotation.path resolves against rootPath while logging.root can be moved, so creating
+		// the archive directory does not create the log's own, and the sink only creates that on its
+		// first append.
+		const base = path.join(TEST_ROOT, `freshInstall${caseNumber++}`);
+		const rotatedDir = path.join(base, 'archives');
+		const logPath = path.join(base, 'logs', 'hdb.log');
+		const logger = hdbLogger.createLogger({
+			stdStreams: false,
+			path: logPath,
+			level: 'error',
+			rotation: { enabled: true, maxSize: '4K', auditInterval: NEVER_TICKS, path: rotatedDir },
+		});
+		for (let i = 0; i < 200; i++) logger.error(`fresh install line ${i} ${'y'.repeat(60)}`);
+		assert.ok(archives(rotatedDir).length > 0, 'expected the write path to rotate on a log directory it created');
+	});
+
+	it('reports a rotation target it cannot build without failing the module load', () => {
+		// initLogSettings() installs the guard from harper_logger's own module scope, so a failure is
+		// reported while that module is still evaluating. Only a child process can observe that window:
+		// here the module is long since evaluated.
+		const root = path.join(TEST_ROOT, `moduleLoad${caseNumber++}`);
+		fs.mkdirpSync(path.join(root, 'log'));
+		// A regular file where the archive directory should be: mkdir then fails ENOTDIR on every
+		// platform.
+		fs.writeFileSync(path.join(root, 'blocker'), 'not a directory');
+		fs.writeFileSync(
+			path.join(root, hdbTerms.HARPER_CONFIG_FILE),
+			[
+				`rootPath: ${JSON.stringify(root)}`,
+				'logging:',
+				'  file: true',
+				'  stdStreams: false',
+				'  level: error',
+				`  root: ${JSON.stringify(path.join(root, 'log'))}`,
+				'  rotation:',
+				'    enabled: true',
+				'    maxSize: 4K',
+				`    path: ${JSON.stringify(path.join(root, 'blocker', 'archives'))}`,
+				'',
+			].join('\n')
+		);
+		const child = spawnSync(
+			process.execPath,
+			['-e', "require('#src/utility/logging/harper_logger'); process.stdout.write('loaded'); process.exit(0);"],
+			{ cwd: PACKAGE_ROOT, env: { ...process.env, ROOTPATH: root }, encoding: 'utf8' }
+		);
+		assert.strictEqual(child.status, 0, `logger module load failed: ${child.stderr}`);
+		assert.ok(child.stdout.includes('loaded'), `logger module did not finish loading: ${child.stderr}`);
+		assert.match(child.stderr, /log rotation is disabled for/);
 	});
 
 	it('keeps every message exactly once across the active log and the archives', async () => {
