@@ -1214,6 +1214,75 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('admits writes again when the index becomes unavailable with no owner left to catch up', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
+		});
+		const backend = new AsyncBackend('shed-then-dead', { cursor: cursor(7) });
+		// Accept but never make anything durable, so catch-up is never proven and the policy trips.
+		backend.flush = () => {};
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 });
+		runtime.register(
+			registration(backend, {
+				maxLagMilliseconds: 20,
+				maxFlushAgeMilliseconds: 5,
+				maxRebuildAttempts: 1,
+				rebuildBackoffMilliseconds: 5,
+			})
+		);
+		await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined, { timeout: 5000 });
+		backend.applyRecord = () => {
+			throw new Error('native capacity exhausted');
+		};
+		backend.stateChange('failed');
+		await waitFor(() => runtime.getStatus('shed-then-dead')?.state === 'unavailable', { timeout: 5000 });
+		assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined, 'an unavailable index must not shed forever');
+		await runtime.stop();
+	});
+
+	it('retries the lock instead of parking when tryLock throws once', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			if (attempts++ === 0) throw new Error('lock table busy');
+			return tryLock(key, onUnlocked);
+		};
+		const backend = new SyncBackend('lock-throw', cursor(10));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		runtime.register(registration(backend, { rebuildBackoffMilliseconds: 5 }));
+		await waitFor(() => backend.deliveries.length === 1);
+		assert.strictEqual(attempts, 2);
+		await runtime.stop();
+	});
+
+	it('fails a rebuild closed when the projection rejects every scanned record, whatever the chunk size', async () => {
+		const ids = Array.from({ length: 5 }, (_, i) => `r${i}`);
+		const records = new Map(ids.map((id) => [`1:${id}`, { version: 1, value: { title: 1 } }]));
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'r0' })]]]),
+		});
+		const backend = new AsyncBackend('scan-rejected', { applyDelay: 1 });
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 });
+		runtime.register({
+			backend,
+			projections: new Map([
+				[
+					1,
+					() => {
+						throw new ClientError('title must be a string', 400);
+					},
+				],
+			]),
+			options: { maxChunkRecords: 2, maxRebuildAttempts: 1, maxFlushAgeMilliseconds: 5 },
+		});
+		await waitFor(() => runtime.getStatus('scan-rejected')?.state === 'unavailable', { timeout: 5000 });
+		assert.match(runtime.getStatus('scan-rejected').reason, /rejected every/);
+		assert.notStrictEqual(runtime.getReadiness('scan-rejected').state, 'ready');
+		await runtime.stop();
+	});
+
 	it('keeps writes admitted when the registration sets no lag policy', async () => {
 		const records = new Map([['1:a', { version: 1, value: { title: 'a' } }]]);
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 5_000_000, recordId: 'a' })]]]));
@@ -1480,6 +1549,11 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		// notification all go through the native binding here, not the fake.
 		const peer = new DerivedIndexRuntime(Product.auditStore, () => undefined, { scanRecords: () => [] });
 		assert.strictEqual(peer.getReadiness('rocks-rebuild').state, 'ready');
+		// One thread: the binding hands back a plain ArrayBuffer here, which is why views re-fetch until shared.
+		assert(
+			Product.auditStore.getUserSharedBuffer('derived-index:rocks-rebuild:readiness', new ArrayBuffer(512)) instanceof
+				ArrayBuffer
+		);
 		const peerBackend = new AsyncBackend('rocks-rebuild', { applyDelay: 2 });
 		const unregisterPeer = peer.register({
 			backend: peerBackend,
