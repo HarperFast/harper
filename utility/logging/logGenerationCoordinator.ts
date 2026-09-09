@@ -28,7 +28,11 @@ interface RotationTransport {
 }
 
 let transport: RotationTransport | undefined;
-const sinksByPath = new Map<string, { identity(): any; close(): void }>();
+type LogSink = { identity(): any; close(): void };
+// A set per path, not one sink: harper_logger caches its file loggers by the raw configured path, so
+// two spellings of one file are two sinks holding two descriptors on it, and a release has to close
+// both. The key is resolved because retention compares resolved paths.
+const sinksByPath = new Map<string, Set<LogSink>>();
 const pendingByRequest = new Map<
 	string,
 	{ expected: Set<number>; liveLogPaths: Set<string>; settle: (released: boolean) => void }
@@ -63,14 +67,19 @@ export function setRotationTransport(newTransport?: RotationTransport) {
  * Registered by the file sink, not the size guard: a thread with no guard still holds a descriptor,
  * and its answer has to mean the descriptor is gone.
  */
-export function registerLogSink(logPath: string, sink: { identity(): any; close(): void }) {
-	// Keyed on the resolved path: retention compares resolved paths, so a sink registered under
-	// another spelling of the same file would answer "released" having closed nothing.
-	sinksByPath.set(resolve(logPath), sink);
+export function registerLogSink(logPath: string, sink: LogSink) {
+	const key = resolve(logPath);
+	const sinks = sinksByPath.get(key) ?? new Set<LogSink>();
+	sinks.add(sink);
+	sinksByPath.set(key, sinks);
 }
 
-export function unregisterLogSink(logPath: string) {
-	sinksByPath.delete(resolve(logPath));
+export function unregisterLogSink(logPath: string, sink?: LogSink) {
+	const key = resolve(logPath);
+	if (!sink) return void sinksByPath.delete(key);
+	const sinks = sinksByPath.get(key);
+	if (!sinks?.delete(sink)) return;
+	if (sinks.size === 0) sinksByPath.delete(key);
 }
 
 export function nextGenerationId() {
@@ -140,12 +149,12 @@ function recordPeerResponse(request: string, threadId: number, logPaths?: string
 
 function releaseLocally(message: any) {
 	if (message.stale) return releaseStaleDescriptors();
-	const sink = sinksByPath.get(resolve(message.logPath));
-	if (!sink) return;
-	const identity = sink.identity();
-	// No identity to compare (no descriptor open, or a filesystem that cannot report one) means
-	// closing is the only answer that can still be called a release.
-	if (!identity || (identity.ino === message.ino && identity.dev === message.dev)) sink.close();
+	for (const sink of sinksByPath.get(resolve(message.logPath)) ?? []) {
+		const identity = sink.identity();
+		// No identity to compare (no descriptor open, or a filesystem that cannot report one) means
+		// closing is the only answer that can still be called a release.
+		if (!identity || (identity.ino === message.ino && identity.dev === message.dev)) sink.close();
+	}
 }
 
 /**
@@ -153,24 +162,22 @@ function releaseLocally(message: any) {
  * Each sink decides for itself, so nothing has to name the live inode of a log it does not own.
  */
 function releaseStaleDescriptors() {
-	for (const [logPath, sink] of sinksByPath) {
-		const identity = sink.identity();
-		// No identity is not the same as no descriptor: openLogFile() leaves the descriptor open when
-		// its fstat fails. Skipping the sink and still answering "released" is what lets an archive be
-		// unlinked under it, so close it here as the per-generation path already does.
-		if (!identity) {
-			sink.close();
-			continue;
-		}
+	for (const [logPath, sinks] of sinksByPath) {
 		let live;
 		try {
 			live = statSync(logPath);
 		} catch {
-			sink.close();
+			for (const sink of sinks) sink.close();
 			continue;
 		}
-		// `ino === 0` (some Windows filesystems) proves nothing, and answering "released" without
-		// releasing is what destroys an archive under a peer.
-		if (!identity.ino || !live.ino || identity.ino !== live.ino || identity.dev !== live.dev) sink.close();
+		for (const sink of sinks) {
+			const identity = sink.identity();
+			// No identity is not the same as no descriptor: openLogFile() leaves the descriptor open when
+			// its fstat fails. Skipping the sink and still answering "released" is what lets an archive be
+			// unlinked under it, so close it here as the per-generation path already does.
+			// `ino === 0` (some Windows filesystems) proves nothing for the same reason.
+			if (!identity || !identity.ino || !live.ino || identity.ino !== live.ino || identity.dev !== live.dev)
+				sink.close();
+		}
 	}
 }

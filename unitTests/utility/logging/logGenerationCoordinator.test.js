@@ -203,6 +203,30 @@ describe('Test log generation coordinator (#1877)', () => {
 		coordinator.unregisterLogSink(logPath);
 	});
 
+	it('closes every sink holding one file, not just the last one registered for it', () => {
+		// harper_logger caches its file loggers by the raw configured path, so two spellings of one
+		// file are two sinks with two descriptors on it. Keying the release map by the resolved path
+		// makes them collide; only closing one leaves an open descriptor outside every release request
+		// while the answer still says "released".
+		const transport = fakeTransport();
+		const dir = path.join(TEST_ROOT, `sameFileTwice${caseNumber++}`);
+		fs.mkdirpSync(dir);
+		const logPath = path.join(dir, 'hdb.log');
+		fs.writeFileSync(logPath, 'contents\n');
+		const held = fs.statSync(logPath);
+		const stale = { ino: held.ino + 1000, dev: held.dev };
+		const closed = [];
+		const first = { identity: () => stale, close: () => closed.push('first') };
+		const second = { identity: () => stale, close: () => closed.push('second') };
+		coordinator.registerLogSink(logPath, first);
+		coordinator.registerLogSink(path.join(dir, '.', 'hdb.log'), second);
+
+		transport.deliverRotation({ request: 'sameFile', stale: true });
+
+		assert.deepStrictEqual(closed.sort(), ['first', 'second']);
+		coordinator.unregisterLogSink(logPath);
+	});
+
 	it('is not required to wait for a sink registered after the announcement', async () => {
 		const transport = fakeTransport({ peers: [], autoRespond: false });
 		const { generation } = newGeneration();
