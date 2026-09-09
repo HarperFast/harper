@@ -139,8 +139,11 @@ The returned iterable also exposes `failedLogs`, naming any physical iterator th
 unexpected non-corruption error; a derived-index runner treats either that signal or the existing
 corrupt-frame signal as an availability failure and never advances its cursor through it.
 A runner starts the aggregate with its backend's `startByLog` vector and preserves the physical log
-name on every result. Entries from one physical log are assembled through `endTxn`; a drain budget
-is checked only between complete transactions, never in the middle of one.
+name on every result. Entries from one physical log are assembled through `endTxn`. The transaction
+count and byte budgets are checked only between complete transactions; an oversized transaction is
+cut into explicitly marked partial chunks by the distinct-record and wall-time bounds described in
+[Bounded collection, resolution and delivery](#bounded-collection-resolution-and-delivery), and no
+cursor is published for it until its `endTxn` entry has been delivered.
 
 On construction or reconstruction, the aggregate reader exact-seeks each saved log cursor, validates
 and consumes exactly one complete anchor transaction per saved log, then merges from those same
@@ -165,8 +168,9 @@ than a shared scan whose start is pinned to the slowest cursor. Sharing may be a
 cohort whose cursor distance is bounded and whose independent fallback is preserved.
 
 Within a runner batch, repeated mutations for one `(tableId, recordId)` share one authoritative
-primary read and one backend projection. The runtime never calls the resource `get()` path: a cache
-miss must not fetch from an origin inside the drain. The configured projection runs in Harper and
+primary read and one backend projection, and the batch's `records` view lists each such key once
+(see [Coalesced delivery view](#coalesced-delivery-view)). The runtime never calls the resource
+`get()` path: a cache miss must not fetch from an origin inside the drain. The configured projection runs in Harper and
 returns only declared derived-index attributes; record bodies, credentials, and unrelated fields do
 not cross the backend boundary or enter diagnostic logs.
 
@@ -198,15 +202,21 @@ hide work. Once a full vector becomes durable, older offered vectors and their d
 window are discarded. The backend must therefore publish the `through` vector atomically with the
 index state made durable by that barrier.
 
-Accepted-but-not-durable progress is capped at 64 batches by default. At the cap, the runner retains
-ownership but stops reading and enters `waiting-durable`; database commit wakes do not retry it. A
-backend state-change wake reconciles its cursor and resumes only after a complete offered vector has
-become durable. Backend-returned `deferred` batches follow the same wake discipline, preventing an
-unrelated database write stream from repeatedly probing a saturated native queue.
+Accepted-but-not-durable progress is capped at 64 cursor-advancing batches by default
+(`maxAcceptedBatchesAhead`, settable per registration). At the cap, the runner retains ownership
+but stops reading and enters `waiting-durable`; database commit wakes do not retry it. A backend
+state-change wake reconciles its cursor and resumes only after a complete offered vector has become
+durable. The cap never blocks while a transaction is open, because the durable cursor cannot move
+until that transaction closes; memory pressure from an oversized transaction is the backend's
+`deferred`. Backend-returned `deferred` batches follow the same wake discipline, preventing an
+unrelated database write stream from repeatedly probing a saturated native queue. The cap is a
+ceiling on durability lag, not a flush schedule; the schedule is the
+[durability cadence](#durability-cadence).
 
 The fake Stage 1 backend acknowledges each complete transaction durably before returning
 `accepted`. This proves the cursor and cross-worker mechanics without pretending to implement the
-later Tantivy queue and barrier.
+later Tantivy queue and barrier. The native-backend suite adds a queue-and-accept fake whose apply
+and barrier run asynchronously, which is the shape a native backend is expected to use.
 
 ### Authoritative record resolution
 
@@ -292,8 +302,12 @@ unsupported filesystem mutation. A saved boundary normally makes recreation fail
 therefore rebuild.
 
 Harper does not pin transaction-log retention in Stage 1. A backend lagging past retention rebuilds
-when its next exact anchor fails. Runtime status records cursor age and log-floor distance, and emits
-one error and one metric per transition to `needs-rebuild`, so this availability loss is visible.
+when its next exact anchor fails. `getMetrics()` reports `cursorLagMilliseconds` (latest observed
+completed transaction minus the durable position, per log) separately from backend backpressure
+(`deferredBytes`, the `deferred` status) so retention lag and queue memory pressure are
+distinguishable, and the runtime emits one error per transition to `needs-rebuild`, so this
+availability loss is visible. Writer backpressure above a lag threshold is a separate decision
+(see [Lag policy](#lag-policy)).
 
 ### Backend boundary
 
@@ -309,33 +323,56 @@ type DerivedIndexTransaction = {
 	logName: string;
 	timestamp: number;
 	mutations: DerivedIndexMutation[];
+	partial?: true; // a chunk of an oversized transaction that does not include its endTxn entry
 };
 
 type DerivedIndexBatch = {
 	ownerEpoch: bigint;
 	transactions: DerivedIndexTransaction[];
-	through: DerivedIndexCursor;
+	records: DerivedIndexMutation[]; // coalesced last-write-wins view; non-enumerable
+	through?: DerivedIndexCursor; // absent only on a rebuild scan chunk
+	bytes: number; // estimated payload bytes; non-enumerable
+	rebuild?: true;
 };
 
 type DerivedIndexMutation = {
 	tableId: number;
 	recordId: Id;
 	logVersion: number;
-	state: { kind: 'record'; version: number; projection: unknown } | { kind: 'absent' };
+	state:
+		| { kind: 'record'; version: number; projection: unknown }
+		| { kind: 'absent' }
+		| { kind: 'unindexable'; version: number; reason: string };
 };
+
+interface DerivedIndexBackendHost {
+	isOwnerEpoch(epoch: bigint): boolean;
+	getReadiness(): DerivedIndexReadiness;
+}
 
 interface DerivedIndexBackend {
 	readonly id: string;
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
 	onStateChange(wake: (change?: 'changed' | 'accepted-work-lost' | 'failed') => void): () => void;
+	attach?(host: DerivedIndexBackendHost): void;
+	flush?(reason: 'age' | 'threshold' | 'shutdown'): void;
+	reset?(ownerEpoch: bigint): void;
+	shutdown?(ownerEpoch: bigint): void | Promise<void>;
 }
 
 type DerivedIndexRegistration = {
 	backend: DerivedIndexBackend;
 	projections: ReadonlyMap<number, (record: unknown) => unknown>;
+	options?: DerivedIndexRunnerOptions; // per-index turn, chunk, cadence and rebuild bounds
 };
 ```
+
+`records` and `bytes` are non-enumerable properties so the enumerable batch shape stays the Stage 1
+`{ ownerEpoch, transactions, through }` contract; a backend reads them like any other field. The
+four new backend methods are optional: a backend that omits `reset` keeps Stage 1's terminal
+`needs-rebuild`, one that omits `flush` must flush on its own, one that omits `shutdown` is treated
+as quiescent at release, and one that omits `attach` cannot fence stale completions itself.
 
 `DerivedIndexRegistration` belongs to Harper. Its projection functions are compiled from schema
 attributes and execute before `deliver()`, so the backend receives only its declared materialized
@@ -343,13 +380,22 @@ view. They are not customer callbacks.
 
 `DerivedIndexDeliveryResult` uses the exported numeric constants `DERIVED_INDEX_ACCEPTED`,
 `DERIVED_INDEX_DEFERRED`, and `DERIVED_INDEX_FAILED` rather than allocating result objects on the
-drain path. A `deliver()` call is included in the runner's wall-time budget and may not wait on a
-writer mutex or merge. `accepted` means the backend owns the batch; it does not authorize durable
-cursor advancement until the backend's barrier includes its `through` vector. `deferred` preserves
-the batch and requires a later state-change wake. A backend reports discarded accepted-but-not-
-durable queue contents as `accepted-work-lost`, causing the current owner to reconstruct from the
-durable cursor. A permanent failure transitions the backend to `needs-rebuild` and emits one
-contextual error outside the write path.
+drain path. A `deliver()` call runs after the runner's wall-time budget has been spent on collection
+and resolution and is **not** bounded by it: the runtime cannot bound work it does not perform, and a
+native backend cannot honour a 5 ms budget for a batch of milliseconds-per-mutation applies. The
+shape a native backend is expected to use is therefore: accept the batch into its own queue and
+return `DERIVED_INDEX_ACCEPTED` immediately; apply asynchronously in its own bounded time slices;
+advance `getDurableCursor()` at its own barrier; and return `DERIVED_INDEX_DEFERRED` when its queue
+is full. `deliver()` may not wait on a writer mutex or merge. `accepted` means the backend owns the
+batch; it does not authorize durable cursor advancement until the backend's barrier includes its
+`through` vector. `deferred` preserves the batch and requires a later state-change wake. A backend
+reports discarded accepted-but-not-durable queue contents as `accepted-work-lost`, causing the
+current owner to reconstruct from the durable cursor. A permanent failure reported as `'failed'` or
+`DERIVED_INDEX_FAILED` transitions the backend to `needs-rebuild`, emits one contextual error outside
+the write path, and enters the bounded [rebuild](#rebuild-as-a-runtime-phase) when the backend
+supports it. A record the backend itself cannot index (a malformed vector, an oversized document) is
+never a permanent failure: the backend skips it, counts it, and continues, so the same record cannot
+abort every future rebuild.
 
 The cursor remains backend-owned because its atomic durability mechanism differs by engine:
 Tantivy includes it in published index state, while a future HNSW implementation stores it with the
@@ -365,24 +411,195 @@ flowchart TD
     W --> L{acquire backend runner lock?}
     L -->|no| W
     L -->|yes| Q[merge and validate exact anchors in-stream]
-    Q --> T[discard anchors, assemble bounded complete transactions]
-    T --> P[resolve and project current state]
+    Q --> T[collect bounded transaction identities]
+    T --> P[resolve and project each distinct key once]
     P --> O{backend outcome}
     O -->|accepted| N[advance offered progress]
-    O -->|deferred| H[hold backend at cursor]
+    O -->|deferred| H[hold chunk at cursor]
     O -->|failed| R
     N --> D{backend barrier durable?}
     D -->|later| C[persist durable cursor and wake]
     D -->|not yet| T
     C --> T
     H --> W
+    R --> X{backend has reset and a record scan?}
+    X -->|no| Z[terminal: release lock, index unavailable]
+    X -->|yes| Y[publish rebuilding, shutdown old epoch, reset, scan, boundary, replay]
+    Y -->|ready after final barrier| T
+    Y -->|failure| K{attempts below cap?}
+    K -->|yes, after backoff| Y
+    K -->|no| U[publish unavailable, release lock]
 ```
+
+## Native-backend readiness
+
+The additions below make the runtime safe and efficient for a backend whose apply costs 0.2–1.4 ms
+of synchronous CPU per mutation and whose durability barrier is an `msync` (measured on the HNSW
+native plane at 384 dimensions: apply 0.356 ms/mutation, barrier 13.5 ms/call independent of delta
+size, event loop blocked 62 ms max during ordinary ingest). They are runtime changes only; nothing
+here is specific to one backend.
+
+### Coalesced delivery view
+
+`DerivedIndexBatch.records` lists each distinct `(tableId, writeKeyId(recordId))` of the batch once,
+in first-occurrence order, with the last `logVersion` in batch order and the same resolved `state`
+object its occurrences in `transactions` carry. `transactions` is unchanged, so consumers that need
+per-transaction metadata keep it; a backend that materializes latest state iterates `records`. The
+primary read was already shared; what the view removes is the per-occurrence mutation wrapper and
+the repeated backend apply. Bench (`derivedIndexRuntime.bench.js`, 350 µs/apply): 1000 transactions
+over 50 keys in one window cost 1000 applies / 362 ms through `transactions` and 50 applies / 26 ms
+through `records`.
+
+### Bounded collection, resolution and delivery
+
+A drain turn has two phases. **Collection** reads transaction identities from the log iterator —
+`(tableId, recordId, logVersion)` per eligible entry, no primary read — until one of the turn budgets
+is met: `maxTransactionsPerTurn` and `maxBytesPerTurn` (log entry bytes) between complete
+transactions, `maxMillisecondsPerTurn` after any entry, and `maxChunkRecords` distinct keys
+(default 4096) after any entry. **Resolution** then reads the current primary entry once per distinct
+key and projects it. Resolution happens after every collected occurrence of the key has been read,
+so the delivered state is never older than a log entry the batch's cursor certifies; a concurrent
+writer that commits between the two occurrences of a key is reflected, not skipped. This ordering
+is the reason resolution is not done inline as entries are read.
+
+An oversized transaction — one that meets the record or time bound before its `endTxn` — is
+delivered in **partial chunks**: the transaction appears in `transactions` with `partial: true`,
+`through` stays at the last complete transaction, and the iterator remains positioned inside the
+transaction for the next turn. The chunk that carries `endTxn` advances `through`. A partial chunk
+that advances no cursor is accepted work whose durability the next cursor-advancing batch
+certifies; it does not count against `maxAcceptedBatchesAhead`, and the backend bounds its memory
+with `deferred`, which the runtime honours by holding the chunk until a backend wake. A key repeated
+across chunks is resolved again (idempotent latest state); repeats within a chunk are coalesced.
+
+Payload bytes are an **estimate, not an admission bound**: each resolved record contributes its
+stored size when the resolver reports one (`DerivedIndexRecord.size`; the projection is a subset of
+the record) and the log entry's size otherwise, and nothing is serialized to compute it. The hard
+bound on a chunk is `maxChunkRecords`; `maxChunkBytes` (default 4 MiB) stops adding complete
+transactions to a chunk once the estimate is reached, carrying the remaining collected identities to
+the next turn. `getMetrics()` reports deferred (held chunk) and accepted-not-durable bytes.
+
+All bounds are settable per `DerivedIndexRegistration.options`, falling back to the runtime-wide
+values, because a vector backend and a full-text backend want different turn sizes.
+
+### Durability cadence
+
+`maxAcceptedBatchesAhead` is a ceiling; the schedule below is what obliges a backend to flush. The
+runtime is the scheduler because it already tracks accepted-not-durable work; the backend supplies
+the barrier through the optional `flush(reason)` request and reports completion through the
+existing `onStateChange` wake. `flush` is a request, not a barrier call: the backend runs it
+asynchronously, coalesces requests that arrive while a barrier is in flight into one following
+barrier, and publishes the `through` vector atomically with the state that barrier makes durable.
+
+| trigger                                                 | option                    | default |
+| ------------------------------------------------------- | ------------------------- | ------- |
+| first accepted batch since the last request is this old | `maxFlushAgeMilliseconds` | 1000 ms |
+| accepted mutations since the last request reach         | `flushAfterMutations`     | 4096    |
+| accepted estimated bytes since the last request reach   | `flushAfterBytes`         | 8 MiB   |
+| runner release or runtime stop                          | always (`'shutdown'`)     |         |
+
+The age timer is armed by the first accepted batch after a request, so an isolated write becomes
+durable within `maxFlushAgeMilliseconds` and a burst amortizes to one barrier per threshold. Idle
+completion is the age timer: reaching the end of the log does not request an extra barrier,
+because arrivals spaced just beyond drain completion would otherwise pay one barrier per write.
+`getMetrics().oldestAcceptedAgeMilliseconds` exposes a backend that ignores requests. Bench at
+1500 arrivals/s over 200 keys (5 ms barrier): flush-every-batch gives write→durable p50 21 ms with
+281 barriers in 3 s; `maxFlushAgeMilliseconds: 100` / `flushAfterMutations: 512` gives p50 73 ms
+with 29 barriers; the defaults give p50 1.27 s with 4 barriers. A backend chooses through its
+registration options.
+
+At release the runner calls `flush('shutdown')` and then `shutdown(epoch)`, and unlocks only after
+that settles.
+
+### Rebuild as a runtime phase
+
+When the backend implements `reset(ownerEpoch)` and the runtime was constructed with
+`scanRecords(tableId)`, `needs-rebuild` is no longer terminal. The lock holder runs, with an
+ownership check after every `await`:
+
+1. publish shared readiness `rebuilding` — before anything destructive;
+2. `await backend.shutdown(previousEpoch)` so work accepted under the previous epoch is quiescent,
+   then mint a new owner epoch, republish `rebuilding` under it, and `backend.reset(newEpoch)`;
+   afterwards `getDurableCursor()` must be `undefined`;
+3. capture the **conservative boundary**: for every physical log, the first retained committed
+   transaction (`getRange({ log, start: 0 })`); a log with no committed transaction is omitted and
+   must retain its beginning (`oldestSequenceNumber === 1`), otherwise the attempt fails closed;
+4. scan every registered table through `scanRecords` (opened after the capture), project, and
+   deliver chunks bounded by `maxChunkRecords`, `maxChunkBytes` and `maxMillisecondsPerTurn` with
+   `through` absent, yielding between chunks and waiting for a backend wake on `deferred`;
+5. deliver one final chunk (possibly empty) carrying `through` = boundary. Until that batch is
+   durable the backend's cursor stays `undefined`, so a crash mid-rebuild resumes as a fresh
+   rebuild rather than a partial index with a certified cursor;
+6. install the boundary as offered progress and open the log iterator from it with the existing
+   `exactStart` / `resumeAfterExactStart` validation (the anchor transaction is already reflected
+   in the scan because it committed before the capture), replay to the head through the ordinary
+   drain, and publish `ready` on the first idle pass whose durable cursor equals offered progress.
+
+The boundary is the oldest retained entry, so replay re-walks the retention window; a tighter
+boundary derived from staged or uncommitted positions is out of scope (see
+[Approaches considered](#approaches-considered)). A `reload` marker that triggered a rebuild is met
+again by that rebuild's replay and is treated as progress-only, since the scan covered it; a later
+reload triggers another rebuild.
+
+Failure anywhere in the phase, or a `'failed'` report before the index reaches `ready`, retries
+with capped exponential backoff (`rebuildBackoffMilliseconds` 1 s doubling to
+`maxRebuildBackoffMilliseconds` 5 min) while holding the lock. After `maxRebuildAttempts` (8)
+consecutive attempts the index publishes `unavailable` with the reason, releases the lock, and
+stops; the attempt count travels in the shared readiness record so a peer that acquires afterwards
+honours the exhausted budget instead of starting its own. Only `requestRebuild(backendId)` or
+reaching `ready` resets it. A projection that throws a 4xx-classified error (`ClientError`) for one
+record yields `state: { kind: 'unindexable' }` — the backend removes any entry and counts it — in
+live delivery and rebuild alike, so one malformed record cannot loop a rebuild; any other exception
+stays fail-closed.
+
+### Generation fencing and cancellation
+
+Asynchronous acceptance makes ownership handoff unsafe without a handshake: worker A can accept a
+batch, release the lock, and later run a scheduled apply or a flush completion after worker B has
+reset the index. Three mechanisms close it:
+
+- **Shutdown before unlock.** `#release()` drops ownership immediately, calls `flush('shutdown')`
+  then `shutdown(epoch)`, and unlocks only when that settles. A rejected `shutdown` keeps the lock
+  and publishes `unavailable` with the reason: a backend that cannot prove its queue is quiescent
+  must not hand the index to another owner. `DerivedIndexRuntime.stop()` and the unregister
+  function return promises that resolve after every release settled, so a caller cannot close
+  storage while a backend is still draining into it.
+- **Epoch fence.** `attach(host)` gives the backend `isOwnerEpoch(epoch)`, an `Atomics` read of the
+  shared owner-epoch counter. The backend checks it before each apply, after each await, and in
+  flush completions; a completion for a superseded epoch is dropped. Each rebuild attempt mints a
+  new epoch after quiescing the previous one, so a late completion from a failed attempt cannot
+  pass the fence either.
+- **Runtime checks.** The runner tracks a generation that changes on every acquisition, discard,
+  reset and release, and ignores any delivery result, wake or `await` continuation that belongs to
+  an earlier generation.
+
+### Shared cross-worker readiness
+
+`indexStore.isIndexing` is per worker and `getStatus()` is only meaningful on the owner. The owner
+publishes readiness — `ready`, `rebuilding`, `needs-rebuild` or `unavailable`, with a reason, the
+publishing epoch and the rebuild-attempt count — into a 512-byte shared buffer beside the owner-epoch
+counter (`getUserSharedBuffer`), guarded by a sequence lock. `DerivedIndexRuntime.getReadiness(id)`
+and the exported `readDerivedIndexReadiness(logStore, id)` read it synchronously on any worker, so a
+query path can choose between a 503 and a stale-but-usable answer without holding the runner lock.
+Reads are bounded: a publication abandoned mid-write by a dead owner reads as `unknown` (never a
+spin), and the next owner's publication repairs the sequence. `unknown` also means no runtime in
+this process has evaluated the index yet. `ready` is published on a validated acquisition and after
+a rebuild's final barrier; `rebuilding` before the destructive reset.
+
+### Lag policy
+
+Pending decision (issue #2489 convergence, item 7). What exists regardless of it: lag and
+backpressure are separate observable signals (`cursorLagMilliseconds` versus `deferredBytes` and
+the `deferred` status); a `'failed'` report and every rebuild failure go through the bounded retry
+above, so native capacity exhaustion cannot launch endless rebuilds against the same limit; and
+the runtime never lets an exception from a backend call escape the scheduled drain.
 
 ## Approaches considered
 
 **Invariant:** every committed mutation relevant to a derived index is eventually reflected in the
 index, or that index is explicitly unavailable pending rebuild; cursor advancement can never hide
-unapplied work.
+unapplied work. For the native-backend additions: a published cursor certifies a complete durable
+prefix for that index generation, every committed change outside that prefix stays replayable, and
+no work accepted under one owner epoch is applied or published once another epoch owns the index.
 
 ### Different layer
 
@@ -443,6 +660,47 @@ bounded cohort and move a lagging member to its own catch-up runner. That avoids
 common aligned case without pinning healthy indexes to the slowest cursor. Stage 1 has one fake
 backend and no measured N-scan bottleneck, so it establishes the independent runner fallback first;
 the cursor and batch contracts do not prevent adding cohorts after comparative benchmarks.
+
+### Native-backend additions
+
+Two implementations of #2489's protocol existed in parallel: this runtime and the HNSW-shaped
+runtime on the native-plane branch. The additions above converge on this one.
+
+**Different layer.** Keep both runtimes and share only the transaction-log reader changes.
+Rejected: ownership election, exact-cursor validation and recovery stay duplicated, which is the
+failure #2489 exists to prevent.
+
+**Deeper cause.** Move native insertion onto a thread pool so delivery cost stops being event-loop
+cost. It is the deeper fix for the event-loop term, but the installed native package exposes only a
+synchronous insert, it removes neither the duplicated runtime nor the repeated-key work, and it is a
+later phase of the native plane. A second deeper-cause candidate, raised by the planning review and
+**adopted**: collect bounded mutation identities first and resolve each key after its last collected
+occurrence, instead of resolving on first encounter and reusing the result. The first draft resolved
+inline, and a concurrent writer committing between two occurrences of a key inside one chunk would
+have had its later state certified by the cursor while the earlier state stayed indexed — permanently,
+since replay skips both. Identity-first collection prevents that state rather than detecting it, at
+no extra primary reads.
+
+**Do less.** Adopt the runtime unchanged and put coalescing, chunking and rebuild inside each
+backend. Rejected for rebuild, which is not backend-specific (reset → scan → project → deliver →
+replay is identical for full-text and vector backends) and whose duplication is how two runtimes came
+to exist. Coalescing in the runtime only removes repeated wrappers and applies, since the primary read
+was already shared — still worth doing once. Within bounded delivery, "collect an oversized
+transaction across yields but deliver it whole" was the do-less candidate and is rejected because it
+materializes the whole resolved payload (100k records × a 1.5 KB projection is 150 MB) before the
+backend can defer. Timer-coalesced idle flushing, also raised by the planning review and **adopted**,
+is the do-less form of idle completion: an immediate barrier at every idle pass would cost one barrier
+per write for arrivals spaced just beyond drain completion.
+
+**Chosen.** Coalesced view, identity-first bounded collection with partial chunks and no cursor
+publication mid-transaction, runtime-scheduled durability cadence with the age timer as idle
+completion, rebuild phase on the existing conservative boundary with bounded retry and an observable
+`unavailable` end state carried across owners, shutdown-before-unlock plus a shared epoch fence, and
+sequence-locked shared readiness. Excluded: a tighter rebuild boundary from staged or uncommitted
+positions (the shared runner resumes after a complete transaction at its exact cursor, so an
+uncommitted anchor would skip its own transaction, and an aborted one may never exist as a boundary;
+that belongs to the storage layer that owns append and commit order) and the transactional
+dirty-key outbox (rejected under _Deeper cause_ above).
 
 ## Verification
 
@@ -507,8 +765,31 @@ the cursor and batch contracts do not prevent adding cohorts after comparative b
   iterator reuse, native enqueue throughput, deferred recovery, and independent runner parallelism.
 - Benchmark aligned and intentionally divergent index cursors before considering a shared scan
   cohort; no cohort optimization is part of Stage 1.
-- Exercise a large transaction to prove memory is bounded by the configured drain batch plus one
-  complete transaction, not by all writes retained until commit.
+- Exercise a large transaction to prove memory is bounded by the configured chunk, not by the whole
+  transaction: the native-backend suite delivers one transaction in partial chunks that advance no
+  cursor, lets the backend defer after the first chunk, and checks that only the closing chunk
+  advances `through`.
+
+### Native-backend suite and bench
+
+`unitTests/resources/derivedIndexRuntimeNativeBackend.test.js` proves, with a queue-and-accept fake
+backend: coalescing with the last `logVersion` and preserved key identity while `transactions` and
+the enumerable batch shape are unchanged; resolution after the last collected occurrence under a
+concurrent write; oversized-transaction chunking with deferral; per-registration option override;
+flush requests by threshold, age and shutdown; a rebuild driven through reset → scan → boundary →
+replay with `rebuilding` observed before the reset and `ready` only after the final barrier;
+ownership handoff while an apply is scheduled and while a flush is pending, with the old epoch
+fenced; a rejected shutdown holding the lock; a non-owning worker reading the shared readiness; a
+mid-write abandoned publication reading as `unknown`; a 4xx projection rejection delivered as
+`unindexable`; a backend failing every rebuild settling into `unavailable` with the budget honoured
+by a peer and revived by `requestRebuild`; a boundary lost to retention during the scan; and a
+reload marker handled once. Every test asserts no unhandled rejection.
+
+`unitTests/resources/derivedIndexRuntime.bench.js` (excluded from `test:unit:resources`) reports the
+numbers quoted in the sections above: applies and wall time with and without the coalesced view,
+event-loop delay for inline versus queued application of a 5,000-mutation window (964.8 ms max
+inline, 7.0 ms max queued, same throughput), and write→durable latency, indexed throughput, peak
+queued bytes and barrier count for independently paced arrivals under three cadences.
 
 ### Repository gates
 
