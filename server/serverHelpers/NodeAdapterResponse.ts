@@ -30,12 +30,7 @@ class UnsupportedResponseMethodError extends Error {
 
 const ignoreError = () => {};
 
-/**
- * The `ServerResponse` a `withNodeAdapter()` handler receives, and the body the adapter resolves with.
- * Headers commit via `this.writeHead` so a `writeHead` that `on-headers` replaced on the instance runs
- * first; the adapter owns the 'error' listener because a destroy right after `writeHead()` emits
- * before the awaiting caller can attach one.
- */
+/** The `ServerResponse` passed to a `withNodeAdapter()` handler and returned as its response body. */
 export class NodeAdapterResponse extends PassThrough implements NodeServerResponse {
 	statusCode = 200;
 	statusMessage = '';
@@ -78,7 +73,6 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 	get connection() {
 		return this.socket;
 	}
-	// `compression` <= 1.7 (the version Next.js vendors) tests `_header` on every write
 	get _header(): string | null {
 		if (this.#committedStatus === undefined) return null;
 		if (this.#headerText === undefined) {
@@ -99,9 +93,9 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 	setHeaders(headers: Headers | Map<string, number | string | readonly string[]> | ResponseHeaders) {
 		let cookies: string[] | undefined;
 		for (const [name, value] of headers) {
-			if (name.toLowerCase() === 'set-cookie')
-				(cookies ??= []).push(...(Array.isArray(value) ? value : [String(value)]));
-			else this.setHeader(name, value);
+			if (name.toLowerCase() !== 'set-cookie') this.setHeader(name, value);
+			else if (Array.isArray(value)) (cookies ??= []).push(...value);
+			else (cookies ??= []).push(String(value));
 		}
 		if (cookies) this.setHeader('set-cookie', cookies);
 		return this;
@@ -184,7 +178,7 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		// Node destroys a timed-out socket only when no request, response or server listener handled the
 		// event, judged by emit()'s return value, so the forwarder exists exactly while this response has
 		// 'timeout' listeners of its own.
-		const forward = () => this.emit('timeout');
+		const forward = (...args: any[]) => this.emit('timeout', ...args);
 		let forwarding = false;
 		const syncForwarding = (wanted: boolean) => {
 			if (wanted === forwarding) return;

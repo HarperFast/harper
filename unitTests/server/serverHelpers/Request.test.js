@@ -953,14 +953,20 @@ describe('Request class', function () {
 				});
 				const request = new Request({ ...mockNodeRequest }, nodeResponse);
 				let fired = 0;
+				let timeoutArgument;
+				const timeoutSocket = {};
 				const responsePromise = request.withNodeAdapter((req, res) => {
-					res.setTimeout(250, () => fired++);
-					nodeResponse.emit('timeout');
+					res.setTimeout(250, (socket) => {
+						fired++;
+						timeoutArgument = socket;
+					});
+					nodeResponse.emit('timeout', timeoutSocket);
 					res.end();
 				});
 
 				assert.deepStrictEqual(nodeResponse.timeouts, [250]);
 				assert.strictEqual(fired, 1);
+				assert.strictEqual(timeoutArgument, timeoutSocket);
 				const { body } = await responsePromise;
 				for await (const chunk of body) void chunk;
 				if (!body.closed) await new Promise((resolve) => body.once('close', resolve));
@@ -996,7 +1002,6 @@ describe('Request class', function () {
 				});
 
 				await assert.rejects(() => responsePromise, /sync failure/);
-				// a later disconnect finds the response already settled
 				request._abort();
 			});
 

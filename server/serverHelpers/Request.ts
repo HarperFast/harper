@@ -179,11 +179,8 @@ export class Request {
 	 * status, headers, and body, resolving the returned promise as soon as headers are available with a
 	 * streaming body that can be piped back through the Harper middleware chain.
 	 *
-	 * The ServerResponse is the resolved `body` itself (a PassThrough). A handler that destroys it with an
-	 * error after headers, or throws or rejects without ending it, leaves the body errored; a client
-	 * disconnect closes it without an error, as Node does. Neither hangs: consume the body with
-	 * `pipeline()`, `finished()` or async iteration, which report both the stored error and a premature
-	 * close, whereas a later `.on('error')` alone would miss an error emitted before it was attached.
+	 * Consume the returned body with `pipeline()`, `finished()` or async iteration so stored stream errors
+	 * and premature closes are reported.
 	 *
 	 * Example:
 	 *   server.http((request, next) =>
@@ -193,7 +190,6 @@ export class Request {
 	withNodeAdapter(
 		handler: (request: NodeIncomingMessage, response: NodeServerResponse) => void | Promise<void>
 	): Promise<AdaptedResponse> {
-		// Lowercase keys on a plain object, as IncomingMessage.headers is (middleware calls hasOwnProperty).
 		const reqHeaders: Record<string, string | string[]> = {};
 		for (const [key, value] of this.headers) {
 			const lowerKey = key.toLowerCase();
@@ -219,8 +215,6 @@ export class Request {
 			nodeRes = new NodeAdapterResponse(nodeReq, this._nodeResponse, resolve, reject);
 		});
 
-		// Client disconnect: after headers a plain premature close, as from Node's server (pipeBodyToResponse
-		// treats it as routine); before them the promise rejects with the abort reason.
 		const signal = this.signal;
 		const onAbort = () => nodeRes.destroy(nodeRes.headersSent ? undefined : signal.reason);
 		if (signal.aborted) onAbort();
@@ -229,7 +223,6 @@ export class Request {
 			nodeRes.once('close', () => signal.removeEventListener('abort', onAbort));
 		}
 
-		// A failure after the handler ended the response cannot reach the client or the promise.
 		const onHandlerFailure = (error: Error) => {
 			if (!nodeRes.writableEnded) nodeRes.destroy(error);
 			else harperLogger.warn('withNodeAdapter handler failed after ending its response', error);

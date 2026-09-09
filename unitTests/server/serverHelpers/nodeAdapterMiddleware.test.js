@@ -336,7 +336,7 @@ describe('withNodeAdapter with real Node middleware', function () {
 		const received = await withTimeout(collectSlowly(body), 'the response body');
 		assert.deepStrictEqual(received, BODY);
 		assert.ok(backpressure.backpressured, 'write() never returned false');
-		await sleep(1);
+		await waitUntil(() => events.length === 2, 'the response stream to close');
 		assert.deepStrictEqual(events, ['finish', 'close']);
 	});
 
