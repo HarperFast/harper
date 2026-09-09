@@ -382,11 +382,13 @@ describe('withNodeAdapter with real Node middleware', function () {
 		assert.deepStrictEqual(headers.get('x-flat'), ['1', '2']);
 	});
 
-	it('exposes request headers on a plain object with Object.prototype', async function () {
-		const request = makeRequest();
+	it('exposes own request headers on a plain object without changing its prototype', async function () {
+		const request = makeRequest(Object.fromEntries([['__proto__', ['first', 'second']]]));
 		const responsePromise = request.withNodeAdapter((req, res) => {
 			assert.strictEqual(Object.getPrototypeOf(req.headers), Object.prototype);
 			assert.strictEqual(Object.hasOwn(req.headers, 'accept-encoding'), true);
+			assert.strictEqual(Object.hasOwn(req.headers, '__proto__'), true);
+			assert.deepStrictEqual(req.headers.__proto__, ['first', 'second']);
 			res.end();
 		});
 		await withTimeout(responsePromise, 'response headers');
@@ -401,7 +403,6 @@ describe('withNodeAdapter with real Node middleware', function () {
 			assert.throws(() => res.setHeader('X-Late', '1'), { code: 'ERR_HTTP_HEADERS_SENT' });
 			assert.throws(() => res.appendHeader('X-Late', '1'), { code: 'ERR_HTTP_HEADERS_SENT' });
 			assert.throws(() => res.removeHeader('Content-Type'), { code: 'ERR_HTTP_HEADERS_SENT' });
-			// on-headers applies writeHead's headers through setHeader before the adapter's own no-op
 			assert.throws(() => res.writeHead(500, { 'Content-Length': '1' }), { code: 'ERR_HTTP_HEADERS_SENT' });
 			res.end();
 		});

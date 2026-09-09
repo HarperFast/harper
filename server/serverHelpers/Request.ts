@@ -195,7 +195,12 @@ export class Request {
 	): Promise<AdaptedResponse> {
 		// Lowercase keys on a plain object, as IncomingMessage.headers is (middleware calls hasOwnProperty).
 		const reqHeaders: Record<string, string | string[]> = {};
-		for (const [key, value] of this.headers) reqHeaders[key.toLowerCase()] = value;
+		for (const [key, value] of this.headers) {
+			const lowerKey = key.toLowerCase();
+			if (lowerKey === '__proto__')
+				Object.defineProperty(reqHeaders, lowerKey, { value, configurable: true, enumerable: true, writable: true });
+			else reqHeaders[lowerKey] = value;
+		}
 
 		// Proxy the underlying IncomingMessage so body streaming works, but expose
 		// the current Request's (possibly middleware-mutated) method/url/headers.
