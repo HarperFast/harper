@@ -433,6 +433,19 @@ describe('DerivedIndexRuntime for native backends', () => {
 			backend.deliveries.map((batch) => batch.through.logs.local),
 			[20, 30]
 		);
+		await sleep(5);
+		assert(runtime.getMetrics('per-registration').stalledMilliseconds > 0);
+		backend.cursor = backend.deliveries[1].through;
+		backend.stateChange();
+		await waitFor(() => backend.deliveries.length === 3);
+		backend.cursor = backend.deliveries[2].through;
+		backend.stateChange();
+		await waitFor(() => runtime.getStatus('per-registration').state === 'idle');
+		assert.strictEqual(
+			runtime.getMetrics('per-registration').stalledMilliseconds,
+			0,
+			'leaving the ceiling clears the stall clock'
+		);
 		await runtime.stop();
 	});
 
