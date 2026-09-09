@@ -102,12 +102,23 @@ export function rotateLogFileSync(logPath: string, rotatedLogDir: string, closeL
  * Publish an archived generation: ask every enumerable in-process peer to release it, then compress
  * it if requested. The plain archive is only unlinked once that release is proven.
  */
-export async function publishArchivedGeneration(generation: any, compress?: boolean) {
+export async function publishArchivedGeneration(
+	generation: any,
+	compress?: boolean,
+	reportCompressionError?: (error: any) => void
+) {
 	if (!(await requestGenerationClose(generation))) {
 		rememberUnprovenArchive(generation.archivePath, { generation, compress });
 		return generation.archivePath;
 	}
-	return compress ? compressArchive(generation.archivePath) : generation.archivePath;
+	if (compress) {
+		try {
+			return await compressArchive(generation.archivePath);
+		} catch (error) {
+			reportCompressionError?.(error);
+		}
+	}
+	return generation.archivePath;
 }
 
 // A compression retry queue, not the safety mechanism — safety is the release the tick proves before
@@ -306,10 +317,12 @@ export function createRotationGuard(options: any) {
 			report(`Harper cannot rotate its log file: ${error}`);
 			// A rotation target removed under a running instance is recoverable; recreate it here rather
 			// than on every rotation, so the common path keeps costing one stat and one rename.
-			try {
-				mkdirSync(rotatedLogDir, { recursive: true });
-			} catch {
-				// Reported above already; the retry will fail the same way and report again.
+			if (error.code === 'ENOENT') {
+				try {
+					mkdirSync(rotatedLogDir, { recursive: true });
+				} catch {
+					// Reported above already; the retry will fail the same way and report again.
+				}
 			}
 		} finally {
 			rotating = false;
@@ -335,9 +348,9 @@ export function createRotationGuard(options: any) {
 		if (active.size < maxBytes) return;
 		const generation = rotateLogFileSync(logPath, rotatedLogDir, closeLogFile, active);
 		onRotated?.(generation.archivePath);
-		publishArchivedGeneration(generation, compress).catch((error) =>
+		publishArchivedGeneration(generation, compress, (error) =>
 			report(`Harper could not compress a rotated log file: ${error}`)
-		);
+		).catch((error) => report(`Harper could not publish a rotated log file: ${error}`));
 	}
 
 	function holdsGeneration(active: any) {
