@@ -471,6 +471,7 @@ class DerivedIndexRunner {
 		if (this.#rebuildTimer) clearTimeout(this.#rebuildTimer);
 		this.#rebuildTimer = undefined;
 		this.#unsubscribeBackend?.();
+		this.#readinessBuffer.cancel?.();
 		this.#release();
 		// Tables stay registered until the backend has settled, so an eviction committed during the
 		// drain still writes the marker the next owner replays.
@@ -1489,7 +1490,7 @@ function lastOpen(collected: CollectedTransaction[]): CollectedTransaction | und
 	return last && !last.complete ? last : undefined;
 }
 
-type SharedReadinessBuffer = ArrayBufferLike & { notify?: () => void };
+type SharedReadinessBuffer = ArrayBufferLike & { notify?: () => void; cancel?: () => void };
 
 function readinessBuffer(
 	logStore: RocksTransactionLogStore,
@@ -1503,7 +1504,8 @@ function readinessBuffer(
 	) as SharedReadinessBuffer;
 }
 
-const readinessViews = new WeakMap<object, [Int32Array, BigInt64Array, Uint8Array]>();
+// Keyed by store and backend id: the binding returns a fresh wrapper over the same memory per lookup.
+const readinessViews = new WeakMap<object, Map<string, [Int32Array, BigInt64Array, Uint8Array]>>();
 
 function readReadiness(words: Int32Array, epoch: BigInt64Array, bytes: Uint8Array): DerivedIndexReadiness {
 	for (let spin = 0; spin < 256; spin++) {
@@ -1531,15 +1533,17 @@ export function readDerivedIndexReadiness(
 	logStore: RocksTransactionLogStore,
 	backendId: string
 ): DerivedIndexReadiness {
-	const buffer = readinessBuffer(logStore, backendId);
-	let views = readinessViews.get(buffer);
+	let byBackend = readinessViews.get(logStore);
+	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
+	let views = byBackend.get(backendId);
 	if (!views) {
+		const buffer = readinessBuffer(logStore, backendId);
 		views = [
 			new Int32Array(buffer, 0, READINESS_WORDS),
 			new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
 			new Uint8Array(buffer, READINESS_REASON_OFFSET),
 		];
-		readinessViews.set(buffer, views);
+		byBackend.set(backendId, views);
 	}
 	return readReadiness(views[0], views[1], views[2]);
 }
