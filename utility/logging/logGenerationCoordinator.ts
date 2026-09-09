@@ -7,6 +7,8 @@
 // The thread layer injects the transport; harper_logger must never reach manageThreads.
 
 import { statSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { isMainThread } from 'node:worker_threads';
 
 export const LOG_GENERATION_ROTATED = 'log_generation_rotated';
 export const LOG_GENERATION_CLOSED = 'log_generation_closed';
@@ -62,11 +64,13 @@ export function setRotationTransport(newTransport?: RotationTransport) {
  * and its answer has to mean the descriptor is gone.
  */
 export function registerLogSink(logPath: string, sink: { identity(): any; close(): void }) {
-	sinksByPath.set(logPath, sink);
+	// Keyed on the resolved path: retention compares resolved paths, so a sink registered under
+	// another spelling of the same file would answer "released" having closed nothing.
+	sinksByPath.set(resolve(logPath), sink);
 }
 
 export function unregisterLogSink(logPath: string) {
-	sinksByPath.delete(logPath);
+	sinksByPath.delete(resolve(logPath));
 }
 
 export function nextGenerationId() {
@@ -81,8 +85,14 @@ export function nextGenerationId() {
 function requestRelease(message: any): Promise<{ released: boolean; liveLogPaths: Set<string> }> {
 	releaseLocally(message);
 	const liveLogPaths = new Set<string>(sinksByPath.keys());
-	const expected = new Set<number>(transport ? transport.peerThreadIds() : []);
-	if (!transport || expected.size === 0) return Promise.resolve({ released: true, liveLogPaths });
+	// No transport in a worker isolate means the mesh cannot be enumerated yet, not that there is
+	// nobody to ask: harper_logger installs the size guard at its own module load and manageThreads
+	// installs the transport at the end of its, so a worker rotating in that window would otherwise
+	// call an empty peer set a proof and unlink the generation its siblings are appending to. On the
+	// main thread the same state means no worker has been spawned, where zero peers is the truth.
+	if (!transport) return Promise.resolve({ released: isMainThread, liveLogPaths });
+	const expected = new Set<number>(transport.peerThreadIds());
+	if (expected.size === 0) return Promise.resolve({ released: true, liveLogPaths });
 	const request = message.request;
 	return new Promise((resolve) => {
 		let timer;
@@ -130,7 +140,7 @@ function recordPeerResponse(request: string, threadId: number, logPaths?: string
 
 function releaseLocally(message: any) {
 	if (message.stale) return releaseStaleDescriptors();
-	const sink = sinksByPath.get(message.logPath);
+	const sink = sinksByPath.get(resolve(message.logPath));
 	if (!sink) return;
 	const identity = sink.identity();
 	// No identity to compare (no descriptor open, or a filesystem that cannot report one) means

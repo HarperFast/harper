@@ -18,6 +18,8 @@ import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/log-rotation-write-path');
 const MAX_SIZE_BYTES = 64000;
 const REQUEST_COUNT = 120;
+// Matches the fixture's LINES_PER_REQUEST.
+const LINES_PER_REQUEST = 20;
 const WORKERS = 2;
 
 suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHarper) => {
@@ -125,10 +127,14 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 			ok(size < bound, `${name} reached ${size} bytes against a ${MAX_SIZE_BYTES}-byte cap`);
 		}
 
+		// Every line, not just the first of each request: a batch torn at a rotation boundary loses its
+		// tail, which a marker taken from the head of the batch cannot see.
 		const contents = [...generations.values()].join('');
 		for (let i = 0; i < REQUEST_COUNT; i++) {
-			const occurrences = contents.split(`rotation-marker request-${i}:0 `).length - 1;
-			strictEqual(occurrences, 1, `request-${i}'s first marker appeared ${occurrences} times across generations`);
+			for (let line = 0; line < LINES_PER_REQUEST; line++) {
+				const occurrences = contents.split(`rotation-marker request-${i}:${line} `).length - 1;
+				strictEqual(occurrences, 1, `request-${i}:${line} appeared ${occurrences} times across generations`);
+			}
 		}
 	});
 });

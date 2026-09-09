@@ -801,8 +801,8 @@ function getFileLogger(path, rotation, isExternalInstance) {
 	if (!logger) {
 		logger = logToFile;
 		logger.closeLogFile = closeLogFile;
-		// Only the first call for a path keeps its closure; later calls get the cached logger back and
-		// their own logFD/logBuffer are dead. The guard has to be installed through the live closure.
+		// The guard has to be installed through the live closure: later calls for this path get the
+		// cached logger back, and their own logFD/logBuffer are dead.
 		logger.installRotationGuard = installRotationGuard;
 		logger.path = path;
 		fileLoggers.set(path, logger);
@@ -901,7 +901,7 @@ function getFileLogger(path, rotation, isExternalInstance) {
 	function logQueuedData(entry?: any) {
 		const payload = logBuffer ? logBuffer.join('') : entry;
 		// Released before anything can re-enter: the rotation notice is written from inside the append
-		// below, and a re-entrant flush still holding this batch would write every line of it twice.
+		// below, and a re-entrant flush still holding this batch would write it twice.
 		logBuffer = null;
 		if (payload === undefined) return;
 		// A file that just refused a write will refuse the next one too, and every attempt costs a
@@ -917,7 +917,6 @@ function getFileLogger(path, rotation, isExternalInstance) {
 				// Both cleared, so a volume that fills again months later reports itself again
 				retryAppendAfter = undefined;
 				loggedAppendError = false;
-				// byteLength, not a Buffer: appendFileSync encodes the string without allocating one.
 				rotationGuard?.recordWrite(Buffer.byteLength(payload));
 			} catch (error) {
 				retryAppendAfter = performance.now() + APPEND_RETRY_COOLDOWN;
