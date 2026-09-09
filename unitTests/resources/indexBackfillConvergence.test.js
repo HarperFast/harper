@@ -13,7 +13,13 @@ const { spawn } = require('node:child_process');
 const { setupTestDBPath } = require('../testUtils');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
-const { table, resetDatabases, closeDatabase, resumeStartKey } = require('#src/resources/databases');
+const {
+	table,
+	resetDatabases,
+	closeDatabase,
+	resumeStartKey,
+	setIndexingCheckpointPeriod,
+} = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const DB = 'test';
@@ -109,6 +115,15 @@ describe('resumeStartKey: minimum resume checkpoint across the attributes being 
 });
 
 describe('index backfill convergence (#2536)', () => {
+	// checkpoint at every yield interval instead of every few seconds, so small tables checkpoint
+	let checkpointPeriod;
+	before(() => {
+		checkpointPeriod = setIndexingCheckpointPeriod(0);
+	});
+	after(() => {
+		setIndexingCheckpointPeriod(checkpointPeriod);
+	});
+
 	it('resumes an interrupted backfill from its persisted checkpoint, not from the first record', async () => {
 		const TABLE = 'BackfillResume';
 		const N = 600;
@@ -154,6 +169,7 @@ describe('index backfill convergence (#2536)', () => {
 			const parked = findDescriptor(Tbl, name);
 			assert.strictEqual(parked?.value.indexingFailed, true, `${name}: interrupted backfill should be parked`);
 			assert.strictEqual(parked.value.lastIndexedKey, checkpoint, `${name}: checkpoint should be persisted`);
+			assert.strictEqual(parked.value.checkpointCertified, true, `${name}: checkpoint should be stamped`);
 		}
 
 		// The parked descriptor retriggers the backfill; it must open its scan at the checkpoint.
@@ -187,6 +203,7 @@ describe('index backfill convergence (#2536)', () => {
 			const done = findDescriptor(Tbl2, name);
 			assert.strictEqual(done.value.indexingFailed, undefined, `${name}: indexingFailed cleared after completion`);
 			assert.strictEqual(done.value.lastIndexedKey, undefined, `${name}: checkpoint cleared after completion`);
+			assert.strictEqual(done.value.checkpointCertified, undefined, `${name}: stamp cleared after completion`);
 		}
 		let total = 0;
 		for (const v of ['t-0', 't-1', 't-2']) {
@@ -306,12 +323,16 @@ describe('index backfill convergence (#2536)', () => {
 
 		// Park both indexes at different checkpoints, the way two attributes whose checkpoint writes
 		// straddled an interruption would be left.
-		const park = (Tbl, checkpoints) => {
+		const park = (Tbl, checkpoints, { certified = true } = {}) => {
 			for (const [name, lastIndexedKey] of Object.entries(checkpoints)) {
 				const { key, value } = findDescriptor(Tbl, name);
 				value.indexingFailed = true;
+				delete value.checkpointCertified;
 				if (lastIndexedKey === undefined) delete value.lastIndexedKey;
-				else value.lastIndexedKey = lastIndexedKey;
+				else {
+					value.lastIndexedKey = lastIndexedKey;
+					if (certified) value.checkpointCertified = true;
+				}
 				Tbl.dbisDB.putSync(key, value);
 			}
 		};
@@ -348,12 +369,32 @@ describe('index backfill convergence (#2536)', () => {
 		}
 		const evens = await collect(Tbl2.search({ conditions: [{ attribute: 'group', value: 'g-0' }] }));
 		assert.strictEqual(evens.length, N / 2, 'the cleared index should be fully repopulated');
+
+		// A checkpoint written by a release without the stamp advanced past failed and unflushed index
+		// writes, so it must not be resumed: full rebuild, including the clear of the existing entries.
+		park(Tbl2, { tag: 'k-' + pad(300), group: 'k-' + pad(300) }, { certified: false });
+		resetDatabases();
+		Tbl2 = table({ table: TABLE, database: DB, attributes: indexedAttributes });
+		assert.ok(Tbl2.indexingOperation, 'a parked legacy checkpoint should retrigger');
+		resumed = observeRange(Tbl2);
+		try {
+			await Tbl2.indexingOperation;
+		} finally {
+			resumed.restore();
+		}
+		assert.strictEqual(resumed.start, undefined, 'an unstamped legacy checkpoint must not be resumed');
+		assert.strictEqual(
+			resumed.keys.find((key) => typeof key === 'string'),
+			'k-' + pad(0)
+		);
+		const odds = await collect(Tbl2.search({ conditions: [{ attribute: 'group', value: 'g-1' }] }));
+		assert.strictEqual(odds.length, N / 2, 'the rebuilt index should be complete');
 	});
 
-	it('resumes from the checkpoint a process killed mid-backfill left behind, after it flushed', async () => {
+	it('resumes from the checkpoint a process killed mid-backfill left behind', async () => {
 		const DATABASE = 'backfillcrash';
 		const TABLE = 'BackfillCrash';
-		const N = 50000;
+		const N = 10000;
 		const dbPath = setupTestDBPath();
 		setMainIsWorker(true);
 		// The database under test lives outside storage.path and is opened only by the child until

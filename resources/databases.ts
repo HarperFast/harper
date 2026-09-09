@@ -2875,9 +2875,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							// resumes rather than restarts. Canonicalized to match structurallyChanged above.
 							const indexOptionsChanged =
 								canonicalIndexKey(attributeDescriptor?.indexed) !== canonicalIndexKey(attribute.indexed);
-							attribute.lastIndexedKey = indexOptionsChanged
-								? undefined
-								: (attributeDescriptor?.lastIndexedKey ?? undefined);
+							// Only a checkpoint runIndexing stamped as certified resumes: earlier releases advanced
+							// lastIndexedKey past failed and unflushed index writes, so an unstamped one is a full rebuild.
+							attribute.lastIndexedKey =
+								indexOptionsChanged || !attributeDescriptor?.checkpointCertified
+									? undefined
+									: (attributeDescriptor.lastIndexedKey ?? undefined);
+							if (attribute.lastIndexedKey !== undefined) attribute.checkpointCertified = true;
 							// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
 							// object store to the versioned, VT-cacheable format. A full rebuild from scratch
 							// (lastIndexedKey === undefined) clears the store and rewrites every node, so the
@@ -2927,6 +2931,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						// workers / a reload would treat the still-partial index as ready and return incomplete results.
 						attribute.indexingPID = attributeDescriptor.indexingPID;
 						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
+						if (attributeDescriptor.checkpointCertified) attribute.checkpointCertified = true;
 						// Carry the in-progress restart generation too, so persisting this metadata-only
 						// change doesn't drop it and break the crash-recovery trigger for the running backfill.
 						attribute.restartNumber = attributeDescriptor.restartNumber;
@@ -3125,6 +3130,14 @@ export function canonicalizeIndexOptions(value: any): any {
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
 const INDEXING_YIELD_INTERVAL = 100;
+// RocksDB index stores have no WAL (openRocksDatabase defaults disableWAL), so a resumable checkpoint is
+// only written after a flush; the period bounds both the flush rate and the work a crash can lose.
+let indexingCheckpointPeriodMs = 5000;
+export function setIndexingCheckpointPeriod(ms: number): number {
+	const previous = indexingCheckpointPeriodMs;
+	indexingCheckpointPeriodMs = ms;
+	return previous;
+}
 const yieldEventTurn = () => new Promise((resolve) => setImmediate(resolve));
 // The primary-store key a resumed backfill scans from: the minimum persisted checkpoint across the
 // attributes being built, or undefined (scan everything) when any attribute has none.
@@ -3137,6 +3150,7 @@ export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 	return start;
 }
 async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
+	let checkpointing; // at most one flush-gated checkpoint in flight
 	try {
 		logger.info(`Indexing ${Table.tableName} attributes`, attributes);
 		await signalling.signalSchemaChange(
@@ -3166,20 +3180,25 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				}
 			}
 			let outstanding = 0;
-			// A resumed scan starts at the checkpoint, so it must only name a key whose every predecessor was
-			// indexed: callers persist it once the writes it covers have settled, and it stops advancing after
-			// any record has failed so the retry re-covers that record.
-			const persistCheckpoint = (key) => {
+			// A resumed scan starts at the checkpoint, so it must only name a key whose every predecessor is
+			// durably indexed: it is persisted once the writes it covers have settled and the index stores are
+			// flushed, it stops advancing after any record has failed so the retry re-covers that record, and
+			// checkpointCertified marks it as written under these rules (an unstamped checkpoint is ignored).
+			const persistCheckpoint = async (key) => {
 				if (hadIndexingErrors) return;
 				try {
+					const rootStore = Table.primaryStore.rootStore;
+					if (rootStore instanceof RocksDatabase) await rootStore.flush({ allowWriteStall: true });
 					for (const attribute of attributes) {
 						attribute.lastIndexedKey = key;
+						attribute.checkpointCertified = true;
 						Table.dbisDB.put(attribute.key, attribute);
 					}
 				} catch (error) {
 					logger.debug(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
 				}
 			};
+			let nextCheckpointAt = Date.now() + indexingCheckpointPeriodMs;
 			// this means that a new attribute has been introduced that needs to be indexed
 			for (const { key, value: record } of Table.primaryStore.getRange({
 				start,
@@ -3252,15 +3271,19 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					} catch {
 						// already counted and logged by the rejection handler above
 					}
-					persistCheckpoint(key);
+					await checkpointing;
+					await persistCheckpoint(key);
 					return;
 				}
-				if (atInterval)
-					when(
+				if (atInterval && Date.now() >= nextCheckpointAt) {
+					nextCheckpointAt = Date.now() + indexingCheckpointPeriodMs;
+					await checkpointing;
+					checkpointing = when(
 						lastResolution,
 						() => persistCheckpoint(key),
 						() => {}
 					);
+				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
 				// A RocksDB put resolves synchronously and custom indexes (e.g. HNSW) index synchronously, so
 				// neither raises `outstanding`; without a yield of its own a large backfill would run as one
@@ -3268,6 +3291,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				if (atInterval || didSynchronousIndexing || outstanding > MIN_OUTSTANDING_INDEXING) await yieldEventTurn();
 			}
 		}
+		await checkpointing;
 		// Await the last pending put. If it rejects, that is also an indexing error.
 		// Note: the when() calls above already attach rejection handlers to each record's
 		// last-put promise; this try-catch specifically handles the case where lastResolution
@@ -3313,6 +3337,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			// update the attributes to indicate that we are finished
 			for (const attribute of attributes) {
 				delete attribute.lastIndexedKey;
+				delete attribute.checkpointCertified;
 				delete attribute.indexingPID;
 				delete attribute.indexingFailed;
 				delete attribute.restartNumber;
@@ -3332,6 +3357,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 		}
 	} catch (error) {
+		await checkpointing;
 		// A worker shutting down closes its stores mid-backfill, so the range iterator or a
 		// put throws (e.g. "Database not open" / "Iterator not initialized"). This is an
 		// interruption, not a data error: the next worker generation re-runs the backfill via
