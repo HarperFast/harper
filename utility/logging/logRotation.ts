@@ -157,12 +157,22 @@ export async function retryPendingGenerations() {
  */
 export async function compressPendingArchives(rotatedLogDir: string, files: string[], liveLogPaths: Set<string>) {
 	const present = new Set(files);
-	let compressed = 0;
+	let worked = 0;
 	for (const file of files) {
-		if (!file.endsWith('.log') || !isArchiveName(file) || present.has(`${file}.gz`)) continue;
-		if (compressed++ >= MAX_RETRIES_PER_PASS) return;
+		if (!file.endsWith('.log') || !isArchiveName(file)) continue;
 		const archivePath = join(rotatedLogDir, file);
 		if (liveLogPaths.has(resolve(archivePath)) || unprovenArchives.has(archivePath)) continue;
+		// Counted after the skips, not before: the archive directory holds the live logs too, and
+		// spending the pass's budget on files it then skips is what leaves a backlog standing.
+		if (worked++ >= MAX_RETRIES_PER_PASS) return;
+		if (present.has(`${file}.gz`)) {
+			// Both representations of one generation: a crash between the .gz rename and the source
+			// unlink leaves the plain copy behind, and every later pass skipped it as already done, so
+			// it survived until retention aged it out — or forever, retention being unset by default.
+			// The .gz is renamed into place whole, and this pass already proved every peer released it.
+			await fsProm.unlink(archivePath).catch(() => {});
+			continue;
+		}
 		await compressArchive(archivePath).catch(() => {});
 	}
 }

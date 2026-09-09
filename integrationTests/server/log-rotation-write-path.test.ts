@@ -103,8 +103,10 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 	 */
 	async function settledGenerations(): Promise<Map<string, string>> {
 		for (let attempt = 0; attempt < 40; attempt++) {
-			const before = signature();
 			try {
+				// Inside the try: a rotation can leave the active pathname absent for as long as it takes
+				// the sink to reopen it, and this is the read to retry then, not to abort.
+				const before = signature();
 				const generations = new Map<string, string>();
 				for (const name of archiveNames()) generations.set(name, readGeneration(name));
 				generations.set('hdb.log', readFileSync(join(logDir, 'hdb.log'), 'utf8'));
