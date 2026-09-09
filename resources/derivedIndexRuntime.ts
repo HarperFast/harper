@@ -122,7 +122,10 @@ export type DerivedIndexRegistration = {
 	options?: DerivedIndexRunnerOptions;
 };
 
-/** `size` is the stored byte size of the record when known; it bounds the projection's size without serializing it. */
+/**
+ * `size` is the stored byte size of the record when known; it bounds the projection's size without
+ * serializing it. A null or undefined `value` is a tombstone and resolves to `absent`.
+ */
 export type DerivedIndexRecord = { version: number; value: unknown; size?: number } | undefined;
 
 /** A scan record whose `value` is null or undefined is a tombstone and is not indexed. */
@@ -172,7 +175,8 @@ const READINESS_STATES: DerivedIndexReadinessState[] = [
 const READINESS_BYTES = 512;
 const READINESS_WORDS = 6;
 const READINESS_EPOCH_OFFSET = 24;
-const READINESS_REASON_OFFSET = 32;
+const READINESS_RELOADS_OFFSET = 32;
+const READINESS_REASON_OFFSET = 40;
 const READINESS_SEQUENCE = 0;
 const READINESS_STATE = 1;
 const READINESS_REASON_LENGTH = 2;
@@ -188,6 +192,7 @@ export class DerivedIndexRuntime {
 	#options: ResolvedRunnerOptions;
 	#runners = new Map<string, DerivedIndexRunner>();
 	#pendingStops = new Set<Promise<void>>();
+	#heldRunners = new Map<string, { runner: DerivedIndexRunner; stopped: Promise<void> }>();
 	#stopping?: Promise<void>;
 	#onCommit = () => this.wake();
 	#listening = false;
@@ -229,16 +234,17 @@ export class DerivedIndexRuntime {
 				this.#runners.delete(registration.backend.id);
 				this.#stopListeningIfIdle();
 			}
-			return this.#track(runner.stop());
+			return this.#track(runner, runner.stop());
 		};
 	}
 
-	#track(stopped: Promise<void>): Promise<void> {
+	#track(runner: DerivedIndexRunner, stopped: Promise<void>): Promise<void> {
 		this.#pendingStops.add(stopped);
-		// A failed shutdown stays pending: a later stop() must keep reporting the held lock.
+		// A failed shutdown stays pending and its runner stays reachable, so a later stop() keeps
+		// reporting the held lock and requestRebuild() can retry releasing it.
 		stopped.then(
 			() => this.#pendingStops.delete(stopped),
-			() => {}
+			() => this.#heldRunners.set(runner.id, { runner, stopped })
 		);
 		return stopped;
 	}
@@ -263,14 +269,31 @@ export class DerivedIndexRuntime {
 
 	/** Force a rebuild (or retry one that became `unavailable`). Returns false when the backend cannot be rebuilt by the runtime. */
 	requestRebuild(backendId: string): boolean {
-		return this.#runners.get(backendId)?.requestRebuild() ?? false;
+		const held = this.#heldRunners.get(backendId);
+		if (held) {
+			// A stopped runner still holding the lock after a failed shutdown: retry releasing it, then let
+			// the registered runner (if any) acquire through the unlock.
+			const released = held.runner.retryRelease();
+			this.#pendingStops.add(released);
+			released.then(
+				() => {
+					this.#pendingStops.delete(released);
+					this.#pendingStops.delete(held.stopped);
+					if (this.#heldRunners.get(backendId) === held) this.#heldRunners.delete(backendId);
+				},
+				() => {}
+			);
+		}
+		const runner = this.#runners.get(backendId);
+		if (runner) return runner.requestRebuild();
+		return held !== undefined;
 	}
 
 	/** Resolves once every runner has released ownership and its backend shutdown has settled. */
 	stop(): Promise<void> {
 		if (this.#stopping) return this.#stopping;
 		this.#stopped = true;
-		for (const runner of this.#runners.values()) this.#track(runner.stop());
+		for (const runner of this.#runners.values()) this.#track(runner, runner.stop());
 		this.#runners.clear();
 		this.#stopListening();
 		this.#stopping = Promise.allSettled([...this.#pendingStops]).then((results) => {
@@ -403,7 +426,27 @@ class DerivedIndexRunner {
 	#readinessWords: Int32Array;
 	#readinessBytes: Uint8Array;
 	#readinessEpoch: BigInt64Array;
+	#readinessReloads: BigInt64Array;
+	#resetting?: Promise<void>;
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
+
+	get id() {
+		return this.#registration.backend.id;
+	}
+
+	/** After a failed shutdown on a stopped runner: quiesce the held epoch again and unlock on success. */
+	retryRelease(): Promise<void> {
+		if (!this.#heldLock) return this.#stopResult ?? Promise.resolve();
+		this.#heldLock = false;
+		this.#releaseFailure = undefined;
+		this.#owned = true;
+		this.#release();
+		this.#stopResult = (this.#releasing ?? Promise.resolve()).then(() => {
+			if (this.#releaseFailure) throw this.#releaseFailure;
+		});
+		this.#stopResult.catch(() => {});
+		return this.#stopResult;
+	}
 
 	constructor(
 		logStore: RocksTransactionLogStore,
@@ -421,13 +464,13 @@ class DerivedIndexRunner {
 		this.#epochCounter = new BigInt64Array(
 			logStore.getUserSharedBuffer(`derived-index:${registration.backend.id}:owner-epoch`, new ArrayBuffer(8))
 		);
-		// The notify callback lets a peer's rebuild request wake this runner directly when it owns the index.
 		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => {
 			if (this.#owned) this.wake(true);
 		});
 		const readiness = this.#readinessBuffer;
 		this.#readinessWords = new Int32Array(readiness, 0, READINESS_WORDS);
 		this.#readinessEpoch = new BigInt64Array(readiness, READINESS_EPOCH_OFFSET, 1);
+		this.#readinessReloads = new BigInt64Array(readiness, READINESS_RELOADS_OFFSET, 1);
 		this.#readinessBytes = new Uint8Array(readiness, READINESS_REASON_OFFSET);
 		registration.backend.attach?.({
 			isOwnerEpoch: (epoch) => Atomics.load(this.#epochCounter, 0) === epoch,
@@ -441,7 +484,11 @@ class DerivedIndexRunner {
 
 	wake(fromBackend = false) {
 		if (this.#stopped || this.#rebuilding) return;
-		if (this.status.state === 'unavailable') return;
+		if (this.status.state === 'unavailable') {
+			if (this.#heldLock || this.getReadiness().state === 'unavailable') return;
+			// A peer revived the index; drop the local latch so this runner can take over again.
+			this.status = { state: 'idle' };
+		}
 		// A shared rebuild request must reach an owner parked on backpressure or backoff at its next wake.
 		const requested = Atomics.load(this.#readinessWords, READINESS_REBUILD_REQUEST) === 1;
 		if (!requested) {
@@ -592,6 +639,13 @@ class DerivedIndexRunner {
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			const shared = this.getReadiness();
+			const reloadsThrough = Number(Atomics.load(this.#readinessReloads, 0));
+			if (reloadsThrough > 0)
+				for (const logName of this.#logStore.rootStore.listLogs())
+					this.#reloadsHandledThrough.set(
+						logName,
+						Math.max(this.#reloadsHandledThrough.get(logName) ?? 0, reloadsThrough)
+					);
 			if (this.#takeSharedRebuildRequest()) {
 				this.#rebuildRequested = true;
 				this.#rebuildAttempts = 0;
@@ -651,6 +705,8 @@ class DerivedIndexRunner {
 		this.#offeredCursors = [{ cursor: cloneCursor(cursor), bytes: 0, mutations: 0, acceptedAt: this.#options.now() }];
 		this.#unanchoredBytes = 0;
 		this.#unanchoredMutations = 0;
+		this.#unflushedBytes = 0;
+		this.#unflushedMutations = 0;
 		this.#pendingBatch = undefined;
 		this.#carried = [];
 		this.#pendingTimestamps.clear();
@@ -982,7 +1038,6 @@ class DerivedIndexRunner {
 
 	#newChunk(rebuild: boolean): Chunk {
 		const batch = { ownerEpoch: this.#ownerEpoch!, transactions: [] } as unknown as DerivedIndexBatch;
-		// Non-enumerable: the enumerable batch shape is the Stage 1 contract.
 		Object.defineProperties(batch, {
 			records: { value: [], writable: true, configurable: true },
 			bytes: { value: 0, writable: true, configurable: true },
@@ -1000,9 +1055,10 @@ class DerivedIndexRunner {
 			return record;
 		}
 		const current = this.#resolveRecord(tableId, collectedKey.recordId);
-		const state: DerivedIndexState = current
-			? this.#project(chunk, tableId, current.value, current.version, current.size ?? collectedKey.sizeHint)
-			: { kind: 'absent' };
+		const state: DerivedIndexState =
+			current && current.value != null
+				? this.#project(chunk, tableId, current.value, current.version, current.size ?? collectedKey.sizeHint)
+				: { kind: 'absent' };
 		record = { tableId, recordId: collectedKey.recordId, logVersion: collectedKey.logVersion, state };
 		byRecord.set(key, record);
 		chunk.batch.records.push(record);
@@ -1161,14 +1217,15 @@ class DerivedIndexRunner {
 		this.wake(true);
 	}
 
+	/** `reason` is shareable; the error's message stays in the local status and log, since backend messages can quote record content. */
 	#fail(reason: string, error: unknown) {
 		const detail = error instanceof Error && error.message ? `${reason}: ${error.message}` : reason;
-		this.#needsRebuild(detail, error);
+		this.#needsRebuild(detail, error, reason);
 	}
 
-	#needsRebuild(reason: string, error?: unknown) {
+	#needsRebuild(reason: string, error?: unknown, shared = reason) {
 		if (this.#rebuilding) {
-			this.#rebuildFailed(reason, error);
+			this.#rebuildFailed(reason, error, shared);
 			return;
 		}
 		if (this.status.state !== 'needs-rebuild')
@@ -1179,25 +1236,25 @@ class DerivedIndexRunner {
 		if (this.#canRebuild()) {
 			// A failure after a rebuild but before `ready` is that rebuild failing late; it counts against the cap.
 			if (this.#rebuildAttempts >= this.#options.maxRebuildAttempts) {
-				this.#becomeUnavailable(reason, error);
+				this.#becomeUnavailable(reason, error, shared);
 				return;
 			}
-			this.#publishReadiness('needs-rebuild', reason);
+			this.#publishReadiness('needs-rebuild', shared);
 			this.#rebuildRequested = true;
 			this.#scheduleRebuild();
 			return;
 		}
-		this.#publishReadiness('needs-rebuild', reason);
+		this.#publishReadiness('needs-rebuild', shared);
 		this.#release();
 	}
 
-	#becomeUnavailable(reason: string, error?: unknown) {
+	#becomeUnavailable(reason: string, error?: unknown, shared = reason) {
 		logger.error(
 			`Derived index '${this.#registration.backend.id}' is unavailable after ${this.#rebuildAttempts} rebuild attempts: ${reason}`,
 			error
 		);
 		this.status = { state: 'unavailable', reason, ownerEpoch: this.#ownerEpoch };
-		this.#publishReadiness('unavailable', reason);
+		this.#publishReadiness('unavailable', shared);
 		this.#release();
 	}
 
@@ -1271,7 +1328,11 @@ class DerivedIndexRunner {
 			},
 			(error) => {
 				if (!this.#live(generation)) return;
-				this.#rebuildFailed(error instanceof Error && error.message ? error.message : String(error), error);
+				this.#rebuildFailed(
+					error instanceof Error && error.message ? error.message : String(error),
+					error,
+					'rebuild attempt failed'
+				);
 			}
 		);
 	}
@@ -1289,7 +1350,12 @@ class DerivedIndexRunner {
 		this.#ownerEpoch = this.#mintEpoch();
 		this.status = { state: 'rebuilding', ownerEpoch: this.#ownerEpoch };
 		this.#publishReadiness('rebuilding');
-		await backend.reset!(this.#ownerEpoch);
+		this.#resetting = Promise.resolve(backend.reset!(this.#ownerEpoch));
+		try {
+			await this.#resetting;
+		} finally {
+			this.#resetting = undefined;
+		}
 		if (!this.#live(generation)) return;
 		if (backend.getDurableCursor() !== undefined) throw new Error('backend kept a durable cursor after reset');
 		const boundary = this.#captureBoundary();
@@ -1371,6 +1437,7 @@ class DerivedIndexRunner {
 		// Compared against transaction timestamps, which are wall-clock milliseconds; the injectable
 		// budget clock may be monotonic and must not be used here.
 		const captured = Date.now();
+		Atomics.store(this.#readinessReloads, 0, BigInt(Math.floor(captured)));
 		for (const logName of this.#logStore.rootStore.listLogs()) {
 			this.#reloadsHandledThrough.set(logName, Math.max(this.#reloadsHandledThrough.get(logName) ?? 0, captured));
 			let first: number | undefined;
@@ -1391,12 +1458,12 @@ class DerivedIndexRunner {
 		return boundary;
 	}
 
-	#rebuildFailed(reason: string, error?: unknown) {
+	#rebuildFailed(reason: string, error?: unknown, shared = reason) {
 		this.#rebuilding = false;
 		this.#rebuildWaiter?.();
 		this.#discardProgress();
 		if (this.#rebuildAttempts >= this.#options.maxRebuildAttempts) {
-			this.#becomeUnavailable(reason, error);
+			this.#becomeUnavailable(reason, error, shared);
 			return;
 		}
 		logger.error(
@@ -1404,7 +1471,7 @@ class DerivedIndexRunner {
 			error
 		);
 		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
-		this.#publishReadiness('needs-rebuild', reason);
+		this.#publishReadiness('needs-rebuild', shared);
 		this.#rebuildRequested = true;
 		if (this.#owned) this.#scheduleRebuild();
 	}
@@ -1481,7 +1548,9 @@ class DerivedIndexRunner {
 		} catch (error) {
 			logger.warn?.(`Derived index '${backend.id}' shutdown flush request threw`, error);
 		}
-		this.#releasing = this.#quiesce(epoch).then(unlock, hold);
+		// An in-flight destructive reset must finish before its epoch is quiesced and the lock released.
+		const resetting = (this.#resetting ?? Promise.resolve()).then(undefined, () => {});
+		this.#releasing = resetting.then(() => this.#quiesce(epoch)).then(unlock, hold);
 	}
 }
 
@@ -1504,7 +1573,6 @@ function readinessBuffer(
 	) as SharedReadinessBuffer;
 }
 
-// Keyed by store and backend id: the binding returns a fresh wrapper over the same memory per lookup.
 const readinessViews = new WeakMap<object, Map<string, [Int32Array, BigInt64Array, Uint8Array]>>();
 
 function readReadiness(words: Int32Array, epoch: BigInt64Array, bytes: Uint8Array): DerivedIndexReadiness {

@@ -532,7 +532,8 @@ ownership check after every `await`:
    transaction (`getRange({ log, start: 0 })`); a log with no committed transaction is omitted and
    must retain its beginning (`oldestSequenceNumber === 1`), otherwise the attempt fails closed;
 4. scan every registered table through `scanRecords` (opened after the capture; a record whose
-   `value` is null is a tombstone and is skipped), project, and deliver chunks bounded by `maxChunkRecords`, `maxChunkBytes` and `maxMillisecondsPerTurn` with
+   `value` is null is a tombstone and is skipped, as the live resolver's null value resolves to
+   `absent`), project, and deliver chunks bounded by `maxChunkRecords`, `maxChunkBytes` and `maxMillisecondsPerTurn` with
    `through` absent, yielding between chunks and waiting for a backend wake on `deferred`;
 5. deliver one final chunk (possibly empty) carrying `through` = boundary. Until that batch is
    durable the backend's cursor stays `undefined`, so a crash mid-rebuild resumes as a fresh
@@ -548,7 +549,10 @@ boundary derived from staged or uncommitted positions is out of scope (see
 boundary capture — the one that triggered the rebuild and any older retained one — is treated as
 progress-only by that rebuild's replay, since the scan that follows the capture covers it; markers
 are `LOCAL_ONLY`, so the wall-clock capture time (`Date.now()`, the clock transaction timestamps
-use, not the injectable budget clock) is compared against the local log's transaction timestamps. A
+use, not the injectable budget clock) is compared against the local log's transaction timestamps.
+The capture time is also published in the shared readiness record, so an owner that takes over
+before the replay has passed the marker inherits the bound instead of rebuilding again; a process
+restart in that window costs one extra rebuild. A
 reload committed after the capture triggers another rebuild. Residual: a reload staged before the
 capture and committed after it, with a timestamp below the capture, is skipped; that is the same
 staged-transaction window the conservative boundary accepts for ordinary entries.
@@ -590,12 +594,15 @@ reset the index. Three mechanisms close it:
   runtime or runner — repeated calls return the same promise — that resolves after every backend
   settled (a still-draining backend is waited for even when another already failed) and
   **rejects** when any shutdown failed, so a caller cannot close storage on a fulfilled promise
-  while a backend is still draining into it. Table registrations are released only after the
+  while a backend is still draining into it. A release that overlaps an in-flight `reset` waits for
+  the reset before quiescing and unlocking. Table registrations are released only after the
   runner's backend settled, so an eviction committed during the drain still writes the marker the
   next owner replays. The runner that holds a lock after a failed shutdown can be revived by
   `requestRebuild`, which resumes under the same epoch and retries that epoch's quiescence before
-  minting a successor and resetting; there is no automatic bounded hold. A failed shutdown stays in
-  the runtime-wide `stop()` wait, so a later `stop()` keeps reporting it.
+  minting a successor and resetting; a stopped or unregistered runner in that state stays reachable
+  through the runtime's `requestRebuild`, which retries the release so a re-registered runner can
+  acquire. There is no automatic bounded hold. A failed shutdown stays in the runtime-wide
+  `stop()` wait, so a later `stop()` keeps reporting it.
 - **Epoch fence.** `attach(host)` gives the backend `isOwnerEpoch(epoch)`, an `Atomics` read of the
   shared owner-epoch counter. The backend checks it before each apply, after each await, and in
   flush completions; a completion for a superseded epoch is dropped. Each rebuild attempt mints a
@@ -615,7 +622,11 @@ and the exported `readDerivedIndexReadiness(logStore, id)` read it synchronously
 query path can choose between a 503 and a stale-but-usable answer without holding the runner lock.
 Reads are bounded: a publication abandoned mid-write by a dead owner reads as `unknown` (never a
 spin), and the next owner's publication repairs the sequence. `unknown` also means no runtime in
-this process has evaluated the index yet. `ready` is published on a validated acquisition and after
+this process has evaluated the index yet. The reason published for a backend or log fault is the
+runtime's own description, never the backend error's message, which can quote record content; the
+message stays in the owner's local status and log. A runner that latched a shared `unavailable`
+drops the latch on its next wake once the shared state has moved on, so a peer's revival does not
+strand the other workers. `ready` is published on a validated acquisition and after
 a rebuild's final barrier; `rebuilding` before the destructive reset. A fault detected in the middle
 of a drain turn (a corrupt frame surfacing from the iterator) starts the rebuild from inside that
 turn; the turn's generation check prevents its end-of-log path from publishing `ready` over the
