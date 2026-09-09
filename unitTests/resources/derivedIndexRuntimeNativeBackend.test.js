@@ -113,7 +113,7 @@ class FakeLogStore {
 class AsyncBackend {
 	constructor(id, { cursor, applyDelay = 0, capacity = Infinity, onReset, applyRecord } = {}) {
 		this.id = id;
-		this.queued = true;
+		this.asynchronous = true;
 		this.cursor = cursor;
 		this.deliveries = [];
 		this.queue = [];
@@ -1080,7 +1080,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 
 	it('fails closed on a rejected flush request without an unhandled rejection', async () => {
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
-		const backend = new SyncBackend('flush-reject', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		const backend = new AsyncBackend('flush-reject', { cursor: cursor(10) });
 		backend.flush = () => Promise.reject(new Error('msync failed'));
 		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
 			scanRecords: undefined,
@@ -1088,7 +1088,14 @@ describe('DerivedIndexRuntime for native backends', () => {
 		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 1 }));
 
 		await waitFor(() => runtime.getStatus('flush-reject')?.state === 'needs-rebuild');
-		assert.match(runtime.getStatus('flush-reject').reason, /msync failed/);
+		assert.match(runtime.getStatus('flush-reject').reason, /backend flush request rejected/);
+		const shared = runtime.getReadiness('flush-reject');
+		assert.strictEqual(shared.state, 'needs-rebuild');
+		assert.strictEqual(
+			shared.reason,
+			'backend flush request rejected',
+			'the backend message never reaches the shared record'
+		);
 		await runtime.stop();
 	});
 
@@ -1295,13 +1302,65 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
-	it('rejects a queued backend that lacks the fence, barrier or quiescence hooks', () => {
+	it('rejects an asynchronous backend that lacks the fence, barrier or quiescence hooks', () => {
 		const store = new FakeLogStore(new Map([[10, []]]));
 		const { runtime } = runtimeFor(store, new Map());
 		const incomplete = new SyncBackend('incomplete-queued', cursor(10));
-		incomplete.queued = true;
+		incomplete.asynchronous = true;
 		assert.throws(() => runtime.register(registration(incomplete)), /must implement attach\(\)/);
 		assert.strictEqual(runtime.getStatus('incomplete-queued'), undefined);
+	});
+
+	it('fails closed when a backend that declared no asynchronous effects returns a promise from flush', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const backend = new SyncBackend('undeclared-async', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		backend.flush = () => Promise.resolve();
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			scanRecords: undefined,
+		});
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 1 }));
+		await waitFor(() => runtime.getStatus('undeclared-async')?.state === 'needs-rebuild');
+		assert.match(runtime.getStatus('undeclared-async').reason, /declared no asynchronous effects/);
+		await runtime.stop();
+	});
+
+	it('waits for the shutdown flush of an asynchronous backend before releasing the lock', async () => {
+		const records = new Map([['1:a', { version: 20, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const backend = new AsyncBackend('flush-before-unlock', { cursor: cursor(10), applyDelay: 2 });
+		let finishFlush;
+		const events = [];
+		backend.flush = (reason) => {
+			backend.flushes.push(reason);
+			if (reason !== 'shutdown') return;
+			return new Promise((resolve) => (finishFlush = () => (events.push('flush-done'), resolve())));
+		};
+		backend.shutdown = async () => {
+			events.push('shutdown');
+		};
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 1000 }));
+		await waitFor(() => backend.deliveries.length === 1);
+		const stopped = runtime.stop();
+		await sleep(10);
+		assert.deepStrictEqual(events, []);
+		assert.strictEqual(store.locks.size, 1);
+		finishFlush();
+		await stopped;
+		assert.deepStrictEqual(events, ['flush-done', 'shutdown']);
+		assert.strictEqual(store.locks.size, 0);
+	});
+
+	it('leaves no readiness subscription or table admission behind when registration fails', () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const { runtime } = runtimeFor(store, new Map());
+		const throwing = new SyncBackend('partial-registration', cursor(10));
+		throwing.onStateChange = () => {
+			throw new Error('subscribe failed');
+		};
+		assert.throws(() => runtime.register(registration(throwing, { maxLagMilliseconds: 50 })), /subscribe failed/);
+		assert.strictEqual(store.sharedBuffers.get('derived-index:partial-registration:readiness').callbacks.size, 0);
+		assert.strictEqual(hasDerivedIndexRegistration(store, 1), false);
 	});
 
 	it('reads a publication abandoned mid-write as unknown instead of spinning', () => {

@@ -352,19 +352,19 @@ interface DerivedIndexBackendHost {
 
 interface SynchronousDerivedIndexBackend {
 	readonly id: string;
-	queued?: false;
+	asynchronous?: false;
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult; // applies before returning
 	onStateChange(wake: (change?: 'changed' | 'accepted-work-lost' | 'failed') => void): () => void;
 	reset?(ownerEpoch: bigint): void | Promise<void>;
 	attach?(host: DerivedIndexBackendHost): void;
-	flush?(reason: 'age' | 'threshold' | 'shutdown'): void | Promise<void>;
+	flush?(reason: 'age' | 'threshold' | 'shutdown'): void; // must complete before returning
 	shutdown?(ownerEpoch: bigint): void | Promise<void>;
 }
 
-interface QueuedDerivedIndexBackend {
+interface AsynchronousDerivedIndexBackend {
 	readonly id: string;
-	readonly queued: true;
+	readonly asynchronous: true; // any effect that survives a method return
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult; // enqueues; applies asynchronously
 	onStateChange(wake: (change?: 'changed' | 'accepted-work-lost' | 'failed') => void): () => void;
@@ -374,7 +374,7 @@ interface QueuedDerivedIndexBackend {
 	shutdown(ownerEpoch: bigint): void | Promise<void>; // required: the quiescence handshake
 }
 
-type DerivedIndexBackend = SynchronousDerivedIndexBackend | QueuedDerivedIndexBackend;
+type DerivedIndexBackend = SynchronousDerivedIndexBackend | AsynchronousDerivedIndexBackend;
 
 type DerivedIndexRegistration = {
 	backend: DerivedIndexBackend;
@@ -385,17 +385,22 @@ type DerivedIndexRegistration = {
 
 `records` and `bytes` are non-enumerable properties so the enumerable batch shape stays the Stage 1
 `{ ownerEpoch, transactions, through }` contract; a backend reads them like any other field. The
-contract is split by capability: a **synchronous-durable** backend applies inside `deliver()` and
-leaves no work behind at release, so the fence, barrier request and quiescence handshake are
-optional for it (a durable cursor that trails offered progress is still allowed); a **queued**
-backend declares `queued: true`, and registration rejects it unless `attach`, `flush` and
-`shutdown` are all implemented, because without them a queued apply can survive an ownership
-handoff and land in the next owner's generation. `attach(host)` hands the backend a
-`DerivedIndexBackendHost` whose `isOwnerEpoch(epoch)` is the fence a queued apply or flush
-completion checks before it mutates or publishes, and whose `getReadiness()` reads the shared
-record without holding the runner lock. A backend that queues without declaring it
-violates the contract. `reset` is optional for both: a backend that omits it keeps Stage 1's
-terminal `needs-rebuild`.
+contract is split on **asynchronous effects** — work or publication that survives a method return
+— because that, not the apply style, is what can outlive an ownership handoff. A **synchronous**
+backend applies and makes the batch durable inside `deliver()`, completes any `flush` before
+returning, and publishes nothing on its own, so the fence, barrier request and quiescence
+handshake are optional for it; a synchronous backend that returns a promise from `flush` is failed
+closed as an undeclared asynchronous backend. An **asynchronous** backend — a queued apply, a
+barrier that completes later, a durable cursor that trails delivery — declares `asynchronous:
+true`, and registration rejects it unless `attach`, `flush` and `shutdown` are all implemented,
+because without them its work can land in the next owner's generation. Release awaits the shutdown
+flush and any in-flight reset before quiescing the epoch and unlocking. `reset` is optional for
+both: a backend that omits it keeps Stage 1's terminal `needs-rebuild`; a backend that implements
+it owns its crash safety — its first durable action must invalidate the cursor or its generation
+before anything destructive, so an interrupted reset reopens as cursorless rather than as a valid
+cursor over partially destroyed state (shared readiness is process memory and is no evidence after
+a restart). Registration that fails part-way (an `attach` or `onStateChange` that throws) leaves
+no readiness subscription or table admission behind.
 
 `DerivedIndexRegistration` belongs to Harper. Its projection functions are compiled from schema
 attributes and execute before `deliver()`, so the backend receives only its declared materialized
@@ -810,12 +815,16 @@ backend can defer. Timer-coalesced idle flushing, also raised by the planning re
 is the do-less form of idle completion: an immediate barrier at every idle pass would cost one barrier
 per write for arrivals spaced just beyond drain completion.
 
-**Different layer, revisited (adopted from the planning recheck).** Enforce the handoff invariant at
-the backend contract rather than by documentation: a queued backend must declare itself and must
-provide the fence, barrier request and quiescence handshake, checked at registration. Adopted
-because there is no shipped backend yet, so the contract can still be made strict at zero
-migration cost, and because an optional `shutdown` let a queuing backend compile with no fence at
-all.
+**Different layer, revisited (adopted from two planning rechecks).** Enforce the handoff invariant
+at the backend contract rather than by documentation: a backend with asynchronous effects must
+declare itself and must provide the fence, barrier request and quiescence handshake, checked at
+registration. Adopted because there is no shipped backend yet, so the contract can still be made
+strict at zero migration cost, and because an optional `shutdown` let a queuing backend compile
+with no fence at all. The second recheck moved the discriminant from "queued apply" to "any effect
+that survives a method return" — a synchronous apply with an asynchronous flush was the gap — and
+added the reset crash-safety obligation. Its remaining suggestions were declined on facts: a
+commit-time admission recheck only shrinks a staging-to-commit window that the budget and
+hysteresis already dwarf; a native-backend restart test needs a native backend, which #2430 owns.
 
 **Different layer, for the lag policy (adopted from its planning gate).** Gate at the staging layer
 (`_writeUpdate` / `_writeDelete`) rather than at the public verbs: `create()`, `loadAsInstance:

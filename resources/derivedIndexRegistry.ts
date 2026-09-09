@@ -1,10 +1,7 @@
 const registrations = new WeakMap<object, Map<number, number>>();
 const admissions = new WeakMap<object, Map<number, Array<() => string | undefined>>>();
 
-/**
- * Count a backend's tables so the write path can cheaply tell which tables have a derived index.
- * `admission` returns a reason when writes to those tables must currently be rejected.
- */
+/** `admission` returns a reason while writes to these tables must be rejected. */
 export function registerDerivedIndexTables(
 	auditStore: object,
 	tableIds: Iterable<number>,
