@@ -30,6 +30,8 @@ import mqtt, { type IClientOptions, type MqttClient } from 'mqtt';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
+// @ts-expect-error lifecycle.mjs has no type declarations; runtime resolves fine
+import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa681-mqtt-shared-subscriptions');
 
@@ -39,6 +41,7 @@ const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === '
 
 const STREAM_TOPIC = 'Events/stream';
 const Q3_TOPIC = 'Events/q3stream';
+const Q3_SHARE_TOPIC = `$share/g1/${Q3_TOPIC}`;
 const QOS1_TOPIC = 'Events/qos1stream';
 const SHARE_TOPIC = '$share/g1/Events/stream';
 const SUBACK_TOPIC_FILTER_INVALID = 0x8f; // MQTT v5
@@ -199,21 +202,7 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 		const wsScheme = httpURL.startsWith('https') ? 'wss' : 'ws';
 		mqttURL = `${httpURL.replace(/^https?/, wsScheme)}/mqtt`;
 
-		let ready = false;
-		const deadline = Date.now() + 120_000;
-		while (Date.now() < deadline) {
-			try {
-				const probe = await client.reqRest('/Events/').timeout(3_000);
-				if (probe.status !== 404) {
-					ready = true;
-					break;
-				}
-			} catch {
-				/* not ready yet */
-			}
-			await sleep(250);
-		}
-		ok(ready, 'REST route /Events/ never became available within 120s — the fixture did not install');
+		await waitForRouteReady(client, '/Events/', 120_000);
 
 		try {
 			const probe = await connect(mqttURL, baseOpts({ clientId: 'qa681-probe' }));
@@ -318,7 +307,7 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 				for (let i = 0; i < 4; i++) {
 					const c = await connect(mqttURL, baseOpts({ clientId: `qa681-q3-group-${i}` }));
 					groupClients.push(c);
-					groupSubAcks.push(await subscribe(c, SHARE_TOPIC, 1));
+					groupSubAcks.push(await subscribe(c, Q3_SHARE_TOPIC, 1));
 					groupCollectors.push(collectMessages(c));
 				}
 				await subscribe(ordinary, Q3_TOPIC, 1);
@@ -338,7 +327,6 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 					`[QA-681][Q3] ordinary recv=${ordinarySeqs.length}/${M}; refused-client recv counts=${JSON.stringify(groupCounts)}`
 				);
 
-				// Floor: without it a run that published nothing would satisfy the zeros below.
 				// The zeros must come from a refusal, not from a subscribe that timed out: same zero,
 				// different reason.
 				for (const [i, r] of groupSubAcks.entries())

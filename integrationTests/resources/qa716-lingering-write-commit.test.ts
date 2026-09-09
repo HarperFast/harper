@@ -31,6 +31,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
+// @ts-expect-error lifecycle.mjs has no type declarations; runtime resolves fine
+import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa716-lingering-write-commit');
 const SCHEMA = 'data';
@@ -66,21 +68,7 @@ suite(`QA-716 lingering-write-commit vs staged writes [${ENGINE}]`, { skip: skip
 		proc?.stdout?.on('data', (d: Buffer) => (procOutput += d.toString()));
 		proc?.stderr?.on('data', (d: Buffer) => (procOutput += d.toString()));
 
-		let ready = false;
-		const deadline = Date.now() + 120_000;
-		while (Date.now() < deadline) {
-			try {
-				const probe = await client.reqRest('/Orders/').timeout(2000);
-				if (probe.status !== 404) {
-					ready = true;
-					break;
-				}
-			} catch {
-				/* not ready yet */
-			}
-			await sleep(250);
-		}
-		ok(ready, 'REST route /Orders/ never became available within 120s — the fixture did not install');
+		await waitForRouteReady(client, '/Orders/', 120_000);
 	});
 
 	after(async () => {
@@ -255,13 +243,24 @@ suite(`QA-716 lingering-write-commit vs staged writes [${ENGINE}]`, { skip: skip
 		// once the monitor reaches the abandoned transaction, so there is no event to converge on.
 		await sleep(Math.max(6000, MAX_TXN_OPEN_MS * 6));
 		const log = fullLog();
-		// Diagnostics. The abort line is not asserted absent: any other transaction in the run may
-		// legitimately cross the deliberately-low threshold and log it.
 		const abortedLine = /Transaction was open too long and has been aborted/i.test(log);
 		const releasedLine = /Read iterators held a committed transaction.s snapshot/i.test(log);
 		console.log(
 			`[QA-716 Q3 ${ENGINE}] monitor lines seen: aborted-with-writes-discarded=${abortedLine} released-handle-only=${releasedLine}`
 		);
+		// Without this the arm is blind: a change that drops the lingering transaction from write
+		// supervision, or renames storage.maxTransactionOpenTime, would leave it sleeping and then
+		// re-reading writes Q1 already proved durable — green having tested only elapsed time. The
+		// line is #1860's release-only branch (resources/DatabaseTransaction.ts), so it is asserted
+		// on RocksDB alone; LMDB never defers a commit and correctly never logs it.
+		if (ENGINE === 'rocksdb') {
+			ok(
+				releasedLine,
+				'the long-transaction monitor must have reached the abandoned iterator and released its snapshot'
+			);
+		}
+		// The abort line is not asserted absent: any other transaction in the run may legitimately
+		// cross the deliberately-low threshold and log it.
 
 		await assertOrdersDurablyFulfilled(q1FulfilledIds);
 		const inv = (await dump('/DumpInventory/')).find((r: any) => r.sku === q1Sku);

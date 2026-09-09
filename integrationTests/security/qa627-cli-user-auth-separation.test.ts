@@ -41,11 +41,12 @@ import { resolve, join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { setTimeout as sleep } from 'node:timers/promises';
 import request from 'supertest';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
+// @ts-expect-error lifecycle.mjs has no type declarations; runtime resolves fine
+import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -112,7 +113,6 @@ suite(
 			}
 		}
 
-		/** `user_info` is a self lookup, so it needs no super_user permission. */
 		async function canAuthenticate(username: string, password: string): Promise<number> {
 			const header = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
 			const res = await request(ctx.harper.operationsAPIURL)
@@ -139,21 +139,7 @@ suite(
 			cliHome = join(ctx.harper.dataRootDir, 'qa627-cli-home');
 			await mkdir(cliHome, { recursive: true });
 
-			let ready = false;
-			const deadline = Date.now() + 120_000;
-			while (Date.now() < deadline) {
-				try {
-					const probe = await client.reqRest('/FirstTable/').timeout(2000);
-					if (probe.status !== 404) {
-						ready = true;
-						break;
-					}
-				} catch {
-					/* not ready yet */
-				}
-				await sleep(250);
-			}
-			assert.ok(ready, 'REST route /FirstTable/ never became available within 120s — the fixture did not install');
+			await waitForRouteReady(client, '/FirstTable/', 120_000);
 
 			await client
 				.req()
@@ -231,13 +217,23 @@ suite(
 		});
 
 		test('admin credentials embedded in the target= URL authenticate add_user', async () => {
-			const targetUrl = new URL(ctx.harper.operationsAPIURL);
-			targetUrl.username = ctx.harper.admin.username;
-			targetUrl.password = ctx.harper.admin.password;
+			// Built by hand rather than through URL setters, which percent-encode userinfo while
+			// extractTargetCredentials (bin/cliCredentials.ts) returns url.password UNDECODED — so a
+			// round trip would send `pw%40x` for a password containing `@` and this arm would report a
+			// #1873 regression that did not happen. The guard fails loudly if a future harness default
+			// makes the literal form ambiguous instead of letting it read as a product failure.
+			const { username, password } = ctx.harper.admin;
+			assert.doesNotMatch(
+				`${username}:${password}`,
+				/[@/?#[\]%\s]/,
+				'the harness admin credentials must be literal-safe in URL userinfo for this arm to mean anything'
+			);
+			const url = new URL(ctx.harper.operationsAPIURL);
+			const targetUrl = `${url.protocol}//${username}:${password}@${url.host}${url.pathname}`;
 
 			const { code, stdout, stderr } = await runCli([
 				'add_user',
-				`target=${targetUrl.toString()}`,
+				`target=${targetUrl}`,
 				`username=${URL_AUTH_USER}`,
 				`password=${URL_AUTH_PW}`,
 				`role=${ROLE}`,
