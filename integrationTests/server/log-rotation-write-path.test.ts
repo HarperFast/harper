@@ -8,7 +8,7 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { join, resolve } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -53,16 +53,6 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 		rmSync(rotatedDir, { recursive: true, force: true });
 	});
 
-	function archivePaths(): string[] {
-		try {
-			return readdirSync(rotatedDir)
-				.filter((name) => name.endsWith('.log') && name !== 'hdb.log')
-				.map((name) => join(rotatedDir, name));
-		} catch {
-			return [];
-		}
-	}
-
 	function compressedArchivePaths(): string[] {
 		try {
 			return readdirSync(rotatedDir)
@@ -73,6 +63,36 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 		}
 	}
 
+	/**
+	 * One entry per archived generation, keyed by its archive name and read from the compressed copy
+	 * when there is one. Publishing writes the `.gz` and then unlinks the plain archive, so a listing
+	 * taken across that window holds both representations of one generation - counting them both
+	 * would report every record in it twice.
+	 */
+	function archivedGenerations(): Map<string, string> {
+		const byName = new Map<string, string>();
+		let names: string[];
+		try {
+			names = readdirSync(rotatedDir);
+		} catch {
+			return byName;
+		}
+		for (const name of names) {
+			const compressed = name.endsWith('.gz');
+			const generation = compressed ? name.slice(0, -3) : name;
+			if (!generation.endsWith('.log') || generation === 'hdb.log') continue;
+			if (!compressed && byName.has(generation)) continue;
+			try {
+				const raw = readFileSync(join(rotatedDir, name));
+				byName.set(generation, compressed ? gunzipSync(raw).toString('utf8') : raw.toString('utf8'));
+			} catch {
+				// Compressed or reclaimed between the listing and the read; the other representation
+				// carries the same records.
+			}
+		}
+		return byName;
+	}
+
 	test('bounds every generation and keeps every request marker exactly once', { timeout: 120_000 }, async () => {
 		for (let i = 0; i < REQUEST_COUNT; i++) {
 			const response = await fetch(new URL(`/LogBurst/request-${i}`, ctx.harper.httpURL));
@@ -80,8 +100,7 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 			await response.json();
 		}
 
-		const archives = archivePaths();
-		ok(archives.length > 0, 'expected the write path to rotate the log inside one audit interval');
+		ok(archivedGenerations().size > 0, 'expected the write path to rotate the log inside one audit interval');
 
 		// Compression only happens after every writing thread has answered that it released the
 		// archived inode, so a published .gz is the coordinator working through the real thread mesh.
@@ -91,28 +110,22 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 		}
 		ok(compressedArchivePaths().length > 0, 'expected at least one archive to be compressed and published');
 
+		// One listing for both assertions below, so a rotation between them cannot make the size check
+		// and the marker count disagree about which generations exist.
+		const generations = archivedGenerations();
+		generations.set('hdb.log', readFileSync(join(logDir, 'hdb.log'), 'utf8'));
+
 		// Every generation is bounded by the cap plus one check quantum and one in-flight payload per
-		// writing thread — a function of maxSize and thread count, never of how fast the log is written.
+		// writing thread — a function of maxSize and thread count, never of how fast the log is
+		// written. Measured on the records, not on the file, so a compressed generation is held to the
+		// same bound as a plain one.
 		const bound = MAX_SIZE_BYTES * 4;
-		for (const archive of [...archives, join(logDir, 'hdb.log')]) {
-			let size: number;
-			try {
-				size = statSync(archive).size;
-			} catch {
-				continue;
-			}
-			ok(size < bound, `${archive} reached ${size} bytes against a ${MAX_SIZE_BYTES}-byte cap`);
+		for (const [name, content] of generations) {
+			const size = Buffer.byteLength(content);
+			ok(size < bound, `${name} reached ${size} bytes against a ${MAX_SIZE_BYTES}-byte cap`);
 		}
 
-		const contents = [join(logDir, 'hdb.log'), ...archives, ...compressedArchivePaths()]
-			.map((file) => {
-				try {
-					return file.endsWith('.gz') ? gunzipSync(readFileSync(file)).toString('utf8') : readFileSync(file, 'utf8');
-				} catch {
-					return '';
-				}
-			})
-			.join('');
+		const contents = [...generations.values()].join('');
 		for (let i = 0; i < REQUEST_COUNT; i++) {
 			const occurrences = contents.split(`rotation-marker request-${i}:0 `).length - 1;
 			strictEqual(occurrences, 1, `request-${i}'s first marker appeared ${occurrences} times across generations`);

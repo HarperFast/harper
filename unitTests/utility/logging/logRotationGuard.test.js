@@ -300,6 +300,21 @@ describe('Test log rotation on the write path (#1877)', () => {
 		assert.doesNotMatch(fs.readFileSync(archivePath, 'utf8'), /after the announced rotation/);
 	});
 
+	it('recreates a rotation directory that was removed, instead of reading it as a lost race', () => {
+		// rename() reports ENOENT for a missing source and for a missing destination alike. Reading a
+		// missing destination as "another thread already rotated this generation" clears the cap check
+		// on every pass, so the log grows without a bound and without a diagnostic.
+		const { logger, logPath, rotatedDir } = newCase({ maxSize: '4K' });
+		logger.error('one line so the rotated directory exists');
+		fs.removeSync(rotatedDir);
+		for (let i = 0; i < 400; i++) logger.error(`removed target line ${i} ${'z'.repeat(60)}`);
+		const size = activeSize(logPath);
+		assert.ok(size < 4 * 4000, `active log grew to ${size} bytes after its rotation directory was removed`);
+		// Recreated on the failure path, so the retry after the cooldown has somewhere to rename to;
+		// recovery from there is the same path the repaired-target case below covers.
+		assert.ok(fs.pathExistsSync(rotatedDir), 'expected the removed rotation directory to be recreated');
+	});
+
 	it('stops growing the log and reports to stdio when the rotation target cannot be written', () => {
 		const { logger, logPath, rotatedDir } = newCase({ maxSize: '4K' });
 		logger.error('one line so the rotated directory exists');

@@ -185,6 +185,24 @@ describe('Test log generation coordinator (#1877)', () => {
 		}
 	});
 
+	it('closes a descriptor whose identity it cannot read rather than answering for it', () => {
+		// openLogFile() leaves the descriptor open when its fstat fails, so a null identity means "open,
+		// generation unknown" — the one state in which answering "released" without releasing lets an
+		// archive be unlinked under this sink.
+		const transport = fakeTransport();
+		const dir = path.join(TEST_ROOT, `unknownIdentity${caseNumber++}`);
+		fs.mkdirpSync(dir);
+		const logPath = path.join(dir, 'hdb.log');
+		fs.writeFileSync(logPath, 'contents\n');
+		let closed = false;
+		coordinator.registerLogSink(logPath, { identity: () => null, close: () => (closed = true) });
+
+		transport.deliverRotation({ request: 'unknown', stale: true });
+
+		assert.ok(closed, 'a sink with an unreadable identity must be closed, not skipped');
+		coordinator.unregisterLogSink(logPath);
+	});
+
 	it('is not required to wait for a sink registered after the announcement', async () => {
 		const transport = fakeTransport({ peers: [], autoRespond: false });
 		const { generation } = newGeneration();

@@ -86,7 +86,17 @@ export function rotateLogFileSync(logPath: string, rotatedLogDir: string, closeL
 	const archivePath = archivePathFor(logPath, rotatedLogDir);
 	renameSync(logPath, archivePath);
 	closeLogFile();
-	return { logPath, archivePath, ino: active.ino, dev: active.dev, generation: nextGenerationId() };
+	// From the archive, not from the stat above: another isolate can rotate this generation away and
+	// its sink recreate the pathname between the two, and then this rename moves an inode the earlier
+	// stat never saw. Announcing that stat's identity would name a generation nobody holds, so every
+	// peer would answer "released" while still appending to the one about to be destroyed.
+	let { ino, dev } = active;
+	try {
+		({ ino, dev } = statSync(archivePath));
+	} catch {
+		// Already claimed by retention or another pass; the pre-rename identity is the best available.
+	}
+	return { logPath, archivePath, ino, dev, generation: nextGenerationId() };
 }
 
 /**
@@ -161,23 +171,22 @@ export async function compressPendingArchives(rotatedLogDir: string, files: stri
 
 // One compression at a time per rotated directory. A small maxSize on a busy instance rotates
 // hundreds of times a second, and a pipeline per rotation would exhaust descriptors and memory long
-// before retention could run. Nothing is queued in memory: whatever this pass does not reach stays
-// on disk as a plain archive, which is what an uncompressed rotation leaves anyway.
+// before retention could run.
 const compressionByDirectory = new Map<string, Promise<any>>();
 
 export function compressArchive(archivePath: string) {
 	const directory = dirname(archivePath);
-	const previous = compressionByDirectory.get(directory) ?? Promise.resolve();
-	const chain = previous.then(
-		() => compressOneArchive(archivePath),
-		() => compressOneArchive(archivePath)
-	);
+	// Declined rather than queued: chaining would grow an unbounded list of pending jobs whenever
+	// rotation outruns gzip. The archive stays on disk exactly as an uncompressed rotation leaves it,
+	// and the audit tick's bounded sweep finds it later.
+	if (compressionByDirectory.has(directory)) return Promise.resolve(archivePath);
+	// The slot is released by the promise this returns, not by a detached continuation: the tick's
+	// sweep awaits each call before making the next, and a slot still held at that point would make
+	// it decline every archive after the first.
+	const chain: Promise<any> = compressOneArchive(archivePath).finally(() => {
+		if (compressionByDirectory.get(directory) === chain) compressionByDirectory.delete(directory);
+	});
 	compressionByDirectory.set(directory, chain);
-	chain
-		.catch(() => {})
-		.then(() => {
-			if (compressionByDirectory.get(directory) === chain) compressionByDirectory.delete(directory);
-		});
 	return chain;
 }
 
@@ -259,10 +268,13 @@ export function createRotationGuard(options: any) {
 			checkAndRotate();
 			rotationPending = false;
 		} catch (error) {
-			// Losing the race is the normal multi-writer outcome, not a failure: another thread (or the
-			// audit tick) renamed the generation between this thread's stat and its rename. The file is
-			// under the cap now, which is all this check wanted.
-			if (error.code === 'ENOENT') {
+			// rename() reports ENOENT for a missing source AND for a missing destination directory, and
+			// only the first is benign. A missing source is the normal multi-writer outcome: another
+			// thread (or the audit tick) renamed the generation between this thread's stat and its
+			// rename, so the file is under the cap now, which is all this check wanted. A missing
+			// destination means no rotation can ever succeed, and treating that as a race would clear
+			// the cap check on every pass and let the log grow without a bound or a diagnostic.
+			if (error.code === 'ENOENT' && !existsSync(logPath)) {
 				closeLogFile();
 				rotationPending = false;
 				return;
@@ -271,6 +283,13 @@ export function createRotationGuard(options: any) {
 			retryAfter = performance.now() + ROTATION_RETRY_COOLDOWN;
 			closeLogFile();
 			report(`Harper cannot rotate its log file: ${error}`);
+			// A rotation target removed under a running instance is recoverable; recreate it here rather
+			// than on every rotation, so the common path keeps costing one stat and one rename.
+			try {
+				mkdirSync(rotatedLogDir, { recursive: true });
+			} catch {
+				// Reported above already; the retry will fail the same way and report again.
+			}
 		} finally {
 			rotating = false;
 		}
