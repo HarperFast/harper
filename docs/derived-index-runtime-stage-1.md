@@ -687,8 +687,9 @@ turn; the turn's generation check prevents its end-of-log path from publishing `
 Opt-in writer backpressure, per registration (`maxLagMilliseconds`, 0 = no policy; a budget below
 two flush ages is raised to that, since catch-up is only proven at a durable barrier). The owner
 measures lag as the longest of three terms — cursor distance behind what it has read, time parked
-on backpressure or the durability ceiling, and time since it last proved catch-up (end of log with
-durable == offered) — because a slow reader that never idles cannot hide from the third term. It
+on backpressure or the durability ceiling, and how long work has been offered or pending without
+catch-up (end of log with durable == offered) being proven — because a slow reader that never
+idles cannot hide from the third term, while a caught-up owner sitting idle reports zero. It
 samples on every drain turn, idle pass and age tick and on its own lag timer while parked, and
 publishes a lag-exceeded word in the shared readiness buffer: set at `lag >= budget`, cleared only
 once this owner has proved catch-up and lag is below half the budget, so the policy neither flaps
