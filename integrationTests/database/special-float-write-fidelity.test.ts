@@ -1,39 +1,31 @@
 /**
  * QA-432 — content-negotiation write-path fidelity for IEEE-754 special floats.
  *
- * A JSON request body cannot represent NaN, ±Infinity or -0, so a JSON write bakes the JSON-spec
- * coercions in before storage ever sees the value. A CBOR or msgpack body can carry them, so a
- * binary write is the only way to put one in front of Harper at all. The record is then read back
- * over CBOR, msgpack and JSON.
+ * JSON cannot represent NaN or ±Infinity, so a JSON write bakes the JSON-spec coercion in before
+ * storage sees the value and a binary body is the only way to put one in front of Harper. -0 is
+ * the exception: `JSON.parse('{"x":-0}').x` is a genuine negative zero, so all three content
+ * types can deliver it and all three are exercised.
  *
  * What a binary read proves, and what it does not. Reads are not served from a write-side object —
  * PrimaryRocksDatabase sets cachePuts=false and invalidates on put, so the first read decodes
  * stored bytes — which is why a binary read recovering the exact value shows storage kept it. The
- * converse does NOT hold: Harper's outbound CBOR/msgpack encoders coerce on the way out too, so a
- * value that comes back changed may have been lost at ingest OR on response encoding, and this
- * suite cannot tell which. Every claim below is therefore about the round trip. A red arm here is
- * not on its own evidence about the write path; check `server/serverHelpers/contentTypes.ts`
- * response encoding before `resources/Table.ts`.
+ * converse does NOT hold: Harper's outbound encoders coerce on the way out too, so a value that
+ * comes back changed may have been lost at ingest OR on response encoding, and this suite cannot
+ * tell which. Every claim here is about the round trip; a red arm is not on its own evidence about
+ * the write path, so check `server/serverHelpers/contentTypes.ts` response encoding before
+ * `resources/Table.ts`.
  *
- * The contract this pins:
- *   - NaN / +Infinity / -Infinity round-trip exactly on a binary read, after a binary write, on
- *     both an open table and one whose attributes are declared Float.
- *   - A JSON read of those flattens to null, per the JSON spec.
- *   - A genuine IEEE-754 -0 on the wire does not survive the round trip: every read, binary and
- *     JSON, returns +0. Benign (-0 === 0 for nearly all consumers) but a real asymmetry against
- *     NaN and the infinities, so it is pinned rather than left to drift.
+ * -0 needs the wire checked, not just the value written. Both binary encoders take an integer fast
+ * path for -0 (`-0 >>> 0 === -0`), so `encode({ x: -0 })` emits unsigned integer 0 and Harper never
+ * sees a negative zero — an arm built on the default encoders pins cbor-x/msgpackr behaviour while
+ * appearing to pin Harper's. cbor-x emits a real float64 under alwaysUseFloat, msgpackr has no such
+ * option so that map is assembled by hand, and JSON.stringify(-0) is "0" so that body is written
+ * out as text. Each arm asserts its request bytes carry a real -0 before reading anything back.
  *
- * -0 needs the wire checked, not just the value written. Both encoders take an integer fast path
- * for -0 (`-0 >>> 0 === -0`), so `encode({ x: -0 })` emits unsigned integer 0 and Harper never
- * sees a negative zero — a -0 arm built on the default encoders pins cbor-x/msgpackr behaviour
- * while appearing to pin Harper's. cbor-x emits a real float64 under alwaysUseFloat; msgpackr has
- * no such option, so the msgpack body for that field is assembled by hand. Either way the arm
- * asserts the request bytes carry float64 -0 before it reads anything back.
- *
- * TypedDoc exists because the open-table path skips per-attribute validation entirely. A declared
- * Float goes through the `typeof value !== 'number'` branch in resources/Table.ts, which admits
- * NaN and the infinities today; running the same contract against it is what would catch a
- * tightening to a finiteness check.
+ * TypedDoc declares every special-float attribute, so its writes reach the per-type validation in
+ * resources/Table.ts — `case 'Float': if (typeof value !== 'number')`, which admits NaN and the
+ * infinities today. Doc leaves them undeclared and skips that branch entirely; running the same
+ * contract against both is what would catch a tightening to a finiteness check.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/database/special-float-write-fidelity.test.ts"
@@ -41,13 +33,14 @@
 import { suite, test, before, after } from 'node:test';
 import { strictEqual, ok, deepStrictEqual } from 'node:assert';
 import { resolve } from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
 import request from 'supertest';
 import { Encoder } from 'cbor-x';
 import { pack as msgpackPack, unpack as msgpackUnpack } from 'msgpackr';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
+// @ts-expect-error utils/lifecycle.mjs has no type declarations; runtime resolves fine
+import { waitForRouteReady } from '../apiTests/utils/lifecycle.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'special-float-write-fidelity');
 const skipSuite = process.platform === 'win32';
@@ -114,24 +107,12 @@ suite(
 			restURL = (client as any).restURL;
 			authHeaders = { Authorization: client.headers.Authorization, Connection: 'close' };
 
-			// A half-started server answers this probe non-200, so anything but 200 keeps polling:
-			// breaking early lands the first PUT before the table exists and reports it as a
-			// write-path defect.
-			const deadline = Date.now() + 30_000;
+			// A half-started server answers non-200, and breaking early would land the first PUT
+			// before the table exists and report it as a write-path defect.
 			for (const table of TABLES) {
-				let lastStatus: number | string = 'no response';
-				let ready = false;
-				while (!ready && Date.now() < deadline) {
-					try {
-						const probe = await client.reqRest(`/${table}/`).timeout(3_000);
-						lastStatus = probe.status;
-						ready = probe.status === 200;
-					} catch (error) {
-						lastStatus = (error as Error).message;
-					}
-					if (!ready) await sleep(250);
-				}
-				if (!ready) throw new Error(`${table} route never became ready within 30s; last probe: ${lastStatus}`);
+				await waitForRouteReady(client, `/${table}/`, 30_000, {
+					isReady: (response: { status: number }) => response.status === 200,
+				});
 			}
 		});
 
@@ -279,9 +260,37 @@ suite(
 			]);
 		}
 
+		// Without this, dropping the Float declarations from TypedDoc would silently turn it into a
+		// second copy of Doc's open-attribute path and every arm below would stay green.
+		test('TypedDoc reaches per-type validation and Doc does not', async () => {
+			const send = (table: TableName) =>
+				request(restURL)
+					.put(`/${table}/arming-probe`)
+					.set(authHeaders)
+					.set('Content-Type', 'application/json')
+					.send('{"id":"arming-probe","negZero":"not-a-number"}')
+					.timeout(20_000);
+
+			const typed = await send('TypedDoc');
+			ok(
+				typed.status >= 400,
+				`a declared Float must reject a non-numeric value, got ${typed.status} — TypedDoc is not reaching per-type validation`
+			);
+
+			const open = await send('Doc');
+			console.log(`  [arming] non-numeric Float: TypedDoc -> ${typed.status}, Doc -> ${open.status}`);
+			ok(open.status < 300, `an undeclared attribute must accept any value, got ${open.status}`);
+		});
+
 		test('a genuine IEEE-754 -0 on the wire does not survive the round trip', async () => {
 			for (const table of TABLES) {
 				const bodyFor = {
+					json: {
+						contentType: 'application/json',
+						// JSON.stringify(-0) is "0", so the sign has to be written out as text.
+						build: (id: string) => Buffer.from(`{"id":${JSON.stringify(id)},"negZero":-0}`, 'utf8'),
+						marker: Buffer.from('"negZero":-0', 'utf8'),
+					},
 					cbor: {
 						contentType: 'application/cbor',
 						build: (id: string) => Buffer.from(cborFloatCodec.encode({ id, negZero: -0 })),
@@ -309,7 +318,9 @@ suite(
 							.put(`/${table}/${id}`)
 							.set(authHeaders)
 							.set('Content-Type', contentType)
-							.send(body)
+							// supertest sends a Buffer as binary whatever the header says, so the JSON
+							// body has to go out as text or Harper stores the raw bytes as the record.
+							.send(contentType === 'application/json' ? body.toString('utf8') : body)
 							.timeout(20_000)
 					).status;
 					ok(writeStatus < 300, `${table} ${writeFormat} -0 write should not be rejected, got ${writeStatus}`);

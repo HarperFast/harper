@@ -1,16 +1,16 @@
 # QA-432 — content-negotiation WRITE-path fidelity for special floats.
 
-# Undeclared attributes: the open-table path, no per-attribute type validation.
 type Doc @table @export {
   id: ID @primaryKey
 }
 
-# Declared Float attributes: the path that runs Table.ts's per-type validation, which a
-# future finiteness check would tighten.
+# Every special-float attribute is declared here, so writes reach Table.ts's per-type
+# validation instead of the open-attribute path Doc takes.
 type TypedDoc @table @export {
   id: ID @primaryKey
   nan: Float
   posInf: Float
   negInf: Float
+  negZero: Float
   normal: Float
 }
