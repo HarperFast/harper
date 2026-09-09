@@ -77,13 +77,19 @@ function logRotator({
 	}
 
 	let lastRotatedLogPath;
-	// convert date.now to minutes
 	let lastRotationTime = Date.now();
+	let observedGeneration;
+	try {
+		const active = statSync(logger.path);
+		observedGeneration = generationIdentity(active);
+		if (active.birthtimeMs > 0) lastRotationTime = Math.min(lastRotationTime, active.birthtimeMs);
+	} catch {}
 	hdbLogger.trace('Log rotate enabled, maxSize:', maxSize, 'interval:', interval);
 	let tickInFlight = false;
 	let ended = false;
 	let releaseProofStalled = false;
 	let nextReleaseProofReport = 0;
+	let retentionCursor = 0;
 	const auditIntervalMs = auditInterval ?? LOG_AUDIT_INTERVAL;
 	const compressionBudgetMs = Math.max(1, Math.floor(auditIntervalMs / 4));
 	/**
@@ -135,17 +141,16 @@ function logRotator({
 			}
 
 			if (maxInterval) {
-				// Whichever origin is older. birthtime is unsupported on some filesystems, where it mirrors
-				// a write-updated ctime and would postpone interval rotation forever; taking the minimum
-				// means this can only ever rotate at least as often as the counter alone did.
-				let generationStartedAt = lastRotationTime;
 				try {
-					const born = statSync(logger.path).birthtimeMs;
-					if (born > 0) generationStartedAt = Math.min(generationStartedAt, born);
+					const activeGeneration = generationIdentity(statSync(logger.path));
+					if (activeGeneration && activeGeneration !== observedGeneration) {
+						observedGeneration = activeGeneration;
+						lastRotationTime = Date.now();
+					}
 				} catch (err) {
 					if (err.code !== 'ENOENT') throw err;
 				}
-				if (Date.now() - generationStartedAt >= maxInterval) {
+				if (Date.now() - lastRotationTime >= maxInterval) {
 					try {
 						lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger, compressArchives);
 						lastRotationTime = Date.now();
@@ -194,11 +199,13 @@ function logRotator({
 					// adjust retention time if there is a reclamation priority in place
 					const retentionMs = convertToMS(retention ?? '1M') / (1 + reclamationPriority);
 					let retentionCompleted = true;
-					for (const file of candidates) {
+					let examined = 0;
+					for (; examined < candidates.length; examined++) {
 						if (ended || Date.now() >= tickDeadline) {
 							retentionCompleted = false;
 							break;
 						}
+						const file = candidates[(retentionCursor + examined) % candidates.length];
 						try {
 							const archivePath = path.join(rotatedLogDir, file);
 							// An explicitly configured rotation path may contain live component logs too.
@@ -214,7 +221,12 @@ function logRotator({
 							if (err.code !== 'ENOENT') hdbLogger.error('Error trying to remove log', file, err);
 						}
 					}
-					if (retentionCompleted) reclamationPriority = 0;
+					if (retentionCompleted) {
+						retentionCursor = 0;
+						reclamationPriority = 0;
+					} else if (candidates.length) {
+						retentionCursor = (retentionCursor + examined) % candidates.length;
+					}
 				}
 
 				if (released && compressArchives && !ended) {
@@ -246,6 +258,10 @@ function logRotator({
 			return lastRotatedLogPath;
 		},
 	};
+
+	function generationIdentity(stats: any) {
+		return stats.ino ? `${stats.dev}:${stats.ino}` : undefined;
+	}
 }
 
 async function moveLogFile(

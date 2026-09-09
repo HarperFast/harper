@@ -955,6 +955,14 @@ describe('Test harper_logger module', () => {
 			fs.removeSync(rotationCaseDir);
 		});
 
+		it('keeps a pathless install-time logger from creating an undefined file sink', () => {
+			const pathlessLogger = createLogger({ level: 'info' });
+			assert.doesNotThrow(() => {
+				pathlessLogger.path = undefined;
+			});
+			assert.strictEqual(pathlessLogger.path, undefined);
+		});
+
 		it('inherits the main rotation config (incl. maxSize) and rotates the external log file when no component rotation is configured', async () => {
 			const mainRotation = { enabled: true, maxSize: '1K', auditInterval: 100 };
 			const mainLogPath = path.join(rotationCaseDir, 'hdb.log');

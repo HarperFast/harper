@@ -269,18 +269,18 @@ export function createRotationGuard(options: any) {
 	return { beforeAppend, recordWrite, checkQuantum };
 
 	/**
-	 * Whether the file may be appended to. Once the cap is known to be exceeded and rotation has
-	 * failed, the answer stays no: appending anyway would make the overshoot a function of the write
-	 * rate again, which is the failure this change exists to remove. Recovery is retried here, before
-	 * a write, rather than after one — the sink is on stdio in the meantime, so no append would come.
+	 * Try a pending rotation before the next append. A failed rotation leaves the active file
+	 * writable: daemonized services discard stdio, so refusing the append would silently lose logs.
 	 */
 	function beforeAppend() {
 		// `rotating` first: the rotation notice is written back through this same sink, and it must
 		// not re-enter a rotation that has not finished setting its own state.
 		if (rotating || !rotationPending) return true;
-		if (retryAfter > performance.now()) return false;
+		if (retryAfter > performance.now()) return true;
 		attemptRotation();
-		return !rotationPending;
+		// If rotation is still unavailable, preserving records in the writable active log is safer
+		// than silently dropping them (scripted services have no stdio fallback).
+		return true;
 	}
 
 	function recordWrite(byteLength: number) {
