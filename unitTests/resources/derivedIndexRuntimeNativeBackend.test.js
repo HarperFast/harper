@@ -703,6 +703,121 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('waits for an in-flight reset before quiescing and releasing on stop()', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
+		});
+		const events = [];
+		let finishReset;
+		const backend = new AsyncBackend('reset-race', { applyDelay: 2 });
+		backend.reset = (epoch) => {
+			backend.resets.push(epoch);
+			events.push('reset-start');
+			return new Promise((resolve) => (finishReset = () => (events.push('reset-end'), resolve())));
+		};
+		backend.shutdown = async (epoch) => {
+			events.push(`shutdown-${epoch === backend.resets[0] ? 'new' : 'old'}`);
+		};
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 1000 });
+		runtime.register(registration(backend));
+		await waitFor(() => events.includes('reset-start'));
+		const stopped = runtime.stop();
+		await sleep(10);
+		assert.strictEqual(store.locks.size, 1, 'the lock is held while the reset is in flight');
+		assert.deepStrictEqual(events, ['shutdown-old', 'reset-start']);
+		finishReset();
+		await stopped;
+		assert.deepStrictEqual(events, ['shutdown-old', 'reset-start', 'reset-end', 'shutdown-new']);
+		assert.strictEqual(store.locks.size, 0);
+	});
+
+	it('lets requestRebuild release a lock held by a stopped runner whose shutdown failed', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const stuck = new AsyncBackend('held-stopped', { cursor: cursor(10) });
+		let settle = false;
+		stuck.shutdown = async () => {
+			if (!settle) throw new Error('native queue did not drain');
+		};
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		const unregister = runtime.register(registration(stuck));
+		await waitFor(() => store.locks.size === 1);
+		await assert.rejects(unregister(), /native queue did not drain/);
+
+		const replacement = new AsyncBackend('held-stopped', { cursor: cursor(10), applyDelay: 2 });
+		runtime.register(registration(replacement, { maxFlushAgeMilliseconds: 5 }));
+		await sleep(20);
+		assert.strictEqual(
+			runtime.getStatus('held-stopped').ownerEpoch,
+			undefined,
+			'the replacement waits on the held lock'
+		);
+		settle = true;
+		assert.strictEqual(runtime.requestRebuild('held-stopped'), true);
+		await waitFor(
+			() =>
+				runtime.getStatus('held-stopped').ownerEpoch !== undefined &&
+				runtime.getStatus('held-stopped').state === 'idle',
+			{ timeout: 5000 }
+		);
+		assert.strictEqual(replacement.resets.length, 1, 'the request also rebuilds under the new owner');
+		await runtime.stop();
+		assert.strictEqual(store.locks.size, 0);
+	});
+
+	it('clears a latched unavailable status once a peer has revived the index', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
+		});
+		const words = new Int32Array(store.getUserSharedBuffer('derived-index:latched:readiness', new ArrayBuffer(512)));
+		Atomics.store(words, 1, 4);
+		const latched = runtimeFor(store, records, { idleGraceMilliseconds: 5 }).runtime;
+		latched.register(registration(new AsyncBackend('latched', { applyDelay: 2 })));
+		await waitFor(() => latched.getStatus('latched').state === 'unavailable');
+		await waitFor(() => store.locks.size === 0);
+
+		const reviver = runtimeFor(store, records, { idleGraceMilliseconds: 5 }).runtime;
+		const reviverBackend = new AsyncBackend('latched', { applyDelay: 2 });
+		reviver.register(registration(reviverBackend, { maxFlushAgeMilliseconds: 5 }));
+		assert.strictEqual(reviver.requestRebuild('latched'), true);
+		await waitFor(() => reviver.getReadiness('latched').state === 'ready', { timeout: 5000 });
+		await reviver.stop();
+
+		store.rootStore.emit('committed');
+		await waitFor(() => latched.getStatus('latched').state !== 'unavailable' && store.locks.size === 1, {
+			timeout: 5000,
+		});
+		await latched.stop();
+	});
+
+	it('hands the reload-suppression bound to the next owner through shared memory', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const reload = { ...audit({ timestamp: 8, type: 'reload' }), recordId: null };
+		const store = new FakeLogStore(
+			new Map([
+				[7, [reload, audit({ timestamp: 9, recordId: 'a' })]],
+				[9, []],
+			]),
+			{ logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' }), reload]]]) }
+		);
+		const first = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		const firstBackend = new AsyncBackend('reload-handoff', { cursor: cursor(7), applyDelay: 2, capacity: 0 });
+		first.register(registration(firstBackend, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => firstBackend.resets.length === 1 && firstBackend.deliveries.length === 1);
+		// The boundary is captured; the first owner leaves before its replay passes the marker.
+		firstBackend.capacity = Infinity;
+		await first.stop();
+
+		const second = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		const secondBackend = new AsyncBackend('reload-handoff', { cursor: cursor(7), applyDelay: 2 });
+		second.register(registration(secondBackend, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => second.getReadiness('reload-handoff').state === 'ready', { timeout: 5000 });
+		assert.strictEqual(secondBackend.resets.length, 1, 'one rebuild for the condemned generation, none for the marker');
+		assert.deepStrictEqual(secondBackend.cursor, cursor(9));
+		await second.stop();
+	});
+
 	it('keeps tables registered until the backend has settled its shutdown', async () => {
 		const store = new FakeLogStore(new Map([[10, []]]));
 		const backend = new AsyncBackend('registered-until-settled', { cursor: cursor(10) });
