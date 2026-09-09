@@ -27,11 +27,7 @@ jobs:
   unit-test:
     name: Unit Test (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    # The backstop for everything the `Run tests` step timeout below does not cover - install,
-    # build and `harper install`, which a slow runner has stretched from ~45s to 155s. Keep it
-    # above that worst setup plus the step bound (155s + 12m = 14m35s), or a wedged suite hits
-    # this cap first and reports `cancelled` instead of failing the step.
-    timeout-minutes: 16
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -75,12 +71,7 @@ jobs:
 
         run: node --enable-source-maps ./dist/bin/harper.js install
 
-      # `.mocharc.json` sets `timeout: 0`, so a wedged suite ends here or not at all. Bounded
-      # below the job for the reason `unit-test-windows` gives below: this reports a failed step
-      # and keeps mocha's output, where the job cap expiring reports `cancelled` - which reads as
-      # neither pass nor fail to a human or to the shepherd.
       - name: Run tests
-        timeout-minutes: 12
         run: npm run test:unit:all
 
   # Windows had no unit-level coverage at all before this job: every job above pins
