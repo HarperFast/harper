@@ -1,0 +1,4 @@
+# QA-432 — content-negotiation WRITE-path fidelity: open table for special-float records.
+type Doc @table @export {
+  id: ID @primaryKey
+}
