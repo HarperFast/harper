@@ -399,6 +399,7 @@ class DerivedIndexRunner {
 	#unregisterTables: () => void;
 	#ownerEpoch?: bigint;
 	#epochCounter: BigInt64Array;
+	#readinessBuffer: SharedReadinessBuffer;
 	#readinessWords: Int32Array;
 	#readinessBytes: Uint8Array;
 	#readinessEpoch: BigInt64Array;
@@ -420,7 +421,11 @@ class DerivedIndexRunner {
 		this.#epochCounter = new BigInt64Array(
 			logStore.getUserSharedBuffer(`derived-index:${registration.backend.id}:owner-epoch`, new ArrayBuffer(8))
 		);
-		const readiness = readinessBuffer(logStore, registration.backend.id);
+		// The notify callback lets a peer's rebuild request wake this runner directly when it owns the index.
+		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => {
+			if (this.#owned) this.wake(true);
+		});
+		const readiness = this.#readinessBuffer;
 		this.#readinessWords = new Int32Array(readiness, 0, READINESS_WORDS);
 		this.#readinessEpoch = new BigInt64Array(readiness, READINESS_EPOCH_OFFSET, 1);
 		this.#readinessBytes = new Uint8Array(readiness, READINESS_REASON_OFFSET);
@@ -535,8 +540,10 @@ class DerivedIndexRunner {
 			this.#acquired(true);
 			return true;
 		}
-		// The owner may be another worker that never idles: leave the request where every runner looks.
+		// The owner may be another worker that never idles: leave the request where every runner looks,
+		// and notify whoever holds the buffer's callback.
 		Atomics.store(this.#readinessWords, READINESS_REBUILD_REQUEST, 1);
+		this.#readinessBuffer.notify?.();
 		this.wake(true);
 		return true;
 	}
@@ -575,15 +582,14 @@ class DerivedIndexRunner {
 		this.#acquired();
 	}
 
-	/** The lock is held: mint an epoch and either resume from the durable cursor or rebuild. */
 	#acquired(reviving = false) {
 		this.#heldLock = false;
 		this.#releaseFailure = undefined;
 		this.#owned = true;
 		this.#generation++;
-		if (!reviving) this.#ownerEpoch = this.#mintEpoch();
-		this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 		try {
+			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
+			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			const shared = this.getReadiness();
 			if (this.#takeSharedRebuildRequest()) {
 				this.#rebuildRequested = true;
@@ -1483,12 +1489,24 @@ function lastOpen(collected: CollectedTransaction[]): CollectedTransaction | und
 	return last && !last.complete ? last : undefined;
 }
 
-function readinessBuffer(logStore: RocksTransactionLogStore, backendId: string) {
-	return logStore.getUserSharedBuffer(`derived-index:${backendId}:readiness`, new ArrayBuffer(READINESS_BYTES));
+type SharedReadinessBuffer = ArrayBufferLike & { notify?: () => void };
+
+function readinessBuffer(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	callback?: () => void
+): SharedReadinessBuffer {
+	return logStore.getUserSharedBuffer(
+		`derived-index:${backendId}:readiness`,
+		new ArrayBuffer(READINESS_BYTES),
+		callback ? { callback } : undefined
+	) as SharedReadinessBuffer;
 }
 
+const readinessViews = new WeakMap<object, [Int32Array, BigInt64Array, Uint8Array]>();
+
 function readReadiness(words: Int32Array, epoch: BigInt64Array, bytes: Uint8Array): DerivedIndexReadiness {
-	for (let spin = 0; spin < 64; spin++) {
+	for (let spin = 0; spin < 256; spin++) {
 		const before = Atomics.load(words, READINESS_SEQUENCE);
 		if (before & 1) continue;
 		const state = READINESS_STATES[Atomics.load(words, READINESS_STATE)] ?? 'unknown';
@@ -1514,11 +1532,16 @@ export function readDerivedIndexReadiness(
 	backendId: string
 ): DerivedIndexReadiness {
 	const buffer = readinessBuffer(logStore, backendId);
-	return readReadiness(
-		new Int32Array(buffer, 0, READINESS_WORDS),
-		new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
-		new Uint8Array(buffer, READINESS_REASON_OFFSET)
-	);
+	let views = readinessViews.get(buffer);
+	if (!views) {
+		views = [
+			new Int32Array(buffer, 0, READINESS_WORDS),
+			new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
+			new Uint8Array(buffer, READINESS_REASON_OFFSET),
+		];
+		readinessViews.set(buffer, views);
+	}
+	return readReadiness(views[0], views[1], views[2]);
 }
 
 function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is DerivedIndexCursor {

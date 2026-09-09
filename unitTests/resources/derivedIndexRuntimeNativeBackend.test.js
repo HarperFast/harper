@@ -79,12 +79,17 @@ class FakeLogStore {
 		this.waiters.delete(key);
 	}
 
-	getUserSharedBuffer(key, defaultBuffer) {
+	getUserSharedBuffer(key, defaultBuffer, options) {
 		let buffer = this.sharedBuffers.get(key);
 		if (!buffer) {
 			buffer = new SharedArrayBuffer(defaultBuffer.byteLength);
+			buffer.callbacks = new Set();
+			buffer.notify = () => {
+				for (const callback of buffer.callbacks) setImmediate(callback);
+			};
 			this.sharedBuffers.set(key, buffer);
 		}
+		if (options?.callback) buffer.callbacks.add(options.callback);
 		return buffer;
 	}
 }
@@ -146,7 +151,6 @@ class AsyncBackend {
 					}
 					if (batch.through) this.appliedCursor = batch.through;
 				} catch {
-					// An insertion failure is reported through the state protocol, never thrown from the applier.
 					this.queue.length = 0;
 					this.stateChange?.('failed');
 					return;
@@ -655,9 +659,8 @@ describe('DerivedIndexRuntime for native backends', () => {
 		owner.register(registration(ownerBackend, { maxFlushAgeMilliseconds: 5 }));
 		await waitFor(() => owner.getStatus('parked').state === 'deferred');
 		peer.register(registration(peerBackend));
-		assert.strictEqual(peer.requestRebuild('parked'), true);
 		ownerBackend.capacity = Infinity;
-		store.rootStore.emit('committed');
+		assert.strictEqual(peer.requestRebuild('parked'), true);
 		await waitFor(() => ownerBackend.resets.length === 1, { timeout: 5000 });
 		await waitFor(() => owner.getReadiness('parked').state === 'ready', { timeout: 5000 });
 		await peer.stop();
@@ -854,6 +857,25 @@ describe('DerivedIndexRuntime for native backends', () => {
 		rejectSuperseded(new Error('cancelled by shutdown'));
 		await sleep(10);
 		assert.notStrictEqual(readDerivedIndexReadiness(store, 'flush-liveness').state, 'needs-rebuild');
+	});
+
+	it('rebuilds across several physical logs, omitting an empty log that still retains its beginning', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logNames: ['local', 'remote'],
+			logEntries: new Map([
+				['local', [audit({ timestamp: 7, recordId: 'a' })]],
+				['remote', []],
+			]),
+		});
+		const backend = new AsyncBackend('multi-log', { applyDelay: 2 });
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 1000 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
+
+		await waitFor(() => runtime.getReadiness('multi-log').state === 'ready', { timeout: 5000 });
+		assert.deepStrictEqual(backend.cursor, { format: 1, logs: { local: 7 } });
+		assert.strictEqual(runtime.getMetrics('multi-log').rebuildAttempts, 0);
+		await runtime.stop();
 	});
 
 	it('does not spend rebuild attempts on reload markers the scan already covered', async () => {

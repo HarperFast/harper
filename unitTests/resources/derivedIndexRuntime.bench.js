@@ -83,7 +83,6 @@ class LiveLogStore {
 	}
 }
 
-/** Applies each delivered record inline in deliver() and makes the cursor durable immediately. */
 class InlineBackend {
 	constructor(id, { useRecords = true } = {}) {
 		this.id = id;
@@ -113,7 +112,6 @@ class InlineBackend {
 	}
 }
 
-/** Queues deliveries, applies them in bounded slices off the delivery turn, and flushes on request. */
 class QueueBackend {
 	constructor(id, { sliceMillis = 4, capacityBytes = 64 * 1024 * 1024 } = {}) {
 		this.id = id;
