@@ -12,7 +12,8 @@ const assert = require('node:assert');
 const { Worker } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const manageThreads = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = manageThreads;
 
 const WAIT_MS = 30000;
 const PROBE_ID = 'seed-3';
@@ -35,7 +36,18 @@ describe('an index being rebuilt is incomplete on every thread (harper#2537)', f
 		const phase = new Int32Array(new SharedArrayBuffer(4));
 		const ack = new Int32Array(new SharedArrayBuffer(4));
 		const worker = new Worker(__dirname + '/indexRebuildThreadConsistency-thread.js', {
-			workerData: { phase, ack, tableName, attributeName, probeValue: PROBE_VALUE, probeId: PROBE_ID, addPorts: [] },
+			workerData: {
+				phase,
+				ack,
+				tableName,
+				attributeName,
+				probeValue: PROBE_VALUE,
+				probeId: PROBE_ID,
+				addPorts: [],
+				// startWorker sends this key with every worker it spawns; the reader must adopt it, not mint
+				// its own, or two live threads would disagree about which builds this process owns
+				processIncarnation: manageThreads.processIncarnation,
+			},
 		});
 		const probes = {};
 		const failure = new Promise((_, reject) => worker.once('error', reject));
@@ -119,6 +131,11 @@ describe('an index being rebuilt is incomplete on every thread (harper#2537)', f
 		);
 
 		assert.ok(before.loaded, 'the reader thread must have loaded the table before the rebuild');
+		assert.strictEqual(
+			before.processIncarnation,
+			manageThreads.processIncarnation,
+			'a worker must adopt the incarnation it was started with, so live threads agree on build ownership'
+		);
 		assert.strictEqual(before.isIndexing, null, 'there is no index on the attribute before the rebuild');
 
 		assert.ok(

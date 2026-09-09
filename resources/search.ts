@@ -1252,21 +1252,22 @@ function usableIndex(table, attributeName): any {
 }
 
 /**
- * True when an index this condition would have to be driven by is still being built, following a
- * relationship path to the local join index and on to the related table's leaf index. Deliberately
- * comparator-independent: only the equality branch below resolves a relationship, so a range predicate
- * across a join would otherwise reach a finite table-fraction estimate and win the lead.
+ * True when an index this attribute would have to be driven by is still being built, following a
+ * relationship path to the local join index and on to the related table's leaf index. Comparator-
+ * independent: only the equality branch below resolves a relationship, so a range predicate across a
+ * join would otherwise reach a finite table-fraction estimate and win the lead.
  */
-function drivesRebuildingIndex(table, condition): boolean {
-	const attributeName = condition[0] ?? condition.attribute;
-	const path = Array.isArray(attributeName) ? attributeName : [attributeName];
-	if (path.length < 2) return path[0] !== table.primaryKey && !!table.indices[path[0]]?.isIndexing;
-	const attribute = findAttribute(table.attributes, path[0]);
+function drivesRebuildingIndex(table, attributeName): boolean {
+	if (!Array.isArray(attributeName))
+		return attributeName !== table.primaryKey && !!table.indices[attributeName]?.isIndexing;
+	if (attributeName.length < 2) return drivesRebuildingIndex(table, attributeName[0]);
+	const attribute = findAttribute(table.attributes, attributeName[0]);
 	if (!attribute) return false;
 	if (table.indices[attribute.relationship?.from]?.isIndexing) return true;
 	const relatedTable = attribute.definition?.tableClass || attribute.elements?.definition?.tableClass;
 	return (
-		!!relatedTable && drivesRebuildingIndex(relatedTable, { attribute: path.length > 2 ? path.slice(1) : path[1] })
+		!!relatedTable &&
+		drivesRebuildingIndex(relatedTable, attributeName.length > 2 ? attributeName.slice(1) : attributeName[1])
 	);
 }
 
@@ -1299,9 +1300,8 @@ export function estimateCondition(table) {
 			// skip if it is cached
 			let searchType = condition.comparator || condition.search_type;
 			searchType = ALTERNATE_COMPARATOR_NAMES[searchType] || searchType;
-			if (drivesRebuildingIndex(table, condition)) {
-				// Assigned before comparator dispatch: several branches fall back to a finite table-fraction
-				// heuristic that can still beat an available index and take the lead.
+			if (drivesRebuildingIndex(table, condition[0] ?? condition.attribute)) {
+				// before comparator dispatch: several branches fall back to a finite table-fraction heuristic
 				condition.estimated_count = Infinity;
 			} else if (condition.negated) {
 				// a negated condition always executes as a full scan (searchByIndex forces

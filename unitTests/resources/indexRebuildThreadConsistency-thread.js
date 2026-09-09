@@ -1,7 +1,8 @@
 const { parentPort, workerData } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { resetDatabases } = require('#src/resources/databases');
-const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const manageThreads = require('#js/server/threads/manageThreads');
+const { setMainIsWorker } = manageThreads;
 
 // A thread that never declares the schema: it reaches Table.indices only through the catalog reload
 // (resetDatabases -> initStores), which is what the main and operations threads do in a running node.
@@ -22,7 +23,15 @@ async function run() {
 }
 
 async function probe(step) {
-	const message = { step, loaded: false, isIndexing: null, hits: null, searchError: null, foundById: false };
+	const message = {
+		step,
+		loaded: false,
+		isIndexing: null,
+		hits: null,
+		searchError: null,
+		foundById: false,
+		processIncarnation: manageThreads.processIncarnation,
+	};
 	try {
 		const Table = resetDatabases().test?.[tableName];
 		message.loaded = Boolean(Table);

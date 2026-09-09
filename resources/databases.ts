@@ -1220,8 +1220,7 @@ function initStores(
 						indices[attribute.name] = dbi;
 						indices[attribute.name].indexNulls = attribute.indexNulls;
 					}
-					// The catalog owns index completeness, and this reload is the only way a thread that never
-					// declares the schema reaches Table.indices. Assigned, not set: the same reload clears it.
+					// the only way a thread that never declares the schema reaches Table.indices
 					indices[attribute.name].isIndexing = !!attribute.indexingPID;
 					const existingAttribute = existingAttributes.find(
 						(existingAttribute) => existingAttribute.name === attribute.name
@@ -3213,56 +3212,52 @@ export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 }
 
 /**
- * runIndexing has two returns that write nothing — the restart-interrupt return in its loop and the
- * closed-store return in its catch — leaving a descriptor that claims an armed build with no failure
- * marker and nothing to re-trigger it. Persist that marker when the operation settles.
- *
- * `indexingBuildId` is what makes this safe: a replacement worker generation, or another thread
- * declaring different index options, can claim the attribute before an outgoing build's promise
- * settles, and marking that would fail a live build. The re-read and the write share the exclusive
- * catalog lock the declaration takes, so the claim cannot land between them. The locked section stays
- * synchronous (see acquireUpdateAttributesLock); the write is awaited after the release.
+ * Persists the failure marker for a build that ended without running one of runIndexing's own exit
+ * paths, so something re-triggers it. Fenced on `indexingBuildId` under the exclusive catalog lock,
+ * because a replacement generation (or another thread declaring different index options) can claim the
+ * attribute before an outgoing build's promise settles, and marking that would fail a live build. The
+ * locked section stays synchronous (see acquireUpdateAttributesLock) and the write is awaited after
+ * the release. Nothing here may throw: `Table.indexingOperation` reaches operations-API callers.
  */
 async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, string>) {
 	for (const [attribute, buildId] of buildIds) {
-		let pending;
-		let marked;
-		let releaseExclusiveLock;
 		try {
-			if (buildId == null || Table.dbisDB.getSync(attribute.key)?.indexingBuildId !== buildId) continue;
-			if (rootStore instanceof RocksDatabase) {
-				acquireUpdateAttributesLock(rootStore, `abandoned index build '${Table.tableName}.${attribute.name}'`);
-				releaseExclusiveLock = () => releaseUpdateAttributesLock(rootStore);
-			} else {
-				rootStore.transactionSync(() => ({
-					then(callback) {
-						releaseExclusiveLock = callback;
-					},
-				}));
+			let pending;
+			let marked;
+			let releaseExclusiveLock;
+			try {
+				if (buildId == null || Table.dbisDB.getSync(attribute.key)?.indexingBuildId !== buildId) continue;
+				if (rootStore instanceof RocksDatabase) {
+					acquireUpdateAttributesLock(rootStore, `abandoned index build '${Table.tableName}.${attribute.name}'`);
+					releaseExclusiveLock = () => releaseUpdateAttributesLock(rootStore);
+				} else {
+					rootStore.transactionSync(() => ({
+						then(callback) {
+							releaseExclusiveLock = callback;
+						},
+					}));
+				}
+				const descriptor = Table.dbisDB.getSync(attribute.key);
+				if (descriptor?.indexingBuildId === buildId && !descriptor.indexingFailed) {
+					pending = Table.dbisDB.put(attribute.key, { ...descriptor, indexingFailed: true });
+					marked = true;
+				}
+			} finally {
+				if (releaseExclusiveLock) releaseExclusiveLock();
 			}
-			const descriptor = Table.dbisDB.getSync(attribute.key);
-			if (descriptor?.indexingBuildId === buildId && !descriptor.indexingFailed) {
-				pending = Table.dbisDB.put(attribute.key, { ...descriptor, indexingFailed: true });
-				marked = true;
-			}
+			if (pending?.then) await pending;
+			if (marked)
+				logger.warn(
+					`Indexing of ${Table.databaseName}.${Table.tableName}.${attribute.name} ended without completing. ` +
+						`The index stays incomplete and every query on the attribute reports it as not indexed yet; ` +
+						`the next load of the table retries the backfill from the last checkpoint (indexingFailed=true).`
+				);
 		} catch (error) {
 			// A store closed by shutdown is the common case, and it cannot be written to at all.
-			logger.debug(`Could not mark the abandoned index build of ${Table.tableName}.${attribute.name}`, error);
-		} finally {
-			if (releaseExclusiveLock) releaseExclusiveLock();
+			try {
+				logger.debug(`Could not mark the abandoned index build of ${Table.tableName}.${attribute.name}`, error);
+			} catch {}
 		}
-		try {
-			if (pending?.then) await pending;
-		} catch (error) {
-			marked = false;
-			logger.debug(`Could not persist the abandoned index build of ${Table.tableName}.${attribute.name}`, error);
-		}
-		if (marked)
-			logger.warn(
-				`Indexing of ${Table.databaseName}.${Table.tableName}.${attribute.name} ended without completing. ` +
-					`The index stays incomplete and every query on the attribute reports it as not indexed yet; ` +
-					`the next load of the table retries the backfill from the last checkpoint (indexingFailed=true).`
-			);
 	}
 }
 async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
