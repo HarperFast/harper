@@ -85,6 +85,22 @@ describe('Test logRotator module', () => {
 		assert.strictEqual(fs.pathExistsSync(stranded), false, 'the plain archive must be gone once it is compressed');
 	}).timeout(TEST_TIMEOUT);
 
+	it('Clears a plain archive left beside the .gz that already replaced it (#1877)', async () => {
+		// compressOneArchive renames the .gz into place and only then unlinks its source, so a crash in
+		// between leaves both. Every later pass read that as "already compressed" and skipped it, and
+		// with retention unset by default the duplicate survived for the life of the directory.
+		fs.mkdirpSync(path.join(LOG_DIR_TEST, 'rotated'));
+		const orphan = path.join(LOG_DIR_TEST, 'rotated', 'hdb-1a2b3c4d-2020-01-01T00-00-00.000Z-1-0-1.log');
+		fs.writeFileSync(orphan, 'the source the crash never unlinked\n');
+		fs.writeFileSync(`${orphan}.gz`, 'stands in for the published archive\n');
+		await runRotator({ interval: '1D', compress: true, path: path.join(LOG_DIR_TEST, 'rotated') });
+		await waitFor(() => !fs.pathExistsSync(orphan), {
+			timeout: 5000,
+			message: 'Expected the audit tick to clear a plain archive its .gz had already replaced',
+		});
+		assert.ok(fs.pathExistsSync(`${orphan}.gz`), 'the published archive must survive');
+	}).timeout(TEST_TIMEOUT);
+
 	it('Never deletes or compresses a live log sharing the rotated directory (#1877)', async () => {
 		// logging.rotation.path defaults to `log`, the same directory logging.root defaults to, so the
 		// rotated directory normally holds the logs being written as well as the archives.
