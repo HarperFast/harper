@@ -1,0 +1,14 @@
+# Second-boot schema: the same table, now declaring 5 secondary indexes over data that already
+# exists on disk from the first boot. Harper's own boot-time schema load sees these attributes
+# don't have a persisted lastIndexedKey yet and kicks off a real runIndexing backfill for all 5
+# together -- the incident's actual trigger (a schema/component change requiring an index build
+# over pre-existing data), not a synthetic put-bypass.
+type Redirect @table @export {
+	id: ID! @primaryKey
+	url: String
+	attr0: String @indexed
+	attr1: String @indexed
+	attr2: String @indexed
+	attr3: String @indexed
+	attr4: String @indexed
+}

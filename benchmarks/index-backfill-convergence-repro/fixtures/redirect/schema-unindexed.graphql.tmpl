@@ -1,0 +1,13 @@
+# First-boot schema: no secondary indexes yet. incident-replica.mjs copies this in as
+# schema.graphql, boots Harper, bulk-loads data through it, then stops Harper (keeping the data
+# directory) and swaps in schema-indexed.graphql.tmpl before the second boot -- that second boot's
+# runIndexing backfill, over already-present data, is the one under test.
+type Redirect @table @export {
+	id: ID! @primaryKey
+	url: String
+	attr0: String
+	attr1: String
+	attr2: String
+	attr3: String
+	attr4: String
+}
