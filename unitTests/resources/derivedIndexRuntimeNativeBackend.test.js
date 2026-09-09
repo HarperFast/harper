@@ -376,6 +376,8 @@ describe('DerivedIndexRuntime for native backends', () => {
 
 		await waitFor(() => runtime.getStatus('oversized')?.state === 'deferred');
 		assert.strictEqual(backend.deliveries.length, 1, 'the backend can defer after the first chunk');
+		await sleep(5);
+		assert(runtime.getMetrics('oversized').stalledMilliseconds > 0, 'a parked runner reports how long it has stalled');
 		assert.strictEqual(backend.deliveries[0].records.length, 3);
 		assert.strictEqual(backend.deliveries[0].transactions[0].partial, true);
 		assert.deepStrictEqual(backend.deliveries[0].through, cursor(10));
@@ -1302,5 +1304,22 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		await waitFor(() => backend.applied.has('p4'), { timeout: 5000 });
 		assert.deepStrictEqual(backend.applied.get('p4').projection, { title: 'title p4' });
 		assert.strictEqual(runtime.getMetrics('rocks-rebuild').rebuildAttempts, 0);
+
+		// A peer runtime on the same real store: shared readiness, the request word and the buffer
+		// notification all go through the native binding here, not the fake.
+		const peer = new DerivedIndexRuntime(Product.auditStore, () => undefined, { scanRecords: () => [] });
+		assert.strictEqual(peer.getReadiness('rocks-rebuild').state, 'ready');
+		const peerBackend = new AsyncBackend('rocks-rebuild', { applyDelay: 2 });
+		const unregisterPeer = peer.register({
+			backend: peerBackend,
+			projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
+		});
+		assert.strictEqual(peer.requestRebuild('rocks-rebuild'), true);
+		await waitFor(() => backend.resets.length === 2, { timeout: 5000 });
+		await waitFor(() => runtime.getReadiness('rocks-rebuild').state === 'ready', { timeout: 10_000 });
+		assert.deepStrictEqual([...backend.applied.keys()].sort(), ['p1', 'p3', 'p4']);
+		assert.strictEqual(peerBackend.resets.length, 0);
+		await unregisterPeer();
+		await peer.stop();
 	});
 });
