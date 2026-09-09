@@ -15,6 +15,12 @@ inputs:
   required:
     description: how many distinct cross-model review families the description must name
     default: '2'
+  easy_max_lines:
+    description: 'largest changed-line count for which `Complexity: easy` waives the second review leg'
+    default: '150'
+  easy_max_files:
+    description: 'largest changed-file count for which `Complexity: easy` waives the second review leg'
+    default: '10'
   format_mode:
     description: off, report (always green), or enforce PR-description format
     default: off

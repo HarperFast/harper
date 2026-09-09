@@ -5,7 +5,7 @@
 // sees the fleet review's verdict, so demanding coverage here is STRICTER than policy
 // (the gate waives coverage for clean reviews). Hence two modes:
 //   report  (default) — always green; the check text and job summary carry the count
-//   enforce — red when a member-authored, non-trivial, non-draft PR reports <2
+//   enforce — red when a member-authored, AI-authored, non-trivial, non-draft PR reports <2
 // Run from the JavaScript action in this directory, or locally:
 //   node .github/actions/review-coverage/ci-review-coverage.mjs --event <payload.json> [--mode enforce]
 
@@ -14,6 +14,7 @@ import { validateNormalizedPrFiles } from './collectPrFiles.mjs';
 import { evaluateCiCoverage } from './evaluateCiCoverage.mjs';
 import { evaluatePrFormat } from './evaluatePrFormat.mjs';
 import { classifyPullRequest } from './prExemption.mjs';
+import { EASY_MAX_FILES, EASY_MAX_LINES } from './prExemption.mjs';
 import { COVERAGE_REQUIRED } from './reviewGate.mjs';
 
 const MAX_PR_FILES_BYTES = 4 * 1024 * 1024;
@@ -33,6 +34,14 @@ function readPrFiles(pr, formatMode, superseded) {
 	return validateNormalizedPrFiles(JSON.parse(readFileSync(file, 'utf8')));
 }
 
+function boundInt(flag, envVar, fallback) {
+	const raw = arg(flag, process.env[envVar] || '');
+	if (raw === '') return fallback;
+	const value = Number(raw);
+	if (!Number.isInteger(value) || value < 0) throw new Error(`invalid ${flag} '${raw}'`);
+	return value;
+}
+
 function main(mode, formatMode) {
 	const eventPath = arg('event', process.env.GITHUB_EVENT_PATH ?? '');
 	if (!eventPath) throw new Error('no event payload (--event or GITHUB_EVENT_PATH)');
@@ -42,7 +51,11 @@ function main(mode, formatMode) {
 	const rawRequired = arg('required', process.env.INPUT_REQUIRED || process.env.REVIEW_COVERAGE_REQUIRED || '');
 	const required = rawRequired === '' ? COVERAGE_REQUIRED : Number(rawRequired);
 	if (!Number.isInteger(required) || required < 0) throw new Error(`invalid required '${rawRequired}'`);
-	const r = evaluateCiCoverage(pr, { mode, required });
+	const easy = {
+		maxLines: boundInt('easy-max-lines', 'INPUT_EASY_MAX_LINES', EASY_MAX_LINES),
+		maxFiles: boundInt('easy-max-files', 'INPUT_EASY_MAX_FILES', EASY_MAX_FILES),
+	};
+	const r = evaluateCiCoverage(pr, { mode, required, easy });
 	const superseded = arg('pr-files-superseded', process.env.INPUT_PR_FILES_SUPERSEDED || '').toLowerCase() === 'true';
 	let prFiles = null;
 	let evidenceProblem = '';
