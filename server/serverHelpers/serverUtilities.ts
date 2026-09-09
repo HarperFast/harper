@@ -318,6 +318,16 @@ export function chooseOperation(json: OperationRequestBody, bypassAuth = false) 
 			// Before this dispatch's own parse is assigned, so a body-supplied object cannot survive it.
 			stripSuppliedParsedSqlObject(json);
 			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
+			if (hasNestedSqlSearch && parsedSqlObject.variant !== terms.VALID_SQL_OPS_ENUM.SELECT) {
+				throw handleHDBError(
+					new Error(),
+					`'search_operation.sql' must be a SELECT statement`,
+					hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST,
+					undefined,
+					undefined,
+					true
+				);
+			}
 			// Only the direct-SQL path consumes `json.parsed_sql_object` (evaluateSQL). A nested export
 			// re-parses off `search_operation` — whose `parsed_sql_object` was deleted above — so setting
 			// it here for a job would be inert.

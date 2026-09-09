@@ -48,6 +48,7 @@ const EXPORTER = { username: 'authz_exporter', password: 'Exporter-pw-2173!' };
 const EXPORTER_ROLE = 'authz_exporter_role';
 const DB = 'data';
 const TABLE = 'AuthzProbe';
+const NESTED_DELETE_TARGET = 'nested-delete-target';
 
 /** Usernames each escalation attempt tries to create; none may exist afterwards. */
 const ESCALATION_TARGETS = {
@@ -180,14 +181,27 @@ suite(
 				})
 				.expect(200);
 
-			// Granted the export operation, holding no table permission at all, so an export it is
-			// allowed to *invoke* still must not read a table it cannot see.
+			// Granted the export operation and delete, but not read, SQL, or the delete API operation.
 			await client
 				.req()
 				.send({
 					operation: 'add_role',
 					role: EXPORTER_ROLE,
-					permission: { super_user: false, operations: ['export_local', 'user_info', 'get_job'] },
+					permission: {
+						super_user: false,
+						operations: ['export_local', 'user_info', 'get_job'],
+						[DB]: {
+							tables: {
+								[TABLE]: {
+									read: false,
+									insert: false,
+									update: false,
+									delete: true,
+									attribute_permissions: [],
+								},
+							},
+						},
+					},
 				})
 				.expect(200);
 			await client
@@ -203,7 +217,15 @@ suite(
 
 			await client
 				.req()
-				.send({ operation: 'insert', schema: DB, table: TABLE, records: [{ id: 'probe-1', label: 'visible' }] })
+				.send({
+					operation: 'insert',
+					schema: DB,
+					table: TABLE,
+					records: [
+						{ id: 'probe-1', label: 'visible' },
+						{ id: NESTED_DELETE_TARGET, label: 'must-remain' },
+					],
+				})
 				.expect(200);
 		});
 
@@ -369,6 +391,33 @@ suite(
 				},
 			});
 			assertForbidden(r, 'export_local of a table the role cannot read');
+		});
+
+		test('NESTED-SQL-DML — export SQL cannot execute a DELETE', async () => {
+			const started = await client.reqAs(exporterHeaders).send({
+				operation: 'export_local',
+				path: exportDir,
+				format: 'json',
+				search_operation: {
+					operation: 'sql',
+					sql: `DELETE FROM ${DB}.${TABLE} WHERE id = '${NESTED_DELETE_TARGET}'`,
+				},
+			});
+			if (started.body?.job_id) await waitForTerminalJob(started.body.job_id);
+
+			const check = await client
+				.req()
+				.send({
+					operation: 'search_by_value',
+					schema: DB,
+					table: TABLE,
+					search_attribute: 'id',
+					search_value: NESTED_DELETE_TARGET,
+					get_attributes: ['id'],
+				})
+				.expect(200);
+			strictEqual(check.body.length, 1, 'nested export SQL deleted a row');
+			strictEqual(started.status, 400, `expected nested DELETE to be rejected: ${JSON.stringify(started.body)}`);
 		});
 
 		test('NESTED-SHAPE — a non-object search_operation is a 400, not a 500', async () => {

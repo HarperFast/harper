@@ -87,16 +87,15 @@ describe('Test serverUtilities.js module ', () => {
 			return request;
 		}
 
-		it('throws 403 for an export job whose nested write SQL is outside the token scope', function () {
-			// Scoped to the export itself but not to `delete`: a write statement additionally requires
-			// its matching data operation, which is what keeps `read_only` from admitting a DELETE.
+		it('rejects write SQL nested in an export job', function () {
 			assert.throws(
-				() => serverUtilities.chooseOperation(exportJobRequest(['export_local'], 'DELETE FROM data.dog')),
+				() => serverUtilities.chooseOperation(exportJobRequest(undefined, 'DELETE FROM data.dog')),
 				(error) => {
-					assert.strictEqual(error.statusCode ?? error.http_code, 403, 'expected a forbidden status');
+					assert.strictEqual(error.statusCode ?? error.http_code, 400, 'expected a bad-request status');
+					assert.strictEqual(error.http_resp_msg, "'search_operation.sql' must be a SELECT statement");
 					return true;
 				},
-				'an export job must not smuggle write SQL past the scope gate'
+				'an export job must not execute write SQL'
 			);
 		});
 
