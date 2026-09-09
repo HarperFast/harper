@@ -2,7 +2,9 @@
  * harper#2537 / harper#2536. A backfill can end without running either of runIndexing's own exit paths
  * — the restart-interrupt return inside the loop, and the closed-store return in its catch — leaving a
  * descriptor that claims an armed, in-progress build with no `indexingFailed`, nothing logged above
- * debug, and nothing to re-trigger it. Two guards cover that:
+ * debug, and nothing to re-trigger it. Both reach the same settle handler; the cases below simulate
+ * the closed-store return, which is the one reproducible without a live worker generation. Two guards
+ * cover that:
  *
  *   1. the operation's settle handler persists the failure marker for the exact build it scheduled;
  *   2. the trigger treats a build whose process incarnation is not this process's — including a

@@ -3033,7 +3033,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
 		// captured before the backfill can rewrite the attributes
 		const buildIds = new Map(attributesToIndex.map((attribute) => [attribute, attribute.indexingBuildId]));
-		// both arms, and inside the tracked operation, so a marker write cannot reject unobserved
 		const markSettled = () => markAbandonedIndexBuild(Table, rootStore, buildIds);
 		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove, branchPath).then(
 			markSettled,

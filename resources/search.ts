@@ -1253,9 +1253,7 @@ function usableIndex(table, attributeName): any {
 
 /**
  * True when an index this attribute would have to be driven by is still being built, following a
- * relationship path to the local join index and on to the related table's leaf index. Comparator-
- * independent: only the equality branch below resolves a relationship, so a range predicate across a
- * join would otherwise reach a finite table-fraction estimate and win the lead.
+ * relationship path to the local join index and on to the related table's leaf index.
  */
 function drivesRebuildingIndex(table, attributeName): boolean {
 	if (!Array.isArray(attributeName))
@@ -1300,8 +1298,8 @@ export function estimateCondition(table) {
 			// skip if it is cached
 			let searchType = condition.comparator || condition.search_type;
 			searchType = ALTERNATE_COMPARATOR_NAMES[searchType] || searchType;
+			// before comparator dispatch: several branches fall back to a finite table-fraction heuristic
 			if (drivesRebuildingIndex(table, condition[0] ?? condition.attribute)) {
-				// before comparator dispatch: several branches fall back to a finite table-fraction heuristic
 				condition.estimated_count = Infinity;
 			} else if (condition.negated) {
 				// a negated condition always executes as a full scan (searchByIndex forces
@@ -1327,13 +1325,12 @@ export function estimateCondition(table) {
 						});
 						const fromIndex = table.indices[attribute.relationship?.from];
 						// the estimated count is sum of the estimate of the related table and the estimate of the index
-						condition.estimated_count = table.indices[attribute.relationship?.from]?.isIndexing
-							? Infinity // the join would be driven by an index searchByIndex will refuse
-							: estimate +
-								(fromIndex
-									? (estimate * estimatedEntryCount(table.indices[attribute.relationship.from])) /
-										(estimatedEntryCount(relatedTable.primaryStore) || 1)
-									: estimate);
+						condition.estimated_count =
+							estimate +
+							(fromIndex
+								? (estimate * estimatedEntryCount(table.indices[attribute.relationship.from])) /
+									(estimatedEntryCount(relatedTable.primaryStore) || 1)
+								: estimate);
 					}
 				} else {
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
