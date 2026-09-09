@@ -14,6 +14,7 @@ const { EntryHandler } = require('#src/components/EntryHandler');
 const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 const { writeFile } = require('node:fs/promises');
 const { waitFor } = require('../waitFor.js');
+const { useShortReadRetryBudget, restoreReadRetryBudget } = require('../shortReadRetryBudget');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 const { deployLifecycle, _resetForTests: resetDeployLifecycle } = require('#src/components/deployLifecycle');
 
@@ -31,6 +32,7 @@ describe('Scope', () => {
 	});
 
 	afterEach(async () => {
+		restoreReadRetryBudget();
 		resetRestartNeeded();
 		// Yield to the event loop so any in-flight chokidar watcher teardown
 		// (from scope.close() in the test body) and any pending readFile
@@ -257,6 +259,7 @@ describe('Scope', () => {
 		// The operator's config landing afterwards reaches nothing on its own: componentLoader is
 		// long past its await, and the arrival is a `ready`, not the `change` the files/urlPath
 		// listener watches.
+		useShortReadRetryBudget();
 		writeFileSync(this.configFilePath, '');
 		const scopeName = 'static';
 

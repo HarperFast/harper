@@ -4,6 +4,7 @@ const { tmpdir } = require('node:os');
 const { mkdtempSync, writeFileSync, rmSync, mkdirSync } = require('node:fs');
 const { once } = require('node:events');
 const { waitFor } = require('../waitFor');
+const { useShortReadRetryBudget, restoreReadRetryBudget } = require('../shortReadRetryBudget');
 const { stringify } = require('yaml');
 const { RootConfigWatcher } = require('#src/config/RootConfigWatcher');
 const { OptionsWatcher } = require('#src/components/OptionsWatcher');
@@ -36,6 +37,7 @@ describe('root config read handle lifetime', () => {
 	});
 
 	afterEach(async () => {
+		restoreReadRetryBudget();
 		await Promise.all(openWatchers.splice(0).map((watcher) => watcher.close()));
 		if (previousRootPath === undefined) delete process.env.ROOTPATH;
 		else process.env.ROOTPATH = previousRootPath;
@@ -131,6 +133,7 @@ describe('root config read handle lifetime', () => {
 	});
 
 	it('OptionsWatcher can still recover after an error-bearing read exhausted its budget', async () => {
+		useShortReadRetryBudget();
 		const watcher = new OptionsWatcher('test-component', configFilePath, undefined, true);
 		openWatchers.push(watcher);
 		await watcher.ready;

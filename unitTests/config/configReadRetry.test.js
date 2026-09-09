@@ -4,11 +4,18 @@ const assert = require('node:assert');
 const { setTimeout: delay } = require('node:timers/promises');
 const { ConfigReadRetry } = require('#src/config/configReadRetry');
 const { waitFor } = require('../waitFor');
+const {
+	useShortReadRetryBudget,
+	restoreReadRetryBudget,
+	SHORT_READ_RETRY_BUDGET_MS,
+} = require('../shortReadRetryBudget');
 
 const RETRY_BUDGET_MS = 3_100;
 const INITIAL_DELAY_MS = 100;
 
 describe('ConfigReadRetry', () => {
+	afterEach(restoreReadRetryBudget);
+
 	it('arms a retry and reports that it did', async () => {
 		const retry = new ConfigReadRetry();
 		let fired = 0;
@@ -40,6 +47,10 @@ describe('ConfigReadRetry', () => {
 		retry.cancel();
 	});
 
+	// The one case that spends the shipped budget in full. Everything else that only needs the
+	// ladder *spent* shortens it through `useShortReadRetryBudget`, so without this the value that
+	// governs a root-config read on Windows would ship unwatched — the same reason
+	// configUtils.test.js keeps one case on the shipped rename budget.
 	it('reports the budget spent instead of retrying forever', async () => {
 		const retry = new ConfigReadRetry();
 		const startedAt = performance.now();
@@ -60,7 +71,10 @@ describe('ConfigReadRetry', () => {
 		retry.cancel();
 	});
 
+	// The case above spends the shipped budget; that a spent ladder re-arms is the same behaviour at
+	// any budget, so this one runs short rather than paying 3.1 s twice over.
 	it('starts a fresh budget once the caller has been told the ladder is spent', async () => {
+		useShortReadRetryBudget();
 		const retry = new ConfigReadRetry();
 		while (retry.schedule(() => {})) await delay(0);
 
@@ -71,11 +85,14 @@ describe('ConfigReadRetry', () => {
 		while (retry.schedule(() => {})) {
 			scheduled++;
 			await delay(0);
-			if (performance.now() - startedAt > RETRY_BUDGET_MS * 2) break;
+			if (performance.now() - startedAt > SHORT_READ_RETRY_BUDGET_MS * 2) break;
 		}
 
 		assert.ok(scheduled > 1, `the second ladder gave up after ${scheduled} attempts`);
-		assert.ok(performance.now() - startedAt >= RETRY_BUDGET_MS * 0.9, 'the second ladder must get a full budget');
+		assert.ok(
+			performance.now() - startedAt >= SHORT_READ_RETRY_BUDGET_MS * 0.9,
+			'the second ladder must get a full budget'
+		);
 		retry.cancel();
 	});
 
