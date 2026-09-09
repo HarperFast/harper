@@ -46,7 +46,7 @@ async function probe(step) {
 					hits.push(record);
 				message.hits = hits.length;
 			} catch (error) {
-				message.searchError = error.message;
+				message.searchError = error?.message ?? String(error);
 			}
 			message.foundById = Boolean(await Table.get(probeId));
 		}

@@ -14,6 +14,7 @@
 
 require('../testUtils');
 const assert = require('node:assert');
+const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');
@@ -129,14 +130,22 @@ describe('an index build that ends without completing is marked and recovered', 
 		// that read, which is the window a replacement worker generation actually claims the build in.
 		const dbisDB = Rebuilding.dbisDB;
 		const rootStore = Rebuilding.primaryStore.rootStore;
+		const isRocksDatabase = rootStore instanceof RocksDatabase;
 		const originalGetSync = dbisDB.getSync.bind(dbisDB);
+		const originalTransactionSync = rootStore.transactionSync;
 		let reads = 0;
 		let heldOnReread = null;
+		if (!isRocksDatabase) {
+			rootStore.transactionSync = function (...args) {
+				heldOnReread = true;
+				return originalTransactionSync.apply(this, args);
+			};
+		}
 		dbisDB.getSync = (readKey, ...rest) => {
 			const value = originalGetSync(readKey, ...rest);
 			if (readKey === key && ++reads === 2) {
 				// tryLock fails even for the thread already holding it, so this observes the locked section
-				if (typeof rootStore.tryLock === 'function') {
+				if (isRocksDatabase) {
 					heldOnReread = !rootStore.tryLock(UPDATE_ATTRIBUTES_LOCK_KEY);
 					if (!heldOnReread) rootStore.unlock(UPDATE_ATTRIBUTES_LOCK_KEY);
 				}
@@ -157,15 +166,15 @@ describe('an index build that ends without completing is marked and recovered', 
 			if (originalStatus) Object.defineProperty(rootStore, 'status', originalStatus);
 			else delete rootStore.status;
 			dbisDB.getSync = originalGetSync;
+			if (!isRocksDatabase) rootStore.transactionSync = originalTransactionSync;
 		}
 
 		assert.ok(reads >= 2, 'the settle handler must re-read the descriptor after its first check');
-		if (typeof rootStore.tryLock === 'function')
-			assert.strictEqual(
-				heldOnReread,
-				true,
-				'the re-read and the write must happen under the exclusive catalog lock the declaration takes'
-			);
+		assert.strictEqual(
+			heldOnReread,
+			true,
+			'the re-read and the write must happen under the exclusive catalog lock the declaration takes'
+		);
 		await catalogFlushed(Rebuilding);
 		assert.strictEqual(
 			originalGetSync(key).indexingFailed,
