@@ -1,9 +1,9 @@
 import { Resource } from '../resources/Resource.ts';
 import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
-import { tables, databases } from '../resources/databases.ts';
+import { tables, databases, scopedTableFactory } from '../resources/databases.ts';
 import { models as harperModelsSingleton } from '../resources/models/Models.ts';
-import { defineTable, types } from '../resources/defineTable.ts';
+import { defineTable, defineTableUsing, types } from '../resources/defineTable.ts';
 import { defineResource, t, schemaOf, projectTableFragment } from '../resources/defineResource.ts';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -16,7 +16,7 @@ import { createRequire } from 'node:module';
 import * as env from '../utility/environment/environmentManager';
 import * as child_process from 'node:child_process';
 import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
-import { assertTableTargetNotBranched } from '../resources/branchGuard.ts';
+
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type {} from 'ses';
 import {
@@ -893,15 +893,15 @@ function scopedDatabaseBindings(scope: ApplicationScope): { databases: any; tabl
 }
 
 /**
- * `defineTable` registers into the process-wide catalog, so for a branched name it is refused rather
- * than silently misdirected onto the base. See `assertTableTargetNotBranched`.
+ * `defineTable` for a branched application registers through that application's table factory, so
+ * a branched name lands in its branch; an unbranched application gets `defineTable` itself.
  */
 function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
 	const branches = scope.branches;
 	if (!branches?.size) return defineTable;
-	return function (name: string, shape: any, options: any = {}) {
-		assertTableTargetNotBranched(branches, options.database, name, 'defineTable');
-		return defineTable(name, shape, options);
+	const declareTable = scopedTableFactory(branches);
+	return function (name: string, shape: any, options?: any) {
+		return defineTableUsing(declareTable, name, shape, options);
 	} as typeof defineTable;
 }
 

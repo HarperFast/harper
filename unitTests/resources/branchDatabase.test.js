@@ -546,45 +546,421 @@ describeUnlessLmdb('branch rollback is scoped to the failing application (harper
 	});
 });
 
-describe('declaring a table from a branched application (harper#643)', () => {
-	const { assertTableTargetNotBranched } = require('#src/resources/branchGuard');
+describeUnlessLmdb('declaring a table from a branched application (harper#2264)', () => {
+	const { scopedTableFactory, reloadBranchAt, databaseEventsEmitter } = require('#src/resources/databases');
+	const { closeBranchAt, prepareBranches } = require('#src/resources/branchDatabase');
+	const APP = 'declApp';
+	const BASE = 'declbase';
+	const id = { name: 'id', type: 'ID', isPrimaryKey: true };
+	// every `updateTable` a global subscriber (replication, analytics) would have seen
+	let announced;
+	const subscriber = (Table) => announced.push(Table);
 
-	it('refuses every declaration path that would land in the base', function () {
-		// GraphQL @table, scope.ensureTable and defineTable all funnel into the process-wide table(),
-		// so gating only one of them leaves the base reachable through the other two -- and @table is
-		// the path most applications actually use.
-		const branches = new Map([['gatedbase', {}]]);
-		for (const how of ['a GraphQL @table directive', 'ensureTable', 'defineTable']) {
-			assert.throws(() => assertTableTargetNotBranched(branches, 'gatedbase', 'T', how), /branched database/);
-		}
+	before(async function () {
+		this.timeout(30000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const Existing = table({
+			table: 'Existing',
+			database: BASE,
+			schemaDefined: true,
+			attributes: [id, { name: 'note' }],
+		});
+		await Existing.put({ id: 'base-row', note: 'from the base' });
+		// the default database has to exist to be branched
+		table({ table: 'DefaultSource', database: 'data', attributes: [id] });
+		databaseEventsEmitter.on('updateTable', subscriber);
 	});
 
-	it('defaults every falsy database name the way table() does', function () {
-		// `table()` resolves any falsy name to the default database (`if (!databaseName)`), so a guard
-		// that only defaulted nullish names would let `database: ''` past the fence and then land in
-		// the base as `data`.
-		for (const falsy of ['', null, undefined]) {
-			assert.throws(
-				() => assertTableTargetNotBranched(new Map([['data', {}]]), falsy, 'T', 'defineTable'),
-				/branched database 'data'/,
-				`${JSON.stringify(falsy)} must resolve to the default database`
+	after(function () {
+		databaseEventsEmitter.off('updateTable', subscriber);
+	});
+
+	beforeEach(function () {
+		announced = [];
+	});
+
+	afterEach(async function () {
+		await removeBranches();
+	});
+
+	async function branchedFactory() {
+		const branches = await prepareBranches(APP, [BASE], 'vm-current-context');
+		const branch = branches.get(BASE);
+		return { branch, branches, declare: scopedTableFactory(branches) };
+	}
+
+	function assertNothingAnnouncedFrom(branch) {
+		for (const Table of announced) {
+			assert.notStrictEqual(
+				Table,
+				branch.tables[Table.tableName],
+				`a branch class (${Table.tableName}) must never reach a global updateTable subscriber`
 			);
 		}
+	}
+
+	it('hands an unbranched application the global factory itself', function () {
+		// This is the path every application that does not branch takes: it has to be the same
+		// function, not an equivalent one, so nothing on it changes.
+		assert.strictEqual(scopedTableFactory(undefined), table);
+		assert.strictEqual(scopedTableFactory(new Map()), table);
 	});
 
-	it('defaults an unnamed database to the default one', function () {
-		// `@table` and defineTable both omit `database` to mean `data`, so a branch of `data` has to
-		// catch the omitted case or the most common declaration of all slips through.
-		assert.throws(
-			() => assertTableTargetNotBranched(new Map([['data', {}]]), undefined, 'T', 'defineTable'),
-			/branched database 'data'/
+	it('declares into the branch and leaves the base without the table', async function () {
+		const { branch, declare } = await branchedFactory();
+
+		const Declared = declare({
+			table: 'Declared',
+			database: BASE,
+			schemaDefined: true,
+			attributes: [id, { name: 'note' }],
+		});
+
+		assert.strictEqual(branch.tables.Declared, Declared, 'published into the branch graph');
+		assert.strictEqual(databases[BASE].Declared, undefined, 'and never into the base');
+		assert.strictEqual(Declared.databaseName, BASE, 'carrying the logical name the application uses');
+		assert.strictEqual(
+			branch.rootStore.databaseName,
+			`${APP.length}_${APP}__${BASE}`,
+			"the store keeps its own identity, which the branch's blob roots resolve from"
 		);
+		await Declared.put({ id: 'a', note: 'in the branch' });
+		assert.strictEqual((await Declared.get('a'))?.note, 'in the branch');
+		// a class the factory built is a branch class: the base-directed statics stay refused
+		await assert.rejects(() => Declared.dropTable(), /branched database/);
+		assertNothingAnnouncedFrom(branch);
 	});
 
-	it('leaves unbranched targets and unbranched applications alone', function () {
-		assert.doesNotThrow(() => assertTableTargetNotBranched(new Map([['gatedbase', {}]]), 'other', 'T', 'defineTable'));
-		assert.doesNotThrow(() => assertTableTargetNotBranched(undefined, 'gatedbase', 'T', 'defineTable'));
-		assert.doesNotThrow(() => assertTableTargetNotBranched(new Map(), 'gatedbase', 'T', 'defineTable'));
+	it('defaults an unnamed database the way table() does', async function () {
+		// `@table` and defineTable omit `database` to mean the default database, so a branch of it has
+		// to catch the omitted -- and the empty-string -- case or the most common declaration slips through
+		const branches = await prepareBranches(APP, ['data'], 'vm-current-context');
+		const branch = branches.get('data');
+		const declare = scopedTableFactory(branches);
+		const Unnamed = declare({ table: 'Unnamed', attributes: [id] });
+		const Empty = declare({ table: 'Empty', database: '', attributes: [id] });
+		assert.strictEqual(branch.tables.Unnamed, Unnamed);
+		assert.strictEqual(branch.tables.Empty, Empty);
+		assert.strictEqual(databases.data.Unnamed, undefined);
+		assert.strictEqual(databases.data.Empty, undefined);
+	});
+
+	it('routes a database the application did not branch to the global factory, same class and all', async function () {
+		const { declare } = await branchedFactory();
+		const definition = { table: 'Elsewhere', database: 'declother', attributes: [id] };
+
+		const Elsewhere = declare(definition);
+
+		assert.strictEqual(Elsewhere, databases.declother.Elsewhere);
+		assert.strictEqual(Elsewhere, table(definition), 'the identical object the global factory returns');
+	});
+
+	it('re-declares a table the base already has in the branch only', async function () {
+		const { branch, declare } = await branchedFactory();
+		const baseClass = databases[BASE].Existing;
+		const baseAttributes = baseClass.attributes.map((attribute) => attribute.name);
+
+		const Evolved = declare({
+			table: 'Existing',
+			database: BASE,
+			schemaDefined: true,
+			attributes: [id, { name: 'note' }, { name: 'added', type: 'String', indexed: true }],
+		});
+
+		assert.strictEqual(Evolved, branch.tables.Existing, 'the alter lands on the branch class');
+		assert.notStrictEqual(Evolved, baseClass);
+		assert.ok(Evolved.attributes.some((attribute) => attribute.name === 'added'));
+		assert.ok(Evolved.indices.added, 'with its index opened on the branch store');
+		assert.deepStrictEqual(
+			databases[BASE].Existing.attributes.map((attribute) => attribute.name),
+			baseAttributes,
+			'the base schema is untouched'
+		);
+		assert.strictEqual(databases[BASE].Existing, baseClass);
+		assert.strictEqual((await baseClass.get('base-row'))?.note, 'from the base');
+		assert.strictEqual(
+			(await Evolved.get('base-row'))?.note,
+			'from the base',
+			'the branch still serves the checkpoint'
+		);
+		assertNothingAnnouncedFrom(branch);
+	});
+
+	it('persists a declared table in the branch: it is there again after close and reopen', async function () {
+		this.timeout(30000);
+		const { branch, declare } = await branchedFactory();
+		const Persisted = declare({
+			table: 'Persisted',
+			database: BASE,
+			schemaDefined: true,
+			attributes: [id, { name: 'note' }],
+		});
+		await Persisted.put({ id: 'kept', note: 'survives the reopen' });
+
+		await closeBranchAt(branch.path);
+		const reopened = await getOrCreateBranch(BASE, APP);
+
+		assert.notStrictEqual(reopened, branch, 'sanity: a fresh handle over the same directory');
+		assert.ok(reopened.tables.Persisted, 'the catalog in the branch store is the only record needed');
+		assert.notStrictEqual(reopened.tables.Persisted, Persisted);
+		assert.strictEqual((await reopened.tables.Persisted.get('kept'))?.note, 'survives the reopen');
+		assert.strictEqual(databases[BASE].Persisted, undefined);
+	});
+
+	it('hydrates a relationship between two branch-declared tables to the branch after reopen', async function () {
+		this.timeout(30000);
+		const { branch, declare } = await branchedFactory();
+		const Target = declare({
+			table: 'RelTarget2',
+			database: BASE,
+			schemaDefined: true,
+			attributes: [id, { name: 'label' }],
+		});
+		declare({
+			table: 'RelHost2',
+			database: BASE,
+			schemaDefined: true,
+			schemaRelationshipsDefined: true,
+			attributes: [
+				id,
+				{ name: 'targetId', type: 'ID', indexed: {} },
+				{
+					name: 'target',
+					type: 'RelTarget2',
+					relationship: { from: 'targetId' },
+					relationshipReference: { database: BASE, table: 'RelTarget2' },
+					definition: { tableClass: Target },
+				},
+			],
+		});
+		assertNothingAnnouncedFrom(branch);
+
+		await closeBranchAt(branch.path);
+		const reopened = (await prepareBranches(APP, [BASE], 'vm-current-context')).get(BASE);
+
+		const attribute = reopened.tables.RelHost2.attributes.find((a) => a.name === 'target');
+		assert.ok(attribute, 'the persisted relationship comes back with the table');
+		const targetClass = (attribute.definition || attribute.elements?.definition)?.tableClass;
+		assert.strictEqual(targetClass, reopened.tables.RelTarget2, "resolved within the branch's own graph");
+		assertNothingAnnouncedFrom(reopened);
+	});
+
+	/** What another thread's create leaves in the shared catalog: the rows, with no class in THIS thread. */
+	function createElsewhere(branch, tableName) {
+		const catalog = branch.rootStore.dbisDb;
+		const tableId = catalog.getSync(Symbol.for('next-table-id')) ?? 1;
+		catalog.putSync(Symbol.for('next-table-id'), tableId + 1);
+		catalog.putSync(`${tableName}/note`, { name: 'note', attribute: 'note' });
+		catalog.putSync(`${tableName}/`, { name: 'id', type: 'ID', isPrimaryKey: true, tableId, schemaDefined: true });
+		assert.strictEqual(branch.tables[tableName], undefined, 'sanity: this thread has no class yet');
+	}
+
+	it('loads a table another thread created into the branch instead of re-creating it, or creating it in the base', async function () {
+		const { branch, declare } = await branchedFactory();
+		createElsewhere(branch, 'Raced');
+
+		const Raced = declare({ table: 'Raced', database: BASE, schemaDefined: true, attributes: [id, { name: 'note' }] });
+
+		assert.strictEqual(Raced, branch.tables.Raced, 'the class the reload built is what the declaration returns');
+		assert.strictEqual(databases[BASE].Raced, undefined, 'the reload after a lost race must not be the global rescan');
+		await Raced.put({ id: 'r', note: 'usable' });
+		assert.strictEqual((await Raced.get('r'))?.note, 'usable');
+	});
+
+	it('reloads the branch on a schema-change signal that names it, where the branch is open', async function () {
+		const { branch, declare } = await branchedFactory();
+		const { schema: schemaHandler } = require('#js/server/itc/serverHandlers');
+		const ITCEventObject = require('#js/server/itc/utility/ITCEventObject');
+		const { SchemaEventMsg } = require('#js/server/threads/itc');
+		const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
+		// the handler has no way to remove a listener; this one only records into a local array
+		const signalled = [];
+		schemaHandler.addListener((message) => signalled.push(message));
+
+		// the signal is fire-and-forget from the declaration, so its local delivery is a turn behind
+		const { waitFor } = require('../waitFor.js');
+		const signalFor = (tableName) => signalled.find((message) => message.table === tableName);
+
+		declare({ table: 'Signalled', database: BASE, schemaDefined: true, attributes: [id] });
+		await waitFor(() => signalFor('Signalled'), {
+			timeout: 5_000,
+			message: 'a declaration into the branch still signals the other threads',
+		});
+		const forBranch = signalFor('Signalled');
+		assert.strictEqual(forBranch.branchPath, branch.path, 'and the signal addresses the branch, not the base');
+		assert.strictEqual(forBranch.schema, BASE);
+
+		table({ table: 'GlobalSignalled', database: BASE, schemaDefined: true, attributes: [id] });
+		await waitFor(() => signalFor('GlobalSignalled'), { timeout: 5_000, message: 'a base declaration signals' });
+		assert.strictEqual(signalFor('GlobalSignalled').branchPath, undefined, 'a base declaration carries no branch path');
+
+		// what a receiving thread does with it: the branch it holds open learns the new table
+		createElsewhere(branch, 'FromSignal');
+		await schemaHandler(
+			new ITCEventObject(
+				ITC_EVENT_TYPES.SCHEMA,
+				new SchemaEventMsg(process.pid, 'schema-change', BASE, 'FromSignal', undefined, branch.path)
+			)
+		);
+		assert.ok(branch.tables.FromSignal, 'the receiver reloaded the branch');
+		assert.strictEqual(databases[BASE].FromSignal, undefined);
+		assert.strictEqual(
+			reloadBranchAt('/nowhere/such/branch'),
+			undefined,
+			'a thread without the branch has nothing to do'
+		);
+		assertNothingAnnouncedFrom(branch);
+	});
+
+	it('releases every store a declaration opened when the branch closes', async function () {
+		const { branch, declare } = await branchedFactory();
+		declare({
+			table: 'Released',
+			database: BASE,
+			schemaDefined: true,
+			attributes: [id, { name: 'tag', type: 'String', indexed: true }],
+		});
+		// a re-declaration with an index displaces the wrappers the first one opened; both generations are owned
+		declare({
+			table: 'Released',
+			database: BASE,
+			schemaDefined: true,
+			attributes: [
+				id,
+				{ name: 'tag', type: 'String', indexed: true },
+				{ name: 'other', type: 'String', indexed: true },
+			],
+		});
+		const Released = branch.tables.Released;
+		const held = [Released.primaryStore, Released.indices.tag, Released.indices.other, ...branch.openedStores];
+		assert.ok(held.length > 4, 'sanity: the declarations opened stores');
+
+		await closeBranchAt(branch.path);
+
+		for (const store of held) {
+			assert.strictEqual(store.status, 'closed', `a store the branch owned is still open: ${store.name ?? store.path}`);
+		}
+	});
+
+	it('a second, unbranched application alongside sees the untouched base', async function () {
+		const { scopedBindings } = require('#src/security/jsLoader');
+		const { branch, declare } = await branchedFactory();
+		declare({ table: 'Private', database: BASE, schemaDefined: true, attributes: [id] });
+
+		const other = scopedBindings({});
+		assert.strictEqual(other.databases, databases);
+		assert.strictEqual(other.databases[BASE].Private, undefined);
+		assert.ok(other.databases[BASE].Existing, 'the base table the branch started from is still the base one');
+		assert.notStrictEqual(other.databases[BASE].Existing, branch.tables.Existing);
+	});
+});
+
+describeUnlessLmdb('schema authoring paths from a branched scope (harper#2264)', () => {
+	const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
+	const { tmpdir } = require('node:os');
+	const { basename } = require('node:path');
+	const { stringify } = require('yaml');
+	let Scope, ApplicationScope, Resources, handleApplication, scopedBindings, prepareBranches;
+	const APP = 'authoringApp';
+	const BASE = 'authorbase';
+	let directory;
+	let openScope;
+
+	before(function () {
+		({ Scope } = require('#src/components/Scope'));
+		({ ApplicationScope } = require('#src/components/ApplicationScope'));
+		({ Resources } = require('#src/resources/Resources'));
+		({ handleApplication } = require('#src/resources/graphql'));
+		({ scopedBindings } = require('#src/security/jsLoader'));
+		({ prepareBranches } = require('#src/resources/branchDatabase'));
+		setupTestDBPath();
+		setMainIsWorker(true);
+		table({ table: 'AuthorSource', database: BASE, attributes: [{ name: 'id', isPrimaryKey: true }] });
+	});
+
+	afterEach(async function () {
+		try {
+			await openScope?.close();
+		} finally {
+			openScope = undefined;
+			if (directory) rmSync(directory, { recursive: true, force: true });
+			directory = undefined;
+			await removeBranches();
+		}
+	});
+
+	async function branchedApplicationScope() {
+		const applicationScope = new ApplicationScope(APP, new Resources(), {});
+		applicationScope.branches = await prepareBranches(APP, [BASE], 'vm-current-context');
+		return applicationScope;
+	}
+
+	it('lands a GraphQL @table declaration in the branch, exported route and imported binding alike', async function () {
+		this.timeout(30000);
+		const applicationScope = await branchedApplicationScope();
+		const branch = applicationScope.branches.get(BASE);
+		directory = mkdtempSync(join(tmpdir(), 'harper.unit-test.branched-graphql-'));
+		writeFileSync(
+			join(directory, 'schema.graphql'),
+			`type GqlDeclared @table(database: "${BASE}") @export {\n\tid: ID @primaryKey\n\tnote: String\n}\n`
+		);
+		const configFilePath = join(directory, 'config.yaml');
+		writeFileSync(configFilePath, stringify({ graphqlSchema: { files: 'schema.graphql' } }));
+		const scope = new Scope(basename(directory), 'graphqlSchema', directory, configFilePath, applicationScope);
+		openScope = scope;
+		await scope.ready;
+
+		await handleApplication(scope);
+
+		const Declared = branch.tables.GqlDeclared;
+		assert.ok(Declared, 'the @table declaration created the table in the branch');
+		assert.strictEqual(databases[BASE].GqlDeclared, undefined, 'and not in the base');
+		const exported = [...applicationScope.resources.values()].find((entry) => entry.Resource === Declared);
+		assert.ok(exported, 'the exported route is backed by the branch class');
+		// what `import { databases } from 'harper'` resolves to inside the application
+		assert.strictEqual(scopedBindings(applicationScope).databases[BASE].GqlDeclared, Declared);
+		await Declared.put({ id: 'g', note: 'through the branch' });
+		assert.strictEqual((await Declared.get('g'))?.note, 'through the branch');
+	});
+
+	it('lands scope.ensureTable in the branch', async function () {
+		this.timeout(30000);
+		const applicationScope = await branchedApplicationScope();
+		const branch = applicationScope.branches.get(BASE);
+		directory = mkdtempSync(join(tmpdir(), 'harper.unit-test.branched-ensure-'));
+		const configFilePath = join(directory, 'config.yaml');
+		writeFileSync(configFilePath, stringify({ jsResource: { files: 'resources.js' } }));
+		const scope = new Scope(basename(directory), 'jsResource', directory, configFilePath, applicationScope);
+		openScope = scope;
+		await scope.ready;
+
+		const Ensured = scope.ensureTable({
+			table: 'Ensured',
+			database: BASE,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+
+		assert.strictEqual(branch.tables.Ensured, Ensured);
+		assert.strictEqual(databases[BASE].Ensured, undefined);
+		assert.strictEqual(Ensured.origin, basename(directory), 'the origin stamp is unchanged');
+	});
+
+	it('leaves an unbranched scope on the global factory and the global objects', async function () {
+		const applicationScope = new ApplicationScope('plain', new Resources(), {});
+		directory = mkdtempSync(join(tmpdir(), 'harper.unit-test.plain-ensure-'));
+		const configFilePath = join(directory, 'config.yaml');
+		writeFileSync(configFilePath, stringify({ jsResource: { files: 'resources.js' } }));
+		const scope = new Scope(basename(directory), 'jsResource', directory, configFilePath, applicationScope);
+		openScope = scope;
+		await scope.ready;
+
+		const definition = { table: 'PlainEnsured', database: BASE, attributes: [{ name: 'id', isPrimaryKey: true }] };
+		const Ensured = scope.ensureTable(definition);
+
+		assert.strictEqual(Ensured, databases[BASE].PlainEnsured);
+		assert.strictEqual(Ensured, table(definition));
+		assert.strictEqual(scopedBindings(applicationScope).databases, databases);
 	});
 });
 
@@ -603,15 +979,25 @@ describe('defineTable through a branched application (harper#643)', () => {
 		await removeBranches();
 	});
 
-	itUnlessLmdb('refuses to define into a branched database rather than defining into the base', async function () {
-		// defineTable registers in the process-wide catalog, so without this the table would appear in
-		// the base -- replicated and visible to every other application -- while this application's
-		// own reads and writes went to its branch. Landing it in the branch is harper#2264.
+	itUnlessLmdb('defines into the branch rather than into the base (harper#2264)', async function () {
+		// Without this the table would appear in the base -- replicated and visible to every other
+		// application -- while this application's own reads and writes went to its branch.
+		const { types } = require('#src/resources/defineTable');
 		const branch = await getOrCreateBranch('defbase', 'defApp');
-		const { defineTable } = scopedBindings({ branches: new Map([['defbase', branch]]) });
+		const { defineTable, databases: scoped } = scopedBindings({ branches: new Map([['defbase', branch]]) });
+		const shape = { id: types.id.primaryKey, note: types.string.nullable };
 
-		assert.throws(() => defineTable('Defined', { id: 'string' }, { database: 'defbase' }), /branched database/);
-		assert.strictEqual(databases.defbase.Defined, undefined, 'and nothing must be created in the base');
+		const Defined = defineTable('Defined', shape, { database: 'defbase' });
+
+		assert.strictEqual(branch.tables.Defined, Defined, 'the returned handle is the branch class');
+		assert.strictEqual(scoped.defbase.Defined, Defined, "and what the application's own `databases` resolves");
+		assert.strictEqual(databases.defbase.Defined, undefined, 'nothing is created in the base');
+		await Defined.put({ id: 'd', note: 'branch-defined' });
+		assert.strictEqual((await Defined.get('d'))?.note, 'branch-defined');
+		// re-declaring through defineTable evolves the branch table, the way a reload does
+		const Evolved = defineTable('Defined', { ...shape, extra: types.string.nullable }, { database: 'defbase' });
+		assert.strictEqual(Evolved, Defined);
+		assert.ok(Evolved.attributes.some((attribute) => attribute.name === 'extra'));
 	});
 
 	itUnlessLmdb('still defines into databases the application did not branch', async function () {
@@ -1817,5 +2203,73 @@ describeUnlessLmdb('branch control paths cannot be spelled as a database name (h
 			),
 			'and its blob roots were not deleted either'
 		);
+	});
+});
+
+describeUnlessLmdb('a table declared into a branch on one thread reaches another thread (harper#2264)', () => {
+	const { Worker } = require('node:worker_threads');
+	const { scopedTableFactory } = require('#src/resources/databases');
+	const { prepareBranches } = require('#src/resources/branchDatabase');
+	const APP = 'threadApp';
+	const BASE = 'threadbase';
+
+	before(function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		table({ table: 'ThreadSource', database: BASE, attributes: [{ name: 'id', isPrimaryKey: true }] });
+	});
+
+	afterEach(async function () {
+		await removeBranches();
+	});
+
+	it('is loaded by the reload the schema-change signal triggers, not by re-declaring', async function () {
+		this.timeout(60000);
+		const branches = await prepareBranches(APP, [BASE], 'vm-current-context');
+		const branch = branches.get(BASE);
+		const phase = new Int32Array(new SharedArrayBuffer(4));
+		const worker = new Worker(__dirname + '/branchDeclare-thread.js', {
+			workerData: { phase, baseName: BASE, appName: APP, tableName: 'Threaded', addPorts: [] },
+		});
+		try {
+			const failure = new Promise((_, reject) => worker.once('error', reject));
+			const message = (type) =>
+				Promise.race([
+					failure,
+					new Promise((resolve) => {
+						worker.on('message', function onMessage(received) {
+							if (received.type !== type) return;
+							worker.off('message', onMessage);
+							resolve(received);
+						});
+					}),
+				]);
+			const opened = message('opened');
+			const reloaded = message('reloaded');
+			assert.strictEqual(
+				(await opened).loaded,
+				false,
+				'sanity: the other thread opened the branch before the table existed'
+			);
+
+			const Threaded = scopedTableFactory(branches)({
+				table: 'Threaded',
+				database: BASE,
+				schemaDefined: true,
+				attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }, { name: 'note' }],
+			});
+			await Threaded.put({ id: 'declared-elsewhere', note: 'seen across threads' });
+			Atomics.store(phase, 0, 1);
+			Atomics.notify(phase, 0);
+
+			const seen = await reloaded;
+			assert.strictEqual(seen.loaded, true, 'the other thread has the class after its reload');
+			assert.deepStrictEqual(seen.attributes, ['id', 'note']);
+			assert.strictEqual(seen.note, 'seen across threads', 'and reads the row through it');
+			assert.strictEqual(databases[BASE].Threaded, undefined, 'the base has nothing on either thread');
+			assert.ok(branch.tables.Threaded);
+		} finally {
+			await worker.terminate();
+		}
 	});
 });
