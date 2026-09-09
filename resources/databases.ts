@@ -2927,7 +2927,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							attribute.restartNumber = currentRestartGeneration;
 							if (manageThreads.processIncarnation != null)
 								attribute.indexingIncarnation = manageThreads.processIncarnation;
-							// Identifies this build itself, so its settle handler cannot mark a later one failed.
 							attribute.indexingBuildId = randomBytes(8).toString('hex');
 							delete attribute.indexingFailed; // clear failure flag for the new run
 							dbi.isIndexing = true;
@@ -3033,10 +3032,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	logger.trace(`${tableName} table loading, running index`);
 	const branchPath = target.branch?.path;
 	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
-		// The ids the arming block just wrote, captured before the backfill can rewrite the attributes.
+		// captured before the backfill can rewrite the attributes
 		const buildIds = new Map(attributesToIndex.map((attribute) => [attribute, attribute.indexingBuildId]));
-		// runIndexing resolves on every path it takes, including its silent returns, so both arms run the
-		// same pass; it is awaited inside the tracked operation so its writes cannot reject unobserved.
+		// both arms, and inside the tracked operation, so a marker write cannot reject unobserved
 		const markSettled = () => markAbandonedIndexBuild(Table, rootStore, buildIds);
 		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove, branchPath).then(
 			markSettled,
