@@ -422,7 +422,7 @@ class DerivedIndexRunner {
 	/** Collected but unresolved transactions; the last one may still be open (incomplete). */
 	#carried: CollectedTransaction[] = [];
 	#latestSeen = new Map<string, number>();
-	#stalledSince = 0;
+	#stalledSince?: number;
 	#reloadsHandledThrough = new Map<string, number>();
 	#scheduled = false;
 	#waitingForLock = false;
@@ -591,7 +591,7 @@ class DerivedIndexRunner {
 			deferredBytes: this.#pendingBatch?.bytes ?? 0,
 			oldestAcceptedAgeMilliseconds: oldestAcceptedAt === undefined ? 0 : Math.max(0, now - oldestAcceptedAt),
 			cursorLagMilliseconds: cursorLag,
-			stalledMilliseconds: this.#stalledSince === 0 ? 0 : Math.max(0, now - this.#stalledSince),
+			stalledMilliseconds: this.#stalledSince === undefined ? 0 : Math.max(0, now - this.#stalledSince),
 			unindexableRecords: this.#unindexableRecords,
 			rebuildAttempts: this.#rebuildAttempts,
 			rebuiltRecords: this.#rebuiltRecords,
@@ -815,7 +815,7 @@ class DerivedIndexRunner {
 			if (result === DERIVED_INDEX_DEFERRED) {
 				this.#pendingBatch = batch;
 				this.status = { state: 'deferred', ownerEpoch: this.#ownerEpoch };
-				if (this.#stalledSince === 0) this.#stalledSince = now;
+				this.#stalledSince ??= now;
 				return;
 			}
 			this.#pendingBatch = undefined;
@@ -824,10 +824,10 @@ class DerivedIndexRunner {
 			if (!this.#reconcileDurableCursor()) return;
 			if (!lastOpen(this.#carried) && this.#offeredCursors.length - 1 >= this.#options.maxAcceptedBatchesAhead) {
 				this.status = { state: 'waiting-durable', ownerEpoch: this.#ownerEpoch };
-				if (this.#stalledSince === 0) this.#stalledSince = now;
+				this.#stalledSince ??= now;
 				return;
 			}
-			this.#stalledSince = 0;
+			this.#stalledSince = undefined;
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			this.wake();
 		} catch (error) {
@@ -1001,6 +1001,7 @@ class DerivedIndexRunner {
 		const options = this.#options;
 		const through = cloneCursor(this.#offered!);
 		let completed = 0;
+		let visited = 0;
 		for (let i = 0; i < collected.length; i++) {
 			const transaction = collected[i];
 			const mutations: DerivedIndexMutation[] = [];
@@ -1011,8 +1012,7 @@ class DerivedIndexRunner {
 						!remaining &&
 						chunk.batch.records.length > 0 &&
 						(chunk.batch.bytes >= options.maxChunkBytes ||
-							((chunk.batch.records.length & 15) === 0 &&
-								options.now() - chunk.started >= options.maxMillisecondsPerTurn))
+							((++visited & 15) === 0 && options.now() - chunk.started >= options.maxMillisecondsPerTurn))
 					) {
 						remaining = { ...transaction, keys: new Map(), keyCount: 0 };
 					}
@@ -1167,6 +1167,7 @@ class DerivedIndexRunner {
 	}
 
 	#finishIdlePass() {
+		this.#stalledSince = undefined;
 		if (this.#rebuilding || !this.#offered) return;
 		const durable = this.#registration.backend.getDurableCursor();
 		if (durable === undefined && this.#boundaryPending) {
@@ -1301,6 +1302,7 @@ class DerivedIndexRunner {
 
 	#discardProgress() {
 		this.#generation++;
+		this.#stalledSince = undefined;
 		this.#offered = undefined;
 		this.#pendingBatch = undefined;
 		this.#carried = [];
@@ -1452,8 +1454,10 @@ class DerivedIndexRunner {
 				return;
 			}
 			if (result === DERIVED_INDEX_ACCEPTED) break;
+			this.#stalledSince ??= this.#options.now();
 			await this.#waitForBackend();
 		}
+		this.#stalledSince = undefined;
 		this.#noteAccepted(chunk.batch);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
