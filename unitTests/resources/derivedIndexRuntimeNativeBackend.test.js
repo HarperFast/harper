@@ -28,6 +28,7 @@ class FakeLogStore {
 		this.locks = new Set();
 		this.waiters = new Map();
 		this.sharedBuffers = new Map();
+		this.bufferLookups = 0;
 		this.rangeCalls = [];
 		this.exactStartFailures = new Map();
 		this.rootStore = new EventEmitter();
@@ -86,6 +87,7 @@ class FakeLogStore {
 	}
 
 	getUserSharedBuffer(key, defaultBuffer, options) {
+		this.bufferLookups++;
 		let memory = this.sharedBuffers.get(key);
 		if (!memory) {
 			memory = { buffer: new SharedArrayBuffer(defaultBuffer.byteLength), callbacks: new Set() };
@@ -1197,7 +1199,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
-	it('fails closed instead of emptying the index when a projection rejects every record of a chunk', async () => {
+	it('skips and counts every record of a chunk the projection rejects instead of condemning the index', async () => {
 		const ids = Array.from({ length: 40 }, (_, i) => `r${i}`);
 		const store = new FakeLogStore(new Map([[10, ids.map((id, i) => audit({ timestamp: 20 + i, recordId: id }))]]));
 		const backend = new SyncBackend('all-rejected', cursor(10));
@@ -1215,9 +1217,14 @@ describe('DerivedIndexRuntime for native backends', () => {
 				],
 			]),
 		});
-		await waitFor(() => runtime.getStatus('all-rejected')?.state === 'needs-rebuild');
-		assert.match(runtime.getStatus('all-rejected').reason, /rejected every record/);
-		assert.strictEqual(backend.deliveries.length, 0);
+		await waitFor(() => backend.deliveries.length > 0);
+		const states = backend.deliveries.flatMap((batch) => batch.records.map((record) => record.state));
+		assert.strictEqual(states.length, 40);
+		assert(states.every((state) => state.kind === 'unindexable' && /\(400\)$/.test(state.reason)));
+		assert.strictEqual(runtime.getMetrics('all-rejected').unindexableRecords, 40);
+		await waitFor(() => backend.cursor.logs.local === 59);
+		assert.strictEqual(runtime.getStatus('all-rejected').state, 'idle');
+		assert.strictEqual(runtime.getMetrics('all-rejected').rebuildAttempts, 0);
 		await runtime.stop();
 	});
 
@@ -1264,7 +1271,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
-	it('fails a rebuild closed when the projection rejects every scanned record, whatever the chunk size', async () => {
+	it('completes a rebuild whose scan the projection rejects entirely, counting the records', async () => {
 		const ids = Array.from({ length: 5 }, (_, i) => `r${i}`);
 		const records = new Map(ids.map((id) => [`1:${id}`, { version: 1, value: { title: 1 } }]));
 		const store = new FakeLogStore(new Map([[7, []]]), {
@@ -1284,10 +1291,49 @@ describe('DerivedIndexRuntime for native backends', () => {
 			]),
 			options: { maxChunkRecords: 2, maxRebuildAttempts: 1, maxFlushAgeMilliseconds: 5 },
 		});
-		await waitFor(() => runtime.getStatus('scan-rejected')?.state === 'unavailable', { timeout: 5000 });
-		assert.match(runtime.getStatus('scan-rejected').reason, /rejected every/);
-		assert.notStrictEqual(runtime.getReadiness('scan-rejected').state, 'ready');
+		await waitFor(() => runtime.getReadiness('scan-rejected').state === 'ready', { timeout: 5000 });
+		assert.strictEqual(runtime.getMetrics('scan-rejected').unindexableRecords, 5);
+		assert.strictEqual(runtime.getMetrics('scan-rejected').rebuiltRecords, 5);
+		assert.strictEqual(runtime.getMetrics('scan-rejected').rebuildAttempts, 0);
+		assert.strictEqual(backend.applied.size, 0);
 		await runtime.stop();
+	});
+
+	it('yields the event loop through a long run of tombstones during a rebuild scan', async () => {
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'kept' })]]]),
+		});
+		const backend = new AsyncBackend('tombstone-scan', { applyDelay: 1 });
+		let clock = 0;
+		let yielded = false;
+		let yieldedBefore = -1;
+		const { runtime } = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 60_000,
+			now: () => clock,
+			scanRecords: function* () {
+				setImmediate(() => (yielded = true));
+				for (let i = 0; i < 2000; i++) {
+					if (yielded && yieldedBefore < 0) yieldedBefore = i;
+					clock += 1;
+					yield { recordId: `dead${i}`, version: 1, value: null };
+				}
+				yield { recordId: 'kept', version: 2, value: { title: 'kept' } };
+			},
+		});
+		runtime.register(registration(backend, { maxMillisecondsPerTurn: 5, maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => runtime.getReadiness('tombstone-scan').state === 'ready', { timeout: 5000 });
+		assert(yieldedBefore >= 0 && yieldedBefore < 2000, `scan held the event loop through ${yieldedBefore} tombstones`);
+		assert.strictEqual(runtime.getMetrics('tombstone-scan').rebuiltRecords, 1);
+		assert.deepStrictEqual([...backend.applied.keys()], ['kept']);
+		const scanChunks = backend.deliveries.filter((batch) => batch.rebuild);
+		assert(
+			scanChunks.every((batch) => batch.records.length > 0 || batch.through),
+			'no empty chunk before the boundary'
+		);
+		assert.deepStrictEqual(scanChunks.at(-1).through, cursor(7));
+		const lookups = store.bufferLookups;
+		await runtime.stop();
+		assert.strictEqual(store.bufferLookups, lookups, 'shared-memory views are fetched once per runner');
 	});
 
 	it('keeps writes admitted when the registration sets no lag policy', async () => {
@@ -1322,6 +1368,26 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await waitFor(() => runtime.getStatus('undeclared-async')?.state === 'needs-rebuild');
 		assert.match(runtime.getStatus('undeclared-async').reason, /declared no asynchronous effects/);
 		await runtime.stop();
+	});
+
+	it('holds the lock under an undeclared asynchronous flush until its promise settles', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const backend = new SyncBackend('undeclared-pending', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		const settlers = [];
+		backend.flush = () => new Promise((resolve) => settlers.push(resolve));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			scanRecords: undefined,
+		});
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 1 }));
+		await waitFor(() => runtime.getStatus('undeclared-pending')?.state === 'needs-rebuild');
+		await sleep(20);
+		assert(store.locks.has('derived-index:undeclared-pending:runner'), 'the lock is held while the promise is pending');
+		const stopped = runtime.stop();
+		await sleep(20);
+		assert(store.locks.has('derived-index:undeclared-pending:runner'), 'stop() waits for the promise too');
+		for (const settle of settlers) settle();
+		await stopped;
+		assert(!store.locks.has('derived-index:undeclared-pending:runner'));
 	});
 
 	it('waits for the shutdown flush of an asynchronous backend before releasing the lock', async () => {
@@ -1608,11 +1674,15 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		// notification all go through the native binding here, not the fake.
 		const peer = new DerivedIndexRuntime(Product.auditStore, () => undefined, { scanRecords: () => [] });
 		assert.strictEqual(peer.getReadiness('rocks-rebuild').state, 'ready');
-		// One thread: the binding hands back a plain ArrayBuffer here, which is why views re-fetch until shared.
-		assert(
-			Product.auditStore.getUserSharedBuffer('derived-index:rocks-rebuild:readiness', new ArrayBuffer(512)) instanceof
-				ArrayBuffer
+		// The binding hands every caller a plain ArrayBuffer over one process-wide allocation: a second
+		// wrapper of the same key observes the owner's publication, and never a SharedArrayBuffer.
+		const wrapper = Product.auditStore.getUserSharedBuffer(
+			'derived-index:rocks-rebuild:readiness',
+			new ArrayBuffer(512)
 		);
+		assert(!(wrapper instanceof SharedArrayBuffer));
+		assert.strictEqual(readDerivedIndexReadiness(Product.auditStore, 'rocks-rebuild').state, 'ready');
+		assert.notStrictEqual(new Int32Array(wrapper)[0], 0, 'the wrapper sees the published sequence word');
 		const peerBackend = new AsyncBackend('rocks-rebuild', { applyDelay: 2 });
 		const unregisterPeer = peer.register({
 			backend: peerBackend,

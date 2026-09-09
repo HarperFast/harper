@@ -9,6 +9,7 @@ const {
 	DERIVED_INDEX_DEFERRED,
 	DerivedIndexRuntime,
 } = require('#src/resources/derivedIndexRuntime');
+const { derivedIndexWriteRejection, registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
 
 const APPLY_MICROS = Number(process.env.DERIVED_BENCH_APPLY_MICROS ?? 350);
 const BARRIER_MILLIS = Number(process.env.DERIVED_BENCH_BARRIER_MILLIS ?? 5);
@@ -258,6 +259,28 @@ describe('Benchmark: derived-index runtime with a costly native-shaped backend',
 
 	before(() => {
 		console.log(`\n  apply cost ${APPLY_MICROS} µs/mutation, barrier ${BARRIER_MILLIS} ms, ${DIMENSIONS}-d records`);
+	});
+
+	it('admission check: cost per local write with no index, an index without a policy, and an admitting policy', () => {
+		const store = {};
+		const words = new Int32Array(new ArrayBuffer(64));
+		const measure = (label) => {
+			const rounds = 5_000_000;
+			let hits = 0;
+			const started = performance.now();
+			for (let i = 0; i < rounds; i++) if (derivedIndexWriteRejection(store, 1) !== undefined) hits++;
+			const nanos = ((performance.now() - started) * 1e6) / rounds;
+			console.log(`  ${label.padEnd(36)} | ${fmt(nanos)} ns per write (${hits} rejections)`);
+		};
+		measure('no derived index on the table');
+		const releasePlain = registerDerivedIndexTables(store, [1]);
+		measure('index registered, no lag policy');
+		releasePlain();
+		const releaseGated = registerDerivedIndexTables(store, [1], () =>
+			Atomics.load(words, 5) === 1 ? 'behind' : undefined
+		);
+		measure('lag policy on, admitting');
+		releaseGated();
 	});
 
 	it('coalescing: repeated keys within one delivery window', async () => {

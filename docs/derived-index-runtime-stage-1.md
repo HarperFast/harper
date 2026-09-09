@@ -390,7 +390,9 @@ contract is split on **asynchronous effects** — work or publication that survi
 backend applies and makes the batch durable inside `deliver()`, completes any `flush` before
 returning, and publishes nothing on its own, so the fence, barrier request and quiescence
 handshake are optional for it; a synchronous backend that returns a promise from `flush` is failed
-closed as an undeclared asynchronous backend. An **asynchronous** backend — a queued apply, a
+closed as an undeclared asynchronous backend, and because that promise may still write, the
+epoch's quiescence — and so any unlock or reset — waits for it to settle; a promise that never
+settles holds the lock, which is the safe failure. An **asynchronous** backend — a queued apply, a
 barrier that completes later, a durable cursor that trails delivery — declares `asynchronous:
 true`, and registration rejects it unless `attach`, `flush` and `shutdown` are all implemented,
 because without them its work can land in the next owner's generation. Release awaits the shutdown
@@ -614,10 +616,11 @@ a backend that cannot rebuild parks on a condemned generation instead of resumin
 record yields `state: { kind: 'unindexable' }` whose `reason` is the error's class and status only,
 never its message (validation messages can quote record values) — the backend removes any entry and
 counts it — in live delivery and rebuild alike, so one malformed record cannot loop a rebuild; any
-other exception stays fail-closed, and so does a chunk (of at least 32 records or the chunk bound,
-whichever is smaller) in which the projection rejected every one, or a rebuild scan that rejected
-every record it found, since that is a schema or projection fault that would otherwise empty the
-index.
+other exception stays fail-closed. A chunk, or a whole scan, in which the projection rejected every
+record is not a fault: a bulk write of records that lack the projected attribute, or a table indexed
+before its data carries it, is a legitimate state, and condemning it would turn user data into an
+outage that the rebuild's replay re-trips. The runtime logs one warning per such streak and the
+count stays visible in `unindexableRecords`.
 
 ### Generation fencing and cancellation
 
@@ -667,13 +670,14 @@ runtime's own description, never the backend error's message, which can quote re
 message stays in the owner's local status and log. A runner that latched a shared `unavailable`
 drops the latch on its next wake once the shared state has moved on, so a peer's revival does not
 strand the other workers. `ready` is published on a validated acquisition and after
-a rebuild's final barrier; `rebuilding` before the destructive reset. rocksdb-js hands back a plain
-`ArrayBuffer` for a key until another thread has asked for it, so the runtime caches its views of
-the readiness and owner-epoch records only once the memory is a `SharedArrayBuffer`; before that,
-the epoch mint and every owner publish re-fetch on each use (a worker booting in the middle of a
-single-worker rebuild must be seen at once, or the two owners would mint the same epoch in private
-memory), while reads — the fence, the admission word, wake gating and `readDerivedIndexReadiness`
-— re-fetch at most every 100 ms, so a single-worker process pays no native call per apply. A fault detected in the middle
+a rebuild's final barrier; `rebuilding` before the destructive reset. rocksdb-js
+(`DBDescriptor::getUserSharedBuffer`) copies the default buffer into one native allocation per key
+on the first call and, on every later call from any thread, wraps that same allocation in a new
+external `ArrayBuffer`; it never returns a `SharedArrayBuffer`, never re-seeds an existing entry,
+and keeps the allocation while any wrapper is alive. The runtime therefore fetches each view once
+per runner and holds it (which keeps the allocation alive); `Atomics.load`/`store`/`add`/`exchange`
+are atomic on any integer typed array, and wakes go through the binding's own `notify()`, so
+nothing here needs `Atomics.wait`. A fault detected in the middle
 of a drain turn (a corrupt frame surfacing from the iterator) starts the rebuild from inside that
 turn; the turn's generation check prevents its end-of-log path from publishing `ready` over the
 `rebuilding` just written.
@@ -696,8 +700,8 @@ clears the word, because shedding writes forever would protect nothing.
 Every worker's runner registers an admission check for the index's tables
 (`registerDerivedIndexTables(store, tableIds, admission)`); `derivedIndexWriteRejection(store,
 tableId)` costs one WeakMap miss on tables without a derived index and one `Atomics.load` per
-policy-enabled index otherwise. The check sits at the staging layer, `_writeUpdate` and
-`_writeDelete`, where every local write converges — put, patch, post and `create()`,
+policy-enabled index otherwise. The check sits at the staging layer — `_writeUpdate`,
+`_writeDelete`, `_writeInvalidate` and `_writeRelocate` — where every local write converges — put, patch, post and `create()`,
 `loadAsInstance: false` writes, held-lock saves, and per-row query deletes — and it bypasses
 replication apply (`isNotification`) and replay, because a rejected replicated write would break
 convergence; origin cache fills call `updateRecord` directly and are not gated. A shed write fails
