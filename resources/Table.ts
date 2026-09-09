@@ -3967,6 +3967,7 @@ export function makeTable(options) {
 			// objects. Entries are small and shallow; the clone is cheap next to the query.
 			conditions = cloneConditions(conditions);
 			let orderAlignedCondition;
+			let syntheticOrderCondition;
 			const filtered = {};
 
 			function prepareConditions(conditions: any[], operator: string) {
@@ -4105,7 +4106,7 @@ export function makeTable(options) {
 							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index.
 							// the primary key has no secondary index, but the primary store is itself keyed in
 							// primary-key order, so scanning it is already aligned with the sort
-							orderAlignedCondition = { ...sort, comparator: 'sort' };
+							orderAlignedCondition = syntheticOrderCondition = { ...sort, comparator: 'sort' };
 							conditions.push(orderAlignedCondition);
 						} else if (conditions.length === 0 && !target.allowFullScan)
 							throw handleHDBError(
@@ -4135,8 +4136,10 @@ export function makeTable(options) {
 						};
 					}
 				} else {
-					// if we had to add an aligned condition that isn't first, we remove it and do ordering later
-					if (orderAlignedCondition) conditions.splice(conditions.indexOf(orderAlignedCondition), 1);
+					// if we had to add an aligned condition that isn't first, we remove it and do ordering later.
+					// Only the pseudo-condition we added: a caller's own condition on the sort attribute is a
+					// filter the result must still satisfy, and dropping it returned rows that do not match.
+					if (syntheticOrderCondition) conditions.splice(conditions.indexOf(syntheticOrderCondition), 1);
 					postOrdering = sort;
 				}
 			}
