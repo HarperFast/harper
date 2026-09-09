@@ -156,8 +156,6 @@ export async function retryPendingGenerations() {
  * Only safe to call once quiescence has been proven for exactly this listing.
  */
 export async function compressPendingArchives(rotatedLogDir: string, files: string[], liveLogPaths: Set<string>) {
-	// A Set: the archive rate is write-rate/maxSize, so this listing is unbounded between retention
-	// passes and a per-file includes() over it is quadratic.
 	const present = new Set(files);
 	let compressed = 0;
 	for (const file of files) {
@@ -177,12 +175,10 @@ const compressionByDirectory = new Map<string, Promise<any>>();
 export function compressArchive(archivePath: string) {
 	const directory = dirname(archivePath);
 	// Declined rather than queued: chaining would grow an unbounded list of pending jobs whenever
-	// rotation outruns gzip. The archive stays on disk exactly as an uncompressed rotation leaves it,
-	// and the audit tick's bounded sweep finds it later.
+	// rotation outruns gzip. The archive is left for the tick's bounded sweep, which is where an
+	// uncompressed rotation leaves it anyway. The slot is released by the promise this returns, not by
+	// a detached continuation, because that sweep awaits each call before making the next.
 	if (compressionByDirectory.has(directory)) return Promise.resolve(archivePath);
-	// The slot is released by the promise this returns, not by a detached continuation: the tick's
-	// sweep awaits each call before making the next, and a slot still held at that point would make
-	// it decline every archive after the first.
 	const chain: Promise<any> = compressOneArchive(archivePath).finally(() => {
 		if (compressionByDirectory.get(directory) === chain) compressionByDirectory.delete(directory);
 	});
@@ -273,8 +269,10 @@ export function createRotationGuard(options: any) {
 			// thread (or the audit tick) renamed the generation between this thread's stat and its
 			// rename, so the file is under the cap now, which is all this check wanted. A missing
 			// destination means no rotation can ever succeed, and treating that as a race would clear
-			// the cap check on every pass and let the log grow without a bound or a diagnostic.
-			if (error.code === 'ENOENT' && !existsSync(logPath)) {
+			// the cap check on every pass and let the log grow without a bound or a diagnostic. The
+			// destination is what is asked about: a peer can recreate the source pathname between the
+			// failed rename and this check, which would make the benign case look like the fatal one.
+			if (error.code === 'ENOENT' && existsSync(rotatedLogDir)) {
 				closeLogFile();
 				rotationPending = false;
 				return;

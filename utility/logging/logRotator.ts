@@ -1,6 +1,6 @@
 'use strict';
 
-import { mkdirSync, statSync, promises as fsProm } from 'fs';
+import { existsSync, mkdirSync, statSync, promises as fsProm } from 'fs';
 import * as path from 'path';
 import * as envMgr from '../environment/environmentManager.ts';
 envMgr.initSync();
@@ -80,6 +80,22 @@ function logRotator({
 	let lastRotationTime = Date.now();
 	hdbLogger.trace('Log rotate enabled, maxSize:', maxSize, 'interval:', interval);
 	let tickInFlight = false;
+	let releaseProofStalled = false;
+	/**
+	 * rename() reports ENOENT for a missing destination directory as well as a missing source, and
+	 * only the second is the benign lost race. The directory is created once at rotator start, so a
+	 * rotation target removed under a running instance otherwise stops rotation permanently and
+	 * silently — and with `interval` and no `maxSize` there is no write-path guard to recreate it.
+	 */
+	function recoverRotationTarget(err: any) {
+		if (err.code !== 'ENOENT' || existsSync(rotatedLogDir)) return;
+		try {
+			mkdirSync(rotatedLogDir, { recursive: true });
+			hdbLogger.warn(`The log rotation directory ${rotatedLogDir} was missing and has been recreated`);
+		} catch (mkdirErr) {
+			hdbLogger.error('Could not recreate the log rotation directory', rotatedLogDir, mkdirErr);
+		}
+	}
 	const setIntervalId = setInterval(async () => {
 		// setInterval does not await the callback, and one pass can now wait on peers; overlapping
 		// passes would work the same archive twice and double-compress it.
@@ -114,6 +130,7 @@ function logRotator({
 				} catch (err) {
 					// A missing or already-rotated active log only invalidates this check; retention below
 					// must still run, so skip the check rather than leaving the whole tick.
+					recoverRotationTarget(err);
 					if (err.code !== 'ENOENT') throw err;
 				}
 			}
@@ -135,6 +152,7 @@ function logRotator({
 						lastRotationTime = Date.now();
 					} catch (err) {
 						// If the log file doesn't exist, skip rotation
+						recoverRotationTarget(err);
 						if (err.code !== 'ENOENT') throw err;
 					}
 				}
@@ -155,6 +173,19 @@ function logRotator({
 					candidates = [];
 				}
 				const { released, liveLogPaths } = await requestStaleDescriptorRelease();
+				// A peer whose event loop is blocked never answers, and the whole pass then destroys
+				// nothing — correct, but it is also the only thing bounding the rotated directory, so an
+				// operator who configured retention has to be able to see that it has stopped. Latched
+				// rather than repeated, so a permanently stalled peer reports once per stall.
+				if (!released && !releaseProofStalled) {
+					releaseProofStalled = true;
+					hdbLogger.warn(
+						`Log rotation could not prove every thread released its archived log descriptors; compression and retention are paused for ${rotatedLogDir}`
+					);
+				} else if (released && releaseProofStalled) {
+					releaseProofStalled = false;
+					hdbLogger.notify(`Log rotation descriptor release recovered; retention resumed for ${rotatedLogDir}`);
+				}
 				const liveLogs = new Set([...liveLogPaths, logger.path].map((p) => path.resolve(p)));
 
 				if (released && compressArchives) await compressPendingArchives(rotatedLogDir, candidates, liveLogs);
