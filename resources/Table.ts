@@ -748,8 +748,7 @@ export function makeTable(options) {
 		}
 		return { txnLogKey: version, nodeId };
 	}
-	// Every local write converges on the _write* staging methods; replication apply (isNotification),
-	// replay and origin cache fills (updateRecord directly) must never be shed, only user writes.
+	// Only user writes are shed: replication apply, replay and origin cache fills must never be.
 	function assertDerivedIndexAdmission(options: any, replaying: boolean) {
 		if (options?.isNotification || replaying) return;
 		const reason = derivedIndexWriteRejection(auditStore, tableId);
