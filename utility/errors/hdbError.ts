@@ -72,6 +72,22 @@ export class ServerError extends Error {
  * permanent failure and retry, rather than mis-handling the generic 503 (e.g. as a "no result").
  * See issue #1355.
  */
+/**
+ * Thrown when a write targets a table whose derived index has fallen further behind than its
+ * registration allows. A distinct, retryable 503 so writers back off before the index's cursor is
+ * lost to transaction-log retention, rather than reading a generic 503 as a permanent failure.
+ */
+export class DerivedIndexLagError extends ServerError {
+	code: string;
+	retryable: boolean;
+	constructor(message: string) {
+		super(message, 503);
+		this.name = 'DerivedIndexLagError';
+		this.code = 'DERIVED_INDEX_LAGGING';
+		this.retryable = true;
+	}
+}
+
 export class IndexRebuildingError extends ServerError {
 	code: string;
 	retryable: boolean;

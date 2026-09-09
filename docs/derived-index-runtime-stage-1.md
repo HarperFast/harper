@@ -307,8 +307,7 @@ durable position, per log — it cannot see transactions the runner has not read
 runner's lag is reported through `stalledMilliseconds`, the time spent on backend backpressure or
 the durability ceiling) separately from backend backpressure (`deferredBytes`, the `deferred`
 status) so retention lag and queue memory pressure are distinguishable, and the runtime emits one error per transition to `needs-rebuild`, so this
-availability loss is visible. Writer backpressure above a lag threshold is a separate decision
-(see [Lag policy](#lag-policy)).
+availability loss is visible. Writer backpressure above a lag threshold is the opt-in [lag policy](#lag-policy).
 
 ### Backend boundary
 
@@ -565,7 +564,10 @@ ownership check after every `await`:
 6. install the boundary as offered progress and open the log iterator from it with the existing
    `exactStart` / `resumeAfterExactStart` validation (the anchor transaction is already reflected
    in the scan because it committed before the capture), replay to the head through the ordinary
-   drain, and publish `ready` on the first idle pass whose durable cursor equals offered progress.
+   drain, and publish `ready` on the first durable advance past the boundary or the first idle
+   pass whose durable cursor equals offered progress, whichever comes first — under sustained
+   ingest there may never be an idle pass, and a durable advance already certifies a complete
+   prefix.
 
 The boundary is the oldest retained entry, so replay re-walks the retention window; a tighter
 boundary derived from staged or uncommitted positions is out of scope (see
@@ -604,7 +606,9 @@ a backend that cannot rebuild parks on a condemned generation instead of resumin
 record yields `state: { kind: 'unindexable' }` whose `reason` is the error's class and status only,
 never its message (validation messages can quote record values) — the backend removes any entry and
 counts it — in live delivery and rebuild alike, so one malformed record cannot loop a rebuild; any
-other exception stays fail-closed.
+other exception stays fail-closed, and so does a chunk of 32 or more records in which the projection
+rejected every one, since that is a schema or projection fault that would otherwise empty the
+index.
 
 ### Generation fencing and cancellation
 
@@ -661,10 +665,26 @@ turn; the turn's generation check prevents its end-of-log path from publishing `
 
 ### Lag policy
 
-Pending decision (issue #2489 convergence, item 7). What exists regardless of it: lag and
-backpressure are separate observable signals (`cursorLagMilliseconds` versus `deferredBytes` and
-the `deferred` status); a `'failed'` report and every rebuild failure go through the bounded retry
-above, so native capacity exhaustion cannot launch endless rebuilds against the same limit; and
+Opt-in writer backpressure, per registration (`maxLagMilliseconds`, 0 = no policy). The owner
+computes `lag = max(cursorLagMilliseconds, stalledMilliseconds)` on every drain turn, idle pass and
+age tick and publishes a lag-exceeded word in the shared readiness buffer: set at `lag >= max`,
+cleared at `lag < max / 2` so the policy does not flap, and cleared whenever the owner discards
+progress or releases. Every worker's runner registers an admission check for the index's tables
+(`registerDerivedIndexTables(store, tableIds, admission)`), and the write path's
+`derivedIndexWriteRejection(store, tableId)` costs one WeakMap miss on tables without a derived
+index and one `Atomics.load` otherwise. `Table.update()` (put, patch, post) and `Table.delete()`
+throw `DerivedIndexLagError` — a retryable 503 with `code: 'DERIVED_INDEX_LAGGING'` — while the
+word is set; replication apply, scan deletes, eviction and origin cache fills go through
+`updateRecord` directly and are never rejected, because a rejected replicated write would break
+convergence. Why not pin retention to the slowest cursor: rocksdb-js has no protected-position
+registration (`purgeLogs()` is time/name filtered and configured retention applies independently).
+Why not metrics only: sustained overload runs the cursor past retention, rebuilds, and falls behind
+again; the bounded retry makes that loop finite, not harmless. A vector backend whose apply is
+slower than the write path sets the threshold; a full-text backend can leave the policy off.
+
+Regardless of the policy, lag and backpressure remain separate observable signals
+(`cursorLagMilliseconds` and `stalledMilliseconds` versus `deferredBytes` and the `deferred`
+status), a `'failed'` report and every rebuild failure go through the bounded retry above, and
 the runtime never lets an exception from a backend call escape the scheduled drain.
 
 ## Approaches considered
