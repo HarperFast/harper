@@ -1,5 +1,9 @@
 const assert = require('node:assert');
-const { hasDerivedIndexRegistration, registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
+const {
+	derivedIndexWriteRejection,
+	hasDerivedIndexRegistration,
+	registerDerivedIndexTables,
+} = require('#src/resources/derivedIndexRegistry');
 
 describe('derived index registration tracking', () => {
 	it('counts registrations independently by audit store and table', () => {
@@ -24,5 +28,21 @@ describe('derived index registration tracking', () => {
 
 		releaseOtherStore();
 		assert.strictEqual(hasDerivedIndexRegistration(secondStore, 1), false);
+	});
+
+	it('returns the first admission reason for a table and none once released', () => {
+		const store = {};
+		let reason;
+		const releaseGated = registerDerivedIndexTables(store, [1], () => reason);
+		const releaseOpen = registerDerivedIndexTables(store, [1, 2]);
+		assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+		reason = 'behind';
+		assert.strictEqual(derivedIndexWriteRejection(store, 1), 'behind');
+		assert.strictEqual(derivedIndexWriteRejection(store, 2), undefined);
+		releaseGated();
+		assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+		assert.strictEqual(hasDerivedIndexRegistration(store, 1), true);
+		releaseOpen();
+		assert.strictEqual(hasDerivedIndexRegistration(store, 1), false);
 	});
 });

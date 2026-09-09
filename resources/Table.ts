@@ -53,6 +53,7 @@ import {
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
 import {
+	DerivedIndexLagError,
 	handleHDBError,
 	ClientError,
 	ServerError,
@@ -81,7 +82,7 @@ import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, LOCAL_ONLY, auditRetention, removeAuditEntry } from './auditStore.ts';
-import { hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
+import { derivedIndexWriteRejection, hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -746,6 +747,11 @@ export function makeTable(options) {
 				return { txnLogKey: version, nodeId };
 		}
 		return { txnLogKey: version, nodeId };
+	}
+	// User-originated writes only: replication apply and origin cache fills bypass this and never 503.
+	function assertDerivedIndexAdmission() {
+		const reason = derivedIndexWriteRejection(auditStore, tableId);
+		if (reason) throw new DerivedIndexLagError(reason);
 	}
 	function stageDerivedIndexEviction(transaction: RocksTransaction, id: Id, version: number) {
 		if (!hasDerivedIndexRegistration(auditStore, tableId)) return;
@@ -2075,6 +2081,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			const envTxn = txnForContext(context);
 			if (!envTxn) throw new Error('Can not update a table resource outside of a transaction');
+			assertDerivedIndexAdmission();
 			// record in the list of updating records so it can be written to the database when we commit
 			if (updates === false) {
 				// TODO: Remove from transaction
@@ -3710,6 +3717,7 @@ export function makeTable(options) {
 		}
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
+			assertDerivedIndexAdmission();
 			if (isSearchTarget(target)) {
 				let scanTarget = target;
 				if ((target as any).checkPermission && (this.constructor as any).loadAsInstance === false) {

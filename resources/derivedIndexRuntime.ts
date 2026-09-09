@@ -133,6 +133,11 @@ export type DerivedIndexRunnerOptions = {
 	rebuildBackoffMilliseconds?: number;
 	maxRebuildBackoffMilliseconds?: number;
 	maxRebuildAttempts?: number;
+	/**
+	 * Opt-in writer backpressure: while the index is further behind than this, user writes to its
+	 * tables fail with a retryable 503 on every worker. 0 (the default) means no policy.
+	 */
+	maxLagMilliseconds?: number;
 };
 
 export type DerivedIndexRegistration = {
@@ -185,6 +190,7 @@ type ResolvedRunnerOptions = Required<DerivedIndexRunnerOptions> & {
 	now: () => number;
 };
 
+const UNINDEXABLE_CIRCUIT = 32;
 const ELIGIBLE_ACTIONS = new Set(['put', 'patch', 'delete', 'invalidate', 'relocate', 'evict']);
 
 const READINESS_STATES: DerivedIndexReadinessState[] = [
@@ -204,6 +210,7 @@ const READINESS_STATE = 1;
 const READINESS_REASON_LENGTH = 2;
 const READINESS_ATTEMPTS = 3;
 const READINESS_REBUILD_REQUEST = 4;
+const READINESS_LAG_EXCEEDED = 5;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -361,6 +368,7 @@ function resolveRunnerOptions(
 		rebuildBackoffMilliseconds: 1000,
 		maxRebuildBackoffMilliseconds: 300_000,
 		maxRebuildAttempts: 8,
+		maxLagMilliseconds: 0,
 	};
 	if (!options) return base;
 	return {
@@ -376,6 +384,7 @@ function resolveRunnerOptions(
 		rebuildBackoffMilliseconds: options.rebuildBackoffMilliseconds ?? base.rebuildBackoffMilliseconds,
 		maxRebuildBackoffMilliseconds: options.maxRebuildBackoffMilliseconds ?? base.maxRebuildBackoffMilliseconds,
 		maxRebuildAttempts: options.maxRebuildAttempts ?? base.maxRebuildAttempts,
+		maxLagMilliseconds: Math.max(0, options.maxLagMilliseconds ?? base.maxLagMilliseconds),
 	};
 }
 
@@ -507,13 +516,21 @@ class DerivedIndexRunner {
 		this.#unsubscribeBackend = registration.backend.onStateChange((change = 'changed') =>
 			this.#backendStateChanged(change)
 		);
-		this.#unregisterTables = registerDerivedIndexTables(logStore, registration.projections.keys());
+		this.#unregisterTables = registerDerivedIndexTables(
+			logStore,
+			registration.projections.keys(),
+			options.maxLagMilliseconds > 0 ? () => this.#writeRejection() : undefined
+		);
 	}
 
 	wake(fromBackend = false) {
 		if (this.#stopped || this.#rebuilding) return;
 		if (this.status.state === 'unavailable') {
-			if (this.#heldLock || this.getReadiness().state === 'unavailable') return;
+			if (
+				this.#heldLock ||
+				Atomics.load(this.#readinessWords, READINESS_STATE) === READINESS_STATES.indexOf('unavailable')
+			)
+				return;
 			this.status = { state: 'idle' };
 		}
 		// A shared rebuild request must reach an owner parked on backpressure or backoff at its next wake.
@@ -575,14 +592,7 @@ class DerivedIndexRunner {
 			acceptedMutations += this.#offeredCursors[i].mutations;
 		}
 		if (oldestAcceptedAt === undefined && this.#unanchoredMutations > 0) oldestAcceptedAt = this.#unanchoredAcceptedAt;
-		let cursorLag = 0;
-		const durable = this.#offeredCursors[0]?.cursor;
-		if (durable) {
-			for (const [logName, latest] of this.#latestSeen) {
-				const position = durable.logs[logName];
-				if (position !== undefined && latest > position) cursorLag = Math.max(cursorLag, latest - position);
-			}
-		}
+		const cursorLag = this.#cursorLag();
 		return {
 			readiness: this.getReadiness(),
 			acceptedBatches: Math.max(0, this.#offeredCursors.length - 1),
@@ -596,6 +606,39 @@ class DerivedIndexRunner {
 			rebuildAttempts: this.#rebuildAttempts,
 			rebuiltRecords: this.#rebuiltRecords,
 		};
+	}
+
+	#cursorLag(): number {
+		let cursorLag = 0;
+		const durable = this.#offeredCursors[0]?.cursor;
+		if (durable) {
+			for (const [logName, latest] of this.#latestSeen) {
+				const position = durable.logs[logName];
+				if (position !== undefined && latest > position) cursorLag = Math.max(cursorLag, latest - position);
+			}
+		}
+		return cursorLag;
+	}
+
+	#writeRejection(): string | undefined {
+		if (Atomics.load(this.#readinessWords, READINESS_LAG_EXCEEDED) !== 1) return;
+		return `derived index '${this.id}' is more than ${this.#options.maxLagMilliseconds} ms behind; retry this write`;
+	}
+
+	/** Owner-only: publish whether the lag policy is tripped, with hysteresis at half the threshold. */
+	#publishLag() {
+		const max = this.#options.maxLagMilliseconds;
+		if (max <= 0 || !this.#owned) return;
+		const now = this.#options.now();
+		const lag = Math.max(this.#cursorLag(), this.#stalledSince === undefined ? 0 : now - this.#stalledSince);
+		const tripped = Atomics.load(this.#readinessWords, READINESS_LAG_EXCEEDED) === 1;
+		if (!tripped && lag >= max) {
+			Atomics.store(this.#readinessWords, READINESS_LAG_EXCEEDED, 1);
+			logger.warn?.(`Derived index '${this.id}' is ${Math.round(lag)} ms behind; rejecting writes until it catches up`);
+		} else if (tripped && lag < max / 2) {
+			Atomics.store(this.#readinessWords, READINESS_LAG_EXCEEDED, 0);
+			logger.info?.(`Derived index '${this.id}' caught up; admitting writes again`);
+		}
 	}
 
 	requestRebuild(): boolean {
@@ -792,6 +835,7 @@ class DerivedIndexRunner {
 		if (this.status.state === 'needs-rebuild' || this.status.state === 'unavailable') return;
 		const generation = this.#generation;
 		const now = this.#options.now();
+		this.#publishLag();
 		try {
 			if (!this.#checkNewLogs() || !this.#checkRangeHealth()) return;
 			if (this.status.state === 'waiting-durable') {
@@ -822,6 +866,7 @@ class DerivedIndexRunner {
 			this.#noteAccepted(batch);
 			if (!this.#live(generation)) return;
 			if (!this.#reconcileDurableCursor()) return;
+			this.#publishLag();
 			if (!lastOpen(this.#carried) && this.#offeredCursors.length - 1 >= this.#options.maxAcceptedBatchesAhead) {
 				this.status = { state: 'waiting-durable', ownerEpoch: this.#ownerEpoch };
 				this.#stalledSince ??= now;
@@ -910,7 +955,9 @@ class DerivedIndexRunner {
 		if (this.#flushTimer) return;
 		this.#flushTimer = setTimeout(() => {
 			this.#flushTimer = undefined;
-			if (this.#owned) this.#requestFlush('age');
+			if (!this.#owned) return;
+			this.#publishLag();
+			this.#requestFlush('age');
 		}, this.#options.maxFlushAgeMilliseconds);
 		this.#flushTimer.unref?.();
 	}
@@ -1067,6 +1114,7 @@ class DerivedIndexRunner {
 				];
 			}
 		}
+		this.#assertNotAllUnindexable(chunk);
 		if (completed === 0 && chunk.batch.records.length === 0) return CONTINUE;
 		chunk.batch.through = through;
 		return chunk.batch;
@@ -1099,6 +1147,13 @@ class DerivedIndexRunner {
 		byRecord.set(key, record);
 		chunk.batch.records.push(record);
 		return record;
+	}
+
+	/** Rejecting every record of a sizeable chunk is a projection or schema fault; fail closed instead of emptying the index. */
+	#assertNotAllUnindexable(chunk: Chunk) {
+		const records = chunk.batch.records;
+		if (records.length < UNINDEXABLE_CIRCUIT || records.some((record) => record.state.kind !== 'unindexable')) return;
+		throw new Error(`projection rejected every record of a ${records.length}-record chunk`);
 	}
 
 	#project(
@@ -1179,12 +1234,12 @@ class DerivedIndexRunner {
 			return;
 		}
 		if (!this.#reconcileDurableCursor(durable)) return;
+		this.#publishLag();
 		if (!sameCursor(durable, this.#offered!)) {
 			this.#armFlushTimer();
 			return;
 		}
-		if (this.getReadiness().state !== 'ready') this.#publishReadiness('ready');
-		this.#rebuildAttempts = 0;
+		this.#settleReady();
 		if (this.#idleTimer) return;
 		this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
 		this.#idleTimer = setTimeout(() => {
@@ -1227,8 +1282,19 @@ class DerivedIndexRunner {
 			}
 		}
 		this.#boundaryPending = false;
-		if (offeredIndex > 0) this.#offeredCursors.splice(0, offeredIndex);
+		if (offeredIndex > 0) {
+			this.#offeredCursors.splice(0, offeredIndex);
+			// A durable advance certifies a complete prefix; under sustained ingest there may never be an
+			// idle pass, so readiness (and the retry budget) settle here as well.
+			if (!this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
+		}
 		return true;
+	}
+
+	#settleReady() {
+		this.#rebuildAttempts = 0;
+		if (Atomics.load(this.#readinessWords, READINESS_STATE) !== READINESS_STATES.indexOf('ready'))
+			this.#publishReadiness('ready');
 	}
 
 	#backendStateChanged(change: DerivedIndexBackendStateChange) {
@@ -1303,6 +1369,8 @@ class DerivedIndexRunner {
 	#discardProgress() {
 		this.#generation++;
 		this.#stalledSince = undefined;
+		if (this.#owned && this.#options.maxLagMilliseconds > 0)
+			Atomics.store(this.#readinessWords, READINESS_LAG_EXCEEDED, 0);
 		this.#offered = undefined;
 		this.#pendingBatch = undefined;
 		this.#carried = [];
@@ -1420,6 +1488,7 @@ class DerivedIndexRunner {
 				}
 			}
 		}
+		this.#assertNotAllUnindexable(chunk);
 		chunk.batch.through = boundary;
 		await this.#deliverRebuildChunk(chunk, generation);
 		if (!this.#live(generation)) return;

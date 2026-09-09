@@ -4,7 +4,11 @@ const { EventEmitter } = require('node:events');
 const { waitFor } = require('../waitFor');
 const { setupTestDBPath } = require('../testUtils');
 const { ClientError } = require('#src/utility/errors/hdbError');
-const { hasDerivedIndexRegistration } = require('#src/resources/derivedIndexRegistry');
+const {
+	derivedIndexWriteRejection,
+	hasDerivedIndexRegistration,
+	registerDerivedIndexTables,
+} = require('#src/resources/derivedIndexRegistry');
 const {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
@@ -16,10 +20,11 @@ const {
 // the entries physically after it, `logEntries` is the retained log used by the rebuild boundary
 // capture, and every worker (runtime) sharing one instance shares its locks and shared buffers.
 class FakeLogStore {
-	constructor(entriesByCursor, { logNames = ['local'], logEntries = new Map(), onNext } = {}) {
+	constructor(entriesByCursor, { logNames = ['local'], logEntries = new Map(), onNext, live = false } = {}) {
 		this.entriesByCursor = entriesByCursor;
 		this.logEntries = logEntries;
 		this.onNext = onNext;
+		this.live = live;
 		this.locks = new Set();
 		this.waiters = new Map();
 		this.sharedBuffers = new Map();
@@ -37,7 +42,8 @@ class FakeLogStore {
 			entries = (this.logEntries.get(options.log) ?? []).map((entry) => ({ ...entry }));
 		} else {
 			const start = options.startByLog.get('local');
-			entries = (this.entriesByCursor.get(start) ?? []).map((entry) => ({ ...entry }));
+			const source = this.entriesByCursor.get(start) ?? [];
+			entries = this.live ? source : source.map((entry) => ({ ...entry }));
 		}
 		const store = this;
 		const iterable = {
@@ -1130,6 +1136,96 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(callbacks.size, 0);
 	});
 
+	it('trips the opt-in lag policy on every worker while the index is behind and clears it with hysteresis', async () => {
+		const records = new Map(['a', 'b', 'c'].map((id) => [`1:${id}`, { version: 1, value: { title: id } }]));
+		const store = new FakeLogStore(
+			new Map([
+				[
+					10,
+					[
+						audit({ timestamp: 1_000, recordId: 'a' }),
+						audit({ timestamp: 2_000, recordId: 'b' }),
+						audit({ timestamp: 3_000, recordId: 'c' }),
+					],
+				],
+			])
+		);
+		const backend = new SyncBackend('lagging', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		const owner = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		const peer = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined, 'nothing registered: writes admitted');
+		owner.register(registration(backend, { maxLagMilliseconds: 500, maxFlushAgeMilliseconds: 5 }));
+		peer.register(registration(new SyncBackend('lagging', cursor(10)), { maxLagMilliseconds: 500 }));
+
+		await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined);
+		assert.match(derivedIndexWriteRejection(store, 1), /'lagging' is more than 500 ms behind/);
+		assert.match(derivedIndexWriteRejection(store, 2) ?? '', /^$/, 'tables without a derived index are never gated');
+
+		backend.cursor = cursor(3_000);
+		backend.stateChange();
+		await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined);
+		await owner.stop();
+		await peer.stop();
+		assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined, 'unregistering removes the admission check');
+	});
+
+	it('publishes ready on the first durable advance even when the runner never idles', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, [audit({ timestamp: 8, recordId: 'a' })]]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
+			live: true,
+		});
+		let next = 9;
+		store.onNext = (entry) => {
+			// Keep the log ahead of the runner so no idle pass ever happens.
+			if (entry === undefined && next < 2000)
+				store.entriesByCursor.get(7).push(audit({ timestamp: next++, recordId: 'a' }));
+		};
+		const backend = new AsyncBackend('never-idle', { applyDelay: 1 });
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5, maxTransactionsPerTurn: 1 }));
+		await waitFor(() => runtime.getReadiness('never-idle').state === 'ready', { timeout: 5000 });
+		assert.notStrictEqual(runtime.getStatus('never-idle').state, 'idle');
+		assert.strictEqual(runtime.getMetrics('never-idle').rebuildAttempts, 0);
+		await runtime.stop();
+	});
+
+	it('fails closed instead of emptying the index when a projection rejects every record of a chunk', async () => {
+		const ids = Array.from({ length: 40 }, (_, i) => `r${i}`);
+		const store = new FakeLogStore(new Map([[10, ids.map((id, i) => audit({ timestamp: 20 + i, recordId: id }))]]));
+		const backend = new SyncBackend('all-rejected', cursor(10));
+		const { runtime } = runtimeFor(store, new Map(ids.map((id) => [`1:${id}`, { version: 1, value: { title: 1 } }])), {
+			scanRecords: undefined,
+		});
+		runtime.register({
+			backend,
+			projections: new Map([
+				[
+					1,
+					() => {
+						throw new ClientError('title must be a string', 400);
+					},
+				],
+			]),
+		});
+		await waitFor(() => runtime.getStatus('all-rejected')?.state === 'needs-rebuild');
+		assert.match(runtime.getStatus('all-rejected').reason, /rejected every record/);
+		assert.strictEqual(backend.deliveries.length, 0);
+		await runtime.stop();
+	});
+
+	it('keeps writes admitted when the registration sets no lag policy', async () => {
+		const records = new Map([['1:a', { version: 1, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 5_000_000, recordId: 'a' })]]]));
+		const backend = new SyncBackend('unbounded-lag', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 });
+		runtime.register(registration(backend));
+		await waitFor(() => backend.deliveries.length === 1);
+		await sleep(10);
+		assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+		await runtime.stop();
+	});
+
 	it('rejects a queued backend that lacks the fence, barrier or quiescence hooks', () => {
 		const store = new FakeLogStore(new Map([[10, []]]));
 		const { runtime } = runtimeFor(store, new Map());
@@ -1318,6 +1414,26 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		assert.deepStrictEqual(backend.applied.get('p4').projection, { title: 'title p4' });
 		assert.strictEqual(runtime.getMetrics('rocks-rebuild').rebuildAttempts, 0);
 
+		// The write path honours an admission check with a retryable 503; unrelated tables are untouched.
+		const release = registerDerivedIndexTables(Product.auditStore, [Product.tableId], () => 'derived index is behind');
+		// The guard fires before the first await, so the write may throw synchronously or reject.
+		const failure = async (write) => {
+			try {
+				await write();
+			} catch (error) {
+				return error;
+			}
+			assert.fail('expected the write to be rejected');
+		};
+		const blocked = await failure(() => Product.put('p5', { title: 'blocked' }));
+		assert.strictEqual(blocked.statusCode, 503);
+		assert.strictEqual(blocked.code, 'DERIVED_INDEX_LAGGING');
+		assert.strictEqual(blocked.retryable, true);
+		assert.strictEqual((await failure(() => Product.delete('p4'))).statusCode, 503);
+		release();
+		await Product.put('p5', { title: 'admitted' });
+		await waitFor(() => backend.applied.has('p5'), { timeout: 5000 });
+
 		// A peer runtime on the same real store: shared readiness, the request word and the buffer
 		// notification all go through the native binding here, not the fake.
 		const peer = new DerivedIndexRuntime(Product.auditStore, () => undefined, { scanRecords: () => [] });
@@ -1330,7 +1446,7 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		assert.strictEqual(peer.requestRebuild('rocks-rebuild'), true);
 		await waitFor(() => backend.resets.length === 2, { timeout: 5000 });
 		await waitFor(() => runtime.getReadiness('rocks-rebuild').state === 'ready', { timeout: 10_000 });
-		assert.deepStrictEqual([...backend.applied.keys()].sort(), ['p1', 'p3', 'p4']);
+		assert.deepStrictEqual([...backend.applied.keys()].sort(), ['p1', 'p3', 'p4', 'p5']);
 		assert.strictEqual(peerBackend.resets.length, 0);
 		await unregisterPeer();
 		await peer.stop();
