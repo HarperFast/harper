@@ -125,6 +125,7 @@ export type DerivedIndexRegistration = {
 /** `size` is the stored byte size of the record when known; it bounds the projection's size without serializing it. */
 export type DerivedIndexRecord = { version: number; value: unknown; size?: number } | undefined;
 
+/** A scan record whose `value` is null or undefined is a tombstone and is not indexed. */
 export type DerivedIndexScanRecord = { recordId: Id; version: number; value: unknown; size?: number };
 
 export type DerivedIndexRuntimeOptions = DerivedIndexRunnerOptions & {
@@ -186,6 +187,8 @@ export class DerivedIndexRuntime {
 	#scanRecords?: (tableId: number) => Iterable<DerivedIndexScanRecord>;
 	#options: ResolvedRunnerOptions;
 	#runners = new Map<string, DerivedIndexRunner>();
+	#pendingStops = new Set<Promise<void>>();
+	#stopping?: Promise<void>;
 	#onCommit = () => this.wake();
 	#listening = false;
 	#stopped = false;
@@ -205,7 +208,6 @@ export class DerivedIndexRuntime {
 		};
 	}
 
-	/** Returns an unregister function that resolves once the runner's backend shutdown has settled. */
 	register(registration: DerivedIndexRegistration): () => Promise<void> {
 		if (this.#stopped) throw new Error('Derived index runtime is stopped');
 		if (!registration.backend.id) throw new Error('Derived index backend id is required');
@@ -223,12 +225,19 @@ export class DerivedIndexRuntime {
 		}
 		runner.wake(true);
 		return () => {
-			if (this.#runners.get(registration.backend.id) !== runner) return Promise.resolve();
-			this.#runners.delete(registration.backend.id);
-			const stopped = runner.stop();
-			this.#stopListeningIfIdle();
-			return stopped;
+			if (this.#runners.get(registration.backend.id) === runner) {
+				this.#runners.delete(registration.backend.id);
+				this.#stopListeningIfIdle();
+			}
+			return this.#track(runner.stop());
 		};
+	}
+
+	#track(stopped: Promise<void>): Promise<void> {
+		this.#pendingStops.add(stopped);
+		const settled = () => this.#pendingStops.delete(stopped);
+		stopped.then(settled, settled);
+		return stopped;
 	}
 
 	wake() {
@@ -256,12 +265,18 @@ export class DerivedIndexRuntime {
 
 	/** Resolves once every runner has released ownership and its backend shutdown has settled. */
 	stop(): Promise<void> {
-		if (this.#stopped) return Promise.resolve();
+		if (this.#stopping) return this.#stopping;
 		this.#stopped = true;
-		const stopped = [...this.#runners.values()].map((runner) => runner.stop());
+		for (const runner of this.#runners.values()) this.#track(runner.stop());
 		this.#runners.clear();
 		this.#stopListening();
-		return Promise.all(stopped).then(() => undefined);
+		this.#stopping = Promise.allSettled([...this.#pendingStops]).then((results) => {
+			const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+			if (failures.length === 1) throw failures[0];
+			if (failures.length) throw new AggregateError(failures, 'derived index backends failed to shut down');
+		});
+		this.#stopping.catch(() => {});
+		return this.#stopping;
 	}
 
 	#stopListeningIfIdle() {
@@ -366,6 +381,7 @@ class DerivedIndexRunner {
 	#unflushedMutations = 0;
 	#releasing?: Promise<void>;
 	#releaseFailure?: Error;
+	#stopResult?: Promise<void>;
 	#heldLock = false;
 	#quiescing?: { epoch: bigint; promise: Promise<void> };
 	#rebuilding = false;
@@ -441,19 +457,22 @@ class DerivedIndexRunner {
 
 	/** Rejects when the backend could not prove its queued work quiescent; the runner lock stays held then. */
 	stop(): Promise<void> {
-		if (!this.#stopped) {
-			this.#stopped = true;
-			this.status = { state: 'stopped', ownerEpoch: this.#ownerEpoch };
-			if (this.#idleTimer) clearTimeout(this.#idleTimer);
-			if (this.#rebuildTimer) clearTimeout(this.#rebuildTimer);
-			this.#rebuildTimer = undefined;
-			this.#unsubscribeBackend?.();
+		if (this.#stopResult) return this.#stopResult;
+		this.#stopped = true;
+		this.status = { state: 'stopped', ownerEpoch: this.#ownerEpoch };
+		if (this.#idleTimer) clearTimeout(this.#idleTimer);
+		if (this.#rebuildTimer) clearTimeout(this.#rebuildTimer);
+		this.#rebuildTimer = undefined;
+		this.#unsubscribeBackend?.();
+		this.#release();
+		// Tables stay registered until the backend has settled, so an eviction committed during the
+		// drain still writes the marker the next owner replays.
+		this.#stopResult = (this.#releasing ?? Promise.resolve()).then(() => {
 			this.#unregisterTables();
-			this.#release();
-		}
-		return (this.#releasing ?? Promise.resolve()).then(() => {
 			if (this.#releaseFailure) throw this.#releaseFailure;
 		});
+		this.#stopResult.catch(() => {});
+		return this.#stopResult;
 	}
 
 	getReadiness(): DerivedIndexReadiness {
@@ -500,18 +519,18 @@ class DerivedIndexRunner {
 			clearTimeout(this.#rebuildTimer);
 			this.#rebuildTimer = undefined;
 		}
-		if (this.status.state === 'unavailable' || this.getReadiness().state === 'unavailable') {
-			const reason = this.status.state === 'unavailable' ? this.status.reason : 'rebuild requested';
-			this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
-			this.#publishReadiness('needs-rebuild', reason);
+		if (this.status.state === 'unavailable') {
+			this.status = { state: 'needs-rebuild', reason: this.status.reason, ownerEpoch: this.#ownerEpoch };
 		}
 		if (this.#owned) {
 			this.#startRebuild();
 			return true;
 		}
 		if (this.#heldLock) {
-			// This runner still holds the lock from a shutdown that failed to settle; retry from here.
-			this.#acquired();
+			// Still holding the lock from a shutdown that failed to settle: resume under the same epoch so
+			// the rebuild retries that epoch's quiescence before minting a successor.
+			this.#rebuildRequested = true;
+			this.#acquired(true);
 			return true;
 		}
 		// The owner may be another worker that never idles: leave the request where every runner looks.
@@ -555,12 +574,12 @@ class DerivedIndexRunner {
 	}
 
 	/** The lock is held: mint an epoch and either resume from the durable cursor or rebuild. */
-	#acquired() {
+	#acquired(reviving = false) {
 		this.#heldLock = false;
 		this.#releaseFailure = undefined;
 		this.#owned = true;
 		this.#generation++;
-		this.#ownerEpoch = this.#mintEpoch();
+		if (!reviving) this.#ownerEpoch = this.#mintEpoch();
 		this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 		try {
 			const shared = this.getReadiness();
@@ -744,13 +763,7 @@ class DerivedIndexRunner {
 			this.#unflushedBytes >= this.#options.flushAfterBytes
 		) {
 			this.#requestFlush('threshold');
-		} else if (!this.#flushTimer) {
-			this.#flushTimer = setTimeout(() => {
-				this.#flushTimer = undefined;
-				if (this.#owned) this.#requestFlush('age');
-			}, this.#options.maxFlushAgeMilliseconds);
-			this.#flushTimer.unref?.();
-		}
+		} else this.#armFlushTimer();
 	}
 
 	#requestFlush(reason: DerivedIndexFlushReason) {
@@ -762,13 +775,32 @@ class DerivedIndexRunner {
 		this.#unflushedMutations = 0;
 		const flush = this.#registration.backend.flush;
 		if (!flush) return;
+		const generation = this.#generation;
 		try {
 			const result = flush.call(this.#registration.backend, reason);
 			if (result && typeof result.then === 'function')
-				result.then(undefined, (error: unknown) => this.#fail('backend flush request rejected', error));
+				result.then(undefined, (error: unknown) => {
+					if (this.#live(generation)) this.#fail('backend flush request rejected', error);
+				});
 		} catch (error) {
 			this.#fail('backend flush request threw', error);
+			return;
 		}
+		// A backend may coalesce this into a barrier already running; keep asking while work is not durable.
+		if (this.#hasNonDurableWork()) this.#armFlushTimer();
+	}
+
+	#hasNonDurableWork(): boolean {
+		return this.#offeredCursors.length > 1 || this.#unanchoredMutations > 0 || this.#boundaryPending;
+	}
+
+	#armFlushTimer() {
+		if (this.#flushTimer) return;
+		this.#flushTimer = setTimeout(() => {
+			this.#flushTimer = undefined;
+			if (this.#owned) this.#requestFlush('age');
+		}, this.#options.maxFlushAgeMilliseconds);
+		this.#flushTimer.unref?.();
 	}
 
 	/**
@@ -934,7 +966,7 @@ class DerivedIndexRunner {
 
 	#newChunk(rebuild: boolean): Chunk {
 		const batch = { ownerEpoch: this.#ownerEpoch!, transactions: [] } as unknown as DerivedIndexBatch;
-		// Non-enumerable so the enumerable shape stays the Stage 1 `{ ownerEpoch, transactions, through }` contract.
+		// Non-enumerable: the enumerable batch shape is the Stage 1 contract.
 		Object.defineProperties(batch, {
 			records: { value: [], writable: true, configurable: true },
 			bytes: { value: 0, writable: true, configurable: true },
@@ -1028,13 +1060,19 @@ class DerivedIndexRunner {
 	#finishIdlePass() {
 		if (this.#rebuilding || !this.#offered) return;
 		const durable = this.#registration.backend.getDurableCursor();
-		if (durable === undefined && this.#boundaryPending) return;
+		if (durable === undefined && this.#boundaryPending) {
+			this.#armFlushTimer();
+			return;
+		}
 		if (!isValidCursor(durable)) {
 			this.#needsRebuild('backend lost its durable cursor');
 			return;
 		}
 		if (!this.#reconcileDurableCursor(durable)) return;
-		if (!sameCursor(durable, this.#offered!)) return;
+		if (!sameCursor(durable, this.#offered!)) {
+			this.#armFlushTimer();
+			return;
+		}
 		if (this.getReadiness().state !== 'ready') this.#publishReadiness('ready');
 		this.#rebuildAttempts = 0;
 		if (this.#idleTimer) return;
@@ -1151,6 +1189,11 @@ class DerivedIndexRunner {
 		this.#offered = undefined;
 		this.#pendingBatch = undefined;
 		this.#carried = [];
+		try {
+			this.#iterator?.return?.();
+		} catch (error) {
+			logger.warn?.(`Derived index '${this.#registration.backend.id}' log iterator close threw`, error);
+		}
 		this.#iterator = undefined;
 		this.#iterable = undefined;
 		this.#boundaryPending = false;
@@ -1183,6 +1226,7 @@ class DerivedIndexRunner {
 	#startRebuild() {
 		if (!this.#owned || this.#rebuilding || this.#stopped) return;
 		this.#rebuildRequested = false;
+		this.#takeSharedRebuildRequest();
 		this.#rebuilding = true;
 		this.#rebuildWakePending = false;
 		if (this.#idleTimer) {
@@ -1199,6 +1243,7 @@ class DerivedIndexRunner {
 				if (!this.#live(generation)) return;
 				this.#rebuilding = false;
 				this.#rebuildRequested = false;
+				this.#takeSharedRebuildRequest();
 				this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 				this.#drain();
 			},
@@ -1254,6 +1299,7 @@ class DerivedIndexRunner {
 	}
 
 	#addScanRecord(chunk: Chunk, tableId: number, record: DerivedIndexScanRecord) {
+		if (record.value == null) return;
 		const key = writeKeyId(record.recordId);
 		let byRecord = chunk.resolved.get(tableId);
 		if (!byRecord) chunk.resolved.set(tableId, (byRecord = new Map()));

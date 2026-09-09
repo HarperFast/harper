@@ -502,10 +502,13 @@ barrier, and publishes the `through` vector atomically with the state that barri
 | accepted estimated bytes since the last request reach   | `flushAfterBytes`         | 8 MiB   |
 | runner release or runtime stop                          | always (`'shutdown'`)     |         |
 
-The age timer is armed by the first accepted batch after a request, so an isolated write becomes
-durable within `maxFlushAgeMilliseconds` and a burst amortizes to one barrier per threshold. Idle
-completion is the age timer: reaching the end of the log does not request an extra barrier,
-because arrivals spaced just beyond drain completion would otherwise pay one barrier per write.
+The age timer is armed by the first accepted batch after a request and re-armed after every
+request while accepted work is not yet durable, so an isolated write becomes durable within
+`maxFlushAgeMilliseconds`, a burst amortizes to one barrier per threshold, and a backend that
+coalesced a request into a barrier already running is asked again rather than left with a
+non-durable tail. Idle completion is the age timer: reaching the end of the log does not request an
+extra barrier, because arrivals spaced just beyond drain completion would otherwise pay one barrier
+per write.
 `getMetrics().oldestAcceptedAgeMilliseconds` exposes a backend that ignores requests. Bench at
 1500 arrivals/s over 200 keys (5 ms barrier): flush-every-batch gives write→durable p50 21 ms with
 281 barriers in 3 s; `maxFlushAgeMilliseconds: 100` / `flushAfterMutations: 512` gives p50 73 ms
@@ -528,8 +531,8 @@ ownership check after every `await`:
 3. capture the **conservative boundary**: for every physical log, the first retained committed
    transaction (`getRange({ log, start: 0 })`); a log with no committed transaction is omitted and
    must retain its beginning (`oldestSequenceNumber === 1`), otherwise the attempt fails closed;
-4. scan every registered table through `scanRecords` (opened after the capture), project, and
-   deliver chunks bounded by `maxChunkRecords`, `maxChunkBytes` and `maxMillisecondsPerTurn` with
+4. scan every registered table through `scanRecords` (opened after the capture; a record whose
+   `value` is null is a tombstone and is skipped), project, and deliver chunks bounded by `maxChunkRecords`, `maxChunkBytes` and `maxMillisecondsPerTurn` with
    `through` absent, yielding between chunks and waiting for a backend wake on `deferred`;
 5. deliver one final chunk (possibly empty) carrying `through` = boundary. Until that batch is
    durable the backend's cursor stays `undefined`, so a crash mid-rebuild resumes as a fresh
@@ -560,7 +563,8 @@ reaching `ready` resets it. An owner that acquires while the shared state is `ne
 condemned that generation. `requestRebuild` from a non-owning worker sets a request word in the
 shared record that the owner consumes on its next drain turn and any acquisition consumes first,
 so a request reaches an owner that never idles; a request arriving during a rebuild is absorbed by
-it. A projection that throws a 4xx-classified error (`ClientError`) for one
+it (the rebuild consumes the word when it starts and again when it completes). A non-owning worker
+never writes the readiness record itself: only the lock holder publishes. A projection that throws a 4xx-classified error (`ClientError`) for one
 record yields `state: { kind: 'unindexable' }` — the backend removes any entry and counts it — in
 live delivery and rebuild alike, so one malformed record cannot loop a rebuild; any other exception
 stays fail-closed.
@@ -576,11 +580,15 @@ reset the index. Three mechanisms close it:
   release that overlaps a rebuild attempt's own quiescence shares its promise instead of calling
   the backend twice. A rejected `shutdown` keeps the lock and publishes `unavailable` with the
   reason: a backend that cannot prove its queue is quiescent must not hand the index to another
-  owner. `DerivedIndexRuntime.stop()` and the unregister function return promises that resolve
-  after every release settled and **reject** when a backend's shutdown failed, so a caller cannot
-  close storage on a fulfilled promise while a backend is still draining into it. The runner that
-  holds such a lock can be revived by `requestRebuild`, which retries the quiescence before
-  resetting; there is no automatic bounded hold.
+  owner. `DerivedIndexRuntime.stop()` and the unregister function return one cached promise per
+  runtime or runner — repeated calls return the same promise — that resolves after every backend
+  settled (a still-draining backend is waited for even when another already failed) and
+  **rejects** when any shutdown failed, so a caller cannot close storage on a fulfilled promise
+  while a backend is still draining into it. Table registrations are released only after the
+  runner's backend settled, so an eviction committed during the drain still writes the marker the
+  next owner replays. The runner that holds a lock after a failed shutdown can be revived by
+  `requestRebuild`, which resumes under the same epoch and retries that epoch's quiescence before
+  minting a successor and resetting; there is no automatic bounded hold.
 - **Epoch fence.** `attach(host)` gives the backend `isOwnerEpoch(epoch)`, an `Atomics` read of the
   shared owner-epoch counter. The backend checks it before each apply, after each await, and in
   flush completions; a completion for a superseded epoch is dropped. Each rebuild attempt mints a
