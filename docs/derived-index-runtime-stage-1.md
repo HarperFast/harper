@@ -708,8 +708,9 @@ ingest stays within drain latency plus flush age. Catch-up is proven by a durabl
 idle pass with durable == offered. It
 samples on every drain turn, idle pass and age tick and on its own lag timer while parked, and
 publishes a lag-exceeded word in the shared readiness buffer: set at `lag >= budget`, cleared only
-once this owner has proved catch-up and lag is below half the budget, so the policy neither flaps
-nor clears on an ownership handoff before the successor has caught up. Discarding progress drops the
+once this owner has proved catch-up — a durable advance and the end of the log both reached since it
+acquired — and lag is below half the budget, so the policy neither flaps nor clears on an ownership
+handoff before the successor has drained the inherited backlog. Discarding progress drops the
 accepted work with it, so a rebuild or lost accepted work does not turn the owner's age into
 fabricated lag. An index that becomes `unavailable` — no owner will catch it up —
 clears the word, because shedding writes forever would protect nothing.

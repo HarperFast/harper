@@ -1386,6 +1386,75 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('keeps an inherited lag trip until the successor has drained the backlog, not just advanced once', async () => {
+		const entries = Array.from({ length: 300 }, (_, i) => audit({ timestamp: 11 + i, recordId: `r${i}` }));
+		const records = new Map(entries.map((entry, i) => [`1:r${i}`, { version: 11 + i, value: { title: 'x' } }]));
+		const store = new FakeLogStore(new Map([[10, entries]]), {
+			onNext: (entry) => {
+				if (!entry) return;
+				const until = performance.now() + 1;
+				while (performance.now() < until);
+			},
+		});
+		// The first owner accepts but never makes anything durable, trips the policy, and leaves.
+		const first = new SyncBackend('inherited', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		const owner = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		owner.register(registration(first, { maxLagMilliseconds: 100, maxFlushAgeMilliseconds: 5, maxChunkRecords: 4 }));
+		await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined, { timeout: 5000 });
+		await owner.stop();
+
+		// The successor makes every batch durable at once but still has the whole backlog to read.
+		const second = new SyncBackend('inherited', cursor(10));
+		const successor = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		successor.register(
+			registration(second, {
+				maxLagMilliseconds: 100,
+				maxFlushAgeMilliseconds: 5,
+				maxMillisecondsPerTurn: 2,
+				maxChunkRecords: 4,
+			})
+		);
+		assert.notStrictEqual(derivedIndexWriteRejection(store, 1), undefined, 'the trip survives the handoff');
+		await waitFor(() => second.deliveries.length >= 3);
+		assert.notStrictEqual(derivedIndexWriteRejection(store, 1), undefined, 'durable advances alone do not clear it');
+		await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined, { timeout: 10_000 });
+		assert.strictEqual(second.cursor.logs.local, 310, 'cleared only once the end of the log was reached');
+		await successor.stop();
+	});
+
+	it('parks a backend that cannot rebuild on a refused condemnation and retries the marker without a reset', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
+		});
+		const backend = new AsyncBackend('marker-fails-no-reset', { cursor: cursor(7), applyDelay: 1 });
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => runtime.getReadiness('marker-fails-no-reset').state === 'ready');
+		backend.reset = undefined;
+		store.putSync = () => {
+			throw new Error('root store is read-only');
+		};
+		backend.stateChange('failed');
+		await waitFor(
+			() => runtime.getStatus('marker-fails-no-reset')?.state === 'needs-rebuild' && store.locks.size === 0
+		);
+		store.rootStore.emit('committed');
+		await sleep(30);
+		assert.strictEqual(runtime.getStatus('marker-fails-no-reset').state, 'needs-rebuild');
+		assert.strictEqual(store.markers.size, 0);
+		delete store.putSync;
+		store.rootStore.emit('committed');
+		await waitFor(() => store.markers.size === 1, { timeout: 5000 });
+		assert.strictEqual(
+			runtime.getStatus('marker-fails-no-reset').state,
+			'needs-rebuild',
+			'still parked: it cannot rebuild'
+		);
+		assert.strictEqual(runtime.getReadiness('marker-fails-no-reset').state, 'needs-rebuild');
+		await runtime.stop();
+	});
+
 	it('keeps proving catch-up mid-stream so a backend that keeps up under sustained ingest never trips', async () => {
 		const entries = [];
 		const records = new Map();
