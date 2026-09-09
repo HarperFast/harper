@@ -16,10 +16,6 @@ export function _setRetryBudgetForTests(ms: number = RETRY_BUDGET_MS): void {
 	retryBudgetMs = ms;
 }
 
-export function _retryBudgetForTests(): number {
-	return retryBudgetMs;
-}
-
 export class ConfigReadRetry {
 	#timer?: NodeJS.Timeout;
 	#deadline?: number;

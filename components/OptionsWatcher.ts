@@ -410,6 +410,8 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	}
 
 	#handleError(error: unknown) {
+		// A queued chokidar error can land after close(), which has dropped every listener.
+		if (this.#closed) return;
 		// See EntryHandler.#handleWatcherError: a lost native watch handle is benign
 		// and must not be surfaced to consumers as a config-watch failure.
 		if (claimLostNativeWatchError(error)) return;

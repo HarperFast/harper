@@ -236,6 +236,25 @@ describe('OptionsWatcher', () => {
 		await teardown({ fixture, options });
 	});
 
+	// The twin guard on `RootConfigWatcher.handleError`. close() drops the listeners, so a queued
+	// chokidar error reaches no consumer either way; what it still does without the guard is walk
+	// the exhaustion branch on a dead watcher, flipping the watch to a polling fallback that the
+	// `#closed` check in the reopen then declines to take.
+	it('ignores a watcher error queued past close()', async () => {
+		const fixture = mkdtempSync(getFixtureName());
+		const configFilePath = join(fixture, 'harper-config.yaml');
+		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
+		const options = new OptionsWatcher(NAME, configFilePath, undefined, true);
+		await options.ready;
+		await options.close();
+
+		options._simulateWatcherErrorForTests(Object.assign(new Error('boom'), { code: 'ENOSPC' }));
+
+		assert.equal(options._usingPollingForTests, false, 'a closed watcher must not fall back to polling');
+
+		rmSync(fixture, { recursive: true, force: true });
+	});
+
 	// `componentLoader` builds scopes from a memoized view of the config, so a block removed under a
 	// booting worker leaves a read that parses perfectly and simply has nothing for this scope.
 	it('settles ready when the config that read fine no longer carries this scope', async () => {
