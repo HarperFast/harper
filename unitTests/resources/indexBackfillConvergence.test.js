@@ -1,0 +1,405 @@
+/**
+ * Regression coverage for harper#2536: a secondary-index backfill that could not converge on a
+ * large table because runIndexing (resources/databases.ts) (1) never used its resume checkpoint —
+ * `start` stayed undefined and every retrigger rescanned from the first record — and (2) never
+ * yielded the event loop on a plain index whose put resolves synchronously, so the whole backfill
+ * ran as one uninterrupted turn.
+ */
+require('../testUtils');
+const assert = require('node:assert/strict');
+const { setupTestDBPath } = require('../testUtils');
+const { table, resetDatabases, resumeStartKey } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+
+const DB = 'test';
+const LMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const INDEXING_YIELD_INTERVAL = 100;
+
+async function collect(iter) {
+	const out = [];
+	for await (const x of iter) out.push(x);
+	return out;
+}
+
+function pad(i) {
+	return String(i).padStart(4, '0');
+}
+
+// The per-attribute descriptor lives in Table.dbisDB under the table's key prefix; the dbisDB is
+// shared by every table in the database, so scope the scan to this table.
+function findDescriptor(Tbl, attrName) {
+	const prefix = Tbl.tableName + '/';
+	for (const { key, value } of Tbl.dbisDB.getRange({ start: false })) {
+		if (value && value.name === attrName && key.toString().startsWith(prefix)) return { key, value };
+	}
+	return null;
+}
+
+// Wrap Table.primaryStore.getRange so the test can observe the range runIndexing actually opens
+// (its `start` option and every key it visits) and optionally abort the scan partway. runIndexing
+// only reads the store after awaiting a schema-change signal and an event turn, so wrapping right
+// after table() returns is early enough.
+function observeRange(Tbl, { onKey, abortAfter } = {}) {
+	const store = Tbl.primaryStore;
+	const original = store.getRange;
+	const observed = { start: undefined, keys: [] };
+	store.getRange = function (options) {
+		observed.start = options?.start;
+		const inner = original.call(this, options);
+		return {
+			[Symbol.iterator]() {
+				const iterator = inner[Symbol.iterator]();
+				return {
+					next: () => {
+						if (abortAfter !== undefined && observed.keys.length >= abortAfter) {
+							iterator.return?.();
+							throw new Error('simulated primary-store iterator failure');
+						}
+						const result = iterator.next();
+						if (!result.done) {
+							observed.keys.push(result.value.key);
+							onKey?.(result.value.key);
+						}
+						return result;
+					},
+					return: () => iterator.return?.(),
+				};
+			},
+		};
+	};
+	observed.restore = () => {
+		store.getRange = original;
+	};
+	return observed;
+}
+
+describe('resumeStartKey: minimum resume checkpoint across the attributes being built (#2536)', () => {
+	it('returns the shared checkpoint when every attribute checkpointed at the same key', () => {
+		assert.equal(resumeStartKey([{ lastIndexedKey: 'k-0500' }, { lastIndexedKey: 'k-0500' }]), 'k-0500');
+	});
+
+	it('returns the minimum when the attributes checkpointed at different keys', () => {
+		assert.equal(
+			resumeStartKey([{ lastIndexedKey: 'k-0700' }, { lastIndexedKey: 'k-0300' }, { lastIndexedKey: 'k-0500' }]),
+			'k-0300'
+		);
+		assert.equal(resumeStartKey([{ lastIndexedKey: 42 }, { lastIndexedKey: 7 }]), 7);
+	});
+
+	it('returns undefined (full scan) when any attribute has never checkpointed', () => {
+		assert.equal(resumeStartKey([{ lastIndexedKey: 'k-0700' }, {}]), undefined);
+		assert.equal(resumeStartKey([{ lastIndexedKey: 'k-0700' }, { lastIndexedKey: undefined }]), undefined);
+	});
+
+	it('returns the checkpoint of a single attribute', () => {
+		assert.equal(resumeStartKey([{ lastIndexedKey: 'k-0900' }]), 'k-0900');
+	});
+});
+
+describe('index backfill convergence (#2536)', () => {
+	it('resumes an interrupted backfill from its persisted checkpoint, not from the first record', async () => {
+		const TABLE = 'BackfillResume';
+		const N = 600;
+		const ABORT_AFTER = 250;
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }, { name: 'group' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: 't-' + (i % 3), group: 'g-' + (i % 2) });
+		await last;
+
+		// Add two indexed attributes and abort the backfill's primary-store scan partway, the way a
+		// store/iterator failure does; the outer catch persists indexingFailed with the checkpoint.
+		resetDatabases();
+		Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+				{ name: 'group', indexed: true },
+			],
+		});
+		assert.ok(Tbl.indexingOperation, 'adding indexed attributes should trigger a backfill');
+		const firstPass = observeRange(Tbl, { abortAfter: ABORT_AFTER });
+		try {
+			await Tbl.indexingOperation;
+		} finally {
+			firstPass.restore();
+		}
+		assert.equal(firstPass.keys.length, ABORT_AFTER, 'the first pass should have been aborted partway');
+		// runIndexing checkpoints every 100 entries it visits (LMDB yields a leading structures entry
+		// too), but only once the index writes the checkpoint covers have settled; LMDB commits them
+		// asynchronously, so the persisted checkpoint may lag one interval behind the abort point.
+		const checkpoint = findDescriptor(Tbl, 'tag').value.lastIndexedKey;
+		const expectedCheckpoints = LMDB ? [firstPass.keys[99], firstPass.keys[199]] : [firstPass.keys[199]];
+		assert.ok(
+			expectedCheckpoints.includes(checkpoint),
+			`persisted checkpoint ${checkpoint} should be one of ${expectedCheckpoints}`
+		);
+		for (const name of ['tag', 'group']) {
+			const parked = findDescriptor(Tbl, name);
+			assert.equal(parked?.value.indexingFailed, true, `${name}: interrupted backfill should be parked`);
+			assert.equal(parked.value.lastIndexedKey, checkpoint, `${name}: checkpoint should be persisted`);
+		}
+
+		// The parked descriptor retriggers the backfill; it must open its scan at the checkpoint.
+		resetDatabases();
+		const Tbl2 = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+				{ name: 'group', indexed: true },
+			],
+		});
+		assert.ok(Tbl2.indexingOperation, 'a parked backfill should retrigger');
+		const resumed = observeRange(Tbl2);
+		try {
+			await Tbl2.indexingOperation;
+		} finally {
+			resumed.restore();
+		}
+
+		assert.equal(resumed.start, checkpoint, 'the resumed scan should start at the persisted checkpoint');
+		assert.equal(resumed.keys[0], checkpoint, 'the first key visited after resume should be the checkpoint');
+		assert.equal(
+			resumed.keys.length,
+			N - Number(checkpoint.slice(2)),
+			'the resumed scan should only cover the checkpoint and the records after it'
+		);
+
+		for (const name of ['tag', 'group']) {
+			const done = findDescriptor(Tbl2, name);
+			assert.equal(done.value.indexingFailed, undefined, `${name}: indexingFailed cleared after completion`);
+			assert.equal(done.value.lastIndexedKey, undefined, `${name}: checkpoint cleared after completion`);
+		}
+		let total = 0;
+		for (const v of ['t-0', 't-1', 't-2']) {
+			total += (await collect(Tbl2.search({ conditions: [{ attribute: 'tag', value: v }] }))).length;
+		}
+		assert.equal(total, N, 'every row should be indexed once the resumed backfill completes');
+	});
+
+	it('does not advance the checkpoint past a record whose index write failed, so the retry re-covers it', async () => {
+		const TABLE = 'BackfillFailedRecord';
+		const N = 600;
+		const FAILING_ID = 'k-' + pad(250);
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: 't-' + (i % 3) });
+		await last;
+
+		resetDatabases();
+		Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
+		const tagIndex = Tbl.indices.tag;
+		const originalPut = tagIndex.put;
+		tagIndex.put = function (indexedValue, primaryKey, options) {
+			if (primaryKey === FAILING_ID) throw new Error('simulated transient index put failure');
+			return originalPut.call(this, indexedValue, primaryKey, options);
+		};
+		const firstPass = observeRange(Tbl);
+		try {
+			await Tbl.indexingOperation;
+		} finally {
+			tagIndex.put = originalPut;
+			firstPass.restore();
+		}
+		const failedAt = firstPass.keys.indexOf(FAILING_ID);
+		const lastSafeCheckpoint = firstPass.keys[Math.floor(failedAt / 100) * 100 - 1];
+		const parked = findDescriptor(Tbl, 'tag');
+		assert.equal(parked?.value.indexingFailed, true, 'a backfill with a failed record should be parked');
+		const persisted = parked.value.lastIndexedKey;
+		if (LMDB) {
+			// checkpoints wait for their writes to commit, so a failure that lands first withholds them
+			const safe = [undefined, ...firstPass.keys.slice(0, failedAt).filter((_, i) => i % 100 === 99)];
+			assert.ok(safe.includes(persisted), `checkpoint ${persisted} must not pass the failed record`);
+		} else {
+			assert.equal(
+				persisted,
+				lastSafeCheckpoint,
+				'the checkpoint must stop at the last one written before the failed record'
+			);
+		}
+
+		resetDatabases();
+		const Tbl2 = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(Tbl2.indexingOperation, 'a parked backfill should retrigger');
+		const resumed = observeRange(Tbl2);
+		try {
+			await Tbl2.indexingOperation;
+		} finally {
+			resumed.restore();
+		}
+		assert.equal(resumed.start, persisted, 'the retry should resume from the persisted safe checkpoint');
+		assert.ok(resumed.keys.includes(FAILING_ID), 'the retry must revisit the record that failed');
+		assert.equal(findDescriptor(Tbl2, 'tag').value.indexingFailed, undefined, 'the retry should complete cleanly');
+		const viaIndex = await collect(Tbl2.search({ conditions: [{ attribute: 'tag', value: 't-' + (250 % 3) }] }));
+		assert.ok(
+			viaIndex.some((row) => row.id === FAILING_ID),
+			'the record whose index write failed must be indexed after the retry'
+		);
+	});
+
+	it('resumes from the minimum of unequal persisted checkpoints, and scans everything when one is absent', async () => {
+		const TABLE = 'BackfillUnequalCheckpoints';
+		const N = 500;
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }, { name: 'group' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: 't-' + (i % 3), group: 'g-' + (i % 2) });
+		await last;
+		const indexedAttributes = [
+			{ name: 'id', isPrimaryKey: true },
+			{ name: 'tag', indexed: true },
+			{ name: 'group', indexed: true },
+		];
+		resetDatabases();
+		Tbl = table({ table: TABLE, database: DB, attributes: indexedAttributes });
+		await Tbl.indexingOperation;
+
+		// Park both indexes at different checkpoints, the way two attributes whose checkpoint writes
+		// straddled an interruption would be left.
+		const park = (Tbl, checkpoints) => {
+			for (const [name, lastIndexedKey] of Object.entries(checkpoints)) {
+				const { key, value } = findDescriptor(Tbl, name);
+				value.indexingFailed = true;
+				if (lastIndexedKey === undefined) delete value.lastIndexedKey;
+				else value.lastIndexedKey = lastIndexedKey;
+				Tbl.dbisDB.putSync(key, value);
+			}
+		};
+		park(Tbl, { tag: 'k-' + pad(300), group: 'k-' + pad(200) });
+		resetDatabases();
+		let Tbl2 = table({ table: TABLE, database: DB, attributes: indexedAttributes });
+		assert.ok(Tbl2.indexingOperation, 'parked indexes should retrigger');
+		let resumed = observeRange(Tbl2);
+		try {
+			await Tbl2.indexingOperation;
+		} finally {
+			resumed.restore();
+		}
+		assert.equal(resumed.start, 'k-' + pad(200), 'the scan should start at the lower checkpoint');
+		assert.equal(resumed.keys[0], 'k-' + pad(200));
+
+		park(Tbl2, { tag: 'k-' + pad(300), group: undefined });
+		resetDatabases();
+		Tbl2 = table({ table: TABLE, database: DB, attributes: indexedAttributes });
+		assert.ok(Tbl2.indexingOperation, 'parked indexes should retrigger');
+		resumed = observeRange(Tbl2);
+		try {
+			await Tbl2.indexingOperation;
+		} finally {
+			resumed.restore();
+		}
+		assert.equal(resumed.start, undefined, 'an attribute with no checkpoint forces a full scan');
+		assert.equal(
+			resumed.keys.find((key) => typeof key === 'string'),
+			'k-' + pad(0)
+		);
+		for (const name of ['tag', 'group']) {
+			assert.equal(findDescriptor(Tbl2, name).value.lastIndexedKey, undefined, `${name}: completed`);
+		}
+		const evens = await collect(Tbl2.search({ conditions: [{ attribute: 'group', value: 'g-0' }] }));
+		assert.equal(evens.length, N / 2, 'the cleared index should be fully repopulated');
+	});
+
+	it('yields the event loop at a bounded record interval on a plain index whose put resolves synchronously', async () => {
+		const TABLE = 'BackfillYield';
+		const N = 2000;
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'y-' + pad(i), tag: 't-' + (i % 5) });
+		await last;
+
+		resetDatabases();
+		Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
+
+		// A setImmediate ticker advances once per event-loop turn the backfill gives up; stamp each
+		// visited key with the current tick so the longest run of keys on one tick is the longest
+		// stretch the loop ran without yielding.
+		let tick = 0;
+		let running = true;
+		const ticksPerKey = [];
+		const ticker = () => {
+			if (!running) return;
+			tick++;
+			setImmediate(ticker);
+		};
+		setImmediate(ticker);
+		const observed = observeRange(Tbl, {
+			onKey: (key) => {
+				if (typeof key === 'string') ticksPerKey.push(tick);
+			},
+		});
+		try {
+			await Tbl.indexingOperation;
+		} finally {
+			running = false;
+			observed.restore();
+		}
+
+		assert.equal(ticksPerKey.length, N, 'the backfill should visit every record');
+		let longestRun = 0;
+		let run = 0;
+		for (let i = 0; i < ticksPerKey.length; i++) {
+			run = i > 0 && ticksPerKey[i] === ticksPerKey[i - 1] ? run + 1 : 1;
+			if (run > longestRun) longestRun = run;
+		}
+		assert.ok(
+			longestRun <= INDEXING_YIELD_INTERVAL,
+			`backfill ran ${longestRun} records without yielding the event loop (bound ${INDEXING_YIELD_INTERVAL})`
+		);
+		const complete = await collect(Tbl.search({ conditions: [{ attribute: 'tag', value: 't-0' }] }));
+		assert.equal(complete.length, N / 5, 'the backfill should still index every row');
+	});
+});

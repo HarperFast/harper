@@ -3124,6 +3124,19 @@ export function canonicalizeIndexOptions(value: any): any {
 }
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
+// Records scanned between event-loop yields, and between resume checkpoints.
+const INDEXING_YIELD_INTERVAL = 100;
+const yieldEventTurn = () => new Promise((resolve) => setImmediate(resolve));
+// The primary-store key a resumed backfill scans from: the minimum persisted checkpoint across the
+// attributes being built, or undefined (scan everything) when any attribute has none. Exported for tests.
+export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
+	let start: any;
+	for (const attribute of attributes) {
+		if (attribute.lastIndexedKey == undefined) return undefined;
+		if (start === undefined || compareKeys(attribute.lastIndexedKey, start) < 0) start = attribute.lastIndexedKey;
+	}
+	return start;
+}
 async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
 	try {
 		logger.info(`Indexing ${Table.tableName} attributes`, attributes);
@@ -3141,10 +3154,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		const attributesLength = attributes.length;
 		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
 		if (attributesLength > 0) {
-			let start: any;
+			const start = resumeStartKey(attributes);
 			for (const attribute of attributes) {
-				// if we are resuming, we need to start from the last key we indexed by all attributes
-				if (compareKeys(attribute.lastIndexedKey, start) < 0) start = attribute.lastIndexedKey;
 				if (attribute.lastIndexedKey == undefined) {
 					// if we are starting from the beginning, clear out any previous index entries since we are rewriting
 					if (attribute.dbi.clearAsync) {
@@ -3163,7 +3174,12 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				versions: true,
 				snapshot: false, // don't hold a read transaction this whole time
 			})) {
-				if (!record) continue; // deletion entry
+				const atInterval = ++indexed % INDEXING_YIELD_INTERVAL === 0;
+				if (!record) {
+					// deletion entry
+					if (atInterval) await yieldEventTurn();
+					continue;
+				}
 				// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
 				//if (Table.schemaVersion !== schemaVersion) return; // break out if there are any schema changes and let someone else pick it up
 				outstanding++;
@@ -3219,18 +3235,31 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				if (workerData && workerData.restartNumber !== manageThreads.restartNumber) {
 					interrupted = true;
 				}
-				if (++indexed % 100 === 0 || interrupted) {
-					// occasionally update our progress so if we crash, we can resume
-					for (const attribute of attributes) {
-						attribute.lastIndexedKey = key;
-						Table.dbisDB.put(attribute.key, attribute);
-					}
+				if (atInterval || interrupted) {
+					// Checkpoint our progress so a crash can resume. A resumed scan starts at the checkpoint, so
+					// it must only ever name a key whose every predecessor was indexed: wait for the writes it
+					// covers to settle, and stop advancing it once any record has failed so the retry re-covers
+					// that record.
+					when(
+						lastResolution,
+						() => {
+							if (hadIndexingErrors) return;
+							try {
+								for (const attribute of attributes) {
+									attribute.lastIndexedKey = key;
+									Table.dbisDB.put(attribute.key, attribute);
+								}
+							} catch (error) {
+								// a lost checkpoint only costs the retry a rescan of this stretch
+								logger.debug(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
+							}
+						},
+						() => {} // already counted and logged by the rejection handler above
+					);
 					if (interrupted) return;
 				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
-				else if (outstanding > MIN_OUTSTANDING_INDEXING)
-					await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
-				else if (didSynchronousIndexing) await new Promise((resolve) => setImmediate(resolve)); // custom indexes (e.g. HNSW) index synchronously and never raise `outstanding`; without this yield a large backfill runs in a single event-loop turn, starving keepalive/replication and queries and never letting the isIndexing flag be observed
+				else if (outstanding > MIN_OUTSTANDING_INDEXING || didSynchronousIndexing || atInterval) await yieldEventTurn(); // custom indexes (e.g. HNSW) index synchronously and a RocksDB put resolves synchronously, so neither raises `outstanding`; without this yield a large backfill runs in a single event-loop turn, starving keepalive/replication and queries and never letting the isIndexing flag be observed
 			}
 		}
 		// Await the last pending put. If it rejects, that is also an indexing error.
