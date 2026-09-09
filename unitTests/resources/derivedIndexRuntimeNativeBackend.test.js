@@ -1229,8 +1229,8 @@ describe('DerivedIndexRuntime for native backends', () => {
 	});
 
 	it('admits writes again when the index becomes unavailable with no owner left to catch up', async () => {
-		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
-		const store = new FakeLogStore(new Map([[7, []]]), {
+		const records = new Map([['1:a', { version: 8, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, [audit({ timestamp: 8, recordId: 'a' })]]]), {
 			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
 		});
 		const backend = new AsyncBackend('shed-then-dead', { cursor: cursor(7) });
@@ -1334,6 +1334,27 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const lookups = store.bufferLookups;
 		await runtime.stop();
 		assert.strictEqual(store.bufferLookups, lookups, 'shared-memory views are fetched once per runner');
+	});
+
+	it('does not trip the lag policy for a caught-up owner that idles past the budget', async () => {
+		const records = new Map([['1:a', { version: 1, value: { title: 'a' } }]]);
+		const entries = [];
+		const store = new FakeLogStore(new Map([[10, entries]]), { live: true });
+		const backend = new SyncBackend('idle-caught-up', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		let clock = 1_000_000;
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000, now: () => clock });
+		runtime.register(registration(backend, { maxLagMilliseconds: 400, maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => runtime.getStatus('idle-caught-up')?.state === 'idle');
+		clock += 5_000;
+		await sleep(350);
+		assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined, 'a caught-up idle owner has no lag');
+		entries.push(audit({ timestamp: 11, recordId: 'a' }));
+		backend.deliverImpl = () => DERIVED_INDEX_DEFERRED;
+		store.rootStore.emit('committed');
+		await waitFor(() => runtime.getStatus('idle-caught-up').state === 'deferred');
+		clock += 1_000;
+		await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined, { timeout: 5000 });
+		await runtime.stop();
 	});
 
 	it('keeps writes admitted when the registration sets no lag policy', async () => {

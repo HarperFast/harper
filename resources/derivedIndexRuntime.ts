@@ -653,19 +653,19 @@ class DerivedIndexRunner {
 
 	/**
 	 * Owner-only. Lag is the longest of: cursor distance behind what this runner has read, time parked
-	 * on backpressure, and time since catch-up (end of log with durable == offered) was last proven —
-	 * the last term is what a slow reader that never idles cannot hide. The trip survives discard and
+	 * on backpressure, and how long work has been offered or pending without catch-up (end of log
+	 * with durable == offered) being proven — the last term is what a slow reader that never idles
+	 * cannot hide, and it is zero for a caught-up owner sitting idle. The trip survives discard and
 	 * handoff: a successor clears it only after proving catch-up itself, below half the budget.
 	 */
 	#publishLag() {
 		const max = this.#lagBudget;
 		if (max <= 0 || !this.#owned || this.#rebuilding) return;
 		const now = this.#options.now();
-		const unproven = this.#lastCaughtUpAt ?? this.#unprovenSince ?? now;
 		const lag = Math.max(
 			this.#cursorLag(),
 			this.#stalledSince === undefined ? 0 : now - this.#stalledSince,
-			now - unproven
+			this.#unprovenSince === undefined ? 0 : now - this.#unprovenSince
 		);
 		const words = this.#shared().words;
 		const tripped = Atomics.load(words, READINESS_LAG_EXCEEDED) === 1;
@@ -946,6 +946,7 @@ class DerivedIndexRunner {
 
 	#noteAccepted(batch: DerivedIndexBatch) {
 		const now = this.#options.now();
+		this.#unprovenSince ??= now;
 		if (batch.through && !sameCursor(batch.through, this.#offered)) {
 			this.#offered = cloneCursor(batch.through);
 			this.#offeredCursors.push({
@@ -1309,7 +1310,10 @@ class DerivedIndexRunner {
 			return;
 		}
 		if (!this.#reconcileDurableCursor(durable)) return;
-		if (sameCursor(durable, this.#offered!)) this.#lastCaughtUpAt = this.#options.now();
+		if (sameCursor(durable, this.#offered!)) {
+			this.#lastCaughtUpAt = this.#options.now();
+			this.#unprovenSince = undefined;
+		}
 		this.#publishLag();
 		if (!sameCursor(durable, this.#offered!)) {
 			this.#armFlushTimer();
