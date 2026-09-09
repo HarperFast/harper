@@ -344,6 +344,26 @@ JS thread:
 > writer, receive routing, audit filtering, the commit-time fence, `ClusterLockTransport`) is reused
 > unchanged; the `LOCK_REQUEST`/`LOCK_GRANT` state machine is removed. Read what follows as the
 > description of the code currently on `feat/record-lock-phase1`, not as a settled design.
+>
+> **Phase 1 contract: exclusion-only.** A cluster `lock()` guarantees exclusive _admission_ of a
+> critical section, and successor freshness after a clean handoff while the key's home still holds
+> that handoff's dependency set. It adds no fencing generation to conflict resolution and does not
+> confirm locked writes to a quorum, so **it changes nothing about how two conflicting writes
+> resolve** — a predecessor's write can still outrank its successor's, reachable on a fully clean
+> handoff via a future `context.timestamp`, which "Acquisition timestamp and mixed transactions" above
+> documents as deliberate Phase 0 behavior — and successor freshness is not promised once the
+> dependency set is gone. Neither limitation is crash-only.
+>
+> **§10 of [`docs/record-lock-ownership.md`](docs/record-lock-ownership.md) is the normative
+> wording**: the routes into each limitation, why there is no caller-side mitigation, and the rule
+> that none of it may be softened in the API docs. Read it before writing anything user-facing about
+> `lock()`.
+>
+> One consequence bears on the code here rather than on the API: **the Phase 0 contract's relationship
+> with ordinary writes is unchanged by Phase 1** — plain writes are still never gated and still
+> resolve by last-write-wins, with no field added to them — which is the main thing the fenced arm
+> would have given up. The fenced and quorum-confirmed alternatives are deferred, with their costs, to
+> harper#2540.
 
 Phase 1 keeps every Phase 0 mechanism and adds a cluster round on top of it. Nothing in core registers
 a `ClusterLockTransport`, so in a core-only build the machinery is inert and `lock()` behaves exactly
