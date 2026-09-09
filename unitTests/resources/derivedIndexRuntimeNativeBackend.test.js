@@ -1255,6 +1255,28 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('arms one retry timer while tryLock keeps throwing under a commit stream', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			if (attempts++ < 30) throw new Error('lock table busy');
+			return tryLock(key, onUnlocked);
+		};
+		const backend = new SyncBackend('lock-storm', cursor(10));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		runtime.register(registration(backend, { rebuildBackoffMilliseconds: 20 }));
+		await waitFor(() => attempts === 1);
+		for (let i = 0; i < 20; i++) {
+			store.rootStore.emit('committed');
+			await sleep(1);
+		}
+		const afterStorm = attempts;
+		await sleep(60);
+		assert(attempts <= afterStorm + 3, `retry timers fired ${attempts - afterStorm} times after the storm`);
+		await runtime.stop();
+	});
+
 	it('retries the lock instead of parking when tryLock throws once', async () => {
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
 		let attempts = 0;
@@ -1704,6 +1726,31 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		assert(!(wrapper instanceof SharedArrayBuffer));
 		assert.strictEqual(readDerivedIndexReadiness(Product.auditStore, 'rocks-rebuild').state, 'ready');
 		assert.notStrictEqual(new Int32Array(wrapper)[0], 0, 'the wrapper sees the published sequence word');
+		// A real worker thread, through the binding alone, reads the owner's publication.
+		const { Worker } = require('node:worker_threads');
+		const worker = new Worker(
+			`const { parentPort, workerData } = require('node:worker_threads');
+			const { RocksDatabase } = require(workerData.binding);
+			const db = new RocksDatabase(workerData.path).open();
+			const words = new Int32Array(db.getUserSharedBuffer(workerData.key, new ArrayBuffer(512)), 0, 8);
+			parentPort.postMessage({ state: Atomics.load(words, 1), sequence: Atomics.load(words, 0) });
+			db.close();`,
+			{
+				eval: true,
+				workerData: {
+					binding: require.resolve('@harperfast/rocksdb-js'),
+					path: Product.auditStore.rootStore.path,
+					key: 'derived-index:rocks-rebuild:readiness',
+				},
+			}
+		);
+		const seen = await new Promise((resolve, reject) => {
+			worker.once('message', resolve);
+			worker.once('error', reject);
+		});
+		await new Promise((resolve) => worker.once('exit', resolve));
+		assert.strictEqual(seen.state, 1, 'a worker thread reads the ready state the owner published');
+		assert(seen.sequence > 0 && seen.sequence % 2 === 0, 'and a settled sequence word');
 		const peerBackend = new AsyncBackend('rocks-rebuild', { applyDelay: 2 });
 		const unregisterPeer = peer.register({
 			backend: peerBackend,

@@ -401,7 +401,10 @@ both: a backend that omits it keeps Stage 1's terminal `needs-rebuild`; a backen
 it owns its crash safety — its first durable action must invalidate the cursor or its generation
 before anything destructive, so an interrupted reset reopens as cursorless rather than as a valid
 cursor over partially destroyed state (shared readiness is process memory and is no evidence after
-a restart). Registration that fails part-way (an `attach` or `onStateChange` that throws) leaves
+a restart). The same caveat covers a condemnation: `needs-rebuild` lives in the shared buffer, so a
+process that restarts after condemning a cursor but before the rebuild's `reset` has durably
+invalidated it reopens on that cursor with no rebuild scheduled; a backend that cannot rebuild, or
+an operator who wants the rebuild regardless, uses `requestRebuild`. Registration that fails part-way (an `attach` or `onStateChange` that throws) leaves
 no readiness subscription or table admission behind.
 
 `DerivedIndexRegistration` belongs to Harper. Its projection functions are compiled from schema

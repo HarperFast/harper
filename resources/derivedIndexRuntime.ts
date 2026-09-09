@@ -447,6 +447,7 @@ class DerivedIndexRunner {
 	#unprovenSince?: number;
 	#lastCaughtUpAt?: number;
 	#lagTimer?: NodeJS.Timeout;
+	#lockRetryTimer?: NodeJS.Timeout;
 	#lagBudget: number;
 	#reloadsHandledThrough = new Map<string, number>();
 	#scheduled = false;
@@ -587,6 +588,7 @@ class DerivedIndexRunner {
 		this.status = { state: 'stopped', ownerEpoch: this.#ownerEpoch };
 		if (this.#idleTimer) clearTimeout(this.#idleTimer);
 		if (this.#rebuildTimer) clearTimeout(this.#rebuildTimer);
+		if (this.#lockRetryTimer) clearTimeout(this.#lockRetryTimer);
 		this.#rebuildTimer = undefined;
 		try {
 			this.#unsubscribeBackend?.();
@@ -743,8 +745,13 @@ class DerivedIndexRunner {
 		} catch (error) {
 			this.#waitingForLock = false;
 			logger.error(`Derived index '${this.id}' could not attempt the runner lock; retrying`, error);
-			const retryLater = setTimeout(() => this.wake(true), this.#options.rebuildBackoffMilliseconds);
-			retryLater.unref?.();
+			if (!this.#lockRetryTimer) {
+				this.#lockRetryTimer = setTimeout(() => {
+					this.#lockRetryTimer = undefined;
+					this.wake(true);
+				}, this.#options.rebuildBackoffMilliseconds);
+				this.#lockRetryTimer.unref?.();
+			}
 			return;
 		}
 		this.#waitingForLock = false;
@@ -1705,8 +1712,6 @@ class DerivedIndexRunner {
 	}
 
 	#publishReadiness(state: DerivedIndexReadinessState, reason = '') {
-		// One buffer for the whole seqlock write: a re-fetch mid-publish could split it across the
-		// private and the shared copy.
 		const { words, bytes, epoch } = this.#shared();
 		// Force the sequence odd rather than incrementing, so a publication abandoned by a dead owner is repaired.
 		const sequence = Atomics.load(words, READINESS_SEQUENCE) | 1;
@@ -1771,8 +1776,6 @@ class DerivedIndexRunner {
 		} catch (error) {
 			logger.warn?.(`Derived index '${backend.id}' shutdown flush request threw`, error);
 		}
-		// Nothing that can still write — an in-flight reset, the shutdown flush — may outlive the
-		// epoch's quiescence and the unlock that follows it.
 		const settling = Promise.allSettled([this.#resetting, flushed]).then(() => undefined);
 		this.#releasing = settling.then(() => (epoch === undefined ? undefined : this.#quiesce(epoch))).then(unlock, hold);
 	}
