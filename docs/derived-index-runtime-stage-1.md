@@ -406,8 +406,11 @@ key (`derived-index:<id>:condemned`, through the audit store's symbol-keyed `put
 durability follows the root store's WAL setting): a process that restarts after condemning a
 cursor but before the rebuild's `reset` has durably invalidated it finds the marker on acquisition
 and rebuilds instead of trusting the still-format-valid cursor. The marker clears only at the first
-durable `ready` after the rebuild, so a crash before that costs one extra rebuild. A backend that
-cannot rebuild parks on the marker until `requestRebuild` or a rebuild-capable registration. Registration that fails part-way (an `attach` or `onStateChange` that throws) leaves
+durable `ready` after the rebuild, so a crash before that costs one extra rebuild. A marker that
+cannot be written makes the index `unavailable` with no `reset` issued — without it a crash
+mid-reset would reopen on the condemned cursor — and a marker that cannot be read counts as
+present. A backend that cannot rebuild parks on the marker until `requestRebuild` or a
+rebuild-capable registration. Registration that fails part-way (an `attach` or `onStateChange` that throws) leaves
 no readiness subscription or table admission behind.
 
 `DerivedIndexRegistration` belongs to Harper. Its projection functions are compiled from schema

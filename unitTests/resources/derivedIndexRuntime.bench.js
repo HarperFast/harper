@@ -304,6 +304,14 @@ describe('Benchmark: derived-index runtime with a costly native-shaped backend',
 		};
 		await measure('warm-up', 5_000);
 		await measure('guard live (no derived index)');
+		// The staging layer reads the export at call time, so replacing it replaces the guard; prove it.
+		registry.derivedIndexWriteRejection = () => 'probe';
+		try {
+			await Plain.put('probe', { title: 'probe' });
+			throw new Error('the stub did not reach the staging layer');
+		} catch (error) {
+			if (error.code !== 'DERIVED_INDEX_LAGGING') throw error;
+		}
 		registry.derivedIndexWriteRejection = () => undefined;
 		try {
 			await measure('guard stubbed out');

@@ -324,8 +324,6 @@ export class DerivedIndexRuntime {
 	requestRebuild(backendId: string): boolean {
 		const held = this.#heldRunners.get(backendId);
 		if (held) {
-			// A stopped runner still holding the lock after a failed shutdown: retry releasing it, then let
-			// the registered runner (if any) acquire through the unlock.
 			const released = held.runner.retryRelease();
 			this.#pendingStops.add(released);
 			released.then(
@@ -439,6 +437,7 @@ class DerivedIndexRunner {
 	#options: ResolvedRunnerOptions;
 	#lockKey: string;
 	#markerKey: symbol;
+	#markersSupported: boolean;
 	#iterator?: Iterator<AuditRecord>;
 	#iterable?: TransactionLogIterable;
 	#knownLogs = new Set<string>();
@@ -470,6 +469,7 @@ class DerivedIndexRunner {
 	#unflushedBytes = 0;
 	#unflushedMutations = 0;
 	#releasing?: Promise<void>;
+	#releasingSince?: number;
 	#releaseFailure?: Error;
 	#stopResult?: Promise<void>;
 	#heldLock = false;
@@ -526,6 +526,11 @@ class DerivedIndexRunner {
 		this.#options = options;
 		this.#lockKey = `derived-index:${registration.backend.id}:runner`;
 		this.#markerKey = Symbol.for(`derived-index:${registration.backend.id}:condemned`);
+		const root = logStore.rootStore as { getSync?: unknown; removeSync?: unknown } | undefined;
+		this.#markersSupported =
+			typeof logStore.putSync === 'function' &&
+			typeof root?.getSync === 'function' &&
+			typeof root?.removeSync === 'function';
 		this.#lagBudget = effectiveLagBudget(options);
 		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => {
 			if (this.#owned) this.wake(true);
@@ -647,7 +652,10 @@ class DerivedIndexRunner {
 			unindexableRecords: this.#unindexableRecords,
 			rebuildAttempts: this.#rebuildAttempts,
 			rebuiltRecords: this.#rebuiltRecords,
-			quiescenceAgeMilliseconds: this.#quiescing === undefined ? 0 : Math.max(0, now - this.#quiescing.since),
+			quiescenceAgeMilliseconds:
+				this.#releasingSince === undefined && this.#quiescing === undefined
+					? 0
+					: Math.max(0, now - Math.min(this.#releasingSince ?? Infinity, this.#quiescing?.since ?? Infinity)),
 		};
 	}
 
@@ -783,6 +791,7 @@ class DerivedIndexRunner {
 		try {
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
+			const condemned = this.#readCondemnation();
 			const shared = this.getReadiness();
 			const reloadsThrough = Number(Atomics.load(this.#shared().reloads, 0));
 			if (reloadsThrough > 0)
@@ -821,7 +830,7 @@ class DerivedIndexRunner {
 				}
 				return;
 			}
-			if (this.#readCondemnation()) {
+			if (condemned) {
 				this.#needsRebuild('condemned before a restart; the durable cursor is not trusted');
 				return;
 			}
@@ -1234,11 +1243,7 @@ class DerivedIndexRunner {
 		return record;
 	}
 
-	/**
-	 * A backend that declared no asynchronous effects but returned a promise has work that may still
-	 * write; nothing may unlock or reset under it, so the epoch's quiescence waits for it to settle.
-	 * A never-settling promise then holds the lock, which is the safe failure.
-	 */
+	/** Undeclared asynchronous work may still write: the epoch's quiescence waits for it before any unlock or reset. */
 	#noteUndeclaredAsync(pending: Promise<void>) {
 		this.#undeclaredAsync = Promise.allSettled([this.#undeclaredAsync, pending]).then(() => undefined);
 	}
@@ -1407,28 +1412,38 @@ class DerivedIndexRunner {
 	 * the index's marker key; a restart before the rebuild's `reset` has durably invalidated the
 	 * cursor then still rebuilds instead of trusting it. Durability follows the root store's WAL
 	 * setting. The marker clears only at the first durable `ready` after the rebuild, so a crash
-	 * before that costs one extra rebuild, never a trusted condemned cursor.
+	 * before that costs one extra rebuild, never a trusted condemned cursor. A log store without a
+	 * root-store key-value surface (test fakes) keeps Stage 1's process-memory condemnation only.
 	 */
-	#writeCondemnation() {
-		if (this.#condemned) return;
-		this.#condemned = true;
+	#writeCondemnation(): boolean {
+		if (this.#condemned || !this.#markersSupported) return true;
 		try {
 			this.#logStore.putSync(this.#markerKey, CONDEMNED_MARKER, {});
+			this.#condemned = true;
+			return true;
 		} catch (error) {
+			// Without the marker a crash mid-reset would reopen on the condemned cursor, so no reset runs.
 			logger.error(`Derived index '${this.id}' could not persist its condemnation`, error);
+			return false;
 		}
 	}
 
 	#readCondemnation(): boolean {
+		if (!this.#markersSupported) return false;
 		try {
 			this.#condemned = this.#logStore.rootStore.getSync(this.#markerKey) !== undefined;
 		} catch (error) {
 			logger.error(`Derived index '${this.id}' could not read its condemnation marker`, error);
+			this.#condemned = true;
 		}
 		return this.#condemned;
 	}
 
 	#clearCondemnation() {
+		if (!this.#markersSupported) {
+			this.#condemned = false;
+			return;
+		}
 		try {
 			this.#logStore.rootStore.removeSync(this.#markerKey);
 			this.#condemned = false;
@@ -1481,7 +1496,10 @@ class DerivedIndexRunner {
 		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
 		this.#discardProgress();
 		if (!this.#owned) return;
-		this.#writeCondemnation();
+		if (!this.#writeCondemnation()) {
+			this.#becomeUnavailable('condemnation could not be persisted; no rebuild until it can', error);
+			return;
+		}
 		if (this.#canRebuild()) {
 			// A failure after a rebuild but before `ready` is that rebuild failing late; it counts against the cap.
 			if (this.#rebuildAttempts >= this.#options.maxRebuildAttempts) {
@@ -1685,7 +1703,6 @@ class DerivedIndexRunner {
 		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
 
-	/** A dropped backend wake must not park a rebuild forever: re-offer after a flush age at most. */
 	#waitForBackend(): Promise<void> {
 		if (this.#rebuildWakePending) {
 			this.#rebuildWakePending = false;
@@ -1800,8 +1817,10 @@ class DerivedIndexRunner {
 		this.#discardProgress();
 		const backend = this.#registration.backend;
 		const epoch = this.#ownerEpoch;
+		this.#releasingSince = this.#options.now();
 		const unlock = () => {
 			this.#releasing = undefined;
+			this.#releasingSince = undefined;
 			try {
 				this.#logStore.unlock(this.#lockKey);
 			} catch (error) {
@@ -1810,6 +1829,7 @@ class DerivedIndexRunner {
 		};
 		const hold = (error: unknown) => {
 			this.#releasing = undefined;
+			this.#releasingSince = undefined;
 			this.#heldLock = true;
 			const shared = 'backend shutdown failed; runner lock held';
 			const reason = `${shared}: ${error instanceof Error ? error.message : String(error)}`;
