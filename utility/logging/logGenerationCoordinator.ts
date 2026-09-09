@@ -2,7 +2,7 @@
 
 // Every isolate holds its own descriptor on the shared log file, so a rename leaves the others
 // appending to the archived inode and destroying it loses whatever they write next. No size
-// comparison can rule out a write that has not happened yet; an answer from every peer can.
+// comparison can rule out a write that has not happened yet; enumerated in-process peers must answer.
 //
 // The thread layer injects the transport; harper_logger must never reach manageThreads.
 
@@ -87,11 +87,11 @@ export function nextGenerationId() {
 }
 
 /**
- * Ask every writer of `logPath` to release the descriptors this request names, and resolve to
- * whether they all provably did. `false` means the caller must leave those archives in place — it
- * is never safe to unlink an inode a peer may still be appending to.
+ * Ask every in-process peer this isolate can enumerate to release the descriptors this request
+ * names. `false` means the caller must leave those archives in place — it is never safe to unlink
+ * an inode a peer may still be appending to.
  */
-function requestRelease(message: any): Promise<{ released: boolean; liveLogPaths: Set<string> }> {
+function requestRelease(message: any, deadline?: number): Promise<{ released: boolean; liveLogPaths: Set<string> }> {
 	releaseLocally(message);
 	const liveLogPaths = new Set<string>(sinksByPath.keys());
 	// No transport in a worker isolate means the mesh cannot be enumerated yet, not that there is
@@ -102,6 +102,9 @@ function requestRelease(message: any): Promise<{ released: boolean; liveLogPaths
 	if (!transport) return Promise.resolve({ released: isMainThread, liveLogPaths });
 	const expected = new Set<number>(transport.peerThreadIds());
 	if (expected.size === 0) return Promise.resolve({ released: true, liveLogPaths });
+	const quiescenceTimeout = transport.quiescenceTimeout ?? DEFAULT_QUIESCENCE_TIMEOUT;
+	if (deadline !== undefined && Date.now() + quiescenceTimeout > deadline)
+		return Promise.resolve({ released: false, liveLogPaths });
 	const request = message.request;
 	return new Promise((resolve) => {
 		let timer;
@@ -111,22 +114,25 @@ function requestRelease(message: any): Promise<{ released: boolean; liveLogPaths
 			resolve({ released, liveLogPaths });
 		};
 		pendingByRequest.set(request, { expected, liveLogPaths, settle });
-		timer = setTimeout(() => settle(false), transport.quiescenceTimeout ?? DEFAULT_QUIESCENCE_TIMEOUT);
+		timer = setTimeout(() => settle(false), quiescenceTimeout);
 		timer.unref?.();
 		transport.broadcast({ ...message, originator: transport.threadId });
 	});
 }
 
 /** One archived generation: release any descriptor still pointing at the inode that was renamed. */
-export async function requestGenerationClose(generation: any): Promise<boolean> {
+export async function requestGenerationClose(generation: any, deadline?: number): Promise<boolean> {
 	return (
-		await requestRelease({
-			type: LOG_GENERATION_ROTATED,
-			request: generation.generation,
-			logPath: generation.logPath,
-			ino: generation.ino,
-			dev: generation.dev,
-		})
+		await requestRelease(
+			{
+				type: LOG_GENERATION_ROTATED,
+				request: generation.generation,
+				logPath: generation.logPath,
+				ino: generation.ino,
+				dev: generation.dev,
+			},
+			deadline
+		)
 	).released;
 }
 
@@ -135,8 +141,10 @@ export async function requestGenerationClose(generation: any): Promise<boolean> 
  * Not scoped to one path: the archive directory holds the archives of every component and external
  * log sharing it, and retention destroys those too.
  */
-export function requestStaleDescriptorRelease(): Promise<{ released: boolean; liveLogPaths: Set<string> }> {
-	return requestRelease({ type: LOG_GENERATION_ROTATED, request: nextGenerationId(), stale: true });
+export function requestStaleDescriptorRelease(
+	deadline?: number
+): Promise<{ released: boolean; liveLogPaths: Set<string> }> {
+	return requestRelease({ type: LOG_GENERATION_ROTATED, request: nextGenerationId(), stale: true }, deadline);
 }
 
 function recordPeerResponse(request: string, threadId: number, logPaths?: string[]) {

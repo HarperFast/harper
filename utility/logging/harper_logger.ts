@@ -56,6 +56,9 @@ const LOG_TIME_USAGE_THRESHOLD = 100;
 const APPEND_RETRY_COOLDOWN = 5000;
 // Ceiling on how often a failing rotation may report itself; the failure repeats every check point.
 const ROTATION_REPORT_INTERVAL = 60000;
+const SET_ROTATION_POLICY = Symbol('setRotationPolicy');
+const GET_ROTATION_POLICY = Symbol('getRotationPolicy');
+const FILE_ROTATION_SOURCE = Symbol('fileRotationSource');
 
 let logConsole;
 let log_to_file;
@@ -119,6 +122,10 @@ export function updateLogger(logger: any, logOptions: any, name?: string, mainLo
 	// rotation entirely (#1877). Excluded when `logger` IS mainLoggerRef: the fallback would just
 	// reassign mainLogger.rotation to itself, making it impossible to ever clear main's rotation.
 	const inheritedRotation = logOptions.rotation ?? (logger === mainLoggerRef ? undefined : mainLoggerRef?.rotation);
+	const loggerPolicy = logger[GET_ROTATION_POLICY]?.();
+	const mainPolicy = mainLoggerRef?.[GET_ROTATION_POLICY]?.();
+	const inheritsRotation = logOptions.rotation == null && logger !== mainLoggerRef;
+	const rotationSource = inheritsRotation ? mainPolicy?.source : loggerPolicy?.ownSource;
 	let path = logOptions.path;
 	if (path) {
 		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
@@ -144,9 +151,9 @@ export function updateLogger(logger: any, logOptions: any, name?: string, mainLo
 		// state — file loggers are cached per path — so stripping there discards the operator's
 		// configured rotation.path for the main log itself, which no EXDEV risk justifies.
 		const { path: _inheritedPath, ...rotationWithoutPath } = inheritedRotation;
-		logger.rotation = rotationWithoutPath;
+		setRotationPolicy(rotationWithoutPath);
 	} else {
-		logger.rotation = inheritedRotation;
+		setRotationPolicy(inheritedRotation);
 	}
 	// After the rotation above: assigning `path` goes through the setter that rebuilds this path's
 	// file logger, and it reads `logger.rotation` as it stands at that moment.
@@ -158,6 +165,11 @@ export function updateLogger(logger: any, logOptions: any, name?: string, mainLo
 	// if there is a configured tag or if a component is logging to default/main log path, use the component name as the tag
 	// to differentiate it
 	logger.tag = logOptions.tag ?? ((mainLoggerRef.path === logger.path || externalLogger.path === logger.path) && name);
+
+	function setRotationPolicy(rotation) {
+		if (logger[SET_ROTATION_POLICY]) logger[SET_ROTATION_POLICY](rotation, rotationSource, inheritsRotation);
+		else logger.rotation = rotation;
+	}
 }
 // creates a logger where the methods are only defined if they are within the log level.
 // Using this conditional logger means that every method call must be optional like log.trace?.('message),
@@ -479,6 +491,12 @@ export function logsAtLevel(level: any) {
 export function initLogSettings(forceInit = false) {
 	try {
 		if (hdbProperties === undefined || forceInit) {
+			if (forceInit && mainLogger?.[SET_ROTATION_POLICY]) {
+				const currentPath = mainLogger.path;
+				const { ownSource } = mainLogger[GET_ROTATION_POLICY]();
+				mainLogger[SET_ROTATION_POLICY](undefined, ownSource, false);
+				mainLogger.path = currentPath;
+			}
 			closeLogFile();
 			const bootPropsFilePath = getPropsFilePath();
 			let properties = assignCMDENVVariables(['ROOTPATH']);
@@ -674,7 +692,14 @@ export function createLogger(options: any = {} as any) {
 		isExternalInstance,
 		writeToLog,
 		component,
+		rotationSource,
+		rotationInherited = false,
 	}: any = options;
+	const ownRotationSource = Symbol('rotationPolicySource');
+	let currentRotationSource = rotationSource ?? ownRotationSource;
+	let previousRotationSource;
+	let currentRotationInherited = rotationInherited;
+	let rotationChangeIsAuthoritative = rotation !== undefined;
 	if (!logLevel) logLevel = 'info';
 	let level = typeof logLevel === 'number' ? logLevel : LOG_LEVEL_HIERARCHY[logLevel];
 	let logger;
@@ -718,7 +743,8 @@ export function createLogger(options: any = {} as any) {
 			}
 		} else if (logToStdstreams) process.stderr.write(log);
 	}
-	let logToFile = logFilePath && getFileLogger(logFilePath, rotation, isExternalInstance);
+	let logToFile = logFilePath && getFileLogger(logFilePath, rotation, isExternalInstance, rotationPolicy());
+	rotationPolicyApplied();
 	function logPrepend(write) {
 		return {
 			write(log) {
@@ -741,6 +767,14 @@ export function createLogger(options: any = {} as any) {
 		},
 		level
 	);
+	logger[SET_ROTATION_POLICY] = function (newRotation, source = ownRotationSource, inherited = false) {
+		previousRotationSource = currentRotationSource;
+		currentRotationSource = source ?? ownRotationSource;
+		currentRotationInherited = inherited;
+		rotationChangeIsAuthoritative = true;
+		logger.rotation = newRotation;
+	};
+	logger[GET_ROTATION_POLICY] = () => ({ ownSource: ownRotationSource, source: currentRotationSource });
 	updateConditional(logger);
 	logger.path = logFilePath;
 	Object.defineProperty(logger, 'path', {
@@ -749,7 +783,8 @@ export function createLogger(options: any = {} as any) {
 		},
 		set(path) {
 			logFilePath = path;
-			logToFile = getFileLogger(logFilePath, logger.rotation, isExternalInstance);
+			logToFile = getFileLogger(logFilePath, logger.rotation, isExternalInstance, rotationPolicy());
+			rotationPolicyApplied();
 			if (isExternalInstance) writeToLogFile = logToFile;
 		},
 		enumerable: true,
@@ -762,12 +797,15 @@ export function createLogger(options: any = {} as any) {
 			let componentLogger = components.get(name);
 			if (!componentLogger) {
 				const protoLogger = isExternal ? externalLogger : logger;
+				const protoRotationPolicy = protoLogger[GET_ROTATION_POLICY]?.();
 				componentLogger = createLogger({
 					path: protoLogger.path,
 					level: protoLogger.level,
 					stdStreams: protoLogger.logToStdstreams,
 					isExternalInstance: isExternal || name === 'external',
 					rotation: protoLogger.rotation,
+					rotationSource: protoRotationPolicy?.source,
+					rotationInherited: true,
 					writeToLog,
 					component: true,
 				});
@@ -783,6 +821,20 @@ export function createLogger(options: any = {} as any) {
 		logger.components = components;
 	}
 	return logger;
+
+	function rotationPolicy() {
+		return {
+			source: currentRotationSource,
+			previousSource: previousRotationSource,
+			inherited: currentRotationInherited,
+			authoritative: rotationChangeIsAuthoritative,
+		};
+	}
+
+	function rotationPolicyApplied() {
+		previousRotationSource = currentRotationSource;
+		rotationChangeIsAuthoritative = false;
+	}
 }
 /**
  * Get the file logger for the given path. If it doesn't exist, create it.
@@ -790,7 +842,7 @@ export function createLogger(options: any = {} as any) {
  * @param isExternalInstance
  * @return {any}
  */
-function getFileLogger(path, rotation, isExternalInstance) {
+function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 	let logger = fileLoggers.get(path);
 	let logFD, loggedFDError, loggedAppendError, logTimer, retryAppendAfter;
 	let logBuffer;
@@ -811,15 +863,28 @@ function getFileLogger(path, rotation, isExternalInstance) {
 		// answer from it has to mean "released" rather than only "handler ran".
 		registerLogSink(path, { identity: () => logFDIdentity, close: closeLogFile });
 	}
-	// An undefined rotation means "no opinion", not "off" — that is what `enabled: false` says.
-	// Several loggers are created for one path during startup and the later ones carry no rotation
-	// block, so treating undefined as a reconfiguration tore down the configured caller's rotation.
-	const reconfigured = rotation !== undefined && JSON.stringify(rotation) !== JSON.stringify(logger.rotation);
+	const currentSource = logger[FILE_ROTATION_SOURCE];
+	const sameSource = currentSource === rotationPolicy.source;
+	const replacesPreviousSource = currentSource !== undefined && currentSource === rotationPolicy.previousSource;
+	const canInstall =
+		rotation !== undefined &&
+		(!rotationPolicy.inherited || currentSource === undefined || sameSource || replacesPreviousSource);
+	const canClear = rotation === undefined && rotationPolicy.authoritative && (sameSource || replacesPreviousSource);
+	let reconfigured = false;
+	if (canInstall) {
+		logger[FILE_ROTATION_SOURCE] = rotationPolicy.source;
+		reconfigured = JSON.stringify(rotation) !== JSON.stringify(logger.rotation);
+	}
 	if (reconfigured) {
 		logger.rotation = rotation;
 		// Every writing thread, and synchronously: request logging is produced by the HTTP workers, and
 		// at the rates that make maxSize matter a deferred guard misses megabytes before it exists.
 		logger.installRotationGuard(rotation);
+	} else if (canClear) {
+		logger.rotation = undefined;
+		logger[FILE_ROTATION_SOURCE] = undefined;
+		logger.installRotationGuard(undefined);
+		reconfigured = true;
 	}
 	if (isMainThread && reconfigured) {
 		setTimeout(() => {
@@ -827,7 +892,9 @@ function getFileLogger(path, rotation, isExternalInstance) {
 			// require('./logRotator') (which reaches environmentManager's synchronous init) nor a
 			// rotator teardown may take the process down over log rotation (#847).
 			try {
-				logger.rotator?.end();
+				const previousRotator = logger.rotator;
+				logger.rotator = undefined;
+				previousRotator?.end();
 				if (!rotation) return;
 				const { logRotator } = require('./logRotator');
 				logger.rotator = logRotator({

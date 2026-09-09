@@ -8,11 +8,12 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { join, resolve } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { parse, stringify } from 'yaml';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'fixtures/log-rotation-write-path');
@@ -163,5 +164,63 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 				);
 			}
 		}
+	});
+
+	test('stops rotating in every HTTP worker when the rotation block is removed', { timeout: 120_000 }, async () => {
+		const configPath = ['harper-config.yaml', 'harperdb-config.yaml']
+			.map((name) => join(ctx.harper.dataRootDir, name))
+			.find(existsSync);
+		ok(configPath, `expected a root config under ${ctx.harper.dataRootDir}`);
+		const config = parse(readFileSync(configPath, 'utf8'));
+		delete config.logging.rotation;
+		writeFileSync(configPath, stringify(config));
+
+		const workersAfterRemoval = new Set<number>();
+		let activeSize = 0;
+		for (let i = 0; i < 300 && (workersAfterRemoval.size < WORKERS || activeSize <= MAX_SIZE_BYTES * 4); i += 8) {
+			const responses = await Promise.all(
+				Array.from({ length: 8 }, (_, offset) =>
+					fetch(new URL(`/LogBurst/rotation-disabled-${i + offset}`, ctx.harper.httpURL), {
+						headers: { connection: 'close' },
+					})
+				)
+			);
+			for (const [offset, response] of responses.entries()) {
+				strictEqual(response.status, 200, `post-removal request ${i + offset} failed`);
+				const body = await response.json();
+				workersAfterRemoval.add(body.threadId);
+			}
+			try {
+				activeSize = statSync(join(logDir, 'hdb.log')).size;
+			} catch {
+				activeSize = 0;
+			}
+		}
+		strictEqual(workersAfterRemoval.size, WORKERS, 'expected post-removal writes from every HTTP worker');
+		ok(
+			activeSize > MAX_SIZE_BYTES * 4,
+			`expected hdb.log to grow beyond the former cap after removal; reached ${activeSize} bytes`
+		);
+
+		const archivesAfterRemoval = archiveNames();
+		const sizeAfterRemoval = activeSize;
+		const workersAfterSnapshot = new Set<number>();
+		for (let i = 0; i < 80 && workersAfterSnapshot.size < WORKERS; i += 8) {
+			const responses = await Promise.all(
+				Array.from({ length: 8 }, (_, offset) =>
+					fetch(new URL(`/LogBurst/rotation-still-disabled-${i + offset}`, ctx.harper.httpURL), {
+						headers: { connection: 'close' },
+					})
+				)
+			);
+			for (const [offset, response] of responses.entries()) {
+				strictEqual(response.status, 200, `post-snapshot request ${i + offset} failed`);
+				const body = await response.json();
+				workersAfterSnapshot.add(body.threadId);
+			}
+		}
+		strictEqual(workersAfterSnapshot.size, WORKERS, 'expected every worker to keep writing after removal');
+		ok(statSync(join(logDir, 'hdb.log')).size > sizeAfterRemoval, 'expected the active log to keep growing');
+		strictEqual(archiveNames().join('|'), archivesAfterRemoval.join('|'), 'no new generation should be archived');
 	});
 });
