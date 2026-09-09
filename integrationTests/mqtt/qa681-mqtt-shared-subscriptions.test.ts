@@ -385,9 +385,8 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 					await publish(pub, QOS1_TOPIC, JSON.stringify({ seq, tag: 'q4' }), { qos: 1 });
 					if (seq === dropAt - 1) {
 						await sleep(150); // let in-flight qos1 delivery to dropClient settle first
-						// Destroy the transport with no MQTT DISCONNECT: a crashed member, not a clean
-						// unsubscribe, which is what leaves the durable session with a backlog to resume.
-						(dropClient as any).stream?.destroy?.();
+						// end(true) closes the socket without sending a DISCONNECT: a crashed member, not a
+						// clean unsubscribe, which is what leaves the durable session a backlog to resume.
 						dropClient.end(true);
 						// Converge on the socket actually being down before publishing past the drop
 						// point; otherwise seq 15 can still reach the old session and the boundary
