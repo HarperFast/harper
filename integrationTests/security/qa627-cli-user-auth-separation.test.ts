@@ -38,8 +38,7 @@
 import { suite, test, before, after } from 'node:test';
 import assert from 'node:assert';
 import { resolve, join } from 'node:path';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -100,7 +99,12 @@ suite(
 				});
 				return { code: 0, stdout, stderr };
 			} catch (err: any) {
-				return { code: err.code ?? 1, stdout: err.stdout ?? '', stderr: err.stderr ?? '' };
+				// A spawn failure puts a string in `code` (ENOENT and friends); keep the contract numeric
+				// so an assertion diff reads as an exit status rather than a type mismatch.
+				const code = typeof err.code === 'number' ? err.code : 1;
+				const stderr =
+					typeof err.code === 'string' ? `${err.code}: ${err.message}\n${err.stderr ?? ''}` : (err.stderr ?? '');
+				return { code, stdout: err.stdout ?? '', stderr };
 			}
 		}
 
@@ -126,9 +130,11 @@ suite(
 				env: {},
 			});
 			client = createApiClient(ctx.harper);
-			cliHome = await mkdtemp(join(tmpdir(), 'qa627-cli-home-'));
+			// Under dataRootDir so instance teardown removes it, rather than a tmpdir entry that
+			// leaks if this hook throws before `after` runs.
+			cliHome = join(ctx.harper.dataRootDir, 'qa627-cli-home');
+			await mkdir(cliHome, { recursive: true });
 
-			// Pre-installed fixture, so poll for non-404 rather than restarting workers.
 			let ready = false;
 			const deadline = Date.now() + 120_000;
 			while (Date.now() < deadline) {
@@ -153,7 +159,6 @@ suite(
 
 		after(async () => {
 			await teardownHarper(ctx);
-			if (cliHome) await rm(cliHome, { recursive: true, force: true });
 		});
 
 		test('CONTROL: a no-credentials ops-API call gets a genuine 401 (authorizeLocal bypass disabled)', async () => {

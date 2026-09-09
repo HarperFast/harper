@@ -1,10 +1,7 @@
 // QA-716 fixture. FulfillPage is the shape under test: it pages a status='pending' search, stages
 // writes across Orders + Inventory + Reservation, and returns with the cursor simply dropped —
 // never drained, never .return()'d — so the read handle outlives the request's own commit.
-//
-//   /Seed          { bucket, count }     — insert `count` pending Orders for bucket.
-//   /FulfillPage   { bucket, pageSize }  — the repro.
-//   GET /DumpOrders, /DumpInventory, /DumpReservation — base scans, index-independent.
+// The Dump* resources are base scans, deliberately index-independent.
 
 function pad(n) {
 	return String(n).padStart(6, '0');

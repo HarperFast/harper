@@ -198,7 +198,6 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 		const wsScheme = httpURL.startsWith('https') ? 'wss' : 'ws';
 		mqttURL = `${httpURL.replace(/^https?/, wsScheme)}/mqtt`;
 
-		// Pre-installed fixture, so poll for non-404 rather than restarting workers.
 		let ready = false;
 		const deadline = Date.now() + 120_000;
 		while (Date.now() < deadline) {
@@ -422,44 +421,37 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 				strictEqual(new Set(seqsC).size, N, 'no duplicates for survivor C');
 
 				// The drop must genuinely have cut delivery. Without this, a run where the transport
-				// destroy failed leaves deliveredBeforeDrop holding all N and expectedRecovery at 0, so
-				// the union check below is satisfied before the session ever resumes and a broken
-				// clean:false resume passes. Which messages landed first is scheduler-dependent; that
-				// none published after the drop did is not, and that is what is asserted.
+				// destroy failed leaves deliveredBeforeDrop holding all N, and the coverage poll below
+				// is satisfied before the session ever resumes — so a broken clean:false resume would
+				// pass. Which messages landed first is scheduler-dependent; that none published after
+				// the drop did is not, and that is what is asserted.
 				ok(
 					[...deliveredBeforeDrop].every((seq) => seq < dropAt),
 					`the dropped client must have received nothing published after the drop, got ${JSON.stringify([...deliveredBeforeDrop].sort((a, b) => a - b))}`
 				);
 
-				// Reconnect the SAME clientId and let the durable session catch up. How many messages
-				// landed before the drop is scheduler-dependent, so the assertion is on the union:
-				// whatever the split, the session as a whole must have lost nothing.
 				const resumedMessages: CollectedMessage[] = [];
 				const resumed = await connect(mqttURL, baseOpts({ clientId: dropClientId, clean: false }), (topic, payload) =>
 					resumedMessages.push({ topic, payload: payload.toString() })
 				);
 				try {
-					const expectedRecovery = N - deliveredBeforeDrop.size;
-					await waitFor(() => resumedMessages.length >= expectedRecovery, 10_000);
-					await sleep(500); // so a straggler just behind the last recovered message still lands
+					// Poll on COVERAGE, not on a count. QoS-1 is at-least-once, so a resume may replay a
+					// message that was unacked when the transport died; counting deliveries would then
+					// reach the expected total while a later sequence is still in flight, and the run
+					// would fail a session that recovers everything.
+					const allSeqs = Array.from({ length: N }, (_, seq) => seq);
+					const seenSoFar = () => new Set([...deliveredBeforeDrop, ...seqsOf({ messages: resumedMessages })]);
+					const recovered = await waitFor(() => allSeqs.every((seq) => seenSoFar().has(seq)), 10_000);
 					const resumedSeqs = seqsOf({ messages: resumedMessages });
 					console.log(
 						`[QA-681][Q4] resumed same-clientId session recv=${resumedSeqs.length} ` +
-							`(expected at least ${expectedRecovery}): ${JSON.stringify(resumedSeqs)}`
+							`(missed ${N - deliveredBeforeDrop.size}): ${JSON.stringify(resumedSeqs)}`
 					);
 
-					// A floor, not an exact count: QoS-1 is at-least-once, so a message unacked when the
-					// transport died may legitimately be replayed — possibly more than once.
+					const seen = seenSoFar();
 					ok(
-						resumedSeqs.length >= expectedRecovery,
-						`the resumed session should recover the ${expectedRecovery} message(s) it missed, got ${JSON.stringify(resumedSeqs)}`
-					);
-					const seen = new Set([...deliveredBeforeDrop, ...resumedSeqs]);
-					const missing = Array.from({ length: N }, (_, seq) => seq).filter((seq) => !seen.has(seq));
-					strictEqual(
-						missing.length,
-						0,
-						`the durable session must lose nothing across the drop; never delivered seq ${JSON.stringify(missing)}`
+						recovered,
+						`the durable session must lose nothing across the drop; never delivered seq ${JSON.stringify(allSeqs.filter((seq) => !seen.has(seq)))}`
 					);
 					ok(
 						resumedSeqs.every((seq) => seq >= 0 && seq < N),

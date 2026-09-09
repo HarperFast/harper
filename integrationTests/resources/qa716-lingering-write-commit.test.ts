@@ -66,7 +66,6 @@ suite(`QA-716 lingering-write-commit vs staged writes [${ENGINE}]`, { skip: skip
 		proc?.stdout?.on('data', (d: Buffer) => (procOutput += d.toString()));
 		proc?.stderr?.on('data', (d: Buffer) => (procOutput += d.toString()));
 
-		// Pre-installed fixture, so poll for non-404 rather than restarting workers.
 		let ready = false;
 		const deadline = Date.now() + 120_000;
 		while (Date.now() < deadline) {

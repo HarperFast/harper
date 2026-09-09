@@ -2,9 +2,9 @@
 # staged write on a second table in the same transaction; Reservation adds a third plus a TTL, so
 # its staged write races background eviction while the deferred commit is in flight.
 #
-# expiration 8 rather than 3: the presence assertions sit behind several sequential index reads,
-# and a contended shard can spend a 3s window on those alone, failing a run in which every write
-# actually landed.
+# expiration 8 rather than 3: search stops returning a row the moment expiresAt passes, so the
+# window is wall-clock time from the write, and a contended shard can spend a 3s one on a single
+# round trip.
 type Orders @table @export {
 	id: ID @primaryKey
 	bucket: String
