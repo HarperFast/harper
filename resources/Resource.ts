@@ -150,10 +150,16 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				const resourceClass = resource.constructor;
 				const primaryKey = resourceClass.primaryKey;
 				// Before dispatching anything: a malformed body must not race a sibling's write, and a bare
-				// dereference below would reach the client as a 500 carrying V8's wording.
-				for (let index = 0; index < data.length; index++)
-					if (data[index] == null)
-						throw new ClientError(`Array element at index ${index} is ${data[index]}, expected a record`);
+				// dereference below would reach the client as a 500 carrying V8's wording. A primitive is
+				// malformed for the same reason — only a Table's own key validation rejects one later, so a
+				// plain Resource's override would otherwise be handed it.
+				for (let index = 0; index < data.length; index++) {
+					const element = data[index];
+					if (element == null || typeof element !== 'object')
+						throw new ClientError(
+							`Array element at index ${index} is ${element === null ? 'null' : typeof element}, expected a record`
+						);
+				}
 				const elementTarget = elementTargetFactory(query);
 				const results = [];
 				try {

@@ -90,8 +90,8 @@ suite('array PUT over REST (harper#2000)', { skip: skipSuite }, (ctx: ContextWit
 		deepStrictEqual(await idsOf('rest-ns'), []);
 	});
 
-	// Primitives take a different route than `null`: they survive the nullish guard, and the store's
-	// own primary-key validation rejects them. Both have to land as a 400, not a 500.
+	// A primitive is rejected by the same pre-dispatch guard as `null`, so no sibling is dispatched;
+	// both have to land as a 400, not a 500.
 	test('a primitive element is also a client error, not an internal one', async () => {
 		for (const bad of [42, 'nope', true]) {
 			const response = await putCollection([{ id: 'rest-prim-a', kind: 'rest-prim' }, bad]);

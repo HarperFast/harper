@@ -129,6 +129,36 @@ describe('array put element failure', () => {
 		assert.deepStrictEqual(await idsOf('fail-null'), []);
 	});
 
+	it('rejects a primitive element before any sibling is dispatched, on a Table and a plain Resource', async function () {
+		// A Table's own key validation would reject a primitive eventually, but only after the batch has
+		// dispatched its siblings — and a plain Resource, which never reaches storage, accepted it outright.
+		const { error, unhandled } = await withRejectionWatch(() =>
+			Docs.put(collectionTarget(), [{ id: 'fail-prim-a', kind: 'fail-prim' }, 42], {})
+		);
+		assert.match(error?.message ?? '', /Array element at index 1 is number/);
+		assert.strictEqual(error.statusCode, 400);
+		assert.deepStrictEqual(unhandled, []);
+		assert.deepStrictEqual(await idsOf('fail-prim'), []);
+
+		const calls = [];
+		class Widget extends Resource {
+			static primaryKey = 'id';
+			put(data) {
+				calls.push(data);
+				return data;
+			}
+		}
+		let plainError;
+		try {
+			await Widget.put([{ id: 'w1' }, 'nope'], {});
+		} catch (thrown) {
+			plainError = thrown;
+		}
+		assert.match(plainError?.message ?? '', /Array element at index 1 is string/);
+		assert.strictEqual(plainError.statusCode, 400);
+		assert.deepStrictEqual(calls, []);
+	});
+
 	it('rejects the whole batch for an element with no primary key, persisting no earlier element', async function () {
 		const { error, unhandled } = await withRejectionWatch(() =>
 			Docs.put(collectionTarget(), [{ id: 'fail-pk-a', kind: 'fail-pk' }, { kind: 'fail-pk' }], {})
