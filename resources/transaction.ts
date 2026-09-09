@@ -74,39 +74,42 @@ export function transaction<T>(
 				? callback(transaction)
 				: contextStorage.run(context, () => callback(transaction));
 		if ((result as any)?.then) {
-			// A synchronous callback cannot yield to the event loop, so arming before it would be pure
-			// overhead; no microtask has run yet, so nothing was missed.
-			if (signal) {
-				onDisconnect = () => {
-					try {
-						// isCommittingWrites() is not redundant: commit() marks itself CLOSED and clears its
-						// staged writes before the native commit settles, so for that whole window a
-						// write-bearing transaction reads as idle and read-only.
-						if (!transaction.sourceApply && !transaction.isReplay) {
-							if (
-								(transaction.open === TRANSACTION_STATE.OPEN && transaction.hasPendingWrites()) ||
-								transaction.isCommittingWrites()
-							) {
-								transaction.abortDueToDisconnect();
-							} else {
-								// Read-only right now, so there is nothing to cut off — but the abort event fires
-								// exactly once, and the scope is still running. Record it, or a write staged after
-								// this point commits for a client that is already gone (addWrite).
-								transaction.disconnectPending = true;
-							}
-						}
-					} catch (error) {
-						harperLogger.debug?.('aborting transaction on client disconnect', error);
-					}
-				};
-				signal.addEventListener('abort', onDisconnect, ONCE);
-			}
+			armDisconnectListener();
 			return (result as any).then(onComplete, onError);
 		}
 	} catch (error) {
 		onError(error);
 	}
 	return onComplete(result);
+	// Only armed once something the scope owns is actually going to yield to the event loop — a pending
+	// callback, or a commit that returned a promise. Nothing synchronous can miss an abort event by
+	// arming late: no microtask has run between the call and the check that arms this.
+	function armDisconnectListener() {
+		if (onDisconnect || !signal) return;
+		onDisconnect = () => {
+			try {
+				// isCommittingWrites() is not redundant: commit() marks itself CLOSED and clears its
+				// staged writes before the native commit settles, so for that whole window a
+				// write-bearing transaction reads as idle and read-only.
+				if (!transaction.sourceApply && !transaction.isReplay) {
+					if (
+						(transaction.open === TRANSACTION_STATE.OPEN && transaction.hasPendingWrites()) ||
+						transaction.isCommittingWrites()
+					) {
+						transaction.abortDueToDisconnect();
+					} else {
+						// Read-only right now, so there is nothing to cut off — but the abort event fires
+						// exactly once, and the scope is still running. Record it, or a write staged after
+						// this point commits for a client that is already gone (addWrite).
+						transaction.disconnectPending = true;
+					}
+				}
+			} catch (error) {
+				harperLogger.debug?.('aborting transaction on client disconnect', error);
+			}
+		};
+		signal.addEventListener('abort', onDisconnect, ONCE);
+	}
 	function removeDisconnectListener() {
 		if (onDisconnect) signal.removeEventListener('abort', onDisconnect);
 	}
@@ -119,6 +122,9 @@ export function transaction<T>(
 			return onCommitError(error, result);
 		}
 		if ((committed as any).then) {
+			// A synchronous callback never armed one, and this commit is where its writes actually become
+			// durable — the pre-commit `before` phase (a blob's file write) alone can outlast the request.
+			armDisconnectListener();
 			return (committed as any).then(
 				() => {
 					removeDisconnectListener();

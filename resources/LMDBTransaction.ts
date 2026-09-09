@@ -435,7 +435,9 @@ export class LMDBTransaction extends DatabaseTransaction {
 				this.clearWrites();
 				this.releaseContext(!this.timedOut && !this.disconnected);
 			} finally {
-				if (next) {
+				// Same guard as DatabaseTransaction.abort(): a child whose native commit is outstanding owns
+				// its own cleanup, and clearing its writes here would unlink blobs that commit still references.
+				if (next && !(next.nativeCommitSubmitted && next.commitsInFlight)) {
 					try {
 						next.abort(retainReadTransaction);
 					} catch (error) {

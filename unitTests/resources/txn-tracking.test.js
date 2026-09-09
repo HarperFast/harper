@@ -932,7 +932,7 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 // same signal a Request/UwsRequest populates on client disconnect) and, while the callback is still
 // running, aborts the transaction immediately instead.
 describe('Disconnect abort', () => {
-	let DisconnectResource;
+	let DisconnectResource, DisconnectBlobResource;
 	before(async function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -940,6 +940,14 @@ describe('Disconnect abort', () => {
 			table: 'DisconnectTxnTable',
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		DisconnectBlobResource = table({
+			table: 'DisconnectBlobTxnTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
 		});
 	});
 
@@ -1435,6 +1443,30 @@ describe('Disconnect abort', () => {
 	// test alone would see nothing to protect and let the scope rotate back open and commit later writes
 	// for a client that is already gone. RocksDB only: LMDB commits its writes through the store's batch
 	// rather than a native transaction handle this can gate on.
+	// The listener used to be armed only when the callback returned a promise, which left a synchronous
+	// callback's writes to be committed by onComplete with no cancellation armed at all — and that commit
+	// is where they become durable.
+	it('arms cancellation for a synchronous callback whose final commit is asynchronous', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		// Synchronous callback: it stages its write and returns nothing thenable, so the wrapper's own
+		// commit is this scope's only asynchronous phase.
+		const handled = transaction(context, () => {
+			DisconnectBlobResource.put({ id: 538, blob }, context);
+		});
+		handled.catch(() => {});
+		slow.write(Buffer.alloc(4096, 'a'));
+		await waitFor(() => databaseTxns(context).some((txn) => txn.committing), {
+			message: 'the blob save should park the wrapper commit before it submits',
+		});
+		ac.abort();
+		slow.end();
+		await assert.rejects(handled, /disconnected/);
+		assert.ok((await DisconnectBlobResource.get(538)) == null, 'a pre-submit commit must not land after a disconnect');
+	});
+
 	it('poisons a disconnect that lands after the commit marked itself closed', async function () {
 		if (isLMDB) return;
 		const ac = new AbortController();

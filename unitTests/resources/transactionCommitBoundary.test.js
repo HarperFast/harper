@@ -337,6 +337,53 @@ describe('Transaction native-submit boundary', () => {
 
 		transaction.commitsInFlight = 0;
 	});
+	it('does not defer a disconnect-poisoned pre-submit sibling behind a submitted link', function () {
+		const root = new DatabaseTransaction();
+		const sibling = new DatabaseTransaction();
+		root.next = sibling;
+		sibling.root = root;
+		root.commitsInFlight = 1;
+		root.commitSubmitted = true;
+		root.nativeCommitSubmitted = true;
+		sibling.commitsInFlight = 1;
+		sibling.committing = true;
+
+		root.abortDueToDisconnect();
+		assert.equal(sibling.open, TRANSACTION_STATE.CLOSED, 'the unsubmitted sibling is aborted by the poison');
+		assert.equal(
+			deferForCommitInFlight(sibling, '/poisoned-sibling', 1000),
+			false,
+			'a poisoned pre-submit link has no native outcome of its own to hold its snapshot for'
+		);
+
+		// The stalled-commit poison runs later on the same chain; it must not excuse the continuation this
+		// abort already cut off, or the sibling would read as protected again and re-take the grace.
+		root.poisonAfterStalledSubmittedCommit();
+		assert.equal(sibling.poisonedMidCommit, false, 'an aborted continuation stays subject to the poison check');
+		assert.equal(deferForCommitInFlight(sibling, '/poisoned-sibling', 1000), false);
+
+		root.commitsInFlight = 0;
+		sibling.commitsInFlight = 0;
+	});
+
+	it('does not cascade an LMDB abort into a submitted child', function () {
+		const head = new LMDBTransaction();
+		const child = new LMDBTransaction();
+		const write = makeLMDBWrite(8, () => {});
+		head.next = child;
+		child.root = head;
+		child.writes.push(write);
+		child.commitsInFlight = 1;
+		child.nativeCommitSubmitted = true;
+
+		head.abort(true);
+
+		assert.equal(child.writes[0], write, 'the child keeps the state its own settle path needs');
+		assert.equal(child.open, TRANSACTION_STATE.OPEN, 'the submitted child still owns its native outcome');
+
+		child.commitsInFlight = 0;
+	});
+
 	it('keeps a closed root deferred while only a detached link owns the native outcome', function () {
 		const root = new DatabaseTransaction();
 		const detached = new DatabaseTransaction();

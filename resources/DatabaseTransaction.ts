@@ -2186,7 +2186,9 @@ export class DatabaseTransaction implements Transaction {
 		if (root.submittedLinks) for (const txn of root.submittedLinks) collect(txn);
 		for (const txn of links) {
 			txn.postSubmitPoisoned = true;
-			txn.poisonedMidCommit = true;
+			// Not on a link an earlier poison already aborted: abort() cleared its write set, so excusing
+			// its continuation from the poison check would let it resume onto nothing and report success.
+			if (!txn.commitAttemptDoomedByPoison()) txn.poisonedMidCommit = true;
 			if (txn.nativeCommitSubmitted) {
 				txn.timedOut = true;
 			}
@@ -2482,6 +2484,10 @@ export function deferForCommitInFlight(
 ): boolean {
 	const root = txn.root ?? txn;
 	if (!txn.isChainCommitting() || !root.commitSubmitted) return false;
+	// A sibling's submitted commit is protected by the links that own it. This one is poisoned and never
+	// submitted, so deferring it only holds its retained snapshot for the diagnostic and commit-phase
+	// graces on behalf of an attempt that is going to throw.
+	if (txn.commitAttemptDoomedByPoison()) return false;
 	// performance.now(), not Date.now(): a clock correction must not extend a stalled commit's hold on its
 	// diagnostic grace, nor report a legitimately slow one early.
 	const now = performance.now();
