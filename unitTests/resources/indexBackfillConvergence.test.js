@@ -11,7 +11,6 @@ const path = require('node:path');
 const { readFileSync, rmSync } = require('node:fs');
 const { spawn } = require('node:child_process');
 const { setupTestDBPath } = require('../testUtils');
-const { waitFor } = require('../waitFor');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const { table, resetDatabases, closeDatabase, resumeStartKey } = require('#src/resources/databases');
@@ -41,18 +40,11 @@ function findDescriptor(Tbl, attrName) {
 	return null;
 }
 
-// LMDB commits checkpoint writes asynchronously, so read the descriptor only once it has stopped
-// changing (three consecutive identical polls, 10ms apart).
+// LMDB commits checkpoint writes asynchronously; every checkpoint put is queued by the time
+// runIndexing resolves, so waiting for the queue to flush makes the read authoritative.
 async function settledCheckpoint(Tbl, attrName) {
-	let last = findDescriptor(Tbl, attrName).value.lastIndexedKey;
-	let stable = 0;
-	await waitFor(() => {
-		const current = findDescriptor(Tbl, attrName).value.lastIndexedKey;
-		stable = current === last ? stable + 1 : 0;
-		last = current;
-		return stable >= 3;
-	});
-	return last;
+	await Tbl.dbisDB.flushed;
+	return findDescriptor(Tbl, attrName).value.lastIndexedKey;
 }
 
 // Wrap Table.primaryStore.getRange so the test can observe the range runIndexing actually opens
@@ -157,9 +149,7 @@ describe('index backfill convergence (#2536)', () => {
 		// too), once the index writes the checkpoint covers have settled; LMDB commits those
 		// asynchronously, so the last checkpoint can land after the interruption itself was recorded.
 		const checkpoint = firstPass.keys[199];
-		await waitFor(() => findDescriptor(Tbl, 'tag').value.lastIndexedKey === checkpoint, {
-			message: `the checkpoint ${checkpoint} should be persisted after the interrupted pass`,
-		});
+		assert.strictEqual(await settledCheckpoint(Tbl, 'tag'), checkpoint, 'the last checkpoint should be persisted');
 		for (const name of ['tag', 'group']) {
 			const parked = findDescriptor(Tbl, name);
 			assert.strictEqual(parked?.value.indexingFailed, true, `${name}: interrupted backfill should be parked`);
