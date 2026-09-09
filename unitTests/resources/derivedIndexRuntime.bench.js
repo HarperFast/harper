@@ -283,6 +283,36 @@ describe('Benchmark: derived-index runtime with a costly native-shaped backend',
 		releaseGated();
 	});
 
+	it('admission check on a real table: put throughput with the staging-layer guard live and stubbed', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return this.skip();
+		const { setupTestDBPath } = require('../testUtils');
+		setupTestDBPath();
+		require('#js/server/threads/manageThreads').setMainIsWorker(true);
+		const { table } = require('#src/resources/databases');
+		const registry = require('#src/resources/derivedIndexRegistry');
+		const Plain = table({
+			database: 'derived-index-admission-bench',
+			table: 'Plain',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+		});
+		const live = registry.derivedIndexWriteRejection;
+		const measure = async (label, rounds = 20_000) => {
+			const started = performance.now();
+			for (let i = 0; i < rounds; i++) await Plain.put(`${label}-${i}`, { title: label });
+			const seconds = (performance.now() - started) / 1000;
+			console.log(`  ${label.padEnd(36)} | ${fmt(rounds / seconds, 0)} puts/s`);
+		};
+		await measure('warm-up', 5_000);
+		await measure('guard live (no derived index)');
+		registry.derivedIndexWriteRejection = () => undefined;
+		try {
+			await measure('guard stubbed out');
+		} finally {
+			registry.derivedIndexWriteRejection = live;
+		}
+		await measure('guard live again');
+	});
+
 	it('coalescing: repeated keys within one delivery window', async () => {
 		for (const useRecords of [false, true]) {
 			const store = new LiveLogStore();
