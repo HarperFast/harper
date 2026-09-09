@@ -74,20 +74,17 @@ describe('prepareApplication serialization', () => {
 		}
 	});
 
-	it('reports both errors when installation and restoration fail', async function () {
+	it('cannot corrupt the live tree from an install script, because the live tree is not in play yet', async function () {
 		this.timeout(10000);
 		const rootDir = await mkdtemp(join(tmpdir(), 'prepare-application-aggregate-'));
 		const componentDirPath = join(rootDir, 'shared');
-		await mkdir(componentDirPath, { recursive: true });
+		await mkdir(join(componentDirPath, 'nested'), { recursive: true });
 		await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: 'shared', version: '1.0.0' }));
-		const installScript = `
-			const fs = require('node:fs');
-			const path = require('node:path');
-			const asideDir = path.resolve('..', '.deploy-aside', 'shared');
-			const asidePath = path.join(asideDir, fs.readdirSync(asideDir)[0]);
-			fs.renameSync(asidePath, path.resolve('..', 'moved-aside'));
-			process.exit(2);
-		`;
+		await writeFile(join(componentDirPath, 'nested', 'old-only.txt'), 'previous bytes\n');
+		// Nothing for an install script to sabotage: the install runs in the candidate directory and the live
+		// tree has not been moved, so no rollback record exists yet. The assertions are the single-error
+		// rejection (no AggregateError, since there is no restore to also fail) and the untouched live tree.
+		const installScript = `process.exit(2);`;
 		const application = new Application({
 			name: 'shared',
 			payload: await makePayload(rootDir, 'shared', '2.0.0', installScript),
@@ -96,16 +93,13 @@ describe('prepareApplication serialization', () => {
 		application.dirPath = componentDirPath;
 
 		try {
+			// One error, not an AggregateError: there is no restore to also fail.
 			await assert.rejects(
 				() => prepareApplication(application),
-				(error) =>
-					error instanceof AggregateError &&
-					error.errors.length === 2 &&
-					error.message.includes('Failed to install dependencies') &&
-					error.message.includes('failed to restore its previous component directory') &&
-					error.message.includes('ENOENT')
+				(error) => !(error instanceof AggregateError) && /Failed to install dependencies/.test(error.message)
 			);
-			assert.equal(JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version, '2.0.0');
+			assert.equal(JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			assert.equal(await readFile(join(componentDirPath, 'nested', 'old-only.txt'), 'utf8'), 'previous bytes\n');
 		} finally {
 			await rm(rootDir, { recursive: true, force: true });
 		}
@@ -181,9 +175,15 @@ describe('prepareApplication serialization', () => {
 			);
 			const secondPreparation = prepareApplication(secondApplication);
 
+			// Tolerates the live path not existing yet, which is the new invariant: the first deploy's
+			// candidate is still installing, so nothing has been published to the component path at all.
 			await assert.rejects(
 				waitFor(
-					async () => JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version === '2.0.0',
+					async () =>
+						readFile(join(componentDirPath, 'package.json'), 'utf8').then(
+							(contents) => JSON.parse(contents).version === '2.0.0',
+							() => false
+						),
 					{ timeout: 300, message: 'second extraction started before the first install completed' }
 				),
 				/second extraction started before the first install completed/

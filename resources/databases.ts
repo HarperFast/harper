@@ -98,8 +98,74 @@ const logger = forComponent('storage');
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
+const CATALOG_RELATIONSHIP = Symbol('catalog-relationship');
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
+
+type RelationshipTarget = { database: string; table: string };
+type PersistedRelationship = {
+	name: string;
+	type: string;
+	elements?: { type: string };
+	relationship: { from?: string; to?: string; filterMissing?: boolean };
+	target: RelationshipTarget;
+};
+
+type RelationshipHydration = {
+	table: any;
+	databaseName: string;
+	tableName: string;
+	definitions: unknown[];
+};
+
+let relationshipsToHydrate: RelationshipHydration[] = [];
+const reportedRelationshipErrors = new Set<string>();
+// an interrupted create is reported once per table and thread, not on every rescan
+const reportedIncompleteCatalogs = new Set<string>();
+
+function normalizeRelationships(attributes: any[]): PersistedRelationship[] {
+	const relationships: PersistedRelationship[] = [];
+	for (const attribute of attributes) {
+		const target = attribute.relationshipReference;
+		if (!attribute.relationship || !target) continue;
+		const relationship: PersistedRelationship['relationship'] = {};
+		if (typeof attribute.relationship.from === 'string') relationship.from = attribute.relationship.from;
+		if (typeof attribute.relationship.to === 'string') relationship.to = attribute.relationship.to;
+		// the GraphQL parser hands every directive argument over as a string, and the resolver reads
+		// filterMissing for truthiness, so persist what the resolver would see rather than the literal
+		if (attribute.relationship.filterMissing !== undefined)
+			relationship.filterMissing = Boolean(attribute.relationship.filterMissing);
+		if (!relationship.from && !relationship.to) continue;
+		const definition: PersistedRelationship = {
+			name: attribute.name,
+			type: attribute.type,
+			relationship,
+			target: { database: target.database, table: target.table },
+		};
+		if (attribute.type === 'array') definition.elements = { type: attribute.elements?.type };
+		relationships.push(definition);
+	}
+	return relationships;
+}
+
+function relationshipEquals(left: any, right: any): boolean {
+	return (
+		left?.name === right?.name &&
+		left?.type === right?.type &&
+		left?.elements?.type === right?.elements?.type &&
+		left?.relationship?.from === right?.relationship?.from &&
+		left?.relationship?.to === right?.relationship?.to &&
+		left?.relationship?.filterMissing === right?.relationship?.filterMissing &&
+		left?.target?.database === right?.target?.database &&
+		left?.target?.table === right?.target?.table
+	);
+}
+
+function relationshipListsEqual(left: any, right: PersistedRelationship[]): boolean {
+	if (!Array.isArray(left) || left.length !== right.length) return false;
+	for (let index = 0; index < right.length; index++) if (!relationshipEquals(left[index], right[index])) return false;
+	return true;
+}
 /**
  * The RocksDB block/blob codec for every column family this process opens (`storage.rocks.compression`),
  * or `undefined` to leave rocksdb-js on its own default (lz4 wherever the native build has it).
@@ -354,6 +420,32 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
+// Restore every field used by `commonChanged`, plus `indexed` and `indexNulls`,
+// from the durable descriptor. In particular, preserve `indexNulls: false` so
+// an index that excludes nulls is not reopened as though it contains them.
+const PEER_REDEFINABLE_FIELDS = [
+	'type',
+	'indexed',
+	'indexNulls',
+	'nullable',
+	'enumerable',
+	'version',
+	'elements',
+	'properties',
+	'embed',
+];
+// `indexNulls` is derived from the durable descriptor, never sent by a peer, so naming it in the
+// discard warn would blame the peer for a field it did not write.
+const PEER_DECLARABLE_FIELDS = PEER_REDEFINABLE_FIELDS.filter((field) => field !== 'indexNulls');
+
+// A cluster-origin caller's list can predate a declaration another thread has already committed, so on
+// that path the descriptor — not the caller — decides what the attribute is, in both directions.
+function applyDurableDeclaration(attribute: any, descriptor: any) {
+	for (const field of PEER_REDEFINABLE_FIELDS) {
+		if (field in descriptor) attribute[field] = descriptor[field];
+		else delete attribute[field];
+	}
+}
 // How many times the schema load will try to finish a tombstoned drop before
 // giving up for the rest of this process's lifetime. A drop that fails once
 // almost always fails identically forever - the usual cause is a RocksDB
@@ -435,6 +527,7 @@ export function getDatabases(): Databases {
 	loadedDatabases = true;
 
 	definedDatabases = new Map();
+	relationshipsToHydrate = [];
 	const hdbBasePath = getHdbBasePath();
 	let databasePath = hdbBasePath && join(hdbBasePath, DATABASES_DIR_NAME);
 	const schemaConfigs = envGet(CONFIG_PARAMS.DATABASES) || {};
@@ -457,6 +550,8 @@ export function getDatabases(): Databases {
 			// (out-of-band) RocksDB directory happens to occupy that reserved name — the API can't
 			// create it (schemaRegex forbids the backtick), but the scan opens any CURRENT+MANIFEST dir
 			if (databaseEntry.name === RESTORE_META_DIR) continue;
+			// branch directories are process-local derivatives, never databases in their own right
+			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (blockedByRestore.has(dbName)) continue;
@@ -522,6 +617,7 @@ export function getDatabases(): Databases {
 				for (const databaseEntry of entries) {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
+					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
 					if (isOpenBranchPath(join(databasePath, databaseEntry.name))) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
@@ -568,10 +664,13 @@ export function getDatabases(): Databases {
 			for (const tableName in tables) {
 				if (!definedTables.has(tableName)) {
 					logger.trace(`delete table class ${tableName}`);
+					tables[tableName]?.cleanup?.();
 					delete tables[tableName];
 				}
 			}
 		} else {
+			const removedTables = databases[dbName];
+			for (const tableName in removedTables) removedTables[tableName]?.cleanup?.();
 			delete databases[dbName];
 			if (dbName === 'data') {
 				for (const tableName in tables) {
@@ -581,6 +680,7 @@ export function getDatabases(): Databases {
 			}
 		}
 	}
+	hydrateCatalogRelationships();
 	if (envGet(CONFIG_PARAMS.ANALYTICS_REPLICATE) === false) {
 		if (!NON_REPLICATING_SYSTEM_TABLES.includes('hdb_analytics')) NON_REPLICATING_SYSTEM_TABLES.push('hdb_analytics');
 	} else {
@@ -596,6 +696,168 @@ export function getDatabases(): Databases {
 		}
 	}
 	return databases;
+}
+
+/**
+ * Hydrate one branch's relationships, resolving each target against the application's own branches
+ * first and only then against the real databases: a target the application also branched must be its
+ * branch's table, and a target it did not branch is legitimately the shared one.
+ */
+export function hydrateBranchRelationships(branch: BranchDatabase, branches: Map<string, BranchDatabase>): void {
+	const resolveTarget: ResolveRelationshipTarget = (target) => {
+		const targetBranch = branches.get(target.database);
+		// A branched target resolves ONLY within that branch. A durable branch is a checkpoint frozen
+		// at creation while the base keeps evolving, so falling through to the base for a table the
+		// branch's own copy lacks would point a branched application's relationship reads at live base
+		// data -- the fallback belongs to a database the application did not branch, never to one it did.
+		return targetBranch ? targetBranch.tables?.[target.table] : databases[target.database]?.[target.table];
+	};
+	for (const hydration of branch.pendingRelationships.splice(0)) {
+		try {
+			hydrateTableRelationships(hydration, resolveTarget);
+		} catch (error) {
+			logger.error(
+				`Unable to hydrate persisted relationships for branch table ${hydration.databaseName}.${hydration.tableName}`,
+				error
+			);
+		}
+	}
+}
+
+function hydrateCatalogRelationships(): void {
+	for (const hydration of relationshipsToHydrate) {
+		try {
+			hydrateTableRelationships(hydration);
+		} catch (error) {
+			const key = `${hydration.databaseName}.${hydration.tableName}:hydrate`;
+			if (!reportedRelationshipErrors.has(key)) {
+				reportedRelationshipErrors.add(key);
+				logger.error(
+					`Unable to hydrate persisted relationships for ${hydration.databaseName}.${hydration.tableName}`,
+					error
+				);
+			}
+		}
+	}
+}
+
+type ResolveRelationshipTarget = (target: RelationshipTarget) => any;
+
+const resolveTargetGlobally: ResolveRelationshipTarget = (target) => databases[target.database]?.[target.table];
+
+function hydrateTableRelationships(
+	{ table, databaseName, tableName, definitions }: RelationshipHydration,
+	resolveTarget: ResolveRelationshipTarget = resolveTargetGlobally
+): void {
+	const hydratable: { definition: PersistedRelationship; targetTable: any }[] = [];
+	for (let index = 0; index < definitions.length; index++) {
+		const definition = definitions[index] as PersistedRelationship;
+		// Keyed by name rather than list position, so a reordered list cannot inherit the previous
+		// occupant's reported state and swallow a different relationship's failure — and by reason, so
+		// hydrating one entry does not clear the report of a same-named invalid duplicate.
+		const errorKey = `${databaseName}.${tableName}:${(definition as any)?.name || `#${index}`}`;
+		if (!validRelationshipDefinition(definition, definitions, index)) {
+			reportRelationshipError(
+				`${errorKey}:invalid`,
+				`Ignoring invalid persisted relationship ${databaseName}.${tableName}[${index}]`
+			);
+			continue;
+		}
+		// a live schema attribute of the same name owns the name; the catalog copy is only a stand-in
+		// for threads that never loaded the schema
+		if (table.attributes.some((attribute) => attribute.name === definition.name && !attribute[CATALOG_RELATIONSHIP]))
+			continue;
+		const targetTable = resolveTarget(definition.target);
+		if (!targetTable || !relationshipFieldsExist(table, targetTable, definition)) {
+			reportRelationshipError(
+				`${errorKey}:unavailable`,
+				`Unable to hydrate persisted relationship ${databaseName}.${tableName}.${definition.name}: target or foreign key is unavailable`
+			);
+			continue;
+		}
+		reportedRelationshipErrors.delete(`${errorKey}:unavailable`);
+		hydratable.push({ definition, targetTable });
+	}
+
+	const installed = table.attributes.filter((attribute) => attribute[CATALOG_RELATIONSHIP]);
+	if (
+		installed.length === hydratable.length &&
+		hydratable.every(
+			({ definition, targetTable }, index) =>
+				relationshipEquals(installed[index], definition) &&
+				(installed[index].definition || installed[index].elements?.definition)?.tableClass === targetTable
+		)
+	)
+		return;
+
+	const attributes = table.attributes.filter((attribute) => !attribute[CATALOG_RELATIONSHIP]);
+	for (const { definition, targetTable } of hydratable)
+		attributes.push(createCatalogRelationship(definition, targetTable));
+	table.attributes.splice(0, table.attributes.length, ...attributes);
+	table.schemaVersion++;
+	table.updatedAttributes();
+	databaseEventsEmitter.emit('updateTable', table);
+}
+
+function validRelationshipDefinition(definition: any, definitions: unknown[], index: number): boolean {
+	if (!definition || typeof definition !== 'object') return false;
+	const validName = (value: any) => typeof value === 'string' && value.length > 0 && !/[`/]/.test(value);
+	if (!validName(definition.name) || !validName(definition.type)) return false;
+	if (!validName(definition.target?.database) || !validName(definition.target?.table)) return false;
+	if (!definition.relationship || typeof definition.relationship !== 'object') return false;
+	const { from, to, filterMissing } = definition.relationship;
+	if (from !== undefined && !validName(from)) return false;
+	if (to !== undefined && !validName(to)) return false;
+	if (!from && !to) return false;
+	if (filterMissing !== undefined && typeof filterMissing !== 'boolean') return false;
+	if (definition.type === 'array' ? !validName(definition.elements?.type) : definition.elements !== undefined)
+		return false;
+	for (let earlier = 0; earlier < index; earlier++)
+		if ((definitions[earlier] as any)?.name === definition.name) return false;
+	return true;
+}
+
+function relationshipFieldsExist(sourceTable: any, targetTable: any, definition: PersistedRelationship): boolean {
+	if (
+		definition.relationship.from &&
+		!sourceTable.attributes.some((attribute) => attribute.name === definition.relationship.from)
+	)
+		return false;
+	if (
+		definition.relationship.to &&
+		!targetTable.attributes.some((attribute) => attribute.name === definition.relationship.to)
+	)
+		return false;
+	return true;
+}
+
+function createCatalogRelationship(definition: PersistedRelationship, targetTable: any): any {
+	const attribute: any = {
+		name: definition.name,
+		attribute: definition.name,
+		type: definition.type,
+		relationship: { ...definition.relationship },
+		target: { ...definition.target },
+	};
+	const targetDefinition = {
+		tableClass: targetTable,
+		type: targetTable.tableName,
+		attributes: targetTable.attributes,
+	};
+	if (definition.elements) {
+		attribute.elements = { type: definition.elements.type };
+		Object.defineProperty(attribute.elements, 'definition', { value: targetDefinition, configurable: true });
+	} else {
+		Object.defineProperty(attribute, 'definition', { value: targetDefinition, configurable: true });
+	}
+	Object.defineProperty(attribute, CATALOG_RELATIONSHIP, { value: true });
+	return attribute;
+}
+
+function reportRelationshipError(key: string, message: string): void {
+	if (reportedRelationshipErrors.has(key)) return;
+	reportedRelationshipErrors.add(key);
+	logger.error(message);
 }
 
 /**
@@ -675,11 +937,13 @@ function readRocksMetaDb(
 			rootStore = openRocksDatabase(path, { disableWAL: false, enableStats: true }) as any;
 			rocksdbDatabaseEnvs.set(path, rootStore);
 			initStores(path, rootStore, databaseName, { defaultTable, destination, storeName, openedStores });
-			// a caller-owned graph is replayed into as well: nothing else will ever replay this store.
-			// `replayLogs` is a no-op off the main thread, so a branch opened on a worker sees only
-			// what the checkpoint's SSTs hold — see the note on `openBranchDatabase`
-			if (!isReadOnlyMode()) {
-				replayLogs(rootStore, destination ?? databases[databaseName]);
+			// A branch (`destination`) recovers its transaction-log tail in `openOrCreate`
+			// (branchDatabase.ts), not here: the branch claim elects exactly one replaying thread —
+			// applications load on workers, where this call would be a no-op — and awaits the replay
+			// before the branch is published to any reader. See the contract note on
+			// `openBranchDatabase` (harper#643).
+			if (!isReadOnlyMode() && !destination) {
+				replayLogs(rootStore, databases[databaseName]);
 			}
 		}
 		return rootStore;
@@ -853,12 +1117,21 @@ function initStores(
 				}
 			}
 			if (!primaryAttribute) {
-				logger.warn(
-					`Unable to find a primary key attribute on table ${tableName}, with attributes: ${JSON.stringify(attributes)}`
-				);
+				const tableKey = `${databaseName}/${tableName}`;
+				if (reportedIncompleteCatalogs.has(tableKey))
+					logger.debug(`Skipping table ${databaseName}.${tableName}: still no primary key row`);
+				else {
+					reportedIncompleteCatalogs.add(tableKey);
+					logger.warn(
+						`Skipping table ${databaseName}.${tableName}: its catalog has attribute rows (${attributes.map((attribute) => attribute.name).join(', ')}) but no primary key row - a create in progress on another thread, or an interrupted one that re-running create_table repairs`
+					);
+				}
+				// not defined until it loads, so the cleanup pass evicts a class left from a dropped same-name table
+				definedTables?.delete(tableName);
 				continue;
 			}
 		}
+		if (reportedIncompleteCatalogs.size) reportedIncompleteCatalogs.delete(`${databaseName}/${tableName}`);
 		// if the table has already been defined, use that class, don't create a new one
 		let table = tables[tableName];
 		// unless its store was migrated to a different engine (e.g. LMDB to RocksDB on startup)
@@ -1002,6 +1275,8 @@ function initStores(
 				tables,
 				tableName,
 				makeTable({
+					// A branch builds into a caller-owned destination; its tables must refuse DDL.
+					isBranch: Boolean(destination),
 					primaryStore,
 					auditStore,
 					audit,
@@ -1026,13 +1301,62 @@ function initStores(
 			table.schemaVersion = 1;
 			if (!destination) databaseEventsEmitter.emit('updateTable', table);
 		}
+		if (Array.isArray(primaryAttribute.relationships)) {
+			relationshipsToHydrate.push({ table, databaseName, tableName, definitions: primaryAttribute.relationships });
+		} else if (primaryAttribute.relationships !== undefined) {
+			reportRelationshipError(
+				`${databaseName}.${tableName}:list`,
+				`Ignoring invalid persisted relationship list for ${databaseName}.${tableName}`
+			);
+			relationshipsToHydrate.push({ table, databaseName, tableName, definitions: [] });
+		}
 	}
 	return rootStore;
 }
 
+/**
+ * Branch directories live beside the base database's own storage root, never under the HDB root: a
+ * database can be placed on its own volume, and `createCheckpoint` only hardlinks when source and
+ * target share a filesystem — off-volume it degrades to a full byte copy, which is the property the
+ * whole feature rests on.
+ *
+ * The backticks are what make the name reserved rather than merely conventional: `schemaRegex`
+ * (validation/common_validators.ts) excludes 0x60, so no database can ever be created under this
+ * name and shadow the branch root -- the same protection RESTORE_META_DIR uses.
+ */
+export const BRANCH_ROOT_DIR = '`branches`';
+
+/**
+ * Where the branch of `baseName` belonging to `appName` lives. Derived only from those two names, so
+ * every node in a cluster resolves the same application's branch to the same place — the identity an
+ * application's data needs if it is to be addressed, and eventually replicated, cluster-wide.
+ *
+ * App and database are separate path segments: joining them (`<app>__<db>`) is not injective —
+ * `(a__b, c)` and `(a, b__c)` collide — so two declarations could otherwise open one directory.
+ */
+export function resolveBranchPath(baseName: string, appName: string): string {
+	for (const [label, segment] of [
+		['application', appName],
+		['database', baseName],
+	]) {
+		if (!segment || segment.includes('/') || segment.includes('\\') || segment === '.' || segment === '..') {
+			throw new Error(`Invalid ${label} name for a branch path: ${JSON.stringify(segment)}`);
+		}
+	}
+	return join(resolveDatabaseStorageRoot(baseName), BRANCH_ROOT_DIR, appName, baseName);
+}
+
+/** A branch's private table graph plus the handle needed to tear it down. */
 export interface BranchDatabase {
 	tables: Tables;
 	rootStore: RootDatabaseKind;
+	/**
+	 * Relationships this branch's tables declared, still un-hydrated. They cannot be resolved at open
+	 * time: a branch's definitions name the BASE database (its tables carry the base's logical names),
+	 * so resolving them through the global map would point the application's relationship reads at the
+	 * base. `hydrateBranchRelationships` finishes the job once the whole branch set is known.
+	 */
+	pendingRelationships: RelationshipHydration[];
 	close(): void;
 }
 
@@ -1040,6 +1364,41 @@ export interface BranchDatabase {
 const openBranches = new Map<string, BranchDatabase | undefined>();
 /** Store identities in use, so two branches cannot resolve one set of blob roots. */
 const openBranchIdentities = new Set<string>();
+
+/**
+ * Materialization renames its clone in from `<blobRoot>.staging`, so a branch owns two database
+ * names rather than one: a database legally called `<storeName>.staging` resolves its own blob root
+ * to exactly the path the clone removes and renames over. Every check, reservation and release
+ * covers the pair, so the name cannot be claimed at any point where a branch operation may still
+ * delete what it resolves to.
+ */
+const BRANCH_STAGING_SUFFIX = '.staging';
+/**
+ * Suffix of the sibling a branch is renamed to while being removed. A backtick, not a dot:
+ * `schemaRegex` excludes 0x60, so no database can be named such that `<db>` + this suffix is another
+ * branch's directory (with `.removing`, an application branching both `data` and `data.removing`, both
+ * legal names, would destroy one by opening the other).
+ */
+export const BRANCH_REMOVING_SUFFIX = '`removing`';
+function branchIdentityPair(storeName: string): string[] {
+	return [storeName, storeName + BRANCH_STAGING_SUFFIX];
+}
+
+/**
+ * Identities whose blob roots outlived the branch that owned them, because a removal or an abandoned
+ * materialization could not delete them. A database created under such a name would resolve its own
+ * fresh file ids onto files it never wrote, so the name stays refused -- but only against DATABASES.
+ * The branch itself may take it back: materializing it replaces those roots wholesale, which is the
+ * only route that clears the condition without an operator.
+ */
+const quarantinedBranchIdentities = new Set<string>();
+
+export function quarantineBranchIdentity(storeName: string): void {
+	for (const name of branchIdentityPair(storeName)) {
+		quarantinedBranchIdentities.add(name);
+		openBranchIdentities.delete(name);
+	}
+}
 
 /**
  * True when `dbPath` is a directory an open branch owns. The database scan opens any directory that
@@ -1078,6 +1437,117 @@ function assertLegalBranchName(name: string, description: string): void {
 }
 
 /**
+ * Refuse a branch store identity that something else already answers to.
+ *
+ * `storeName` picks the branch's blob roots, and blob file ids restart from each store's own counter,
+ * so two holders of one identity write the same file paths and truncate each other. It must be
+ * checked BEFORE anything destructive runs: materialization removes and replaces the blob root that
+ * this name resolves to, and a real database may legally be called `5_myapp__data` -- `schemaRegex`
+ * permits digits, `_` and `.`. The `.staging` sibling materialization writes is covered too, since a
+ * database may legally carry that name as well.
+ */
+export function assertBranchIdentityAvailable(storeName: string): void {
+	// The on-disk scan, not just the in-memory maps: a database that exists on disk but has not been
+	// loaded is absent from both, and it owns the blob root this identity would destroy.
+	getDatabases();
+	for (const name of branchIdentityPair(storeName)) {
+		// The directory as well as the maps. `getDatabases` skips a database blocked by restore, so an
+		// in-memory check alone reports its name as free while its blob root is very much real -- and
+		// materialization would then remove and replace it.
+		if (
+			databases[name] ||
+			definedDatabases?.has(name) ||
+			openBranchIdentities.has(name) ||
+			existsSync(resolveDatabasePath(name)) ||
+			anotherBranchOwns(name, storeName)
+		) {
+			throw new Error(`Cannot use '${storeName}' as a branch store identity: '${name}' is already in use`);
+		}
+	}
+}
+
+/**
+ * Does a branch OTHER than the one being opened already answer to this name on disk? `.staging` is
+ * what makes the question two-sided: `<identity>.staging` is both the path a clone renames over and
+ * a legal identity for a branch of a database literally named `<base>.staging`, so each of the pair
+ * can belong to somebody else. Only the primary name read as itself is excluded -- that directory is
+ * the very branch this call is opening.
+ */
+function anotherBranchOwns(name: string, storeName: string): boolean {
+	if (name !== storeName) return branchDirectoryExistsFor(name);
+	return name.endsWith(BRANCH_STAGING_SUFFIX)
+		? branchDirectoryExistsFor(name.slice(0, -BRANCH_STAGING_SUFFIX.length))
+		: false;
+}
+
+/**
+ * Claim the identity as well as checking it, so the window between the check and the branch actually
+ * opening cannot be filled by a concurrent create or a second branch. `releaseBranchIdentity` hands
+ * it back if materialization never gets as far as opening.
+ */
+export function reserveBranchIdentity(storeName: string): void {
+	assertBranchIdentityAvailable(storeName);
+	retakeBranchIdentity(storeName);
+}
+
+/**
+ * Take the pair back for an operation that owned it a statement ago -- cleanup, which has to keep
+ * holding the names through the deletions its `close()` just released them for. Deliberately without
+ * the availability check: nothing can have taken a name the caller held until now, and the check runs
+ * the database scan, which at that exact moment would find the branch directory unowned.
+ */
+export function retakeBranchIdentity(storeName: string): void {
+	for (const name of branchIdentityPair(storeName)) {
+		openBranchIdentities.add(name);
+		quarantinedBranchIdentities.delete(name);
+	}
+}
+
+export function releaseBranchIdentity(storeName: string): void {
+	for (const name of branchIdentityPair(storeName)) openBranchIdentities.delete(name);
+}
+
+/** Is this name spoken for by a branch? Database creation has to refuse it -- they share a blob root. */
+export function isBranchIdentity(name: string): boolean {
+	if (openBranchIdentities.has(name) || quarantinedBranchIdentities.has(name)) return true;
+	// The in-memory set covers only branches open in THIS process, so after a restart -- or for an
+	// application that is simply not loaded -- a database could take the name of an on-disk branch and
+	// share its blob root. The staging sibling goes through the same route, because it names the path
+	// materialization renames over -- but BOTH readings of a name ending in `.staging` have to be
+	// tried: `schemaRegex` permits `.`, so `4_myapp__data.staging` is either the sibling of a branch of
+	// `data` or a branch of a database actually called `data.staging`.
+	if (branchDirectoryExistsFor(name)) return true;
+	return name.endsWith(BRANCH_STAGING_SUFFIX)
+		? branchDirectoryExistsFor(name.slice(0, -BRANCH_STAGING_SUFFIX.length))
+		: false;
+}
+
+/**
+ * Is there a branch directory answering to this store identity? The identity carries the application
+ * name's length precisely so it can be taken apart again without guessing where the name ends.
+ */
+function branchDirectoryExistsFor(storeName: string): boolean {
+	const prefix = /^(\d+)_/.exec(storeName);
+	if (!prefix) return false;
+	const appLength = Number(prefix[1]);
+	const appName = storeName.slice(prefix[0].length, prefix[0].length + appLength);
+	if (
+		appName.length !== appLength ||
+		storeName.slice(prefix[0].length + appLength, prefix[0].length + appLength + 2) !== '__'
+	)
+		return false;
+	const baseName = storeName.slice(prefix[0].length + appLength + 2);
+	if (!baseName) return false;
+	try {
+		const branchPath = resolveBranchPath(baseName, appName);
+		return existsSync(branchPath) || existsSync(branchPath + BRANCH_REMOVING_SUFFIX);
+	} catch {
+		// Not a name a branch path could hold, so no branch owns it.
+		return false;
+	}
+}
+
+/**
  * Open a RocksDB directory as a **scope-private** database: its Table classes are built into an
  * object the caller owns and nothing is registered in the global `databases` map, so no enumerator
  * of that map — analytics, `describe_all`, worker teardown, replication — can observe it.
@@ -1088,24 +1558,34 @@ function assertLegalBranchName(name: string, description: string): void {
  * base's.
  *
  * The caller owns the returned handle; the only thing that closes it on the caller's behalf is
- * `closeBranchDatabases`, which `closeLoadedDatabases` runs at thread teardown so a branch left open
- * on an exiting worker does not leak its handles into the process-global RocksDB registry.
+ * `closeBranchDatabases`, run by an exiting job worker (via `closeLoadedDatabases`) and by an HTTP
+ * worker's shutdown path, so a branch left open on an exiting worker does not linger in the
+ * process-global RocksDB registry.
  *
- * NOT YET SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
+ * NOT SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
  * `dropTable()` or equivalent through one resolves against the global schema and would delete the
- * live base Table class. Nothing calls this yet; the scope wiring that first exposes a branch to
- * application code must gate schema operations before it does (harper#643).
+ * live base Table class — which is why schema operations through a branch are refused
+ * (branchGuard.ts).
  *
- * A branch's blob roots start empty, so a row whose blob was written before the checkpoint reads
- * back as a missing file until harper#644 links the base's blob tree into them. Non-blob rows are
- * unaffected, for reads and writes alike.
+ * A branch's blob roots are a hard-link clone of the base's, taken with the checkpoint, so a row
+ * whose blob predates the branch reads back normally and the branch allocates new file ids in its own
+ * directory (harper#644).
  *
- * A branch is the checkpoint's SST content plus, on the main thread only, its transaction-log tail:
- * `replayLogs` is a no-op off the main thread and nothing else will ever replay a private store. It
- * is also not awaited, so `close()` can race a replay still writing — neither is a problem while
- * nothing calls this, and both are decisions the scope wiring has to settle (harper#643).
+ * A branch is the checkpoint's SST content plus its own transaction-log tail. This function opens
+ * only the stores; replaying the tail is `openOrCreate`'s job (branchDatabase.ts), where the
+ * cross-thread claim elects exactly one replayer and awaits it before any thread may open the
+ * branch — the same recovery contract a base database gets at boot, without which a process that
+ * died unflushed silently rewinds the branch to its last memtable flush (harper#643).
+ *
+ * Pass `blobRoots` to pin the handle to the roots the branch was published with; without it the
+ * store resolves them from current configuration, which is only right for a branch being created.
  */
-export function openBranchDatabase(path: string, databaseName: string, storeName: string): BranchDatabase {
+export function openBranchDatabase(
+	path: string,
+	databaseName: string,
+	storeName: string,
+	blobRoots?: string[]
+): BranchDatabase {
 	assertLegalBranchName(databaseName, 'logical database name');
 	assertLegalBranchName(storeName, 'store identity');
 	if (!existsSync(path)) throw new Error(`Cannot open branch database: no directory at ${path}`);
@@ -1121,27 +1601,33 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	// a loaded database's store is closed by `closeLoadedDatabases`, so adopting it would mean this
 	// handle's `close()` tears down a live database
 	if (rocksdbDatabaseEnvs.has(path)) throw new Error(`Cannot branch ${path}: it is already open as a database`);
-	// `storeName` picks the blob roots, and blob file ids restart from each store's own checkpointed
-	// counter, so two holders of one identity write the same file paths and truncate each other
-	if (databases[storeName] || definedDatabases?.has(storeName) || openBranchIdentities.has(storeName)) {
-		throw new Error(`Cannot use '${storeName}' as a branch store identity: it is already in use`);
-	}
+	assertBranchIdentityAvailable(storeName);
 
 	const tables: Tables = Object.create(null);
 	// initStores opens a table's column families well before `setTable` publishes it into `tables`,
 	// so the graph is not a complete record of what a failed open must release
 	const openedStores: any[] = [];
+	// The boot-time hydration pass has already run by the time a branch opens, so anything this open
+	// queues would never be drained. It is handed to the caller instead, which is the only place that
+	// knows the application's other branches and can therefore resolve targets without leaking to base.
+	const queuedRelationshipsAt = relationshipsToHydrate.length;
 	let rootStore: RootDatabaseKind;
 	// claim the path before the open, not after: readRocksMetaDb registers the store in
 	// `rocksdbDatabaseEnvs` partway through, so anything re-entering `database()` during initStores
 	// would otherwise find the branch's store on an unowned path
 	openBranches.set(path, undefined);
-	openBranchIdentities.add(storeName);
+	retakeBranchIdentity(storeName);
 	try {
 		rootStore = readRocksMetaDb(path, null, databaseName, { destination: tables, storeName, openedStores });
+		// Pin the handle to the roots the caller proved this branch was published with, before it is
+		// handed out. A row's `storageIndex` is a position in that list, so resolving through current
+		// configuration instead would let an appended volume take writes at an index the branch's own
+		// completion marker never recorded -- and a later change at that index would then silently
+		// re-address them. `closeBranchHandles` clears the entry with the rest of the handle.
+		if (blobRoots) databasePaths.set(rootStore as unknown as RootDatabase, blobRoots);
 	} catch (error) {
 		openBranches.delete(path);
-		openBranchIdentities.delete(storeName);
+		releaseBranchIdentity(storeName);
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
 		closeBranchHandles(path, stranded, openedStores);
@@ -1151,13 +1637,14 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
 	const branch: BranchDatabase = {
 		tables,
 		rootStore,
+		pendingRelationships: relationshipsToHydrate.splice(queuedRelationshipsAt),
 		close() {
 			// guard on the handle, not on the registrations: those are keyed by path, and a closed
 			// branch frees its path, so a stale handle would otherwise tear down its successor
 			if (closed) return;
 			closed = true;
 			openBranches.delete(path);
-			openBranchIdentities.delete(storeName);
+			releaseBranchIdentity(storeName);
 			rocksdbDatabaseEnvs.delete(path);
 			closeBranchHandles(path, rootStore, openedStores);
 		},
@@ -1177,6 +1664,7 @@ export function openBranchDatabase(path: string, databaseName: string, storeName
  */
 function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, openedStores: any[] = []): void {
 	const reclamationPaths = new Set<string>([path]);
+	(rootStore as any)?.auditStore?.stopAuditCleanup?.();
 	const closeStore = (store: any, description: string) => {
 		if (store?.path) reclamationPaths.add(store.path);
 		try {
@@ -1228,6 +1716,7 @@ interface TableDefinition {
 	trackDeletes?: boolean;
 	attributes: any[];
 	schemaDefined?: boolean;
+	schemaRelationshipsDefined?: boolean;
 	origin?: string;
 	description?: string;
 	properties?: Record<string, any>;
@@ -1460,6 +1949,10 @@ export async function dropDatabase(databaseName) {
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
 
 		if (rootStore) {
+			// awaited: retirement stops the loop admitting work, the barrier is what says the pass that was
+			// already running has released the stores this is about to close and unlink
+			await rootStore.auditStore?.stopAuditCleanup?.();
+			removeStorageReclamation(rootStore.path);
 			if (rootStore.status === 'open') {
 				if (rootStore instanceof RocksDatabase) {
 					rootStore.close();
@@ -1474,6 +1967,8 @@ export async function dropDatabase(databaseName) {
 			// a tableless database resolves its root store here rather than in the loop above, so take
 			// the drop lock now (still before any destructive step)
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
+			await rootStore.auditStore?.stopAuditCleanup?.();
+			removeStorageReclamation(rootStore.path);
 			if (rootStore instanceof RocksDatabase) {
 				rootStore.close();
 				rootStore.destroy();
@@ -1511,17 +2006,27 @@ export function closeDatabase(databaseName: string): boolean {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
-		for (const indexName in table.indices || {}) {
-			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
-		}
-		closeStore(table.primaryStore, `table ${tableName}`);
 	}
 	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
 	// an open root store, tracked only on the defined-database entry rather than any table — include
 	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	if (definedRoot) rootStores.add(definedRoot);
+	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
+	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
+	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
+	// synchronous purgeLogs() call with nothing suspended mid-removal.
+	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
+	for (const tableName in dbTables) {
+		const table: any = dbTables[tableName];
+		if (!table?.primaryStore) continue;
+		for (const indexName in table.indices || {}) {
+			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+		}
+		closeStore(table.primaryStore, `table ${tableName}`);
+	}
 	for (const rootStore of rootStores) {
+		removeStorageReclamation(rootStore.path);
 		closeStore(rootStore.dbisDb, 'attributes store');
 		closeStore(rootStore, 'root store');
 		lmdbDatabaseEnvs.delete(rootStore.path);
@@ -1670,23 +2175,34 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 			cache: isCustomObjectIndex,
 		} as any) as any;
 		(dbi as any).rootStore = rootStore;
-		// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
-		// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
-		// Verification-Table cache can't track them. A versioned index initialises its encoder as a
-		// versioned RocksDB store (isRocksDB → metadata-prefix encode/decode) and marks it
-		// self-versioning, so each node gets a monotonic version the VT can extract — enabling cached,
-		// decode-free graph traversal. The format is resolved from the persisted attribute descriptor
-		// (decided once at create — see resolveIndexFormat) so every worker and reload agree on it.
-		if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
-			armVersionedIndexEncoder(dbi, rootStore);
+		try {
+			// Custom-index object stores (e.g. HNSW) write graph nodes via plain put() with no staged
+			// transaction timestamp, so their values carry no version and the PrimaryRocksDatabase
+			// Verification-Table cache can't track them. A versioned index initialises its encoder as a
+			// versioned RocksDB store (isRocksDB → metadata-prefix encode/decode) and marks it
+			// self-versioning, so each node gets a monotonic version the VT can extract — enabling cached,
+			// decode-free graph traversal. The format is resolved from the persisted attribute descriptor
+			// (decided once at create — see resolveIndexFormat) so every worker and reload agree on it.
+			if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
+				armVersionedIndexEncoder(dbi, rootStore);
+			}
+			installCustomIndex(dbi);
+		} catch (error) {
+			// the handle is not yet owned by any table, so nobody else can close it
+			try {
+				dbi.close();
+			} catch {}
+			throw error;
 		}
 	} else {
 		dbi = (rootStore as any).openDB(dbiKey, dbiInit as any);
+		installCustomIndex(dbi);
 	}
-	if (attribute.indexed.type) {
+	function installCustomIndex(indexStore: any) {
+		if (!attribute.indexed.type) return;
 		const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
 		if (CustomIndex) {
-			dbi.customIndex = new CustomIndex(dbi, attribute.indexed);
+			indexStore.customIndex = new CustomIndex(indexStore, attribute.indexed);
 		} else {
 			logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
 		}
@@ -1723,6 +2239,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		randomAccessFields,
 		trackDeletes,
 		schemaDefined,
+		schemaRelationshipsDefined,
 		origin,
 		description,
 		properties,
@@ -1740,6 +2257,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	if ((RESERVED_DATABASE_NAMES as readonly string[]).includes(databaseName)) {
 		throw new ClientError(`'${databaseName}' is a reserved name and cannot be used as a database name`);
 	}
+	// A branch resolves its blob root from its store identity, so a database created under that same
+	// name would share the root: two allocators minting the same file paths and truncating each other,
+	// and the branch's teardown removing the database's blobs.
+	if (isBranchIdentity(databaseName)) {
+		throw new ClientError(`'${databaseName}' is in use as a branch store identity and cannot be a database name`);
+	}
 	const rootStore = database({ database: databaseName, table: tableName });
 	const tables = databases[databaseName];
 	logger.trace(`Defining ${tableName} in ${databaseName}`);
@@ -1755,6 +2278,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
+	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
 
 	for (const attribute of attributes) {
@@ -1766,6 +2290,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		if (attribute.expiresAt) attribute.indexed = true;
 	}
 	let hasChanges;
+	let refreshRelationshipAttributes = false;
+	let deferredPrimaryRow: any;
+	let unpublishedPrimaryStore: any;
+	let published = false;
 	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
@@ -1805,12 +2333,41 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
+			if (origin === 'cluster') {
+				const merged = Table.attributes.slice();
+				for (const attribute of attributes) {
+					const existing = merged.find((existingAttribute) => existingAttribute.name === attribute.name);
+					if (!existing) {
+						merged.push(attribute);
+						continue;
+					}
+					// Nodes that apply the same peer definitions in a different order keep different index sets, and
+					// this warn is the only signal of it. An absent field and an explicit falsy one declare the same
+					// thing, so neither direction of that pair is a difference.
+					const discarded = PEER_DECLARABLE_FIELDS.filter(
+						(field) =>
+							(attribute[field] || existing[field]) &&
+							JSON.stringify(attribute[field]) !== JSON.stringify(existing[field])
+					);
+					if (discarded.length > 0)
+						logger.warn(
+							`Ignoring peer redefinition of ${databaseName}.${tableName}.${attribute.name} (${discarded
+								.map(
+									(field) =>
+										`${field}: local ${JSON.stringify(existing[field])}, peer ${JSON.stringify(attribute[field])}`
+								)
+								.join('; ')}); the local schema is authoritative`
+						);
+				}
+				attributes = merged;
+			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
 			// Re-assert from the live declaration so a stale value on disk (replicated event,
 			// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
 			// callers that omit the flag (cluster schema-replication, data loader) don't flip a
-			// dynamic table to true via the default at the top of table().
-			if (schemaDefinedExplicit) Table.schemaDefined = schemaDefined;
+			// dynamic table to true via the default at the top of table(), and on origin so a
+			// peer-derived definition never overrides the local declaration.
+			if (schemaDefinedExplicit && origin !== 'cluster') Table.schemaDefined = schemaDefined;
 			// Refresh class-level schema metadata to track docstring/directive changes across reloads.
 			Table.description = description;
 			Table.properties = properties;
@@ -1824,6 +2381,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			primaryKeyAttribute.isPrimaryKey = true;
 			primaryKeyAttribute.is_hash_attribute = true; // backward-compat: harperdb@4.x reads this field to open the DBI with correct flags
 			primaryKeyAttribute.schemaDefined = schemaDefined;
+			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
+			if (relationshipDefinitions) primaryKeyAttribute.relationships = relationshipDefinitions;
 			// can't change compression after the fact (except threshold), so save only when we create the table
 			primaryKeyAttribute.compression = getDefaultCompression();
 			if (trackDeletes) primaryKeyAttribute.trackDeletes = true;
@@ -1910,6 +2469,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
+			unpublishedPrimaryStore = primaryStore;
 			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
 			rootStore.databaseName = databaseName;
 			primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
@@ -1918,38 +2478,33 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
 
 			primaryKeyAttribute.tableId = primaryStore.tableId;
-			Table = setTable(
-				tables,
+			Table = makeTable({
+				primaryStore,
+				auditStore,
+				audit,
+				sealed,
+				splitSegments,
+				replicate,
+				trackDeletes,
+				expirationMS: expiration && expiration * 1000,
+				evictionMS: eviction && eviction * 1000,
+				primaryKey,
 				tableName,
-				makeTable({
-					primaryStore,
-					auditStore,
-					audit,
-					sealed,
-					splitSegments,
-					replicate,
-					trackDeletes,
-					expirationMS: expiration && expiration * 1000,
-					evictionMS: eviction && eviction * 1000,
-					primaryKey,
-					tableName,
-					tableId: primaryStore.tableId,
-					databasePath: databaseName,
-					databaseName,
-					indices: {},
-					attributes,
-					schemaDefined,
-					dbisDB: attributesDbi,
-					description,
-					properties,
-					hidden,
-					cacheControl,
-				})
-			);
+				tableId: primaryStore.tableId,
+				databasePath: databaseName,
+				databaseName,
+				indices: {},
+				attributes,
+				schemaDefined,
+				dbisDB: attributesDbi,
+				description,
+				properties,
+				hidden,
+				cacheControl,
+			});
 			Table.schemaVersion = 1;
 			hasChanges = true;
-
-			attributesDbi.put(dbiName, primaryKeyAttribute);
+			deferredPrimaryRow = primaryKeyAttribute;
 		}
 		const indices = Table.indices;
 		if (!attributesDbi) {
@@ -1965,7 +2520,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 		}
 		Table.dbisDB = attributesDbi;
-		for (const { key, value } of attributesDbi.getRange({ start: true })) {
+		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
+		// reconciliation is reserved for local schema authoring; on a create the rows can only be aborted state.
+		const reconcileRemovals = origin !== 'cluster' || Boolean(deferredPrimaryRow);
+		for (const { key, value } of reconcileRemovals
+			? attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })
+			: []) {
 			if (value == null) continue;
 			let [attributeTableName, attribute_name] = key.toString().split('/');
 			if (attribute_name === '') attribute_name = value.name; // primary key
@@ -1977,10 +2537,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			}
 			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
-			if (!attribute || removeIndex) {
+			// rows already present under a create are aborted state
+			const staleRow = !attribute || Boolean(deferredPrimaryRow);
+			if (staleRow || removeIndex) {
 				exclusiveLock();
 				hasChanges = true;
-				if (!attribute) attributesDbi.remove(key);
+				if (staleRow) attributesDbi.remove(key);
 				if (removeIndex) {
 					const indexDbi = Table.indices[attributeTableName];
 					if (indexDbi) indicesToRemove.push(indexDbi);
@@ -1990,31 +2552,39 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		for (const attribute of attributes || []) {
-			if (attribute.relationship || attribute.computed) {
-				hasChanges = true; // need to update the table so the computed properties are translated to property resolvers
-				if (attribute.relationship) continue;
+			if (attribute.relationship) {
+				refreshRelationshipAttributes = true;
+				continue;
 			}
+			if (attribute.computed) hasChanges = true;
 			let dbiKey = tableName + '/' + (attribute.name || '');
 			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
 			if (attribute.isPrimaryKey) {
+				if (deferredPrimaryRow) continue;
 				attributeDescriptor = attributeDescriptor || attributesDbi.getSync((dbiKey = tableName + '/')) || {};
 				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
 				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
 				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
-				// but other workers' next disk-load re-reads the stale value.
+				// but other workers' next disk-load re-reads the stale value. The whole settings update is
+				// gated off for cluster-origin callers: their values come from this worker's (possibly
+				// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
 				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
 				// primary key can't change indexing, but settings can change
 				if (
-					schemaDefinedMismatch ||
-					(audit !== undefined && audit !== Table.audit) ||
-					(sealed !== undefined && sealed !== Table.sealed) ||
-					(replicate !== undefined && replicate !== Table.replicate) ||
-					(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
-					(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-					attribute.type !== attributeDescriptor.type
+					origin !== 'cluster' &&
+					(schemaDefinedMismatch ||
+						(audit !== undefined && audit !== Table.audit) ||
+						(sealed !== undefined && sealed !== Table.sealed) ||
+						(replicate !== undefined && replicate !== Table.replicate) ||
+						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
+						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
+						attribute.type !== attributeDescriptor.type)
 				) {
-					const updatedPrimaryAttribute = { ...attributeDescriptor };
+					exclusiveLock();
+					const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
+					if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) continue;
+					const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
 					if (typeof audit === 'boolean') {
 						if (audit) Table.enableAuditing();
 						updatedPrimaryAttribute.audit = audit;
@@ -2026,15 +2596,53 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
 					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
 					hasChanges = true; // send out notification of the change
-					exclusiveLock();
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 				}
 
 				continue;
 			}
 
-			// note that non-indexed attributes do not need a dbi
 			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
+
+			if (origin === 'cluster' && attributeDescriptor) {
+				// An existing descriptor is a local declaration this caller may not have seen yet, so it wins
+				// over the incoming definition and is never written back from it.
+				applyDurableDeclaration(attribute, attributeDescriptor);
+				const abandonedIndexBuild =
+					attribute.indexed &&
+					(attributeDescriptor.indexingFailed ||
+						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
+						attributeDescriptor.restartNumber < (workerData?.restartNumber ?? manageThreads.restartNumber));
+				if (abandonedIndexBuild) {
+					// Recovery is the exception to skipping the handling below, because without it `isIndexing`
+					// stays pinned on with nothing left to clear it and every query on the attribute fails with
+					// IndexRebuildingError for the life of the worker. It persists the attribute (here and again
+					// from runIndexing), so restate the declaration from a descriptor read under the lock.
+					exclusiveLock();
+					applyDurableDeclaration(attribute, attributesDbi.getSync(dbiKey) ?? attributeDescriptor);
+				} else {
+					if (attribute.indexed) {
+						const dbi = openIndex(dbiKey, rootStore, attribute);
+						// Persisting the indexFormat openIndex just resolved adds a field the descriptor lacks
+						// rather than rewriting one it has. Without it an empty index resolves 'versioned', writes
+						// versioned nodes, then re-derives 'legacy' on the next load — see indexFormatNeedsPersist.
+						if (attribute.indexFormat != null && attributeDescriptor.indexFormat == null) {
+							exclusiveLock();
+							const durableDescriptor = attributesDbi.getSync(dbiKey);
+							if (durableDescriptor && durableDescriptor.indexFormat == null) {
+								hasChanges = true;
+								attributesDbi.put(dbiKey, { ...durableDescriptor, indexFormat: attribute.indexFormat });
+							}
+						}
+						if (attributeDescriptor.indexingPID) dbi.isIndexing = true;
+						dbi.indexNulls = attribute.indexNulls;
+						indices[attribute.name] = dbi;
+					}
+					continue;
+				}
+			}
+
+			// note that non-indexed attributes do not need a dbi
 			// Some index options affect only search, not the stored structure (e.g. HNSW's
 			// efConstructionSearch). Changing those should persist the new metadata but NOT trigger a
 			// reindex. A custom index declares such keys via a static `searchOnlyOptions`.
@@ -2078,6 +2686,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
+				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on
 				// disk; persist the resolved value now — even when nothing else changed — so the format is
@@ -2194,10 +2803,46 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
+		// The primary row is what makes a table loadable, so it lands last: a scan on another thread that
+		// runs mid-create skips the table instead of building (and announcing) a partial one. It already
+		// carries this table's relationships (set on primaryKeyAttribute above), so the persistence block
+		// below is a no-op for a create — a table is never published with an incomplete relationship list.
+		if (deferredPrimaryRow) {
+			attributesDbi.put(tableName + '/', deferredPrimaryRow);
+			// That write, not the registration below, is the publish point: it is durable from here
+			// (on LMDB releaseLock()'s finally commits this create's write transaction even while an
+			// error unwinds), so any later throw must leave the catalog alone. Rolling back past it
+			// would delete the attribute rows out from under a live primary row and leave every
+			// thread loading the primary-only schema this change exists to prevent.
+			published = true;
+			setTable(tables, tableName, Table);
+		}
+		// a table with no declared primary key has no attribute row to carry relationships, and the
+		// loop above never visits its descriptor
+		if (relationshipDefinitions) {
+			const relationshipsKey = primaryDescriptorKey();
+			if (!relationshipListsEqual(attributesDbi.getSync(relationshipsKey)?.relationships, relationshipDefinitions)) {
+				exclusiveLock();
+				const currentPrimaryAttribute = attributesDbi.getSync(relationshipsKey);
+				// a missing row means a concurrent drop completed; writing one back would resurrect the table
+				if (
+					currentPrimaryAttribute &&
+					!tableIsDropping(currentPrimaryAttribute, relationshipsKey) &&
+					!relationshipListsEqual(currentPrimaryAttribute.relationships, relationshipDefinitions)
+				) {
+					attributesDbi.put(relationshipsKey, { ...currentPrimaryAttribute, relationships: relationshipDefinitions });
+					hasChanges = true;
+				}
+			}
+		}
+	} catch (error) {
+		if (unpublishedPrimaryStore && !published) discardUnpublishedTable();
+		else if (published && tables[tableName] !== Table) discardUnregisteredClass();
+		throw error;
 	} finally {
 		releaseLock();
 	}
-	if (hasChanges) {
+	if (hasChanges || refreshRelationshipAttributes) {
 		Table.schemaVersion++;
 		Table.updatedAttributes();
 	}
@@ -2210,7 +2855,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		);
 
 	Table.origin = origin;
-	if (hasChanges) {
+	if (hasChanges || refreshRelationshipAttributes) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
 	if (expiration || eviction || scanInterval)
@@ -2222,6 +2867,58 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	logger.trace(`${tableName} table loaded`);
 
 	return Table as TableResourceType;
+	// dropTable() tombstones the bare table row, which is not the row a legacy catalog keeps the
+	// table's settings in, so a drop in flight has to be checked on both.
+	function tableIsDropping(descriptor: any, descriptorKey: string) {
+		if (descriptor?.dropping) return true;
+		return descriptorKey !== tableName + '/' && attributesDbi.getSync(tableName + '/')?.dropping;
+	}
+	// The catalog row initStores() reads a table's settings from: the primary key's own row when it
+	// has one, and the bare table row otherwise.
+	function primaryDescriptorKey() {
+		const declaredPrimaryKey = attributes?.find((attribute) => attribute.isPrimaryKey)?.name;
+		if (declaredPrimaryKey) {
+			const attributeKey = tableName + '/' + declaredPrimaryKey;
+			if (attributesDbi.getSync(attributeKey)) return attributeKey;
+		}
+		return tableName + '/';
+	}
+	// The catalog of a published table stays, but a class the registration never accepted is
+	// unreachable, so release what makeTable() registered process-wide instead of leaving its timers
+	// and reclamation handler live for the process. The stores stay open: the table is durable, and
+	// whichever scan reloads it opens its own handles.
+	function discardUnregisteredClass() {
+		try {
+			Table.cleanup();
+		} catch (discardError) {
+			logger.warn(`Error releasing the unregistered class of ${databaseName}.${tableName}`, discardError);
+		}
+	}
+	function discardUnpublishedTable() {
+		const discard = (description: string, action: () => unknown) => {
+			try {
+				action();
+			} catch (discardError) {
+				logger.warn(
+					`Error discarding ${description} of the failed create of ${databaseName}.${tableName}`,
+					discardError
+				);
+			}
+		};
+		discard('catalog rows', () => {
+			for (const attribute of attributes) {
+				if (!attribute.isPrimaryKey && !attribute.relationship) attributesDbi.remove(tableName + '/' + attribute.name);
+			}
+		});
+		if (Table) discard('callbacks', () => Table.cleanup());
+		// an LMDB store is a per-environment handle slot shared with every thread and still inside this
+		// create's write transaction; only RocksDB column-family handles hold native state to release
+		if (rootStore instanceof RocksDatabase) {
+			for (const indexName in Table?.indices ?? {})
+				discard(`index ${indexName}`, () => Table.indices[indexName].close());
+			discard('primary store', () => unpublishedPrimaryStore.close());
+		}
+	}
 	// Acquire an exclusive lock for attribute updates
 	function exclusiveLock() {
 		if (releaseExclusiveLock) return;

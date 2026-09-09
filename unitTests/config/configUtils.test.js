@@ -119,7 +119,17 @@ const STRING_ERROR = 'Harper config file validation error: "logging.rotation.max
 describe('Test configUtils module', () => {
 	const sandbox = sinon.createSandbox();
 
+	// exercises boot-props resolution, which mocha.init.js's ROOTPATH export shadows
+	let savedRootPathEnv;
+	before(() => {
+		savedRootPathEnv = process.env.ROOTPATH;
+		delete process.env.ROOTPATH;
+		common_utils.resetNoBootFileCache();
+	});
+
 	after(() => {
+		if (savedRootPathEnv !== undefined) process.env.ROOTPATH = savedRootPathEnv;
+		common_utils.resetNoBootFileCache();
 		sandbox.restore();
 	});
 

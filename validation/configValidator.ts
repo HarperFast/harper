@@ -30,6 +30,31 @@ const INVALID_RETENTION_VALUE_MSG =
 const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 
+/**
+ * What `deploy_component` writes into a root-config entry, plus the deployment-level keys
+ * componentLoader reads off it — the shape of a `sql` application deployed before the name was
+ * reserved. Closed to new keys: nothing new may take this shape.
+ */
+export const LEGACY_SQL_APPLICATION_KEYS = [
+	'package',
+	'files',
+	'path',
+	'install',
+	'credentials',
+	'loadComponent',
+	'urlPath',
+	'host',
+	'branchedDatabases',
+	'network',
+	'port',
+	'securePort',
+];
+
+export function isLegacySqlApplicationEntry(value: unknown): boolean {
+	if (typeof value !== 'object' || value === null) return false;
+	return LEGACY_SQL_APPLICATION_KEYS.some((key) => Object.hasOwn(value, key));
+}
+
 // Directory-path validation. The previous `([...]+)+$` nested quantifier
 // backtracked catastrophically (ReDoS), hanging the CLI at 100% CPU on any
 // value with a character outside its allow-list after a run of valid ones — a
@@ -244,6 +269,43 @@ export function configValidator(configJson, skipFsValidation = false) {
 		session: mcpSessionSchema.optional(),
 	});
 
+	// `convert: false` — validateConfig() only writes the coerced value back into configDoc for
+	// threads/componentsRoot/logging/storage/operationsApi, not sql, so leaving Joi's default
+	// convert:true on here would accept a quoted `allowFullScan: "true"` and then silently drop
+	// it (getSqlEngineConfig()'s typeof guard rejects the still-unconverted string).
+	const sqlSettingsSchema = Joi.object({
+		engine: string.valid('legacy', 'new', 'auto').optional(),
+		allowFullScan: boolean.optional(),
+		maxSortRows: number.integer().min(1).optional(),
+		maxHashRows: number.integer().min(1).optional(),
+	})
+		.unknown(false)
+		.prefs({ convert: false });
+
+	// An application deployed under the name before it was reserved still boots; validateConfig()
+	// warns to rename it. Selected positively so a typo'd setting is still held to the settings
+	// schema instead of passing as an application.
+	const legacySqlApplicationSchema = Joi.object({
+		engine: Joi.any().forbidden(),
+		allowFullScan: Joi.any().forbidden(),
+		maxSortRows: Joi.any().forbidden(),
+		maxHashRows: Joi.any().forbidden(),
+	})
+		.unknown(true)
+		.messages({
+			'any.unknown': `{#label} cannot be set while 'sql' names a deployed application; redeploy that application under a different name`,
+		});
+	const sqlSchema = Joi.alternatives()
+		.conditional(
+			Joi.object()
+				.or(...LEGACY_SQL_APPLICATION_KEYS)
+				.unknown(true),
+			{ then: legacySqlApplicationSchema, otherwise: sqlSettingsSchema }
+		)
+		// `false`/null is how componentLoader spells a disabled entry, so an operator who had already
+		// turned a pre-reservation `sql` application off keeps booting.
+		.allow(false, null);
+
 	const configSchema = Joi.object({
 		authentication: Joi.alternatives(
 			Joi.object({
@@ -275,6 +337,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			pingTimeout: number.min(1).optional().empty(null),
 			copyTimeout: number.min(1).optional().empty(null),
 			blobGapReconnectMs: number.min(1000).optional().empty(null),
+			blobGapEscalationCycles: number.integer().min(0).optional().empty(null),
+			blobGapEscalationMs: number.integer().min(0).optional().empty(null),
 			copyCursorFlushBytes: number.min(1).optional().empty(null),
 			copyCursorFlushIntervalMs: number.min(1).optional().empty(null),
 			replayTimeout: number.min(1).optional().empty(null),
@@ -382,6 +446,30 @@ export function configValidator(configJson, skipFsValidation = false) {
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
 			caching: boolean.optional(),
+			blobs: Joi.object({
+				compression: Joi.object()
+					.pattern(
+						// exact content type, 'type/*' wildcard, or the 'default' entry
+						/^([\w.+-]+\/(\*|[\w.+-]+)|default)$/,
+						Joi.alternatives([
+							Joi.valid(false),
+							// .unknown(false) so a typo'd nested field (e.g. `treshold`) is rejected instead of
+							// silently inheriting the top-level validate() allowUnknown:true and falling back to
+							// the default threshold — matching config-root.schema.json.
+							Joi.object({ codec: Joi.valid('deflate').optional(), threshold: number.min(0).optional() }).unknown(
+								false
+							),
+						])
+					)
+					// fail on keys that are not a content type, a 'type/*' wildcard, or 'default' —
+					// a typo'd key would otherwise silently never match anything
+					.unknown(false)
+					.optional(),
+			})
+				// reject a misspelled property directly under storage.blobs (e.g. `compresion:`), which the
+				// top-level validate()'s allowUnknown:true would otherwise accept and silently leave off
+				.unknown(false)
+				.optional(),
 			compression: Joi.alternatives([
 				boolean.optional(),
 				Joi.object({ dictionary: string.optional(), threshold: number.optional() }),
@@ -396,6 +484,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 		}).required(),
 		mcp: mcpSchema.optional(),
 		models: modelsSchema.optional(),
+		sql: sqlSchema.optional(),
 		ignoreScripts: boolean.optional(),
 		tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 	});

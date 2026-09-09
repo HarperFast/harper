@@ -65,6 +65,8 @@ describe('test REST calls with cache table', () => {
 		});
 		assert.equal(response.status, 204);
 		start_count = tables.CacheOfResource.sourceGetsPerformed;
+		const expirationBoundary = Date.now();
+		await waitFor(() => Date.now() > expirationBoundary);
 		response = await axios(`${baseUrl}/CacheOfResource/33`, {
 			validateStatus: function (_status) {
 				return true;

@@ -1,0 +1,9 @@
+# QA-559 — regression verify for #1789 "Fix SSE hang + uncaughtException when a generator
+# throws mid-stream" (commit 8930b1ef2).
+#
+# No table backing is needed for the generator Resources under test, but a jsResource fixture
+# requires at least one @table/@export type to be a valid component, so this is a minimal
+# placeholder.
+type Placeholder @table @export {
+	id: ID @primaryKey
+}

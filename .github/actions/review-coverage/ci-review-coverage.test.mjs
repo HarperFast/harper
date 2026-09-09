@@ -100,7 +100,10 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { normalizePrFiles } from './collectPrFiles.mjs';
+
 const SCRIPT = fileURLToPath(new URL('./ci-review-coverage.mjs', import.meta.url));
+const COLLECTOR = fileURLToPath(new URL('./collectPrFiles.mjs', import.meta.url));
 const CLEAN_ENV = { ...process.env };
 delete CLEAN_ENV.GITHUB_ENV;
 delete CLEAN_ENV.GITHUB_OUTPUT;
@@ -144,6 +147,13 @@ test('the CLI runs through a symlinked entrypoint', () => {
 		fileURLToPath(new URL('./evaluateCiCoverage.mjs', import.meta.url)),
 		path.join(dir, 'evaluateCiCoverage.mjs')
 	);
+	symlinkSync(
+		fileURLToPath(new URL('./evaluatePrFormat.mjs', import.meta.url)),
+		path.join(dir, 'evaluatePrFormat.mjs')
+	);
+	symlinkSync(COLLECTOR, path.join(dir, 'collectPrFiles.mjs'));
+	symlinkSync(fileURLToPath(new URL('./prExemption.mjs', import.meta.url)), path.join(dir, 'prExemption.mjs'));
+	symlinkSync(fileURLToPath(new URL('./prFormatLinks.mjs', import.meta.url)), path.join(dir, 'prFormatLinks.mjs'));
 	symlinkSync(fileURLToPath(new URL('./reviewGate.mjs', import.meta.url)), path.join(dir, 'reviewGate.mjs'));
 	writeFileSync(file, JSON.stringify({ pull_request: pr() }));
 	try {
@@ -178,6 +188,158 @@ test('the JavaScript action uses a pinned runtime and receives action inputs', (
 		});
 		assert.strictEqual(result.status, 1);
 		assert.match(result.stderr, /2 cross-model reviews reported .*policy asks for 3/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('format mode off never reads a PR-files artifact', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-off-'));
+	const file = path.join(dir, 'event.json');
+	writeFileSync(file, JSON.stringify({ pull_request: pr() }));
+	try {
+		const result = spawnSync(process.execPath, [SCRIPT], {
+			encoding: 'utf8',
+			env: {
+				...CLEAN_ENV,
+				GITHUB_EVENT_PATH: file,
+				INPUT_FORMAT_MODE: 'off',
+				INPUT_PR_FILES_READY: 'true',
+				INPUT_PR_FILES: path.join(dir, 'missing.json'),
+			},
+		});
+		assert.strictEqual(result.status, 0);
+		assert.doesNotMatch(result.stderr, /missing\.json/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('a superseded action run does not read or warn about PR-files evidence', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-superseded-'));
+	const file = path.join(dir, 'event.json');
+	writeFileSync(file, JSON.stringify({ pull_request: pr() }));
+	try {
+		const result = spawnSync(process.execPath, [SCRIPT], {
+			encoding: 'utf8',
+			env: {
+				...CLEAN_ENV,
+				GITHUB_EVENT_PATH: file,
+				INPUT_FORMAT_MODE: 'enforce',
+				INPUT_PR_FILES_SUPERSEDED: 'true',
+				INPUT_PR_FILES_READY: 'true',
+				INPUT_PR_FILES: path.join(dir, 'missing.json'),
+			},
+		});
+		assert.strictEqual(result.status, 0);
+		assert.match(result.stdout, /exempt: superseded by a newer PR head/);
+		assert.doesNotMatch(result.stderr, /PR-files/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('an oversized normalized PR-files artifact is bounded before parsing', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-large-'));
+	const event = path.join(dir, 'event.json');
+	const prFiles = path.join(dir, 'pr-files.json');
+	writeFileSync(event, JSON.stringify({ pull_request: pr() }));
+	writeFileSync(prFiles, Buffer.alloc(4 * 1024 * 1024 + 1));
+	try {
+		const execute = (formatMode) =>
+			spawnSync(process.execPath, [SCRIPT], {
+				encoding: 'utf8',
+				env: {
+					...CLEAN_ENV,
+					GITHUB_EVENT_PATH: event,
+					INPUT_FORMAT_MODE: formatMode,
+					INPUT_PR_FILES_READY: 'true',
+					INPUT_PR_FILES: prFiles,
+				},
+			});
+		const report = execute('report');
+		assert.strictEqual(report.status, 0);
+		assert.match(report.stderr, /artifact exceeds 4194304 bytes/);
+		assert.match(report.stdout, /review-coverage \[report\]/, 'artifact failures must not suppress coverage output');
+		const enforce = execute('enforce');
+		assert.strictEqual(enforce.status, 1);
+		assert.match(enforce.stderr, /PR-files evidence is unavailable/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('the action consumes a produced PR-files artifact end to end', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-artifact-'));
+	const event = path.join(dir, 'event.json');
+	const prFiles = path.join(dir, 'pr-files.json');
+	const hash = 'db526bfa2603e0ee94ab17a9ea8c2b8bd02e1f626dd6907624cfe8508ad356ba';
+	const link = `https://github.com/HarperFast/harper/pull/2338/changes?w=1#diff-${hash}R211`;
+	writeFileSync(
+		event,
+		JSON.stringify({
+			number: 2338,
+			repository: { full_name: 'HarperFast/harper' },
+			pull_request: pr({ body: `Summary with [current code](${link}).\n\n## Verification\n\nFocused test passed.` }),
+		})
+	);
+	writeFileSync(
+		prFiles,
+		JSON.stringify(normalizePrFiles([[{ filename: 'resources/auditStore.ts', patch: '@@ -200,21 +205,62 @@' }]]))
+	);
+	try {
+		const result = spawnSync(process.execPath, [SCRIPT], {
+			encoding: 'utf8',
+			env: {
+				...CLEAN_ENV,
+				GITHUB_EVENT_PATH: event,
+				INPUT_FORMAT_MODE: 'report',
+				INPUT_PR_FILES_READY: 'true',
+				INPUT_PR_FILES: prFiles,
+			},
+		});
+		assert.strictEqual(result.status, 0);
+		assert.match(result.stdout, /pr-format \[report\]: compliant/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('the collector CLI writes a normalized stdin artifact', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-collector-'));
+	const output = path.join(dir, 'pr-files.json');
+	try {
+		const result = spawnSync(process.execPath, [COLLECTOR, output], {
+			encoding: 'utf8',
+			input: JSON.stringify([[{ filename: 'new.js', patch: '@@ -0,0 +1,2 @@\n+a\n+b' }]]),
+		});
+		assert.strictEqual(result.status, 0);
+		assert.deepStrictEqual(JSON.parse(readFileSync(output, 'utf8')).files[0].ranges, { L: [], R: [[1, 2]] });
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('a schema-invalid artifact becomes unavailable evidence without hiding coverage', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-schema-'));
+	const event = path.join(dir, 'event.json');
+	const prFiles = path.join(dir, 'pr-files.json');
+	writeFileSync(event, JSON.stringify({ pull_request: pr() }));
+	writeFileSync(prFiles, JSON.stringify({ version: 1, complete: true, files: {} }));
+	try {
+		const result = spawnSync(process.execPath, [SCRIPT], {
+			encoding: 'utf8',
+			env: {
+				...CLEAN_ENV,
+				GITHUB_EVENT_PATH: event,
+				INPUT_FORMAT_MODE: 'report',
+				INPUT_PR_FILES_READY: 'true',
+				INPUT_PR_FILES: prFiles,
+			},
+		});
+		assert.strictEqual(result.status, 0);
+		assert.match(result.stdout, /review-coverage \[report\]/);
+		assert.match(result.stderr, /invalid normalized PR-files artifact/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

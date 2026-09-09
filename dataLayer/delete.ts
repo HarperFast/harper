@@ -110,7 +110,12 @@ export async function deleteAuditLogsBefore(deleteObj: any) {
 	harperLogger.info(`Finished deleting audit logs before ${deleteObj.timestamp}`);
 
 	// `deleteTransactionLogsBefore` returns `entries_deleted`; the legacy result exposes it as `transactions_deleted`.
-	return new DeleteAuditLogsBeforeResults(results.start_timestamp, results.end_timestamp, results.entries_deleted);
+	return new DeleteAuditLogsBeforeResults(
+		results.start_timestamp,
+		results.end_timestamp,
+		results.entries_deleted,
+		results.log_files_deleted
+	);
 }
 
 /**

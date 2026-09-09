@@ -52,15 +52,6 @@ function filesUnder(directory: string): string[] {
 	});
 }
 
-async function waitForMarkedAside(asidePath: string): Promise<void> {
-	const deadline = Date.now() + 10_000;
-	while (Date.now() < deadline) {
-		if (existsSync(asidePath) && readdirSync(asidePath).some((entry) => entry.startsWith('.in-progress-'))) return;
-		await sleep(5);
-	}
-	throw new Error('Timed out waiting for peer extraction to move the previous component aside');
-}
-
 function postMultipart(
 	url: URL,
 	contentType: string,
@@ -212,41 +203,35 @@ suite('Deployment tracking — peer-side branch', (ctx: ContextWithHarper) => {
 	);
 
 	// This test intentionally corrupts the seed deployment blob and must remain the suite's final deployment test.
-	test(
-		'peer-side branch: a payload blob failure after the swap restores the previous tree',
-		{ skip: skipOnBun },
-		async () => {
-			ok(seedPayloadBlobPath, 'seed payload blob path should be recorded before the failure test');
-			const componentPath = join(ctx.harper.dataRootDir, 'components', PEER_PROJECT);
-			const asidePath = join(ctx.harper.dataRootDir, 'components', '.deploy-aside', PEER_PROJECT);
-			const oldOnlyPath = join(componentPath, 'old-only.txt');
-			writeFileSync(oldOnlyPath, 'previous bytes\n');
-			truncateSync(seedPayloadBlobPath, 128 * 1024);
+	test('peer-side branch: a payload blob failure leaves the previous tree untouched', { skip: skipOnBun }, async () => {
+		ok(seedPayloadBlobPath, 'seed payload blob path should be recorded before the failure test');
+		const componentPath = join(ctx.harper.dataRootDir, 'components', PEER_PROJECT);
+		const asidePath = join(ctx.harper.dataRootDir, 'components', '.deploy-aside', PEER_PROJECT);
+		const stagingPath = join(ctx.harper.dataRootDir, 'components', '.deploy-staging');
+		const oldOnlyPath = join(componentPath, 'old-only.txt');
+		writeFileSync(oldOnlyPath, 'previous bytes\n');
+		truncateSync(seedPayloadBlobPath, 128 * 1024);
 
-			const responsePromise = callOperation(ctx, {
-				operation: 'deploy_component',
-				project: PEER_PROJECT,
-				restart: false,
-				_deploymentId: seedDeploymentId,
-				deployment_timeout: 5000,
-			});
-			const [asideResult, responseResult] = await Promise.allSettled([waitForMarkedAside(asidePath), responsePromise]);
-			if (responseResult.status === 'rejected') throw responseResult.reason;
-			if (asideResult.status === 'rejected') {
-				throw new Error(`${asideResult.reason}; deploy response: ${responseResult.value.rawText}`);
-			}
-			const response = responseResult.value;
+		// A blob failure never touches the live tree: the peer extracts into a candidate, so no aside exists
+		// to observe and there is nothing to roll back.
+		const response = await callOperation(ctx, {
+			operation: 'deploy_component',
+			project: PEER_PROJECT,
+			restart: false,
+			_deploymentId: seedDeploymentId,
+			deployment_timeout: 5000,
+		});
 
-			strictEqual(response.status, 500, `peer deploy should fail after payload truncation: ${response.rawText}`);
-			ok(
-				/blob|payload|incomplete|stall/i.test(response.rawText),
-				`peer failure should report payload delivery, got: ${response.rawText}`
-			);
-			strictEqual(readFileSync(oldOnlyPath, 'utf8'), 'previous bytes\n');
-			strictEqual(readFileSync(join(componentPath, 'web', 'index.html'), 'utf8'), '<h1>Hello, Peer Branch!</h1>');
-			strictEqual(existsSync(asidePath), false, 'rollback should remove the component deploy staging directory');
-		}
-	);
+		strictEqual(response.status, 500, `peer deploy should fail after payload truncation: ${response.rawText}`);
+		ok(
+			/blob|payload|incomplete|stall/i.test(response.rawText),
+			`peer failure should report payload delivery, got: ${response.rawText}`
+		);
+		strictEqual(readFileSync(oldOnlyPath, 'utf8'), 'previous bytes\n');
+		strictEqual(readFileSync(join(componentPath, 'web', 'index.html'), 'utf8'), '<h1>Hello, Peer Branch!</h1>');
+		strictEqual(existsSync(asidePath), false, 'the live tree was never moved aside, so no record exists');
+		ok(!existsSync(stagingPath) || readdirSync(stagingPath).length === 0, 'and the abandoned candidate is cleaned up');
+	});
 
 	// Note: the bogus-_deploymentId-id timeout case isn't covered here because the
 	// awaitDeploymentRow 120s default would balloon test time. The timeout path (and the

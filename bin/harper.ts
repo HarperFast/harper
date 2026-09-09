@@ -119,7 +119,7 @@ async function harper() {
 		case SERVICE_ACTIONS_ENUM.COPYDB: {
 			let sourceDb = process.argv[3];
 			let targetDbPath = process.argv[4];
-			return require('./copyDb').copyDb(sourceDb, targetDbPath);
+			return require('./copyDb').copyDb(sourceDb, targetDbPath, { blobs: 'copy' });
 		}
 		case OPERATIONS_ENUM.CREATE_BACKUP:
 		case OPERATIONS_ENUM.LIST_BACKUPS:

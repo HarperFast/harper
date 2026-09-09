@@ -45,7 +45,8 @@ type SubObject @table(audit: false) @export {
 }
 `;
 
-const CONFIG_YAML = `rest: true
+const CONFIG_YAML = `rest:
+  exactCount: true
 graphqlSchema:
   files: '*.graphql'
 graphql: true
@@ -66,6 +67,26 @@ const SUBOBJECT_ROWS = [
 	{ id: '3', relatedId: '3', any: 'any-3' },
 	{ id: '4', relatedId: '4', any: 'any-4' },
 	{ id: '5', relatedId: '5', any: 'any-5' },
+];
+
+// Second component whose REST mount uses the default (exact counting NOT opted in).
+const SCHEMA_GATE_GRAPHQL = `
+type GatedWidget @table @export(rest: true, mqtt: false) {
+	id: ID @primaryKey
+	name: String @indexed
+}
+`;
+
+const CONFIG_GATE_YAML = `rest: true
+graphqlSchema:
+  files: '*.graphql'
+graphql: true
+`;
+
+const GATE_ROWS = [
+	{ id: '1', name: 'w-1' },
+	{ id: '2', name: 'w-2' },
+	{ id: '3', name: 'w-3' },
 ];
 
 const skipSuite = process.platform === 'win32';
@@ -242,6 +263,177 @@ suite('REST query syntax', { skip: skipSuite }, (ctx) => {
 					r.text
 				)
 			)
+			.expect(200);
+	});
+
+	// `Prefer: count=` (pagination total-count) — emits Content-Range/Range-Unit/Preference-Applied.
+	test('[rest] count=exact emits an exact Content-Range', () => {
+		return client
+			.reqRest('/Related/?sort(id)&limit(2)')
+			.set('Prefer', 'count=exact')
+			.expect('Range-Unit', 'items')
+			.expect('Content-Range', 'items 0-1/5')
+			.expect('Preference-Applied', 'count=exact')
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
+			.expect((r) =>
+				assert.ok(
+					(r.headers['access-control-expose-headers'] || '').includes('Content-Range'),
+					`expected Content-Range to be exposed for CORS, got: ${r.headers['access-control-expose-headers']}`
+				)
+			)
+			.expect(200);
+	});
+
+	test('[rest] count=exact reflects the offset window but a total independent of it', () => {
+		return client
+			.reqRest('/Related/?sort(id)&limit(1,3)') // offset 1, 2 rows
+			.set('Prefer', 'count=exact')
+			.expect('Content-Range', 'items 1-2/5')
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
+			.expect(200);
+	});
+
+	test('[rest] count=exact on a filtered query counts only matches', () => {
+		return client
+			.reqRest('/Related/?name==name-2&limit(10)')
+			.set('Prefer', 'count=exact')
+			.expect('Content-Range', 'items 0-0/1')
+			.expect('Preference-Applied', 'count=exact')
+			.expect(200);
+	});
+
+	test('[rest] count=estimated emits a numeric total flagged estimated', () => {
+		return client
+			.reqRest('/Related/?sort(id)&limit(2)')
+			.set('Prefer', 'count=estimated')
+			.expect('Preference-Applied', 'count=estimated')
+			.expect((r) => assert.match(r.headers['content-range'], /^items 0-1\/\d+$/, r.text))
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
+			.expect(200);
+	});
+
+	test('[rest] an uncomputable total reports items .../* but still echoes the requested mode', () => {
+		// `name != x` estimates to Infinity, so the total is unavailable. The header must still say
+		// count=estimated (the mode applied), not count=none — the client asked, it just can't be given.
+		return client
+			.reqRest('/Related/?name!=name-2&limit(2)')
+			.set('Prefer', 'count=estimated')
+			.expect('Preference-Applied', 'count=estimated')
+			.expect((r) => assert.match(r.headers['content-range'], /^items 0-\d+\/\*$/, r.text))
+			.expect(200);
+	});
+
+	test('[rest] no Prefer header means no Content-Range (opt-in only)', () => {
+		return client
+			.reqRest('/Related/?sort(id)&limit(2)')
+			.expect((r) => assert.equal(r.headers['content-range'], undefined, r.text))
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
+			.expect(200);
+	});
+
+	test('[rest] HEAD with count=exact returns the count header and no body', () => {
+		return request(client.restURL)
+			.head('/Related/?sort(id)&limit(2)')
+			.set(client.headers)
+			.set('Prefer', 'count=exact')
+			.expect('Content-Range', 'items 0-1/5')
+			.expect((r) => assert.ok(!r.body || Object.keys(r.body).length === 0, r.text))
+			.expect(200);
+	});
+
+	test('[rest] an oversized page limit falls through to streaming with no count', () => {
+		// A limit past the max count-page size must not materialize a count page — the request is served
+		// normally (all rows) with no Content-Range, rather than buffering an unbounded page.
+		return client
+			.reqRest('/Related/?sort(id)&limit(0,20000)')
+			.set('Prefer', 'count=exact')
+			.expect((r) => assert.equal(r.headers['content-range'], undefined, r.text))
+			.expect((r) => assert.equal(r.body.length, 5, r.text))
+			.expect(200);
+	});
+
+	test('[rest] a deep-page offset past the scan budget falls through with no count', () => {
+		// limit(start,end) with a huge start is a huge offset; the count path must not iterate an unbounded
+		// offset before its guardrail engages, so the request falls through with no Content-Range.
+		return client
+			.reqRest('/Related/?sort(id)&limit(2000000,2000010)')
+			.set('Prefer', 'count=exact')
+			.expect((r) => assert.equal(r.headers['content-range'], undefined, r.text))
+			.expect(200);
+	});
+
+	test('[rest] a collection read declares Vary: Prefer', () => {
+		// So a shared cache keys on Prefer and never serves count headers to a request that did not ask.
+		return client
+			.reqRest('/Related/?sort(id)&limit(2)')
+			.expect((r) => assert.match(r.headers['vary'] || '', /\bPrefer\b/i, r.text))
+			.expect(200);
+	});
+
+	test('[rest] DELETE with a limit and Prefer: count is not misrouted to the count path', () => {
+		// Regression: the count preference is GET/HEAD-only. A DELETE that also carried limit()+Prefer used
+		// to receive a materialized array from search() and throw instead of deleting.
+		return client
+			.req()
+			.send({ operation: 'insert', table: 'Related', records: [{ id: 'del-me', name: 'to-delete' }] })
+			.expect(200)
+			.then(() =>
+				request(client.restURL)
+					.delete('/Related/?id==del-me&limit(10)')
+					.set(client.headers)
+					.set('Prefer', 'count=exact')
+					.expect((r) => assert.ok(r.status >= 200 && r.status < 300, `expected 2xx, got ${r.status}: ${r.text}`))
+			)
+			.then(() => client.reqRest('/Related/?id==del-me').expect((r) => assert.equal(r.body.length, 0, r.text)));
+	});
+});
+
+// exactCount is a per-REST-mount policy, so it needs its own instance: two components exporting at
+// the root path share one mount (the handler dedupes), and this mount's default config would otherwise
+// bleed onto the main suite's routes (which opt in with exactCount: true).
+suite('REST count default (exact not opted in)', { skip: skipSuite }, (ctx) => {
+	let client;
+
+	before(async () => {
+		await startHarper(ctx, { config: {}, env: {} });
+		client = createApiClient(ctx.harper);
+
+		await installAppComponent(client, {
+			project: 'appCountGate',
+			files: { 'schema.graphql': SCHEMA_GATE_GRAPHQL, 'config.yaml': CONFIG_GATE_YAML },
+			probePath: '/GatedWidget/',
+			restartTimeoutMs: 120000,
+		});
+
+		await client
+			.req()
+			.send({ operation: 'insert', table: 'GatedWidget', records: GATE_ROWS })
+			.expect((r) => assert.ok(r.body.message.includes('inserted 3 of 3 records'), r.text))
+			.expect(200);
+	});
+
+	after(async () => {
+		await teardownHarper(ctx);
+	});
+
+	// Default (no exactCount opt-in): count=exact is served as a cheap estimate instead.
+	test('[rest] default downgrades count=exact to estimated', () => {
+		return client
+			.reqRest('/GatedWidget/?sort(id)&limit(2)')
+			.set('Prefer', 'count=exact')
+			.expect('Preference-Applied', 'count=estimated')
+			.expect((r) => assert.match(r.headers['content-range'], /^items 0-1\/\d+$/, r.text))
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
+			.expect(200);
+	});
+
+	// estimated still works normally on a default mount.
+	test('[rest] default leaves count=estimated unchanged', () => {
+		return client
+			.reqRest('/GatedWidget/?sort(id)&limit(2)')
+			.set('Prefer', 'count=estimated')
+			.expect('Preference-Applied', 'count=estimated')
+			.expect((r) => assert.equal(r.body.length, 2, r.text))
 			.expect(200);
 	});
 });

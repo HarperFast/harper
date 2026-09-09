@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('node:path');
-const { isMainThread } = require('node:worker_threads');
+const { isMainThread, parentPort } = require('node:worker_threads');
 const fs = require('fs-extra');
 const fg = require('fast-glob');
 const normalize = require('normalize-path');
@@ -29,7 +29,13 @@ const {
 	streamPackagedDirectory,
 } = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
-const { Application, prepareApplication, ASIDE_STAGING_DIR, dropComponentDirectory } = require('./Application.ts');
+const {
+	Application,
+	prepareApplication,
+	ASIDE_STAGING_DIR,
+	DEPLOY_STAGING_DIR,
+	dropComponentDirectory,
+} = require('./Application.ts');
 const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
 const { server } = require('../server/Server.ts');
 const {
@@ -431,6 +437,110 @@ async function packageComponent(req) {
 	return { project, payload };
 }
 
+/**
+ * Load the built candidate to surface load-time errors. A load-ERROR PROBE, not a safety guarantee: it runs
+ * the component's own top-level code with incomplete side-effect isolation.
+ *
+ * A no-op on the main thread, and the operations API deploys there — so operator deploys are unvalidated
+ * (#2315 step 2). What this guarantees is ORDER: where validation runs, a rejected candidate never goes live.
+ */
+// `componentLoader.setErrorReporter` is ONE process-global callback, so two components validating
+// concurrently on the same worker cross-attribute their failures: B installs its reporter while A is
+// loading, A's load error lands in B, and A then activates broken code while B rejects a good candidate.
+// Validation is serialized (it is already the slow path) and the previous reporter is restored, so the
+// global is only ever owned by one in-flight validation.
+let validationChain = Promise.resolve();
+
+async function validateComponentLoads(candidateDirPath, emit) {
+	const run = validationChain.then(
+		() => validateComponentLoadsExclusive(candidateDirPath, emit),
+		() => validateComponentLoadsExclusive(candidateDirPath, emit)
+	);
+	validationChain = run.then(
+		() => {},
+		() => {}
+	);
+	return run;
+}
+
+async function validateComponentLoadsExclusive(candidateDirPath, emit) {
+	// now we attempt to actually load the component in case there is
+	// an error we can immediately detect and report, but app code should not run on the main thread
+	if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
+		const pseudoResources = new Resources();
+		pseudoResources.isWorker = true;
+
+		const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
+		const { trackScopeClose } = require('./scopeShutdown.ts');
+		let lastError;
+		const priorErrorReporter = componentLoader.getErrorReporter?.();
+		componentLoader.setErrorReporter((error) => (lastError = error));
+		emit('phase', { phase: 'load', status: 'start' });
+		// This load exists only to surface load-time errors early; the Scopes it creates are
+		// throwaway. They are collected (instead of registered for worker-shutdown auto-close) so we
+		// can close them here once validation completes — otherwise each deploy leaks the Scope's
+		// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
+		// (#1462).
+		const validationScopes = new Set();
+		// Process-wide `server.*` registrations (registerOperation, setMcpQuotaHandler) are not owned by
+		// a Scope, so a candidate's top-level registration during this throwaway load would otherwise
+		// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
+		// registration methods no-op for the duration of the load.
+		const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
+		// The candidate loads under the REAL component's name, so a candidate that throws would mark the live
+		// component ERROR. Its status writes are diverted into the guard's throwaway sink instead — see
+		// `deployValidationState.ts` for why this is context-scoped rather than captured and reverted here.
+		const componentName = path.basename(candidateDirPath);
+		// Extension modules the candidate load pulls in are registered in the loader's module registry keyed by
+		// module, so forgetting only the candidate's realpath leaves those behind — one set per deploy. Their
+		// identities are collected by the load itself; diffing the global registry instead would delete a live
+		// module registered by an interleaving real load, since validations serialize only with each other.
+		const validationModules = new Set();
+		const validation = runWithDeployValidationGuard(async () => {
+			try {
+				await componentLoader.loadComponent(candidateDirPath, pseudoResources, undefined, {
+					collectScopes: validationScopes,
+					collectLoadedModules: validationModules,
+				});
+			} finally {
+				const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
+				const failedCloses = closeResults.filter((result) => result.status === 'rejected');
+				for (const result of failedCloses) {
+					log.warn('Failed to close a deploy-validation Scope', result.reason);
+				}
+				// A rejected close is a REJECTED VALIDATION, not a warning. `Scope.close()` stops at the
+				// throwing listener, so its remaining internal listener removal and subscription-hold release
+				// never run and the throwaway scope stays partially live — one leak per deploy, on the worker
+				// that serves the component.
+				if (failedCloses.length) {
+					throw new AggregateError(
+						failedCloses.map((result) => result.reason),
+						`Could not tear down deploy validation for ${componentName}: ${failedCloses.length} scope(s) failed to close`
+					);
+				}
+			}
+		});
+		// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
+		// disposing — a plugin may start a native runtime in handleApplication — before realExit.
+		trackScopeClose(validation);
+		try {
+			await validation;
+		} finally {
+			componentLoader.setErrorReporter(priorErrorReporter);
+			// The candidate path is unique per deploy, so leaving it in the loader's realpath registry leaks
+			// one dead entry per deploy for the life of the process.
+			componentLoader.forgetLoadedPath?.(candidateDirPath);
+			componentLoader.forgetLoadedModules?.(validationModules);
+		}
+		emit('phase', { phase: 'load', status: 'done' });
+
+		if (lastError) throw lastError;
+	}
+}
+
+const BRANCH_STORAGE_RETAINED =
+	'. Any branched database storage this application owns was left in place; drop it again with restart: true to discard that data';
+
 /** Report a restart outcome the operation's own success message cannot convey. */
 function logRestartOutcome(restart, what) {
 	const { RESTART_IDLE_TIMEOUT_MS, RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
@@ -455,6 +565,13 @@ function logRestartOutcome(restart, what) {
 			`The restart after ${what} was still running after ${RESTART_WAIT_CEILING_MS}ms; worker threads may still be running the previous code`
 		);
 }
+/**
+ * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
+ * harperdb-config, when HDB is restarted the package will be installed in hdb/nodeModules. If a base64 encoded string is passed it
+ * will write string to a temp tar file and extract that file into the deployed project in hdb/components.
+ * @param req
+ * @returns {Promise<string>}
+ */
 async function deployComponent(req) {
 	if (req.project) {
 		req.project = canonicalProjectName(req.project);
@@ -501,6 +618,12 @@ async function deployComponent(req) {
 		}
 		if (req.urlPath !== undefined) applicationConfig.urlPath = req.urlPath;
 		if (req.host !== undefined) applicationConfig.host = req.host;
+		// Same convention as host/urlPath above, and for the same reason: a package redeploy rebuilds
+		// this application's whole root-config entry from request fields, so a deployment-level key that
+		// isn't re-supplied here is silently dropped -- for branchedDatabases specifically, that means an
+		// application which believed it had a private fork resumes sharing the base after the next
+		// restart, with nothing in this operation to say so.
+		if (req.branchedDatabases !== undefined) applicationConfig.branchedDatabases = req.branchedDatabases;
 		// Persist credential references (never tokens) so every cold install of this component —
 		// reboot, new peer, rollback — re-resolves the credential from the store.
 		if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
@@ -625,52 +748,19 @@ async function deployComponent(req) {
 		if (credentialReferences.length) req.credentials = credentialReferences;
 		else delete req.credentials;
 
+		// Validated INSIDE preparation, between build and swap, so a component that installs cleanly but
+		// throws at load never becomes live.
+		//
+		// Phase ORDER is unchanged for clients, but `prepare:done` means "candidate built", not "swap
+		// committed" — so a later failure arrives after both phases reported success. The operation's error
+		// is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
-		await prepareApplication(application);
-		emit('phase', { phase: 'prepare', status: 'done' });
-
-		// now we attempt to actually load the component in case there is
-		// an error we can immediately detect and report, but app code should not run on the main thread
-		if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
-			const pseudoResources = new Resources();
-			pseudoResources.isWorker = true;
-
-			const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
-			const { trackScopeClose } = require('./scopeShutdown.ts');
-			let lastError;
-			componentLoader.setErrorReporter((error) => (lastError = error));
-			emit('phase', { phase: 'load', status: 'start' });
-			// This load exists only to surface load-time errors early; the Scopes it creates are
-			// throwaway. They are collected (instead of registered for worker-shutdown auto-close) so we
-			// can close them here once validation completes — otherwise each deploy leaks the Scope's
-			// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
-			// (#1462).
-			const validationScopes = new Set();
-			// Process-wide `server.*` registrations (registerOperation, setMcpQuotaHandler) are not owned by
-			// a Scope, so a candidate's top-level registration during this throwaway load would otherwise
-			// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
-			// registration methods no-op for the duration of the load.
-			const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
-			const validation = runWithDeployValidationGuard(async () => {
-				try {
-					await componentLoader.loadComponent(application.dirPath, pseudoResources, undefined, {
-						collectScopes: validationScopes,
-					});
-				} finally {
-					const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
-					for (const result of closeResults) {
-						if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
-					}
-				}
-			});
-			// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
-			// disposing — a plugin may start a native runtime in handleApplication — before realExit.
-			trackScopeClose(validation);
-			await validation;
-			emit('phase', { phase: 'load', status: 'done' });
-
-			if (lastError) throw lastError;
-		}
+		await prepareApplication(application, {
+			validateCandidate: async (candidateDirPath) => {
+				emit('phase', { phase: 'prepare', status: 'done' });
+				await validateComponentLoads(candidateDirPath, emit);
+			},
+		});
 		const rollingRestart = req.restart === 'rolling';
 		// if doing a rolling restart set restart to false so that other nodes don't also restart.
 		req.restart = rollingRestart ? false : req.restart;
@@ -915,9 +1005,13 @@ async function getComponents() {
 			const list = await fs.readdir(dir, { withFileTypes: true });
 			for (let item of list) {
 				const itemName = item.name;
+				// Deny-list, not a dot-prefix skip: component CONTENTS legitimately include dot-files
+				// (`.aiignore`, `.env.example`) that callers expect to see, so only Harper's own
+				// bookkeeping directories are excluded by name.
 				if (
 					itemName === 'node_modules' ||
 					itemName === ASIDE_STAGING_DIR ||
+					itemName === DEPLOY_STAGING_DIR ||
 					itemName === COMPONENT_PREPARATION_LOCK_DIR
 				)
 					continue;
@@ -1218,6 +1312,7 @@ async function dropComponent(req) {
 	const componentPath = path.join(componentsRoot, project);
 	const pathToComponent = path.join(componentsRoot, projectPath);
 
+	let response;
 	await withComponentPreparationLock(
 		componentPath,
 		async () => {
@@ -1242,20 +1337,56 @@ async function dropComponent(req) {
 			}
 
 			configUtils.deleteConfigFromFile([project]);
+			// The main thread's cached config still names the project; the restart below installs every
+			// package application in that cache, and installing this one would take the lock held here.
+			// (A worker's RESTART message refreshes main's config the same way.)
+			if (isMainThread) env.initSync(true);
+			response = await server.replication.replicateOperation(req);
+			const { applicationHasBranchStorage, removeBranchesForApplication } = require('../resources/branchDatabase.ts');
+			const branched = !file && applicationHasBranchStorage(project);
+			if (req.restart !== true) {
+				response.message = `Successfully dropped: ${projectPath}`;
+				if (branched) response.message += BRANCH_STORAGE_RETAINED;
+				return;
+			}
+			// The branches go after the restart, under this lock; a worker is one of the threads being
+			// replaced, so it hands both to the main thread.
+			response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
+			if (!isMainThread) {
+				parentPort.postMessage({
+					type: hdbTerms.ITC_EVENT_TYPES.RESTART,
+					workerType: 'http',
+					removeBranchesFor: file ? undefined : project,
+				});
+				if (branched) {
+					response.message +=
+						'; the main thread removes its branched database storage after the restart and logs the outcome';
+				}
+				return;
+			}
+			const { awaitRestart } = require('./awaitRestart.ts');
+			const restart = await awaitRestart((onProgress) =>
+				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
+			);
+			logRestartOutcome(restart, `dropping ${projectPath}`);
+			if (!branched) return;
+			if (restart.completed && !restart.workersKeptOnOldCode) {
+				try {
+					await removeBranchesForApplication(project);
+				} catch (error) {
+					log.error(`Branched database storage of ${project} could not be removed`, error);
+					throw new Error(
+						`Successfully dropped: ${projectPath}, but its branched database storage could not be removed and ` +
+							`was left in place: ${error.message}. Drop it again with restart: true to retry.`
+					);
+				}
+			} else {
+				log.warn(`Branched database storage of ${project} was left in place: the restart did not complete`);
+				response.message += BRANCH_STORAGE_RETAINED;
+			}
 		},
 		componentDropLockOptions(project)
 	);
-	const response = await server.replication.replicateOperation(req);
-	if (req.restart === true) {
-		// Same race as a deploy, in the removal direction: until a worker is replaced it still serves the
-		// dropped component's resources, so a caller that reads success as "it is gone" can be wrong.
-		const { awaitRestart } = require('./awaitRestart.ts');
-		const restart = await awaitRestart((onProgress) =>
-			manageThreads.restartWorkers('http', undefined, undefined, onProgress)
-		);
-		logRestartOutcome(restart, `dropping ${projectPath}`);
-		response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
-	} else response.message = `Successfully dropped: ${projectPath}`;
 	return response;
 }
 

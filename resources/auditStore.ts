@@ -4,7 +4,7 @@ import { AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { convertToMS } from '../utility/common_utils.ts';
-import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder.ts';
+import { LAST_TIMESTAMP_PLACEHOLDER, HAS_STRUCTURE_UPDATE, PENDING_LOCAL_TIME } from './RecordEncoder.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { getRecordAtTime } from './crdt.ts';
 import { decodeFromDatabase } from './blob.ts';
@@ -33,8 +33,8 @@ import { isReadOnlyMode } from './databases.ts';
 initSync();
 
 export type AuditRecord = {
-	version: number;
-	localTime: number; // only to be used by LMDB (from the key)
+	version: number; // the record's own version: LWW ordering, @updatedTime, ETag
+	txnLogKey: number; // position in the origin's transaction log
 	type: string;
 	encodedRecord?: Buffer;
 	extendedType?: number;
@@ -115,8 +115,22 @@ const MAX_CLEANUP_DELAY = 2 ** 31 - 1;
 // mint latch keyed per (table, type) so one entry type can't silence another's producer stack
 const warnedBodylessMints = new Set<string>();
 const warnedBodylessTables = new Set<number>();
+// legacy-format latches, mirroring the bodyless ones above: a range scan over millions of pre-#2247
+// entries must not turn a recovered read into a log flood. Recovery latches per table (the table is
+// known by then); an undecodable header has no table, so it latches once per process.
+const warnedRecoveredTables = new Set<number>();
+let warnedUndecodableHeader = false;
+// keyed per (table, type) like warnedBodylessMints, so one entry type cannot silence another's stack
+const warnedPendingPreviousVersion = new Set<string>();
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
+
+/** Last resort on a detached path: a failing log sink must not itself become an unhandled rejection. */
+function warnContained(message: string, error: unknown) {
+	try {
+		harperLogger.warn(message, error);
+	} catch {}
+}
 let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
 let timestampErrored = false;
 export function openAuditStore(rootStore) {
@@ -132,13 +146,16 @@ export function openAuditStore(rootStore) {
 		if (!auditStore) {
 			// this means we are creating a new audit store. Initialize with the last removed timestamp (we don't want to put this in legacy audit logs since we don't know if they have had deletions or not).
 			auditStore = rootStore.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
-			updateLastRemoved(auditStore, 1);
+			// this open path is synchronous, so nothing downstream can own the write's rejection
+			updateLastRemoved(auditStore, 1)?.catch?.((error) =>
+				warnContained('Error initializing the audit log last-removed marker', error)
+			);
 		}
 		const superGetRange = auditStore.getRange.bind(auditStore);
 		auditStore.getRange = function (options) {
 			if (options.values === false) return superGetRange(options); // getKeys shouldn't be modified
 			return superGetRange(options).map(({ key, value }) => {
-				value.key = value.localTime = key;
+				value.key = value.txnLogKey = key;
 				return value;
 			});
 		};
@@ -154,6 +171,7 @@ export function openAuditStore(rootStore) {
 		return {
 			remove() {
 				delete deleteCallbacks[tableId];
+				if (auditStore.tableStores[tableId] === table) delete auditStore.tableStores[tableId];
 			},
 		};
 	};
@@ -163,7 +181,15 @@ export function openAuditStore(rootStore) {
 	let pendingCleanupResolve: (() => void) | null = null;
 	let lastCleanupResolution: Promise<void>;
 	let cleanupPriority = 0;
-	let auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
+	auditStore.auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
+	let cleanupStopped = false;
+	// a last-removed marker whose write failed, retried on later passes: dropping it would leave
+	// getLastRemoved() reporting a boundary the entries behind it have already been deleted past
+	let pendingLastRemoved: number | undefined;
+	const isRocksAuditStore = auditStore instanceof RocksTransactionLogStore;
+	// A pass yields, so the store can be closed underneath it. Every touch of the environment after a
+	// resume — cursor advance, cursor release, marker write, re-arm — has to re-check.
+	const storeClosing = () => auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing';
 	onStorageReclamation(rootStore.path, (priority) => {
 		cleanupPriority = priority; // update the priority
 		if (priority) {
@@ -174,28 +200,23 @@ export function openAuditStore(rootStore) {
 	/**
 	 * Schedules a pass of the audit cleanup loop. The returned promise fulfills once the pass that
 	 * serves this call has finished, so callers (notably tests) can await completion instead of
-	 * guessing a delay. Two things it does not promise: a pass removes at most
+	 * guessing a delay. Two things it does not promise: an LMDB pass removes at most
 	 * MAX_DELETES_PER_CLEANUP entries before rescheduling itself, so fulfillment means "that pass
 	 * finished", not "the audit log is fully pruned"; and a pass that failed logs and fulfills rather
 	 * than rejecting, since this promise doubles as the loop's serialization barrier.
 	 */
 	function scheduleAuditCleanup(newCleanupDelay?: number): Promise<void> {
 		// Skip audit cleanup/purge in read-only mode
-		if (isReadOnlyMode()) return Promise.resolve();
-		if (auditStore instanceof RocksTransactionLogStore) {
-			auditStore.rootStore.purgeLogs({
-				before: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority),
-			});
-			return Promise.resolve();
-		}
+		if (cleanupStopped || isReadOnlyMode()) return Promise.resolve();
 
-		if (newCleanupDelay) auditCleanupDelay = newCleanupDelay;
+		if (newCleanupDelay) auditStore.auditCleanupDelay = newCleanupDelay;
 		// the pass we are about to cancel has not started, so its callers are handed over to this one
 		const supersededResolve = pendingCleanupResolve;
 		clearTimeout(pendingCleanup);
 		const resolution = new Promise<void>((resolve) => {
 			pendingCleanupResolve = resolve;
-			pendingCleanup = setTimeout(async () => {
+			const runCleanupPass = async () => {
+				pendingCleanup = null;
 				pendingCleanupResolve = null; // started, so a later schedule can no longer cancel this pass
 				// claim the serialization slot before yielding: assigning it after the await lets every
 				// pass released by the same resolution run concurrently over the same range
@@ -203,67 +224,146 @@ export function openAuditStore(rootStore) {
 				lastCleanupResolution = resolution;
 				await previousCleanup;
 				// query for audit entries that are old
-				if (auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing') {
+				if (cleanupStopped || storeClosing()) {
 					// nothing to clean up and nothing to reschedule, but leaving `resolution` pending would
 					// wedge the loop permanently: it is now the resolution every later pass awaits
 					resolve();
 					return;
 				}
+				const passCleanupPriority = cleanupPriority;
 				let deleted = 0;
 				let lastKey: any;
 				try {
-					for (const auditRecord of auditStore.getRange({
-						start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
-						snapshot: false,
-						end: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
-					})) {
+					if (isRocksAuditStore) {
+						auditStore.rootStore.purgeLogs({
+							before: Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority),
+						});
+					} else {
+						// Driven explicitly rather than with for-of: this loop suspends on the awaits below, and a
+						// close landing mid-pass closes the env under it. for-of calls next() before the body, so a
+						// check inside the body advances the cursor first — the guard has to precede every next().
+						const entries = auditStore
+							.getRange({
+								start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
+								snapshot: false,
+								end: Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
+							})
+							[Symbol.iterator]();
 						try {
-							// awaited so a rejection (not just a synchronous throw) is caught here instead of
-							// escaping as an unhandled rejection once a later iteration's promise replaces this one
-							await removeAuditEntry(auditStore, auditRecord);
-						} catch (error) {
-							harperLogger.warn('Error removing audit entry', error);
-						}
-						lastKey = auditRecord.key;
-						await new Promise(setImmediate);
-						if (++deleted >= MAX_DELETES_PER_CLEANUP) {
-							// limit the amount we cleanup per event turn so we don't use too much memory/CPU
-							auditCleanupDelay = 10; // and keep trying very soon
-							break;
+							while (!cleanupStopped && !storeClosing()) {
+								const entry = entries.next();
+								if (entry.done) break;
+								const auditRecord = entry.value;
+								try {
+									// awaited so a rejection (not just a synchronous throw) is caught here instead of
+									// escaping as an unhandled rejection once a later iteration's promise replaces this one
+									await removeAuditEntry(auditStore, auditRecord);
+								} catch (error) {
+									harperLogger.warn('Error removing audit entry', error);
+								}
+								lastKey = auditRecord.key;
+								await new Promise(setImmediate);
+								if (++deleted >= MAX_DELETES_PER_CLEANUP) {
+									// limit the amount we cleanup per event turn so we don't use too much memory/CPU
+									auditStore.auditCleanupDelay = 10; // and keep trying very soon
+									break;
+								}
+							}
+						} finally {
+							// for-of released the underlying cursor on break; an explicit loop owes that itself.
+							// Skipped only once the root is closing: releasing a cursor into a closed env reaches
+							// native code, while a retirement that leaves the env open still owes the release.
+							if (!storeClosing()) entries.return?.();
 						}
 					}
 				} catch (error) {
-					// the timer callback is detached, so anything escaping here lands as an unhandled
-					// rejection instead of a log line — and skips the reschedule below with it
+					// a failed scan is a log line, not a retired loop: the bookkeeping and reschedule below
+					// still run
 					harperLogger.warn('Error during audit log cleanup', error);
 				} finally {
-					// resolve() first and unconditionally: updateLastRemoved() below can throw
-					// synchronously if the store transitions to closing/closed mid-pass, and a throw
-					// from the rest of this block must not skip settling `resolution` — that's the
-					// serialization barrier every later pass awaits, and never settling it wedges the
-					// cleanup loop for the life of the store.
-					resolve();
-					if (deleted === 0) {
-						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
-						// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
-						// sub-millisecond retention collapsed the delay to 0 permanently (0 << 1 is 0), and a
-						// retention over ~248 days grows it past 2^31 where halving it wraps negative.
-						auditCleanupDelay = Math.max(1, Math.min(auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY));
-					} else {
-						// if we did delete something, update our updates since timestamp
-						updateLastRemoved(auditStore, lastKey);
-						// and do updates faster
-						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay / 2;
+					try {
+						if (isRocksAuditStore) {
+							// eligibility only changes on rotation/flush, so the LMDB backoff — keyed on a per-entry
+							// delete count — would only rescan the same segments
+							auditStore.auditCleanupDelay = Math.max(
+								DEFAULT_AUDIT_CLEANUP_DELAY,
+								Math.min(auditRetention / (1 + cleanupPriority * cleanupPriority) / 10, MAX_CLEANUP_DELAY)
+							);
+						} else {
+							if (deleted === 0) {
+								// if we didn't delete anything, we can increase the delay (double until we get to one tenth of
+								// the retention time). Plain arithmetic, not `<<`/`>>`: those coerce to int32, so a
+								// sub-millisecond retention collapsed the delay to 0 permanently (0 << 1 is 0), and a
+								// retention over ~248 days grows it past 2^31 where halving it wraps negative.
+								auditStore.auditCleanupDelay = Math.max(
+									1,
+									Math.min(auditStore.auditCleanupDelay * 2, auditRetention / 10, MAX_CLEANUP_DELAY)
+								);
+							} else {
+								pendingLastRemoved = lastKey;
+								// and do updates faster
+								if (auditStore.auditCleanupDelay > 100) auditStore.auditCleanupDelay = auditStore.auditCleanupDelay / 2;
+							}
+							// skipped when the store was retired or closed mid-pass — this writes to the audit
+							// store — and carried to the next pass instead, so a failed write is not lost
+							if (pendingLastRemoved !== undefined && !cleanupStopped && !storeClosing()) {
+								const marker = pendingLastRemoved;
+								try {
+									// awaited so the barrier below covers the write, and so a rejection is logged
+									// here rather than escaping the detached timer callback
+									await updateLastRemoved(auditStore, marker);
+									if (pendingLastRemoved === marker) pendingLastRemoved = undefined;
+								} catch (error) {
+									harperLogger.warn('Error recording the last removed audit entry', error);
+								}
+							}
+						}
+					} finally {
+						// settled and re-armed whatever the bookkeeping above threw: this promise is both the
+						// serialization barrier every later pass awaits and the drain barrier
+						// stopAuditCleanup() hands its callers, so never settling it wedges both
+						resolve();
+						// both conjuncts are backstops, not the ownership rule — see DESIGN.md: the arming
+						// sites already restrict Rocks to the last worker
+						if (
+							!cleanupStopped &&
+							!storeClosing() &&
+							(!isRocksAuditStore || (getWorkerIndex() === getWorkerCount() - 1 && !pendingCleanupResolve))
+						) {
+							scheduleAuditCleanup();
+						}
 					}
-					scheduleAuditCleanup();
 				}
 				// we can run this pretty frequently since there is very little overhead to these queries
-			}, auditCleanupDelay).unref();
+			};
+			pendingCleanup = setTimeout(() => {
+				// nothing owns the timer callback's promise, so anything the pass lets escape — including a
+				// throw from the logging inside its own containment — would land as an unhandled rejection
+				runCleanupPass().catch((error) => {
+					warnContained('Error during audit log cleanup', error);
+					resolve();
+				});
+			}, auditStore.auditCleanupDelay).unref();
 		});
 		if (supersededResolve) resolution.then(supersededResolve);
 		return resolution;
 	}
 	auditStore.scheduleAuditCleanup = scheduleAuditCleanup;
+	/**
+	 * Retires the cleanup loop for good, and returns a drain barrier: the promise settles once the pass
+	 * that was already running has finished. Retirement alone only stops the loop admitting more work —
+	 * a pass suspended inside `await removeAuditEntry()` still has a write queued whose DBI the native
+	 * writer consumes later, so a caller that closes or unlinks stores must await this first. The
+	 * synchronous teardown paths cannot; the in-pass status checks are what covers them.
+	 */
+	auditStore.stopAuditCleanup = function (): Promise<void> {
+		cleanupStopped = true;
+		clearTimeout(pendingCleanup);
+		pendingCleanup = null;
+		pendingCleanupResolve?.();
+		pendingCleanupResolve = null;
+		return lastCleanupResolution ?? Promise.resolve();
+	};
 	if (getWorkerIndex() === getWorkerCount() - 1) {
 		scheduleAuditCleanup();
 	}
@@ -281,18 +381,40 @@ export function openAuditStore(rootStore) {
 	return auditStore;
 }
 
+/**
+ * Whether `entry` is the very write `auditRecord` describes. Write identity is (origin node, log key),
+ * never the record version: a version is legitimately non-unique, so a version match can name a
+ * different write and authorize destroying live state (a tombstone, a still-referenced blob).
+ *
+ * On LMDB this is exact — the audit-store key IS the record's `txnLogKey`. On RocksDB a record stores
+ * its version in the compatibility word and keeps a divergent log key in `additionalAuditRefs`.
+ * Absent identity answers false. The direction is deliberate: uncertainty retains.
+ */
+export function isAuditEntryWrite(entry: any, auditRecord: AuditRecord): boolean {
+	if (entry == null || auditRecord.txnLogKey == null) return false;
+	const auditNodeId = auditRecord.nodeId ?? 0;
+	return (
+		(entry.localTime === auditRecord.txnLogKey && (entry.nodeId ?? 0) === auditNodeId) ||
+		entry.additionalAuditRefs?.some(
+			(ref) => ref.version === auditRecord.txnLogKey && (ref.nodeId ?? 0) === auditNodeId
+		) === true
+	);
+}
+
 export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Promise<void> {
 	let tombstoneRemoval: Promise<void> | undefined;
 	if (auditRecord.type === 'delete') {
 		// if this is a delete, we remove the delete entry from the primary table
-		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
+		// at the same time so the audit table the primary table are in sync, assuming the entry is still
+		// the record state this audit record wrote
 		const tableId = auditRecord.tableId;
 		const primaryStore = auditStore.tableStores[auditRecord.tableId];
-		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
+		const tombstone = primaryStore?.getEntry(auditRecord.recordId);
+		if (isAuditEntryWrite(tombstone, auditRecord))
 			// a failed tombstone removal doesn't mean the audit entry removal failed — only
 			// auditStore.remove() below decides this function's outcome
 			tombstoneRemoval = new Promise<void>((resolve) => {
-				resolve(auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version));
+				resolve(auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, tombstone.version));
 			}).catch((error) => {
 				harperLogger.warn('Error removing deleted record while removing its audit entry', error);
 			});
@@ -303,7 +425,7 @@ export function removeAuditEntry(auditStore: any, auditRecord: AuditRecord): Pro
 
 function updateLastRemoved(auditStore, lastKey) {
 	FLOAT_TARGET[0] = lastKey;
-	auditStore.put(Symbol.for('last-removed'), FLOAT_BUFFER);
+	return auditStore.put(Symbol.for('last-removed'), FLOAT_BUFFER);
 }
 
 export function getLastRemoved(auditStore) {
@@ -388,13 +510,63 @@ const EVENT_TYPES = {
 	remoteSequenceUpdate: REMOTE_SEQUENCE_UPDATE,
 	[REMOTE_SEQUENCE_UPDATE]: 'remoteSequenceUpdate',
 };
+/**
+ * The LMDB audit entry states the presence of its leading 8-byte previousVersion field with that
+ * field's own first byte. The same test is what harperdb 4.x's reader uses and what both versions'
+ * replication senders use to strip the field before framing an entry for the wire, so it is a
+ * cross-version contract, not a local convention: a field written with any other leading byte is
+ * skipped by every reader and shifts action/nodeId/tableId/recordId/version by 8. See harper#2247.
+ */
+const PREVIOUS_VERSION_FIRST_BYTE = 66;
+/**
+ * Which first bytes can begin an action, and so cannot be a previousVersion field. Derived from what
+ * the encoding can express, not from the types defined today: nibbles 9-15 are reserved for future
+ * entry types, and a peer one version ahead must keep decoding rather than look corrupt here.
+ */
+const ACTION_FIRST_BYTE = new Uint8Array(256);
+// single-byte form; 0 is not an entry type, so a zero low nibble cannot start one
+for (let firstByte = 1; firstByte <= (HAS_RECORD | HAS_PARTIAL_RECORD | 0xf); firstByte++) {
+	if (firstByte & 0xf) ACTION_FIRST_BYTE[firstByte] = 1;
+}
+// extended form, written as `action | extendedType | 0xc0000000`; 0xff is the five-byte readInt form
+for (let firstByte = 0xc0; firstByte < 0xff; firstByte++) ACTION_FIRST_BYTE[firstByte] = 1;
+let knownActionFlags: number | undefined;
+/**
+ * Whether an action word decodes wholly into what this version understands. Consulted only to accept
+ * or reject a legacy prefix recovery — never to validate a normally-framed entry, where an unknown
+ * future flag must stay forwards-compatible rather than corrupt. The mask is built on first use
+ * because HAS_STRUCTURE_UPDATE crosses the RecordEncoder import cycle: read at module scope it
+ * resolves to undefined whenever RecordEncoder is the cycle's entry, silently dropping that bit.
+ */
+function isDecodableAction(action: number) {
+	knownActionFlags ??=
+		0xf |
+		HAS_RECORD |
+		HAS_PARTIAL_RECORD |
+		HAS_STRUCTURE_UPDATE |
+		HAS_CURRENT_RESIDENCY_ID |
+		HAS_PREVIOUS_RESIDENCY_ID |
+		HAS_ORIGINATING_OPERATION |
+		HAS_EXPIRATION_EXTENDED_TYPE |
+		HAS_BLOBS |
+		HAS_ADDITIONAL_AUDIT_REFS |
+		LOCAL_ONLY;
+	return (action & 0xf) !== 0 && !(action & ~knownActionFlags);
+}
 const ORIGINATING_OPERATIONS = {
 	insert: 1,
 	update: 2,
 	upsert: 3,
+	// `put` must be persisted, not inferred: the physical write type is also `put` for an `upsert`
+	// that happened to create a record, so the history readers cannot tell the two apart from the
+	// type alone. Without an id here the originating operation decoded as undefined, the readers fell
+	// back to the physical type, and replication catch-up replayed a `put` as an `upsert` — patching
+	// the replica and RETAINING attributes the source had removed.
+	put: 4,
 	1: 'insert',
 	2: 'update',
 	3: 'upsert',
+	4: 'put',
 };
 
 /**
@@ -446,12 +618,43 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 		}
 		action &= ~HAS_RECORD;
 	}
-	let position = start + 1;
-	if (previousVersion) {
-		if (previousVersion > 1) ENTRY_DATAVIEW.setFloat64(start, previousVersion);
-		else ENTRY_HEADER.set(PREVIOUS_TIMESTAMP_PLACEHOLDER, start);
-		position = start + 9;
+	let hasPreviousVersion: boolean;
+	if (start > 0) {
+		// RocksTransactionLogStore states presence with its own prelude flag, derived from this same
+		// truthiness, so this container's field stays unconditional and its value is unconstrained.
+		hasPreviousVersion = !!previousVersion;
+		if (hasPreviousVersion) ENTRY_DATAVIEW.setFloat64(start, previousVersion);
+	} else if (previousVersion == null || previousVersion === 0) {
+		// absence is stated, not inferred from truthiness: NaN is falsy and would otherwise be
+		// silently dropped rather than rejected below
+		hasPreviousVersion = false;
+	} else if (previousVersion === PENDING_LOCAL_TIME) {
+		// The previous entry has no log position yet, and a format whose presence signal is the value's
+		// own first byte cannot express "to be filled in at commit". The superseded code deferred to
+		// lmdb-js's instructed-write substitution, which resolves to 2.0 whenever no previous time was
+		// recorded — the unreadable entry behind harper-pro#737. It resolved correctly when one was, so
+		// this trades a lost link on that path for never minting the unreadable form. Not a throw: a
+		// pending previous is a producer state, unlike a value the format cannot hold.
+		hasPreviousVersion = false;
+		if (!warnedPendingPreviousVersion.has(`${tableId}:${type}`)) {
+			warnedPendingPreviousVersion.add(`${tableId}:${type}`);
+			warnContained(
+				`Audit entry (${type}) for record ${recordId} in table ${tableId} has a pending previous version; recording it without a previous-version link`,
+				new Error('pending audit previousVersion')
+			);
+		}
+	} else {
+		ENTRY_DATAVIEW.setFloat64(start, previousVersion);
+		if (ENTRY_HEADER[start] !== PREVIOUS_VERSION_FIRST_BYTE) {
+			throw new Error(
+				`Audit entry previousVersion ${previousVersion} for record ${recordId} in table ${tableId} is not representable. ` +
+					'The LMDB audit format signals this field with its own leading 0x42 byte, so only values in [2**33, 2**49) can be written; ' +
+					'writing any other value produces an entry every reader parses 8 bytes off.'
+			);
+		}
+		hasPreviousVersion = true;
 	}
+	let position = start + (hasPreviousVersion ? 9 : 1);
 	if (extendedType) {
 		if (extendedType & 0xff) {
 			throw new Error('Illegal extended type');
@@ -490,8 +693,9 @@ export function createAuditEntry(auditRecord: AuditRecord, start = 0) {
 
 	if (user) writeValue(user);
 	else ENTRY_HEADER[position++] = 0;
-	if (extendedType) ENTRY_DATAVIEW.setUint32(start + (previousVersion ? 8 : 0), action | extendedType | 0xc0000000);
-	else ENTRY_HEADER[start + (previousVersion ? 8 : 0)] = action;
+	const actionPosition = start + (hasPreviousVersion ? 8 : 0);
+	if (extendedType) ENTRY_DATAVIEW.setUint32(actionPosition, action | extendedType | 0xc0000000);
+	else ENTRY_HEADER[actionPosition] = action;
 	const header = ENTRY_HEADER.subarray(0, position);
 	if (encodedRecord) {
 		return Buffer.concat([header, encodedRecord]);
@@ -549,13 +753,40 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 			((buffer as any).decoder = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 		decoder.position = start;
 		let previousVersion;
-		if (buffer[decoder.position] == 66) {
-			// 66 is the first byte in a date double.
+		let entryStart = start;
+		const firstByte = buffer[start];
+		if (firstByte === PREVIOUS_VERSION_FIRST_BYTE) {
 			previousVersion = decoder.readFloat64();
+		} else if (ACTION_FIRST_BYTE[firstByte] !== 1) {
+			// Written before the writer enforced the leading-0x42 contract (harper#2247): the field is
+			// physically here but does not announce itself, so the action sits 8 bytes further on.
+			// Recover only when the bytes cannot be anything else, and never for the RocksDB container,
+			// whose prelude flag already consumed its previousVersion before this offset.
+			if (start !== 0 || start + 9 > buffer.byteLength || ACTION_FIRST_BYTE[buffer[start + 8]] !== 1) {
+				return corruptEntry(buffer, start, end, firstByte);
+			}
+			// > 1 is exactly what the superseded writer's own guard could emit, the tightest available
+			// bound on "these bytes really are an old previousVersion"
+			if (!(decoder.getFloat64(start) > 1)) return corruptEntry(buffer, start, end, firstByte);
+			entryStart = decoder.position = start + 8;
+			// The value itself is dropped, not reported. It cannot lead with 0x42 (that is the branch
+			// above), and audit keys carry the same constraint, so it could never have addressed a
+			// retrievable entry; reporting it would only feed an unrepresentable value back to
+			// createAuditEntry through the resolveRecord re-mint in RecordEncoder, which now rejects it.
 		}
 		const action = decoder.readInt();
+		if (entryStart !== start && !isDecodableAction(action)) {
+			return corruptEntry(buffer, start, end, firstByte);
+		}
 		const nodeId = decoder.readInt();
 		const tableId = decoder.readInt();
+		if (entryStart !== start && !warnedRecoveredTables.has(tableId)) {
+			warnedRecoveredTables.add(tableId);
+			warnContained('Audit entry carries an unannounced previousVersion field; recovering its field offsets', {
+				tableId,
+				firstByte,
+			});
+		}
 		let length = decoder.readInt();
 		// A corrupt length field (e.g., a 0xff-prefixed uint32) would otherwise push
 		// decoder.position hundreds of megabytes past the buffer; the next readFloat64
@@ -640,10 +871,14 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 				}
 			},
 			get encoded() {
-				return start ? buffer.subarray(start, end) : buffer;
+				// On a recovered entry this drops the unannounced prefix, so a replication sender —
+				// which strips by the same leading-0x42 test and frames by encoded.length — forwards a
+				// clean entry instead of passing the same misparse to the next hop.
+				return entryStart ? buffer.subarray(entryStart, end) : buffer;
 			},
 			get size() {
-				return start !== undefined && end !== undefined ? end - start : buffer.byteLength;
+				// only the recovered prefix is discounted; every other case keeps its existing basis
+				return (end !== undefined ? end - start : buffer.byteLength) - (entryStart - start);
 			},
 			getValue(store, fullRecord?, auditTime?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
@@ -690,6 +925,23 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined): 
 		harperLogger.error('Reading audit entry error', error, buffer);
 		return createCorruptAuditSentinel(buffer, start, end);
 	}
+}
+
+/**
+ * Reject a header whose first byte can be neither an action nor a previousVersion field. Returns the
+ * sentinel directly rather than throwing into readAuditEntry's catch, whose error log is not
+ * contained: a throwing log sink there would escape the decoder and stall the iteration it runs in.
+ */
+function corruptEntry(buffer: Uint8Array, start: number, end: number | undefined, firstByte: number): AuditRecord {
+	if (!warnedUndecodableHeader) {
+		warnedUndecodableHeader = true;
+		warnContained('Audit entry header begins with neither an action nor a previousVersion; treating as corrupt', {
+			firstByte,
+			// the 8 prefix bytes plus the action byte: the classifying bytes, stopping before the recordId
+			header: Buffer.from(buffer.subarray(start, Math.min(start + 9, buffer.byteLength))).toString('hex'),
+		});
+	}
+	return createCorruptAuditSentinel(buffer, start, end);
 }
 
 /**

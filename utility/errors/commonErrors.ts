@@ -132,6 +132,8 @@ const OPERATION_AUTH_ERROR_MSGS = {
 	OP_IS_SU_ONLY: (op) => `Operation '${op}' is restricted to 'super_user' roles`,
 	OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
 	OP_NOT_IN_OPERATIONS: (op) => `Operation '${op}' is not permitted for this role's operations configuration`,
+	PUT_WITH_ATTRIBUTE_PERMS: (schema, table) =>
+		`'put' is not permitted for a role with attribute permissions on '${schema}.${table}', because replacing a record removes the attributes the request omits and those removals cannot be checked against attribute permissions. Use 'update' or 'upsert' to merge, or a REST PUT, which restores attributes the role may not update.`,
 	OPERATIONS_MUST_BE_ARRAY: "Permission 'operations' must be an array of operation names or group names",
 	INVALID_OPERATIONS_OP: (op) =>
 		`Invalid operations value '${op}'. Must be a valid operation name or group (e.g. 'read_only').`,
@@ -234,6 +236,8 @@ const CUSTOM_FUNCTIONS_ERROR_MSGS = {
 	NO_FILE: 'File does not exist',
 	BAD_FILE_NAME: 'File name can only contain alphanumeric, dash and underscore characters',
 	BAD_PROJECT_NAME: 'Project name can only contain alphanumeric, dash and underscores characters',
+	RESERVED_PROJECT_NAME: (project: string) =>
+		`Component name '${project}' is reserved for Harper's '${project}' configuration section; deploy under a different name`,
 	BAD_PACKAGE: 'Packaged project must be base64-encoded tar file of project directory',
 	DROP_FUNCTION: 'Error dropping custom function, check the log for more details',
 	ADD_FUNCTION: 'Error adding custom function project, check the log for more details',

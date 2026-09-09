@@ -13,9 +13,8 @@ require('#src/server/serverHelpers/serverUtilities');
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 
 function assertChronological(events, msg = 'events out of order') {
-	// Use `version` because lmdb populates localTime on cursor sends but rocksdb doesn't; both
-	// backends set version on the audit record to the commit timestamp, so version is the
-	// portable "time" key.
+	// Use `version`: both backends set it to the commit timestamp on cursor sends (rocksdb now
+	// also populates localTime with the log key, but version remains the portable "time" key).
 	for (let i = 1; i < events.length; i++) {
 		assert.ok(
 			events[i].version >= events[i - 1].version,
@@ -131,18 +130,29 @@ describe('Subscription replay', () => {
 				await StartTimeTable.put(1000 + i, { name: 'pre' + i });
 			}
 			const subscription = await StartTimeTable.subscribe({ startTime: startTime - 1, isCollection: true });
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			// fire writes concurrently with the replay loop
 			const concurrentWrites = (async () => {
 				for (let i = 0; i < 30; i++) {
 					await StartTimeTable.put(2000 + i, { name: 'post' + i });
 				}
 			})();
-			const events = await collect(subscription, 100);
 			await concurrentWrites;
-			// All writes have committed; wait for any pending subscription events to flush
-			// before closing. Without this, the last write's event can be queued but not
-			// yet delivered when return() closes the stream.
-			await delay(200);
+			// Wait for every expected id rather than for the stream to go quiet: under contention
+			// the gap between two deliveries can exceed any fixed window, and the per-id asserts
+			// below then name whichever one went missing.
+			await waitFor(
+				() => {
+					const ids = new Set(events.map((e) => e.id));
+					for (let i = 0; i < 150; i++) if (!ids.has(1000 + i)) return false;
+					for (let i = 0; i < 30; i++) if (!ids.has(2000 + i)) return false;
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
+			// additive settle: a duplicate trailing the last expected delivery can still land
+			await delay(100);
 			subscription.return?.();
 
 			const ids = new Set(events.map((e) => e.id));
@@ -188,15 +198,24 @@ describe('Subscription replay', () => {
 				await CountTable.put(3000 + i, { name: 'count_pre' + i });
 			}
 			const subscription = await CountTable.subscribe({ previousCount: 5, isCollection: true });
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			// fire writes after subscribe returns but while replay loop is still running
 			const concurrentWrites = (async () => {
 				for (let i = 0; i < 20; i++) {
 					await CountTable.put(4000 + i, { name: 'count_post' + i });
 				}
 			})();
-			const events = await collect(subscription, 150);
 			await concurrentWrites;
-			await delay(200);
+			await waitFor(
+				() => {
+					const ids = new Set(events.map((e) => e.id));
+					for (let i = 0; i < 20; i++) if (!ids.has(4000 + i)) return false;
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
+			await delay(100);
 			subscription.return?.();
 
 			// concurrent writes should arrive
@@ -245,15 +264,27 @@ describe('Subscription replay', () => {
 				await CurrentStateTable.put(5000 + i, { name: 'dedupe_pre' + i });
 			}
 			const subscription = await CurrentStateTable.subscribe({ isCollection: true });
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			// concurrent writes that may be observed by both cursor (snapshot:false) and the listener
 			const concurrentWrites = (async () => {
 				for (let i = 0; i < 30; i++) {
 					await CurrentStateTable.put(5000 + i, { name: 'dedupe_updated' + i });
 				}
 			})();
-			const events = await collect(subscription, 150);
 			await concurrentWrites;
-			await delay(200);
+			await waitFor(
+				() => {
+					const lastByKey = new Map();
+					for (const e of events) lastByKey.set(e.id, e);
+					for (let i = 0; i < 30; i++) {
+						if (lastByKey.get(5000 + i)?.value?.name !== 'dedupe_updated' + i) return false;
+					}
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
+			await delay(100);
 			subscription.return?.();
 
 			// every updated key MUST be delivered with its final value at least once, even if
@@ -338,14 +369,19 @@ describe('Subscription replay', () => {
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
-			// Wait for every in-flight write to be delivered rather than guessing a fixed
-			// duration — the fixed wait raced loaded runners and was the source of the
-			// intermittent "missing id" failures.
-			await waitFor(() => {
-				const seen = new Set(events.map((e) => e.id));
-				for (let i = 0; i < 200; i++) if (!seen.has(20000 + i)) return false;
-				return true;
-			});
+			// Wait on the deliveries themselves rather than a fixed duration, and let the timeout
+			// fall through so the per-id asserts below name whichever write was lost. A
+			// `missing in-flight id N` failure here is not a test-timing problem: it is the lost
+			// delivery in https://github.com/HarperFast/harper/issues/2311 — the startTime replay
+			// branch drops live events committed after its audit cursor has terminated.
+			await waitFor(
+				() => {
+					const seen = new Set(events.map((e) => e.id));
+					for (let i = 0; i < 200; i++) if (!seen.has(20000 + i)) return false;
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
 			subscription.return?.();
 
 			const ids = new Set(events.map((e) => e.id));
@@ -381,7 +417,19 @@ describe('Subscription replay', () => {
 			const events = [];
 			subscription.on('data', (e) => events.push(e));
 			await concurrentWrites;
-			await delay(200);
+			// wait for every hammered key's final (round-2) value instead of a fixed 200ms — the
+			// queued deliveries can trail the commits on a loaded runner
+			await waitFor(
+				() => {
+					const lastSeen = new Map();
+					for (const e of events) lastSeen.set(e.id, e);
+					for (let i = 100; i < 200; i++) {
+						if (lastSeen.get(6000 + i)?.value?.name !== `rc_v2_${i}`) return false;
+					}
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
 			subscription.return?.();
 
 			// every key in 6000..6199 must appear at least once
@@ -418,8 +466,23 @@ describe('Subscription replay', () => {
 					await CurrentStateTable.put(7000 + i, { name: 'pp_updated' + i });
 				}
 			})();
-			const events = await collect(subscription, 250);
+			// Queued deliveries can trail the commits by more than any quiet window on a loaded
+			// runner, so wait for every key's final value. The timeout falls through so the per-key
+			// asserts below report exactly which key was stale.
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			await concurrentWrites;
+			await waitFor(
+				() => {
+					const finals = new Map();
+					for (const e of events) finals.set(e.id, e);
+					for (let i = 0; i < 50; i++) {
+						if (finals.get(7000 + i)?.value?.name !== 'pp_updated' + i) return false;
+					}
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
 			subscription.return?.();
 
 			// every key 7000..7049 must end up at the updated value as its final delivery
@@ -550,8 +613,17 @@ describe('Subscription replay', () => {
 				inFlight.push(CurrentStateTable.put(14000 + i, { name: 'inflight' + i }));
 			}
 			const subscription = await CurrentStateTable.subscribe({ isCollection: true });
-			const events = await collect(subscription, 250);
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
+			await waitFor(
+				() => {
+					const seen = new Set(events.map((e) => e.id));
+					for (let i = 0; i < 200; i++) if (!seen.has(14000 + i)) return false;
+					return true;
+				},
+				{ timeout: 5000 }
+			).catch(() => {});
 			subscription.return?.();
 
 			// every in-flight key must be delivered at least once (duplicates allowed under
@@ -608,8 +680,24 @@ describe('Subscription replay', () => {
 				inFlight.push(CountTable.put(17000 + i, { name: 'count_race_inflight' + i }));
 			}
 			const subscription = await CountTable.subscribe({ previousCount: 10, isCollection: true });
-			const events = await collect(subscription, 250);
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
+			// The duplicate check below is only sound once every delivery that is coming has come.
+			// It cannot wait for all 30 in-flight ids: one that commits before the cursor's snapshot
+			// and falls outside previousCount is legitimately never delivered (running this test
+			// alone, 17000-17002 never arrive). A record written after they settle bounds them
+			// instead: the previousCount cursor collects its history from a snapshot taken before
+			// subscribe() resolves, so it cannot deliver this record, and the queue that will is
+			// drained in commit order.
+			await CountTable.put(17999, { name: 'count_race_sentinel' });
+			await waitFor(() => events.some((e) => e.id === 17999), {
+				timeout: 5000,
+				message: 'sentinel written after the in-flight writes was never delivered',
+			});
+			// additive settle: a duplicate trailing the sentinel can still land; this can only
+			// catch more, never lose events
+			await delay(100);
 			subscription.return?.();
 
 			// the regression we want to catch: a record landing in BOTH history (from cursor's
@@ -631,8 +719,21 @@ describe('Subscription replay', () => {
 				inFlight.push(RecordTable.put(15000, { name: 'inflight_v' + i }));
 			}
 			const subscription = await RecordTable.subscribe({ id: 15000, startTime: startTime - 1 });
-			const events = await collect(subscription, 250);
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
 			await Promise.all(inFlight);
+			// Same soundness requirement as the count test above. Rapid same-record versions can
+			// legitimately coalesce, so no in-flight version is guaranteed to be delivered on its
+			// own; a version written after they all settle is. The cursor captures this record's
+			// entry before subscribe() resolves, so it cannot deliver that later version — it
+			// arrives through the commit-ordered queue, after every in-flight delivery.
+			await RecordTable.put(15000, { name: 'inflight_sentinel' });
+			await waitFor(() => events.some((e) => e.value?.name === 'inflight_sentinel'), {
+				timeout: 5000,
+				message: 'sentinel version written after the in-flight writes was never delivered',
+			});
+			// additive settle so a duplicate trailing the sentinel can still surface
+			await delay(100);
 			subscription.return?.();
 
 			const pairs = events.map((e) => `${e.id}:${e.version}`);
@@ -978,7 +1079,20 @@ describe('Subscription replay', () => {
 			for (let i = 0; i < N; i++) {
 				await T.put(20000 + i, { name: 'burst' + i });
 			}
-			const events = await collect(subscription, 300);
+			const events = [];
+			subscription.on('data', (e) => events.push(e));
+			// Every write is committed and awaited before this point, so all N must be delivered —
+			// wait for that rather than for a quiet window, which a mid-drain stall longer than the
+			// window ends early (measured: 1 failure in 32 lmdb runs, "missing 7 of 600").
+			await waitFor(
+				() => {
+					const seen = new Set(events.map((e) => e.id));
+					for (let i = 0; i < N; i++) if (!seen.has(20000 + i)) return false;
+					return true;
+				},
+				{ timeout: 10000 }
+			).catch(() => {});
+			await delay(100);
 			subscription.return?.();
 
 			const ids = new Set(events.map((e) => e.id));

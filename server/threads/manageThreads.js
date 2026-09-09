@@ -7,7 +7,7 @@ const { realExit } = require('./workerProcessGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { spawn, spawnSync } = require('node:child_process');
-const { readdirSync, readFileSync } = require('node:fs');
+const { readdirSync, readFileSync, readlinkSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
 const { join, isAbsolute, extname } = require('path');
 const { pathToFileURL } = require('url');
@@ -26,6 +26,8 @@ const { getConfigPath } = require('../../config/configUtils.ts');
 const { resolveWatchTarget } = require('../../utility/watchPath.ts');
 const {
 	DIRECTORY_POLLING_FALLBACK_OPTIONS,
+	claimLostNativeWatchError,
+	guardedWatch,
 	isWatcherExhaustionError,
 	warnWatcherFallback,
 } = require('../../utility/watcherFallback.ts');
@@ -49,7 +51,6 @@ function getRequireModules() {
 		);
 	return requireModules;
 }
-const chokidar = require('chokidar');
 const isBun = typeof globalThis.Bun !== 'undefined';
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
@@ -64,6 +65,8 @@ const RESTART_TYPE = 'restart';
 const RESTART_PROGRESS_HEARTBEAT_MS = 15000;
 const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';
+const OS_THREAD_ID = 'os-thread-id';
+const STUCK_WORKER_REPORT = 'stuck-worker-report';
 const THREAD_INFO = 'thread_info';
 const ADDED_PORT = 'added-port';
 const ACKNOWLEDGEMENT = 'ack';
@@ -308,6 +311,15 @@ if (!parentPort) {
 	onMessageByType(RESOURCE_REPORT, (message, worker) => {
 		if (worker) recordResourceReport(worker, message);
 	});
+	onMessageByType(OS_THREAD_ID, (message, worker) => {
+		if (worker) worker.osThreadId = message.osThreadId;
+	});
+	onMessageByType(STUCK_WORKER_REPORT, (message) => {
+		for (const threadId of message.threadIds) {
+			const worker = workers.find((worker) => worker.threadId === threadId);
+			if (worker) logStuckWorkerDiagnostics(worker);
+		}
+	});
 	onMessageByType(AWAIT_PROCESS_GROUP_TERMINATION, async (message, worker) => {
 		if (!worker) return;
 		await (pendingProcessGroupTerminations.get(message.ownerThreadId) ?? Promise.resolve());
@@ -319,6 +331,7 @@ if (!parentPort) {
 }
 // postMessage type listeners that are registered in other ways or can be registered later
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED, null);
+listenersByType.set(hdbTerms.ITC_EVENT_TYPES.CHILD_STARTUP_PHASE, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.SCHEMA, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.USER, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST, null);
@@ -458,7 +471,10 @@ function startWorker(path, options = {}) {
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
 				startWorker(path, options);
-			} else harperLogger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
+			} else {
+				harperLogger.error(`Thread has been restarted ${worker.unexpectedRestarts} times and will not be restarted`);
+				options.onRestartExhausted?.(worker);
+			}
 		}
 	});
 	workers.push(worker);
@@ -529,7 +545,7 @@ async function restartWorkers(
 			maxWorkersDown = maxWorkersDown * workers.length;
 		}
 		// make a copy of the workers before iterating them, as the workers array mutates a lot during this
-		let waitingToFinish = []; // promises for workers we have shut down and are waiting to exit
+		let waitingToFinish = []; // promises for workers we are replacing, spliced as each is replaced
 		// Every replacement that was started without being awaited first, so this function can still
 		// resolve only once each one is accepting connections.
 		let replacementsStarting = [];
@@ -539,6 +555,7 @@ async function restartWorkers(
 		// costs capacity until startWorker's auto-restart brings a fresh one up.
 		let workersKeptOnOldCode = 0;
 		let replacementsNotStarted = 0;
+		let replacementsFailedToStart = 0;
 		// We can only start the replacement *before* the old worker releases its port when the OS lets
 		// both listen on the same port at once (SO_REUSEPORT). Without that — Windows (no SO_REUSEPORT),
 		// macOS (unreliable SO_REUSEPORT, so workers bind exclusively), and Bun — the replacement can't
@@ -550,7 +567,9 @@ async function restartWorkers(
 		// thread keeps serving the HTTP ports throughout. This ordering is also what lets
 		// listenOnPorts() treat a dedicated listener's EADDRINUSE as an external conflict.
 		const canPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
-		for (let worker of workers.slice(0)) {
+		const restarting = workers.slice(0);
+		for (let index = 0; index < restarting.length; index++) {
+			const worker = restarting[index];
 			// Terminal shutdown: stop replacing workers mid-loop — the guard for every replacement start below.
 			if (processShuttingDown && startReplacementThreads) break;
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
@@ -639,13 +658,15 @@ async function restartWorkers(
 			// Overlapping types we couldn't pre-start (Windows/Bun): start the replacement now that the old
 			// worker is releasing its port. server.close() stops accepting immediately, so the port frees up
 			// well before the replacement finishes booting and binds.
-			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown)
-				replacementsStarting.push(
-					whenWorkerStarted(worker.startCopy()).then((started) => {
-						onProgress?.();
-						return started;
-					})
-				);
+			let replacementStarting;
+			if (overlapping && startReplacementThreads && !canPreStartReplacement && !processShuttingDown) {
+				replacementStarting = whenWorkerStarted(worker.startCopy()).then((started) => {
+					if (!started) replacementsFailedToStart++;
+					onProgress?.();
+					return started;
+				});
+				replacementsStarting.push(replacementStarting);
+			}
 
 			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, force it from the outside
@@ -688,17 +709,40 @@ async function restartWorkers(
 					clearTimeout(timeout);
 					onProgress?.();
 					worker.extendTerminateDeadline = undefined;
-					const index = waitingToFinish.indexOf(whenDone);
-					if (index > -1) waitingToFinish.splice(index, 1);
 					// non-overlapping types have no advance replacement, so start it once the old one is gone
 					if (!overlapping && startReplacementThreads && !processShuttingDown) worker.startCopy();
 					resolve();
 				});
 			});
-			waitingToFinish.push(whenDone);
+			// A worker counts as replaced only once its replacement is accepting connections, not merely
+			// once it has exited. This promise is held unawaited between throttle points, so it must not
+			// be able to reject.
+			const replaced = (replacementStarting ? Promise.all([whenDone, replacementStarting]) : whenDone)
+				.catch((error) => harperLogger.warn('Error waiting for a worker to be replaced', error))
+				.then(() => {
+					const at = waitingToFinish.indexOf(replaced);
+					if (at > -1) waitingToFinish.splice(at, 1);
+				});
+			waitingToFinish.push(replaced);
 			if (waitingToFinish.length >= maxWorkersDown) {
-				// throttle how many workers are draining/down at once to limit load
+				// throttle how many workers are down at once to limit load
 				await Promise.race(waitingToFinish);
+			}
+			// Readiness throttling bounds how many workers are down at once, but not how many *fail*: with
+			// replacements that never come up, walking the rest of the pool would leave nothing serving.
+			// The workers not yet touched are still running the old code, which beats none running at all.
+			if (replacementsFailedToStart >= maxWorkersDown) {
+				const untouched = restarting
+					.slice(index + 1)
+					// a worker that exited on its own mid-restart is spliced out of `workers` and
+					// auto-restarted onto the new code (see the exit handler above); it is not still on
+					// the previous code even though this loop never got to it.
+					.filter((other) => (!name || other.name === name) && !other.wasShutdown && workers.includes(other)).length;
+				harperLogger.error(
+					`${replacementsFailedToStart} replacement worker thread(s) did not start; stopping this restart with ${untouched} worker(s) still on the previous code`
+				);
+				workersKeptOnOldCode += untouched;
+				break;
 			}
 		}
 		await Promise.all(waitingToFinish);
@@ -885,16 +929,152 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 				timer = undefined;
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
-					stuck.push(ackHandler.port?.threadId);
+					stuck.push(ackHandler.port);
 					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
 				}
 				harperLogger.warn(
-					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.join(', ')} within ${timeout}ms; proceeding best-effort`
+					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; proceeding best-effort`
 				);
+				if (isMainThread) for (let port of stuck) logStuckWorkerDiagnostics(port);
+				else if (parentPort) {
+					// Only main holds the Worker objects (and tids), so a worker-originated timeout is sampled there.
+					const threadIds = stuck.map((port) => port?.threadId).filter((threadId) => threadId > 0);
+					if (threadIds.length > 0) parentPort.postMessage({ type: STUCK_WORKER_REPORT, threadIds });
+				}
 			}, timeout);
 			timer.unref?.();
 		}
 	});
+}
+
+// Linux only: /proc/thread-self resolves to <pid>/task/<tid> for the calling thread.
+function getOsThreadId() {
+	try {
+		const tid = Number(readlinkSync('/proc/thread-self').split('/').pop());
+		return Number.isInteger(tid) && tid > 0 ? tid : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function readTaskFile(tid, name) {
+	try {
+		return readFileSync(`/proc/self/task/${tid}/${name}`, 'utf8').trim();
+	} catch {
+		return undefined;
+	}
+}
+
+// Kernel-side view of one thread. Every field is best-effort and reported individually, since
+// wchan/syscall need ptrace read access that a hardened container may deny while stat is open.
+function finiteOrUndefined(value) {
+	const number = Number(value);
+	return Number.isFinite(number) ? number : undefined;
+}
+
+function readOsThreadState(tid) {
+	const thread = { tid };
+	const stat = readTaskFile(tid, 'stat');
+	if (stat !== undefined) {
+		// Fields after the parenthesized comm, so state is [0], utime/stime [11]/[12], starttime [19].
+		const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+		thread.state = fields[0];
+		const utime = finiteOrUndefined(fields[11]);
+		const stime = finiteOrUndefined(fields[12]);
+		if (utime !== undefined && stime !== undefined) thread.cpuTicks = utime + stime;
+		thread.startTime = fields[19];
+	}
+	const wchan = readTaskFile(tid, 'wchan');
+	if (wchan !== undefined) thread.wchan = wchan;
+	// First token only: the syscall number, "running", or -1 (blocked outside a syscall). The
+	// remainder is argument registers and the stack/instruction pointers, which don't belong in a log.
+	const syscall = readTaskFile(tid, 'syscall');
+	if (syscall !== undefined) thread.syscall = syscall.split(' ')[0];
+	const status = readTaskFile(tid, 'status');
+	if (status !== undefined) {
+		thread.voluntarySwitches = finiteOrUndefined(/^voluntary_ctxt_switches:\s*(\d+)/m.exec(status)?.[1]);
+		thread.nonvoluntarySwitches = finiteOrUndefined(/^nonvoluntary_ctxt_switches:\s*(\d+)/m.exec(status)?.[1]);
+	}
+	return thread;
+}
+
+function snapshotWorkerThread(worker) {
+	const snapshot = { at: Date.now() };
+	if (worker.resources?.updated) snapshot.sinceResourceReport = snapshot.at - worker.resources.updated;
+	const eventLoop = worker.performance?.eventLoopUtilization?.();
+	if (eventLoop) snapshot.eventLoop = { idle: eventLoop.idle, active: eventLoop.active };
+	if (worker.osThreadId) snapshot.osThread = readOsThreadState(worker.osThreadId);
+	return snapshot;
+}
+
+function describeThreadState(thread) {
+	return `state=${thread.state ?? '?'} wchan=${thread.wchan ?? '?'} syscall=${thread.syscall ?? '?'}`;
+}
+
+function describeSnapshot(snapshot) {
+	const parts = [
+		snapshot.sinceResourceReport === undefined
+			? 'no resource report received'
+			: `last resource report ${snapshot.sinceResourceReport}ms ago`,
+	];
+	if (snapshot.eventLoop)
+		parts.push(
+			`event loop active ${Math.round(snapshot.eventLoop.active)}ms idle ${Math.round(snapshot.eventLoop.idle)}ms`
+		);
+	const thread = snapshot.osThread;
+	if (!thread) parts.push('os thread state unavailable');
+	else
+		parts.push(
+			`os tid ${thread.tid} ${describeThreadState(thread)} cpuTicks=${thread.cpuTicks ?? '?'} ctxtSwitches=${thread.voluntarySwitches ?? '?'}/${thread.nonvoluntarySwitches ?? '?'}`
+		);
+	return parts.join('; ');
+}
+
+function describeDelta(before, after) {
+	return Number.isFinite(before) && Number.isFinite(after) ? `+${after - before}` : '?';
+}
+
+function describeProgress(first, second) {
+	const parts = [];
+	if (first.eventLoop && second.eventLoop)
+		parts.push(
+			`event loop active +${Math.round(second.eventLoop.active - first.eventLoop.active)}ms idle +${Math.round(second.eventLoop.idle - first.eventLoop.idle)}ms`
+		);
+	const before = first.osThread;
+	const after = second.osThread;
+	if (before && after)
+		parts.push(
+			`cpuTicks ${describeDelta(before.cpuTicks, after.cpuTicks)} ctxtSwitches ${describeDelta(before.voluntarySwitches, after.voluntarySwitches)}/${describeDelta(before.nonvoluntarySwitches, after.nonvoluntarySwitches)} ${describeThreadState(after)}`
+		);
+	return parts.join('; ');
+}
+
+// A blocked event loop cannot report itself; two kernel-state samples a second apart separate
+// "parked on a lock" (no CPU ticks, no context switches) from "spinning".
+const STUCK_WORKER_SAMPLE_INTERVAL_MS = 1000;
+const STUCK_WORKER_DIAGNOSTIC_COOLDOWN_MS = 30000;
+function logStuckWorkerDiagnostics(worker) {
+	if (!worker || !workers.includes(worker)) return;
+	const now = Date.now();
+	if (worker.stuckDiagnosticAt !== undefined && now - worker.stuckDiagnosticAt < STUCK_WORKER_DIAGNOSTIC_COOLDOWN_MS)
+		return;
+	worker.stuckDiagnosticAt = now;
+	const threadId = worker.threadId; // Node resets it to -1 once the worker exits
+	const first = snapshotWorkerThread(worker);
+	harperLogger.warn(`Worker thread ${threadId} at ack timeout: ${describeSnapshot(first)}`);
+	if (!first.eventLoop && !first.osThread) return;
+	setTimeout(() => {
+		if (!workers.includes(worker)) {
+			harperLogger.warn(`Worker thread ${threadId} exited before its follow-up sample`);
+			return;
+		}
+		const second = snapshotWorkerThread(worker);
+		// A recycled tid after a thread exit would attribute another thread's activity to this worker.
+		if (second.osThread && second.osThread.startTime !== first.osThread?.startTime) second.osThread = undefined;
+		harperLogger.warn(
+			`Worker thread ${threadId} over the next ${second.at - first.at}ms: ${describeProgress(first, second) || 'no further state available'}`
+		);
+	}, STUCK_WORKER_SAMPLE_INTERVAL_MS).unref();
 }
 
 function sendThreadInfo(targetWorker) {
@@ -969,6 +1149,8 @@ if (parentPort && workerData?.addPorts) {
 	// parentPort so sendToThread(0, ...) and similar lookups can route back to main.
 	parentPort.threadId = 0;
 	addPort(parentPort);
+	const osThreadId = getOsThreadId();
+	if (osThreadId !== undefined) parentPort.postMessage({ type: OS_THREAD_ID, osThreadId });
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];
 		port.threadId = workerData.addThreadIds[i];
@@ -1506,7 +1688,7 @@ if (isMainThread) {
 		let usingPolling = watchTarget.mustPoll;
 		let liveWatcher;
 		const openWatcher = () => {
-			const opened = (liveWatcher = chokidar.watch(watchTarget.path, {
+			const opened = (liveWatcher = guardedWatch(watchTarget.path, {
 				persistent: false,
 				...(usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
 				ignored: (path) => {
@@ -1517,6 +1699,7 @@ if (isMainThread) {
 				// This runs on the thread that owns every worker, and chokidar emits 'error' unguarded for
 				// anything but ENOENT/ENOTDIR.
 				.on('error', (error) => {
+					if (claimLostNativeWatchError(error)) return;
 					if (isWatcherExhaustionError(error)) {
 						if (usingPolling || liveWatcher !== opened) return;
 						warnWatcherFallback(dir);

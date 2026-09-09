@@ -31,3 +31,15 @@ export class StorageEngineInfo extends Resource {
 		};
 	}
 }
+
+export class TransactionLogStats extends Resource {
+	static loadAsInstance = false;
+	async get() {
+		const rootStore = tables['Ledger']?.primaryStore?.rootStore;
+		if (!rootStore?.auditStore?.log) throw new Error('RocksDB transaction log is not available');
+		if (typeof rootStore.auditStore.log.getStats !== 'function') {
+			throw new Error('RocksDB transaction-log statistics are not available');
+		}
+		return rootStore.auditStore.log.getStats();
+	}
+}

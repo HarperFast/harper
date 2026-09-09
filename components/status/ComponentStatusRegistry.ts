@@ -5,6 +5,7 @@
  * centralized management of component health status.
  */
 
+import { deployValidationStatusSink } from '../../server/serverHelpers/deployValidationState.ts';
 import { ComponentStatus } from './ComponentStatus.ts';
 import {
 	type ComponentStatusLevel,
@@ -24,6 +25,37 @@ export type ComponentStatusMap = Map<string, ComponentStatus>;
  * Component Status Registry Class
  * Provides a centralized registry for managing component health status
  */
+/**
+ * A status copy handed to a validation must share nothing mutable with the live entry. `Error` is reachable
+ * through the public `statusForComponent(...).get()` path, so candidate code could otherwise edit
+ * `message`, `cause` or a custom field on the serving component's own error object. Own enumerable
+ * properties are carried across; `cause` is flattened to a message, because an error graph of unknown depth
+ * is not worth cloning to hand a throwaway load its own read.
+ */
+function detachError(error: Error | string | undefined): Error | string | undefined {
+	if (!(error instanceof Error)) return error;
+	const detached = new Error(error.message);
+	detached.name = error.name;
+	detached.stack = error.stack;
+	for (const [key, value] of Object.entries(error)) {
+		if (key === 'cause') continue;
+		// Detached too where it can be: copying an object property by reference would leave the candidate a
+		// mutable handle into the live error after all. Anything unclonable (a function, a class instance) is
+		// replaced by its string form rather than shared.
+		let detachedValue: unknown;
+		try {
+			detachedValue = structuredClone(value);
+		} catch {
+			detachedValue = typeof value === 'object' && value !== null ? String(value) : value;
+		}
+		(detached as unknown as Record<string, unknown>)[key] = detachedValue;
+	}
+	if (error.cause !== undefined) {
+		detached.cause = error.cause instanceof Error ? `${error.cause.name}: ${error.cause.message}` : error.cause;
+	}
+	return detached;
+}
+
 export class ComponentStatusRegistry {
 	private statusMap: ComponentStatusMap = new Map();
 
@@ -61,6 +93,16 @@ export class ComponentStatusRegistry {
 			);
 		}
 
+		// A deploy's pre-flight validation loads the CANDIDATE's code under the real component's name, so its
+		// writes would land on the live component. They go to the validation's own throwaway map instead —
+		// which is why this cannot simply be reverted afterwards: the live component keeps serving through
+		// that window, and `statusForComponent()` is a public API its own code may call at any time, so
+		// reverting would silently discard a genuine report from it.
+		const sink = deployValidationStatusSink();
+		if (sink) {
+			sink.set(componentName, new ComponentStatus(status, message, error));
+			return;
+		}
 		this.statusMap.set(componentName, new ComponentStatus(status, message, error));
 	}
 
@@ -68,6 +110,23 @@ export class ComponentStatusRegistry {
 	 * Get the current status of a component
 	 */
 	public getStatus(componentName: string): ComponentStatus | undefined {
+		// Inside a validation the candidate reads its OWN writes, and never the live object: the returned
+		// `ComponentStatus` is mutable, so handing back the live one would let candidate code edit the
+		// serving component's status in place and bypass the diversion entirely. A component the candidate
+		// has not written yet is copied into the sink on first read for the same reason.
+		const sink = deployValidationStatusSink();
+		if (sink) {
+			const diverted = sink.get(componentName);
+			if (diverted) return diverted;
+			const live = this.statusMap.get(componentName);
+			if (!live) return undefined;
+			const copy = new ComponentStatus(live.status, live.message, detachError(live.error));
+			// A new Date, not the live one: `Date` is mutable, so sharing it would let candidate code reach
+			// back into the serving component's status through the copy.
+			copy.lastChecked = new Date(live.lastChecked);
+			sink.set(componentName, copy);
+			return copy;
+		}
 		return this.statusMap.get(componentName);
 	}
 

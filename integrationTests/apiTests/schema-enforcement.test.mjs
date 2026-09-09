@@ -146,4 +146,29 @@ suite('Schema enforcement features', { skip: skipSuite }, (ctx) => {
 		assert.ok(Array.isArray(r.body), r.text);
 		assert.equal(r.body.length, 0, `expected 0 records for absent tag, got ${r.body.length}: ${r.text}`);
 	});
+
+	// ── [String] @indexed — a range scan reads several entries per record (harper#2434) ────
+	// tags index entries in scan order: alpha→1, beta→1, beta→2, delta→3, gamma→2, gamma→3.
+	// Every record owns two of them, and record 2's are not adjacent (delta→3 sits between
+	// them), so the scan has to collapse to one result per record before the page window.
+
+	test('[String] @indexed: a range over several elements returns each record once', async () => {
+		const r = await client.reqRest('/TaggedItem/?tags=ge=alpha').expect(200);
+		assert.ok(Array.isArray(r.body), r.text);
+		const ids = r.body.map((item) => item.id);
+		assert.deepEqual(ids.sort(), ['1', '2', '3'], r.text);
+	});
+
+	test('[String] @indexed: a paged range sweep returns each record exactly once', async () => {
+		const pageSize = 2;
+		const swept = [];
+		for (let offset = 0; offset < 10; offset += pageSize) {
+			const r = await client.reqRest(`/TaggedItem/?tags=ge=alpha&limit(${offset},${offset + pageSize})`).expect(200);
+			assert.ok(Array.isArray(r.body), r.text);
+			if (r.body.length === 0) break;
+			assert.ok(r.body.length <= pageSize, `page at offset ${offset} exceeded its limit: ${r.text}`);
+			swept.push(...r.body.map((item) => item.id));
+		}
+		assert.deepEqual(swept, ['1', '2', '3']);
+	});
 });

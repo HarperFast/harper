@@ -250,6 +250,7 @@ export const OPERATIONS_ENUM = {
 	INSERT: 'insert',
 	UPDATE: 'update',
 	UPSERT: 'upsert',
+	PUT: 'put',
 	SEARCH_BY_CONDITIONS: 'search_by_conditions',
 	SEARCH_BY_HASH: 'search_by_hash',
 	SEARCH_BY_ID: 'search_by_id',
@@ -660,6 +661,8 @@ export const CONFIG_PARAMS = {
 	REPLICATION_SHARD: 'replication_shard',
 	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
 	REPLICATION_BLOBGAPRECONNECTMS: 'replication_blobGapReconnectMs',
+	REPLICATION_BLOBGAPESCALATIONCYCLES: 'replication_blobGapEscalationCycles',
+	REPLICATION_BLOBGAPESCALATIONMS: 'replication_blobGapEscalationMs',
 	REPLICATION_COPYCURSORFLUSHBYTES: 'replication_copyCursorFlushBytes',
 	REPLICATION_COPYCURSORFLUSHINTERVALMS: 'replication_copyCursorFlushIntervalMs',
 	REPLICATION_BLOBSENDDRAINTIMEOUT: 'replication_blobSendDrainTimeout',
@@ -690,9 +693,11 @@ export const CONFIG_PARAMS = {
 	STORAGE_MAXTRANSACTIONOPENTIME: 'storage_maxTransactionOpenTime',
 	STORAGE_MAX_READ_TRANSACTION_OPEN_TIME: 'storage_maxReadTransactionOpenTime',
 	STORAGE_DEBUGLONGTRANSACTIONS: 'storage_debugLongTransactions',
+	STORAGE_LONGTRANSACTIONREPORTTHRESHOLD: 'storage_longTransactionReportThreshold',
 	STORAGE_PATH: 'storage_path',
 	STORAGE_BACKUPPATH: 'storage_backupPath',
 	STORAGE_BLOBPATHS: 'storage_blobPaths',
+	STORAGE_BLOBS_COMPRESSION: 'storage_blobs_compression',
 	STORAGE_BLOBCLEANUPSPEED: 'storage_blobCleanupSpeed',
 	STORAGE_BLOBREADTIMEOUT: 'storage_blobReadTimeout',
 	STORAGE_BLOBRETENTION: 'storage_blobRetention',
@@ -737,6 +742,10 @@ export const CONFIG_PARAMS = {
 	CLONED: 'cloned',
 	NODE_HOSTNAME: 'node_hostname',
 	NODE_URL: 'node_url',
+	SQL_ENGINE: 'sql_engine',
+	SQL_ALLOWFULLSCAN: 'sql_allowFullScan',
+	SQL_MAXSORTROWS: 'sql_maxSortRows',
+	SQL_MAXHASHROWS: 'sql_maxHashRows',
 } as const;
 
 /**
@@ -933,6 +942,7 @@ export const JWT_ENUM = {
 export const ITC_EVENT_TYPES = {
 	SHUTDOWN: 'shutdown',
 	CHILD_STARTED: 'child_started',
+	CHILD_STARTUP_PHASE: 'child_startup_phase',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',
 	USER: 'user',

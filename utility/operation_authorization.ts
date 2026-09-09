@@ -90,6 +90,8 @@ const BULK_OPS = {
 	CSV_FILE_LOAD: 'csvFileLoad',
 	IMPORT_FROM_S3: 'importFromS3',
 };
+/** The same set, precomputed: `isBulkLoadOperation` runs on every operations authorization. */
+const BULK_OP_NAMES = new Set(Object.values(BULK_OPS));
 
 const STRUCTURE_USER_OPS = [
 	schema.createTable.name,
@@ -148,6 +150,13 @@ requiredPermissions.set(write.update.name, new (permission as any)(false, [UPDAT
 requiredPermissions.set(
 	write.upsert.name,
 	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.UPSERT)
+);
+// Same grants as `upsert`, and the same as REST `PUT` enforces: creating needs insert, replacing an
+// existing record needs update. A full replace can DROP attributes, which is why the
+// attribute-scoped denial below applies to it.
+requiredPermissions.set(
+	write.put.name,
+	new (permission as any)(false, [INSERT_PERM, UPDATE_PERM], terms.OPERATIONS_ENUM.PUT)
 );
 requiredPermissions.set(
 	search.searchByConditions.name,
@@ -672,13 +681,38 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		op = operation;
 	}
 	//we need to use the action value, if present, to ensure the correct permission is checked below
-	let action = requestJson.action;
+	// `action` narrows the required permissions to just that one — `hasPermissions` does it for table
+	// permissions and `checkAttributePerms` for attribute permissions — because a bulk load carries
+	// `action: insert|update|upsert` and only needs the permission for what it will actually do.
+	//
+	// Honoured ONLY for a real bulk-load operation. `action` is an unknown-but-accepted key on the
+	// shared write validator, so taking it from any request let a caller pick which half of an
+	// operation's permissions to be checked against: `{operation:'put', action:'insert'}` from a role
+	// with `insert: true, update: false` replaced an existing record, and `action:'update'` created a
+	// missing one with no insert permission. `upsert` had the same shape before `put` existed.
+	//
+	// Both narrowing sites read this one variable, so gating it here covers both. The bulk path is
+	// unaffected: `verifyBulkLoadAttributePerms` receives the real action from
+	// `bulkLoad.validateChunk`, not from here.
+	let action = isBulkLoadOperation(op) ? requestJson.action : undefined;
 
-	let operationSchema = requestJson.schema ?? requestJson.database;
+	// Resolved through the same helper the handlers use (`transformReq` delegates to it), because
+	// authorization runs BEFORE `transformReq` and any disagreement about the target means the
+	// permissions checked are not the permissions for the write that happens. This used to be a
+	// local `schema ?? database`, which diverged from the handlers in two separately exploitable
+	// ways: it kept a falsy-but-present `database: 0` instead of defaulting, and it preferred
+	// `schema` where the handlers prefer `database` — so a request could be authorized against one
+	// database and written to another. With no target resolved at all, `schemaTableMap` stayed empty
+	// and `hasPermissions` iterated nothing, authorizing by vacuous truth.
+	let operationSchema = commonUtils.resolveTargetDatabase(requestJson);
 	let table = requestJson.table;
 
 	let schemaTableMap = new Map();
-	if (operationSchema && table) {
+	// `table != undefined`, not truthy: `hdbTable` is `Joi.alternatives(Joi.string(), Joi.number())`
+	// (validation/common_validators.ts), so a table named `0` validates and a truthy test drops it
+	// from the map — leaving `hasPermissions` nothing to iterate, which authorizes by vacuous truth.
+	// The same falsy-vs-nullish distinction the database resolution above turns on.
+	if (operationSchema != undefined && table != undefined) {
 		schemaTableMap.set(operationSchema, [table]);
 	}
 
@@ -801,6 +835,16 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		}
 	}
 
+	// Fail closed on an unresolved target. `hasPermissions` iterates `schemaTableMap`, so an empty map
+	// authorizes by vacuous truth — the shape of this whole bug class, and of the SQL path's
+	// GHSA-5c29-q62v-jrwf, whose fix carries the same backstop. `resolveTargetDatabase` always
+	// returns a database, so a named table always populates the map and this is unreachable today; it
+	// is here so that a future change to target resolution fails safe instead of silently authorizing
+	// everything. That also means no test can cover it, which is the point rather than an omission.
+	if (table != undefined && schemaTableMap.size === 0) {
+		return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.UNKNOWN_OP_AUTH_ERROR(op, operationSchema, table));
+	}
+
 	let failedPermissions = hasPermissions(requestJson.hdb_user, op, schemaTableMap, permsResponse, action);
 	//check if failedTablePerms are back and return them B/C it will be an op-level permission issue
 	if (failedPermissions) {
@@ -831,8 +875,17 @@ export function verifyPerms(requestJson: any, operation: any, options?: { apiOpe
 		}
 	}
 
-	const recordAttrs = getRecordAttributes(requestJson);
+	const recordAttrs = getRecordAttributes(requestJson, op);
 	const attrPermissions = getAttributePermissions(requestJson.hdb_user?.role?.permission, operationSchema, table);
+	// A `put` replaces the whole record, so it REMOVES every attribute the request omits — and
+	// `checkAttributePerms` below only sees the attributes a request SUPPLIES, so it cannot police
+	// those removals. An attribute-scoped role could otherwise erase an attribute it has no `update`
+	// permission for by leaving it out. REST closes the same gap in `Table.allowUpdate` by restoring
+	// such attributes from the stored record, which needs the stored record; this runs before anything
+	// is read, so it denies instead. Roles that scope no attribute are unaffected.
+	if (attrPermissions.size > 0 && op === write.put.name) {
+		return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.PUT_WITH_ATTRIBUTE_PERMS(operationSchema, table));
+	}
 	checkAttributePerms(recordAttrs, attrPermissions, op, table, operationSchema, permsResponse, action);
 
 	//This result value will be null if no perms issues were found in checkAttributePerms
@@ -1038,12 +1091,20 @@ export function checkAttributePerms(
  * @param json - json containing the request
  * @returns {Set} - all attributes affected by the request statement.
  */
-function getRecordAttributes(json) {
+/** Whether the operation checks attribute permissions per chunk rather than from this request. */
+function isBulkLoadOperation(operationName): boolean {
+	return BULK_OP_NAMES.has(operationName);
+}
+
+function getRecordAttributes(json, operationName?) {
 	let affectedAttributes = new Set();
 	try {
-		//Bulk load operations need to have attr-level permissions checked during the validateChunk step of the operation
-		// in the bulkLoad.js methods
-		if (json.action) {
+		// Bulk load operations have their attribute permissions checked per chunk instead, in
+		// `bulkLoad.validateChunk` — the records aren't in this request. That opt-out is keyed on the
+		// OPERATION, never on the caller-supplied `action` field: `action` is an unknown-but-accepted
+		// key on the insert/update/upsert validator, so inferring the opt-out from its presence let any
+		// direct request skip every attribute check by adding `action: "update"` to the body.
+		if (isBulkLoadOperation(operationName)) {
 			return affectedAttributes;
 		}
 		if (json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS) {
@@ -1105,7 +1166,10 @@ export function getAttributePermissions(rolePerms, operationSchema, table) {
 	}
 	//Some commands do not require a table to be specified.  If there is no table, there is likely not
 	// anything attribute permissions needs to check.
-	if (!operationSchema || !table) {
+	// Nullish rather than falsy for the same reason as the map guard in verifyPerms: a table named `0`
+	// validates (`hdbTable` accepts a number), and skipping it here means its attribute permissions
+	// go unchecked.
+	if (operationSchema == undefined || table == undefined) {
 		return roleAttributePermissions;
 	}
 	try {

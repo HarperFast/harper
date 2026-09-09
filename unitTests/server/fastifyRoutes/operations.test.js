@@ -557,11 +557,8 @@ describe('Test custom functions operations', () => {
 				package: '@org/new-package',
 			});
 
-			// Verify addConfig was called
 			expect(addConfigStub.calledOnce).to.be.true;
 			expect(addConfigStub.firstCall.args[0]).to.equal('new-component');
-
-			// Verify prepareApplication was called
 			expect(prepareApplicationStub.calledOnce).to.be.true;
 		});
 
@@ -604,12 +601,9 @@ describe('Test custom functions operations', () => {
 				force: true,
 			});
 
-			// Verify addConfig was called
 			expect(addConfigStub.calledOnce).to.be.true;
 			expect(addConfigStub.firstCall.args[0]).to.equal('graphql');
 			expect(addConfigStub.firstCall.args[1].package).to.equal('@org/override-package');
-
-			// Verify prepareApplication was called
 			expect(prepareApplicationStub.calledOnce).to.be.true;
 		});
 
