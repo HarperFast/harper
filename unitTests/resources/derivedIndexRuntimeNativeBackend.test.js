@@ -1339,6 +1339,36 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.match(runtime.getStatus('marker-fails').reason, /condemnation could not be persisted/);
 		assert.strictEqual(backend.resets.length, 0, 'no destructive reset without a durable condemnation');
 		assert.strictEqual(runtime.getReadiness('marker-fails').state, 'unavailable');
+		// The store recovers: the next commit wake retries the marker, and only then does the rebuild run.
+		delete store.putSync;
+		store.rootStore.emit('committed');
+		await waitFor(() => runtime.getReadiness('marker-fails').state === 'ready', { timeout: 5000 });
+		assert.strictEqual(store.markers.size, 0, 'written, then cleared at the durable ready');
+		assert.strictEqual(backend.resets.length, 1);
+		await runtime.stop();
+	});
+
+	it('keeps proving catch-up mid-stream so a backend that keeps up under sustained ingest never trips', async () => {
+		const entries = [];
+		const records = new Map();
+		const store = new FakeLogStore(new Map([[10, entries]]), { live: true });
+		const backend = new AsyncBackend('sustained', { cursor: cursor(10), applyDelay: 0 });
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 });
+		runtime.register(registration(backend, { maxLagMilliseconds: 60, maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => runtime.getStatus('sustained')?.state === 'idle');
+		let next = 11;
+		const started = Date.now();
+		while (Date.now() - started < 300) {
+			for (let i = 0; i < 5; i++) {
+				const id = `r${next}`;
+				records.set(`1:${id}`, { version: next, value: { title: id } });
+				entries.push(audit({ timestamp: next++, recordId: id }));
+			}
+			store.rootStore.emit('committed');
+			await sleep(2);
+			assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined, 'a backend that keeps up is never shed');
+		}
+		assert(backend.flushes.length > 5, 'catch-up was proven at barriers, not at an idle pass');
 		await runtime.stop();
 	});
 

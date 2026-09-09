@@ -452,7 +452,6 @@ class DerivedIndexRunner {
 	#carried: CollectedTransaction[] = [];
 	#latestSeen = new Map<string, number>();
 	#stalledSince?: number;
-	#unprovenSince?: number;
 	#lastCaughtUpAt?: number;
 	#lagTimer?: NodeJS.Timeout;
 	#lockRetryTimer?: NodeJS.Timeout;
@@ -475,6 +474,7 @@ class DerivedIndexRunner {
 	#heldLock = false;
 	#quiescing?: { epoch: bigint; promise: Promise<void>; since: number };
 	#condemned = false;
+	#condemnationPending?: string;
 	#rebuilding = false;
 	#rebuildRequested = false;
 	#boundaryPending = false;
@@ -571,8 +571,9 @@ class DerivedIndexRunner {
 		if (this.#stopped || this.#rebuilding) return;
 		if (this.status.state === 'unavailable') {
 			if (
-				this.#heldLock ||
-				Atomics.load(this.#shared().words, READINESS_STATE) === READINESS_STATES.indexOf('unavailable')
+				this.#condemnationPending === undefined &&
+				(this.#heldLock ||
+					Atomics.load(this.#shared().words, READINESS_STATE) === READINESS_STATES.indexOf('unavailable'))
 			)
 				return;
 			this.status = { state: 'idle' };
@@ -633,12 +634,11 @@ class DerivedIndexRunner {
 		const now = this.#options.now();
 		let acceptedBytes = this.#unanchoredBytes;
 		let acceptedMutations = this.#unanchoredMutations;
-		let oldestAcceptedAt = this.#offeredCursors.length > 1 ? this.#offeredCursors[1].acceptedAt : undefined;
+		const oldestAcceptedAt = this.#oldestAcceptedAt();
 		for (let i = 1; i < this.#offeredCursors.length; i++) {
 			acceptedBytes += this.#offeredCursors[i].bytes;
 			acceptedMutations += this.#offeredCursors[i].mutations;
 		}
-		if (oldestAcceptedAt === undefined && this.#unanchoredMutations > 0) oldestAcceptedAt = this.#unanchoredAcceptedAt;
 		const cursorLag = this.#cursorLag();
 		return {
 			readiness: this.getReadiness(),
@@ -676,21 +676,29 @@ class DerivedIndexRunner {
 		return `derived index '${this.id}' is more than ${this.#lagBudget} ms behind; retry this write`;
 	}
 
+	/** Accepted-at time of the oldest offered work the backend has not yet made durable. */
+	#oldestAcceptedAt(): number | undefined {
+		if (this.#offeredCursors.length > 1) return this.#offeredCursors[1].acceptedAt;
+		return this.#unanchoredMutations > 0 ? this.#unanchoredAcceptedAt : undefined;
+	}
+
 	/**
 	 * Owner-only. Lag is the longest of: cursor distance behind what this runner has read, time parked
-	 * on backpressure, and how long work has been offered or pending without catch-up (end of log
-	 * with durable == offered) being proven — the last term is what a slow reader that never idles
-	 * cannot hide, and it is zero for a caught-up owner sitting idle. The trip survives discard and
-	 * handoff: a successor clears it only after proving catch-up itself, below half the budget.
+	 * on backpressure, and the age of the oldest accepted work not yet durable — the last term is what
+	 * a backend that accepts but never barriers cannot hide, and it is zero for a caught-up owner
+	 * sitting idle and bounded by the flush age for a backend keeping up under sustained ingest. The
+	 * trip survives discard and handoff: a successor clears it only after proving catch-up itself
+	 * (a durable advance or an idle pass with durable == offered), below half the budget.
 	 */
 	#publishLag() {
 		const max = this.#lagBudget;
 		if (max <= 0 || !this.#owned || this.#rebuilding) return;
 		const now = this.#options.now();
+		const oldestAccepted = this.#oldestAcceptedAt();
 		const lag = Math.max(
 			this.#cursorLag(),
 			this.#stalledSince === undefined ? 0 : now - this.#stalledSince,
-			this.#unprovenSince === undefined ? 0 : now - this.#unprovenSince
+			oldestAccepted === undefined ? 0 : now - oldestAccepted
 		);
 		const words = this.#shared().words;
 		const tripped = Atomics.load(words, READINESS_LAG_EXCEEDED) === 1;
@@ -786,11 +794,17 @@ class DerivedIndexRunner {
 		this.#releaseFailure = undefined;
 		this.#owned = true;
 		this.#generation++;
-		this.#unprovenSince = this.#options.now();
 		this.#lastCaughtUpAt = undefined;
 		try {
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
+			if (this.#condemnationPending !== undefined) {
+				// A condemnation the store refused earlier is retried before anything else is trusted.
+				const reason = this.#condemnationPending;
+				this.#condemnationPending = undefined;
+				this.#needsRebuild(reason);
+				return;
+			}
 			const condemned = this.#readCondemnation();
 			const shared = this.getReadiness();
 			const reloadsThrough = Number(Atomics.load(this.#shared().reloads, 0));
@@ -981,7 +995,6 @@ class DerivedIndexRunner {
 
 	#noteAccepted(batch: DerivedIndexBatch) {
 		const now = this.#options.now();
-		this.#unprovenSince ??= now;
 		if (batch.through && !sameCursor(batch.through, this.#offered)) {
 			this.#offered = cloneCursor(batch.through);
 			this.#offeredCursors.push({
@@ -1341,10 +1354,7 @@ class DerivedIndexRunner {
 			return;
 		}
 		if (!this.#reconcileDurableCursor(durable)) return;
-		if (sameCursor(durable, this.#offered!)) {
-			this.#lastCaughtUpAt = this.#options.now();
-			this.#unprovenSince = undefined;
-		}
+		if (sameCursor(durable, this.#offered!)) this.#lastCaughtUpAt = this.#options.now();
 		this.#publishLag();
 		if (!sameCursor(durable, this.#offered!)) {
 			this.#armFlushTimer();
@@ -1397,6 +1407,9 @@ class DerivedIndexRunner {
 			this.#offeredCursors.splice(0, offeredIndex);
 			if (!this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
 		}
+		// A durable advance proves the backend is catching up; under sustained ingest the log is never
+		// exhausted and durable rarely equals offered, so the idle pass alone would never prove it.
+		if (offeredIndex > 0 || sameCursor(cursor, this.#offered)) this.#lastCaughtUpAt = this.#options.now();
 		return true;
 	}
 
@@ -1432,11 +1445,13 @@ class DerivedIndexRunner {
 		if (!this.#markersSupported) return false;
 		try {
 			this.#condemned = this.#logStore.rootStore.getSync(this.#markerKey) !== undefined;
+			return this.#condemned;
 		} catch (error) {
+			// Unreadable counts as present, but only a successful write may set the local flag: the
+			// condemnation that follows must still reach the store before any reset.
 			logger.error(`Derived index '${this.id}' could not read its condemnation marker`, error);
-			this.#condemned = true;
+			return true;
 		}
-		return this.#condemned;
 	}
 
 	#clearCondemnation() {
@@ -1497,6 +1512,7 @@ class DerivedIndexRunner {
 		this.#discardProgress();
 		if (!this.#owned) return;
 		if (!this.#writeCondemnation()) {
+			this.#condemnationPending = reason;
 			this.#becomeUnavailable('condemnation could not be persisted; no rebuild until it can', error);
 			return;
 		}
@@ -1535,7 +1551,6 @@ class DerivedIndexRunner {
 		this.#generation++;
 		this.#stalledSince = undefined;
 		this.#lastCaughtUpAt = undefined;
-		this.#unprovenSince = this.#options.now();
 		this.#offered = undefined;
 		this.#pendingBatch = undefined;
 		this.#carried = [];
