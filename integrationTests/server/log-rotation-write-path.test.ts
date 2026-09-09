@@ -27,7 +27,9 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 	before(async () => {
 		// Pinned rather than discovered: the archive directory defaults relative to the config's
 		// rootPath, which the harness relocates, and this test needs to read the generations back.
-		rotatedDir = mkdtempSync(join(tmpdir(), 'harper-1877-rotated-'));
+		// Beside the runner's log directory rather than in os.tmpdir(): the harness points logging.root
+		// there, and on Windows those are different volumes, where a rename can never succeed.
+		rotatedDir = mkdtempSync(join(process.env.HARPER_INTEGRATION_TEST_LOG_DIR ?? tmpdir(), 'harper-1877-rotated-'));
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: {
 				threads: { count: WORKERS },
