@@ -926,7 +926,7 @@ export function readMetaDb(
 			lmdbDatabaseEnvs.set(path, rootStore);
 		}
 
-		rootStore.dbisDb?.resetReadTxn?.();
+		rootStore.dbisDb?.resetReadTxn();
 		return initStores(path, rootStore, databaseName, { defaultTable, auditPath, isLegacy });
 	} catch (error) {
 		error.message += ` opening database ${path}`;
@@ -3216,13 +3216,12 @@ export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
  * paths, so something re-triggers it. Fenced on `indexingBuildId` under the exclusive catalog lock,
  * because a replacement generation (or another thread declaring different index options) can claim the
  * attribute before an outgoing build's promise settles, and marking that would fail a live build. The
- * locked section stays synchronous (see acquireUpdateAttributesLock) and the write is awaited after
- * the release. Nothing here may throw: `Table.indexingOperation` reaches operations-API callers.
+ * locked read and write stay synchronous (see acquireUpdateAttributesLock). Nothing here may throw:
+ * `Table.indexingOperation` reaches operations-API callers.
  */
 async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, string>) {
 	for (const [attribute, buildId] of buildIds) {
 		try {
-			let pending;
 			let marked;
 			let releaseExclusiveLock;
 			try {
@@ -3239,13 +3238,12 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 				}
 				const descriptor = Table.dbisDB.getSync(attribute.key);
 				if (descriptor?.indexingBuildId === buildId && !descriptor.indexingFailed) {
-					pending = Table.dbisDB.put(attribute.key, { ...descriptor, indexingFailed: true });
+					Table.dbisDB.putSync(attribute.key, { ...descriptor, indexingFailed: true });
 					marked = true;
 				}
 			} finally {
 				if (releaseExclusiveLock) releaseExclusiveLock();
 			}
-			if (pending?.then) await pending;
 			if (marked)
 				logger.warn(
 					`Indexing of ${Table.databaseName}.${Table.tableName}.${attribute.name} ended without completing. ` +

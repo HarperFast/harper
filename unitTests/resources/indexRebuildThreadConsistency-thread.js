@@ -51,7 +51,7 @@ async function probe(step) {
 			message.foundById = Boolean(await Table.get(probeId));
 		}
 	} catch (error) {
-		message.failure = error.message;
+		message.failure = error?.message ?? String(error);
 	}
 	parentPort.postMessage(message);
 }
