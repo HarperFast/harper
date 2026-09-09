@@ -77,6 +77,7 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 		return new Promise((resolvePromise, reject) => {
 			const mqttClient = mqtt.connect(url, opts);
 			if (collector) mqttClient.on('message', collector);
+			let timer: ReturnType<typeof setTimeout>;
 			const onError = (err: Error) => {
 				clearTimeout(timer);
 				mqttClient.removeListener('connect', onConnect);
@@ -92,7 +93,7 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 			// Remove only this helper's own listeners on timeout. removeAllListeners() would also
 			// strip mqtt.js's internal socket-teardown handlers, which can leave end(true) stalled
 			// and hang the runner rather than failing it.
-			const timer = setTimeout(() => {
+			timer = setTimeout(() => {
 				mqttClient.removeListener('error', onError);
 				mqttClient.removeListener('connect', onConnect);
 				mqttClient.on('error', () => {});
@@ -222,10 +223,13 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 	test('Q1 (control): ordinary subscribers get complete, duplicate-free fan-out', { timeout: 30_000 }, async () => {
 		requireMqtt();
 		const M = 20;
-		const pub = await connect(mqttURL, baseOpts({ clientId: 'qa681-q1-pub' }));
-		const subA = await connect(mqttURL, baseOpts({ clientId: 'qa681-q1-a' }));
-		const subB = await connect(mqttURL, baseOpts({ clientId: 'qa681-q1-b' }));
+		let pub: MqttClient | undefined;
+		let subA: MqttClient | undefined;
+		let subB: MqttClient | undefined;
 		try {
+			pub = await connect(mqttURL, baseOpts({ clientId: 'qa681-q1-pub' }));
+			subA = await connect(mqttURL, baseOpts({ clientId: 'qa681-q1-a' }));
+			subB = await connect(mqttURL, baseOpts({ clientId: 'qa681-q1-b' }));
 			await subscribe(subA, STREAM_TOPIC, 1);
 			await subscribe(subB, STREAM_TOPIC, 1);
 			const cA = collectMessages(subA);
@@ -297,11 +301,13 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 		async () => {
 			requireMqtt();
 			const M = 15;
-			const pub = await connect(mqttURL, baseOpts({ clientId: 'qa681-q3-pub' }));
 			const groupClients: MqttClient[] = [];
 			const groupCollectors: ReturnType<typeof collectMessages>[] = [];
-			const ordinary = await connect(mqttURL, baseOpts({ clientId: 'qa681-q3-ordinary' }));
+			let pub: MqttClient | undefined;
+			let ordinary: MqttClient | undefined;
 			try {
+				pub = await connect(mqttURL, baseOpts({ clientId: 'qa681-q3-pub' }));
+				ordinary = await connect(mqttURL, baseOpts({ clientId: 'qa681-q3-ordinary' }));
 				// Delivery is deliberately not gated on the SUBACK: this is the fire-and-forget client.
 				const groupSubAcks: SubAckResult[] = [];
 				for (let i = 0; i < 4; i++) {
@@ -356,11 +362,14 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 			const dropAt = 15;
 			const dropClientId = `qa681-q4-drop-${randomUUID().slice(0, 6)}`;
 
-			const pub = await connect(mqttURL, baseOpts({ clientId: 'qa681-q4-pub' }));
-			const survivorA = await connect(mqttURL, baseOpts({ clientId: 'qa681-q4-a' }));
-			const survivorC = await connect(mqttURL, baseOpts({ clientId: 'qa681-q4-c' }));
+			let pub: MqttClient | undefined;
+			let survivorA: MqttClient | undefined;
+			let survivorC: MqttClient | undefined;
 			let dropClient: MqttClient | undefined;
 			try {
+				pub = await connect(mqttURL, baseOpts({ clientId: 'qa681-q4-pub' }));
+				survivorA = await connect(mqttURL, baseOpts({ clientId: 'qa681-q4-a' }));
+				survivorC = await connect(mqttURL, baseOpts({ clientId: 'qa681-q4-c' }));
 				await subscribe(survivorA, QOS1_TOPIC, 1);
 				await subscribe(survivorC, QOS1_TOPIC, 1);
 				// clean:false plus a stable clientId, so "lost forever" is distinguishable from
@@ -457,6 +466,7 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 				await endQuiet(pub);
 				await endQuiet(survivorA);
 				await endQuiet(survivorC);
+				await endQuiet(dropClient);
 			}
 		}
 	);
