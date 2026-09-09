@@ -18,10 +18,11 @@ function encodedDelete(recordId) {
 	);
 }
 
-function makeLog(name, entries) {
+function makeLog(name, entries, onQuery) {
 	return {
 		name,
-		query() {
+		query(options) {
+			onQuery?.(options);
 			let index = 0;
 			return {
 				next() {
@@ -113,5 +114,102 @@ describe('RocksTransactionLogStore range metadata', () => {
 			[['record', 'local']]
 		);
 		assert.deepStrictEqual([...iterable.failedLogs], ['failed-peer']);
+	});
+
+	it('preserves the legacy single-log exactStart error behavior without the new opt-in flags', () => {
+		const failedLog = makeLog('local', []);
+		failedLog.query = () => ({
+			next() {
+				throw new Error('legacy exact-start failure');
+			},
+			[Symbol.iterator]() {
+				return this;
+			},
+		});
+		const iterable = makeStore([failedLog]).getRange({ log: 'local', start: 50, exactStart: true });
+
+		assert.throws(() => [...iterable], /legacy exact-start failure/);
+		assert.strictEqual(iterable.failedLogs.size, 0);
+	});
+
+	it('reports an exact-start miss by physical log', () => {
+		const store = makeStore([makeLog('local', [])]);
+		const iterable = store.getRange({
+			startByLog: new Map([['local', 50]]),
+			exactStart: true,
+			includeLogName: true,
+		});
+
+		assert.deepStrictEqual([...iterable], []);
+		assert.deepStrictEqual([...iterable.exactStartFailures], [['local', 'missing']]);
+	});
+
+	it('validates and consumes one complete anchor before returning later physical transactions', () => {
+		let queryOptions;
+		const log = makeLog(
+			'local',
+			[{ ...entry(50, 'anchor-a'), endTxn: false }, entry(50, 'anchor-b'), entry(10, 'later-lower-timestamp')],
+			(options) => (queryOptions = options)
+		);
+		const iterable = makeStore([log]).getRange({
+			startByLog: new Map([['local', 50]]),
+			exactStart: true,
+			exclusiveStart: true,
+			resumeAfterExactStart: true,
+			includeLogName: true,
+		});
+
+		assert.deepStrictEqual(
+			[...iterable].map(({ recordId, txnLogKey }) => [recordId, txnLogKey]),
+			[['later-lower-timestamp', 10]]
+		);
+		assert.strictEqual(
+			queryOptions.exclusiveStart,
+			false,
+			'Harper consumes the boundary instead of filtering by value'
+		);
+		assert.strictEqual(iterable.exactStartFailures.size, 0);
+	});
+
+	for (const [name, entries, reason] of [
+		['an incomplete anchor', [{ ...entry(50, 'anchor'), endTxn: false }], 'incomplete'],
+		['a duplicate transaction timestamp', [entry(50, 'anchor'), entry(50, 'duplicate')], 'duplicate'],
+	]) {
+		it(`reports ${name} as an invalid exact resume boundary`, () => {
+			const iterable = makeStore([makeLog('local', entries)]).getRange({
+				startByLog: new Map([['local', 50]]),
+				exactStart: true,
+				resumeAfterExactStart: true,
+			});
+
+			assert.deepStrictEqual([...iterable], []);
+			assert.deepStrictEqual([...iterable.exactStartFailures], [['local', reason]]);
+		});
+	}
+
+	it('starts a newly discovered log from its beginning without an exact anchor', () => {
+		let cursorOptions;
+		let newLogOptions;
+		const cursorLog = makeLog('local', [entry(50, 'anchor')], (options) => (cursorOptions = options));
+		const newLog = makeLog('new-peer', [entry(10, 'new')], (options) => (newLogOptions = options));
+		const iterable = makeStore([cursorLog, newLog]).getRange({
+			startByLog: new Map([['local', 50]]),
+			exactStart: true,
+			includeLogName: true,
+		});
+
+		assert.deepStrictEqual(
+			[...iterable].map(({ recordId, logName }) => [recordId, logName]),
+			[
+				['new', 'new-peer'],
+				['anchor', 'local'],
+			]
+		);
+		assert.strictEqual(cursorOptions.start, 50);
+		assert.strictEqual(cursorOptions.exactStart, true);
+		assert.strictEqual(newLogOptions.start, 0);
+		assert.strictEqual(newLogOptions.exactStart, false);
+		assert.strictEqual(newLogOptions.exclusiveStart, false);
+		assert.strictEqual(iterable.exactStartFailures.size, 0);
 	});
 });
