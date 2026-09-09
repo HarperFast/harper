@@ -1002,7 +1002,7 @@ export class DatabaseTransaction implements Transaction {
 						// a predecessor's immediate commit (CLOSED transaction) sweeps `writes`, running the rest
 						if (predecessor.saved) continue;
 						const result: any = this.#saveOne(predecessor, transaction, reloadEntry, options);
-						if (result?.then) return result.then(saveNext);
+						if (typeof result?.then === 'function') return result.then(saveNext);
 					}
 					if (!operation.saved) return this.#saveOne(operation, transaction, reloadEntry, options);
 				};
