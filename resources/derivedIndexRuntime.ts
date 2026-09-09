@@ -684,12 +684,13 @@ class DerivedIndexRunner {
 			this.#stalledSince === undefined ? 0 : now - this.#stalledSince,
 			now - unproven
 		);
-		const tripped = Atomics.load(this.#shared().words, READINESS_LAG_EXCEEDED) === 1;
+		const words = this.#shared().words;
+		const tripped = Atomics.load(words, READINESS_LAG_EXCEEDED) === 1;
 		if (!tripped && lag >= max) {
-			Atomics.store(this.#shared().words, READINESS_LAG_EXCEEDED, 1);
+			Atomics.store(words, READINESS_LAG_EXCEEDED, 1);
 			logger.warn?.(`Derived index '${this.id}' is ${Math.round(lag)} ms behind; rejecting writes until it catches up`);
 		} else if (tripped && lag < max / 2 && this.#lastCaughtUpAt !== undefined) {
-			Atomics.store(this.#shared().words, READINESS_LAG_EXCEEDED, 0);
+			Atomics.store(words, READINESS_LAG_EXCEEDED, 0);
 			logger.info?.(`Derived index '${this.id}' caught up; admitting writes again`);
 		}
 		if (this.#lagTimer) clearTimeout(this.#lagTimer);
@@ -1702,15 +1703,17 @@ class DerivedIndexRunner {
 	}
 
 	#publishReadiness(state: DerivedIndexReadinessState, reason = '') {
-		const words = this.#shared().words;
+		// One buffer for the whole seqlock write: a re-fetch mid-publish could split it across the
+		// private and the shared copy.
+		const { words, bytes, epoch } = this.#shared();
 		// Force the sequence odd rather than incrementing, so a publication abandoned by a dead owner is repaired.
 		const sequence = Atomics.load(words, READINESS_SEQUENCE) | 1;
 		Atomics.store(words, READINESS_SEQUENCE, sequence);
-		const encoded = textEncoder.encodeInto(reason, this.#shared().bytes);
+		const encoded = textEncoder.encodeInto(reason, bytes);
 		Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf(state));
 		Atomics.store(words, READINESS_REASON_LENGTH, encoded.written);
 		Atomics.store(words, READINESS_ATTEMPTS, state === 'ready' ? 0 : this.#rebuildAttempts);
-		Atomics.store(this.#shared().epoch, 0, this.#ownerEpoch ?? 0n);
+		Atomics.store(epoch, 0, this.#ownerEpoch ?? 0n);
 		Atomics.store(words, READINESS_SEQUENCE, sequence + 1);
 	}
 
