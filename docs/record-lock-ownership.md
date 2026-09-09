@@ -36,10 +36,20 @@ deliveries **per lock**.
 > committed writes to that key before it admits.
 
 Freshness holds unconditionally on the clean-handoff path (§7.1). It is **explicitly narrowed on the
-recovery path** (§7.2) unless the quorum-confirmed option in §7.3 is chosen: a barrier over reachable
-members cannot observe a write the crashed predecessor committed but never replicated, so the
-invariant as written is a promise this design cannot keep in recovery mode for free. Which of those
-two the API promises is the open decision in §10.
+recovery path** (§7.2): a barrier over reachable members cannot observe a write the crashed
+predecessor committed but never replicated, so the invariant as written is a promise this design
+cannot keep in recovery mode for free.
+
+**That narrowing is the shipping guarantee.** The §10 decision is **exclusion-only** (§7.3 (b)):
+`lock()` promises exclusive _admission_, and successor freshness after a clean handoff _while the
+home still holds that handoff's dependency set_ — a home restart, epoch change or cap eviction routes
+the successor to the recovery barrier even after a clean release. It promises
+neither conflict-ordering fences nor quorum-confirmed settlement, so the exclusion invariant above
+ships narrower than it is written on two counts — the commit half holds only up to the
+pre-submission expiry fence, and a predecessor's write can still outrank its successor's under LWW.
+§10 states exactly what is and is not promised and is the normative wording; the two arms that would
+close the rest are deferred to harper#2540, not rejected. Where the sections below describe fenced or
+quorum-confirmed mode, they are describing that issue's scope, not this one's.
 
 They are separate, and expiry establishes neither on its own. Phase 0 enforces part of the first:
 expiry is checked synchronously on every staged write and again immediately before the native commit
@@ -357,6 +367,9 @@ default.
 
 ### 7.3 The crashed writer: LWW is not enough, and fencing is not free
 
+> **Decided: (b) exclusion-only.** (a) and (c) are deferred to harper#2540. §10 carries the
+> normative contract and the reasoning; the analysis below is what those arms would have to build.
+
 The earlier claim — that a crashed holder's unreplicated write is stamped older and dropped by
 last-write-wins — does not hold. If `A`'s clock runs ahead, `A` writes under a valid delegation and
 becomes unreachable, and `B` later acquires and commits, `A`'s delayed write can carry the greater
@@ -384,19 +397,24 @@ coherent options:
 - **(b) Exclusion-only.** No fencing token in conflict resolution. `lock()` promises exclusion of
   concurrent _admission_; conflict resolution stays last-write-wins, and the crashed-clock-ahead
   overwrite is a documented limitation, as is the §7.2 late-settling commit.
-- **(c) Quorum-confirmed locked writes.** Orthogonal to (a)/(b) and the only arm that rescues §2's
+- **(c) Quorum-confirmed locked writes.** Orthogonal to (a)/(b), and the arm that addresses §2's
   freshness invariant in recovery mode: a locked write is not considered settled until replicated to
-  a majority, so a successor's barrier over reachable members necessarily sees it.
-  `X-Replicate-To: N;confirm=M` (`server/REST.ts:259`) is the existing mechanism. It costs latency on
-  every locked write, in exchange for the guarantee actually being the one §2 states.
+  a majority. Write confirmation alone is not sufficient — intersection needs the read side too, and
+  §7.2's barrier has no quorum floor — so this arm is **two** changes: confirm the write to a
+  majority, _and_ make the barrier require a majority and fail closed below it.
+  `X-Replicate-To;confirm=M` (`server/REST.ts:265`) is the nearest existing mechanism, but it is
+  super-user-gated and entangled with residency (§10), so this arm cannot just expose it. It costs
+  latency on
+  every locked write. Even with both halves it does **not** restore §2 as written: the late-settling
+  commit had not settled when the barrier ran, so that route needs the commit _fenced_, which is arm
+  (a)'s job. §2 as written needs (a) and (c) together.
 
-**This is the open decision for the human (§10)**, and it is wider than "fenced or not": it settles
-the _freshness and settlement_ guarantee as well as conflict ordering. It is API-guarantee-shaped and
-touches core write-path behavior, so it is not the implementer's to pick.
+The choice is wider than "fenced or not": it settles the _freshness and settlement_ guarantee as well
+as conflict ordering. §10 records why (b) was taken and states the resulting contract.
 
-Under either answer one limit remains: an expired holder can resume work _outside_ Harper while its
-successor runs. `lock()` can promise exclusion of valid lock admissions and of fenced Harper writes;
-arbitrary external effects need idempotency or fencing at that system.
+One limit is outside all three answers: an expired holder can resume work _outside_ Harper while its
+successor runs. `lock()` promises exclusion of valid lock admissions inside Harper; arbitrary
+external effects need idempotency or fencing at that system.
 
 ## 8. Failure containment and bounded state
 
@@ -419,11 +437,11 @@ arbitrary external effects need idempotency or fencing at that system.
   ever-delegated-in-this-epoch filter (add-only, so it has no false negatives): outside it, a key has
   no predecessor and needs no barrier; inside it with the set evicted, the barrier is required. Retain
   dependency sets longer than delegations, and size the filter as part of the cap budget.
-- Ordinary writes keep their existing ungated path: delegation bookkeeping lives only on lock paths,
-  and — if §7.3 (a) is chosen — the generation field on ordinary writes is the one exception, which
-  must then be measured rather than asserted. The requirement on a cached-delegation hit is **zero
-  additional protocol allocation**, not an allocation-free `lock()`: Phase 0 itself allocates a handle
-  and a promise, and that is the baseline.
+- Ordinary writes keep their existing ungated path, with no exception: exclusion-only (§7.3) adds
+  nothing to a write that was not made under a lock, and delegation bookkeeping lives only on lock
+  paths. This is the property the fenced arm would have given up, and it is the main reason it was not
+  taken. The requirement on a cached-delegation hit is **zero additional protocol allocation**, not an
+  allocation-free `lock()`: Phase 0 itself allocates a handle and a promise, and that is the baseline.
 - Membership and message role are authenticated and authorized **before** state is allocated, so a
   malformed payload, a stale certificate or cap exhaustion cannot be used to accumulate state. A
   configuration certificate is validated by **authenticating each accepting identity and checking they
@@ -453,7 +471,7 @@ claimants, which the single-arbiter design deletes rather than simplifies. What 
 §4.4's home-failure recovery interval. For a lock whose stated goal is per-record throughput, that
 trade goes the other way.
 
-## 10. Cost, and the open decision
+## 10. Cost, and the guarantee decision
 
 Per uncontended acquisition, `P` participants, `d` = locks served under one delegation:
 
@@ -480,17 +498,110 @@ and backlog sensitivity on the recovery path**; allocation rate on the cached-de
 saturation behavior; and throughput with the feature _disabled_, to prove the ungated write path is
 untouched.
 
-**Open decision for the human — §7.3.** What does `lock()` promise, on two independent axes?
+**The guarantee decision — §7.3.** What `lock()` promises, on two independent axes:
 
-|                      | conflict ordering                 | recovery-mode freshness                                | cost                                                                                                         |
-| -------------------- | --------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
-| **Exclusion-only**   | LWW unchanged                     | narrowed: §2's freshness is not promised after a crash | none beyond the protocol                                                                                     |
-| **Fenced**           | `(generation, timestamp, origin)` | still narrowed                                         | record-contract + stored-format change, reverses `DESIGN.md:169`, owes a tombstone-surviving rejection floor |
-| **Quorum-confirmed** | either of the above               | §2 as written                                          | latency on every locked write                                                                                |
+|                       | conflict ordering                 | recovery-mode freshness                                                                                 | cost                                                                                                         |
+| --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **Exclusion-only** ✅ | LWW unchanged                     | narrowed: §2's freshness is not promised on the recovery path                                           | none beyond the protocol                                                                                     |
+| **Fenced**            | `(generation, timestamp, origin)` | still narrowed                                                                                          | record-contract + stored-format change, reverses `DESIGN.md:169`, owes a tombstone-surviving rejection floor |
+| **Quorum-confirmed**  | either of the above               | closes the crashed/unreachable routes, not the late-settling one; §2 as written needs this _and_ fenced | latency on every locked write                                                                                |
 
-This is an API-guarantee and priority call, not an implementation detail, and it changes the size of
-the work materially. The smallest coherent shipping answer is **exclusion-only, with both limitations
-documented**; the strongest is fenced + quorum-confirmed.
+**Exclusion-only is chosen.** The other two arms are deferred to harper#2540, which carries the
+limitations, the costs, and what closing them would take.
+
+Why the two arms were not taken now: fenced mode's cost is misplaced — it changes conflict resolution for _every_ write in the database,
+including in deployments that never call `lock()`, and it inverts a rule Phase 0 documented and
+shipped — in exchange for a predecessor whose write outranks its successor's. Quorum confirmation
+costs a replication round trip on every locked write. Neither should sit on the critical path of a
+feature that has not yet been measured.
+
+> **The contract, and the text the API documentation owes.** `lock()` guarantees that at most one
+> node **admits** a critical section for a key at a time. It further guarantees that a node admitted
+> after another node released cleanly has already applied that node's committed writes to the key —
+> but **only while the key's home still holds the dependency set from that release**. A home restart,
+> an epoch change, or cap eviction (§7.2, §8) loses it and routes the successor to the recovery
+> barrier instead, which is limitation (2) below: so (2) is reachable after a perfectly clean release,
+> not only after a failure. It does **not** guarantee either of the following, and neither of them
+> needs a crash:
+>
+> 1. **A predecessor's write can outrank its successor's under last-write-wins.** LWW compares the
+>    transaction timestamp assigned when the write was _staged_ (`resources/Table.ts:3113`), and lease
+>    expiry orders admissions, not timestamps. **`lock()` changes nothing about conflict resolution**
+>    — a locked write and an unlocked write resolve identically, by timestamp, per field, with CRDT
+>    ops folded and the surviving shape depending on both writes' shapes and on whether auditing is
+>    on — so whatever the pair would have done to the record without a lock is what they do with one,
+>    silently and with no error raised. That is the whole of the limitation, and the contract must not
+>    restate the resolution rules: they live in `Table.ts` / `crdt.ts` and are not `lock()`'s to
+>    promise. Two routes in, and they fail differently:
+>    - **(1a) clock skew.** The predecessor's clock ran ahead of its successor's, and its write is
+>      still in flight when the successor writes.
+>    - **(1b) a timestamp pushed ahead on purpose, on a completely clean handoff.** A caller-supplied
+>      future `context.timestamp`, or a mixed explicit transaction whose later timestamp becomes the
+>      handle's floor — both documented as deliberate Phase 0 behavior (`DESIGN.md:305-309`). The
+>      predecessor commits, replicates, drains and releases cleanly; the successor is admitted with
+>      correct freshness, reads the current value, and writes at real wall-clock time — and its write
+>      is the older one, silently, because the stored version is stamped in the future. What the
+>      committed record then holds is whatever ordinary resolution produces from the pair — which for
+>      overlapping plain fields is not the successor's value, and for disjoint patches or commutative
+>      ops may still carry it. No crash, no skew, nothing in flight. **This is the case that
+>      makes "exclusion-only" narrower than it sounds**, and the only defense available to a caller
+>      today is not to stamp future timestamps under a lock.
+> 2. **Successor freshness is not promised on the recovery path.** The §7.2 barrier drains streams
+>    from every _reachable_ member, so a write the predecessor committed and did not replicate is
+>    invisible to it: the barrier succeeds and the successor reads a stale value. Three routes in, and
+>    only the first is a crash — the predecessor crashed; the predecessor is unreachable; or the
+>    predecessor passed the pre-commit expiry fence, submitted its native commit, and that commit
+>    settles _after_ the barrier was measured. The third needs no failure beyond a commit slower than
+>    the remaining lease. **Two damaged effects on the one record, not two records:** the predecessor's
+>    committed transaction is not reflected in the result, _and_ the successor's own write is computed
+>    from the stale value it read — stored balance 150, successor reads 100 and writes 80, so what
+>    survives is wrong on its own terms and not merely stale. That is exactly the
+>    read-then-conditionally-write the lock exists for.
+>
+> **§2's exclusion invariant is wider than what (1) and (2) leave.** It requires a successor to
+> exclude every predecessor capability that can still admit _or commit_; what ships excludes
+> admission, and the commit half holds only up to the pre-submission expiry fence
+> (`resources/DatabaseTransaction.ts:1213`) — a native commit that clears that fence and settles
+> afterwards is limitation (2)'s third route.
+>
+> **There is no caller-side mitigation for (2) — the obvious candidate is unreachable and, where it
+> is reachable, makes things worse.** `X-Replicate-To` / `confirm=` is meant to be super-user only —
+> `checkContextPermissions` (`resources/Table.ts:7258`) raises 403 otherwise, though its truthiness
+> gate lets `X-Replicate-To: 0` through, which is harper#2546 and not a mitigation anyone should
+> build on. And where it is legitimately available it is a **residency** directive before it is a
+> confirmation knob: absent a `getResidencyById` function, which short-circuits ahead of it
+> (`resources/Table.ts:1575`), a numeric value sets residency to `[self, ...N nodes]` and truncates
+> existing residency on update (`:1574`), while `*` leaves `replicateTo` undefined and falls back to
+> the database's configured `replication.replicateTo` count (`:1578`, `:642`) — neither of which is
+> guaranteed to be the whole cluster. In a twelve-node cluster configured `replicateTo: 3`, either
+> form leaves the record on four nodes, and a successor's barrier over the other eight reachable
+> members satisfies without any of them ever having held the locked write. That is the opposite of
+> what the barrier needs.
+>
+> Even with residency genuinely cluster-wide, confirmation **narrows (2) and closes none of its three
+> routes**. For the crashed and unreachable routes it helps only when the confirming and reachable
+> sets intersect — `M + reachable > |cluster|` — and §7.2's barrier has no read-quorum floor, because
+> it deliberately tolerates unreachable members; forcing that intersection costs any single down node
+> blocking every locked write, and `M` is a literal that silently under-confirms after a scale-out.
+> **For the third route it does nothing at all**: the predecessor's commit had not settled when the
+> barrier was measured, so no confirmation level makes a barrier taken at `T` observe a commit that
+> replicates at `T+δ`. Closing (2) needs the barrier to require a majority and fail closed below it,
+> _and_ the late-settling commit to be fenced rather than confirmed — which is why harper#2540's
+> quorum-confirmed arm is not a one-line header change and needs the fenced arm with it.
+
+**Both limitations ship silent, and that is a choice worth recording rather than a consequence.** A
+caller whose locked write loses gets a 200, no log line and no counter, so nothing distinguishes it
+from correct behavior. Making it observable is cheap and confined to the lock path — the handle
+already carries its floor and the commit path already fences per write on `write.lockHandle`
+(`resources/DatabaseTransaction.ts:1211`), so a lock-path-only check that a staged version exceeds
+wall-clock, and a counter when a barrier admits with no dependency set, cost nothing on ungated
+writes. It is not in scope here because it is detection rather than guarantee, but it belongs in
+harper#2541 rather than nowhere.
+
+Nothing above may be softened into "rare" or "best-effort" in the API docs, and neither limitation
+may be described as crash-only or as unreachable on a clean handoff: a documented narrowing is what
+makes exclusion-only an honest answer rather than an unstated hole, and a narrowing stated more
+narrowly than it is is the same hole with a paragraph in front of it.
 
 ## 11. What survives from harper#2498
 
@@ -515,7 +626,7 @@ Unchanged and reused:
 
 **Three defects inherited with that substrate.** A cross-model review of the branch at `b26d5e22`
 found them in code this note keeps rather than in the arbitration rule it deletes, so they do not go
-away on their own and are obligations on the replacement:
+away on their own and are obligations on the replacement. They are tracked as part of harper#2541:
 
 - **Transport replacement does not fence live authority** (`resources/Table.ts:5474`). Re-registering
   a transport — a component reload is enough — closes the current coordinator and installs an empty
@@ -590,8 +701,23 @@ as the new protocol.
   _replacement_ (not just failure); mixed protocol versions refuse to interoperate; feature disabled
   is byte-for-byte the current write path. Counter tests assert observed read/write histories, not
   only final totals, and snapshot-free reload must still work after the applied-history fence
-  (`Table.ts:2759`). If §7.3 (a) is chosen, add stale full writes, patches and deletes against
-  successor records and reclaimed tombstones, asserting values _and_ indices.
+  (`Table.ts:2759`). Under exclusion-only there is no fenced-mode suite to add here; the stale
+  writes, patches and deletes against successor records and reclaimed tombstones belong to
+  harper#2540 if that arm is ever taken. What this suite **must** assert instead is the documented
+  narrowing itself, as expected outcomes rather than test failures. Two schedules, and both must
+  assert the observed value rather than only that no error was raised:
+  - **A predecessor's write outranking its successor's**, driven by a caller-supplied future
+    `context.timestamp` rather than a faked clock — so it runs over a _clean_ handoff with no skew.
+    Assert what `lock()` failed to prevent, not a storage disposition: that the committed record
+    differs from what a serialized execution of the two critical sections would have produced, and
+    that no error reached either caller. Choose a fixture where the two writes overlap on a plain
+    field, so the assertion holds under any conflict-resolution change — pinning exact post-resolution
+    values would tie this suite to `Table.ts`/`crdt.ts` behavior that is not `lock()`'s to promise.
+  - **A barrier that succeeds while a predecessor's unreplicated write is invisible**, including the
+    no-crash route where the predecessor's native commit settles after the barrier was measured.
+    Assert both damaged effects on the one record, again over an overlapping plain field: the
+    predecessor's transaction not reflected in the committed result, and the successor's own write
+    computed from the stale value it read.
 - Failure injection as an executable contract, not prose: synchronous throws and rejected promises
   through revoke, settlement callbacks, release persistence, shutdown and table removal — callers
   settle, admission stays closed, no unhandled rejection, no fabricated handoff. A release entry that
@@ -616,10 +742,19 @@ release, logical-transaction settlement), §7.2 (fail-closed is not freshness), 
 and the fenced-mode costs), §8 (dependency-set retention, certificate authentication), §9 (the
 unsupported "months-scale" rejection, replaced with the durable-work-per-acquisition fact), §10, §12.
 
-**A cleared framing is not authorization to implement.** Two things must be settled first:
+**A cleared framing is not authorization to implement.** Two things had to be settled first, and one
+still is:
 
-1. **The §10 decision is the human's**, and it sizes the work. Nothing downstream should be built
-   against a guarantee nobody has chosen.
-2. **The measurement gate of §10** comes before the protocol change, not after it.
+1. **The guarantee decision — settled, exclusion-only** (§7.3 (b), §10). The deferred arms are
+   harper#2540.
+2. **The measurement gate of §10 comes before the protocol change, not after it.** Tracked as
+   harper-pro#824, and it is the only piece of this work that is unblocked today.
 
-Everything else above is implementable as written.
+Everything else above is implementable as written. The work is decomposed as harper-pro#825 (the
+epoch protocol, §4), harper#2541 (home ring, delegations, drain and caps, §§5/6/8, plus the three
+inherited substrate defects in §11) and harper#2542 (successor freshness, §7).
+
+**The documentation obligation is harper#2547, and it is not optional.** §10's rule that the two
+limitations may not be softened is the condition on which exclusion-only was chosen over harper#2540;
+if Phase 1 ships behind its gate and the public `lock()` page still describes exclusion without them,
+the tradeoff that justified the decision was never paid. It lands with or before enablement.
