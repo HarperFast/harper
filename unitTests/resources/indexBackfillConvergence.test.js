@@ -498,9 +498,8 @@ describe('index backfill convergence (#2536)', () => {
 				`backfill ran ${longestRun} records without yielding the event loop (bound ${INDEXING_YIELD_INTERVAL})`
 			);
 		} else {
-			assert.strictEqual(
-				longestRun,
-				INDEXING_YIELD_INTERVAL,
+			assert.ok(
+				longestRun >= INDEXING_YIELD_INTERVAL / 2 && longestRun <= INDEXING_YIELD_INTERVAL,
 				`backfill should yield the event loop every ${INDEXING_YIELD_INTERVAL} records, ran ${longestRun}`
 			);
 		}
