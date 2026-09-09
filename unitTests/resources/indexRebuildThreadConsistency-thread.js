@@ -1,4 +1,4 @@
-const { parentPort, workerData } = require('worker_threads');
+const { parentPort, workerData } = require('node:worker_threads');
 const { setupTestDBPath } = require('../testUtils');
 const { resetDatabases } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');

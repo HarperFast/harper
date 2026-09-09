@@ -1,13 +1,10 @@
 /**
- * harper#2537. `isIndexing` is a per-thread cache of one persisted fact — the attribute descriptor's
- * `indexingPID`. Only the schema *declare* path (table()) used to write that cache, so a thread that
- * reaches Table.indices through the schema *load* path (resetDatabases -> initStores) — the main and
- * operations threads — held `isIndexing === false` for a rebuilding index and served it, returning 200
- * with rows missing while a primary-key read of the same record returned it.
+ * harper#2537: a thread that reaches Table.indices through the schema load path (resetDatabases ->
+ * initStores) rather than by declaring the schema held `isIndexing === false` for a rebuilding index
+ * and served it — 200 with rows missing, while a primary-key read returned the same record.
  *
- * The backfill is held by blocking the declaring thread's event loop in `Atomics.wait`: runIndexing is
- * async and suspends at its first await, so at that point the index is empty and the divergence is
- * observable with a handful of rows instead of a timing window.
+ * The backfill is held by blocking the declaring thread's event loop in `Atomics.wait`: runIndexing
+ * suspends at its first await, so the index is empty there and no timing window is needed.
  */
 
 require('../testUtils');

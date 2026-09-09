@@ -272,12 +272,9 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 			'a store closed by shutdown must be handled as a benign interruption, not a rejection'
 		);
 
-		// harper#1359 left this early return writing nothing at all, on the grounds that recovery came
-		// from the restartNumber/PID trigger. harper#2536 showed that trigger is unreachable after a
-		// process restart under PID 1, so the marker is what makes the incomplete build recoverable, and
-		// the settle handler in declareTable persists it. The loud failure #1359 removed does not come
-		// back: runIndexing still writes nothing here, and the settle handler logs a failed write at
-		// debug (in a real shutdown the catalog store is closed too, so it simply cannot write).
+		// harper#1359 left this return writing nothing, because recovery came from the restartNumber/PID
+		// trigger; harper#2536 showed that trigger cannot fire after a process restart under PID 1, so
+		// declareTable's settle handler persists the marker instead. runIndexing still writes nothing here.
 		const desc = findDescriptor(Tbl, 'tag');
 		assert.ok(desc, 'tag descriptor should exist after a shutdown-interrupted backfill');
 		assert.equal(

@@ -16,6 +16,7 @@ describe('the query planner treats a rebuilding index as unavailable (harper#253
 	this.timeout(60000);
 
 	let Table;
+	let Parent;
 
 	before(async () => {
 		setupTestDBPath();
@@ -35,6 +36,29 @@ describe('the query planner treats a rebuilding index as unavailable (harper#253
 			lastPut = Table.put({ id: `k-${i}`, rare: i === 7 ? 'needle' : `r-${i}`, common: i < 10 ? 'left' : 'right' });
 		await lastPut;
 		if (Table.indexingOperation) await Table.indexingOperation;
+
+		Parent = table({
+			table: 'PlannerRebuildingParent',
+			database: 'test',
+			schemaDefined: true,
+			schemaRelationshipsDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'status', type: 'String', indexed: true },
+				{ name: 'childId', type: 'ID', indexed: true },
+				{
+					name: 'child',
+					type: 'PlannerRebuildingIndex',
+					relationship: { from: 'childId' },
+					relationshipReference: { database: 'test', table: 'PlannerRebuildingIndex' },
+					definition: { tableClass: Table },
+				},
+			],
+		});
+		for (let i = 0; i < 20; i++)
+			lastPut = Parent.put({ id: `p-${i}`, status: i < 10 ? 'open' : 'closed', childId: `k-${i}` });
+		await lastPut;
+		if (Parent.indexingOperation) await Parent.indexingOperation;
 	});
 
 	/** Stand in for a build in flight without holding one open for the length of the suite. */
@@ -102,5 +126,42 @@ describe('the query planner treats a rebuilding index as unavailable (harper#253
 				'a search that can only be driven by the rebuilding index must refuse rather than return partial results'
 			);
 		});
+	});
+
+	it('follows a relationship path for every comparator, not only equality', async () => {
+		const estimates = await whileRebuilding('rare', () => {
+			const estimate = estimateCondition(Parent);
+			return {
+				equals: estimate({ attribute: ['child', 'rare'], value: 'needle' }),
+				between: estimate({ attribute: ['child', 'rare'], comparator: 'between', value: ['r-0', 'r-9'] }),
+				starts_with: estimate({ attribute: ['child', 'rare'], comparator: 'starts_with', value: 'r-' }),
+			};
+		});
+		for (const [comparator, estimate] of Object.entries(estimates))
+			assert.strictEqual(
+				estimate,
+				Infinity,
+				`a relationship "${comparator}" whose leaf index is rebuilding must not rank as usable (got ${estimate})`
+			);
+	});
+
+	it('treats a rebuilding local join index as unusable too', () => {
+		Parent.indices.childId.isIndexing = true;
+		try {
+			assert.strictEqual(
+				estimateCondition(Parent)({ attribute: ['child', 'rare'], comparator: 'between', value: ['r-0', 'r-9'] }),
+				Infinity,
+				'the join is driven by the local from-index, so a rebuild of it must rank the condition as unusable'
+			);
+		} finally {
+			Parent.indices.childId.isIndexing = false;
+		}
+	});
+
+	it('still estimates a relationship finitely when every index it needs is complete', () => {
+		assert.ok(
+			estimateCondition(Parent)({ attribute: ['child', 'rare'], value: 'needle' }) < Infinity,
+			'a complete relationship path must still produce a finite estimate'
+		);
 	});
 });

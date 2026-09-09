@@ -17,6 +17,9 @@ const { table } = require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');
 const { forComponent } = require('#src/utility/logging/harper_logger');
 
+// resources/Table.ts keys the exclusive schema lock on these bytes
+const UPDATE_ATTRIBUTES_LOCK_KEY = Buffer.from('update-attributes');
+
 describe('an index build that ends without completing is marked and recovered', function () {
 	this.timeout(60000);
 
@@ -96,7 +99,6 @@ describe('an index build that ends without completing is marked and recovered', 
 			`the abandoned build must be reported above debug: ${JSON.stringify(warnings)}`
 		);
 
-		// The marker is what the next load acts on.
 		const Recovered = seed(tableName, true);
 		assert.ok(Recovered.indexingOperation, 'the persisted marker must re-trigger the backfill on the next load');
 		await Recovered.indexingOperation;
@@ -124,14 +126,22 @@ describe('an index build that ends without completing is marked and recovered', 
 		// The settle handler re-reads under the exclusive catalog lock; report a replacement's claim on
 		// that read, which is the window a replacement worker generation actually claims the build in.
 		const dbisDB = Rebuilding.dbisDB;
+		const rootStore = Rebuilding.primaryStore.rootStore;
 		const originalGetSync = dbisDB.getSync.bind(dbisDB);
 		let reads = 0;
+		let heldOnReread = null;
 		dbisDB.getSync = (readKey, ...rest) => {
 			const value = originalGetSync(readKey, ...rest);
-			if (readKey === key && ++reads === 2) return { ...value, indexingBuildId: 'a-replacement-build' };
+			if (readKey === key && ++reads === 2) {
+				// tryLock fails even for the thread already holding it, so this observes the locked section
+				if (typeof rootStore.tryLock === 'function') {
+					heldOnReread = !rootStore.tryLock(UPDATE_ATTRIBUTES_LOCK_KEY);
+					if (!heldOnReread) rootStore.unlock(UPDATE_ATTRIBUTES_LOCK_KEY);
+				}
+				return { ...value, indexingBuildId: 'a-replacement-build' };
+			}
 			return value;
 		};
-		const rootStore = Rebuilding.primaryStore.rootStore;
 		const originalStatus = Object.getOwnPropertyDescriptor(rootStore, 'status');
 		const originalGetRange = Rebuilding.primaryStore.getRange;
 		Rebuilding.primaryStore.getRange = () => {
@@ -148,6 +158,12 @@ describe('an index build that ends without completing is marked and recovered', 
 		}
 
 		assert.ok(reads >= 2, 'the settle handler must re-read the descriptor after its first check');
+		if (typeof rootStore.tryLock === 'function')
+			assert.strictEqual(
+				heldOnReread,
+				true,
+				'the re-read and the write must happen under the exclusive catalog lock the declaration takes'
+			);
 		await catalogFlushed(Rebuilding);
 		assert.strictEqual(
 			originalGetSync(key).indexingFailed,
