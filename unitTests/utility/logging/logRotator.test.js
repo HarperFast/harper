@@ -198,6 +198,29 @@ describe('Test logRotator module', () => {
 			.to.be.false;
 	}).timeout(TEST_TIMEOUT);
 
+	it('restarts the interval clock when another writer replaces the active generation', async () => {
+		await callLogger();
+		const rotatedDir = path.join(LOG_DIR_TEST, 'generationClock');
+		const rotator = log_rotator({
+			logger,
+			path: rotatedDir,
+			enabled: true,
+			auditInterval: 50,
+			interval: '0.6s',
+		});
+		await hdb_utils.asyncSetTimeout(400);
+		logger.closeLogFile();
+		fs.renameSync(LOG_FILE_PATH_TEST, path.join(rotatedDir, 'replaced-by-writer.log'));
+		logger.error('fresh generation marker');
+
+		// This models elapsed time to prove the absence of an interval rotation: the old generation
+		// is older than 600ms, while the replacement is not.
+		await hdb_utils.asyncSetTimeout(350);
+		rotator.end();
+		assert.match(fs.readFileSync(LOG_FILE_PATH_TEST, 'utf8'), /fresh generation marker/);
+		assert.strictEqual(rotator.getLastRotatedLogPath(), undefined);
+	}).timeout(TEST_TIMEOUT);
+
 	it('Test log is compressed when rotated', async () => {
 		const rotated_log_path = await runRotator({ maxSize: '1K', compress: true });
 		console.log('rotated log contents', readFileSync(rotated_log_path, 'utf-8'));

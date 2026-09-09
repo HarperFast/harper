@@ -59,6 +59,7 @@ const ROTATION_REPORT_INTERVAL = 60000;
 const SET_ROTATION_POLICY = Symbol('setRotationPolicy');
 const GET_ROTATION_POLICY = Symbol('getRotationPolicy');
 const FILE_ROTATION_SOURCE = Symbol('fileRotationSource');
+const SERVICE_NAME = workerData?.name?.replace(/ /g, '-') || 'main';
 
 let logConsole;
 let log_to_file;
@@ -493,9 +494,11 @@ export function initLogSettings(forceInit = false) {
 		if (hdbProperties === undefined || forceInit) {
 			if (forceInit && mainLogger?.[SET_ROTATION_POLICY]) {
 				const currentPath = mainLogger.path;
-				const { ownSource } = mainLogger[GET_ROTATION_POLICY]();
-				mainLogger[SET_ROTATION_POLICY](undefined, ownSource, false);
-				mainLogger.path = currentPath;
+				if (currentPath) {
+					const { ownSource } = mainLogger[GET_ROTATION_POLICY]();
+					mainLogger[SET_ROTATION_POLICY](undefined, ownSource, false);
+					mainLogger.path = currentPath;
+				}
 			}
 			closeLogFile();
 			const bootPropsFilePath = getPropsFilePath();
@@ -677,7 +680,6 @@ export function suppressLogging(callback) {
 	}
 }
 
-const SERVICE_NAME = workerData?.name?.replace(/ /g, '-') || 'main';
 // these are used to store information about the current service and tag so we can prepend them to the log during
 // the writes, without having to pass the information through the Console instance
 let currentLevel = 'info'; // default is info
@@ -783,6 +785,7 @@ export function createLogger(options: any = {} as any) {
 		},
 		set(path) {
 			logFilePath = path;
+			if (!logFilePath) return;
 			logToFile = getFileLogger(logFilePath, logger.rotation, isExternalInstance, rotationPolicy());
 			rotationPolicyApplied();
 			if (isExternalInstance) writeToLogFile = logToFile;
@@ -846,6 +849,7 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 	let logger = fileLoggers.get(path);
 	let logFD, loggedFDError, loggedAppendError, logTimer, retryAppendAfter;
 	let logBuffer;
+	let rotationProblemNotice;
 	let logTimeUsage = 0;
 	let rotationGuard,
 		logFDIdentity,
@@ -941,7 +945,11 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 		// Rate-limited rather than once-only, so a later, different failure is still reported.
 		if (nextRotationReport > performance.now()) return;
 		nextRotationReport = performance.now() + ROTATION_REPORT_INTERVAL;
-		writeToStdioDirectly(process.stderr, `Harper log rotation problem — ${text}\n`);
+		const message = `Harper log rotation problem — ${text}`;
+		// Scripted services discard stdio. Preserve the warning in the active file on the next
+		// successful append as well, without recursing through the rotation guard.
+		rotationProblemNotice = `${new Date().toISOString()} [${SERVICE_NAME}/${threadId}] [error]: ${message}\n`;
+		writeToStdioDirectly(process.stderr, `${message}\n`);
 	}
 	function logToFile(log) {
 		let entry = `${new Date().toISOString()} ${log}${log.endsWith('\n') ? '' : '\n'}`;
@@ -983,11 +991,13 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 		if (logFD && mayAppend) {
 			let startTime = performance.now();
 			try {
-				fs.appendFileSync(logFD, payload);
+				const appendPayload = rotationProblemNotice ? rotationProblemNotice + payload : payload;
+				fs.appendFileSync(logFD, appendPayload);
+				rotationProblemNotice = undefined;
 				// Both cleared, so a volume that fills again months later reports itself again
 				retryAppendAfter = undefined;
 				loggedAppendError = false;
-				rotationGuard?.recordWrite(Buffer.byteLength(payload));
+				rotationGuard?.recordWrite(Buffer.byteLength(appendPayload));
 			} catch (error) {
 				retryAppendAfter = performance.now() + APPEND_RETRY_COOLDOWN;
 				// A log write must never take the process down: on an exhausted volume this throws from
