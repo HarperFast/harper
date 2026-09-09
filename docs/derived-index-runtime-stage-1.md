@@ -561,8 +561,9 @@ ownership check after every `await`:
    must retain its beginning (`oldestSequenceNumber === 1`), otherwise the attempt fails closed;
 4. scan every registered table through `scanRecords` (opened after the capture; a record whose
    `value` is null is a tombstone and one whose key is a symbol is a Harper-internal store entry
-   such as id allocation — both are skipped, as the live resolver's null value resolves to
-   `absent`), project, and deliver chunks bounded by `maxChunkRecords`, `maxChunkBytes` and `maxMillisecondsPerTurn` with
+   such as id allocation — both are skipped; on the live path only a missing entry resolves to
+   `absent`, and a present entry that decodes to null reaches the projection and fails closed),
+   project, and deliver chunks bounded by `maxChunkRecords`, `maxChunkBytes` and `maxMillisecondsPerTurn` with
    `through` absent, yielding between chunks and waiting for a backend wake on `deferred`
    (re-offering after one flush age at most, so a dropped wake cannot park the rebuild forever);
 5. deliver one final chunk (possibly empty) carrying `through` = boundary. Until that batch is
@@ -668,8 +669,11 @@ drops the latch on its next wake once the shared state has moved on, so a peer's
 strand the other workers. `ready` is published on a validated acquisition and after
 a rebuild's final barrier; `rebuilding` before the destructive reset. rocksdb-js hands back a plain
 `ArrayBuffer` for a key until another thread has asked for it, so the runtime caches its views of
-the readiness and owner-epoch records only once the memory is a `SharedArrayBuffer` and re-fetches
-on every use before that; a single-threaded process simply keeps re-fetching. A fault detected in the middle
+the readiness and owner-epoch records only once the memory is a `SharedArrayBuffer`; before that,
+the epoch mint and every owner publish re-fetch on each use (a worker booting in the middle of a
+single-worker rebuild must be seen at once, or the two owners would mint the same epoch in private
+memory), while reads — the fence, the admission word, wake gating and `readDerivedIndexReadiness`
+— re-fetch at most every 100 ms, so a single-worker process pays no native call per apply. A fault detected in the middle
 of a drain turn (a corrupt frame surfacing from the iterator) starts the rebuild from inside that
 turn; the turn's generation check prevents its end-of-log path from publishing `ready` over the
 `rebuilding` just written.
