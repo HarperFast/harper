@@ -8,6 +8,7 @@ const hdb_utils = require('#src/utility/common_utils');
 const { readFileSync } = require('fs');
 const hdb_logger = require('#src/utility/logging/harper_logger');
 const { logRotator: log_rotator } = require('#src/utility/logging/logRotator');
+const { compressArchive, compressPendingArchives } = require('#src/utility/logging/logRotation');
 const assert = require('assert');
 const { pinLogConfig } = require('../../logConfigFixture.js');
 const { waitFor } = require('../../waitFor.js');
@@ -85,6 +86,70 @@ describe('Test logRotator module', () => {
 		assert.strictEqual(fs.pathExistsSync(stranded), false, 'the plain archive must be gone once it is compressed');
 	}).timeout(TEST_TIMEOUT);
 
+	it('compresses more than four pending archives in one time-budgeted sweep', async () => {
+		const rotatedDir = path.join(LOG_DIR_TEST, 'sweep');
+		fs.mkdirpSync(rotatedDir);
+		const archives = [];
+		for (let i = 0; i < 8; i++) {
+			const archive = path.join(rotatedDir, `hdb-0a1b2c3d-2020-01-01T00-00-00.00${i}Z-1-0-${i}.log`);
+			fs.writeFileSync(archive, `pending archive ${i}\n`);
+			archives.push(archive);
+		}
+
+		await compressPendingArchives(rotatedDir, fs.readdirSync(rotatedDir), new Set(), {
+			deadline: Date.now() + 5000,
+		});
+
+		for (const archive of archives) {
+			assert.strictEqual(fs.pathExistsSync(archive), false, `${archive} should be replaced`);
+			assert.ok(fs.pathExistsSync(`${archive}.gz`), `${archive}.gz should be published`);
+		}
+	}).timeout(TEST_TIMEOUT);
+
+	it('defers compression when the sweep budget is exhausted and resumes on a later pass', async () => {
+		const rotatedDir = path.join(LOG_DIR_TEST, 'deadline');
+		fs.mkdirpSync(rotatedDir);
+		const archive = path.join(rotatedDir, 'hdb-0a1b2c3d-2020-01-01T00-00-00.000Z-1-0-0.log');
+		fs.writeFileSync(archive, 'deferred archive\n');
+		const files = fs.readdirSync(rotatedDir);
+
+		await compressPendingArchives(rotatedDir, files, new Set(), { deadline: Date.now() });
+		assert.ok(fs.pathExistsSync(archive), 'an expired sweep must not start another gzip');
+		await compressPendingArchives(rotatedDir, files, new Set(), { deadline: Date.now() + 5000 });
+		assert.ok(fs.pathExistsSync(`${archive}.gz`), 'a later pass should finish the deferred archive');
+	}).timeout(TEST_TIMEOUT);
+
+	it('stops sweeping when another compression owns the directory slot', async () => {
+		const rotatedDir = path.join(LOG_DIR_TEST, 'busy');
+		fs.mkdirpSync(rotatedDir);
+		const active = path.join(rotatedDir, 'active.log');
+		const stranded = path.join(rotatedDir, 'hdb-0a1b2c3d-2020-01-01T00-00-00.000Z-1-0-0.log');
+		fs.writeFileSync(active, Buffer.alloc(8 * 1024 * 1024, 'a'));
+		fs.writeFileSync(stranded, 'must wait for the next sweep\n');
+		const inFlight = compressArchive(active);
+
+		await compressPendingArchives(rotatedDir, [path.basename(stranded)], new Set(), {
+			deadline: Date.now() + 5000,
+		});
+		assert.ok(fs.pathExistsSync(stranded), 'a busy directory slot must leave the candidate for a later pass');
+		await inFlight;
+	}).timeout(TEST_TIMEOUT);
+
+	it('reports one compression failure without starving later archives in the snapshot', async () => {
+		const rotatedDir = path.join(LOG_DIR_TEST, 'compressionError');
+		fs.mkdirpSync(rotatedDir);
+		const brokenName = 'hdb-0a1b2c3d-2020-01-01T00-00-00.000Z-1-0-0.log';
+		const healthyName = 'hdb-0a1b2c3d-2020-01-01T00-00-00.001Z-1-0-1.log';
+		fs.mkdirpSync(path.join(rotatedDir, brokenName));
+		fs.writeFileSync(path.join(rotatedDir, healthyName), 'compressible archive\n');
+
+		const failure = await compressPendingArchives(rotatedDir, [brokenName, healthyName], new Set(), {
+			deadline: Date.now() + 5000,
+		});
+		assert.strictEqual(failure.file, brokenName);
+		assert.ok(fs.pathExistsSync(path.join(rotatedDir, `${healthyName}.gz`)));
+	}).timeout(TEST_TIMEOUT);
+
 	it('Clears a plain archive left beside the .gz that already replaced it (#1877)', async () => {
 		// compressOneArchive renames the .gz into place and only then unlinks its source, so a crash in
 		// between leaves both. Every later pass read that as "already compressed" and skipped it, and
@@ -102,8 +167,7 @@ describe('Test logRotator module', () => {
 	}).timeout(TEST_TIMEOUT);
 
 	it('Never deletes or compresses a live log sharing the rotated directory (#1877)', async () => {
-		// logging.rotation.path defaults to `log`, the same directory logging.root defaults to, so the
-		// rotated directory normally holds the logs being written as well as the archives.
+		// An explicitly configured rotation directory can also hold logs that are still being written.
 		const companion = path.join(LOG_DIR_TEST, 'companion.log');
 		fs.writeFileSync(companion, 'a live log written by another logger\n');
 		const companionLogger = hdb_logger.createLogger({ stdStreams: false, path: companion, level: 'error' });
@@ -182,11 +246,14 @@ describe('Test logRotator module', () => {
 		fs.mkdirpSync(retentionDir);
 		const oldLog = path.join(retentionDir, 'HDB-old.log');
 		const newLog = path.join(retentionDir, 'HDB-new.log');
+		const abandonedCompression = path.join(retentionDir, 'HDB-old.log.gz.1-0-0.tmp');
 		fs.writeFileSync(oldLog, 'old rotated log contents');
 		fs.writeFileSync(newLog, 'fresh rotated log contents');
+		fs.writeFileSync(abandonedCompression, 'partial gzip from a crashed process');
 		// Age the old log well beyond the retention window (the fresh log stays comfortably inside it).
 		const past = new Date(Date.now() - 7200000);
 		fs.utimesSync(oldLog, past, past);
+		fs.utimesSync(abandonedCompression, past, past);
 
 		// Large maxSize so the active log is not rotated; retention is what we are exercising.
 		const rotator = log_rotator({
@@ -202,6 +269,26 @@ describe('Test logRotator module', () => {
 
 		expect(fs.pathExistsSync(oldLog), 'Rotated log older than retention should be deleted').to.be.false;
 		expect(fs.pathExistsSync(newLog), 'Rotated log within retention should be kept').to.be.true;
+		expect(fs.pathExistsSync(abandonedCompression), 'An abandoned gzip temp file should be reaped').to.be.false;
+	}).timeout(TEST_TIMEOUT);
+
+	it('starts no destructive sweep work after the rotator is ended', async () => {
+		const rotatedDir = path.join(LOG_DIR_TEST, 'ended');
+		fs.mkdirpSync(rotatedDir);
+		const stranded = path.join(rotatedDir, 'hdb-0a1b2c3d-2020-01-01T00-00-00.000Z-1-0-0.log');
+		fs.writeFileSync(stranded, 'must survive\n');
+		const rotator = log_rotator({
+			logger,
+			path: rotatedDir,
+			enabled: true,
+			auditInterval: 100,
+			interval: '1D',
+			compress: true,
+		});
+		rotator.end();
+		await hdb_utils.asyncSetTimeout(250);
+		assert.ok(fs.pathExistsSync(stranded), 'end() must prevent a later sweep from compressing the archive');
+		assert.strictEqual(fs.pathExistsSync(`${stranded}.gz`), false);
 	}).timeout(TEST_TIMEOUT);
 
 	it('Keeps both archives when two loggers with the same basename rotate into a shared directory at the same instant', async () => {
