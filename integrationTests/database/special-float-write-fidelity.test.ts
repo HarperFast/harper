@@ -1,21 +1,29 @@
 /**
  * QA-432 — content-negotiation WRITE-path fidelity for IEEE-754 special floats.
  *
- * A JSON request body cannot represent NaN, ±Infinity or -0, so a JSON write bakes the
- * JSON-spec coercions in before storage ever sees the value. CBOR and msgpack bodies CAN
- * represent them, which makes the write path itself observable: PUT a binary body carrying
- * the special values, then read the record back over all three surfaces (CBOR, msgpack,
- * JSON). A binary read that recovers the exact value proves storage kept it and only the
- * JSON serializer flattens it; a binary read that does not proves the value was lost at
- * ingest, because no read format can resurrect what was never stored.
+ * A JSON request body cannot represent NaN, ±Infinity or -0, so a JSON write bakes the JSON-spec
+ * coercions in before storage ever sees the value. A CBOR or msgpack body can carry them, which
+ * makes ingest itself observable: PUT a binary body, then read the record back over CBOR, msgpack
+ * and JSON. A binary read that recovers the exact value proves storage kept it and only the JSON
+ * serializer flattens it; a binary read that does not proves the value was lost at ingest, because
+ * no read format can resurrect what was never stored. Reads are not served from a write-side
+ * object: PrimaryRocksDatabase sets cachePuts=false and invalidates on put, so the first read
+ * decodes stored bytes.
  *
- * The contract this pins (from QA-432):
+ * The contract this pins:
  *   - NaN / +Infinity / -Infinity survive a binary write and round-trip exactly on a binary read.
  *   - A JSON read of those flattens to null, per the JSON spec — read-path, not storage.
- *   - -0 loses its sign on the binary WRITE path: every read, binary included, returns +0.
- *     Benign (-0 === 0 for nearly all consumers) but a real asymmetry, so it is pinned
- *     explicitly rather than left to drift.
- *   - No special value is ever silently replaced by a WRONG finite number, on any surface.
+ *   - A genuine IEEE-754 -0 on the wire does not survive the round trip: every read, binary
+ *     included, returns +0. Benign (-0 === 0 for nearly all consumers) but a real asymmetry
+ *     against NaN and the infinities, so it is pinned rather than left to drift.
+ *
+ * -0 needs the wire checked, not just the value written. Both encoders take an integer fast path
+ * for -0 (`-0 >>> 0 === -0`), so `encode({ x: -0 })` emits unsigned integer 0 and Harper never
+ * sees a negative zero — a -0 arm built on the default encoders pins cbor-x/msgpackr behaviour
+ * while appearing to pin Harper's. cbor-x emits a real float64 under alwaysUseFloat; msgpackr has
+ * no such option, so the msgpack body for that field is assembled by hand. Either way the arm
+ * asserts the request bytes carry float64 -0 (0xfb / 0xcb + sign bit) before it reads anything
+ * back.
  *
  * Reproduction:
  *   npm run test:integration -- "integrationTests/database/special-float-write-fidelity.test.ts"
@@ -35,9 +43,11 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'special-float-write-fidelity'
 const skipSuite = process.platform === 'win32';
 const TABLE = 'Doc';
 
-// useToJSON:false so the encoder emits the raw IEEE-754 special values instead of
-// going through a lossy toJSON() path; useRecords:false keeps the wire format simple.
-const cborCodec = new Encoder({ useRecords: false, useToJSON: false });
+const cborCodec = new Encoder({ useRecords: false });
+// The only encoder setting that puts a real float64 -0 on the wire; see the header.
+const cborFloatCodec = new Encoder({ useRecords: false, alwaysUseFloat: true });
+
+const FLOAT64_NEG_ZERO = Buffer.from('8000000000000000', 'hex');
 
 type Client = ReturnType<typeof createApiClient>;
 
@@ -45,8 +55,7 @@ const FIELDS = {
 	nan: NaN,
 	posInf: Infinity,
 	negInf: -Infinity,
-	negZero: -0,
-	normal: 3.14, // control — must always survive faithfully
+	normal: 3.14,
 } as const;
 type FieldName = keyof typeof FIELDS;
 
@@ -55,11 +64,6 @@ const READS = [
 	{ label: 'cbor', accept: 'application/cbor' },
 	{ label: 'msgpack', accept: 'application/x-msgpack' },
 ] as const;
-
-/** Same-value check that distinguishes NaN and -0 (unlike ===). */
-function sameValue(a: unknown, b: unknown): boolean {
-	return Object.is(a, b);
-}
 
 function fmt(v: unknown): string {
 	if (v === null) return 'null';
@@ -76,7 +80,6 @@ interface Cell {
 	status: number;
 	value: unknown;
 }
-// matrix[writeFormat][field][readLabel] = Cell
 const matrix: Record<string, Record<string, Record<string, Cell>>> = {};
 
 function binaryParser(res: any, cb: (err: Error | null, body: Buffer) => void) {
@@ -100,17 +103,22 @@ suite(
 			restURL = (client as any).restURL;
 			authHeaders = { Authorization: client.headers.Authorization, Connection: 'close' };
 
-			// Readiness poll (component pre-installed; do NOT restartHttpWorkers — races per QA-179 notes).
+			// A half-started server answers this probe non-200, so anything but 200 keeps polling:
+			// breaking early lands the first PUT before the table exists and reports it as a
+			// write-path defect.
 			const deadline = Date.now() + 30_000;
+			let lastStatus: number | string = 'no response';
 			while (Date.now() < deadline) {
 				try {
 					const probe = await client.reqRest(`/${TABLE}/`).timeout(3_000);
-					if (probe.status !== 404) break;
-				} catch {
-					/* not ready */
+					lastStatus = probe.status;
+					if (probe.status === 200) return;
+				} catch (error) {
+					lastStatus = (error as Error).message;
 				}
 				await sleep(250);
 			}
+			throw new Error(`${TABLE} route never became ready within 30s; last probe: ${lastStatus}`);
 		});
 
 		after(async () => {
@@ -138,7 +146,6 @@ suite(
 			console.log('');
 		}
 
-		/** Write one record (all FIELDS) via CBOR or msgpack body; return write status. */
 		async function writeRecord(id: string, writeFormat: 'cbor' | 'msgpack'): Promise<number> {
 			const record: Record<string, unknown> = { id, ...FIELDS };
 			const body = writeFormat === 'cbor' ? cborCodec.encode(record) : msgpackPack(record);
@@ -152,7 +159,6 @@ suite(
 			return r.status;
 		}
 
-		/** Read the whole record back in a given Accept encoding, decode with the matching codec. */
 		async function readRecord(
 			id: string,
 			accept: string,
@@ -174,32 +180,35 @@ suite(
 			return { status: r.status, decoded };
 		}
 
+		/** Every cell of a row comes from one response, so a row is one snapshot of the record. */
+		async function readAllFormats(id: string): Promise<Record<string, Record<string, Cell>>> {
+			const row: Record<string, Record<string, Cell>> = {};
+			for (const { label, accept } of READS) {
+				const { status, decoded } = await readRecord(id, accept, label);
+				for (const field of Object.keys(FIELDS)) {
+					(row[field] ??= {})[label] = { status, value: decoded ? decoded[field] : undefined };
+				}
+			}
+			return row;
+		}
+
 		async function runWriteFormat(writeFormat: 'cbor' | 'msgpack') {
 			const id = `rec-${writeFormat}`;
 			const writeStatus = await writeRecord(id, writeFormat);
 			ok(writeStatus < 300, `${writeFormat} write for ${id} should not be rejected, got ${writeStatus}`);
-
-			matrix[writeFormat] = {};
-			for (const field of Object.keys(FIELDS) as FieldName[]) {
-				matrix[writeFormat][field] = {};
-				for (const { label, accept } of READS) {
-					const { status, decoded } = await readRecord(id, accept, label);
-					matrix[writeFormat][field][label] = { status, value: decoded ? decoded[field] : undefined };
-				}
-			}
+			matrix[writeFormat] = await readAllFormats(id);
 		}
 
-		test('CBOR write: PUT body with NaN/Infinity/-Infinity/-0/control', async () => {
+		test('CBOR write: PUT body with NaN/Infinity/-Infinity/control', async () => {
 			await runWriteFormat('cbor');
 		});
 
-		test('msgpack write: PUT body with NaN/Infinity/-Infinity/-0/control', async () => {
+		test('msgpack write: PUT body with NaN/Infinity/-Infinity/control', async () => {
 			await runWriteFormat('msgpack');
 		});
 
-		/** Vacuity floor: every analysis arm below reads the matrix the two write arms fill in.
-		 *  Without this, a failed write arm leaves it empty and every loop below iterates zero
-		 *  times — green, having measured nothing. */
+		/** A failed write arm leaves the matrix empty, which would make every loop below iterate
+		 *  zero times and pass having measured nothing. */
 		function writeFormats(): string[] {
 			const formats = Object.keys(matrix);
 			deepStrictEqual(formats.sort(), ['cbor', 'msgpack'], 'both write formats must have produced a record');
@@ -224,7 +233,7 @@ suite(
 					for (const readLabel of ['cbor', 'msgpack']) {
 						const got = matrix[writeFormat][field][readLabel].value;
 						ok(
-							sameValue(got, written),
+							Object.is(got, written),
 							`${field} written as ${fmt(written)} over ${writeFormat} must read back exactly over ` +
 								`${readLabel}, got ${fmt(got)} — a binary read cannot resurrect a value storage lost, ` +
 								`so this failing means the write path coerced it`
@@ -240,30 +249,67 @@ suite(
 			}
 		});
 
-		// D-254: the one write-path coercion. Pinned so a change of behaviour is visible, not
-		// because -0 vs +0 matters to a consumer.
-		test('-0 loses its sign on the write path: every read, binary included, returns +0', () => {
-			for (const writeFormat of writeFormats()) {
-				for (const { label } of READS) {
-					const got = matrix[writeFormat]['negZero'][label].value;
-					ok(sameValue(got, 0), `-0 written over ${writeFormat} must read back as +0 over ${label}, got ${fmt(got)}`);
-				}
-			}
-		});
+		/** msgpackr has no alwaysUseFloat, so this row of the map is assembled byte by byte:
+		 *  fixmap(2), "id" -> id, "negZero" -> float64 -0. */
+		function msgpackBodyWithNegZero(id: string): Buffer {
+			const key = (name: string) => Buffer.concat([Buffer.from([0xa0 | name.length]), Buffer.from(name, 'utf8')]);
+			return Buffer.concat([
+				Buffer.from([0x82]),
+				key('id'),
+				key(id),
+				key('negZero'),
+				Buffer.from([0xcb]),
+				FLOAT64_NEG_ZERO,
+			]);
+		}
 
-		test('no special value is silently substituted with a wrong finite number', () => {
-			const specialFields: FieldName[] = ['nan', 'posInf', 'negInf'];
-			for (const writeFormat of writeFormats()) {
-				for (const field of specialFields) {
-					for (const { label } of READS) {
-						const v = matrix[writeFormat][field][label].value;
-						const isAcceptable = v === null || (typeof v === 'number' && (Number.isNaN(v) || !Number.isFinite(v)));
-						ok(
-							isAcceptable,
-							`DEFECT: ${writeFormat} write, field=${field}, read=${label}: expected null or the special ` +
-								`value itself, got ${fmt(v)} — silent numeric corruption`
-						);
-					}
+		// Where the sign is dropped is not observable from here: Harper's CBOR/msgpack response
+		// encoders take the same integer fast path on the way out, so a faithfully stored -0 and a
+		// coerced one look identical over HTTP. The arm therefore pins the round trip, not the
+		// ingest step.
+		test('a genuine IEEE-754 -0 on the wire does not survive the round trip', async () => {
+			const bodies = {
+				cbor: {
+					contentType: 'application/cbor',
+					body: Buffer.from(cborFloatCodec.encode({ id: 'rec-negzero-cbor', negZero: -0 })),
+					marker: Buffer.concat([Buffer.from([0xfb]), FLOAT64_NEG_ZERO]),
+				},
+				msgpack: {
+					contentType: 'application/x-msgpack',
+					body: msgpackBodyWithNegZero('rec-negzero-msgpack'),
+					marker: Buffer.concat([Buffer.from([0xcb]), FLOAT64_NEG_ZERO]),
+				},
+			};
+
+			for (const [writeFormat, { contentType, body, marker }] of Object.entries(bodies)) {
+				const id = `rec-negzero-${writeFormat}`;
+				// Arming check: without it the encoder's integer fast path silently turns this into a
+				// test of cbor-x/msgpackr rather than of Harper.
+				ok(
+					body.includes(marker),
+					`${writeFormat} request body must carry float64 -0 (${marker.toString('hex')}), got ${body.toString('hex')}`
+				);
+
+				const writeStatus = (
+					await request(restURL)
+						.put(`/${TABLE}/${id}`)
+						.set(authHeaders)
+						.set('Content-Type', contentType)
+						.send(body)
+						.timeout(20_000)
+				).status;
+				ok(writeStatus < 300, `${writeFormat} -0 write should not be rejected, got ${writeStatus}`);
+
+				for (const readLabel of ['cbor', 'msgpack']) {
+					const accept = READS.find((r) => r.label === readLabel)!.accept;
+					const { status, decoded } = await readRecord(id, accept, readLabel);
+					strictEqual(status, 200, `${writeFormat} -0 read over ${readLabel} should be 200`);
+					const got = decoded?.negZero;
+					console.log(`  [-0] write=${writeFormat} read=${readLabel} -> ${fmt(got)}`);
+					ok(
+						Object.is(got, 0),
+						`-0 written over ${writeFormat} must read back as +0 over ${readLabel}, got ${fmt(got)}`
+					);
 				}
 			}
 		});
