@@ -1276,7 +1276,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		};
 		const backend = new SyncBackend('lock-storm', cursor(10));
 		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
-		runtime.register(registration(backend, { rebuildBackoffMilliseconds: 40 }));
+		runtime.register(registration(backend, { rebuildBackoffMilliseconds: 200 }));
 		await waitFor(() => attempts === 1);
 		for (let i = 0; i < 20; i++) {
 			store.rootStore.emit('committed');
@@ -1292,7 +1292,6 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
 		const logEntries = new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]);
 		const first = new FakeLogStore(new Map([[7, []]]), { logEntries });
-		// No reset: the condemnation parks this runner, and nothing durable invalidates the cursor.
 		const condemned = new AsyncBackend('condemn-restart', { cursor: cursor(7), applyDelay: 1 });
 		condemned.reset = undefined;
 		const before = runtimeFor(first, records, { idleGraceMilliseconds: 60_000 }).runtime;
@@ -1321,6 +1320,26 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await waitFor(() => third.getReadiness('condemn-restart').state === 'ready', { timeout: 5000 });
 		assert.strictEqual(trusted.resets.length, 0, 'a cleared marker lets the cursor be trusted');
 		await third.stop();
+	});
+
+	it('does not reset the backend when the condemnation marker cannot be persisted', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
+		});
+		store.putSync = () => {
+			throw new Error('root store is read-only');
+		};
+		const backend = new AsyncBackend('marker-fails', { cursor: cursor(7), applyDelay: 1 });
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => runtime.getReadiness('marker-fails').state === 'ready');
+		backend.stateChange('failed');
+		await waitFor(() => runtime.getStatus('marker-fails')?.state === 'unavailable');
+		assert.match(runtime.getStatus('marker-fails').reason, /condemnation could not be persisted/);
+		assert.strictEqual(backend.resets.length, 0, 'no destructive reset without a durable condemnation');
+		assert.strictEqual(runtime.getReadiness('marker-fails').state, 'unavailable');
+		await runtime.stop();
 	});
 
 	it('retries the lock instead of parking when tryLock throws once', async () => {
@@ -1804,6 +1823,45 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		await new Promise((resolve) => worker.once('exit', resolve));
 		assert.strictEqual(seen.state, 1, 'a worker thread reads the ready state the owner published');
 		assert(seen.sequence > 0 && seen.sequence % 2 === 0, 'and a settled sequence word');
+		// The marker is written through the audit store's symbol-keyed putSync and read back through the
+		// root store: one keyspace on the real binding.
+		const condemnable = new AsyncBackend('rocks-condemn', { applyDelay: 2 });
+		const condemning = new DerivedIndexRuntime(Product.auditStore, () => undefined, { scanRecords: () => [] });
+		condemning.register({ backend: condemnable, projections: new Map([[Product.tableId, (record) => record]]) });
+		await waitFor(() => condemning.getReadiness('rocks-condemn').state === 'ready', { timeout: 5000 });
+		condemnable.reset = undefined;
+		condemnable.stateChange('failed');
+		await waitFor(() => condemning.getStatus('rocks-condemn')?.state === 'needs-rebuild');
+		const markerKey = Symbol.for('derived-index:rocks-condemn:condemned');
+		assert.notStrictEqual(
+			Product.auditStore.rootStore.getSync(markerKey),
+			undefined,
+			'marker readable via the root store'
+		);
+		await condemning.stop();
+		const rebuildable = new AsyncBackend('rocks-condemn', { applyDelay: 2 });
+		const rebuilding = new DerivedIndexRuntime(
+			Product.auditStore,
+			(tableId, recordId) => {
+				const entry = Product.primaryStore.getEntry(recordId);
+				return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+			},
+			{ scanRecords: () => [] }
+		);
+		rebuilding.register({
+			backend: rebuildable,
+			projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
+			options: { maxFlushAgeMilliseconds: 5 },
+		});
+		await waitFor(() => rebuilding.getReadiness('rocks-condemn').state === 'ready', { timeout: 5000 });
+		assert.strictEqual(rebuildable.resets.length, 1);
+		assert.strictEqual(
+			Product.auditStore.rootStore.getSync(markerKey),
+			undefined,
+			'marker removed at the durable ready'
+		);
+		await rebuilding.stop();
+
 		const peerBackend = new AsyncBackend('rocks-rebuild', { applyDelay: 2 });
 		const unregisterPeer = peer.register({
 			backend: peerBackend,
