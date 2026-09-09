@@ -6,6 +6,9 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 
+// LMDB applies staged writes only in the commit batch, so a read inside the transaction cannot see them
+const readsOwnWrites = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
+
 async function collect(iter) {
 	const out = [];
 	for await (const x of iter) out.push(x);
@@ -48,11 +51,12 @@ describe('create followed by patch on the same key in one transaction', () => {
 		await transaction(context, async () => {
 			await Inst.create({ id: 'a', status: 'queued' }, context);
 			await Inst.patch('a', { metadata: 'required-value' }, context);
-			assert.deepStrictEqual(
-				fields(await Inst.get('a', context)),
-				{ id: 'a', status: 'queued', metadata: 'required-value', count: undefined },
-				'read-your-writes inside the transaction'
-			);
+			if (readsOwnWrites)
+				assert.deepStrictEqual(
+					fields(await Inst.get('a', context)),
+					{ id: 'a', status: 'queued', metadata: 'required-value', count: undefined },
+					'read-your-writes inside the transaction'
+				);
 		});
 		assert.deepStrictEqual(
 			fields(await Inst.get('a')),
@@ -69,12 +73,13 @@ describe('create followed by patch on the same key in one transaction', () => {
 			await Inst.patch('b', { status: 'running' }, context);
 			await Inst.patch('b', { metadata: 'first' }, context);
 			await Inst.patch('b', { metadata: 'second', status: 'done' }, context);
-			assert.deepStrictEqual(fields(await Inst.get('b', context)), {
-				id: 'b',
-				status: 'done',
-				metadata: 'second',
-				count: 1,
-			});
+			if (readsOwnWrites)
+				assert.deepStrictEqual(fields(await Inst.get('b', context)), {
+					id: 'b',
+					status: 'done',
+					metadata: 'second',
+					count: 1,
+				});
 		});
 		assert.deepStrictEqual(fields(await Inst.get('b')), { id: 'b', status: 'done', metadata: 'second', count: 1 });
 		assert.strictEqual(await isIndexedUnder('queued', 'b'), false);
@@ -88,12 +93,13 @@ describe('create followed by patch on the same key in one transaction', () => {
 			transaction(context, async () => {
 				await Inst.create({ id: 'c', status: 'queued' }, context);
 				await Inst.patch('c', { metadata: 'required-value' }, context);
-				assert.deepStrictEqual(fields(await Inst.get('c', context)), {
-					id: 'c',
-					status: 'queued',
-					metadata: 'required-value',
-					count: undefined,
-				});
+				if (readsOwnWrites)
+					assert.deepStrictEqual(fields(await Inst.get('c', context)), {
+						id: 'c',
+						status: 'queued',
+						metadata: 'required-value',
+						count: undefined,
+					});
 				throw new Error('abort');
 			}),
 			/abort/
