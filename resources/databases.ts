@@ -3139,8 +3139,18 @@ export function setIndexingCheckpointPeriod(ms: number): number {
 	return previous;
 }
 const yieldEventTurn = () => new Promise((resolve) => setImmediate(resolve));
-// The primary-store key a resumed backfill scans from: the minimum persisted checkpoint across the
-// attributes being built, or undefined (scan everything) when any attribute has none.
+// Index stores have no WAL, so a flush is what makes a checkpoint's entries durable; one flush per root
+// store at a time, shared by every backfill running on that database.
+const indexingFlushes = new WeakMap<object, Promise<void>>();
+function flushIndexStores(rootStore: any): Promise<void> | undefined {
+	if (!(rootStore instanceof RocksDatabase)) return;
+	let flush = indexingFlushes.get(rootStore);
+	if (!flush) {
+		flush = rootStore.flush().finally(() => indexingFlushes.delete(rootStore));
+		indexingFlushes.set(rootStore, flush);
+	}
+	return flush;
+}
 export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 	let start: any;
 	for (const attribute of attributes) {
@@ -3187,18 +3197,23 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			const persistCheckpoint = async (key) => {
 				if (hadIndexingErrors) return;
 				try {
-					const rootStore = Table.primaryStore.rootStore;
-					if (rootStore instanceof RocksDatabase) await rootStore.flush({ allowWriteStall: true });
+					await flushIndexStores(Table.primaryStore.rootStore);
+					const puts = [];
 					for (const attribute of attributes) {
 						attribute.lastIndexedKey = key;
 						attribute.checkpointCertified = true;
-						Table.dbisDB.put(attribute.key, attribute);
+						puts.push(Table.dbisDB.put(attribute.key, attribute));
 					}
+					await Promise.all(puts);
 				} catch (error) {
 					logger.debug(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
 				}
 			};
-			let nextCheckpointAt = Date.now() + indexingCheckpointPeriodMs;
+			const onIndexPutRejected = (error) => {
+				hadIndexingErrors = true;
+				logger.error(error);
+			};
+			let nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
 			// this means that a new attribute has been introduced that needs to be indexed
 			for (const { key, value: record } of Table.primaryStore.getRange({
 				start,
@@ -3218,7 +3233,6 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				// we index, that's fine because indexing is idempotent, we can just put the same values again. If it changes
 				// during the indexing, the indexing here will fail. This is also fine because it means the other thread will have
 				// performed indexing and we don't need to do anything further
-				// a deletion entry has nothing to index but still paces the checkpoints and yields
 				if (record) {
 					for (let i = 0; i < attributesLength; i++) {
 						const attribute = attributes[i];
@@ -3236,6 +3250,9 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 							if (values) {
 								for (let i = 0, l = values.length; i < l; i++) {
 									lastResolution = index.put(values[i], key);
+									// only the last put's settlement is awaited below; a rejection of any other must
+									// still stop the checkpoint
+									if (lastResolution?.then) lastResolution.then(undefined, onIndexPutRejected);
 								}
 							}
 						} catch (error) {
@@ -3256,11 +3273,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				when(
 					lastResolution,
 					() => outstanding--,
-					(error) => {
-						outstanding--;
-						hadIndexingErrors = true;
-						logger.error(error);
-					}
+					() => outstanding-- // counted and logged by onIndexPutRejected
 				);
 				if (workerData && workerData.restartNumber !== manageThreads.restartNumber) {
 					interrupted = true;
@@ -3275,8 +3288,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					await persistCheckpoint(key);
 					return;
 				}
-				if (atInterval && Date.now() >= nextCheckpointAt) {
-					nextCheckpointAt = Date.now() + indexingCheckpointPeriodMs;
+				if (atInterval && performance.now() >= nextCheckpointAt) {
+					nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
 					await checkpointing;
 					checkpointing = when(
 						lastResolution,
@@ -3285,20 +3298,13 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					);
 				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
-				// A RocksDB put resolves synchronously and custom indexes (e.g. HNSW) index synchronously, so
-				// neither raises `outstanding`; without a yield of its own a large backfill would run as one
-				// event-loop turn, starving keepalive, replication and queries.
+				// RocksDB puts and custom indexes complete synchronously and never raise `outstanding`
 				if (atInterval || didSynchronousIndexing || outstanding > MIN_OUTSTANDING_INDEXING) await yieldEventTurn();
 			}
 		}
 		await checkpointing;
-		// Await the last pending put. If it rejects, that is also an indexing error.
-		// Note: the when() calls above already attach rejection handlers to each record's
-		// last-put promise; this try-catch specifically handles the case where lastResolution
-		// itself rejects (i.e. the very last put in the loop failed) which would otherwise
-		// throw past the hadIndexingErrors check to the outer catch. The broader issue of
-		// unhandled rejections from non-last puts in multi-value attributes is pre-existing
-		// and out of scope for this fix.
+		// Await the last pending put. If it rejects, that is also an indexing error (already counted by
+		// onIndexPutRejected); catching it here keeps it from escaping to the outer catch.
 		try {
 			await lastResolution;
 		} catch (error) {
