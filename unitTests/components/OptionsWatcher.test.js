@@ -236,10 +236,8 @@ describe('OptionsWatcher', () => {
 		await teardown({ fixture, options });
 	});
 
-	// The twin guard on `RootConfigWatcher.handleError`. close() drops the listeners, so a queued
-	// chokidar error reaches no consumer either way; what it still does without the guard is walk
-	// the exhaustion branch on a dead watcher, flipping the watch to a polling fallback that the
-	// `#closed` check in the reopen then declines to take.
+	// Asserting on the `error` event would pass without the guard too: close() has already dropped
+	// the listeners. The polling flip is the one effect that survives it.
 	it('ignores a watcher error queued past close()', async () => {
 		const fixture = mkdtempSync(getFixtureName());
 		const configFilePath = join(fixture, 'harper-config.yaml');
