@@ -80,19 +80,24 @@ class FakeLogStore {
 	}
 
 	getUserSharedBuffer(key, defaultBuffer, options) {
-		let buffer = this.sharedBuffers.get(key);
-		if (!buffer) {
-			buffer = new SharedArrayBuffer(defaultBuffer.byteLength);
-			buffer.callbacks = new Set();
-			buffer.notify = () => {
-				for (const listener of buffer.callbacks) setImmediate(listener);
-			};
-			this.sharedBuffers.set(key, buffer);
+		let memory = this.sharedBuffers.get(key);
+		if (!memory) {
+			memory = { buffer: new SharedArrayBuffer(defaultBuffer.byteLength), callbacks: new Set() };
+			this.sharedBuffers.set(key, memory);
 		}
+		// Like the native binding, each lookup returns its own wrapper over the same shared memory with
+		// notification and cancellation bound to that lookup's subscription.
+		const wrapper = structuredClone(memory.buffer);
 		const { callback } = options ?? {};
-		if (callback) buffer.callbacks.add(callback);
-		buffer.cancel = () => buffer.callbacks.delete(callback);
-		return buffer;
+		if (callback) memory.callbacks.add(callback);
+		wrapper.callbacks = memory.callbacks;
+		wrapper.notify = () => {
+			for (const listener of memory.callbacks) setImmediate(listener);
+		};
+		wrapper.cancel = () => {
+			if (callback) memory.callbacks.delete(callback);
+		};
+		return wrapper;
 	}
 }
 
@@ -977,6 +982,20 @@ describe('DerivedIndexRuntime for native backends', () => {
 		}
 		assert.strictEqual(store.sharedBuffers.get('derived-index:cycled:readiness').callbacks.size, 0);
 		await runtime.stop();
+	});
+
+	it('cancels only its own subscription when two runners share a readiness buffer', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const first = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		const second = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 }).runtime;
+		first.register(registration(new SyncBackend('shared-buffer', cursor(10))));
+		second.register(registration(new SyncBackend('shared-buffer', cursor(10))));
+		const callbacks = store.sharedBuffers.get('derived-index:shared-buffer:readiness').callbacks;
+		assert.strictEqual(callbacks.size, 2);
+		await first.stop();
+		assert.strictEqual(callbacks.size, 1);
+		await second.stop();
+		assert.strictEqual(callbacks.size, 0);
 	});
 
 	it('reads a publication abandoned mid-write as unknown instead of spinning', () => {
