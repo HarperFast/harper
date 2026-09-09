@@ -41,6 +41,20 @@ function findDescriptor(Tbl, attrName) {
 	return null;
 }
 
+// LMDB commits checkpoint writes asynchronously, so read the descriptor only once it has stopped
+// changing (three consecutive identical polls, 10ms apart).
+async function settledCheckpoint(Tbl, attrName) {
+	let last = findDescriptor(Tbl, attrName).value.lastIndexedKey;
+	let stable = 0;
+	await waitFor(() => {
+		const current = findDescriptor(Tbl, attrName).value.lastIndexedKey;
+		stable = current === last ? stable + 1 : 0;
+		last = current;
+		return stable >= 3;
+	});
+	return last;
+}
+
 // Wrap Table.primaryStore.getRange so the test can observe the range runIndexing actually opens
 // (its `start` option and every key it visits) and optionally abort the scan partway. runIndexing
 // only reads the store after awaiting a schema-change signal and an event turn, so wrapping right
@@ -140,17 +154,12 @@ describe('index backfill convergence (#2536)', () => {
 		}
 		assert.strictEqual(firstPass.keys.length, ABORT_AFTER, 'the first pass should have been aborted partway');
 		// runIndexing checkpoints every 100 entries it visits (LMDB yields a leading structures entry
-		// too), but only once the index writes the checkpoint covers have settled; LMDB commits them
-		// asynchronously, so the persisted checkpoint may lag one interval behind the abort point and
-		// land after the interruption itself was recorded.
-		const checkpoint = await waitFor(() => findDescriptor(Tbl, 'tag').value.lastIndexedKey, {
-			message: 'a checkpoint should be persisted after the interrupted pass',
+		// too), once the index writes the checkpoint covers have settled; LMDB commits those
+		// asynchronously, so the last checkpoint can land after the interruption itself was recorded.
+		const checkpoint = firstPass.keys[199];
+		await waitFor(() => findDescriptor(Tbl, 'tag').value.lastIndexedKey === checkpoint, {
+			message: `the checkpoint ${checkpoint} should be persisted after the interrupted pass`,
 		});
-		const expectedCheckpoints = LMDB ? [firstPass.keys[99], firstPass.keys[199]] : [firstPass.keys[199]];
-		assert.ok(
-			expectedCheckpoints.includes(checkpoint),
-			`persisted checkpoint ${checkpoint} should be one of ${expectedCheckpoints}`
-		);
 		for (const name of ['tag', 'group']) {
 			const parked = findDescriptor(Tbl, name);
 			assert.strictEqual(parked?.value.indexingFailed, true, `${name}: interrupted backfill should be parked`);
@@ -239,7 +248,7 @@ describe('index backfill convergence (#2536)', () => {
 		const lastSafeCheckpoint = firstPass.keys[Math.floor(failedAt / 100) * 100 - 1];
 		const parked = findDescriptor(Tbl, 'tag');
 		assert.strictEqual(parked?.value.indexingFailed, true, 'a backfill with a failed record should be parked');
-		const persisted = parked.value.lastIndexedKey;
+		const persisted = await settledCheckpoint(Tbl, 'tag');
 		if (LMDB) {
 			// checkpoints wait for their writes to commit, so a failure that lands first withholds them
 			const safe = [undefined, ...firstPass.keys.slice(0, failedAt).filter((_, i) => i % 100 === 99)];
@@ -412,12 +421,18 @@ describe('index backfill convergence (#2536)', () => {
 			} finally {
 				resumed.restore();
 			}
-			assert.strictEqual(
-				resumed.start,
-				checkpoint,
-				"the resumed scan should start at the crashed process's checkpoint"
-			);
-			assert.strictEqual(resumed.keys[0], checkpoint);
+			if (LMDB) {
+				// the child read a committed checkpoint, but LMDB's write thread can commit the next one
+				// (already queued) before the kill lands
+				assert.ok(resumed.start >= checkpoint, `the resumed scan should start at or after ${checkpoint}`);
+			} else {
+				assert.strictEqual(
+					resumed.start,
+					checkpoint,
+					"the resumed scan should start at the crashed process's checkpoint"
+				);
+			}
+			assert.strictEqual(resumed.keys[0], resumed.start);
 			assert.strictEqual(
 				findDescriptor(Tbl, 'tag').value.indexingPID,
 				undefined,
