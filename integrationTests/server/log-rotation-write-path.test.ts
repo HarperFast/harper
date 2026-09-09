@@ -8,7 +8,7 @@
  */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { join, resolve } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -65,34 +65,56 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 		}
 	}
 
-	/**
-	 * One entry per archived generation, keyed by its archive name and read from the compressed copy
-	 * when there is one. Publishing writes the `.gz` and then unlinks the plain archive, so a listing
-	 * taken across that window holds both representations of one generation - counting them both
-	 * would report every record in it twice.
-	 */
-	function archivedGenerations(): Map<string, string> {
-		const byName = new Map<string, string>();
-		let names: string[];
+	function archiveNames(): string[] {
 		try {
-			names = readdirSync(rotatedDir);
+			return readdirSync(rotatedDir)
+				.map((name) => (name.endsWith('.gz') ? name.slice(0, -3) : name))
+				.filter((name) => name.endsWith('.log') && name !== 'hdb.log')
+				.sort();
 		} catch {
-			return byName;
+			return [];
 		}
-		for (const name of names) {
-			const compressed = name.endsWith('.gz');
-			const generation = compressed ? name.slice(0, -3) : name;
-			if (!generation.endsWith('.log') || generation === 'hdb.log') continue;
-			if (!compressed && byName.has(generation)) continue;
+	}
+
+	/**
+	 * Read one generation by its archive name. Publishing renames the `.gz` into place and only then
+	 * unlinks the plain archive, so trying the compressed copy first and the plain one second always
+	 * finds exactly one representation of it — reading a listing entry by entry does not, because a
+	 * generation compressed between the listing and the read leaves a plain path that no longer
+	 * exists and a `.gz` the listing never saw.
+	 */
+	function readGeneration(name: string): string {
+		try {
+			return gunzipSync(readFileSync(join(rotatedDir, `${name}.gz`))).toString('utf8');
+		} catch {
+			return readFileSync(join(rotatedDir, name), 'utf8');
+		}
+	}
+
+	function signature(): string {
+		return `${archiveNames().join('|')}#${statSync(join(logDir, 'hdb.log')).size}`;
+	}
+
+	/**
+	 * Every generation, read as of one instant. Reading the active log and the archive set at
+	 * different instants lets a rotation in between either duplicate a batch or lose one, and no
+	 * exactly-once assertion survives that — so the read is bracketed by the same signature, and
+	 * retried when a rotation lands inside it.
+	 */
+	async function settledGenerations(): Promise<Map<string, string>> {
+		for (let attempt = 0; attempt < 40; attempt++) {
+			const before = signature();
 			try {
-				const raw = readFileSync(join(rotatedDir, name));
-				byName.set(generation, compressed ? gunzipSync(raw).toString('utf8') : raw.toString('utf8'));
+				const generations = new Map<string, string>();
+				for (const name of archiveNames()) generations.set(name, readGeneration(name));
+				generations.set('hdb.log', readFileSync(join(logDir, 'hdb.log'), 'utf8'));
+				if (signature() === before) return generations;
 			} catch {
-				// Compressed or reclaimed between the listing and the read; the other representation
-				// carries the same records.
+				// A generation moved under the read; the retry below takes a fresh set.
 			}
+			await new Promise((resolve) => setTimeout(resolve, 250));
 		}
-		return byName;
+		throw new Error('the log never stopped rotating long enough to read every generation once');
 	}
 
 	test('bounds every generation and keeps every request marker exactly once', { timeout: 120_000 }, async () => {
@@ -102,7 +124,7 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 			await response.json();
 		}
 
-		ok(archivedGenerations().size > 0, 'expected the write path to rotate the log inside one audit interval');
+		ok(archiveNames().length > 0, 'expected the write path to rotate the log inside one audit interval');
 
 		// Compression only happens after every writing thread has answered that it released the
 		// archived inode, so a published .gz is the coordinator working through the real thread mesh.
@@ -112,10 +134,7 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 		}
 		ok(compressedArchivePaths().length > 0, 'expected at least one archive to be compressed and published');
 
-		// One listing for both assertions below, so a rotation between them cannot make the size check
-		// and the marker count disagree about which generations exist.
-		const generations = archivedGenerations();
-		generations.set('hdb.log', readFileSync(join(logDir, 'hdb.log'), 'utf8'));
+		const generations = await settledGenerations();
 
 		// Every generation is bounded by the cap plus one check quantum and one in-flight payload per
 		// writing thread — a function of maxSize and thread count, never of how fast the log is
@@ -133,7 +152,13 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 		for (let i = 0; i < REQUEST_COUNT; i++) {
 			for (let line = 0; line < LINES_PER_REQUEST; line++) {
 				const occurrences = contents.split(`rotation-marker request-${i}:${line} `).length - 1;
-				strictEqual(occurrences, 1, `request-${i}:${line} appeared ${occurrences} times across generations`);
+				strictEqual(
+					occurrences,
+					1,
+					`request-${i}:${line} appeared ${occurrences} times across ${generations.size} generations: ${[...generations]
+						.map(([name, content]) => `${name}=${content.length}b`)
+						.join(', ')}`
+				);
 			}
 		}
 	});
