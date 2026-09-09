@@ -985,12 +985,13 @@ function getFileLogger(path, rotation, isExternalInstance, rotationPolicy) {
 			let startTime = performance.now();
 			try {
 				const appendPayload = rotationProblemNotice ? rotationProblemNotice + payload : payload;
-				fs.appendFileSync(logFD, appendPayload);
+				const appendBuffer = Buffer.from(appendPayload);
+				fs.appendFileSync(logFD, appendBuffer);
 				rotationProblemNotice = undefined;
 				// Both cleared, so a volume that fills again months later reports itself again
 				retryAppendAfter = undefined;
 				loggedAppendError = false;
-				rotationGuard?.recordWrite(Buffer.byteLength(appendPayload));
+				rotationGuard?.recordWrite(appendBuffer.length);
 			} catch (error) {
 				retryAppendAfter = performance.now() + APPEND_RETRY_COOLDOWN;
 				// A log write must never take the process down: on an exhausted volume this throws from

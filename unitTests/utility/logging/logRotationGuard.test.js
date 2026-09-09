@@ -300,14 +300,20 @@ describe('Test log rotation on the write path (#1877)', () => {
 		assert.doesNotMatch(fs.readFileSync(archivePath, 'utf8'), /after the announced rotation/);
 	});
 
-	it('recreates a removed rotation directory without dropping records during the retry cooldown', () => {
+	it('recreates a removed rotation directory without dropping records during the retry cooldown', async () => {
 		// rename() reports ENOENT for a missing source and for a missing destination alike. Reading a
 		// missing destination as "another thread already rotated this generation" clears recovery.
 		const { logger, logPath, rotatedDir } = newCase({ maxSize: '4K' });
 		logger.error('one line so the rotated directory exists');
 		fs.removeSync(rotatedDir);
 		for (let i = 0; i < 400; i++) logger.error(`removed target line ${i} ${'z'.repeat(60)}`);
-		const contents = fs.readFileSync(logPath, 'utf8');
+		const contents = await waitForContent(
+			logPath,
+			rotatedDir,
+			'removed target line 0 ',
+			'removed target line 399 ',
+			'Harper log rotation problem'
+		);
 		assert.match(contents, /removed target line 0 /);
 		assert.match(contents, /removed target line 399 /);
 		assert.match(contents, /Harper log rotation problem/);
