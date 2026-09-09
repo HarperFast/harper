@@ -334,6 +334,17 @@ JS thread:
 
 ### Phase 1: cluster-wide `lock()` over replicated control entries (`recordLockCoordinator`)
 
+> **The arbitration rule below is superseded and is not what will ship.** Ricart–Agrawala requires a
+> grant from every participant, so any single unreachable peer blocks every cluster lock, and an
+> acquisition costs `P+1` durable commits and up to `P²−1` frame deliveries with no amortization for a
+> node that locks the same record repeatedly. [`docs/record-lock-ownership.md`](docs/record-lock-ownership.md)
+> specifies the replacement — durable membership epochs, rendezvous-hashed home nodes, and volatile
+> per-record delegations that serve repeat `lock()`/`unlock()` from the Phase 0 key lock with no
+> cluster message. The substrate documented in the rest of this section (the control entries, the
+> writer, receive routing, audit filtering, the commit-time fence, `ClusterLockTransport`) is reused
+> unchanged; the `LOCK_REQUEST`/`LOCK_GRANT` state machine is removed. Read what follows as the
+> description of the code currently on `feat/record-lock-phase1`, not as a settled design.
+
 Phase 1 keeps every Phase 0 mechanism and adds a cluster round on top of it. Nothing in core registers
 a `ClusterLockTransport`, so in a core-only build the machinery is inert and `lock()` behaves exactly
 as it did in Phase 0 — the whole feature is gated on harper-pro registering a transport.
