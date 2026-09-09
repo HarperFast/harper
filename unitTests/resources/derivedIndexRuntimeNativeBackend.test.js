@@ -20,9 +20,14 @@ const {
 // the entries physically after it, `logEntries` is the retained log used by the rebuild boundary
 // capture, and every worker (runtime) sharing one instance shares its locks and shared buffers.
 class FakeLogStore {
-	constructor(entriesByCursor, { logNames = ['local'], logEntries = new Map(), onNext, live = false } = {}) {
+	constructor(
+		entriesByCursor,
+		{ logNames = ['local'], logEntries = new Map(), onNext, live = false, markers = new Map() } = {}
+	) {
 		this.entriesByCursor = entriesByCursor;
 		this.logEntries = logEntries;
+		// Root-store markers survive a "restart" (a new FakeLogStore sharing this map); shared buffers do not.
+		this.markers = markers;
 		this.onNext = onNext;
 		this.live = live;
 		this.locks = new Set();
@@ -34,6 +39,12 @@ class FakeLogStore {
 		this.rootStore = new EventEmitter();
 		this.rootStore.listLogs = () => logNames.slice();
 		this.rootStore.useLog = (name) => ({ name, getStats: () => ({ oldestSequenceNumber: 1 }) });
+		this.rootStore.getSync = (key) => this.markers.get(key);
+		this.rootStore.removeSync = (key) => this.markers.delete(key);
+	}
+
+	putSync(key, value) {
+		this.markers.set(key, value);
 	}
 
 	getRange(options) {
@@ -1260,21 +1271,56 @@ describe('DerivedIndexRuntime for native backends', () => {
 		let attempts = 0;
 		const tryLock = store.tryLock.bind(store);
 		store.tryLock = (key, onUnlocked) => {
-			if (attempts++ < 30) throw new Error('lock table busy');
+			if (attempts++ < 2) throw new Error('lock table busy');
 			return tryLock(key, onUnlocked);
 		};
 		const backend = new SyncBackend('lock-storm', cursor(10));
 		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
-		runtime.register(registration(backend, { rebuildBackoffMilliseconds: 20 }));
+		runtime.register(registration(backend, { rebuildBackoffMilliseconds: 40 }));
 		await waitFor(() => attempts === 1);
 		for (let i = 0; i < 20; i++) {
 			store.rootStore.emit('committed');
 			await sleep(1);
 		}
-		const afterStorm = attempts;
-		await sleep(60);
-		assert(attempts <= afterStorm + 3, `retry timers fired ${attempts - afterStorm} times after the storm`);
+		assert.strictEqual(attempts, 1, 'commit wakes do not re-enter tryLock while the retry timer is armed');
+		await waitFor(() => backend.deliveries.length === 1, { timeout: 5000 });
+		assert.strictEqual(attempts, 3, 'one attempt per timer firing');
 		await runtime.stop();
+	});
+
+	it('rebuilds after a restart when a condemnation was recorded before the reset could invalidate the cursor', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const logEntries = new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]);
+		const first = new FakeLogStore(new Map([[7, []]]), { logEntries });
+		// No reset: the condemnation parks this runner, and nothing durable invalidates the cursor.
+		const condemned = new AsyncBackend('condemn-restart', { cursor: cursor(7), applyDelay: 1 });
+		condemned.reset = undefined;
+		const before = runtimeFor(first, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		before.register(registration(condemned, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => before.getReadiness('condemn-restart').state === 'ready');
+		condemned.stateChange('failed');
+		await waitFor(() => before.getStatus('condemn-restart')?.state === 'needs-rebuild');
+		assert.strictEqual(first.markers.size, 1, 'the condemnation is written to the root store');
+		await before.stop();
+
+		// "Restart": fresh shared buffers (readiness reads unknown), same root store markers and log.
+		const restarted = new FakeLogStore(new Map([[7, []]]), { logEntries, markers: first.markers });
+		const rebuilt = new AsyncBackend('condemn-restart', { cursor: cursor(7), applyDelay: 1 });
+		const after = runtimeFor(restarted, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		assert.strictEqual(after.getReadiness('condemn-restart').state, 'unknown');
+		after.register(registration(rebuilt, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => after.getReadiness('condemn-restart').state === 'ready', { timeout: 5000 });
+		assert.strictEqual(rebuilt.resets.length, 1, 'the still-valid cursor is rebuilt, not trusted');
+		assert.strictEqual(restarted.markers.size, 0, 'the marker clears at the durable ready');
+		await after.stop();
+
+		const again = new FakeLogStore(new Map([[7, []]]), { logEntries, markers: first.markers });
+		const trusted = new AsyncBackend('condemn-restart', { cursor: cursor(7), applyDelay: 1 });
+		const third = runtimeFor(again, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		third.register(registration(trusted, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => third.getReadiness('condemn-restart').state === 'ready', { timeout: 5000 });
+		assert.strictEqual(trusted.resets.length, 0, 'a cleared marker lets the cursor be trusted');
+		await third.stop();
 	});
 
 	it('retries the lock instead of parking when tryLock throws once', async () => {
@@ -1637,6 +1683,13 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 			rejected = error;
 		}
 		assert.strictEqual(rejected?.code, 'DERIVED_INDEX_LAGGING');
+		// A canonical-source apply is never shed: dropping it would advance the source cursor past it.
+		const { transaction } = require('#src/resources/transaction');
+		const canonical = { sourceApply: true };
+		await transaction(canonical, () => Gated.put('g-source', { title: 'canonical' }, canonical));
+		assert.strictEqual((await Gated.get('g-source'))?.title, 'canonical');
+		assert.notStrictEqual(derivedIndexWriteRejection(Gated.auditStore, Gated.tableId), undefined, 'still tripped');
+		await waitFor(() => backend.deliveries.length >= 2, { timeout: 5000 });
 
 		backend.cursor = backend.deliveries.at(-1).through;
 		backend.stateChange();

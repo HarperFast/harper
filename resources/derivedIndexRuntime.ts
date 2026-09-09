@@ -36,7 +36,12 @@ export type DerivedIndexTransaction = {
 	logName: string;
 	timestamp: number;
 	mutations: DerivedIndexMutation[];
-	/** Present on a chunk of an oversized transaction that does not include its `endTxn` entry. */
+	/**
+	 * Present on a chunk of an oversized transaction that does not include its `endTxn` entry. A
+	 * backend applies such chunks like any other and may expose a transaction's earlier chunks before
+	 * its later ones: the runtime withholds the cursor until the closing chunk, but query-visible
+	 * atomicity of one transaction is not preserved across chunks.
+	 */
 	partial?: true;
 };
 
@@ -192,6 +197,8 @@ export type DerivedIndexRunnerMetrics = {
 	unindexableRecords: number;
 	rebuildAttempts: number;
 	rebuiltRecords: number;
+	/** How long the current epoch's quiescence (backend shutdown, undeclared asynchronous work) has been pending. */
+	quiescenceAgeMilliseconds: number;
 };
 
 type ResolvedRunnerOptions = Required<DerivedIndexRunnerOptions> & {
@@ -209,6 +216,7 @@ const READINESS_STATES: DerivedIndexReadinessState[] = [
 	'unavailable',
 ];
 const READINESS_BYTES = 512;
+const CONDEMNED_MARKER = new Uint8Array([1]);
 const READINESS_WORDS = 6;
 const READINESS_EPOCH_OFFSET = 24;
 const READINESS_RELOADS_OFFSET = 32;
@@ -430,6 +438,7 @@ class DerivedIndexRunner {
 	#registration: DerivedIndexRegistration;
 	#options: ResolvedRunnerOptions;
 	#lockKey: string;
+	#markerKey: symbol;
 	#iterator?: Iterator<AuditRecord>;
 	#iterable?: TransactionLogIterable;
 	#knownLogs = new Set<string>();
@@ -464,7 +473,8 @@ class DerivedIndexRunner {
 	#releaseFailure?: Error;
 	#stopResult?: Promise<void>;
 	#heldLock = false;
-	#quiescing?: { epoch: bigint; promise: Promise<void> };
+	#quiescing?: { epoch: bigint; promise: Promise<void>; since: number };
+	#condemned = false;
 	#rebuilding = false;
 	#rebuildRequested = false;
 	#boundaryPending = false;
@@ -515,6 +525,7 @@ class DerivedIndexRunner {
 		this.#registration = registration;
 		this.#options = options;
 		this.#lockKey = `derived-index:${registration.backend.id}:runner`;
+		this.#markerKey = Symbol.for(`derived-index:${registration.backend.id}:condemned`);
 		this.#lagBudget = effectiveLagBudget(options);
 		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => {
 			if (this.#owned) this.wake(true);
@@ -581,7 +592,10 @@ class DerivedIndexRunner {
 		});
 	}
 
-	/** Rejects when the backend could not prove its queued work quiescent; the runner lock stays held then. */
+	/**
+	 * Rejects when the backend could not prove its queued work quiescent; the runner lock stays held
+	 * then. Callers await it before closing storage: it resolves only once nothing can still write.
+	 */
 	stop(): Promise<void> {
 		if (this.#stopResult) return this.#stopResult;
 		this.#stopped = true;
@@ -633,6 +647,7 @@ class DerivedIndexRunner {
 			unindexableRecords: this.#unindexableRecords,
 			rebuildAttempts: this.#rebuildAttempts,
 			rebuiltRecords: this.#rebuiltRecords,
+			quiescenceAgeMilliseconds: this.#quiescing === undefined ? 0 : Math.max(0, now - this.#quiescing.since),
 		};
 	}
 
@@ -726,7 +741,7 @@ class DerivedIndexRunner {
 	}
 
 	#acquire() {
-		if (this.#waitingForLock) return;
+		if (this.#waitingForLock || this.#lockRetryTimer) return;
 		if (this.#releasing) {
 			this.#releasing.then(() => this.wake(true));
 			return;
@@ -804,6 +819,10 @@ class DerivedIndexRunner {
 					};
 					this.#release();
 				}
+				return;
+			}
+			if (this.#readCondemnation()) {
+				this.#needsRebuild('condemned before a restart; the durable cursor is not trusted');
 				return;
 			}
 			this.#resetFromDurableCursor();
@@ -1378,8 +1397,44 @@ class DerivedIndexRunner {
 
 	#settleReady() {
 		this.#rebuildAttempts = 0;
+		if (this.#condemned) this.#clearCondemnation();
 		if (Atomics.load(this.#shared().words, READINESS_STATE) !== READINESS_STATES.indexOf('ready'))
 			this.#publishReadiness('ready');
+	}
+
+	/**
+	 * Shared readiness is process memory, so a condemnation is also written to the root store under
+	 * the index's marker key; a restart before the rebuild's `reset` has durably invalidated the
+	 * cursor then still rebuilds instead of trusting it. Durability follows the root store's WAL
+	 * setting. The marker clears only at the first durable `ready` after the rebuild, so a crash
+	 * before that costs one extra rebuild, never a trusted condemned cursor.
+	 */
+	#writeCondemnation() {
+		if (this.#condemned) return;
+		this.#condemned = true;
+		try {
+			this.#logStore.putSync(this.#markerKey, CONDEMNED_MARKER, {});
+		} catch (error) {
+			logger.error(`Derived index '${this.id}' could not persist its condemnation`, error);
+		}
+	}
+
+	#readCondemnation(): boolean {
+		try {
+			this.#condemned = this.#logStore.rootStore.getSync(this.#markerKey) !== undefined;
+		} catch (error) {
+			logger.error(`Derived index '${this.id}' could not read its condemnation marker`, error);
+		}
+		return this.#condemned;
+	}
+
+	#clearCondemnation() {
+		try {
+			this.#logStore.rootStore.removeSync(this.#markerKey);
+			this.#condemned = false;
+		} catch (error) {
+			logger.error(`Derived index '${this.id}' could not clear its condemnation marker`, error);
+		}
 	}
 
 	#backendStateChanged(change: DerivedIndexBackendStateChange) {
@@ -1426,6 +1481,7 @@ class DerivedIndexRunner {
 		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
 		this.#discardProgress();
 		if (!this.#owned) return;
+		this.#writeCondemnation();
 		if (this.#canRebuild()) {
 			// A failure after a rebuild but before `ready` is that rebuild failing late; it counts against the cap.
 			if (this.#rebuildAttempts >= this.#options.maxRebuildAttempts) {
@@ -1702,7 +1758,7 @@ class DerivedIndexRunner {
 		} catch (error) {
 			promise = Promise.reject(error);
 		}
-		const quiescing = { epoch, promise };
+		const quiescing = { epoch, promise, since: this.#options.now() };
 		this.#quiescing = quiescing;
 		const settle = () => {
 			if (this.#quiescing === quiescing) this.#quiescing = undefined;

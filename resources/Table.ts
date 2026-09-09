@@ -748,9 +748,10 @@ export function makeTable(options) {
 		}
 		return { txnLogKey: version, nodeId };
 	}
-	// Only user writes are shed: replication apply, replay and origin cache fills must never be.
-	function assertDerivedIndexAdmission(options: any, replaying: boolean) {
-		if (options?.isNotification || replaying) return;
+	// Canonical-source applies (sourceApply), replay and replication notifications are never shed;
+	// dropping one would advance the source cursor past a write that never landed.
+	function assertDerivedIndexAdmission(options: any, transaction: any) {
+		if (options?.isNotification || transaction?.sourceApply || transaction?.isReplay) return;
 		const reason = derivedIndexWriteRejection(auditStore, tableId);
 		if (reason) throw new DerivedIndexLagError(reason);
 	}
@@ -2279,7 +2280,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
-			assertDerivedIndexAdmission(options, transaction.isReplay === true);
+			assertDerivedIndexAdmission(options, transaction);
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -2339,7 +2340,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
-			assertDerivedIndexAdmission(options, transaction.isReplay === true);
+			assertDerivedIndexAdmission(options, transaction);
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -2899,7 +2900,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			const transaction = txnForContext(context);
 			const replaying = transaction.isReplay === true;
-			assertDerivedIndexAdmission(options, replaying);
+			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
 				// A source/replication-applied put must carry the record; these applies skip record
@@ -3770,7 +3771,7 @@ export function makeTable(options) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			const transaction = txnForContext(context);
-			assertDerivedIndexAdmission(options, transaction.isReplay === true);
+			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 

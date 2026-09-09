@@ -401,10 +401,13 @@ both: a backend that omits it keeps Stage 1's terminal `needs-rebuild`; a backen
 it owns its crash safety — its first durable action must invalidate the cursor or its generation
 before anything destructive, so an interrupted reset reopens as cursorless rather than as a valid
 cursor over partially destroyed state (shared readiness is process memory and is no evidence after
-a restart). The same caveat covers a condemnation: `needs-rebuild` lives in the shared buffer, so a
-process that restarts after condemning a cursor but before the rebuild's `reset` has durably
-invalidated it reopens on that cursor with no rebuild scheduled; a backend that cannot rebuild, or
-an operator who wants the rebuild regardless, uses `requestRebuild`. Registration that fails part-way (an `attach` or `onStateChange` that throws) leaves
+a restart). A condemnation is therefore also written to the root store under the index's marker
+key (`derived-index:<id>:condemned`, through the audit store's symbol-keyed `putSync`, so its
+durability follows the root store's WAL setting): a process that restarts after condemning a
+cursor but before the rebuild's `reset` has durably invalidated it finds the marker on acquisition
+and rebuilds instead of trusting the still-format-valid cursor. The marker clears only at the first
+durable `ready` after the rebuild, so a crash before that costs one extra rebuild. A backend that
+cannot rebuild parks on the marker until `requestRebuild` or a rebuild-capable registration. Registration that fails part-way (an `attach` or `onStateChange` that throws) leaves
 no readiness subscription or table admission behind.
 
 `DerivedIndexRegistration` belongs to Harper. Its projection functions are compiled from schema
@@ -707,8 +710,12 @@ tableId)` costs one WeakMap miss on tables without a derived index and one `Atom
 policy-enabled index otherwise. The check sits at the staging layer — `_writeUpdate`,
 `_writeDelete`, `_writeInvalidate` and `_writeRelocate` — where every local write converges — put, patch, post and `create()`,
 `loadAsInstance: false` writes, held-lock saves, and per-row query deletes — and it bypasses
-replication apply (`isNotification`) and replay, because a rejected replicated write would break
-convergence; origin cache fills call `updateRecord` directly and are not gated. A shed write fails
+canonical-source applies (`transaction.sourceApply`: replication peers and external caching
+sources), crash-recovery replay (`transaction.isReplay`) and replication notifications
+(`options.isNotification`), because a rejected canonical write would advance the source cursor
+past a write that never landed; origin cache fills call `updateRecord` directly and are not gated.
+The check is one function call, one `WeakMap` lookup and no allocation on every local write,
+including tables with no derived index — low, not zero. A shed write fails
 with `DerivedIndexLagError`, a `ServerError` with status 503 and `code: 'DERIVED_INDEX_LAGGING'`;
 the status and code are the wire contract on every surface, while `retryable: true` is carried on
 the error object and serialized only where a surface already serializes it.
