@@ -3213,10 +3213,10 @@ export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 
 /**
  * Persists the failure marker for a build that ended without running one of runIndexing's own exit
- * paths, so something re-triggers it. Fenced on `indexingBuildId` under the exclusive catalog lock,
- * because a replacement generation (or another thread declaring different index options) can claim the
- * attribute before an outgoing build's promise settles, and marking that would fail a live build. The
- * locked read and write stay synchronous (see acquireUpdateAttributesLock). Nothing here may throw:
+ * paths, so something re-triggers it. Fenced on `indexingBuildId` inside the storage engine's catalog
+ * serialization boundary, because a replacement generation (or another thread declaring different index
+ * options) can claim the attribute before an outgoing build's promise settles, and marking that would fail
+ * a live build. The fence read and write stay synchronous, and nothing here may throw because
  * `Table.indexingOperation` reaches operations-API callers.
  */
 async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, string>) {
