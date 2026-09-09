@@ -85,11 +85,13 @@ class FakeLogStore {
 			buffer = new SharedArrayBuffer(defaultBuffer.byteLength);
 			buffer.callbacks = new Set();
 			buffer.notify = () => {
-				for (const callback of buffer.callbacks) setImmediate(callback);
+				for (const listener of buffer.callbacks) setImmediate(listener);
 			};
 			this.sharedBuffers.set(key, buffer);
 		}
-		if (options?.callback) buffer.callbacks.add(options.callback);
+		const { callback } = options ?? {};
+		if (callback) buffer.callbacks.add(callback);
+		buffer.cancel = () => buffer.callbacks.delete(callback);
 		return buffer;
 	}
 }
@@ -963,6 +965,18 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await waitFor(() => peer.getReadiness('shared-readiness').state === 'ready', { timeout: 5000 });
 		assert.strictEqual(peer.getReadiness('shared-readiness').ownerEpoch, backend.deliveries.at(-1).ownerEpoch);
 		await owner.stop();
+	});
+
+	it('cancels the rebuild-request notification when a runner is unregistered', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		for (let cycle = 0; cycle < 3; cycle++) {
+			const unregister = runtime.register(registration(new SyncBackend('cycled', cursor(10))));
+			await waitFor(() => runtime.getStatus('cycled').state === 'idle' && store.locks.size === 1);
+			await unregister();
+		}
+		assert.strictEqual(store.sharedBuffers.get('derived-index:cycled:readiness').callbacks.size, 0);
+		await runtime.stop();
 	});
 
 	it('reads a publication abandoned mid-write as unknown instead of spinning', () => {
