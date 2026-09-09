@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import { pipeline } from 'stream';
 const pipe = promisify(pipeline);
 import * as path from 'path';
+import { createHash } from 'crypto';
 import * as envMgr from '../environment/environmentManager.ts';
 envMgr.initSync();
 import hdbLogger from './harper_logger.ts';
@@ -67,62 +68,71 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 	let lastRotationTime = Date.now();
 	hdbLogger.trace('Log rotate enabled, maxSize:', maxSize, 'interval:', interval);
 	const setIntervalId = setInterval(async () => {
-		// A missing/relocated active log file only invalidates the rotation checks below — retention cleanup
-		// must still run. So skip the individual check on ENOENT rather than returning from the whole tick.
-		if (maxBytes) {
-			let fileStats;
-			try {
-				fileStats = await fsProm.stat(logger.path);
-			} catch (err) {
-				// If the log file doesn't exist, skip the size-based rotation check
-				if (err.code !== 'ENOENT') throw err;
-			}
-
-			if (fileStats && fileStats.size >= maxBytes) {
+		// The tick is async but setInterval doesn't await it, so any error that escapes this callback
+		// becomes an unhandled rejection rather than surfacing anywhere useful — and since it isn't
+		// caught, it also skips the retention cleanup below. Contain everything here and report via
+		// the logger instead, so one bad tick (e.g. an unexpected fs error) never kills rotation for
+		// the rest of the process's life.
+		try {
+			// A missing/relocated active log file only invalidates the rotation checks below — retention cleanup
+			// must still run. So skip the individual check on ENOENT rather than returning from the whole tick.
+			if (maxBytes) {
+				let fileStats;
 				try {
-					lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger);
+					fileStats = await fsProm.stat(logger.path);
 				} catch (err) {
-					// If the log file doesn't exist, skip rotation
+					// If the log file doesn't exist, skip the size-based rotation check
 					if (err.code !== 'ENOENT') throw err;
 				}
-			}
-		}
 
-		if (maxInterval) {
-			const minSinceLastRotate = Date.now() - lastRotationTime;
-			if (minSinceLastRotate >= maxInterval) {
-				try {
-					lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger);
-					lastRotationTime = Date.now();
-				} catch (err) {
-					// If the log file doesn't exist, skip rotation
-					if (err.code !== 'ENOENT') throw err;
-				}
-			}
-		}
-		if (retention || reclamationPriority) {
-			// remove old logs after retention time
-			// adjust retention time if there is a reclamation priority in place
-			const retentionMs = convertToMS(retention ?? '1M') / (1 + reclamationPriority);
-			reclamationPriority = 0; // reset it after use
-			let files;
-			try {
-				files = await fsProm.readdir(rotatedLogDir);
-			} catch (err) {
-				// The rotated log dir may not exist yet (nothing rotated so far); nothing to clean up
-				if (err.code !== 'ENOENT') hdbLogger.error('Error reading rotated log directory', rotatedLogDir, err);
-				files = [];
-			}
-			for (const file of files) {
-				try {
-					const fileStats = await fsProm.stat(path.join(rotatedLogDir, file));
-					if (Date.now() - fileStats.mtimeMs > retentionMs) {
-						await fsProm.unlink(path.join(rotatedLogDir, file));
+				if (fileStats && fileStats.size >= maxBytes) {
+					try {
+						lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger);
+					} catch (err) {
+						// If the log file doesn't exist, skip rotation
+						if (err.code !== 'ENOENT') throw err;
 					}
-				} catch (err) {
-					hdbLogger.error('Error trying to remove log', file, err);
 				}
 			}
+
+			if (maxInterval) {
+				const minSinceLastRotate = Date.now() - lastRotationTime;
+				if (minSinceLastRotate >= maxInterval) {
+					try {
+						lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger);
+						lastRotationTime = Date.now();
+					} catch (err) {
+						// If the log file doesn't exist, skip rotation
+						if (err.code !== 'ENOENT') throw err;
+					}
+				}
+			}
+			if (retention || reclamationPriority) {
+				// remove old logs after retention time
+				// adjust retention time if there is a reclamation priority in place
+				const retentionMs = convertToMS(retention ?? '1M') / (1 + reclamationPriority);
+				reclamationPriority = 0; // reset it after use
+				let files;
+				try {
+					files = await fsProm.readdir(rotatedLogDir);
+				} catch (err) {
+					// The rotated log dir may not exist yet (nothing rotated so far); nothing to clean up
+					if (err.code !== 'ENOENT') hdbLogger.error('Error reading rotated log directory', rotatedLogDir, err);
+					files = [];
+				}
+				for (const file of files) {
+					try {
+						const fileStats = await fsProm.stat(path.join(rotatedLogDir, file));
+						if (Date.now() - fileStats.mtimeMs > retentionMs) {
+							await fsProm.unlink(path.join(rotatedLogDir, file));
+						}
+					} catch (err) {
+						hdbLogger.error('Error trying to remove log', file, err);
+					}
+				}
+			}
+		} catch (err) {
+			hdbLogger.error('Error during log rotation audit tick for', logger.path, err);
 		}
 	}, auditInterval ?? LOG_AUDIT_INTERVAL).unref();
 	return {
@@ -135,11 +145,28 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 	};
 }
 
+// Monotonically increasing across every rotation in this process, regardless of which logger/source
+// triggered it — combined with the pid, this guarantees two archive names can never collide even if
+// two rotations for two different sources race concurrently within the same audit-interval tick.
+let rotationSequence = 0;
+
 async function moveLogFile(logPath: string, rotatedLogPath: string, logger?: any) {
 	const compress = envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS);
+	// Name the archive after its source log (hdb, external, a component name, ...), not a fixed
+	// "HDB" literal — external/component loggers can now inherit rotation from the main logger
+	// (#1877) and default to the same rotated directory as it, so distinct sources rotating in
+	// the same audit tick must not collide on the same timestamp-only filename. A basename alone
+	// is not enough either: two distinct source paths can share a basename (e.g. `/logs/a/hdb.log`
+	// and `/logs/b/hdb.log`), so a hash of the full resolved source path plus a pid+sequence suffix
+	// give every archive a name POSIX rename() can never clobber, even under a same-millisecond race.
+	const sourceName = path.basename(logPath, path.extname(logPath)) || 'HDB';
+	// sha256, not sha1: this only needs a stable identifier, not cryptographic strength, but a FIPS-mode
+	// OpenSSL provider disables sha1 and throws synchronously, which would crash every rotation tick.
+	const sourceId = createHash('sha256').update(path.resolve(logPath)).digest('hex').slice(0, 8);
+	const uniqueSuffix = `${process.pid}-${rotationSequence++}`;
 	let fullRotateLogPath = path.join(
 		rotatedLogPath,
-		`HDB-${new Date(Date.now()).toISOString().replaceAll(':', '-')}.log`
+		`${sourceName}-${sourceId}-${new Date(Date.now()).toISOString().replaceAll(':', '-')}-${uniqueSuffix}.log`
 	);
 	// Move log file to rotated log path first (if we crash
 	// during compression, we don't want to restart the compression with a new file)

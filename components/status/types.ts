@@ -75,6 +75,7 @@ export interface AggregatedComponentStatus {
  * Component status information from a worker thread
  */
 export interface WorkerComponentStatuses {
+	threadId?: number;
 	workerIndex: number | undefined;
 	isMainThread: boolean;
 	statuses: Array<[string, ComponentStatusSummary]>;

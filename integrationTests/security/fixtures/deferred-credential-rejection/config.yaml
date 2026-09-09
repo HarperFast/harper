@@ -1,0 +1,15 @@
+# Regression fixture for #2418 — credential rejection is deferred until route ownership is known.
+#
+# `deferredAuthAppCatchAll` is wired in through HARPER_BUILTIN_COMPONENTS (see the test file); it
+# must ALSO appear as a top-level component key here for componentLoader to load it. It registers
+# an application middleware with `after: rest`, reproducing the ordering an application needs:
+# authentication -> rest -> application catch-all.
+graphqlSchema:
+  files: '*.graphql'
+jsResource:
+  files: resources.js
+rest: true
+# /graphql is Harper-owned too, so the deferred rejection has to be settled there with the same
+# authentication error envelope REST returns — not GraphQL's own {errors:[...]} mapping.
+graphql: true
+deferredAuthAppCatchAll: true

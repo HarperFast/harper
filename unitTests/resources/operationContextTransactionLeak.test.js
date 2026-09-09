@@ -4,7 +4,7 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const serverUtilities = require('#src/server/serverHelpers/serverUtilities');
 const { contextStorage } = require('#src/resources/transaction');
-const { TRANSACTION_STATE, DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
+const { TRANSACTION_STATE, DatabaseTransaction, RELEASED_TRANSACTION } = require('#src/resources/DatabaseTransaction');
 
 // Regression coverage for a transaction-context leak exposed by issue #1591/#1592 (ambient user
 // context for operation handlers) and confirmed against a real 2-node cluster-formation scenario
@@ -200,17 +200,17 @@ describe('Ambient operation context must not couple independent writes (transact
 		const [afterFirst, afterSecond, afterThird] = transactionsSeenAfterEachWrite;
 		assert.strictEqual(
 			afterFirst,
-			null,
+			RELEASED_TRANSACTION,
 			"the first write's transaction must be released from the ambient context once its commit completes"
 		);
 		assert.strictEqual(
 			afterSecond,
-			null,
+			RELEASED_TRANSACTION,
 			"the second write's transaction must likewise be released, not left attached for a later write to observe"
 		);
 		assert.strictEqual(
 			afterThird,
-			null,
+			RELEASED_TRANSACTION,
 			"the third write's transaction must likewise be released, for the same reason"
 		);
 
@@ -236,5 +236,30 @@ describe('Ambient operation context must not couple independent writes (transact
 			transactionsStarted[2],
 			'the third write must not join the second write’s transaction instance, for the same reason'
 		);
+	});
+
+	// The delivery path: an operations-API handler under processLocalTransaction's ambient context reads
+	// through that context and then commits it itself. transaction.test.js covers the same shape on a
+	// bare `{}` context; only this one exercises the real ambient operation context.
+	it('lets an operation handler commit its ambient context after a static read completed that context’s transaction', async () => {
+		let committed = false;
+		const result = await serverUtilities.processLocalTransaction(
+			{ body: { operation: 'test_registered_op', hdb_user: { username: 'internal_bookkeeping' } } },
+			async () => {
+				const context = contextStorage.getStore();
+				await LeakTable.get('handler-commit-target');
+				// getUserPermissions()'s shape: bound the transaction the reads above ran in, then carry on.
+				await context.transaction.commit();
+				committed = true;
+				await LeakTable.put('handler-commit-target', { name: 'written after the handler commit' });
+				await context.transaction.commit();
+				return { message: 'ok' };
+			}
+		);
+		assert.equal(result?.message, 'ok', 'the handler must not fail on its own mid-handler commit');
+		assert.ok(committed);
+		const record = await LeakTable.get('handler-commit-target');
+		assert.ok(record, 'the write made after the handler’s own commit must persist');
+		assert.equal(record.name, 'written after the handler commit');
 	});
 });

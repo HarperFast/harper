@@ -17,11 +17,20 @@ on:
           - '24'
           - '26'
 
+# These workflows are dispatched by cherry-pick-patch.yml against a branch built
+# from PR commits, so they run PR-authored build/test scripts. The repo default is
+# a write-scoped token; pin it to read here.
+permissions:
+  contents: read
+
 jobs:
   unit-test:
     name: Unit Test (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
+    # on a required check. Every step below is capped in its own right and this sits above their
+    # sum (41 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -29,28 +38,40 @@ jobs:
 
     steps:
       - name: Checkout code
+        timeout-minutes: 3
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup Node.js ${{ matrix.node-version }}
+        timeout-minutes: 5
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
 
       - name: Install dependencies
+        timeout-minutes: 6
         run: npm install --ignore-scripts
 
       - name: Build
+        timeout-minutes: 3
         run: npm run build || true # we currently have type errors so just ignore that
 
       - name: Type contract tests
         if: matrix.node-version == 22
+        timeout-minutes: 3
         run: npm run test:types # strict tsc over unitTests/types/ — asserts the shipped public types
 
       - name: Benchmark unit tests
+        timeout-minutes: 3
         run: npm run test:bench # pure-logic tests for benchmarks/ converters; doesn't need a running Harper instance
 
+      - name: Review-coverage action tests
+        if: matrix.node-version == 24
+        timeout-minutes: 3
+        run: node --test .github/actions/review-coverage/*.test.mjs
+
       - name: Setup Harper
+        timeout-minutes: 3
         env:
           DEFAULTS_MODE: 'dev'
           HDB_ADMIN_USERNAME: 'admin'
@@ -61,5 +82,54 @@ jobs:
 
         run: node --enable-source-maps ./dist/bin/harper.js install
 
+      # `.mocharc.json` sets `timeout: 0`, so nothing inside the run can time out on its own —
+      # this cap is the only thing that turns a wedged suite into a reported failure.
       - name: Run tests
+        timeout-minutes: 15
         run: npm run test:unit:all
+
+  # Windows had no unit-level coverage at all before this job: every job above pins
+  # ubuntu-latest, and integration-tests.yml was the only workflow touching Windows.
+  # Platform-gated code and the tests written to prove it therefore never executed.
+  #
+  # It runs a scoped slice of the unit tree rather than the whole thing — a set of
+  # suites still fail on Windows for environmental or test-design reasons that
+  # reproduce on `main`, so gating on everything would land red and stay red.
+  #
+  # This is the same `npm run test:unit:windows` a developer runs locally, so a failure
+  # here is reproducible without pushing. The scope, the exclusions (each with the
+  # reason it is there) and the reason the run is split into one mocha process per
+  # directory all live in unitTests/windowsGate.mjs — read its header before changing
+  # what this job covers.
+  #
+  # Make this `unit-test-windows` job a REQUIRED status check on `main`. It fires on
+  # every PR with no `paths:` filter, so it is satisfiable.
+  unit-test-windows:
+    name: Unit Test (Windows, Node.js v24)
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build
+        run: npm run build
+        continue-on-error: true # we currently have type errors so just ignore that
+
+      # Bounded below the job so a hung group fails the step rather than cancelling
+      # the job, which keeps the gate's own group table in the log. The gate caps each
+      # group at 10 minutes on its own, so this bounds a pathological run, not a
+      # healthy one — a cold Windows runner does the whole gate in well under it.
+      - name: Run unit tests
+        timeout-minutes: 30
+        run: npm run test:unit:windows

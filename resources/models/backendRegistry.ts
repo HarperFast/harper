@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import type { DefineBackendSpec, GenerateResult, ModelBackend, ModelCapabilities, ToolCall } from './types.ts';
 
@@ -24,14 +25,95 @@ type ModelKind = 'embedding' | 'generative';
 const embedding: Map<string, ModelBackend> = new Map();
 const generative: Map<string, ModelBackend> = new Map();
 
+/** A registration a factory made during construction, deferred to the caller. */
+export interface CapturedInstall {
+	kind: ModelKind;
+	logicalName: string;
+	backend: ModelBackend;
+}
+
+interface CaptureSlot {
+	kind: ModelKind;
+	logicalName: string;
+	backend?: ModelBackend;
+	/** Deferred with the primary, so no request observes a new helper next to an old primary. */
+	extras: CapturedInstall[];
+	/** Async work spawned by a factory retains the ALS context past construction; once construction
+	 * ends the scope deactivates so a late same-slot registration installs normally. */
+	active: boolean;
+}
+
+// Async-context scoped: a module-global slot would divert unrelated registrations and collide
+// concurrent constructions.
+const captureScope = new AsyncLocalStorage<CaptureSlot>();
+
+function install(kind: ModelKind, logicalName: string, backend: ModelBackend): void {
+	const slot = captureScope.getStore();
+	if (slot?.active) {
+		if (slot.kind === kind && slot.logicalName === logicalName) slot.backend = backend;
+		else slot.extras.push({ kind, logicalName, backend });
+		return;
+	}
+	(kind === 'embedding' ? embedding : generative).set(logicalName, backend);
+}
+
 /** Map `logicalName` to a backend for embedding calls. Re-set replaces. */
 export function setEmbedding(logicalName: string, backend: ModelBackend): void {
-	embedding.set(logicalName, backend);
+	install('embedding', logicalName, backend);
 }
 
 /** Map `logicalName` to a backend for generative calls. Re-set replaces. */
 export function setGenerative(logicalName: string, backend: ModelBackend): void {
-	generative.set(logicalName, backend);
+	install('generative', logicalName, backend);
+}
+
+/**
+ * Build a backend through its normal registration path but return it instead of installing it, so a
+ * config reload can install it conditionally. A scratch logical name would be briefly visible
+ * through `listBackends`, which backs the public `GET /v1/models`.
+ */
+export async function constructBackend(
+	kind: ModelKind,
+	logicalName: string,
+	register: () => void | Promise<void>
+): Promise<{ backend?: ModelBackend; extras: CapturedInstall[] }> {
+	const slot: CaptureSlot = { kind, logicalName, extras: [], active: true };
+	try {
+		await captureScope.run(slot, async () => {
+			await register();
+		});
+	} finally {
+		slot.active = false;
+	}
+	return { backend: slot.backend, extras: slot.extras };
+}
+
+/**
+ * Replace `logicalName`'s backend for `kind` only if it is still `expected`. A plain `set` is atomic
+ * but unconditional, so concurrent writers resolve by arrival order rather than by which value is
+ * newer. A caller that loses the swap must re-derive from current state rather than overwrite.
+ */
+export function replaceIfCurrent(
+	kind: ModelKind,
+	logicalName: string,
+	expected: ModelBackend | undefined,
+	next: ModelBackend
+): boolean {
+	const map = kind === 'embedding' ? embedding : generative;
+	if (map.get(logicalName) !== expected) return false;
+	map.set(logicalName, next);
+	return true;
+}
+
+/**
+ * Remove `logicalName`'s backend for `kind` only if it is still `expected`, returning whether it was
+ * removed. Withdrawing a credential must not delete a slot another writer has since taken over.
+ */
+export function removeIfCurrent(kind: ModelKind, logicalName: string, expected: ModelBackend | undefined): boolean {
+	const map = kind === 'embedding' ? embedding : generative;
+	if (map.get(logicalName) !== expected) return false;
+	map.delete(logicalName);
+	return true;
 }
 
 /** Non-throwing lookup of the backend mapped to `logicalName` for `kind`, or `undefined`. Used by the router to assemble + filter candidate lists without exceptions. */

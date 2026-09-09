@@ -16,6 +16,7 @@ const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 
 const testUtils = require('../testUtils.js');
+const { waitFor } = require('../waitFor.js');
 testUtils.preTestPrep();
 
 const {
@@ -24,6 +25,11 @@ const {
 	waitForConfirmedTermination,
 	waitForWindowsTreeTermination,
 } = require('#src/components/Application');
+const {
+	isProcessGroupAlive,
+	registerProcessGroup,
+	unregisterProcessGroup,
+} = require('#src/server/threads/manageThreads');
 
 // Write `script` to a temp .js file and return its path; auto-removed in `after`.
 let workDir;
@@ -172,9 +178,16 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		// exactly the state that let the old exitCode/signalCode check skip probing the process group.
 		assert.notStrictEqual(childProcess.exitCode, null);
 
-		await delay(50);
-		const sizeBeforeTermination = (await require('node:fs/promises').stat(writesPath)).size;
-		assert.ok(sizeBeforeTermination > 0, 'descendant writer should have started before termination');
+		await waitFor(
+			async () => {
+				try {
+					return (await require('node:fs/promises').stat(writesPath)).size;
+				} catch {
+					return false;
+				}
+			},
+			{ message: 'descendant writer should have started before termination' }
+		);
 
 		await terminateProcessTree(childProcess, Promise.resolve());
 
@@ -220,6 +233,199 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		alive = false;
 		await confirmation;
 		assert.equal(settled, true);
+	});
+
+	it('treats a Linux process group containing only zombies as terminated', () => {
+		let now = 0;
+		const nextScan = () => (now += 1000);
+		const zombieGroup = (processIds) =>
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => processIds,
+				readStat: (path) =>
+					path === '/proc/123/stat' ? '123 (installer worker) Z 1 123 123' : '456 (installer child) Z 1 123 123',
+				now: nextScan,
+			});
+		assert.strictEqual(zombieGroup(['123', '456']), false);
+		assert.strictEqual(
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['123', '456'],
+				readStat: (path) =>
+					path === '/proc/123/stat' ? '123 (installer) Z 1 123 123' : '456 (still running) S 1 123 123',
+				now: nextScan,
+			}),
+			true
+		);
+		assert.strictEqual(zombieGroup(['123']), false);
+		assert.strictEqual(
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['456'],
+				readStat: (path) => {
+					if (path === '/proc/123/stat') throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+					return '456 (unreaped child) Z 1 123 123';
+				},
+				now: nextScan,
+			}),
+			false
+		);
+		assert.strictEqual(
+			isProcessGroupAlive(123, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['456'],
+				readStat: (path) => {
+					if (path === '/proc/123/stat') throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+					return '456 (running child) S 1 123 123';
+				},
+				now: nextScan,
+			}),
+			true
+		);
+		unregisterProcessGroup(123);
+	});
+
+	it('does not let an unrelated unreadable proc entry keep a Linux process group alive', () => {
+		// A pid we can't read (e.g. EACCES under hidepid/ProtectProc) cannot be one of our own
+		// children — we spawned them as this same user, so their stat is always readable — so it
+		// must not block confirming that a group whose own members are all zombie is gone.
+		const permissionError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+		assert.strictEqual(
+			isProcessGroupAlive(678, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['678', '679'],
+				readStat: (path) => {
+					if (path === '/proc/678/stat') return '678 (installer) Z 1 678 678';
+					throw permissionError;
+				},
+			}),
+			false
+		);
+		unregisterProcessGroup(678);
+	});
+
+	it('keeps a Linux process group alive when a scan read fails for a reason other than permission or absence', () => {
+		// Unlike EACCES/ENOENT (proof the pid isn't one of our own), an error like EMFILE or a torn
+		// read proves nothing either way, so it must stay conservative rather than skip the pid.
+		assert.strictEqual(
+			isProcessGroupAlive(680, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['680', '681'],
+				readStat: (path) => {
+					if (path === '/proc/680/stat') return '680 (installer) Z 1 680 680';
+					throw Object.assign(new Error('too many open files'), { code: 'EMFILE' });
+				},
+			}),
+			true
+		);
+		unregisterProcessGroup(680);
+	});
+
+	it('warns once when process-group termination remains unconfirmed', () => {
+		let now = 0;
+		const warnings = [];
+		const permissionError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => ['789'],
+			readStat: () => {
+				throw permissionError;
+			},
+			now: () => now,
+			warn: (message) => warnings.push(message),
+		};
+
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		now = 29999;
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		assert.deepStrictEqual(warnings, []);
+		now = 30000;
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		assert.deepStrictEqual(warnings, [
+			'Process group 789 termination remains unconfirmed after 30000ms: reading /proc/789/stat failed (EACCES)',
+		]);
+		now = 60000;
+		assert.strictEqual(isProcessGroupAlive(789, options), true);
+		assert.strictEqual(warnings.length, 1);
+		unregisterProcessGroup(789);
+	});
+
+	it('does not trust a recycled Linux process-group leader pid', () => {
+		assert.strictEqual(
+			isProcessGroupAlive(234, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => ['234', '456'],
+				readStat: (path) =>
+					path === '/proc/234/stat' ? '234 (unrelated process) S 1 999 999' : '456 (installer child) Z 1 234 234',
+			}),
+			false
+		);
+	});
+
+	it('requires two all-zombie scans before reporting a Linux process group terminated', () => {
+		let scanCount = 0;
+		assert.strictEqual(
+			isProcessGroupAlive(345, {
+				platform: 'linux',
+				processGroupExists: () => true,
+				readDirectory: () => {
+					scanCount++;
+					return ['345', '456'];
+				},
+				readStat: (path) =>
+					path === '/proc/345/stat' || scanCount === 1
+						? `${path === '/proc/345/stat' ? 345 : 456} (installer) Z 1 345 345`
+						: '456 (forked child) S 1 345 345',
+			}),
+			true
+		);
+		assert.strictEqual(scanCount, 2);
+		unregisterProcessGroup(345);
+	});
+
+	it('throttles Linux process-group scans and clears the throttle when unregistered', () => {
+		let now = 0;
+		let scanCount = 0;
+		let childState = 'S';
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => {
+				scanCount++;
+				return ['456'];
+			},
+			readStat: (path) => {
+				if (path === '/proc/456/stat') return `456 (installer child) ${childState} 1 567 567`;
+				throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+			},
+			now: () => now,
+		};
+
+		assert.strictEqual(isProcessGroupAlive(567, options), true);
+		assert.strictEqual(scanCount, 1);
+		childState = 'Z';
+		now = 999;
+		assert.strictEqual(isProcessGroupAlive(567, options), true);
+		assert.strictEqual(scanCount, 1);
+		now = 1000;
+		assert.strictEqual(isProcessGroupAlive(567, options), false);
+		assert.strictEqual(scanCount, 3);
+
+		childState = 'S';
+		assert.strictEqual(isProcessGroupAlive(567, options), true);
+		registerProcessGroup(567);
+		unregisterProcessGroup(567);
+		childState = 'Z';
+		assert.strictEqual(isProcessGroupAlive(567, options), false);
+		assert.strictEqual(scanCount, 6);
 	});
 
 	it('accepts a Windows taskkill miss only when the process tree is independently gone', async () => {

@@ -11,8 +11,8 @@ const harperBridge =
 	require('../../dataLayer/harperBridge/harperBridge.ts').default ||
 	require('../../dataLayer/harperBridge/harperBridge.ts');
 const process = require('process');
-const { isMainThread, workerData } = require('worker_threads');
-const { resetDatabases, closeDatabase } = require('../../resources/databases.ts');
+const { isMainThread, threadId, workerData } = require('node:worker_threads');
+const { resetDatabases, closeDatabase, reloadBranchAt } = require('../../resources/databases.ts');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -76,6 +76,13 @@ schemaHandler.addListener = function (listener) {
  */
 async function syncSchemaMetadata(msg) {
 	try {
+		// A change to a scope-private branch is not a change to any database in the global map, so the
+		// rescan below has nothing to find; a thread holding that branch open reloads it instead.
+		if (msg.branchPath) {
+			// No write barrier here: the symbol-keyed put below has never been one (harper#2522).
+			reloadBranchAt(msg.branchPath);
+			return;
+		}
 		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
 		let databases = resetDatabases();
 		if (msg.table && msg.database)
@@ -187,6 +194,7 @@ async function componentStatusRequestHandler(event) {
 			message: {
 				requestId: event.message.requestId,
 				statuses: statusArray,
+				threadId,
 				workerIndex: workerIndex,
 				isMainThread: isMainThread,
 			},

@@ -13,6 +13,7 @@ import * as lmdbTerms from './terms.ts';
 import * as hdbTerms from '../hdbTerms.ts';
 import { resetDatabases } from '../../resources/databases.ts';
 import * as envMngr from '../environment/environmentManager.ts';
+import { updateConfigObject } from '../../config/configUtils.ts';
 
 const INTERNAL_DBIS_NAME = lmdbTerms.INTERNAL_DBIS_NAME;
 const DBI_DEFINITION_NAME = lmdbTerms.DBI_DEFINITION_NAME;
@@ -109,7 +110,7 @@ export async function createEnvironment(
 
 	envName = envName.toString();
 	let schemasConfig = envMngr.get(hdbTerms.CONFIG_PARAMS.DATABASES);
-	if (!schemasConfig) envMngr.setProperty(hdbTerms.CONFIG_PARAMS.DATABASES, (schemasConfig = {}));
+	if (!schemasConfig) updateConfigObject(hdbTerms.CONFIG_PARAMS.DATABASES, (schemasConfig = {}));
 	if (!schemasConfig[dbName]) schemasConfig[dbName] = {};
 	schemasConfig[dbName].path = basePath;
 	try {

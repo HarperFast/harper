@@ -1,0 +1,14 @@
+# Regression fixture for #2418.
+#
+# Ledger is a protected Harper-owned resource: only an authenticated principal may read it.
+# PublicNotice is Harper-owned but readable anonymously, which is what makes "Harper owns it, so
+# Harper decides it" testable independently of whether the route happens to be protected.
+type Ledger @table @export {
+	id: ID @primaryKey
+	note: String
+}
+
+type PublicNotice @table @export {
+	id: ID @primaryKey
+	message: String
+}

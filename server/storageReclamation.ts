@@ -118,6 +118,29 @@ export function onStorageReclamation(
 		if (!reclamationTimer) reclamationTimer = setTimeout(runReclamationHandlers, RECLAMATION_INTERVAL).unref();
 	}
 }
+
+/**
+ * Drop every reclamation handler registered for `path`. Registration is process-global and keyed by
+ * storage path with no lifetime of its own, so a store that is closed and discarded leaves both its
+ * handler and the closure holding the closed store alive for the life of the process, and every
+ * re-open of the same path appends another.
+ */
+export function removeStorageReclamation(path: string): boolean {
+	return reclamationHandlers.delete(path);
+}
+
+/**
+ * Drop one handler; a RocksDB column family shares its path with every other family in the database.
+ * The list is replaced rather than spliced so a run iterating it across awaits skips nothing.
+ */
+export function removeStorageReclamationHandler(path: string, handler: (priority: number) => unknown): boolean {
+	const handlers = reclamationHandlers.get(path);
+	const remaining = handlers?.filter((entry) => entry.handler !== handler);
+	if (!remaining || remaining.length === handlers.length) return false;
+	if (remaining.length === 0) reclamationHandlers.delete(path);
+	else reclamationHandlers.set(path, remaining);
+	return true;
+}
 let reclamationTimer: NodeJS.Timeout;
 
 export type StorageSpaceStats = {

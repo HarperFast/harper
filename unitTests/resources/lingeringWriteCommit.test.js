@@ -4,7 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { TRANSACTION_STATE } = require('#src/resources/DatabaseTransaction');
+const { TRANSACTION_STATE, RELEASED_TRANSACTION } = require('#src/resources/DatabaseTransaction');
 const { setTimeout: delay } = require('node:timers/promises');
 
 // A commit issued while a search iterator still holds the read transaction cannot commit the
@@ -61,7 +61,7 @@ describe('commit with open read iterators commits writes immediately on a replay
 		const { context, iterator } = await commitWithOpenIterator('linger-write');
 		// Captured before the iterator drains: once it does, DatabaseTransaction now releases the
 		// context's own back-reference too (releaseContext(), deferred here until the last iterator
-		// finishes — see doneReadTxn()), so context.transaction itself goes null. Assertions below
+		// finishes — see doneReadTxn()), so the slot stops pointing at this instance. Assertions below
 		// that need the specific (now-closed) transaction instance use this captured reference.
 		const closedTxn = context.transaction;
 		assert.equal(
@@ -78,7 +78,11 @@ describe('commit with open read iterators commits writes immediately on a replay
 		while (!(await iterator.next()).done);
 		await delay(50); // give a released-handle failure a beat to surface as an unhandledRejection
 		assert.equal(closedTxn.transaction, null, 'the drained iterator must release the native handle');
-		assert.equal(context.transaction, null, 'the drained iterator must also release the context’s back-reference');
+		assert.equal(
+			context.transaction,
+			RELEASED_TRANSACTION,
+			'the drained iterator must also release the context’s back-reference'
+		);
 		assert.ok(await LingerTable.get('linger-write'), 'releasing the read handle must not disturb the committed write');
 		// audit/txn-log entries batch on the native transaction they were staged into and are only
 		// written by its commit; the replay must re-stage them into ITS transaction — the original
@@ -143,14 +147,14 @@ describe('commit with open read iterators commits writes immediately on a replay
 		assert.equal(await LingerTable.get('linger-fail'), undefined, 'the failed write is not committed');
 		// A terminal commit failure is just as final as a success: releaseContext() defers the
 		// context release the same way (pendingContextRelease) until the still-open iterator drains,
-		// so capture the wrapper before draining it — draining deletes context.transaction itself.
+		// so capture the wrapper before draining it — draining replaces context.transaction itself.
 		const closedTxn = context.transaction;
 		// the original read handle must survive the replay failure: the iterator finishes normally
 		while (!(await iterator.next()).done);
 		assert.equal(closedTxn.transaction, null, 'the drained iterator must still release the native handle');
 		assert.equal(
 			context.transaction,
-			null,
+			RELEASED_TRANSACTION,
 			'the drained iterator must also release the context’s back-reference, even after a terminal commit failure'
 		);
 		await delay(100);

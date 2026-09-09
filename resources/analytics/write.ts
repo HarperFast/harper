@@ -3,7 +3,7 @@ import { onMessageByType } from '../../server/threads/manageThreads.js';
 import { getDatabases, table, isReadOnlyMode } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
-import { stat, readdir } from 'node:fs/promises';
+import { stat, opendir } from 'node:fs/promises';
 const { getLogFilePath, forComponent } = harperLogger;
 import { dirname, join } from 'path';
 import { open } from 'fs/promises';
@@ -780,32 +780,81 @@ function getDatabasesIncludingSystem(): Databases {
 	return all;
 }
 
-export async function getDirectorySizeAsync(dirPath: string): Promise<number> {
-	try {
-		const entries = await readdir(dirPath, { withFileTypes: true });
-		const sizes = await Promise.all(
-			entries.map((entry) => {
-				const fullPath = join(dirPath, entry.name);
-				if (entry.isDirectory()) return getDirectorySizeAsync(fullPath);
-				if (entry.isFile()) return stat(fullPath).then((s) => s.size);
-				return 0;
-			})
-		);
-		let total = 0;
-		for (const size of sizes) total += size;
-		return total;
-	} catch {
-		// directory may not exist or be inaccessible
-		return 0;
+/**
+ * Total size of everything under `dirPath`, measured with the smallest footprint we can manage rather
+ * than the fewest wall-clock seconds: this runs about every ten minutes (`analytics.aggregatePeriod`
+ * 60s x `analytics.storageInterval` 10), so it can afford to be slow, and it shares the libuv thread
+ * pool with everything else on this thread.
+ *
+ * Peak live set is O(directories): each directory streams through `opendir` instead of materializing a
+ * dirent array, files are stat'd one at a time, and only the directory stack and a running total are
+ * retained. The previous implementation fanned out over every entry in the tree with an unbounded
+ * `Promise.all`, holding a path string, a dirent and a pending stat per file simultaneously — which
+ * grew the main thread's heap until V8 aborted on a root with a large blob store (harper#2240).
+ *
+ * A per-file stat failure must not zero the tree: the previous `Promise.all` rejected on one bad stat
+ * and the outer catch returned 0 for everything under `dirPath`, so a file removed mid-walk erased the
+ * whole measurement.
+ *
+ * `statFile` is a test seam; production always uses `stat`.
+ */
+export async function getDirectorySizeAsync(
+	dirPath: string,
+	options?: { statFile?: (path: string) => Promise<{ size: number }> }
+): Promise<number> {
+	const statFile = options?.statFile ?? stat;
+	const directories: string[] = [dirPath];
+	let total = 0;
+	let statFailures = 0;
+	while (directories.length > 0) {
+		const directory = directories.pop() as string;
+		let handle;
+		try {
+			handle = await opendir(directory);
+		} catch {
+			continue; // may not exist or be inaccessible — contributes 0, as before
+		}
+		try {
+			for await (const entry of handle) {
+				const fullPath = join(directory, entry.name);
+				if (entry.isDirectory()) {
+					directories.push(fullPath);
+					continue;
+				}
+				if (!entry.isFile()) continue;
+				try {
+					total += (await statFile(fullPath)).size;
+				} catch {
+					statFailures++;
+				}
+			}
+		} catch {
+			// Iteration failed partway (permissions, removal mid-walk). `for await` does not run the
+			// iterator's return() when next() rejects, so close explicitly rather than relying on Dir
+			// internals; a double close throws ERR_DIR_CLOSED, hence the swallow.
+			await handle.close().catch(() => {});
+		}
 	}
+	if (statFailures > 0) {
+		log.debug?.(`Storage metric: ${statFailures} file(s) could not be stat'd; reported size is an under-count`);
+	}
+	return total;
 }
 
 const DEFAULT_STORAGE_INTERVAL = 10;
 let nodeStorageInterval = DEFAULT_STORAGE_INTERVAL;
 let nodeStorageCycleCount = 0;
+let nodeStorageWalkInFlight = false;
 
 async function storeNodeStorageMetric(analyticsTable: Table) {
 	if (nodeStorageInterval <= 0 || ++nodeStorageCycleCount % nodeStorageInterval !== 1) return;
+	// A walk of a large root can outlast the cadence; overlapping walks would multiply the peak. Logged
+	// so a gap in the series reads as "measurement is not keeping up" rather than "storage stopped".
+	if (nodeStorageWalkInFlight) {
+		log.debug?.('Skipping node storage metric: the previous walk is still running');
+		return;
+	}
+	nodeStorageWalkInFlight = true;
 	try {
 		const size = await getDirectorySizeAsync(getHdbBasePath());
 		storeMetric(analyticsTable, {
@@ -814,6 +863,8 @@ async function storeNodeStorageMetric(analyticsTable: Table) {
 		});
 	} catch (error) {
 		log.warn?.('Error getting node storage metric', error);
+	} finally {
+		nodeStorageWalkInFlight = false;
 	}
 }
 

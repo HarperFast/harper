@@ -739,6 +739,11 @@ export function getEnvCliRootPath() {
  * This is used for running HDB without a boot file
  */
 let noBootFileChecked;
+// test support: the memoized result is derived from the ROOTPATH env var, so a test that
+// clears that variable for its own scope must also drop a value cached while it was set
+export function resetNoBootFileCache() {
+	noBootFileChecked = undefined;
+}
 export function noBootFile() {
 	if (noBootFileChecked) return noBootFileChecked;
 	const cliEnvRoot = getEnvCliRootPath();
@@ -829,15 +834,35 @@ export function httpRequest(options: any, data: any): Promise<http.IncomingMessa
 }
 
 /**
+ * Which database an operation request targets: `database` wins over the legacy `schema`, and a
+ * request that names neither targets the default database.
+ *
+ * The single source of truth for that question. Authorization has to answer it identically to the
+ * handlers — it runs first, and if the two disagree then the permissions checked are not the
+ * permissions for the write that happens. Two divergences between this and the copy that used to
+ * live in `verifyPerms` (`schema ?? database`) were each exploitable on their own: nullish
+ * coalescing let a falsy-but-present `database: 0` through where this defaults, and the reversed
+ * precedence let a request authorize against `schema` while the handler wrote `database`.
+ *
+ * Deliberately falsy rather than nullish: a `database` of `0` or `''` is not a database, and
+ * `Joi.number()` is an accepted type for the field, so `0` reaches here validated.
+ */
+export function resolveTargetDatabase(req: any): string {
+	return req.database || req.schema || terms.DEFAULT_DATABASE_NAME;
+}
+
+/**
  * Will set default schema/database or set database to schema
  * @param req
  */
 export function transformReq(req: any) {
-	if (!req.schema && !req.database) {
-		req.schema = terms.DEFAULT_DATABASE_NAME;
-		return;
-	}
-	if (req.database) req.schema = req.database;
+	const database = resolveTargetDatabase(req);
+	// Only write when it would change something. The previous implementation left `req.schema` alone
+	// whenever it was already the resolved value, and an unconditional assignment is not equivalent:
+	// re-assigning an identical value still throws on a frozen or sealed object under strict mode,
+	// which every module here is. Nothing is known to pass one, but a write that cannot change the
+	// outcome is not worth the failure mode.
+	if (req.schema !== database) req.schema = database;
 }
 
 export function convertToMS(interval: any) {
@@ -868,5 +893,35 @@ export function convertToMS(interval: any) {
 		}
 	}
 	return seconds * 1000;
+}
+
+/**
+ * Render a millisecond duration as a compact human-readable string, e.g. `1d 3h 8m 22s`. Drops only
+ * the leading zero units (`5000` → `5s`, `90000` → `1m 30s`) and floors sub-second, negative, and
+ * non-finite values (`NaN`/`Infinity`, e.g. from `convertToMS('abc')`) to `0s`. Roughly the inverse
+ * of {@link convertToMS}, but caps at days — years/months are ambiguous spans (leap years, 30-day
+ * months) and not meaningful for the elapsed-time readouts this serves.
+ */
+export function prettyDuration(ms: number): string {
+	if (!Number.isFinite(ms)) return '0s';
+	let seconds = Math.max(0, Math.floor(ms / 1000));
+	const days = Math.floor(seconds / 86400);
+	seconds %= 86400;
+	const hours = Math.floor(seconds / 3600);
+	seconds %= 3600;
+	const minutes = Math.floor(seconds / 60);
+	seconds %= 60;
+	const units: [number, string][] = [
+		[days, 'd'],
+		[hours, 'h'],
+		[minutes, 'm'],
+		[seconds, 's'],
+	];
+	const firstIdx = units.findIndex(([value]) => value > 0);
+	const start = firstIdx === -1 ? units.length - 1 : firstIdx;
+	return units
+		.slice(start)
+		.map(([value, unit]) => `${value}${unit}`)
+		.join(' ');
 }
 import * as hdbErrors from './errors/commonErrors.ts';

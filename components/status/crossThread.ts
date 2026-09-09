@@ -6,7 +6,11 @@
  */
 
 import { sendItcEvent } from '../../server/threads/itc.js';
-import { getWorkerIndex, onMessageByType, getWorkerCount } from '../../server/threads/manageThreads.js';
+import {
+	getWorkerIndex,
+	onMessageByType,
+	getEligibleBroadcastRecipientThreadIds,
+} from '../../server/threads/manageThreads.js';
 import { ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 import { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
@@ -21,13 +25,27 @@ import {
 import { ITCError } from './errors.ts';
 
 const logger = loggerWithTag('componentStatus.crossThread');
+const THREAD_IDENTITY_SEPARATOR = '#thread-';
+const STATUS_PRIORITY = [
+	COMPONENT_STATUS_LEVELS.ERROR,
+	COMPONENT_STATUS_LEVELS.WARNING,
+	COMPONENT_STATUS_LEVELS.LOADING,
+	COMPONENT_STATUS_LEVELS.UNKNOWN,
+	COMPONENT_STATUS_LEVELS.HEALTHY,
+];
+
+function stripThreadIdentity(statusKey: string): string {
+	const threadLabelStart = statusKey.lastIndexOf('@') + 1;
+	const identityIndex = statusKey.indexOf(THREAD_IDENTITY_SEPARATOR, threadLabelStart);
+	return identityIndex === -1 ? statusKey : statusKey.substring(0, identityIndex);
+}
 
 /**
  * CrossThreadStatusCollector Class
  * Handles collection of component status from all worker threads
  */
 export class CrossThreadStatusCollector {
-	private awaitingResponses = new Map<number, Array<WorkerComponentStatuses>>();
+	private awaitingResponses = new Map<number, Map<number, WorkerComponentStatuses>>();
 	private responseCheckers = new Map<number, () => void>();
 	private nextRequestId = 1;
 	private listenerAttached = false;
@@ -53,8 +71,9 @@ export class CrossThreadStatusCollector {
 
 			// Find the pending request by requestId
 			const pendingResponses = this.awaitingResponses.get(message.requestId);
-			if (pendingResponses) {
-				pendingResponses.push({
+			if (pendingResponses && typeof message.threadId === 'number') {
+				pendingResponses.set(message.threadId, {
+					threadId: message.threadId,
 					workerIndex: message.workerIndex,
 					isMainThread: message.isMainThread || false,
 					statuses: message.statuses || [],
@@ -115,15 +134,10 @@ export class CrossThreadStatusCollector {
 
 			// Generate unique request ID and set up response collection
 			const requestId = this.nextRequestId++;
-			const responses: Array<WorkerComponentStatuses> = [];
+			const responses = new Map<number, WorkerComponentStatuses>();
 			this.awaitingResponses.set(requestId, responses);
 
-			// Calculate expected number of responses
-			// Total threads = main thread (1) + worker threads (workerCount)
-			const workerCount = getWorkerCount() || 1;
-			const totalThreads = workerCount + 1;
-			// We expect responses from all threads except ourselves
-			const expectedResponses = totalThreads - 1;
+			const expectedThreadIds = getEligibleBroadcastRecipientThreadIds();
 
 			// Set up response collection with timeout
 			const responsePromise = new Promise<Array<WorkerComponentStatuses>>((resolve, reject) => {
@@ -132,26 +146,28 @@ export class CrossThreadStatusCollector {
 				// Check if we've received all expected responses
 				const checkComplete = () => {
 					const collectedResponses = this.awaitingResponses.get(requestId);
-					if (collectedResponses && collectedResponses.length >= expectedResponses && !resolved) {
-						resolved = true;
-						cleanup();
-						logger.trace?.(`Collected all ${collectedResponses.length} expected responses for request ${requestId}`);
-						resolve(collectedResponses);
+					if (!collectedResponses || resolved) return;
+					for (const threadId of expectedThreadIds) {
+						if (!collectedResponses.has(threadId)) return;
 					}
+					resolved = true;
+					cleanup();
+					logger.trace?.(`Collected all ${collectedResponses.size} expected responses for request ${requestId}`);
+					resolve([...collectedResponses.values()]);
 				};
 
 				// Set up timeout as fallback
 				const timeoutHandle = setTimeout(() => {
 					if (!resolved) {
 						resolved = true;
-						const collectedResponses = this.awaitingResponses.get(requestId) || [];
+						const collectedResponses = this.awaitingResponses.get(requestId) || new Map();
 						this.awaitingResponses.delete(requestId);
 						// Log timeout with diagnostic info
 						logger.debug?.(
-							`Collection timeout for request ${requestId}: collected ${collectedResponses.length}/${expectedResponses} responses`
+							`Collection timeout for request ${requestId}: collected ${collectedResponses.size}/${expectedThreadIds.size} responses`
 						);
 						// Resolve with whatever we've collected so far
-						resolve(collectedResponses);
+						resolve([...collectedResponses.values()]);
 					}
 				}, this.timeout);
 
@@ -196,20 +212,14 @@ export class CrossThreadStatusCollector {
 			const localThreadLabel = localWorkerIndex === undefined ? 'main' : `worker-${localWorkerIndex}`;
 
 			for (const [name, status] of localStatuses) {
-				aggregatedStatuses.set(`${name}@${localThreadLabel}`, {
-					...status,
-					workerIndex: localWorkerIndex,
-				});
+				this.setThreadStatus(aggregatedStatuses, name, localThreadLabel, status, localWorkerIndex);
 			}
 
 			// Add responses from other threads
 			for (const response of collectedResponses) {
+				const threadLabel = response.isMainThread ? 'main' : `worker-${response.workerIndex}`;
 				for (const [name, status] of response.statuses) {
-					const threadLabel = response.isMainThread ? 'main' : `worker-${response.workerIndex}`;
-					aggregatedStatuses.set(`${name}@${threadLabel}`, {
-						...status,
-						workerIndex: response.workerIndex,
-					});
+					this.setThreadStatus(aggregatedStatuses, name, threadLabel, status, response.workerIndex, response.threadId);
 				}
 			}
 
@@ -232,6 +242,26 @@ export class CrossThreadStatusCollector {
 		}
 	}
 
+	private setThreadStatus(
+		statuses: Map<string, ComponentStatusSummary>,
+		name: string,
+		threadLabel: string,
+		status: ComponentStatusSummary,
+		workerIndex: number | undefined,
+		threadId?: number
+	): void {
+		const baseKey = `${name}@${threadLabel}`;
+		let key = baseKey;
+		if (statuses.has(baseKey)) {
+			if (threadId === undefined) throw new Error(`Physical thread identity is required for duplicate ${baseKey}`);
+			key += `${THREAD_IDENTITY_SEPARATOR}${threadId}`;
+		}
+		statuses.set(key, {
+			...status,
+			workerIndex,
+		});
+	}
+
 	/**
 	 * Get status from local thread only (fallback when cross-thread collection fails)
 	 */
@@ -242,10 +272,7 @@ export class CrossThreadStatusCollector {
 		const localThreadLabel = localWorkerIndex === undefined ? 'main' : `worker-${localWorkerIndex}`;
 
 		for (const [name, status] of localStatuses) {
-			fallbackStatuses.set(`${name}@${localThreadLabel}`, {
-				...status,
-				workerIndex: localWorkerIndex,
-			});
+			this.setThreadStatus(fallbackStatuses, name, localThreadLabel, status, localWorkerIndex);
 		}
 		return fallbackStatuses;
 	}
@@ -318,7 +345,8 @@ export class StatusAggregator {
 		// Analyze all instances of this component
 		for (const [nameWithThread, status] of statusEntries) {
 			const atIndex = nameWithThread.lastIndexOf('@');
-			const threadLabel = atIndex !== -1 ? nameWithThread.substring(atIndex + 1) : '';
+			const threadLabelWithIdentity = atIndex !== -1 ? nameWithThread.substring(atIndex + 1) : '';
+			const threadLabel = stripThreadIdentity(threadLabelWithIdentity);
 
 			// Convert lastChecked to ms since epoch
 			const checkTime =
@@ -330,7 +358,7 @@ export class StatusAggregator {
 			} else if (threadLabel && threadLabel.startsWith('worker-')) {
 				const workerIndex = parseInt(threadLabel.substring(7)); // 'worker-'.length = 7
 				if (!isNaN(workerIndex)) {
-					lastCheckedTimes.workers[workerIndex] = checkTime;
+					lastCheckedTimes.workers[workerIndex] = Math.max(lastCheckedTimes.workers[workerIndex] ?? 0, checkTime);
 				}
 			}
 
@@ -360,7 +388,12 @@ export class StatusAggregator {
 			// There are inconsistencies - populate abnormalities
 			for (const [nameWithThread, status] of statusEntries) {
 				if (status.status !== determinedStatus) {
-					abnormalities.set(nameWithThread, {
+					const publicNameWithThread = stripThreadIdentity(nameWithThread);
+					const existing = abnormalities.get(publicNameWithThread);
+					if (existing && STATUS_PRIORITY.indexOf(existing.status) <= STATUS_PRIORITY.indexOf(status.status)) {
+						continue;
+					}
+					abnormalities.set(publicNameWithThread, {
 						workerIndex: status.workerIndex !== undefined ? status.workerIndex : -1,
 						status: status.status,
 						message: status.message,
@@ -391,15 +424,7 @@ export class StatusAggregator {
 	 * Determine overall status based on priority
 	 */
 	private static determineOverallStatus(statusCounts: Map<ComponentStatusLevel, number>): ComponentStatusLevel {
-		const statusPriority = [
-			COMPONENT_STATUS_LEVELS.ERROR,
-			COMPONENT_STATUS_LEVELS.WARNING,
-			COMPONENT_STATUS_LEVELS.LOADING,
-			COMPONENT_STATUS_LEVELS.UNKNOWN,
-			COMPONENT_STATUS_LEVELS.HEALTHY,
-		];
-
-		for (const priorityStatus of statusPriority) {
+		for (const priorityStatus of STATUS_PRIORITY) {
 			if (statusCounts.has(priorityStatus) && statusCounts.get(priorityStatus)! > 0) {
 				return priorityStatus;
 			}

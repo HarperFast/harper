@@ -1,14 +1,35 @@
-name: Cherry-pick patch PRs to release branch
+name: Cherry-pick milestoned PRs to release branches
 
-# Pre-merge flow for PRs labeled `patch`:
-#   1. labeled / synchronize  → (re)create `cherry-pick/<release>/pr-<N>` off
-#                               the release branch, cherry-pick the PR's
-#                               commits, run integration tests, post a sticky
-#                               comment on the original PR.
-#   2. unlabeled              → tear the branch down, mark sticky comment
-#                               cancelled.
-#   3. closed && merged       → re-pick from the final merge SHA and push the
-#                               release branch.
+# Release targeting is driven by the PR's **Milestone**, not by a label.
+#
+#   Milestone `vX.Y` → the PR is cherry-picked onto the `vX.Y` release branch
+#   and onto every *newer* release branch that already exists. `main` receives
+#   the change through the normal merge, so it is never a cherry-pick target.
+#
+#     Milestone v5.1, branches v5.0/v5.1/v5.2  → picks onto v5.1 and v5.2
+#     Milestone v5.2, branches v5.0/v5.1/v5.2  → picks onto v5.2
+#     Milestone v5.3, no v5.3 branch cut yet   → no-op (the main merge is it)
+#     Milestone unset, or a non-version title  → no-op
+#
+#   A release branch cut *after* the PR merges already contains the commit, so
+#   only branches that exist at merge time need a pick.
+#
+# Per target branch:
+#   1. milestoned / synchronize → (re)create `cherry-pick/<release>/pr-<N>` off
+#                                 the release branch, cherry-pick the PR's
+#                                 commits, run tests, post a sticky comment on
+#                                 the original PR.
+#   2. demilestoned / narrowed  → tear the branch down, mark the sticky comment
+#                                 cancelled.
+#   3. closed && merged         → re-pick from the final merge SHA and push the
+#                                 release branch.
+#   4. closed && !merged        → tear every cherry-pick branch down; a PR that
+#                                 never reached `main` must not reach a release
+#                                 branch.
+#
+# The target set is *reconciled* on every run rather than diffed from the event
+# payload, so changing a milestone (v5.1 → v5.2) tears down the branches that
+# are no longer targeted without depending on GitHub's event ordering.
 #
 # Conflicts are pushed with markers and a sticky comment @-mentions Claude
 # asking for a suggested resolution patch (handled by claude-mention.yml).
@@ -17,18 +38,18 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR number to cherry-pick onto the release branch'
+        description: 'PR number to cherry-pick onto its milestone release branches'
         required: true
         type: string
   # `pull_request_target` (not `pull_request`) so the workflow definition is
   # always loaded from `main` regardless of what's on the PR's head ref. With
   # `pull_request`, PRs branched off `main` before this workflow landed still
-  # use their own (outdated) copy and won't trigger on label events. The token
-  # has write scope; we mitigate the usual `pull_request_target` risk by
+  # use their own (outdated) copy and won't trigger on milestone events. The
+  # token has write scope; we mitigate the usual `pull_request_target` risk by
   # pinning checkout to `main` and only running `git` against PR commits (no
   # npm install or PR-controlled scripts executed in this workflow).
   pull_request_target:
-    types: [labeled, unlabeled, synchronize, closed]
+    types: [milestoned, demilestoned, synchronize, closed]
     branches: [main]
 
 permissions:
@@ -40,23 +61,169 @@ concurrency:
   group: cherry-pick-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
   cancel-in-progress: false
 
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+
 jobs:
-  cherry-pick:
-    name: Cherry-pick onto ${{ vars.RELEASE_BRANCH || 'v5.0' }}
+  # ── Resolve which release branches this PR's milestone targets ──────────
+  plan:
+    name: Resolve release targets
     runs-on: ubuntu-latest
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request_target' && (
-        (github.event.action == 'labeled' && github.event.label.name == 'patch') ||
-        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'patch')) ||
-        (github.event.action == 'unlabeled' && github.event.label.name == 'patch') ||
-        (github.event.action == 'closed' && github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'patch'))
+        github.event.action == 'milestoned' ||
+        github.event.action == 'demilestoned' ||
+        (github.event.action == 'synchronize' && github.event.pull_request.milestone.title != '') ||
+        github.event.action == 'closed'
       ))
+    outputs:
+      milestone: ${{ steps.resolve.outputs.milestone }}
+      abandoned: ${{ steps.resolve.outputs.abandoned }}
+      targets: ${{ steps.resolve.outputs.targets }}
+      stale: ${{ steps.resolve.outputs.stale }}
+    steps:
+      - name: Resolve targets
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Read the milestone from the API, not the event payload: it is
+          # authoritative for workflow_dispatch and for demilestoned events
+          # (where the payload's milestone field is the *removed* one).
+          PR=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '{milestone: (.milestone.title // ""), state: .state, merged: .merged}')
+          MILESTONE=$(echo "$PR" | jq -r '.milestone')
+          PR_STATE=$(echo "$PR" | jq -r '.state')
+          PR_MERGED=$(echo "$PR" | jq -r '.merged')
+          # Releases are tagged at patch level (v5.2.5) and milestones are
+          # sometimes named that way. The release LINE is what has a branch, so
+          # read vX.Y.Z as vX.Y rather than silently matching nothing.
+          if printf '%s' "$MILESTONE" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+            MILESTONE=$(printf '%s' "$MILESTONE" | cut -d. -f1,2)
+            echo "Milestone names a patch release; using the release line $MILESTONE"
+          fi
+          echo "Milestone: ${MILESTONE:-<none>} (state=$PR_STATE merged=$PR_MERGED)"
+          echo "milestone=$MILESTONE" >> "$GITHUB_OUTPUT"
+
+          # A PR closed without merging never reaches `main`, so it must not
+          # reach a release branch either — drop all targets so every existing
+          # cherry-pick branch is torn down instead of left dangling.
+          ABANDONED=false
+          if [ "$PR_STATE" = "closed" ] && [ "$PR_MERGED" != "true" ]; then
+            ABANDONED=true
+            MILESTONE=""
+            echo "PR is closed without merging — tearing down all cherry-pick branches"
+          fi
+          echo "abandoned=$ABANDONED" >> "$GITHUB_OUTPUT"
+
+          ALL_BRANCHES=$(gh api "repos/$GITHUB_REPOSITORY/branches" --paginate --jq '.[].name')
+
+          # Release branches this milestone targets: `vX.Y` and every newer
+          # branch of the SAME major. A next-major branch is not a later release
+          # of this line — a textually clean pick there is exactly where it is
+          # most likely to be semantically wrong — so it is a human's call.
+          TARGETS=()
+          if printf '%s' "$MILESTONE" | grep -qE '^v[0-9]+\.[0-9]+$'; then
+            MAJOR=${MILESTONE%%.*}
+            while read -r BRANCH; do
+              [ -n "$BRANCH" ] || continue
+              [ "${BRANCH%%.*}" = "$MAJOR" ] || continue
+              # BRANCH >= MILESTONE when a version sort puts MILESTONE first.
+              if [ "$(printf '%s\n%s\n' "$BRANCH" "$MILESTONE" | sort -V | head -1)" = "$MILESTONE" ]; then
+                TARGETS+=("$BRANCH")
+              fi
+            done < <(printf '%s\n' "$ALL_BRANCHES" | grep -E '^v[0-9]+\.[0-9]+$' | sort -V)
+          fi
+
+          # Cherry-pick branches that exist for this PR but are no longer
+          # targeted (milestone removed, or moved to a newer line).
+          STALE=()
+          while read -r BRANCH; do
+            [ -n "$BRANCH" ] || continue
+            RELEASE=${BRANCH#cherry-pick/}
+            RELEASE=${RELEASE%%/*}
+            KEEP=false
+            for TARGET in ${TARGETS[@]+"${TARGETS[@]}"}; do
+              if [ "$TARGET" = "$RELEASE" ]; then KEEP=true; fi
+            done
+            if [ "$KEEP" = false ]; then STALE+=("$RELEASE"); fi
+          done < <(printf '%s\n' "$ALL_BRANCHES" | grep -E "^cherry-pick/v[0-9]+\.[0-9]+/pr-${PR_NUMBER}$" || true)
+
+          to_json() { printf '%s\n' ${1+"$@"} | jq -R . | jq -cs 'map(select(length > 0))'; }
+          TARGETS_JSON=$(to_json ${TARGETS[@]+"${TARGETS[@]}"})
+          STALE_JSON=$(to_json ${STALE[@]+"${STALE[@]}"})
+
+          echo "Targets: $TARGETS_JSON"
+          echo "Stale:   $STALE_JSON"
+          echo "targets=$TARGETS_JSON" >> "$GITHUB_OUTPUT"
+          echo "stale=$STALE_JSON" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Release cherry-pick plan for #$PR_NUMBER"
+            echo
+            echo "- Milestone: \`${MILESTONE:-<none>}\`"
+            echo "- Closed without merging: \`$ABANDONED\`"
+            echo "- Cherry-pick onto: \`$TARGETS_JSON\`"
+            echo "- Tear down: \`$STALE_JSON\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Tear down cherry-pick branches that are no longer targeted ──────────
+  teardown:
+    name: Tear down ${{ matrix.release }}
+    needs: plan
+    if: needs.plan.outputs.stale != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJson(needs.plan.outputs.stale) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete branch and cancel sticky comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MILESTONE: ${{ needs.plan.outputs.milestone }}
+          ABANDONED: ${{ needs.plan.outputs.abandoned }}
+          RELEASE: ${{ matrix.release }}
+        run: |
+          set -euo pipefail
+          BRANCH="cherry-pick/${RELEASE}/pr-${PR_NUMBER}"
+          MARKER="<!-- release-cherry-pick:${RELEASE} -->"
+          if git push origin --delete "$BRANCH" 2>/dev/null; then
+            OUTCOME=$(printf 'Cherry-pick branch `%s` was deleted' "$BRANCH")
+          else
+            OUTCOME=$(printf 'Cherry-pick branch `%s` is no longer targeted (nothing to delete)' "$BRANCH")
+          fi
+          if [ "$ABANDONED" = "true" ]; then
+            REASON="this PR was closed without merging"
+          else
+            REASON=$(printf 'this PR no longer targets `%s` (milestone is now `%s`)' "$RELEASE" "${MILESTONE:-<none>}")
+          fi
+          BODY=$(printf '%s\n## Release cherry-pick `%s`: cancelled\n\n%s — %s.\n' \
+            "$MARKER" "$RELEASE" "$OUTCOME" "$REASON")
+          node .github/scripts/upsert-sticky-comment.js "$PR_NUMBER" "$MARKER" "$BODY"
+
+  # ── Cherry-pick onto each targeted release branch ───────────────────────
+  cherry-pick:
+    name: Cherry-pick onto ${{ matrix.release }}
+    needs: plan
+    if: needs.plan.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Distinct release branches, so parallel legs never touch the same ref.
+      matrix:
+        release: ${{ fromJson(needs.plan.outputs.targets) }}
 
     env:
-      RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH || 'v5.0' }}
-      STICKY_MARKER: '<!-- patch-ci -->'
-      PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+      RELEASE_BRANCH: ${{ matrix.release }}
+      STICKY_MARKER: '<!-- release-cherry-pick:${{ matrix.release }} -->'
 
     steps:
       # Pin to `main` so the helper script (.github/scripts/...) is always
@@ -73,34 +240,19 @@ jobs:
       # branch (which may not contain this helper), so stash it under
       # $RUNNER_TEMP and invoke it from there in all subsequent steps.
       - name: Stash sticky-comment helper
-        run: cp .github/scripts/upsert-sticky-comment.js "$RUNNER_TEMP/upsert-sticky-comment.js"
+        run: |
+          cp .github/scripts/upsert-sticky-comment.js "$RUNNER_TEMP/upsert-sticky-comment.js"
+          cp .github/scripts/apply-picks.sh "$RUNNER_TEMP/apply-picks.sh"
 
       - name: Configure git
         run: |
           git config user.email "noreply@harperdb.io"
           git config user.name "Harperfast"
 
-      # ── Unlabeled: tear down branch + cancel sticky comment ─────────────
-      - name: Handle unlabel
-        if: github.event.action == 'unlabeled'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
-          git push origin --delete "$BRANCH" 2>/dev/null || true
-          BODY=$(printf '%s\n## Patch cherry-pick: cancelled\n\nThe `patch` label was removed; cherry-pick branch `%s` was deleted.\n' "$STICKY_MARKER" "$BRANCH")
-          node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
-
-      # ── Main path: labeled / synchronize / merged / dispatch ────────────
       - name: Cherry-pick
-        if: github.event.action != 'unlabeled'
         id: pick
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ACTION: ${{ github.event.action }}
-          EVENT: ${{ github.event_name }}
-          MERGE_SHA_FROM_EVENT: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
           set -euo pipefail
 
@@ -113,116 +265,299 @@ jobs:
           MERGE_SHA=$(echo "$PR_DATA" | jq -r '.merge_sha')
 
           # Trust the API's merged field, not the event action — covers the
-          # case where `patch` is labeled onto an already-merged PR (action =
-          # `labeled`) and workflow_dispatch on a merged PR.
+          # case where a milestone is set on an already-merged PR (action =
+          # `milestoned`) and workflow_dispatch on a merged PR.
           IS_MERGED=false
           if [ "$MERGED" = "true" ] && [ -n "$MERGE_SHA" ] && [ "$MERGE_SHA" != "null" ]; then
             IS_MERGED=true
           fi
 
           BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
+          EXCLUDED_MERGES=""
+          HOLD=""
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-          echo "pr_title=$PR_TITLE" >> "$GITHUB_OUTPUT"
+          {
+            echo "pr_title<<PR_TITLE_EOF"
+            echo "$PR_TITLE"
+            echo "PR_TITLE_EOF"
+          } >> "$GITHUB_OUTPUT"
           echo "is_merged=$IS_MERGED" >> "$GITHUB_OUTPUT"
 
-          git fetch origin main "$RELEASE_BRANCH" "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-${PR_NUMBER}"
+          git fetch origin "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}" \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-${PR_NUMBER}"
 
-          # ── Determine commits to pick ───────────────────────────────────
+          # Range the PR's own work against a LIVE merge base, not the PR's
+          # recorded base.sha. When base.sha predates a merge of main that the
+          # author pulled in, merge-base collapses onto it and the range spans
+          # main's own commits — which would then be replayed onto the release
+          # branch as if they were the author's.
+          MERGE_BASE=$(git merge-base origin/main "$HEAD_SHA")
+          PARENT_COUNT=0
           if [ "$IS_MERGED" = "true" ]; then
             PARENT_COUNT=$(git cat-file -p "$MERGE_SHA" | grep -c "^parent ")
-            if [ "$PARENT_COUNT" -gt 1 ]; then
-              # True merge commit: cherry-pick it directly with -m 1
-              PICK_FLAGS="-m 1"
-              PICK_SHAS="$MERGE_SHA"
-            else
-              # Squash or rebase merge: pick the original PR commits so we get
-              # the full set. For squash this is equivalent (same net diff). For
-              # rebase, MERGE_SHA is only the last rebased commit — the earlier
-              # ones would be silently skipped if we picked MERGE_SHA alone.
-              MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
-              PICK_FLAGS=""
-              PICK_SHAS=$(git rev-list --reverse "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
-              if [ -z "$(echo "$PICK_SHAS" | tr -d ' ')" ]; then
-                PICK_SHAS="$MERGE_SHA"
-              fi
-            fi
+          fi
+
+          # ── Determine commits to pick ───────────────────────────────────
+          #
+          # No merge-method inference. Whether GitHub squashed or rebased this
+          # PR is not recoverable from the commit graph — a squash and a rebase
+          # whose commits touch one file set are indistinguishable by file set,
+          # and patch ids shift whenever main moved under the PR. Guessing wrong
+          # either drops commits or replays main's. So always replay the PR's
+          # own non-merge commits, and treat an excluded merge as a case for a
+          # human rather than something to infer around.
+          if [ "$IS_MERGED" = "true" ] && [ "$PARENT_COUNT" -gt 1 ]; then
+            # The PR was merged with a merge commit: it IS the change.
+            PICK_FLAGS="-m 1"
+            PICK_SHAS="$MERGE_SHA"
           else
-            # Open PR: pick the commit range merge_base..HEAD
-            MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
             PICK_FLAGS=""
-            PICK_SHAS=$(git rev-list --reverse "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
+            PICK_SHAS=$(git rev-list --reverse --no-merges "${MERGE_BASE}..${HEAD_SHA}" | tr '\n' ' ')
+            # Only merges a human DECIDED something in need holding, so a
+            # routine "merge main in, no conflicts" PR still lands
+            # automatically. The test is whether the recorded merge matches what
+            # git would have produced on its own: `diff-tree --cc` is not enough
+            # because it is also empty when the author resolved by taking one
+            # side outright, and replaying their superseded commit would then
+            # reintroduce the very change they discarded.
+            EXCLUDED_MERGES=""
+            for M in $(git rev-list --merges "${MERGE_BASE}..${HEAD_SHA}"); do
+              AUTO_TREE=$(git merge-tree --write-tree "${M}^1" "${M}^2" 2>/dev/null | head -1 || true)
+              if [ -z "$AUTO_TREE" ] || [ "$AUTO_TREE" != "$(git rev-parse "${M}^{tree}")" ]; then
+                EXCLUDED_MERGES="${EXCLUDED_MERGES:+$EXCLUDED_MERGES }$M"
+              fi
+            done
             if [ -z "$(echo "$PICK_SHAS" | tr -d ' ')" ]; then
-              echo "No commits to cherry-pick between $MERGE_BASE and $HEAD_SHA"
-              exit 0
+              if [ "$IS_MERGED" = "true" ]; then
+                # Nothing replayable: the PR's own content exists only in
+                # commits that cannot be replayed. The merge SHA gives a human
+                # something to review, but it is not provably the whole change.
+                PICK_SHAS="$MERGE_SHA"
+                HOLD="the PR has no replayable non-merge commits, so this branch was built from the merge commit alone"
+              elif [ -n "$EXCLUDED_MERGES" ]; then
+              echo "pushed=false" >> "$GITHUB_OUTPUT"
+                # Nothing replayable and a merge that resolved something: the
+                # change exists only where it cannot be picked from.
+                HOLD=$(printf 'the only commits in range are merge commit(s) `%s`, which resolved content of their own' "$EXCLUDED_MERGES")
+                echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
+                echo "no_op=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              else
+                echo "No commits to cherry-pick between $MERGE_BASE and $HEAD_SHA"
+                echo "no_op=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
             fi
           fi
           echo "pick_flags=$PICK_FLAGS" >> "$GITHUB_OUTPUT"
           echo "pick_shas=$PICK_SHAS" >> "$GITHUB_OUTPUT"
+          if [ -n "$EXCLUDED_MERGES" ]; then
+            HOLD=$(printf 'merge commit(s) `%s` resolved content of their own and cannot be replayed' "$EXCLUDED_MERGES")
+          fi
+          echo "excluded_merges=$EXCLUDED_MERGES" >> "$GITHUB_OUTPUT"
+          echo "hold=$HOLD" >> "$GITHUB_OUTPUT"
 
           # ── Create / reset cherry-pick branch off release branch ────────
           git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
 
           # ── Apply commits, tracking which conflicted ────────────────────
-          CONFLICTS=""
-          for SHA in $PICK_SHAS; do
-            # shellcheck disable=SC2086
-            if ! git cherry-pick $PICK_FLAGS "$SHA"; then
-              CONFLICTS="${CONFLICTS:+$CONFLICTS }$SHA"
-              # Stage conflict markers and commit so reviewer sees the state
-              git add -A
-              GIT_EDITOR=true git cherry-pick --continue || git cherry-pick --skip || true
-            fi
-          done
+          CONFLICTS=$("$RUNNER_TEMP/apply-picks.sh" "$PICK_FLAGS" "$PICK_SHAS")
           echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$CONFLICTS" ] && [ -z "$HOLD" ] && [ -z "$(git rev-list "origin/${RELEASE_BRANCH}..HEAD")" ]; then
+            echo "Nothing to land on $RELEASE_BRANCH — every commit was already present"
+            echo "no_op=true" >> "$GITHUB_OUTPUT"
+            # An earlier run may have pushed a branch that is now redundant.
+            git push origin --delete "$BRANCH" 2>/dev/null || true
+            exit 0
+          fi
 
           # Force-push (we rewrite this branch on each push to the PR)
           git push --force origin "$BRANCH"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      # ── Already-present path: nothing to land, say so and stop ──────────
+      - name: Report no-op
+        if: steps.pick.outputs.no_op == 'true' && steps.pick.outputs.hold == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Nothing to land now, so a branch and PR from an earlier revision
+          # describe commits this PR no longer produces — and that PR is still
+          # mergeable into the release branch. Retire both.
+          BRANCH="cherry-pick/${RELEASE_BRANCH}/pr-${PR_NUMBER}"
+          STALE_PR=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --base "$RELEASE_BRANCH" --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$STALE_PR" ] && [ "$STALE_PR" != "null" ]; then
+            gh pr close "$STALE_PR" --repo "$GITHUB_REPOSITORY" \
+              --comment "Superseded: PR #${PR_NUMBER} no longer produces any commits to cherry-pick onto \`${RELEASE_BRANCH}\`." >/dev/null || true
+          fi
+          git push origin --delete "$BRANCH" 2>/dev/null || true
+          BODY=$(printf '%s\n## Release cherry-pick `%s`: already present\n\nEvery commit from this PR is already on `%s` — nothing to cherry-pick.\n' \
+            "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH")
+          node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
       # ── Merged path: fast-forward release branch ────────────────────────
       - name: Merge into release branch
-        if: github.event.action != 'unlabeled' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == ''
+        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged == 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
-          git checkout "$RELEASE_BRANCH"
-          git merge --ff-only "$BRANCH"
-          git push origin "$RELEASE_BRANCH"
-          git push origin --delete "$BRANCH" || true
-          BODY=$(printf '%s\n## Patch cherry-pick: merged\n\nCherry-picked onto `%s`.\n' "$STICKY_MARKER" "$RELEASE_BRANCH")
+
+          # Another PR milestoned for this line can land between the pick and
+          # the push, and a branch built on the old tip can never fast-forward
+          # onto the new one. Rebuild the picks onto the current tip and retry.
+          # (A `concurrency` group would not fix this: GitHub keeps only one
+          # pending job per group and cancels the rest, which loses a landing
+          # silently — worse than a loud retry.)
+          PICK_FLAGS="${{ steps.pick.outputs.pick_flags }}"
+          PICK_SHAS="${{ steps.pick.outputs.pick_shas }}"
+          PUSHED=false
+          REBUILD_CONFLICT=false
+          for ATTEMPT in 1 2 3; do
+            git fetch origin "+refs/heads/${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}"
+            if [ "$ATTEMPT" -gt 1 ]; then
+              git checkout -B "$BRANCH" "origin/$RELEASE_BRANCH"
+              # Same classifier as the first pass: a commit the concurrent
+              # landing already brought in is skipped, not called a conflict.
+              if ! REBUILD_CONFLICTS=$("$RUNNER_TEMP/apply-picks.sh" "$PICK_FLAGS" "$PICK_SHAS"); then
+                # Unclassifiable, exactly as in the first pass: not a conflict,
+                # and not something to paper over with a retry message.
+                echo "::error::rebuilding $BRANCH onto the current $RELEASE_BRANCH failed"
+                exit 1
+              fi
+              if [ -n "$REBUILD_CONFLICTS" ]; then
+                REBUILD_CONFLICT=true
+                break
+              fi
+              git push --force origin "$BRANCH"
+            fi
+            git checkout -B "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH"
+            if ! git merge --ff-only "$BRANCH"; then continue; fi
+            if git push origin "$RELEASE_BRANCH"; then PUSHED=true; break; fi
+          done
+
+          if [ "$PUSHED" = true ]; then
+            git push origin --delete "$BRANCH" || true
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: merged\n\nCherry-picked onto `%s`.\n' "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH")
+            node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+          else
+            if [ "$REBUILD_CONFLICT" = true ]; then
+              WHY=$(printf 'another change landed on `%s` first and these commits no longer apply cleanly on top of it' "$RELEASE_BRANCH")
+            else
+              WHY=$(printf '`%s` kept moving while this pick was in flight' "$RELEASE_BRANCH")
+            fi
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: NOT landed\n\n`%s` was **not** updated — %s.\n\nRe-run the cherry-pick workflow for this PR (`workflow_dispatch`, `pr_number=%s`) to rebuild [`%s`](../tree/%s) against the current `%s`.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$WHY" "$PR_NUMBER" "$BRANCH" "$BRANCH" "$RELEASE_BRANCH")
+            node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+            exit 1
+          fi
+
+      # ── Held: commits were excluded, so a human decides whether to land ─
+      #
+      # A merge commit cannot be replayed without -m and carries main's changes
+      # rather than the author's, so it is not in the pick list. If it resolved
+      # a conflict, that resolution exists nowhere else and this branch does not
+      # have it — which is not something to auto-land on a release branch.
+      # A hold outranks every other outcome: it means the branch is not
+      # provably the whole change, which no clean pick or empty range disproves.
+      - name: Report held for review
+        if: steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TITLE: ${{ steps.pick.outputs.pr_title }}
+          HOLD: ${{ steps.pick.outputs.hold }}
+          PUSHED: ${{ steps.pick.outputs.pushed }}
+        run: |
+          set -euo pipefail
+          BRANCH="${{ steps.pick.outputs.branch }}"
+          HELD_BODY=$(printf 'Cherry-pick of PR #%s onto `%s` applied cleanly, but it is **not** provably the whole change: %s.\n\nIf a merge commit resolved a conflict, that resolution is not on this branch. Confirm the change is complete, then merge this PR.\n' \
+            "$PR_NUMBER" "$RELEASE_BRANCH" "$HOLD")
+          # An empty range never pushed a branch, so there is nothing to open a
+          # PR from. Trust what this run did rather than probing the remote — a
+          # branch left by an earlier run would otherwise be mistaken for it.
+          if [ "$PUSHED" != true ]; then
+            # Nothing was built this run, so anything left from an earlier one
+            # describes a revision that no longer exists. Close it out.
+            STALE_PR=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+              --base "$RELEASE_BRANCH" --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
+            if [ -n "$STALE_PR" ] && [ "$STALE_PR" != "null" ]; then
+              gh pr close "$STALE_PR" --repo "$GITHUB_REPOSITORY" \
+                --comment "Superseded: PR #${PR_NUMBER} no longer produces any commits to cherry-pick onto \`${RELEASE_BRANCH}\`." >/dev/null || true
+            fi
+            git push origin --delete "$BRANCH" 2>/dev/null || true
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: held for review\n\nNothing could be cherry-picked onto `%s`: %s.\n\n`%s` was **not** updated. Apply this change by hand if it belongs on that line.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$HOLD" "$RELEASE_BRANCH")
+            node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
+            exit 0
+          fi
+
+          HELD_PR_URL=$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --base "$RELEASE_BRANCH" --head "$BRANCH" --json url --jq '.[0].url' 2>/dev/null || true)
+          if [ -z "$HELD_PR_URL" ] || [ "$HELD_PR_URL" = "null" ]; then
+            HELD_PR_URL=$(gh pr create --repo "$GITHUB_REPOSITORY" \
+              --base "$RELEASE_BRANCH" \
+              --head "$BRANCH" \
+              --title "cherry-pick: ${PR_TITLE} (review → ${RELEASE_BRANCH})" \
+              --body "$HELD_BODY")
+          else
+            # The branch is rebuilt on every run, so a body written by an
+            # earlier run may describe a different set of commits.
+            gh pr edit "$HELD_PR_URL" --repo "$GITHUB_REPOSITORY" --body "$HELD_BODY" >/dev/null
+          fi
+          BODY=$(printf '%s\n## Release cherry-pick `%s`: held for review\n\nThe picks applied cleanly, but the result is not provably the whole change: %s.\n\nA merge that resolved a conflict holds content found nowhere else, so `%s` was **not** updated automatically. Review and merge: %s\n' \
+            "$STICKY_MARKER" "$RELEASE_BRANCH" "$HOLD" "$RELEASE_BRANCH" "$HELD_PR_URL")
           node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
       # ── Conflict path: post sticky comment, @-mention Claude ────────────
       - name: Report conflict
-        if: github.event.action != 'unlabeled' && steps.pick.outputs.conflicts != ''
+        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.conflicts != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IS_MERGED: ${{ steps.pick.outputs.is_merged }}
           PR_TITLE: ${{ steps.pick.outputs.pr_title }}
+          HOLD: ${{ steps.pick.outputs.hold }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
           CONFLICTS="${{ steps.pick.outputs.conflicts }}"
+
+          # A branch can be both conflicted AND incomplete. Resolving the
+          # markers does not restore a resolution that lived only in a merge
+          # commit, so say so wherever this branch is described.
+          MERGE_WARN=""
+          if [ -n "$HOLD" ]; then
+            MERGE_WARN=$(printf '\n\n> **This branch is also incomplete**, separately from the conflicts: %s. Resolving the markers below will **not** restore that content, so do not merge on the strength of a clean resolution alone.' "$HOLD")
+          fi
 
           if [ "$IS_MERGED" = "true" ]; then
             # PR already merged — open a release-branch PR so the conflict can
             # be resolved and merged without any future trigger from the original PR.
             PATCH_PR_URL=$(gh pr list --repo "$GITHUB_REPOSITORY" \
               --base "$RELEASE_BRANCH" --head "$BRANCH" --json url --jq '.[0].url' 2>/dev/null || true)
+            CONFLICT_BODY=$(printf 'Cherry-pick of PR #%s onto `%s` produced conflicts on commit(s): `%s`.%s\n\nResolve the conflict markers on branch `%s` and merge this PR.\n' \
+              "$PR_NUMBER" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH")
             if [ -z "$PATCH_PR_URL" ] || [ "$PATCH_PR_URL" = "null" ]; then
               PATCH_PR_URL=$(gh pr create --repo "$GITHUB_REPOSITORY" \
                 --base "$RELEASE_BRANCH" \
                 --head "$BRANCH" \
                 --title "cherry-pick: ${PR_TITLE} (conflicts → ${RELEASE_BRANCH})" \
-                --body "$(printf 'Cherry-pick of PR #%s onto \`%s\` produced conflicts on commit(s): \`%s\`.\n\nResolve the conflict markers on branch \`%s\` and merge this PR.\n\n@claude please review branch \`%s\` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto \`%s\`. Post the suggested patch as a comment here — do not push.\n' \
-                  "$PR_NUMBER" "$RELEASE_BRANCH" "$CONFLICTS" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")")
+                --body "$(printf 'Cherry-pick of PR #%s onto \`%s\` produced conflicts on commit(s): \`%s\`.%s\n\nResolve the conflict markers on branch \`%s\` and merge this PR.\n\n@claude please review branch \`%s\` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto \`%s\`. Post the suggested patch as a comment here — do not push.\n' \
+                  "$PR_NUMBER" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")")
+            else
+              # The branch is rebuilt on every run; an earlier body may describe
+              # a different set of conflicting commits.
+              gh pr edit "$PATCH_PR_URL" --repo "$GITHUB_REPOSITORY" --body "$CONFLICT_BODY" >/dev/null
             fi
-            BODY=$(printf '%s\n## Patch cherry-pick: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nA pull request has been opened to land this patch: %s\n' \
-              "$STICKY_MARKER" "$RELEASE_BRANCH" "$CONFLICTS" "$BRANCH" "$BRANCH" "$PATCH_PR_URL")
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nA pull request has been opened to land this patch: %s\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$PATCH_PR_URL")
           else
-            BODY=$(printf '%s\n## Patch cherry-pick: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nIntegration tests are **not** running until conflicts are resolved.\n\n@claude please review branch `%s` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto `%s`. Post the suggested patch as a comment on this PR — do not push.\n' \
-              "$STICKY_MARKER" "$RELEASE_BRANCH" "$CONFLICTS" "$BRANCH" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: conflict\n\nCherry-pick onto `%s` produced conflicts on commit(s): `%s`%s\n\nThe conflict markers are committed on branch [`%s`](../tree/%s).\nIntegration tests are **not** running until conflicts are resolved.\n\n@claude please review branch `%s` and suggest a patch that resolves the conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) introduced by cherry-picking PR #%s onto `%s`. Post the suggested patch as a comment on this PR — do not push.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$CONFLICTS" "$MERGE_WARN" "$BRANCH" "$BRANCH" "$BRANCH" "$PR_NUMBER" "$RELEASE_BRANCH")
           fi
           node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
 
@@ -233,31 +568,49 @@ jobs:
       # fire for `workflow_dispatch`-triggered runs on non-default branches —
       # so a downstream reporter never sees the cherry-pick run finish.
       - name: Trigger tests and wait for completion
-        if: github.event.action != 'unlabeled' && steps.pick.outputs.is_merged != 'true' && steps.pick.outputs.conflicts == ''
+        if: steps.pick.outputs.no_op != 'true' && steps.pick.outputs.is_merged != 'true' && steps.pick.outputs.conflicts == '' && steps.pick.outputs.hold == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXCLUDED_MERGES: ${{ steps.pick.outputs.excluded_merges }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.pick.outputs.branch }}"
+
+          # Merge commits cannot be replayed without -m and carry main's
+          # changes rather than the author's, so they are excluded from the
+          # pick list. Say so: a merge that resolved a conflict holds content
+          # found nowhere else, and this branch will not have it.
+          MERGE_NOTE=""
+          if [ -n "$EXCLUDED_MERGES" ]; then
+            MERGE_NOTE=$(printf '\n\n> **Merge commits were excluded** from the pick: `%s`. If any of them resolved a conflict, that resolution is not on this branch — check before merging.' "$EXCLUDED_MERGES")
+          fi
 
           post_sticky() {
             local heading="$1"
             local run_line="$2"
             local body
-            body=$(printf '%s\n## Patch cherry-pick: %s\n\nCherry-picked PR #%s onto `%s` at branch [`%s`](../tree/%s).\n%s\n\nOn merge of this PR the cherry-pick branch will be fast-forwarded into `%s`.\n' \
-              "$STICKY_MARKER" "$heading" "$PR_NUMBER" "$RELEASE_BRANCH" "$BRANCH" "$BRANCH" "$run_line" "$RELEASE_BRANCH")
+            body=$(printf '%s\n## Release cherry-pick `%s`: %s\n\nCherry-picked PR #%s onto `%s` at branch [`%s`](../tree/%s).\n%s%s\n\nOn merge of this PR the cherry-pick branch will be fast-forwarded into `%s`.\n' \
+              "$STICKY_MARKER" "$RELEASE_BRANCH" "$heading" "$PR_NUMBER" "$RELEASE_BRANCH" "$BRANCH" "$BRANCH" "$run_line" "$MERGE_NOTE" "$RELEASE_BRANCH")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$body"
           }
 
-          WORKFLOW_CHANGES=$(git diff "origin/${RELEASE_BRANCH}".."${BRANCH}" --name-only | grep '^\.github/workflows/' || true)
+          # Dispatching runs the branch's own workflows and npm lifecycle
+          # scripts in base-repo context. Anything that decides what those
+          # scripts are is as privileged as the workflow files themselves.
+          WORKFLOW_CHANGES=$(git diff "origin/${RELEASE_BRANCH}".."${BRANCH}" --name-only \
+            | grep -E '^\.github/workflows/|^package(-lock)?\.json$' || true)
           if [ -n "$WORKFLOW_CHANGES" ]; then
-            BODY=$(printf '%s\n## Patch cherry-pick: workflow files modified\n\nThe cherry-pick branch modifies CI workflow files — automated tests were **not** dispatched to prevent running PR-controlled workflows with write permissions.\n\nModified files:\n```\n%s\n```\nPlease review and trigger tests manually if safe.\n' "$STICKY_MARKER" "$WORKFLOW_CHANGES")
+            BODY=$(printf '%s\n## Release cherry-pick `%s`: build files modified\n\nThe cherry-pick branch modifies CI workflow or package files — automated tests were **not** dispatched to prevent running PR-controlled scripts with base-repo credentials.\n\nModified files:\n```\n%s\n```\nPlease review and trigger tests manually if safe.\n' "$STICKY_MARKER" "$RELEASE_BRANCH" "$WORKFLOW_CHANGES")
             node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"
             exit 0
           fi
 
-          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY"
-          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY"
+          # Pin the Node matrix. These inputs default to `all`, which is the
+          # nightly-scale matrix (~43 jobs); a PR push runs a single version.
+          # Unpinned, one push to a PR milestoned onto three release branches
+          # dispatches that matrix three times.
+          gh workflow run integration-tests.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=24
+          gh workflow run unit-test.yml --ref "$BRANCH" --repo "$GITHUB_REPOSITORY" -f node-version=24
 
           # Locate the dispatched integration-tests run id (creation is async)
           RUN_ID=""
@@ -295,3 +648,28 @@ jobs:
           esac
 
           post_sticky "tests $STATUS_LINE" "Integration tests: **$STATUS_LINE** — $RUN_URL"
+
+      # Every step above carries a bare `if:`, which implies success() — so a
+      # failed pick would report nothing and leave the previous sticky comment
+      # still promising the fast-forward. The classifier exists to make that
+      # class of failure loud; this keeps it loud one layer up.
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_SHA_SEEN: ${{ steps.pick.outputs.pick_shas }}
+        run: |
+          set -euo pipefail
+          [ -f "$RUNNER_TEMP/upsert-sticky-comment.js" ] || exit 0
+          MERGE_SHA_SEEN=$(echo "$MERGE_SHA_SEEN" | awk '{print $NF}')
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # The push may or may not have happened before the failure, so say
+          # what is knowable rather than asserting the branch is untouched.
+          git fetch origin "+refs/heads/${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}" 2>/dev/null || true
+          STATE="It is unclear whether \`$RELEASE_BRANCH\` was updated — check before re-running."
+          if [ -n "${MERGE_SHA_SEEN:-}" ] && git merge-base --is-ancestor "$MERGE_SHA_SEEN" "origin/$RELEASE_BRANCH" 2>/dev/null; then
+            STATE="\`$RELEASE_BRANCH\` already contains this change; the failure is after the landing."
+          fi
+          BODY=$(printf '%s\n## Release cherry-pick `%s`: failed\n\nThe cherry-pick job for `%s` did not complete. %s\n\nRun: %s\n\nRe-run once the cause is addressed (`workflow_dispatch`, `pr_number=%s`).\n' \
+            "$STICKY_MARKER" "$RELEASE_BRANCH" "$RELEASE_BRANCH" "$STATE" "$RUN_URL" "$PR_NUMBER")
+          node "$RUNNER_TEMP/upsert-sticky-comment.js" "$PR_NUMBER" "$STICKY_MARKER" "$BODY"

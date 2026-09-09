@@ -1,9 +1,9 @@
-import { RocksDatabase, type RocksDatabaseOptions, constants, type Store } from '@harperfast/rocksdb-js';
+import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transaction } from '@harperfast/rocksdb-js';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
-import { entryMap, METADATA, type Entry } from './RecordEncoder.ts';
+import { assignStoredFields, entryMap, METADATA, type Entry } from './RecordEncoder.ts';
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -41,6 +41,33 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		}
 	}
 
+	// Match LMDB's remove(key, version) contract without splitting the version check from the delete.
+	async removeIfVersion(id: any, version: number): Promise<boolean> {
+		let retried = false;
+		while (true) {
+			let transaction: Transaction | undefined;
+			try {
+				transaction = new Transaction(this.store);
+				const entry = this.#processEntry(super.getSync(id, { transaction }), id);
+				if (!entry || entry.version !== version) {
+					transaction.abort();
+					return false;
+				}
+				this.#cache?.delete(id);
+				super.removeSync(id, { transaction });
+				await transaction.commit();
+				return true;
+			} catch (error: any) {
+				try {
+					transaction?.abort();
+				} catch {}
+				// rocksdb-js reports a writer that committed between our read and our commit as ERR_BUSY
+				if (retried || error?.code !== 'ERR_BUSY') throw error;
+				retried = true;
+			}
+		}
+	}
+
 	/**
 	 * Initialises encoder/decoder state. Must be called once after open() with the root
 	 * RocksDatabase. Equivalent to the RocksDB branch of handleLocalTimeForGets, but as
@@ -60,7 +87,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			if (entry.value.constructor === Object && this.#enc.structPrototype) {
 				const originalValue = entry.value;
 				entry.value = new this.#enc.structPrototype.constructor();
-				Object.assign(entry.value, originalValue);
+				assignStoredFields(entry.value, originalValue, this.#enc);
 			}
 			if (typeof entry.value === 'object' && entry.value !== null) {
 				entryMap.set(entry.value, entry);
@@ -164,7 +191,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			if (entry.value?.constructor === Object && enc.structPrototype) {
 				const originalValue = entry.value;
 				entry.value = new enc.structPrototype.constructor();
-				for (const key in originalValue) entry.value[key] = originalValue[key];
+				assignStoredFields(entry.value, originalValue, enc);
 			}
 			return entry;
 		});

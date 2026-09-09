@@ -6,12 +6,13 @@ const env = require('#src/utility/environment/environmentManager');
 const assert = require('node:assert');
 const COMMON_TEST_TERMS = require('./commonTestTerms.js');
 const systemSchema = require('../json/systemSchema.json');
-const { table: ensure_table, resetDatabases } = require('#src/resources/databases');
+const { table: ensure_table, resetDatabases, resolveDatabaseStorageRoot } = require('#src/resources/databases');
 const terms = require('#src/utility/hdbTerms');
 const harperBridge = require('#src/dataLayer/harperBridge/harperBridge').default;
-const { isMainThread } = require('node:worker_threads');
-const { getDatabases, databases } = require('#src/resources/databases');
+const { getDatabases } = require('#src/resources/databases');
 const { handleHDBError } = require('#src/utility/errors/hdbError');
+const { PRIVATEKEY_PEM_NAME } = require('#src/utility/terms/certificates');
+const { materializePerPidRoot, removePerPidRoot } = require('./perPidRoot.js');
 
 let envMgrInitSyncStub;
 
@@ -75,9 +76,20 @@ function preTestPrep(testConfigObj) {
 		throw reason;
 	});
 
+	// Set the code rather than calling process.exit() from inside an 'exit' listener: that
+	// re-enters exit and terminates immediately, which skips every listener still queued behind
+	// this one (including mocha.init.js's did-the-run-finish check) and, on Windows, discards
+	// whatever is still pending on the stdout pipe. Assigning process.exitCode here has the same
+	// effect on the process's exit status.
 	process.prependListener('exit', (code) => {
 		if (code === 0) {
-			process.exit(unhandledRejectionExitCode);
+			// Clean up explicitly rather than relying solely on the preload's own 'exit'
+			// listener: this one is prepended, so it runs first, and assigning exitCode
+			// (instead of calling process.exit(), per the comment above) lets the preload's
+			// listener still run too — this just guarantees the ~98 suites that call
+			// preTestPrep don't depend on load order for it.
+			removePerPidRoot();
+			process.exitCode = unhandledRejectionExitCode;
 		}
 	});
 	// Try to change to bin
@@ -345,10 +357,6 @@ function setTestPath(testPath) {
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, testPath);
 	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(testPath, 'database'));
 	fs.mkdirpSync(testPath);
-	const systemPath = databases.system?.hdb_user?.primaryStore?.path;
-	if (systemPath) {
-		env.setProperty(terms.CONFIG_PARAMS.DATABASES, { system: { path: path.dirname(systemPath) } });
-	}
 	fs.writeFileSync(path.join(testPath, 'harperdb-config.yaml'), JSON.stringify({}));
 }
 
@@ -366,30 +374,131 @@ function getMockTestPath() {
  * @returns String representing the path value to the mock lmdb system directory
  */
 function setupTestDBPath() {
-	let dbPath = PID_DIR_PATH;
-	if (!fs.existsSync(dbPath)) {
-		fs.mkdirSync(dbPath, { recursive: true });
-	}
+	let dbPath = materializePerPidRoot();
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, dbPath);
+	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(dbPath, 'database'));
 	const databasePaths = {
 		data: { path: dbPath },
 		dev: { path: dbPath },
 		test: { path: dbPath },
 		test2: { path: dbPath },
 	};
-	const systemPath = databases.system?.hdb_user?.primaryStore?.path;
-	if (systemPath) {
-		// do NOT change an existing system path, really confuses the system
-		databasePaths.system = { path: path.dirname(systemPath) };
-	}
 	env.setProperty(terms.CONFIG_PARAMS.DATABASES, databasePaths);
 	resetDatabases();
-	if (isMainThread) {
-		process.on('exit', function () {
-			tearDownMockDB();
-		});
-	}
 	return dbPath;
+}
+
+function systemDatabaseOnDisk() {
+	const storageRoot = resolveDatabaseStorageRoot('system');
+	// 'system' is a RocksDB directory, 'system.mdb' the LMDB file
+	for (const name of ['system', 'system.mdb']) {
+		const candidate = path.join(storageRoot, name);
+		if (!fs.existsSync(candidate)) continue;
+		const stats = fs.statSync(candidate);
+		if (stats.isFile() ? stats.size > 0 : fs.readdirSync(candidate).length > 0) return true;
+	}
+	return false;
+}
+
+async function seededAdminIsUsable() {
+	const admin = await getDatabases().system.hdb_user?.get('admin');
+	if (!admin?.active) return false;
+	// admin.role holds a role id: a deleted-and-recreated super_user role gets a fresh id,
+	// leaving an active admin that getSuperUser() no longer recognizes
+	const role = admin.role && (await getDatabases().system.hdb_role.get(admin.role));
+	return !!role?.permission?.super_user;
+}
+
+/**
+ * Seeds the per-PID system database the way an install would: the standard system tables
+ * (hdb_user, hdb_role, etc.), a super_user role with an active admin user (which
+ * authorizeLocal/getSuperUser() need to authorize local requests), and self-signed
+ * certificates (which the TLS servers, e.g. MQTT's secure port, need). Suites that
+ * exercise code requiring the system tables (e.g. setUsersWithRolesCache) call this
+ * after setupTestDBPath() instead of borrowing an installed Harper root's system
+ * database.
+ */
+async function ensureSystemTables() {
+	// the guard checks the seed's final artifacts — key file, tables, a usable admin, and
+	// the config repoint that is its last step — so a partial seed, or one a mid-run
+	// tearDownMockDB() removed, re-runs in full; every step below is idempotent
+	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
+	const testKeyPath = path.join(keysDir, 'unitTestPrivateKey.pem');
+	if (
+		env.get(terms.CONFIG_PARAMS.TLS_PRIVATEKEY) === testKeyPath &&
+		fs.existsSync(testKeyPath) &&
+		getDatabases().system?.hdb_role &&
+		(await seededAdminIsUsable())
+	) {
+		return;
+	}
+	materializePerPidRoot();
+	// decide on the ON-DISK database, not the cached handle: after a tearDownMockDB() the
+	// module-level cache still answers, and seeding through handles whose files were
+	// unlinked writes nothing to disk. Close them first so the reopen recreates the files.
+	const tablesInCache = !!getDatabases().system?.hdb_role;
+	if (tablesInCache && !systemDatabaseOnDisk()) {
+		// The cache answers for a database whose files are gone — a tearDownMockDB() removed
+		// the root while its handles were open. Seeding through those handles writes to
+		// unlinked files and reports success, and reopening them from here recurses inside
+		// databases.table(). Fail loudly: the fix belongs at the call site, which must seed
+		// before tearing down, or run in its own process.
+		throw new Error(
+			'ensureSystemTables(): the system database is open but its files are gone — ' +
+				'a tearDownMockDB() removed the per-PID root mid-process. Seed before tearing down.'
+		);
+	}
+	if (!tablesInCache) {
+		const mountHdb = require('#src/utility/mount_hdb').default;
+		await mountHdb(env.getHdbBasePath());
+	}
+	const { addRole, alterRole, getRoleByName } = require('#src/security/role');
+	const user = require('#src/security/user');
+	try {
+		await addRole({ role: 'super_user', permission: { super_user: true } });
+	} catch (error) {
+		if (!error?.message?.includes('already exists')) throw error;
+		// addRole cannot touch an existing row: repair a super_user role whose permission
+		// no longer grants super_user, or the guard above would stay false forever
+		const existing = await getRoleByName('super_user');
+		if (existing && !existing.permission?.super_user) {
+			await alterRole({ id: existing.id, role: 'super_user', permission: { super_user: true } });
+		}
+	}
+	try {
+		await user.addUser({ username: 'admin', password: 'password', role: 'super_user', active: true });
+	} catch (error) {
+		if (!error?.message?.includes('already exists')) throw error;
+		// addUser cannot touch an existing row: repair a deactivated admin, or one whose
+		// role id points at a role that no longer exists
+		await user.alterUser({ username: 'admin', password: 'password', role: 'super_user', active: true });
+	}
+	const keys = require('#src/security/keys');
+	await keys.generateCertsKeys();
+	// Rename the generated key: generateCertsKeys() names it privateKey.pem, the same name
+	// loadCertificates() registers for any ambient config's tls.privateKey in the
+	// in-process privateKeys cache, which would shadow this key and pair the fresh
+	// certificates with an unrelated one (ERR_OSSL_X509_KEY_VALUES_MISMATCH, zero TLS
+	// contexts). Repoint the per-PID config at the renamed key so cert records, the
+	// config file, and the key watcher agree.
+	if (fs.existsSync(path.join(keysDir, PRIVATEKEY_PEM_NAME))) {
+		fs.renameSync(path.join(keysDir, PRIVATEKEY_PEM_NAME), testKeyPath);
+	}
+	const certificateTable = getDatabases().system?.hdb_certificate;
+	if (!certificateTable) {
+		throw new Error('ensureSystemTables(): generateCertsKeys() did not initialize system.hdb_certificate');
+	}
+	const certificatesToRename = [];
+	for await (const cert of certificateTable.search([])) {
+		if (cert.private_key_name === PRIVATEKEY_PEM_NAME) {
+			certificatesToRename.push(cert);
+		}
+	}
+	for (const cert of certificatesToRename) {
+		await keys.setCertTable({ ...cert, private_key_name: path.basename(testKeyPath) });
+	}
+	require('#src/config/configUtils').updateConfigValue(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
+	env.setProperty(terms.CONFIG_PARAMS.TLS_PRIVATEKEY, testKeyPath);
 }
 
 function sortAsc(data, sort_by) {
@@ -506,11 +615,45 @@ function orderedArray(iterator) {
 	return array;
 }
 
+/**
+ * Writes a throwaway RSA keypair where getJWTRSAKeys() looks for it, and returns a cleanup function
+ * that removes exactly the files it created.
+ *
+ * The keys directory is shared with unitTests/utility/install/checkJWTTokensExist.test.js, whose
+ * happy path asserts those files are ABSENT (it expects accessSync to throw ENOENT). Mocha runs
+ * every file in one process against one base path, so a test that writes keys and does not clean up
+ * silently breaks that suite depending on file order — which is exactly how it broke, and why this
+ * lives here instead of being copy-pasted into each caller.
+ */
+function installTestJwtKeys() {
+	const { generateKeyPairSync } = require('node:crypto');
+	const passphrase = 'test-passphrase';
+	const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+		modulusLength: 2048,
+		publicKeyEncoding: { type: 'spki', format: 'pem' },
+		privateKeyEncoding: { type: 'pkcs8', format: 'pem', cipher: 'aes-256-cbc', passphrase },
+	});
+	const keysDir = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME);
+	fs.mkdirpSync(keysDir);
+
+	const written = [
+		[path.join(keysDir, terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME), privateKey],
+		[path.join(keysDir, terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME), publicKey],
+		[path.join(keysDir, terms.JWT_ENUM.JWT_PASSPHRASE_NAME), passphrase],
+	];
+	for (const [file, contents] of written) fs.writeFileSync(file, contents);
+
+	return function removeTestJwtKeys() {
+		for (const [file] of written) fs.removeSync(file);
+	};
+}
+
 module.exports = {
 	changeProcessToBinDir,
 	deepClone,
 	mochaAsyncWrapper,
 	preTestPrep,
+	installTestJwtKeys,
 	cleanUpDirectories,
 	createMockDB,
 	tearDownMockDB,
@@ -518,7 +661,7 @@ module.exports = {
 	setTestPath,
 	getMockTestPath,
 	setupTestDBPath,
-	setupTestDBPath,
+	ensureSystemTables,
 	sortAsc,
 	sortDesc,
 	sortAttrKeyMap,

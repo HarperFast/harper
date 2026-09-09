@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import logger from '../utility/logging/harper_logger.ts';
+import { normalizeGitHost } from '../utility/componentNames.ts';
 
 // GitHub's convention for authenticating a PAT over HTTPS: any non-empty username works, and
 // `x-access-token` is what its own tooling sends. GitLab wants `oauth2` and Bitbucket
@@ -45,16 +46,9 @@ export interface GitCredentialSession {
 	close(): Promise<void>;
 }
 
-/** `https://github.com/` / `GitHub.com` / `github.com/` all identify the same host. */
-export function normalizeGitHost(host: string): string {
-	return host
-		.trim()
-		.replace(/^[a-z0-9+.-]+:\/\//i, '')
-		.replace(/^\/\//, '')
-		.replace(/\/.*$/, '')
-		.replace(/^[^@]*@/, '')
-		.toLowerCase();
-}
+// Re-exported from its shared home (utility/componentNames.ts): the CLI's `deploy setup` flow has to
+// canonicalize a host exactly as this server does, and can't import from components/.
+export { normalizeGitHost };
 
 // A loopback remote never puts the credential on a network, so plaintext http to one is not a
 // disclosure. Anything else must be encrypted.

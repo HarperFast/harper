@@ -4,12 +4,19 @@ const { setupTestDBPath } = require('../testUtils');
 const { table, getDatabases } = require('#src/resources/databases');
 const { removeEntry } = require('#src/resources/RecordEncoder');
 const { Readable, PassThrough } = require('node:stream');
+const { EventEmitter } = require('node:events');
 const { setAuditRetention } = require('#src/resources/auditStore');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const {
+	blobFileMissingOrIncomplete,
+	blobFileMissingOrIncompleteAsync,
+	repairBlobFile,
 	getFilePathForBlob,
+	deleteBlob,
 	setDeletionDelay,
+	holdBlobFile,
+	getBlobHoldStateForTesting,
 	encodeBlobsAsBuffers,
 	findBlobsInObject,
 	isSaving,
@@ -27,6 +34,8 @@ const {
 	registerBlobReceiveInFlight,
 	unregisterBlobReceiveInFlight,
 	isBlobReceiveInFlight,
+	createPendingMarkerBarrier,
+	watchInProgressFile,
 } = require('#src/resources/blob');
 const {
 	existsSync,
@@ -34,12 +43,16 @@ const {
 	openSync,
 	writeSync,
 	ftruncateSync,
+	readFileSync,
 	closeSync,
 	statSync,
 	truncateSync,
 	writeFileSync,
 	readdirSync,
+	renameSync,
+	rmSync,
 } = require('fs');
+const { dirname } = require('path');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
 const { waitFor } = require('../waitFor.js');
@@ -132,6 +145,41 @@ describe('Blob test', () => {
 		assert.equal(sliced.size, 100);
 		retrievedBytes = await sliced.bytes();
 		assert(retrievedBytes.equals(random.slice(300, 400)));
+	});
+	it('decodes a blob created from a plain Uint8Array, not just from a Buffer', async () => {
+		const text = 'blob contents \u2014 \u2705 '.repeat(4000);
+		const content = Buffer.from(text);
+		assert(content.length > 65536); // far enough over FILE_STORAGE_THRESHOLD that raising it cannot make this vacuous
+		const sentinel = Buffer.alloc(64, 0xa5);
+		const backing = Buffer.concat([sentinel, content, sentinel]);
+		const source = new Uint8Array(backing.buffer, backing.byteOffset + sentinel.length, content.length);
+		assert(!Buffer.isBuffer(source));
+
+		const blob = await createBlob(source, { type: 'text/plain' });
+		await BlobTest.put({ id: 1, blob });
+		const filePath = getFilePathForBlob(blob);
+		assert.notEqual(filePath, null);
+		assert.equal(blob.size, content.length);
+		assert.equal(await blob.text(), text);
+		assert.equal(blob.toJSON(), text);
+		assert.equal(await blob.slice(0, 100).text(), content.subarray(0, 100).toString());
+
+		const record = await BlobTest.get(1);
+		assert.notStrictEqual(record.blob, blob);
+		assert.equal(getFilePathForBlob(record.blob), filePath);
+		assert.equal(await record.blob.text(), text);
+		assert((await record.blob.bytes()).equals(content)); // the sentinel bytes on either side of the view stayed out
+	});
+	it('decodes a sub-threshold Uint8Array blob that is stored inline in the record', async () => {
+		const text = 'inline blob contents \u2014 \u2705';
+		const blob = await createBlob(new Uint8Array(Buffer.from(text)), { type: 'text/plain' });
+		assert.equal(await blob.text(), text);
+		await BlobTest.put({ id: 1, blob });
+		const record = await BlobTest.get(1);
+		assert.notStrictEqual(record.blob, blob);
+		assert.equal(getFilePathForBlob(record.blob), null);
+		assert.equal(await record.blob.text(), text);
+		assert.equal(record.blob.toJSON(), text);
 	});
 	it('round-trips a compressed blob via bytes() and stream()', async () => {
 		// compressible payload, comfortably over FILE_STORAGE_THRESHOLD so it is file-backed
@@ -339,6 +387,232 @@ describe('Blob test', () => {
 		await waitFor(() => !existsSync(filePath), {
 			message: 'blob file should be unlinked when the new record no longer references it',
 		});
+		setDeletionDelay(500); // restore the default
+	});
+	it('a reader that resolved a record before it was superseded can still read the blob (#2134)', async () => {
+		// The file is opened lazily, by path, when the consumer calls stream()/bytes() — not when the
+		// record is decoded. A concurrent write that supersedes the record unlinks the prior blob, so
+		// without a retention window the reader's late open fails with ENOENT, typically after the
+		// response headers have already been committed.
+		setAuditRetention(10);
+		setDeletionDelay(undefined); // exercise the shipped default, not a test-compressed delay
+		const ReaderTest = table({
+			table: 'BlobReaderRetentionTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+		const payload = randomBytes(20000); // > FILE_STORAGE_THRESHOLD → file-backed
+		await ReaderTest.put({ id: 300, blob: await createBlob(payload) });
+
+		// A reader resolves the record and holds the decoded blob, but has not opened the file yet.
+		const reader = await ReaderTest.get(300);
+		const filePath = getFilePathForBlob(reader.blob);
+		assert(filePath, 'expected file-backed blob');
+
+		// A concurrent write supersedes it, which schedules the prior blob for reclamation.
+		await ReaderTest.put({ id: 300, blob: await createBlob(randomBytes(20000)) });
+		await delay(800); // past the old fixed 500ms unlink, inside the configured window
+		assert(existsSync(filePath), 'superseded blob must be retained while a reader still references it');
+		assert(payload.equals(await reader.blob.bytes()), "the reader's late read must return the original bytes");
+
+		// The window is a deferral, not a leak: once it lapses the file goes.
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 6000,
+			message: 'superseded blob must be reclaimed once the retention window lapses',
+		});
+
+		await ReaderTest.delete(300);
+		setDeletionDelay(500); // restore the default
+	});
+	it('an explicit retention hold defers reclamation until it is released (#2134)', async () => {
+		// The hook replication needs: a peer that has not yet fetched a superseded blob otherwise gets
+		// a clean 404 from the sender, classifies it as unrecoverable at source, and advances its
+		// resume cursor past a record whose bytes it will never have (harper-pro#403/#388).
+		setAuditRetention(10);
+		setDeletionDelay(0); // isolate the hold from the time-based delay
+		const payload = randomBytes(20000);
+		const blob = await createBlob(payload);
+		await BlobTest.put({ id: 301, blob });
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath && existsSync(filePath), 'expected file-backed blob on disk');
+
+		const release = holdBlobFile(blob);
+		await BlobTest.put({ id: 301, blob: await createBlob(randomBytes(20000)) });
+		await delay(50);
+		assert(existsSync(filePath), 'a held blob must not be reclaimed');
+
+		release();
+		// Generous: a deadline queued by an earlier test clamps this entry's (see enqueue()).
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 8000,
+			message: 'blob should be reclaimed once the hold is released',
+		});
+
+		await BlobTest.delete(301);
+		setDeletionDelay(500); // restore the default
+	});
+	it('a hold taken on another worker defers reclamation (#2134)', async () => {
+		// The consumer and the write that supersedes it routinely run on different workers, so the
+		// hold count lives in the store's shared buffer — a thread-local version of this passed its
+		// unit test while protecting nothing in production.
+		setAuditRetention(10);
+		setDeletionDelay(0);
+		const blob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 302, blob });
+		const filePath = getFilePathForBlob(blob);
+		const fileId = getFileId(blob);
+		assert(filePath && existsSync(filePath), 'expected file-backed blob on disk');
+
+		// Increment the shared counter directly, the way another worker's holdBlobFile() would.
+		const store = BlobTest.primaryStore.rootStore;
+		const { table, slot } = getBlobHoldStateForTesting(store, fileId);
+		assert.equal(Atomics.add(table, slot, 1), 0, 'expected no existing holders');
+
+		await BlobTest.put({ id: 302, blob: await createBlob(randomBytes(20000)) });
+		await delay(100);
+		assert(existsSync(filePath), "a blob held by another worker's hold must not be reclaimed");
+
+		Atomics.sub(table, slot, 1);
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'blob should be reclaimed once the cross-worker hold is released',
+		});
+
+		await BlobTest.delete(302);
+		setDeletionDelay(500); // restore the default
+	});
+	it('two concurrent holders each keep the blob alive (#2134)', async () => {
+		// The case a binary lock cannot express: with one shared lock, the first release frees it while
+		// the second holder is still running.
+		setAuditRetention(10);
+		setDeletionDelay(0);
+		const blob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 303, blob });
+		const filePath = getFilePathForBlob(blob);
+		const fileId = getFileId(blob);
+		const store = BlobTest.primaryStore.rootStore;
+		const { table, slot } = getBlobHoldStateForTesting(store, fileId);
+
+		const releaseA = holdBlobFile(blob); // this worker
+		Atomics.add(table, slot, 1); // another worker
+
+		await BlobTest.put({ id: 303, blob: await createBlob(randomBytes(20000)) });
+		releaseA();
+		await delay(100);
+		assert(existsSync(filePath), 'the remaining holder must still keep the blob alive');
+
+		Atomics.sub(table, slot, 1);
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'blob should be reclaimed once the last holder releases',
+		});
+
+		await BlobTest.delete(303);
+		setDeletionDelay(500); // restore the default
+	});
+	it('a re-reference on another worker cancels a queued reclamation (#2134)', async () => {
+		// The queue is per worker, so the worker that re-references a file is not necessarily the one
+		// that queued its reclamation; the signal has to be shared.
+		setAuditRetention(10);
+		setDeletionDelay(300);
+		const blob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 304, blob });
+		const filePath = getFilePathForBlob(blob);
+		const fileId = getFileId(blob);
+		const store = BlobTest.primaryStore.rootStore;
+
+		await BlobTest.put({ id: 304, blob: await createBlob(randomBytes(20000)) }); // queues reclamation
+		// Another worker writes a record referencing the original file again.
+		const { table, slot } = getBlobHoldStateForTesting(store, fileId);
+		Atomics.store(table, slot + 1, 1);
+
+		// Wait for the reclaimer to consume the signal rather than sleeping a fixed span: an entry's
+		// deadline is clamped to the queue tail, so work queued by earlier tests can push this one out.
+		await waitFor(() => Atomics.load(table, slot + 1) === 0, {
+			timeout: 10000,
+			message: 'the re-reference signal should be consumed',
+		});
+		assert(existsSync(filePath), 'a re-referenced blob must not be reclaimed');
+
+		await BlobTest.delete(304);
+		// The signal was simulated, so no record actually references the retained file — it would be a
+		// real orphan for the later cleanupOrphans assertion. Remove it here rather than leaving the
+		// suite to find it.
+		unlinkSync(filePath);
+		setDeletionDelay(500); // restore the default
+	});
+	it('an in-progress stream keeps its blob alive past the retention window (#2134)', async () => {
+		// stream() takes a hold for the life of the read, so a read that outlives the window — a slow
+		// or backpressured consumer — still gets its bytes. The payload has to be large enough that the
+		// stream parks on backpressure after its first chunk: a small blob is pulled into the stream's
+		// internal queue immediately, completing (and correctly releasing) before anything can race it.
+		setAuditRetention(10);
+		setDeletionDelay(200); // shorter than the parked read below, so only the hold can save it
+		const payload = randomBytes(4_000_000);
+		await BlobTest.put({ id: 305, blob: await createBlob(payload) });
+		const reader = await BlobTest.get(305);
+		const filePath = getFilePathForBlob(reader.blob);
+		const fileId = getFileId(reader.blob);
+		const { table, slot } = getBlobHoldStateForTesting(BlobTest.primaryStore.rootStore, fileId);
+
+		const streamReader = reader.blob.stream().getReader();
+		await streamReader.read(); // first chunk; the rest waits on this consumer
+		assert.equal(Atomics.load(table, slot), 1, 'the in-progress read should hold the file');
+
+		await BlobTest.put({ id: 305, blob: await createBlob(randomBytes(20000)) }); // supersedes
+		await delay(600); // well past the retention window
+		assert(existsSync(filePath), 'an in-progress read must keep its blob alive');
+
+		let total = (await streamReader.read()).value?.length ?? 0;
+		for (let chunk = await streamReader.read(); !chunk.done; chunk = await streamReader.read()) {
+			total += chunk.value.length;
+		}
+		assert(total > 0, 'the parked read must be able to continue');
+
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'blob should be reclaimed once the read releases its hold',
+		});
+
+		await BlobTest.delete(305);
+		setDeletionDelay(500); // restore the default
+	});
+	it('an open read snapshot keeps a superseded blob alive (#2134)', async function () {
+		// A blob reference is fixed when the reader's snapshot is taken, not when the record is
+		// decoded, so a reader inside a transaction is entitled to the bytes for as long as its
+		// snapshot lives — regardless of the retention window. LMDB exposes no snapshot watermark.
+		const store = BlobTest.primaryStore.rootStore;
+		if (typeof store.getOldestSnapshotTimestamp !== 'function') return this.skip();
+		setAuditRetention(10);
+		setDeletionDelay(200); // far shorter than the snapshot is held open
+		const blob = await createBlob(randomBytes(20000));
+		await BlobTest.put({ id: 306, blob });
+		const filePath = getFilePathForBlob(blob);
+		assert(filePath && existsSync(filePath), 'expected file-backed blob on disk');
+
+		let releaseSnapshot;
+		const snapshotHeld = new Promise((resolve) => (releaseSnapshot = resolve));
+		const snapshotDone = store.transaction(async (txn) => {
+			await txn.get(306); // transactional read → SetSnapshot()
+			await snapshotHeld;
+		});
+		await waitFor(() => store.getOldestSnapshotTimestamp() > 0, { message: 'expected an open snapshot' });
+
+		await BlobTest.put({ id: 306, blob: await createBlob(randomBytes(20000)) }); // supersedes
+		await delay(1500); // many times the retention window
+		assert(existsSync(filePath), 'a blob visible to an open snapshot must not be reclaimed');
+
+		releaseSnapshot();
+		await snapshotDone;
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 8000,
+			message: 'blob should be reclaimed once the snapshot is released',
+		});
+
+		await BlobTest.delete(306);
 		setDeletionDelay(500); // restore the default
 	});
 	it('blob unlink is gated on the removal committing (#1364)', async () => {
@@ -773,6 +1047,74 @@ describe('Blob test', () => {
 		assert.equal(collectRetainedFileIds(null), undefined); // no record
 		assert.equal(collectRetainedFileIds({ no: 'blobs' }), undefined); // no blobs → no set allocated
 	});
+	it('#2062: a blob whose file was deleted cannot be silently re-stored', async () => {
+		// A blob instance outlives its file: the fileId stays set and saveBlob short-circuits on it, so a
+		// caller still holding the instance (the deploy recorder re-puts the same record object across a
+		// deploy) would otherwise mint a second reference to a destroyed file — a permanently unreadable
+		// record, and one replication can never satisfy on a peer. Fail where the cause is still known.
+		setDeletionDelay(0);
+		const blob = createBlob(Buffer.alloc(20000, 'e'));
+		const record = { id: 2062, blob };
+		await BlobTest.put(record);
+		const filePath = getFilePathForBlob(blob);
+		const slice = blob.slice(0, 1024);
+		const decodedBlob = (await BlobTest.get(2062)).blob;
+		assert.notStrictEqual(decodedBlob, blob, 'the stored record should decode to a distinct blob instance');
+		deleteBlob(decodedBlob);
+		deleteBlob(blob);
+		await waitFor(() => !existsSync(filePath), { message: `discarded blob ${filePath} should be deleted` });
+		// the failure surfaces synchronously from the record encode, so catch rather than assert.rejects
+		let storeError;
+		try {
+			await BlobTest.put(record);
+		} catch (error) {
+			storeError = error;
+		}
+		assert.match(storeError?.message ?? '', /discarded/, 're-storing a discarded blob must fail loudly');
+		let sliceError;
+		try {
+			await BlobTest.put({ id: 2062, blob: slice });
+		} catch (error) {
+			sliceError = error;
+		}
+		assert.match(sliceError?.message ?? '', /discarded/, 'a slice sharing the condemned file must also fail');
+		await BlobTest.delete(2062); // leave no record referencing the destroyed file
+	});
+	it('#2062: cleanup tombstones a blob before its in-flight save settles', async () => {
+		setDeletionDelay(0);
+		const slow = new PassThrough();
+		const blob = createBlob(slow, { saveBeforeCommit: true });
+		const record = { id: 2063, blob };
+		const preCommit = startPreCommitBlobsForRecord(record, BlobTest.primaryStore.rootStore, false, false);
+		const saving = preCommit.complete();
+		slow.write(Buffer.alloc(16384, 'q'));
+		const filePath = await waitFor(
+			() => {
+				const path = getFilePathForBlob(blob);
+				return path && existsSync(path) && path;
+			},
+			{
+				message: 'the in-flight save should create its file',
+			}
+		);
+		cleanupUnusedBlobs(preCommit.blobs);
+		const ending = setTimeout(() => slow.end(Buffer.alloc(16384, 'r')), 250);
+		let storeError;
+		try {
+			assert(existsSync(filePath), 'the file should still be present while its source is open');
+			try {
+				await BlobTest.put(record);
+			} catch (error) {
+				storeError = error;
+			}
+		} finally {
+			clearTimeout(ending);
+			if (!slow.writableEnded) slow.end(Buffer.alloc(16384, 'r'));
+		}
+		assert.match(storeError?.message ?? '', /discarded/, 're-storing must fail before the condemned file is unlinked');
+		await saving;
+		await waitFor(() => !existsSync(filePath), { message: `discarded blob ${filePath} should be deleted` });
+	});
 	it('cleanupUnusedBlobs is a no-op for unsaved blobs and clears the list', () => {
 		const unsavedBlob = createBlob(Buffer.from('not yet saved'));
 		const list = [unsavedBlob];
@@ -874,6 +1216,44 @@ describe('Blob test', () => {
 	it('cleanupOrphans', async () => {
 		let orphansDeleted = await cleanupOrphans(getDatabases().test);
 		assert.equal(orphansDeleted, 0);
+	});
+
+	// harper#2412: the orphan sweep skips scanning an audit entry's value only when the primary record
+	// IS that entry's write, because the table pass already scanned it. Identifying that write by record
+	// version instead of log position deletes blobs a retained audit entry still references, since a
+	// version is legitimately non-unique.
+	it('scans an audit value whose record version matches a different write', async () => {
+		// A file on disk that only an audit entry references, and a live record for the same id whose
+		// version happens to equal that entry's. Identifying the entry's write by version would treat
+		// the live record as its output, skip scanning the entry, and unlink a referenced blob.
+		const { blob, filePath } = await makeDiskBackedBlob(4096);
+		const id = 'orphan-identity';
+		await BlobTest.put(id, { id, other: 'no blob here' });
+		const entry = BlobTest.primaryStore.getEntry(id);
+		const auditStore = BlobTest.primaryStore.rootStore.auditStore;
+		const originalGetRange = auditStore.getRange.bind(auditStore);
+		auditStore.getRange = function (options) {
+			if (options?.start !== 1) return originalGetRange(options);
+			return [
+				{
+					tableId: BlobTest.tableId,
+					recordId: id,
+					type: 'put',
+					version: entry.version,
+					txnLogKey: entry.localTime + 1,
+					nodeId: entry.nodeId ?? 0,
+					getValue: () => ({ blob }),
+				},
+			];
+		};
+		try {
+			await cleanupOrphans(getDatabases().test);
+			assert(existsSync(filePath), 'a blob referenced by a retained audit entry must survive the sweep');
+		} finally {
+			auditStore.getRange = originalGetRange;
+			if (existsSync(filePath)) unlinkSync(filePath);
+			await BlobTest.delete(id).catch(() => {});
+		}
 	});
 
 	// Helper: produce a blob backed ONLY by its on-disk file (no in-memory contentBuffer), the way a
@@ -1026,24 +1406,121 @@ describe('Blob test', () => {
 		source.blobStreamIdleTimeoutMs = 60000; // arm the source-idle watchdog (won't fire during the test)
 		const blob = await createBlob(source, { size: 20000 });
 		const saving = decodeFromDatabase(() => saveBlob(blob).saving, store);
-		source.write(randomBytes(4000)); // a partial body lands before the abort
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		source.destroy(new Error('Blob source stream idle for 120000ms'));
-		await assert.rejects(Promise.resolve(saving), 'the aborted save rejects');
-		// the PENDING stub is written asynchronously in the abort callback; wait for the read to flip to 503
-		await waitFor(
-			async () => {
-				try {
-					await blob.bytes();
-					return false;
-				} catch (error) {
-					return error.statusCode === 503;
-				}
-			},
-			{ timeout: 2000, message: 'aborted source write should leave a PENDING (503) blob' }
+		const lockKey = getFileId(blob) + ':blob';
+		await new Promise((resolve, reject) => {
+			source.write(randomBytes(4000), (error) => (error ? reject(error) : resolve()));
+		});
+		const sourceError = new Error('Blob source stream idle for 120000ms');
+		source.destroy(sourceError);
+		await assert.rejects(Promise.resolve(saving), (error) => {
+			assert.strictEqual(error, sourceError, 'the save must reject with the original source error');
+			return true;
+		});
+		const lockReleased = store.tryLock(lockKey);
+		if (lockReleased) store.unlock(lockKey);
+		assert.ok(lockReleased, 'the aborted save must release its blob lock before rejection settles');
+		await assert.rejects(
+			blob.bytes(),
+			(error) => error.statusCode === 503,
+			'aborted source write should leave a PENDING (503) blob before rejection settles'
 		);
 		unlinkSync(getFilePathForBlob(blob));
 	});
+	it('#481: a synchronous PENDING marker failure releases the blob lock and preserves the source error', async () => {
+		const store = BlobTest.primaryStore.rootStore;
+		const source = new PassThrough();
+		source.blobStreamIdleTimeoutMs = 60000;
+		const blob = await createBlob(source, { size: 20000 });
+		const saving = decodeFromDatabase(() => saveBlob(blob).saving, store);
+		const lockKey = getFileId(blob) + ':blob';
+		await new Promise((resolve, reject) => {
+			source.write(randomBytes(4000), (error) => (error ? reject(error) : resolve()));
+		});
+		const sourceError = new Error('source failure');
+		sourceError.toString = () => {
+			throw new Error('synchronous marker construction failure');
+		};
+		source.destroy(sourceError);
+		await assert.rejects(Promise.resolve(saving), (error) => {
+			assert.strictEqual(error, sourceError, 'marker failure must not mask the source error');
+			return true;
+		});
+		const lockReleased = store.tryLock(lockKey);
+		if (lockReleased) store.unlock(lockKey);
+		assert.ok(lockReleased, 'a synchronous marker failure must release the blob lock before rejection settles');
+		const filePath = getFilePathForBlob(blob);
+		if (existsSync(filePath)) unlinkSync(filePath);
+	});
+	// The barrier's own contract, exercised without stalling a real filesystem write. The abort
+	// regressions above cover the wired-up normal path; these cover the two behaviors that did not
+	// exist before the bound was added, and which no fs-backed test can reach: the fallback firing
+	// when the write callback never arrives, and the once-guard that keeps a late callback from
+	// releasing a lock a different writer now holds.
+	describe('#2228: the PENDING-marker cleanup barrier', () => {
+		it('releases before it settles, exactly once, on a normal write completion', () => {
+			const order = [];
+			const finish = createPendingMarkerBarrier({
+				timeoutMs: 60_000,
+				release: () => order.push('release'),
+				settle: () => order.push('settle'),
+			});
+			finish();
+			finish(); // a duplicate completion must be a no-op
+			assert.deepStrictEqual(order, ['release', 'settle'], 'release must precede settle, and each run once');
+		});
+
+		it('reports a write error before releasing, and still releases and settles', () => {
+			const order = [];
+			const writeError = new Error('ENOSPC');
+			let reported;
+			const finish = createPendingMarkerBarrier({
+				timeoutMs: 60_000,
+				release: () => order.push('release'),
+				settle: () => order.push('settle'),
+				onWriteError: (error) => {
+					reported = error;
+					order.push('report');
+				},
+			});
+			finish(writeError);
+			assert.deepStrictEqual(order, ['report', 'release', 'settle']);
+			assert.strictEqual(reported, writeError, 'the write error is reported verbatim');
+		});
+
+		it('settles on its own when the write callback never arrives (the bound)', async () => {
+			const order = [];
+			let timedOut = false;
+			createPendingMarkerBarrier({
+				timeoutMs: 10,
+				release: () => order.push('release'),
+				settle: () => order.push('settle'),
+				onTimeout: () => {
+					timedOut = true;
+				},
+			});
+			// Deliberately never call finish — this is the wedged-volume shape.
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert.ok(timedOut, 'the fallback must report that it fired');
+			assert.deepStrictEqual(order, ['release', 'settle'], 'the fallback must release then settle');
+		});
+
+		it('never releases twice when a late write callback lands after the fallback fired', async () => {
+			let releases = 0;
+			let settles = 0;
+			const finish = createPendingMarkerBarrier({
+				timeoutMs: 10,
+				release: () => releases++,
+				settle: () => settles++,
+			});
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert.strictEqual(releases, 1, 'the fallback released once');
+			finish(); // the stalled write finally calls back
+			finish(new Error('late error'));
+			assert.strictEqual(releases, 1, 'a late callback must NOT release a lock another writer may hold');
+			assert.strictEqual(settles, 1, 'and must not settle twice');
+		});
+	});
+
 	it('#481: an app-supplied (unarmed) source-stream abort is NOT marked PENDING (gate excludes one-shot streams)', async () => {
 		// Same abort shape, but the source is NOT armed with blobStreamIdleTimeoutMs — an ordinary app write,
 		// not a replication receive. The abort branch must NOT stamp it PENDING: nothing will ever re-stream
@@ -1404,6 +1881,425 @@ describe('shouldDestroyIdleBlobSource (paused-source progress gate)', () => {
 	});
 });
 
+describe('blobFileMissingOrIncomplete (copy-apply duplicate-repair gate, harper-pro#699)', () => {
+	let BlobRepairTest;
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		BlobRepairTest = table({
+			table: 'BlobRepairTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+	async function savedBlob(id, source = Readable.from(randomBytes(25000))) {
+		const blob = await createBlob(source);
+		await BlobRepairTest.put({ id, blob });
+		const record = await BlobRepairTest.get(id);
+		const filePath = getFilePathForBlob(record.blob);
+		assert.ok(filePath && existsSync(filePath));
+		return { blob: record.blob, filePath, store: BlobRepairTest.primaryStore.rootStore };
+	}
+	function stampHeaderType(filePath, type) {
+		const fd = openSync(filePath, 'r+');
+		try {
+			writeSync(fd, Buffer.from([0, type]), 0, 2, 0);
+		} finally {
+			closeSync(fd);
+		}
+	}
+
+	it('reports an intact saved blob as complete', async () => {
+		const { blob } = await savedBlob('intact');
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
+	});
+
+	it('reports a missing backing file', async () => {
+		const { blob, filePath } = await savedBlob('missing');
+		unlinkSync(filePath);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports a PENDING-stamped stub (aborted re-streamable receive, harper-pro#481)', async () => {
+		const { blob, filePath } = await savedBlob('pending');
+		stampHeaderType(filePath, 0xfe);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports an ERROR-stamped stub (same classification as the repair sweep)', async () => {
+		const { blob, filePath } = await savedBlob('errstub');
+		stampHeaderType(filePath, 0xff);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports a file truncated below its header', async () => {
+		const { blob, filePath } = await savedBlob('short');
+		const fd = openSync(filePath, 'r+');
+		try {
+			ftruncateSync(fd, 4);
+		} finally {
+			closeSync(fd);
+		}
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports an uncompressed file shorter than its header claims', async () => {
+		const { blob, filePath } = await savedBlob('torn');
+		const fd = openSync(filePath, 'r+');
+		try {
+			ftruncateSync(fd, statSync(filePath).size - 1);
+		} finally {
+			closeSync(fd);
+		}
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports an uncompressed file longer than its header claims', async () => {
+		const { blob, filePath } = await savedBlob('long');
+		writeFileSync(filePath, Buffer.concat([readFileSync(filePath), Buffer.from([0])]));
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports a self-consistent file whose header disagrees with the record descriptor', async () => {
+		const { blob, filePath } = await savedBlob('descriptor-size-mismatch', randomBytes(25000));
+		writeFileSync(filePath, Buffer.concat([makeBlobHeader(100), randomBytes(100)]));
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports an unknown header type', async () => {
+		const { blob, filePath } = await savedBlob('unknown-type');
+		stampHeaderType(filePath, 2);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('reports a save that never completed (pre-completion size sentinel)', async () => {
+		const { blob, filePath } = await savedBlob('sentinel');
+		const fd = openSync(filePath, 'r+');
+		try {
+			writeSync(fd, Buffer.from([0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]), 0, 8, 0);
+		} finally {
+			closeSync(fd);
+		}
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('returns undefined for a blob with no repair question to answer (unsaved/inline)', async () => {
+		const blob = await createBlob(Readable.from(randomBytes(64)));
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), undefined);
+	});
+
+	it('repairBlobFile streams replacement bytes INTO the existing fileId of a damaged blob', async () => {
+		const { blob, filePath } = await savedBlob('repair-target');
+		const original = readFileSync(filePath);
+		stampHeaderType(filePath, 0xfe); // PENDING stub: the dangling state harper-pro#699 heals
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+		const source = new PassThrough();
+		let sourceSize;
+		const saving = repairBlobFile(blob, source, () => sourceSize);
+		assert.ok(saving, 'repair should start on a damaged blob');
+		assert.strictEqual(isSaving(blob), undefined, 'repair must not publish into the normal blob-save gate');
+		sourceSize = original.length - 8;
+		source.end(original.subarray(8));
+		await saving;
+		assert.strictEqual(getFilePathForBlob(blob), filePath); // same fileId — record needs no rewrite
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
+		assert.deepStrictEqual(readFileSync(filePath).subarray(8), original.subarray(8));
+	});
+
+	it('repairBlobFile declines when the source reports a size unlike the stored descriptor', async () => {
+		const { blob, filePath } = await savedBlob('repair-advertised-size-mismatch', randomBytes(25000));
+		stampHeaderType(filePath, 0xfe);
+		assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(24999)), 24999), undefined);
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
+	});
+
+	it('repairBlobFile rejects a late source-size mismatch without replacing the file', async () => {
+		const { blob, filePath } = await savedBlob('repair-late-size-mismatch', randomBytes(25000));
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, Readable.from(randomBytes(25000)), () => 24999);
+		assert.ok(saving, 'repair should start before the stream reports its final size');
+		await assert.rejects(saving, /Blob repair source size mismatch/);
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
+	});
+
+	it('repairBlobFile contains a throwing source-size getter and releases both locks', async () => {
+		const { blob, filePath, store } = await savedBlob('repair-source-size-error', randomBytes(25000));
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, Readable.from(randomBytes(25000)), () => {
+			throw new Error('source size unavailable');
+		});
+		assert.ok(saving, 'repair should return its rejected settle promise');
+		await assert.rejects(saving, /source size unavailable/);
+		for (const lockKey of [getFileId(blob) + ':blob', filePath + '.repair:blob']) {
+			assert.ok(store.tryLock(lockKey), `${lockKey} should be released`);
+			store.unlock(lockKey);
+		}
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
+	});
+
+	it('repairBlobFile recreates a missing bucket directory', async () => {
+		const { blob, filePath } = await savedBlob('repair-missing-directory');
+		const original = readFileSync(filePath);
+		const fileDir = dirname(filePath);
+		const backupDir = fileDir + '-repair-backup';
+		renameSync(fileDir, backupDir);
+		try {
+			const saving = repairBlobFile(blob, Readable.from(original.subarray(8)), original.length - 8);
+			assert.ok(saving, 'repair should start when the bucket directory is missing');
+			await saving;
+			assert.deepStrictEqual(readFileSync(filePath).subarray(8), original.subarray(8));
+		} finally {
+			rmSync(fileDir, { recursive: true, force: true });
+			renameSync(backupDir, fileDir);
+		}
+	});
+
+	it('repairBlobFile rejects a wrong-size source without finalizing the file', async () => {
+		const { blob, filePath } = await savedBlob('repair-size-mismatch', randomBytes(25000));
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, Readable.from(randomBytes(100)), 25000);
+		assert.ok(saving, 'repair should start on a damaged blob');
+		await assert.rejects(saving, /Blob repair size mismatch/);
+		await waitFor(() => readFileSync(filePath)[1] === 0xfe, {
+			message: 'failed repair should leave a PENDING marker',
+		});
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+	});
+
+	it('repairBlobFile declines when the stored descriptor has no verification size', async () => {
+		const { blob, filePath } = await savedBlob('repair-unknown-size');
+		stampHeaderType(filePath, 0xfe);
+		blob.size = undefined;
+		assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(100))), undefined);
+	});
+
+	it('repairBlobFile releases its lock when stream setup throws', async () => {
+		const { blob, filePath, store } = await savedBlob('repair-stream-setup-error');
+		const lockKey = getFileId(blob) + ':blob';
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, {}, statSync(filePath).size - 8);
+		assert.ok(saving, 'repair should return its rejected settle promise');
+		await assert.rejects(saving);
+		assert.strictEqual(
+			isSaving(blob),
+			undefined,
+			'failed repair should not poison later writes with a stale rejection'
+		);
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe, 'failed setup must preserve the referenced PENDING file');
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
+		await waitFor(
+			() => {
+				if (!store.tryLock(lockKey)) return false;
+				store.unlock(lockKey);
+				return true;
+			},
+			{ message: 'failed stream setup should release the blob lock' }
+		);
+	});
+
+	it('repairBlobFile leaves the referenced file untouched while replacement bytes are still arriving', async () => {
+		const { blob, filePath } = await savedBlob('repair-in-flight');
+		const source = new PassThrough();
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, source, 25000);
+		assert.ok(saving, 'repair should start on a damaged blob');
+		source.write(randomBytes(100));
+		await waitFor(() => existsSync(filePath + '.repair') && statSync(filePath + '.repair').size > 8, {
+			message: 'replacement bytes should land in the temporary repair file',
+		});
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+		await cleanupOrphans(getDatabases().test);
+		assert.strictEqual(existsSync(filePath + '.repair'), true, 'orphan cleanup must preserve an active repair');
+		source.destroy(new Error('stop in-flight repair'));
+		await assert.rejects(saving, /stop in-flight repair/);
+		assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
+	});
+
+	it('cleanupOrphans removes a stale repair file', async () => {
+		const { filePath } = await savedBlob('stale-repair-file');
+		writeFileSync(filePath + '.repair', randomBytes(16));
+		await cleanupOrphans(getDatabases().test);
+		assert.strictEqual(existsSync(filePath + '.repair'), false);
+	});
+
+	it('repairBlobFile accepts uncompressed replacement bytes for a compressed stored blob', async () => {
+		const payload = Buffer.from('repair compressed blob '.repeat(2000));
+		const created = createBlob(payload, { compress: true });
+		await BlobRepairTest.put({ id: 'repair-compressed', blob: created });
+		const { blob } = await BlobRepairTest.get('repair-compressed');
+		const filePath = getFilePathForBlob(blob);
+		stampHeaderType(filePath, 0xfe);
+		const saving = repairBlobFile(blob, Readable.from(payload), payload.length);
+		assert.ok(saving, 'repair should start on a damaged compressed blob');
+		await saving;
+		assert.strictEqual(readFileSync(filePath).readUInt16BE(0), 0);
+		assert.deepStrictEqual(await blob.bytes(), payload);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
+	});
+
+	async function savedCompressedBlob(id, payload) {
+		await BlobRepairTest.put({ id, blob: createBlob(payload, { compress: true }) });
+		const { blob } = await BlobRepairTest.get(id);
+		const filePath = getFilePathForBlob(blob);
+		const intact = readFileSync(filePath);
+		assert.strictEqual(intact[1], 1, 'precondition: stored deflated');
+		return { blob, filePath, intact };
+	}
+
+	it('classifies a compressed body by inflating it; the locked recheck confirms only the file the probe judged', async () => {
+		const payload = Buffer.from('truncated compressed blob '.repeat(2000));
+		const { blob, filePath, intact } = await savedCompressedBlob('compressed-damage-probe', payload);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), undefined, 'unprobed compressed body has no sync answer');
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), false, 'intact compressed body is healthy');
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), undefined, 'a healthy probe leaves nothing to confirm');
+		truncateSync(filePath, intact.length - 1);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), undefined, 'damage the probe has not seen is not confirmed');
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true, 'torn compressed body is damaged');
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true, 'the probed torn body is confirmed');
+		writeFileSync(filePath, intact);
+		assert.strictEqual(
+			blobFileMissingOrIncomplete(blob),
+			undefined,
+			'a file that changed since the probe is not confirmed'
+		);
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), false, 'restored body is healthy again');
+		// a header understating the size: the body inflates past the cap and is refused, not allocated
+		writeFileSync(filePath, Buffer.concat([makeBlobHeader(payload.length - 1, 1), intact.subarray(8)]));
+		blob.size = payload.length - 1;
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true, 'body inflating past the header is damaged');
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), true);
+		writeFileSync(filePath, intact);
+		blob.size = payload.length;
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), false);
+	});
+
+	it('blobFileMissingOrIncompleteAsync classifies an uncompressed body by length, and a missing file as damaged', async () => {
+		const { blob, filePath } = await savedBlob('async-uncompressed', Readable.from(Buffer.alloc(20000, 3)));
+		assert.strictEqual(readFileSync(filePath)[1], 0, 'precondition: stored uncompressed');
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), false);
+		truncateSync(filePath, 20000);
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true);
+		unlinkSync(filePath);
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true);
+	});
+
+	it('blobFileMissingOrIncompleteAsync has no answer for a blob that is not a stored file', async () => {
+		assert.strictEqual(
+			await blobFileMissingOrIncompleteAsync(await createBlob(Readable.from([Buffer.alloc(16)]))),
+			undefined
+		);
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(new Blob(['inline'])), undefined);
+	});
+
+	it('repairBlobFile heals a compressed body torn by an unclean shutdown once the probe has classified it', async () => {
+		const payload = Buffer.from('torn compressed blob '.repeat(2000));
+		const { blob, filePath } = await savedCompressedBlob('repair-torn-compressed', payload);
+		truncateSync(filePath, statSync(filePath).size - 64);
+		await assert.rejects(blob.bytes(), { statusCode: 500 });
+		assert.strictEqual(repairBlobFile(blob, Readable.from(payload), payload.length), undefined, 'declined unprobed');
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true);
+		const saving = repairBlobFile(blob, Readable.from(payload), payload.length);
+		assert.ok(saving, 'repair should start on a probed torn compressed blob');
+		await saving;
+		assert.strictEqual(getFilePathForBlob(blob), filePath);
+		assert.strictEqual(readFileSync(filePath).readUInt16BE(0), 0);
+		assert.deepStrictEqual(await blob.bytes(), payload);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
+	});
+
+	it('repairBlobFile declines a compressed body that grew after the probe classified it', async () => {
+		const payload = Buffer.from('regrown compressed blob '.repeat(2000));
+		const { blob, filePath, intact } = await savedCompressedBlob('repair-regrown-compressed', payload);
+		truncateSync(filePath, intact.length - 64);
+		assert.strictEqual(await blobFileMissingOrIncompleteAsync(blob), true);
+		writeFileSync(filePath, intact);
+		assert.strictEqual(repairBlobFile(blob, Readable.from(payload), payload.length), undefined);
+		assert.deepStrictEqual(readFileSync(filePath), intact, 'the completed file is left alone');
+	});
+
+	it('repairBlobFile preserves the referenced PENDING file before a competing writer acquires the lock', async () => {
+		const { blob, filePath, store } = await savedBlob('repair-restamp-race');
+		const original = readFileSync(filePath);
+		const lockKey = getFileId(blob) + ':blob';
+		stampHeaderType(filePath, 0xfe);
+		const originalUnlock = store.unlock;
+		let armCompetingWriter = false;
+		let competingWriterHeld = false;
+		let competingWriterAcquired = false;
+		let headerTypeAtUnlock;
+		store.unlock = function (key, ...args) {
+			if (armCompetingWriter && key === lockKey) headerTypeAtUnlock = readFileSync(filePath)[1];
+			const result = originalUnlock.call(this, key, ...args);
+			if (armCompetingWriter && key === lockKey && !competingWriterHeld) {
+				competingWriterAcquired = store.tryLock(lockKey);
+				if (competingWriterAcquired) {
+					competingWriterHeld = true;
+					writeFileSync(filePath, original);
+				}
+			}
+			return result;
+		};
+		try {
+			const source = new PassThrough();
+			const saving = repairBlobFile(blob, source, original.length - 8);
+			assert.ok(saving, 'repair should start on a damaged blob');
+			armCompetingWriter = true;
+			source.destroy(new Error('repair failed'));
+			await assert.rejects(saving, /repair failed/);
+			await waitFor(() => competingWriterAcquired, {
+				message: 'competing writer should acquire the released repair lock',
+			});
+			assert.strictEqual(headerTypeAtUnlock, 0xfe, 'repair must preserve PENDING before releasing its lock');
+			assert.ok(competingWriterAcquired, 'competing writer should acquire the released repair lock');
+			assert.ok(competingWriterHeld);
+			assert.deepStrictEqual(readFileSync(filePath), original);
+		} finally {
+			store.unlock = originalUnlock;
+			if (competingWriterHeld) originalUnlock.call(store, lockKey);
+		}
+	});
+
+	it('repairBlobFile declines without touching the file while another writer holds the lock', async () => {
+		const { blob, filePath, store } = await savedBlob('repair-lock-busy');
+		const lockKey = getFileId(blob) + ':blob';
+		stampHeaderType(filePath, 0xfe);
+		assert.ok(store.tryLock(lockKey));
+		try {
+			assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(16)), 16), undefined);
+			assert.strictEqual(readFileSync(filePath)[1], 0xfe);
+			assert.strictEqual(existsSync(filePath + '.repair'), false);
+		} finally {
+			store.unlock(lockKey);
+		}
+	});
+
+	it('repairBlobFile declines on a healthy blob', async () => {
+		const { blob } = await savedBlob('repair-healthy');
+		assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(16))), undefined);
+	});
+
+	it('repairBlobFile declines a slice that shares its parent backing file', async () => {
+		const { blob, filePath } = await savedBlob('repair-slice', randomBytes(25000));
+		const slice = blob.slice(0, 1000);
+		assert.strictEqual(getFilePathForBlob(slice), filePath);
+		assert.strictEqual(repairBlobFile(slice, Readable.from(randomBytes(1000)), 1000), undefined);
+		assert.strictEqual(blobFileMissingOrIncomplete(blob), false);
+	});
+
+	it('repairBlobFile declines on an unsaved blob', async () => {
+		const blob = await createBlob(Readable.from(randomBytes(64)));
+		assert.strictEqual(repairBlobFile(blob, Readable.from(randomBytes(16))), undefined);
+	});
+});
+
 function delay(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms)); // wait for audit log removal and deletion
 }
@@ -1422,3 +2318,249 @@ async function streamToBytes(stream) {
 	}
 	return Buffer.concat(chunks);
 }
+
+describe('backup of a blob root during a live write (harper#2262)', () => {
+	const { mkdtempSync, rmSync, writeFileSync, readFileSync: readFileNow, statSync: statNow } = require('node:fs');
+	const { tmpdir } = require('node:os');
+	const { join } = require('node:path');
+	const { snapshotBlobs, blobSnapshotDir } = require('#src/dataLayer/blobBackup');
+	const { getBlobPathsForDatabaseName, getFilePathForBlob: pathForBlob } = require('#src/resources/blob');
+
+	async function waitFor(probe, timeoutMs = 2000) {
+		const deadline = Date.now() + timeoutMs;
+		for (;;) {
+			const value = probe();
+			if (value !== undefined && value !== false) return value;
+			if (Date.now() >= deadline) return undefined;
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+	}
+
+	let SnapshotTest;
+	let backupDir;
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		SnapshotTest = table({
+			table: 'SnapshotTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+	beforeEach(() => {
+		backupDir = mkdtempSync(join(tmpdir(), 'harper.unit-test.live-snapshot-'));
+	});
+	afterEach(() => {
+		rmSync(backupDir, { recursive: true, force: true });
+	});
+
+	it('a restored substituted marker reads as retryable, not as absent or corrupt', async () => {
+		// The whole design rests on this: a blob captured as a marker must reach a reader as a 503 it
+		// will retry (and blob repair will heal), never a 404 that a replication peer reads as
+		// "cleanly gone" or a 500 it treats as confidently incomplete.
+		const { createCaptureMarker: mintMarker } = require('#src/resources/blob');
+		await SnapshotTest.put({ id: 'restored', blob: await createBlob(randomBytes(20000)) });
+		const record = await SnapshotTest.get('restored');
+		const filePath = pathForBlob(record.blob);
+
+		writeFileSync(filePath, mintMarker('pending', 'blob was not yet complete when this backup was taken'));
+
+		const reread = await SnapshotTest.get('restored');
+		let status;
+		try {
+			await reread.blob.bytes();
+			assert.fail('reading a PENDING marker should not resolve');
+		} catch (error) {
+			status = error.statusCode ?? error.status;
+		}
+		assert.strictEqual(status, 503, 'a restored marker must classify as retryable');
+	});
+
+	it('a blob that vanished mid-backup is captured terminal, not as a retry that can never succeed', async () => {
+		const { createCaptureMarker: mintMarker } = require('#src/resources/blob');
+		await SnapshotTest.put({ id: 'vanished', blob: await createBlob(randomBytes(20000)) });
+		const filePath = pathForBlob((await SnapshotTest.get('vanished')).blob);
+
+		writeFileSync(filePath, mintMarker('gone', 'blob was deleted while this backup was being taken'));
+
+		let status;
+		try {
+			await (await SnapshotTest.get('vanished')).blob.bytes();
+			assert.fail('reading a terminal marker should not resolve');
+		} catch (error) {
+			status = error.statusCode ?? error.status;
+		}
+		assert.strictEqual(status, 500, 'gone-for-good bytes must read terminal, not retryable');
+	});
+
+	it('never hard-links a blob that a real write is still streaming into', async () => {
+		await SnapshotTest.put({ id: 'settled', blob: await createBlob(randomBytes(4096)) });
+
+		const source = new PassThrough();
+		const growing = createBlob(source, { size: 60000 });
+		const put = SnapshotTest.put({ id: 'streaming', blob: growing });
+		source.write(randomBytes(30000));
+		const livePath = await waitFor(() => {
+			const path = pathForBlob(growing);
+			return path && existsSync(path) && statNow(path).size > 0 ? path : undefined;
+		});
+		assert.ok(livePath, 'the in-flight blob should be on disk with a body before the snapshot runs');
+		const roots = getBlobPathsForDatabaseName(SnapshotTest.primaryStore.rootStore.databaseName);
+		await snapshotBlobs(backupDir, 1, roots);
+
+		const rootIndex = roots.findIndex((root) => livePath.startsWith(root));
+		const relative = livePath.slice(roots[rootIndex].length + 1);
+		const captured = join(blobSnapshotDir(backupDir, 1), String(rootIndex), relative);
+		assert.ok(existsSync(captured), 'the in-flight blob id must still be reserved in the snapshot');
+		assert.notStrictEqual(
+			statNow(captured).ino,
+			statNow(livePath).ino,
+			'the snapshot shared an inode with a blob that was still being written'
+		);
+		const capturedBytes = readFileNow(captured);
+		assert.strictEqual(capturedBytes.readUInt16BE(0), 0xfe, 'expected a PENDING marker');
+
+		source.end(randomBytes(30000));
+		await put;
+
+		assert.strictEqual(readFileNow(livePath).length, 60000 + 8);
+		assert.deepStrictEqual(readFileNow(captured), capturedBytes, 'snapshot bytes changed after the write finished');
+	});
+});
+
+describe('watchInProgressFile (in-progress read watcher fallback)', () => {
+	const ORIGINAL_PATH = '/blobs/RUNNER~1/00/01';
+	const CANONICAL_PATH = '/blobs/runneradmin/00/01';
+
+	function fakeWatcher() {
+		const watcher = new EventEmitter();
+		watcher.closeCount = 0;
+		watcher.close = () => watcher.closeCount++;
+		return watcher;
+	}
+
+	function exhaustion() {
+		return Object.assign(new Error('watcher pool exhausted'), { code: 'ENOSPC' });
+	}
+
+	function opening(...watchers) {
+		const pending = [...watchers];
+		return (path, options, onChange) => {
+			const watcher = pending.shift();
+			watcher.path = path;
+			watcher.options = options;
+			watcher.change = onChange;
+			return watcher;
+		};
+	}
+
+	function recordingHandlers(isLive = () => true) {
+		const calls = { change: 0, failure: 0 };
+		return { calls, handlers: { isLive, onChange: () => calls.change++, onFailure: () => calls.failure++ } };
+	}
+
+	it('arms nothing, and attempts no registration, for a target that must poll', () => {
+		const target = { path: ORIGINAL_PATH, mustPoll: true };
+		const { calls, handlers } = recordingHandlers();
+		let attempts = 0;
+		const watcher = watchInProgressFile(ORIGINAL_PATH, target, handlers, () => {
+			attempts++;
+			return fakeWatcher();
+		});
+		assert.strictEqual(watcher, undefined);
+		assert.strictEqual(attempts, 0);
+		assert.deepStrictEqual(calls, { change: 0, failure: 0 });
+	});
+
+	it('watches the canonical path, not the path the read reports', () => {
+		const target = { path: CANONICAL_PATH, mustPoll: false };
+		const { calls, handlers } = recordingHandlers();
+		const opened = fakeWatcher();
+		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, opening(opened)), opened);
+		assert.strictEqual(opened.path, CANONICAL_PATH);
+		assert.deepStrictEqual(opened.options, { persistent: false });
+		// Without this listener Node rethrows an emitted watcher error out of the watcher callback.
+		assert.strictEqual(opened.listenerCount('error'), 1);
+		opened.change();
+		assert.deepStrictEqual(calls, { change: 1, failure: 0 });
+	});
+
+	it('latches polling when registration throws, so the read stops re-attempting it', () => {
+		const target = { path: CANONICAL_PATH, mustPoll: false };
+		const { calls, handlers } = recordingHandlers();
+		let attempts = 0;
+		const throwOnRegistration = () => {
+			attempts++;
+			throw exhaustion();
+		};
+		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, throwOnRegistration), undefined);
+		assert.strictEqual(target.mustPoll, true);
+		// The caller polls from its own no-watcher branch here, so a throw must not also drive onFailure.
+		assert.deepStrictEqual(calls, { change: 0, failure: 0 });
+		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, throwOnRegistration), undefined);
+		assert.strictEqual(attempts, 1);
+	});
+
+	it('drops a live watcher to polling when it fails after registration', () => {
+		const target = { path: CANONICAL_PATH, mustPoll: false };
+		const opened = fakeWatcher();
+		const { calls, handlers } = recordingHandlers((candidate) => candidate === opened);
+		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, opening(opened)), opened);
+		opened.emit('error', exhaustion());
+		assert.strictEqual(target.mustPoll, true);
+		assert.strictEqual(opened.closeCount, 1);
+		assert.deepStrictEqual(calls, { change: 0, failure: 1 });
+	});
+
+	it('still drops to polling when the failed watcher throws on close', () => {
+		const target = { path: CANONICAL_PATH, mustPoll: false };
+		const opened = fakeWatcher();
+		opened.close = () => {
+			throw new Error('close failed synchronously');
+		};
+		const { calls, handlers } = recordingHandlers((candidate) => candidate === opened);
+		assert.strictEqual(watchInProgressFile(ORIGINAL_PATH, target, handlers, opening(opened)), opened);
+		assert.doesNotThrow(() => opened.emit('error', exhaustion()));
+		assert.strictEqual(target.mustPoll, true);
+		assert.deepStrictEqual(calls, { change: 0, failure: 1 });
+	});
+
+	// Acting on either callback from a superseded watcher would close the live watcher and start a
+	// second read sharing the first one's fd and position.
+	describe('a watcher the read has already replaced', () => {
+		let superseded;
+		let live;
+		let target;
+		let recorded;
+
+		beforeEach(() => {
+			superseded = fakeWatcher();
+			live = fakeWatcher();
+			target = { path: CANONICAL_PATH, mustPoll: false };
+			let current;
+			recorded = recordingHandlers((candidate) => candidate === current);
+			const open = opening(superseded, live);
+			current = watchInProgressFile(ORIGINAL_PATH, target, recorded.handlers, open);
+			current = watchInProgressFile(ORIGINAL_PATH, target, recorded.handlers, open);
+			assert.strictEqual(current, live);
+		});
+
+		afterEach(() => {
+			assert.deepStrictEqual(recorded.calls, { change: 0, failure: 0 });
+			assert.strictEqual(live.closeCount, 0);
+			assert.strictEqual(superseded.closeCount, 0);
+			assert.strictEqual(target.mustPoll, false);
+		});
+
+		it('cannot resume the read with a late change event', () => {
+			superseded.change();
+		});
+
+		it('cannot drop the read to polling with a late error', () => {
+			superseded.emit('error', exhaustion());
+		});
+	});
+});

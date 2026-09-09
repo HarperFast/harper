@@ -199,6 +199,124 @@ describe('HARPER_CONFIG', function () {
 
 			assert.strictEqual(fileConfig.http.cors?.enabled, undefined, 'introduced key removed');
 		});
+
+		it('prunes an entry it introduced entirely when the entry is dropped (#2067)', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({
+				models: { embedding: { a: { backend: 'openai' }, b: { backend: 'openai' } } },
+			});
+			const fileConfig = {};
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.models.embedding.b.backend, 'openai');
+
+			process.env.HARPER_CONFIG = JSON.stringify({
+				models: { embedding: { a: { backend: 'openai' } } },
+			});
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.models.embedding.b, undefined, 'dropped entry pruned, not left as {}');
+			assert.strictEqual(fileConfig.models.embedding.a.backend, 'openai');
+		});
+
+		it('does not prune a deliberate empty object when removing an already-absent key', function () {
+			// a has other content at populate time, so no empty-scope marker exists
+			process.env.HARPER_CONFIG = JSON.stringify({ a: { b: 2 } });
+			const fileConfig = { a: { keep: 1 } };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.a.b, 2);
+
+			// user hand-edited the file down to a deliberate `a: {}` between boots
+			const editedConfig = { a: {} };
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.deepStrictEqual(editedConfig.a, {}, 'no-op removal must not eat the empty scope');
+		});
+
+		it('does not prune when the absent key collides with an Object.prototype member', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({ x: { constructor: 1 } });
+			const fileConfig = { x: { keep: 1 } };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.x.constructor, 1);
+
+			// user hand-edited the file down to a deliberate `x: {}` between boots
+			const editedConfig = { x: {} };
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.deepStrictEqual(editedConfig.x, {}, 'prototype-chain key must not defeat the absent-leaf guard');
+		});
+
+		it('clears a stale marker when the user hand-deletes the scope the env var populated', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({ myComponent: { port: 1 } });
+			const fileConfig = { myComponent: {} };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent.port, 1);
+
+			// user hand-deletes the whole scope while the env var is still set;
+			// the CONFIG layer re-asserts its leaf on the next boot
+			const editedConfig = {};
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.strictEqual(editedConfig.myComponent.port, 1);
+
+			// removing the env var must not resurrect the hand-deleted scope
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.strictEqual(editedConfig.myComponent, undefined, 'hand-deleted scope must stay deleted');
+		});
+
+		it('clears a stale marker even when the scope name collides with an Object.prototype member', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({ constructor: { port: 1 } });
+			const fileConfig = { constructor: {} };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.constructor.port, 1);
+
+			// user hand-deletes the scope; the walk must see absence, not the prototype
+			const editedConfig = {};
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.strictEqual(editedConfig.constructor.port, 1);
+
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(editedConfig, testRoot);
+			assert.strictEqual(editedConfig.constructor?.port, undefined, 'hand-deleted scope must stay deleted');
+		});
+
+		it('keeps the marker across a restart while a higher layer holds a scalar over the scope', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({ myComponent: { port: 1 } });
+			const fileConfig = { myComponent: {} };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+
+			process.env.HARPER_SET_CONFIG = JSON.stringify({ myComponent: false });
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent, false);
+
+			// ordinary restart with both vars unchanged: occlusion is not deletion
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent, false);
+
+			// both layers released: the file-declared empty scope must come back
+			delete process.env.HARPER_SET_CONFIG;
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.deepStrictEqual(fileConfig.myComponent, {}, 'marker must survive restarts under an occluding scalar');
+		});
+
+		it('keeps a declared-empty scope restorable across stacked CONFIG and SET layers', function () {
+			process.env.HARPER_CONFIG = JSON.stringify({ myComponent: { port: 1 } });
+			const fileConfig = { myComponent: {} };
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent.port, 1);
+
+			// SET overwrites the whole scope with a leaf, then releases it
+			process.env.HARPER_SET_CONFIG = JSON.stringify({ myComponent: false });
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent, false);
+
+			delete process.env.HARPER_SET_CONFIG;
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.strictEqual(fileConfig.myComponent.port, 1, 'CONFIG layer reasserts after SET releases');
+
+			delete process.env.HARPER_CONFIG;
+			applyRuntimeEnvConfig(fileConfig, testRoot);
+			assert.deepStrictEqual(fileConfig.myComponent, {}, 'file-declared empty scope survives the stack');
+		});
 	});
 
 	describe('individual env var interaction', function () {

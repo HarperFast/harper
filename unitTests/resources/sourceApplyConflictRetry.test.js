@@ -6,7 +6,12 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 const { setTimeout: delay } = require('node:timers/promises');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
-const { DatabaseTransaction, TRANSACTION_STATE, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
+const {
+	DatabaseTransaction,
+	TRANSACTION_STATE,
+	setTxnExpiration,
+	RELEASED_TRANSACTION,
+} = require('#src/resources/DatabaseTransaction');
 // A coordinatedRetry transaction (the source-apply path) signals an optimistic write conflict by
 // resolving commit() with this sentinel instead of rejecting with ERR_BUSY.
 const RETRY_NOW_VALUE = require('@harperfast/rocksdb-js').constants.RETRY_NOW_VALUE;
@@ -282,6 +287,8 @@ describe('abortChainAfterRetries chain cleanup', () => {
 	it("still detaches, untracks, and natively aborts later links when an earlier link's wrapper cleanup throws", () => {
 		const head = new DatabaseTransaction();
 		const next = new DatabaseTransaction();
+		const context = { transaction: head };
+		head.setContext(context);
 		head.next = next;
 
 		const headNative = fakeNative();
@@ -323,5 +330,27 @@ describe('abortChainAfterRetries chain cleanup', () => {
 		assert.equal(next.transaction, null, 'later link must have its native handle detached');
 		assert.ok(!trackedTxns.has(head), 'head must be untracked');
 		assert.ok(!trackedTxns.has(next), "later link must be untracked despite the earlier link's cleanup exception");
+		assert.deepStrictEqual(head.writes, [], 'failed blob cleanup must not retain the write graph');
+		assert.equal(context.transaction, RELEASED_TRANSACTION, 'failed blob cleanup must not retain the closed wrapper');
+	});
+
+	it('aborts both head handles when an outstanding iterator forced writes onto a replay transaction', () => {
+		const head = new DatabaseTransaction();
+		const retainedRead = fakeNative();
+		const replayWrite = fakeNative();
+		head.transaction = retainedRead;
+		head.readTxnsUsed = 1;
+		head.readTxnRefCount = 1;
+
+		const trackedTxns = setTxnExpiration(30000);
+		trackedTxns.add(head);
+		head.abortChainAfterRetries(replayWrite);
+
+		assert.ok(replayWrite.aborted, 'the replay write transaction must be aborted');
+		assert.ok(retainedRead.aborted, 'the retained read transaction must be aborted');
+		assert.equal(head.transaction, null, 'the retained handle must be detached');
+		assert.equal(head.readTxnsUsed, 0);
+		assert.equal(head.readTxnRefCount, 0);
+		assert.ok(!trackedTxns.has(head), 'the retained read transaction must be untracked');
 	});
 });

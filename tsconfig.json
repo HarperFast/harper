@@ -25,8 +25,17 @@
 		// Type checking only by default; use `tsconfig.build.json` for emitting
 		"noEmit": true,
 
-		// Target Node 20+ with ES2022 features
+		// Preserve the ES2022 type surface while declaring Node 22's Promise.withResolvers()
 		"target": "ES2022",
+		"lib": [
+			"ES2022",
+			"ES2024.Promise",
+			"DOM",
+			"WebWorker.ImportScripts",
+			"ScriptHost",
+			"DOM.Iterable",
+			"DOM.AsyncIterable"
+		],
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
 

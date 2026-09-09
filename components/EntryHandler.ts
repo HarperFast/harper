@@ -4,17 +4,20 @@ import { createHash } from 'node:crypto';
 import type { Stats } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { Component, FileAndURLPathConfig } from './Component.ts';
-import chokidar, { FSWatcher, FSWatcherEventMap } from 'chokidar';
-import { join } from 'node:path';
+import { FSWatcher, FSWatcherEventMap } from 'chokidar';
+import { isAbsolute, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { deriveURLPath } from './deriveURLPath.ts';
 import { isMatch } from 'micromatch';
 import {
 	DIRECTORY_POLLING_FALLBACK_OPTIONS,
+	claimLostNativeWatchError,
+	guardedWatch,
 	isWatcherExhaustionError,
 	warnWatcherFallback,
 } from '../utility/watcherFallback.ts';
+import { resolveWatchTarget } from '../utility/watchPath.ts';
 
 export interface BaseEntry {
 	stats?: Stats;
@@ -391,6 +394,11 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	#handleWatcherError(error: unknown): void {
+		// A lost native watch handle (the watched tree was deleted or replaced) is
+		// benign and not actionable by a consumer. chokidar's non-persistent branch
+		// never routes it here today — installLostNativeWatchGuard() catches it at
+		// the process instead — but the polling branch and a fixed chokidar would.
+		if (claimLostNativeWatchError(error)) return;
 		if (isWatcherExhaustionError(error)) {
 			// Swallow every exhaustion error — chokidar can emit several before the
 			// failed native watcher closes, and we don't want a flurry of ENOSPC to
@@ -536,45 +544,57 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			readFailures: new Map(),
 		};
 
-		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));
+		// `ignored` receives absolute paths built from `cwd`, so its bases must come from the same
+		// directory spelling. Event paths are relative to `cwd`, so reads below stay on `this.directory`.
+		const watchTarget = resolveWatchTarget(this.#component.directory);
+		if (watchTarget.mustPoll) this.#usingPolling = true;
+		const watchDirectory = watchTarget.path;
+		const normalizedDirectory = watchDirectory.replace(/\\/g, '/');
+		const normalizedBases = this.#component.patternBases.map((base) => join(watchDirectory, base).replace(/\\/g, '/'));
+
+		// chokidar resolves a relative pattern base against `cwd`, but an absolute one reaches the
+		// native watch as spelled, bypassing the canonicalized `cwd` above.
+		let watchPattern = this.#component.commonPatternBase;
+		if (isAbsolute(watchPattern)) {
+			const patternTarget = resolveWatchTarget(watchPattern);
+			if (patternTarget.mustPoll) this.#usingPolling = true;
+			watchPattern = patternTarget.path;
+		}
 
 		this.#openCount++;
-		const watcher = (this.#watcher = chokidar
-			.watch(this.#component.commonPatternBase, {
-				cwd: this.#component.directory,
-				persistent: false,
-				followSymlinks: false,
-				...(this.#usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
-				ignored: (path) => {
-					const normalizedPath = path.replace(/\\/g, '/');
-					const normalizedBases = allowedBases.map((base) => base.replace(/\\/g, '/'));
-					const normalizedDirectory = this.#component.directory.replace(/\\/g, '/');
+		const watcher = (this.#watcher = guardedWatch(watchPattern, {
+			cwd: watchDirectory,
+			persistent: false,
+			followSymlinks: false,
+			...(this.#usingPolling ? DIRECTORY_POLLING_FALLBACK_OPTIONS : {}),
+			ignored: (path) => {
+				const normalizedPath = path.replace(/\\/g, '/');
 
-					// Determine the path relative to the component directory. Leading '/' is preserved
-					// (or empty when the path *is* the component directory) so the regex anchors below
-					// can use `(?:^|/)` to match the first segment without false positives on names
-					// that merely contain the same substring (e.g. `mynode_modules`, `notgit`).
-					const relativePath = normalizedPath.startsWith(normalizedDirectory)
-						? normalizedPath.slice(normalizedDirectory.length)
-						: normalizedPath;
+				// Determine the path relative to the component directory. Leading '/' is preserved
+				// (or empty when the path *is* the component directory) so the regex anchors below
+				// can use `(?:^|/)` to match the first segment without false positives on names
+				// that merely contain the same substring (e.g. `mynode_modules`, `notgit`).
+				const relativePath = normalizedPath.startsWith(normalizedDirectory)
+					? normalizedPath.slice(normalizedDirectory.length)
+					: normalizedPath;
 
-					// Skip node_modules at any depth. This allows plugins loaded from node_modules
-					// to still watch their own component files while ignoring their dependencies.
-					if (/(?:^|\/)node_modules(?:\/|$)/.test(relativePath)) return true;
+				// Skip node_modules at any depth. This allows plugins loaded from node_modules
+				// to still watch their own component files while ignoring their dependencies.
+				if (/(?:^|\/)node_modules(?:\/|$)/.test(relativePath)) return true;
 
-					// Skip transient package manager and VCS artifacts. Without these, an in-place
-					// `npm install` during a component deploy writes log files and atomic-rename
-					// temp directories that fire change events and drive an auto-reload restart
-					// storm — see harper#488.
-					if (/(?:^|\/)\.git(?:\/|$)/.test(relativePath)) return true;
-					if (/(?:^|\/)\.tmp-/.test(relativePath)) return true;
-					if (/(?:^|\/)(?:npm-debug|yarn-error|yarn-debug|pnpm-debug)\.log(?:\/|$)/.test(relativePath)) return true;
+				// Skip transient package manager and VCS artifacts. Without these, an in-place
+				// `npm install` during a component deploy writes log files and atomic-rename
+				// temp directories that fire change events and drive an auto-reload restart
+				// storm — see harper#488.
+				if (/(?:^|\/)\.git(?:\/|$)/.test(relativePath)) return true;
+				if (/(?:^|\/)\.tmp-/.test(relativePath)) return true;
+				if (/(?:^|\/)(?:npm-debug|yarn-error|yarn-debug|pnpm-debug)\.log(?:\/|$)/.test(relativePath)) return true;
 
-					return (
-						normalizedPath !== normalizedDirectory && normalizedBases.every((base) => !normalizedPath.startsWith(base))
-					);
-				},
-			})
+				return (
+					normalizedPath !== normalizedDirectory && normalizedBases.every((base) => !normalizedPath.startsWith(base))
+				);
+			},
+		})
 			.on('all', (...args) => this.#handleAll(generation, ...args))
 			.on('error', (error) => {
 				if (generation === this.#watchGeneration) this.#handleWatcherError(error);

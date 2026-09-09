@@ -1,10 +1,9 @@
 import { dirname } from 'path';
 import { Script } from 'node:vm';
-import { table } from './databases.ts';
+import { scopedTableFactory, table } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { Resources } from './Resources.ts';
 import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
-import { once } from 'node:events';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -63,7 +62,7 @@ server.knownGraphQLDirectives.push(
  */
 export function handleApplication(scope: import('../components/Scope.ts').Scope) {
 	let initialLoadComplete = false;
-	const entryHandler = scope.handleEntry(async (entry) => {
+	scope.handleEntry(async (entry) => {
 		if (initialLoadComplete) {
 			scope.requestRestart();
 			return;
@@ -75,19 +74,56 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			return;
 		}
 
-		await processGraphQLSchema((entry as any).contents, entry.urlPath, entry.absolutePath, scope.resources);
+		await processGraphQLSchema(
+			(entry as any).contents,
+			entry.urlPath,
+			entry.absolutePath,
+			scope.resources,
+			scopedTableFactory(scope.applicationScope?.branches),
+			scope.logger
+		);
 	});
-	const initialLoadPromise = once(entryHandler, 'initialLoadComplete');
-	initialLoadPromise.then(() => {
+	// Settles with the load's real outcome, so a diagnosed failure is not left for the loader's watchdog
+	// to report while it holds the plugin-wide load lock (#1917). The flag advances either way: a schema
+	// corrected afterwards belongs on the restart path.
+	return scope.waitForInitialLoads().finally(() => {
 		initialLoadComplete = true;
 	});
-	return initialLoadPromise;
 }
 
-async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
+function describeLocation(loc: { startToken?: { line: number; column: number } } | undefined) {
+	const token = loc?.startToken;
+	return token ? `line ${token.line}, column ${token.column}` : 'an unknown location';
+}
+
+async function processGraphQLSchema(
+	gqlContent,
+	urlPath,
+	filePath,
+	resources,
+	declareTable: typeof table = table,
+	logger: { warn?: (...args: any[]) => void; error?: (...args: any[]) => void } = harperLogger
+) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
-	const { parse, Source, Kind } = await import('graphql');
-	const ast = parse(new Source(gqlContent.toString(), filePath));
+	const { parse, Source, Kind, specifiedDirectives } = await import('graphql');
+	let ast;
+	try {
+		ast = parse(new Source(gqlContent.toString(), filePath));
+	} catch (error) {
+		// GraphQLError.toString() is the only rendering carrying the source excerpt and caret; `.stack`,
+		// which the logger prefers, points at Harper internals. It stays out of the thrown message: a
+		// failed component's ErrorResource message becomes the REST problem title.
+		logger.error?.(`Invalid GraphQL schema in ${filePath}:\n${error}`);
+		throw new Error(`Invalid GraphQL schema${urlPath ? ` at ${urlPath}` : ''}`);
+	}
+	// Spec-defined and schema-declared directives are not unknown just because Harper ignores them.
+	const recognizedDirectives = new Set([
+		...server.knownGraphQLDirectives,
+		...specifiedDirectives.map((directive) => directive.name),
+	]);
+	for (const definition of ast.definitions) {
+		if (definition.kind === Kind.DIRECTIVE_DEFINITION) recognizedDirectives.add(definition.name.value);
+	}
 	const types = new Map();
 	const tables = [];
 	// we begin by iterating through the definitions in the AST to get the types and convert them
@@ -112,6 +148,7 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 						// @table is the canonical schema-defined declaration; pass the flag explicitly so
 						// the existing-Table re-assert in databases.ts::table() fires on every reload.
 						typeDef.schemaDefined = true;
+						typeDef.schemaRelationshipsDefined = true;
 						if (typeDef.schema) typeDef.database = typeDef.schema;
 						if (!typeDef.table) typeDef.table = typeName;
 						if (typeDef.audit) typeDef.audit = typeDef.audit !== 'false';
@@ -168,7 +205,10 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 					for (const directive of field.directives) {
 						const directiveName = directive.name.value;
 						if (directiveName === 'primaryKey') {
-							if (hasPrimaryKey) console.warn('Can not define two attributes as a primary key at', directive.loc);
+							if (hasPrimaryKey)
+								logger.warn?.(
+									`Can not define two attributes as a primary key, at ${describeLocation(directive.loc)} in ${filePath}`
+								);
 							else {
 								property.isPrimaryKey = true;
 								hasPrimaryKey = true;
@@ -244,8 +284,10 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 									authorizedRoles.push((arg.value as StringValueNode).value);
 								}
 							}
-						} else if (server.knownGraphQLDirectives.includes(directiveName)) {
-							console.warn(`@${directiveName} is an unknown directive, at`, directive.loc);
+						} else if (!recognizedDirectives.has(directiveName)) {
+							logger.warn?.(
+								`@${directiveName} is an unknown field directive, at ${describeLocation(directive.loc)} in ${filePath}`
+							);
 						}
 					}
 					// @embed targets a vector column and auto-indexes it with HNSW; resolved after all
@@ -302,19 +344,31 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 		} else if (property.type === 'array') connectPropertyType(property.elements);
 		else if (!PRIMITIVE_TYPES.includes(property.type)) {
 			if (getWorkerIndex() === 0)
-				console.error(
+				logger.error?.(
 					`The type ${property.type} is unknown at line ${property.location.line}, column ${property.location.column}, in ${filePath}`
 				);
 		}
 	}
 	for (const typeDef of types.values()) {
-		for (const property of typeDef.attributes) connectPropertyType(property);
+		for (const property of typeDef.attributes) {
+			connectPropertyType(property);
+			const relationshipType = property.definition || property.elements?.definition;
+			if (property.relationship && relationshipType?.table) {
+				Object.defineProperty(property, 'relationshipReference', {
+					value: {
+						database: relationshipType.database || 'data',
+						table: relationshipType.table,
+					},
+					configurable: true,
+				});
+			}
+		}
 	}
 	// any tables that are defined in the schema can now be registered
 	for (const typeDef of tables) {
 		// with graphql database definitions, this is a declaration that the table should exist and that it
 		// should be created if it does not exist
-		typeDef.tableClass = table(typeDef);
+		typeDef.tableClass = declareTable(typeDef);
 		if (getWorkerIndex() === 0) {
 			// Post-Phase-2: typeDef.properties is the canonical Record (no .find); read the Array form.
 			const pk = (typeDef.attributes as any[])?.find((p) => p.isPrimaryKey)?.name ?? 'id';
@@ -351,4 +405,4 @@ async function processGraphQLSchema(gqlContent, urlPath, filePath, resources) {
 }
 
 // useful for testing
-export const loadGQLSchema = (content) => processGraphQLSchema(content, null, null, new Resources());
+export const loadGQLSchema = (content) => processGraphQLSchema(content, null, '<inline-schema>', new Resources());

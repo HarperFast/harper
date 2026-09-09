@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('node:path');
-const { isMainThread } = require('node:worker_threads');
+const { isMainThread, parentPort } = require('node:worker_threads');
 const fs = require('fs-extra');
 const fg = require('fast-glob');
 const normalize = require('normalize-path');
@@ -19,13 +19,24 @@ const {
 	upsertEnvValues,
 	removeEnvKeys,
 } = require('../utility/envFile.ts');
+const { canonicalProjectName, projectNameFromPackage } = require('../utility/componentNames.ts');
 const { handleHDBError, ServerError, hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const manageThreads = require('../server/threads/manageThreads.js');
-const { packageDirectory } = require('../components/packageComponent.ts');
+const {
+	packageDirectory,
+	scanPackageDirectory,
+	streamPackagedDirectory,
+} = require('../components/packageComponent.ts');
 const { Resources } = require('../resources/Resources.ts');
-const { Application, prepareApplication, ASIDE_STAGING_DIR } = require('./Application.ts');
-const { COMPONENT_PREPARATION_LOCK_DIR } = require('./componentPreparationLock.ts');
+const {
+	Application,
+	prepareApplication,
+	ASIDE_STAGING_DIR,
+	DEPLOY_STAGING_DIR,
+	dropComponentDirectory,
+} = require('./Application.ts');
+const { COMPONENT_PREPARATION_LOCK_DIR, withComponentPreparationLock } = require('./componentPreparationLock.ts');
 const { server } = require('../server/Server.ts');
 const {
 	DeploymentRecorder,
@@ -35,6 +46,21 @@ const {
 	DEFAULT_AWAIT_ROW_TIMEOUT_MS,
 } = require('./deploymentRecorder.ts');
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
+
+const DROP_COMPONENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+
+function componentDropLockOptions(project) {
+	return {
+		timeoutMs: DROP_COMPONENT_LOCK_TIMEOUT_MS,
+		onWait: (owner) =>
+			log.info(
+				`Waiting to drop ${project} while component preparation is in progress` +
+					(owner ? ` in process ${owner.pid}, thread ${owner.threadId}` : '')
+			),
+		onReleaseError: (error) => log.error(`Failed to release the component preparation lock for ${project}:`, error),
+		isOwnerAlive: (owner) => owner.pid !== process.pid || manageThreads.isThreadRunning(owner.threadId),
+	};
+}
 
 /**
  * Read the settings.js file and return the
@@ -107,7 +133,7 @@ function getCustomFunctions() {
  */
 function getCustomFunction(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	if (req.file) {
@@ -145,7 +171,7 @@ function getCustomFunction(req) {
  */
 async function setCustomFunction(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	if (req.file) {
@@ -185,7 +211,7 @@ async function setCustomFunction(req) {
  */
 async function dropCustomFunction(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	if (req.file) {
@@ -224,7 +250,7 @@ async function dropCustomFunction(req) {
  */
 async function addComponent(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	const validation = validator.addComponentValidator(req);
@@ -233,14 +259,12 @@ async function addComponent(req) {
 	}
 
 	log.trace(`adding component`);
-	const cfDir = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, install_command, install_timeout, install_allow_scripts } = req;
 
 	const template = req.template || 'https://github.com/harperdb/application-template';
 
 	try {
-		const projectDir = path.join(cfDir, project);
-		fs.mkdirSync(projectDir, { recursive: true });
+		await fs.mkdir(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), { recursive: true });
 		const application = new Application({
 			name: project,
 			packageIdentifier: template,
@@ -273,7 +297,7 @@ async function addComponent(req) {
  */
 async function dropCustomFunctionProject(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	const validation = validator.dropCustomFunctionProjectValidator(req);
@@ -305,8 +329,16 @@ async function dropCustomFunctionProject(req) {
 
 	try {
 		const projectDir = path.join(cfDir, project);
-		fs.rmSync(projectDir, { recursive: true });
-		let response = await server.replication.replicateOperation(req);
+		const stagingDir = path.join(cfDir, ASIDE_STAGING_DIR, project);
+		if (!(await fs.pathExists(projectDir)) && !(await fs.pathExists(stagingDir))) await fs.stat(projectDir);
+		await withComponentPreparationLock(
+			projectDir,
+			async () => {
+				await dropComponentDirectory(projectDir, project, log);
+			},
+			componentDropLockOptions(project)
+		);
+		const response = await server.replication.replicateOperation(req);
 		response.message = `Successfully deleted project: ${project}`;
 		return response;
 	} catch (err) {
@@ -321,14 +353,35 @@ async function dropCustomFunctionProject(req) {
 }
 
 /**
- * Will package a component into a temp tar file then output that file as a base64 string.
- * Req can accept a skip_node_modules boolean which will skip the node mods when creating temp tar file.
+ * Package a component's directory into a tar+gzip archive.
+ *
+ * Three response shapes, selected by the request:
+ *
+ * - `stream: true` — the archive as raw bytes, with download headers attached. serverHandlers.js
+ *   pipes any returned Readable that carries a `headers` Map. **Prefer this for anything that
+ *   isn't known to be small**; see the note below.
+ * - `estimate: true` — no archive at all, just `{ total_size, dangling_symlinks }` from a single
+ *   directory walk, so a caller can decide whether packaging is worth it before paying for it.
+ * - neither (default) — the historical `{ project, payload }` shape, base64 inside JSON.
+ *
+ * The default is retained for compatibility but does not scale, and callers should migrate off
+ * it. Buffering the archive and base64-ing it costs ~4.7x the archive size resident in this
+ * (shared, multi-tenant) process — 2x to concat the gzip chunks, +1.33x for the base64 string,
+ * +1.33x again when Fastify serializes the envelope — and it hard-fails above ~384 MiB of
+ * compressed output, because base64 of that exceeds V8's 512 MiB string cap
+ * (`buffer.constants.MAX_STRING_LENGTH`) and `.toString('base64')` throws ERR_STRING_TOO_LONG.
+ * The streamed shape is constant-memory on both ends and has no size ceiling.
+ *
+ * `skip_node_modules` / `skip_symlinks` apply to all three shapes. `estimate` is checked before
+ * `stream`, so it wins if a caller sets both.
+ *
  * @param req
- * @returns {Promise<{payload: *, project}>}
+ * @returns {Promise<{payload: string, project: string}|{project: string, total_size: number,
+ *   dangling_symlinks: string[]}|Readable>}
  */
 async function packageComponent(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	}
 
 	const validation = validator.packageComponentValidator(req);
@@ -348,8 +401,34 @@ async function packageComponent(req) {
 		try {
 			pathToProject = await fs.realpath(path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project));
 		} catch (err) {
+			// Only a genuinely absent project earns the friendly message. Everything else —
+			// ENOTDIR from a broken installation, EACCES from a permissions problem — is rethrown
+			// with its code, path, and cause intact, rather than being flattened into a
+			// misleading "missing project". Rethrowing is also what guarantees pathToProject is
+			// set past this point, which the stream shape depends on: its response headers are
+			// committed before the packer walks, so a failure discovered later would reach the
+			// caller as a 200 with a truncated body instead of an error it can act on.
 			if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) throw new Error(`Unable to locate project '${project}'`);
+			throw err;
 		}
+	}
+
+	if (req.estimate) {
+		const { totalSize, danglingSymlinks } = await scanPackageDirectory(pathToProject, req);
+		return { project, total_size: totalSize, dangling_symlinks: danglingSymlinks };
+	}
+
+	if (req.stream) {
+		const stream = streamPackagedDirectory(pathToProject, req);
+		const headers = new Map();
+		headers.set('content-type', 'application/gzip');
+		// `project` is narrowed to a bare filename by path.parse().name above and validated
+		// against PROJECT_FILE_NAME_REGEX, so it cannot inject header content.
+		headers.set('content-disposition', `attachment; filename="${project}.tar.gz"`);
+		stream.headers = headers;
+		// tar-fs output is already gzipped; tell serverHandlers not to compress it a second time.
+		stream.preCompressed = true;
+		return stream;
 	}
 
 	const payload = (await packageDirectory(pathToProject, req)).toString('base64');
@@ -359,6 +438,134 @@ async function packageComponent(req) {
 }
 
 /**
+ * Load the built candidate to surface load-time errors. A load-ERROR PROBE, not a safety guarantee: it runs
+ * the component's own top-level code with incomplete side-effect isolation.
+ *
+ * A no-op on the main thread, and the operations API deploys there — so operator deploys are unvalidated
+ * (#2315 step 2). What this guarantees is ORDER: where validation runs, a rejected candidate never goes live.
+ */
+// `componentLoader.setErrorReporter` is ONE process-global callback, so two components validating
+// concurrently on the same worker cross-attribute their failures: B installs its reporter while A is
+// loading, A's load error lands in B, and A then activates broken code while B rejects a good candidate.
+// Validation is serialized (it is already the slow path) and the previous reporter is restored, so the
+// global is only ever owned by one in-flight validation.
+let validationChain = Promise.resolve();
+
+async function validateComponentLoads(candidateDirPath, emit) {
+	const run = validationChain.then(
+		() => validateComponentLoadsExclusive(candidateDirPath, emit),
+		() => validateComponentLoadsExclusive(candidateDirPath, emit)
+	);
+	validationChain = run.then(
+		() => {},
+		() => {}
+	);
+	return run;
+}
+
+async function validateComponentLoadsExclusive(candidateDirPath, emit) {
+	// now we attempt to actually load the component in case there is
+	// an error we can immediately detect and report, but app code should not run on the main thread
+	if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
+		const pseudoResources = new Resources();
+		pseudoResources.isWorker = true;
+
+		const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
+		const { trackScopeClose } = require('./scopeShutdown.ts');
+		let lastError;
+		const priorErrorReporter = componentLoader.getErrorReporter?.();
+		componentLoader.setErrorReporter((error) => (lastError = error));
+		emit('phase', { phase: 'load', status: 'start' });
+		// This load exists only to surface load-time errors early; the Scopes it creates are
+		// throwaway. They are collected (instead of registered for worker-shutdown auto-close) so we
+		// can close them here once validation completes — otherwise each deploy leaks the Scope's
+		// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
+		// (#1462).
+		const validationScopes = new Set();
+		// Process-wide `server.*` registrations (registerOperation, setMcpQuotaHandler) are not owned by
+		// a Scope, so a candidate's top-level registration during this throwaway load would otherwise
+		// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
+		// registration methods no-op for the duration of the load.
+		const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
+		// The candidate loads under the REAL component's name, so a candidate that throws would mark the live
+		// component ERROR. Its status writes are diverted into the guard's throwaway sink instead — see
+		// `deployValidationState.ts` for why this is context-scoped rather than captured and reverted here.
+		const componentName = path.basename(candidateDirPath);
+		// Extension modules the candidate load pulls in are registered in the loader's module registry keyed by
+		// module, so forgetting only the candidate's realpath leaves those behind — one set per deploy. Their
+		// identities are collected by the load itself; diffing the global registry instead would delete a live
+		// module registered by an interleaving real load, since validations serialize only with each other.
+		const validationModules = new Set();
+		const validation = runWithDeployValidationGuard(async () => {
+			try {
+				await componentLoader.loadComponent(candidateDirPath, pseudoResources, undefined, {
+					collectScopes: validationScopes,
+					collectLoadedModules: validationModules,
+				});
+			} finally {
+				const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
+				const failedCloses = closeResults.filter((result) => result.status === 'rejected');
+				for (const result of failedCloses) {
+					log.warn('Failed to close a deploy-validation Scope', result.reason);
+				}
+				// A rejected close is a REJECTED VALIDATION, not a warning. `Scope.close()` stops at the
+				// throwing listener, so its remaining internal listener removal and subscription-hold release
+				// never run and the throwaway scope stays partially live — one leak per deploy, on the worker
+				// that serves the component.
+				if (failedCloses.length) {
+					throw new AggregateError(
+						failedCloses.map((result) => result.reason),
+						`Could not tear down deploy validation for ${componentName}: ${failedCloses.length} scope(s) failed to close`
+					);
+				}
+			}
+		});
+		// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
+		// disposing — a plugin may start a native runtime in handleApplication — before realExit.
+		trackScopeClose(validation);
+		try {
+			await validation;
+		} finally {
+			componentLoader.setErrorReporter(priorErrorReporter);
+			// The candidate path is unique per deploy, so leaving it in the loader's realpath registry leaks
+			// one dead entry per deploy for the life of the process.
+			componentLoader.forgetLoadedPath?.(candidateDirPath);
+			componentLoader.forgetLoadedModules?.(validationModules);
+		}
+		emit('phase', { phase: 'load', status: 'done' });
+
+		if (lastError) throw lastError;
+	}
+}
+
+const BRANCH_STORAGE_RETAINED =
+	'. Any branched database storage this application owns was left in place; drop it again with restart: true to discard that data';
+
+/** Report a restart outcome the operation's own success message cannot convey. */
+function logRestartOutcome(restart, what) {
+	const { RESTART_IDLE_TIMEOUT_MS, RESTART_WAIT_CEILING_MS } = require('./awaitRestart.ts');
+	if (restart.replacementsNotStarted)
+		log.warn(
+			`${restart.replacementsNotStarted} replacement worker thread(s) did not report starting after ${what}; the pool is short until they are restarted`
+		);
+	if (restart.error) log.error(`Restart after ${what} failed`, restart.error);
+	else if (restart.workersKeptOnOldCode)
+		log.warn(
+			`${restart.workersKeptOnOldCode} worker thread(s) could not be replaced after ${what} and are still running the previous code`
+		);
+	else if (restart.declined) log.warn(`No restart was performed after ${what}: the process is already shutting down`);
+	else if (restart.handedOff)
+		log.debug?.(`The restart after ${what} was handed to the main thread, which reports its own completion`);
+	else if (restart.stalled)
+		log.warn(
+			`The restart after ${what} stopped making progress for ${RESTART_IDLE_TIMEOUT_MS}ms; worker threads may still be running the previous code`
+		);
+	else if (!restart.completed)
+		log.warn(
+			`The restart after ${what} was still running after ${RESTART_WAIT_CEILING_MS}ms; worker threads may still be running the previous code`
+		);
+}
+/**
  * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
  * harperdb-config, when HDB is restarted the package will be installed in hdb/nodeModules. If a base64 encoded string is passed it
  * will write string to a temp tar file and extract that file into the deployed project in hdb/components.
@@ -367,9 +574,9 @@ async function packageComponent(req) {
  */
 async function deployComponent(req) {
 	if (req.project) {
-		req.project = path.parse(req.project).name;
+		req.project = canonicalProjectName(req.project);
 	} else if (req.package) {
-		req.project = getProjectNameFromPackage(req.package);
+		req.project = projectNameFromPackage(req.package);
 	}
 
 	const validation = validator.deployComponentValidator(req);
@@ -411,6 +618,12 @@ async function deployComponent(req) {
 		}
 		if (req.urlPath !== undefined) applicationConfig.urlPath = req.urlPath;
 		if (req.host !== undefined) applicationConfig.host = req.host;
+		// Same convention as host/urlPath above, and for the same reason: a package redeploy rebuilds
+		// this application's whole root-config entry from request fields, so a deployment-level key that
+		// isn't re-supplied here is silently dropped -- for branchedDatabases specifically, that means an
+		// application which believed it had a private fork resumes sharing the base after the next
+		// restart, with nothing in this operation to say so.
+		if (req.branchedDatabases !== undefined) applicationConfig.branchedDatabases = req.branchedDatabases;
 		// Persist credential references (never tokens) so every cold install of this component —
 		// reboot, new peer, rollback — re-resolves the credential from the store.
 		if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
@@ -441,6 +654,10 @@ async function deployComponent(req) {
 				// Reference form only — the rollback source for re-resolving the credential.
 				credentials: credentialReferences.length ? credentialReferences : null,
 				emitter,
+				// Reuse the same `deployment_timeout` knob operators already have for the
+				// peer-side row/blob waits to size the origin's payload-ingest write
+				// transaction too — see DEFAULT_INGEST_TRANSACTION_TIMEOUT_MS in deploymentRecorder.
+				ingestTimeoutMs: req.deployment_timeout,
 			});
 	if (recorder) req._deploymentId = recorder.deploymentId;
 
@@ -531,52 +748,19 @@ async function deployComponent(req) {
 		if (credentialReferences.length) req.credentials = credentialReferences;
 		else delete req.credentials;
 
+		// Validated INSIDE preparation, between build and swap, so a component that installs cleanly but
+		// throws at load never becomes live.
+		//
+		// Phase ORDER is unchanged for clients, but `prepare:done` means "candidate built", not "swap
+		// committed" — so a later failure arrives after both phases reported success. The operation's error
+		// is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
-		await prepareApplication(application);
-		emit('phase', { phase: 'prepare', status: 'done' });
-
-		// now we attempt to actually load the component in case there is
-		// an error we can immediately detect and report, but app code should not run on the main thread
-		if (!isMainThread && !process.env.HARPER_SAFE_MODE) {
-			const pseudoResources = new Resources();
-			pseudoResources.isWorker = true;
-
-			const componentLoader = require('./componentLoader.ts').default || require('./componentLoader.ts');
-			const { trackScopeClose } = require('./scopeShutdown.ts');
-			let lastError;
-			componentLoader.setErrorReporter((error) => (lastError = error));
-			emit('phase', { phase: 'load', status: 'start' });
-			// This load exists only to surface load-time errors early; the Scopes it creates are
-			// throwaway. They are collected (instead of registered for worker-shutdown auto-close) so we
-			// can close them here once validation completes — otherwise each deploy leaks the Scope's
-			// deploy-lifecycle listeners on this worker, eventually tripping MaxListenersExceededWarning
-			// (#1462).
-			const validationScopes = new Set();
-			// Process-wide `server.*` registrations (registerOperation, setMcpQuotaHandler) are not owned by
-			// a Scope, so a candidate's top-level registration during this throwaway load would otherwise
-			// outlive it and pollute the live worker on a failed/rolled-back deploy. The guard makes those
-			// registration methods no-op for the duration of the load.
-			const { runWithDeployValidationGuard } = require('../server/serverHelpers/deployValidationState.ts');
-			const validation = runWithDeployValidationGuard(async () => {
-				try {
-					await componentLoader.loadComponent(application.dirPath, pseudoResources, undefined, {
-						collectScopes: validationScopes,
-					});
-				} finally {
-					const closeResults = await Promise.allSettled(Array.from(validationScopes, (scope) => scope.close()));
-					for (const result of closeResults) {
-						if (result.status === 'rejected') log.warn('Failed to close a deploy-validation Scope', result.reason);
-					}
-				}
-			});
-			// Track the load+close so a concurrent worker shutdown waits for these scopes to finish
-			// disposing — a plugin may start a native runtime in handleApplication — before realExit.
-			trackScopeClose(validation);
-			await validation;
-			emit('phase', { phase: 'load', status: 'done' });
-
-			if (lastError) throw lastError;
-		}
+		await prepareApplication(application, {
+			validateCandidate: async (candidateDirPath) => {
+				emit('phase', { phase: 'prepare', status: 'done' });
+				await validateComponentLoads(candidateDirPath, emit);
+			},
+		});
 		const rollingRestart = req.restart === 'rolling';
 		// if doing a rolling restart set restart to false so that other nodes don't also restart.
 		req.restart = rollingRestart ? false : req.restart;
@@ -621,8 +805,16 @@ async function deployComponent(req) {
 		}
 		if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
-			manageThreads.restartWorkers('http');
+			// Workers not yet replaced keep serving the pre-deploy component set, and where the OS lets
+			// replacements share a port they keep accepting connections for the whole rolling restart, so
+			// a caller that reads success as "the component is live" can be served by a worker that has
+			// never heard of it.
+			const { awaitRestart } = require('./awaitRestart.ts');
+			const restart = await awaitRestart((onProgress) =>
+				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
+			);
 			emit('phase', { phase: 'restart', status: 'done' });
+			logRestartOutcome(restart, `deploying ${application.name}`);
 			response.message = `Successfully deployed: ${application.name}, restarting Harper`;
 		} else if (rollingRestart) {
 			const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
@@ -801,32 +993,6 @@ function isSystemDatabaseReplicated() {
 }
 
 /**
- * Extracts a project name from the specified package name or URL
- * @param {string} pkg - Package name or URL
- * @returns {string} The project name
- */
-function getProjectNameFromPackage(pkg) {
-	if (pkg.startsWith('git+ssh://')) {
-		return path.basename(pkg.split('#')[0].replace(/\.git$/, ''));
-	}
-
-	if (pkg.startsWith('http://') || pkg.startsWith('https://')) {
-		return path.basename(new URL(pkg.replace(/\.git$/, '')).pathname);
-	}
-
-	if (pkg.startsWith('file://')) {
-		try {
-			const { name } = JSON.parse(fs.readFileSync(path.join(pkg, 'package.json'), 'utf8'));
-			return path.basename(name);
-		} catch {
-			//
-		}
-	}
-
-	return path.basename(pkg);
-}
-
-/**
  * Gets a JSON directory tree of the components dir and all nested files/folders
  * @returns {Promise<*>}
  */
@@ -839,9 +1005,13 @@ async function getComponents() {
 			const list = await fs.readdir(dir, { withFileTypes: true });
 			for (let item of list) {
 				const itemName = item.name;
+				// Deny-list, not a dot-prefix skip: component CONTENTS legitimately include dot-files
+				// (`.aiignore`, `.env.example`) that callers expect to see, so only Harper's own
+				// bookkeeping directories are excluded by name.
 				if (
 					itemName === 'node_modules' ||
 					itemName === ASIDE_STAGING_DIR ||
+					itemName === DEPLOY_STAGING_DIR ||
 					itemName === COMPONENT_PREPARATION_LOCK_DIR
 				)
 					continue;
@@ -1138,33 +1308,85 @@ async function dropComponent(req) {
 
 	const { project, file } = req;
 	const projectPath = req.file ? path.join(project, file) : project;
-	const pathToComponent = path.join(configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), projectPath);
+	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const componentPath = path.join(componentsRoot, project);
+	const pathToComponent = path.join(componentsRoot, projectPath);
 
-	const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
-	if (await fs.pathExists(componentSymlink)) {
-		await fs.unlink(componentSymlink);
-	}
+	let response;
+	await withComponentPreparationLock(
+		componentPath,
+		async () => {
+			const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
+			if (await fs.pathExists(componentSymlink)) {
+				await fs.unlink(componentSymlink);
+			}
 
-	if (await fs.pathExists(pathToComponent)) {
-		await fs.remove(pathToComponent);
-	}
+			if (!file) {
+				await dropComponentDirectory(componentPath, project, log);
+			} else if (await fs.pathExists(pathToComponent)) {
+				await fs.remove(pathToComponent);
+			}
 
-	// Remove the component from the package.json file
-	const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
-	if (await fs.pathExists(packageJsonPath)) {
-		const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
-		if (packageJson?.dependencies?.[project]) {
-			delete packageJson.dependencies[project];
-		}
-		await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
-	}
+			const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
+			if (await fs.pathExists(packageJsonPath)) {
+				const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+				if (packageJson?.dependencies?.[project]) {
+					delete packageJson.dependencies[project];
+				}
+				await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
+			}
 
-	configUtils.deleteConfigFromFile([project]);
-	let response = await server.replication.replicateOperation(req);
-	if (req.restart === true) {
-		manageThreads.restartWorkers('http');
-		response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
-	} else response.message = `Successfully dropped: ${projectPath}`;
+			configUtils.deleteConfigFromFile([project]);
+			// The main thread's cached config still names the project; the restart below installs every
+			// package application in that cache, and installing this one would take the lock held here.
+			// (A worker's RESTART message refreshes main's config the same way.)
+			if (isMainThread) env.initSync(true);
+			response = await server.replication.replicateOperation(req);
+			const { applicationHasBranchStorage, removeBranchesForApplication } = require('../resources/branchDatabase.ts');
+			const branched = !file && applicationHasBranchStorage(project);
+			if (req.restart !== true) {
+				response.message = `Successfully dropped: ${projectPath}`;
+				if (branched) response.message += BRANCH_STORAGE_RETAINED;
+				return;
+			}
+			// The branches go after the restart, under this lock; a worker is one of the threads being
+			// replaced, so it hands both to the main thread.
+			response.message = `Successfully dropped: ${projectPath}, restarting Harper`;
+			if (!isMainThread) {
+				parentPort.postMessage({
+					type: hdbTerms.ITC_EVENT_TYPES.RESTART,
+					workerType: 'http',
+					removeBranchesFor: file ? undefined : project,
+				});
+				if (branched) {
+					response.message +=
+						'; the main thread removes its branched database storage after the restart and logs the outcome';
+				}
+				return;
+			}
+			const { awaitRestart } = require('./awaitRestart.ts');
+			const restart = await awaitRestart((onProgress) =>
+				manageThreads.restartWorkers('http', undefined, undefined, onProgress)
+			);
+			logRestartOutcome(restart, `dropping ${projectPath}`);
+			if (!branched) return;
+			if (restart.completed && !restart.workersKeptOnOldCode) {
+				try {
+					await removeBranchesForApplication(project);
+				} catch (error) {
+					log.error(`Branched database storage of ${project} could not be removed`, error);
+					throw new Error(
+						`Successfully dropped: ${projectPath}, but its branched database storage could not be removed and ` +
+							`was left in place: ${error.message}. Drop it again with restart: true to retry.`
+					);
+				}
+			} else {
+				log.warn(`Branched database storage of ${project} was left in place: the restart did not complete`);
+				response.message += BRANCH_STORAGE_RETAINED;
+			}
+		},
+		componentDropLockOptions(project)
+	);
 	return response;
 }
 

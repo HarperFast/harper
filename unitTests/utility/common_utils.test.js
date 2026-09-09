@@ -586,6 +586,28 @@ describe('Test common_utils module', () => {
 		});
 	});
 
+	describe('Test prettyDuration', () => {
+		it('drops only leading zero units', () => {
+			assert.strictEqual(cu.prettyDuration(5000), '5s');
+			assert.strictEqual(cu.prettyDuration(90000), '1m 30s');
+			assert.strictEqual(cu.prettyDuration(97702000), '1d 3h 8m 22s');
+		});
+		it('keeps interior zero units once a larger unit is present', () => {
+			assert.strictEqual(cu.prettyDuration(86405000), '1d 0h 0m 5s');
+		});
+		it('floors sub-second and non-positive values to 0s', () => {
+			assert.strictEqual(cu.prettyDuration(0), '0s');
+			assert.strictEqual(cu.prettyDuration(999), '0s');
+			assert.strictEqual(cu.prettyDuration(-5000), '0s');
+		});
+		it('floors non-finite values to 0s', () => {
+			assert.strictEqual(cu.prettyDuration(NaN), '0s');
+			assert.strictEqual(cu.prettyDuration(Infinity), '0s');
+			assert.strictEqual(cu.prettyDuration(-Infinity), '0s');
+			assert.strictEqual(cu.prettyDuration(cu.convertToMS('abc')), '0s');
+		});
+	});
+
 	describe('Test httpRequest timeout', () => {
 		const http = require('node:http');
 		let server, port;

@@ -126,10 +126,13 @@ describe('mcp/tools/operations — registration', () => {
 		}
 	});
 
-	it('excludes ALL secret-store operations from the default-allow surface', () => {
-		// list_secrets matches the `list_*` glob and get_secrets_public_key looks like a safe
-		// getter, but the secrets store is key custody management — never default-exposed to an
-		// LLM surface. DEFAULT_EXCLUDED pins every secret op, present and future-glob-matching.
+	it('excludes ALL credential-management operations from the default-allow surface', () => {
+		// list_secrets / list_oidc_trust match the `list_*` glob and get_secrets_public_key looks
+		// like a safe getter, but both stores are credential management — never default-exposed to
+		// an LLM surface. The secrets store is key custody; an OIDC trust policy grants an external
+		// workflow the right to authenticate as a Harper user, so reading the set names the
+		// repository worth compromising and writing one is a way to grant access.
+		// DEFAULT_EXCLUDED pins each op, present and future-glob-matching.
 		const secretOps = [
 			'set_secret',
 			'grant_secret',
@@ -138,15 +141,19 @@ describe('mcp/tools/operations — registration', () => {
 			'delete_secret',
 			'get_secrets_public_key',
 		];
-		assert.deepEqual([...DEFAULT_EXCLUDED].sort(), [...secretOps].sort());
+		// exchange_oidc_token matches no DEFAULT_ALLOW glob today, but it is the operation that hands
+		// out a credential — pinned here so a future glob cannot quietly pull it onto the surface.
+		const oidcTrustOps = ['add_oidc_trust', 'list_oidc_trust', 'drop_oidc_trust', 'exchange_oidc_token'];
+		const credentialOps = [...secretOps, ...oidcTrustOps];
+		assert.deepEqual([...DEFAULT_EXCLUDED].sort(), [...credentialOps].sort());
 
 		_setOperationFunctionMapForTest(
-			makeOpMap([...secretOps.map((name) => [name, async () => ({})]), ['list_users', async () => ({})]])
+			makeOpMap([...credentialOps.map((name) => [name, async () => ({})]), ['list_users', async () => ({})]])
 		);
 		registerOperationsTools();
 		const { tools } = listTools({ user: SUPER, profile: 'operations', sessionId: 's', limit: 200 });
 		const names = new Set(tools.map((t) => t.name));
-		for (const op of secretOps) {
+		for (const op of credentialOps) {
 			assert.ok(!names.has(op), `${op} must not be on the default MCP surface`);
 		}
 		assert.ok(names.has('list_users'), 'list_* glob still works for non-excluded ops');

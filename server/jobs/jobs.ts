@@ -11,6 +11,7 @@ import * as search from '../../dataLayer/search.ts';
 import Search_Object from '../../dataLayer/SearchObject.ts';
 import searchByHashObj from '../../dataLayer/SearchByHashObject.ts';
 import SQL_Search_Object from '../../dataLayer/SqlSearchObject.ts';
+import { runWithOperationAuthorizationBypass } from '../serverHelpers/operationAuthorizationState.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import JobObject from './JobObject.ts';
 import UpdateObject from '../../dataLayer/UpdateObject.ts';
@@ -249,7 +250,9 @@ export async function getJobsInDateRange(jsonBody: any) {
 			const hdbSql = require('../../sqlTranslator/index');
 			pSqlEvaluate = promisify(hdbSql.evaluateSQL);
 		}
-		return await pSqlEvaluate(sqlSearchObj);
+		// Harper's own statement, not the caller's. A carrier is not equivalent here — see DESIGN.md.
+		// Wraps only this statement: a later caller-dependent one must not inherit the bypass.
+		return await runWithOperationAuthorizationBypass(true, () => pSqlEvaluate(sqlSearchObj));
 	} catch (e) {
 		log.error(
 			`there was a problem searching for jobs from date ${jsonBody.from_date} to date ${jsonBody.to_date} ${e}`

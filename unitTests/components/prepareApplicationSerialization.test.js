@@ -20,14 +20,41 @@ async function makePayload(rootDir, name, version, installScript) {
 }
 
 describe('prepareApplication serialization', () => {
-	it('restores the loaded component tree when installation fails', async function () {
+	it('compares runtime metadata after recovering an interrupted deploy', async function () {
+		this.timeout(10000);
+		const rootDir = await mkdtemp(join(tmpdir(), 'prepare-application-recovery-metadata-'));
+		const componentDirPath = join(rootDir, 'shared');
+		const asidePath = join(rootDir, '.deploy-aside', 'shared', '.in-progress-123-previous');
+		await mkdir(componentDirPath, { recursive: true });
+		await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: 'shared', version: '2.0.0' }));
+		await mkdir(asidePath, { recursive: true });
+		await writeFile(join(asidePath, 'package.json'), JSON.stringify({ name: 'shared', version: '1.0.0' }));
+		const sourceDir = await mkdtemp(join(rootDir, 'shared-2.0.0-'));
+		await writeFile(join(sourceDir, 'package.json'), JSON.stringify({ name: 'shared', version: '2.0.0' }));
+		const application = new Application({
+			name: 'shared',
+			payload: await packageDirectory(sourceDir, { skip_node_modules: true }),
+		});
+		application.dirPath = componentDirPath;
+
+		try {
+			await prepareApplication(application);
+			assert.equal(application.packageMetadataChanged, true);
+			assert.equal(JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version, '2.0.0');
+		} finally {
+			await rm(rootDir, { recursive: true, force: true });
+		}
+	});
+
+	it('restores the previous component when installation fails', async function () {
 		this.timeout(10000);
 		const rootDir = await mkdtemp(join(tmpdir(), 'prepare-application-rollback-'));
 		const componentDirPath = join(rootDir, 'shared');
-		await mkdir(componentDirPath, { recursive: true });
+		await mkdir(join(componentDirPath, 'nested'), { recursive: true });
 		await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: 'shared', version: '1.0.0' }));
 		await writeFile(join(componentDirPath, 'index.js'), 'module.exports = 1;\n');
-
+		await writeFile(join(componentDirPath, '.env'), 'OLD_ONLY=true\n');
+		await writeFile(join(componentDirPath, 'nested', 'old-only.txt'), 'previous bytes\n');
 		const failedApplication = new Application({
 			name: 'shared',
 			payload: await makePayload(rootDir, 'shared', '2.0.0', 'process.exit(2);'),
@@ -39,6 +66,69 @@ describe('prepareApplication serialization', () => {
 			await assert.rejects(() => prepareApplication(failedApplication), /Failed to install dependencies/);
 			assert.equal(JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version, '1.0.0');
 			assert.equal(await readFile(join(componentDirPath, 'index.js'), 'utf8'), 'module.exports = 1;\n');
+			assert.equal(await readFile(join(componentDirPath, '.env'), 'utf8'), 'OLD_ONLY=true\n');
+			assert.equal(await readFile(join(componentDirPath, 'nested', 'old-only.txt'), 'utf8'), 'previous bytes\n');
+			await assert.rejects(access(join(rootDir, '.deploy-aside', 'shared')));
+		} finally {
+			await rm(rootDir, { recursive: true, force: true });
+		}
+	});
+
+	it('cannot corrupt the live tree from an install script, because the live tree is not in play yet', async function () {
+		this.timeout(10000);
+		const rootDir = await mkdtemp(join(tmpdir(), 'prepare-application-aggregate-'));
+		const componentDirPath = join(rootDir, 'shared');
+		await mkdir(join(componentDirPath, 'nested'), { recursive: true });
+		await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: 'shared', version: '1.0.0' }));
+		await writeFile(join(componentDirPath, 'nested', 'old-only.txt'), 'previous bytes\n');
+		// Nothing for an install script to sabotage: the install runs in the candidate directory and the live
+		// tree has not been moved, so no rollback record exists yet. The assertions are the single-error
+		// rejection (no AggregateError, since there is no restore to also fail) and the untouched live tree.
+		const installScript = `process.exit(2);`;
+		const application = new Application({
+			name: 'shared',
+			payload: await makePayload(rootDir, 'shared', '2.0.0', installScript),
+			install: { command: 'node install.js', timeout: 5000 },
+		});
+		application.dirPath = componentDirPath;
+
+		try {
+			// One error, not an AggregateError: there is no restore to also fail.
+			await assert.rejects(
+				() => prepareApplication(application),
+				(error) => !(error instanceof AggregateError) && /Failed to install dependencies/.test(error.message)
+			);
+			assert.equal(JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version, '1.0.0');
+			assert.equal(await readFile(join(componentDirPath, 'nested', 'old-only.txt'), 'utf8'), 'previous bytes\n');
+		} finally {
+			await rm(rootDir, { recursive: true, force: true });
+		}
+	});
+
+	it('keeps a successful replacement when transient credential cleanup fails', async function () {
+		this.timeout(10000);
+		const rootDir = await mkdtemp(join(tmpdir(), 'prepare-application-cleanup-'));
+		const componentDirPath = join(rootDir, 'shared');
+		await mkdir(componentDirPath, { recursive: true });
+		await writeFile(join(componentDirPath, 'package.json'), JSON.stringify({ name: 'shared', version: '1.0.0' }));
+		const application = new Application({
+			name: 'shared',
+			payload: await makePayload(rootDir, 'shared', '2.0.0', 'process.exit(0);'),
+			install: { command: 'node install.js', timeout: 5000 },
+		});
+		application.dirPath = componentDirPath;
+		const cleanupError = new Error('credential cleanup failed');
+		application.cleanupTransientNpmrc = async () => {
+			throw cleanupError;
+		};
+
+		try {
+			await assert.rejects(
+				() => prepareApplication(application),
+				(error) => error === cleanupError
+			);
+			assert.equal(JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version, '2.0.0');
+			await assert.rejects(access(join(rootDir, '.deploy-aside', 'shared')));
 		} finally {
 			await rm(rootDir, { recursive: true, force: true });
 		}
@@ -85,9 +175,15 @@ describe('prepareApplication serialization', () => {
 			);
 			const secondPreparation = prepareApplication(secondApplication);
 
+			// Tolerates the live path not existing yet, which is the new invariant: the first deploy's
+			// candidate is still installing, so nothing has been published to the component path at all.
 			await assert.rejects(
 				waitFor(
-					async () => JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version === '2.0.0',
+					async () =>
+						readFile(join(componentDirPath, 'package.json'), 'utf8').then(
+							(contents) => JSON.parse(contents).version === '2.0.0',
+							() => false
+						),
 					{ timeout: 300, message: 'second extraction started before the first install completed' }
 				),
 				/second extraction started before the first install completed/

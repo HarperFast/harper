@@ -65,13 +65,24 @@ describe('rocksdbBackup', function () {
 		rmSync(backupDirForDatabase(DB_NAME), { recursive: true, force: true });
 	});
 
-	// Write a blob file into a database's (first) blob root at the given fileId-style relative path.
+	// Write a blob file into a database's (first) blob root at the given fileId-style relative path,
+	// shaped the way resources/blob.ts writes one: an 8-byte header (type in the top 16 bits, body
+	// length in the low 48) then the body. A snapshot only captures complete blobs, so a headerless
+	// fixture would be skipped.
 	function writeBlobFile(dbName, relPath, contents) {
 		const root = getBlobPathsForDatabaseName(dbName)[0];
 		const full = join(root, relPath);
 		mkdirSync(dirname(full), { recursive: true });
-		writeFileSync(full, contents);
+		const body = Buffer.from(contents);
+		const header = Buffer.alloc(8);
+		header.writeUInt16BE(0, 0); // UNCOMPRESSED
+		header.writeUIntBE(body.length, 2, 6);
+		writeFileSync(full, Buffer.concat([header, body]));
 		return full;
+	}
+
+	function readBlobBody(path) {
+		return readFileSync(path).subarray(8).toString('utf8');
 	}
 
 	function writeRecords(records) {
@@ -380,7 +391,7 @@ describe('rocksdbBackup', function () {
 			assert.strictEqual(created.blobs, true, 'blobs should be captured by default');
 			const backupDir = backupDirForDatabase(BLOB_DB);
 			const snapshotFile = join(blobSnapshotDir(backupDir, created.backup_id), '0', BLOB_REL);
-			assert.strictEqual(readFileSync(snapshotFile, 'utf8'), 'blob-payload', 'blob must be in the snapshot');
+			assert.strictEqual(readBlobBody(snapshotFile), 'blob-payload', 'blob must be in the snapshot');
 
 			// a backup writes restore instructions and a blob-layout doc into the repository
 			const backupReadme = readFileSync(join(backupDir, 'README.md'), 'utf8');
@@ -391,7 +402,7 @@ describe('rocksdbBackup', function () {
 			rmSync(join(getBlobPathsForDatabaseName(BLOB_DB)[0], BLOB_REL));
 			await restoreBackupOffline(BLOB_DB, created.backup_id);
 			assert.strictEqual(
-				readFileSync(join(getBlobPathsForDatabaseName(BLOB_DB)[0], BLOB_REL), 'utf8'),
+				readBlobBody(join(getBlobPathsForDatabaseName(BLOB_DB)[0], BLOB_REL)),
 				'blob-payload',
 				'a blob deleted after the backup must be restored'
 			);
@@ -515,6 +526,49 @@ describe('rocksdbBackup', function () {
 			return names;
 		}
 
+		it('packs a PENDING marker for an incomplete blob, keeping the tar valid', async function () {
+			this.timeout(30000);
+			const MARKER_DB = `${DB_NAME}-blob-marker`;
+			const markerDbDir = join(storageDir, MARKER_DB);
+			const database = RocksDatabase.open(markerDbDir);
+			try {
+				database.putSync('rec', { blob: 'x' });
+			} finally {
+				database.close();
+			}
+			const wholeRel = join('111', '222', '333');
+			const partialRel = join('111', '222', '334');
+			writeBlobFile(MARKER_DB, wholeRel, 'whole-blob');
+			// A write still in flight: the header claims more than the body holds.
+			const partialHeader = Buffer.alloc(8);
+			partialHeader.writeUInt16BE(0, 0);
+			partialHeader.writeUIntBE(9999, 2, 6);
+			const partialFull = join(getBlobPathsForDatabaseName(MARKER_DB)[0], partialRel);
+			mkdirSync(dirname(partialFull), { recursive: true });
+			writeFileSync(partialFull, Buffer.concat([partialHeader, Buffer.from('partial')]));
+
+			const store = RocksDatabase.open(markerDbDir);
+			try {
+				const entries = await extractTarNames(createBackupStream(store, MARKER_DB, false, false));
+				const toPosix = (rel) => rel.split(require('node:path').sep).join('/');
+				const partialEntry = `blobs/0/${toPosix(partialRel)}`;
+				assert.strictEqual(
+					entries
+						.get(`blobs/0/${toPosix(wholeRel)}`)
+						.subarray(8)
+						.toString('utf8'),
+					'whole-blob'
+				);
+				assert.ok(entries.has(partialEntry), 'the incomplete blob id must still be present in the archive');
+				const marker = entries.get(partialEntry);
+				assert.strictEqual(marker.readUInt16BE(0), 0xfe, 'expected a PENDING marker');
+				// a wrong pack.entry size corrupts the whole tar, so the declared size must match the body
+				assert.strictEqual(marker.length, 8 + marker.readUIntBE(2, 6));
+			} finally {
+				store.close();
+			}
+		});
+
 		it('includes blob files alongside the database files in a valid tar', async function () {
 			this.timeout(30000);
 			const STREAM_DB = `${DB_NAME}-blobs`;
@@ -539,7 +593,7 @@ describe('rocksdbBackup', function () {
 				);
 				const blobEntry = `blobs/0/${blobRel.split(require('node:path').sep).join('/')}`;
 				assert.ok(entries.has(blobEntry), `expected blob entry ${blobEntry}, got: ${[...entries.keys()].join(', ')}`);
-				assert.strictEqual(entries.get(blobEntry).toString('utf8'), 'streamed-blob');
+				assert.strictEqual(entries.get(blobEntry).subarray(8).toString('utf8'), 'streamed-blob');
 				// tar entry names are always POSIX-separated (no Windows backslashes leaking in)
 				for (const name of entries.keys()) {
 					assert.ok(!name.includes('\\'), `tar entry name must not contain a backslash: ${name}`);

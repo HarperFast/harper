@@ -11,7 +11,7 @@
  * so a request is sent to exactly ONE registering worker (never broadcast-first-wins).
  *
  *  - Worker: `registerOperation()` announces the name (OPERATION_REGISTERED) to all threads;
- *    only the main thread records it, as name -> Set<threadId>.
+ *    only the main thread records it, as name -> Set<threadId>, plus `grantable`.
  *  - Main: on an OPERATION_FUNCTION_MAP miss, `getRemoteOperationFunction()` supplies a forwarding
  *    function that sends the request body (OPERATION_EXECUTE_REQUEST) to one live registering
  *    worker and awaits the correlated OPERATION_EXECUTE_RESPONSE.
@@ -26,7 +26,11 @@ import * as env from '../../utility/environment/environmentManager.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import { sendItcEvent } from '../threads/itc.js';
-import { onMessageByType, onThreadExit } from '../threads/manageThreads.js';
+import { hasThreadExited, onMessageByType, onThreadExit } from '../threads/manageThreads.js';
+import {
+	registerWorkerGrantableOperation,
+	unregisterWorkerGrantableOperation,
+} from '../../utility/operationPermissions.ts';
 import { runWithOperationAuthorizationBypass } from './operationAuthorizationState.ts';
 
 const operationLog = harperLogger.loggerWithTag('operation');
@@ -59,6 +63,9 @@ export function setLocalOperationDispatch(dispatch: typeof localDispatch) {
 
 /** name -> threadIds of workers that registered it (main thread only) */
 const registeredByWorker = new Map<string, Set<number>>();
+// Per originator, not per name: a rolling deploy whose new generation drops `requiresSuperUser`
+// must keep routing the name while retracting grantability, which a name-level flag cannot express.
+const grantableByWorker = new Map<string, Set<number>>();
 const pendingExecutions = new Map<
 	number,
 	{ targetThreadId: number; resolve: (result: any) => void; reject: (error: Error) => void }
@@ -71,25 +78,80 @@ let mainListenersAttached = false;
  * a lost announcement just means the op stays unreachable (the pre-#1736 status quo), and the
  * broadcast has its own ack timeout.
  */
-export function announceRegisteredOperation(name: string) {
+export function announceRegisteredOperation(name: string, grantable = false) {
 	if (isMainThread) return;
 	sendItcEvent({
 		type: terms.ITC_EVENT_TYPES.OPERATION_REGISTERED,
-		message: { name },
+		message: { name, grantable },
 	}).catch((error) => operationLog.error(`Failed to announce registered operation '${name}'`, error));
 }
 
 /**
  * ITC handler (all threads receive the broadcast; only main records it).
  */
-export function operationRegisteredHandler(event: { message: { name: string; originator: number } }) {
+export function operationRegisteredHandler(event: {
+	message?: { name?: string; grantable?: boolean; originator?: number };
+}) {
 	if (!isMainThread) return;
-	const { name, originator } = event.message;
+	const { name, grantable, originator } = event?.message ?? {};
 	if (typeof name !== 'string' || typeof originator !== 'number') return;
+	// An announcement can lose the race with its own thread's exit, and exit notification fires once
+	// per thread, so without this the entry would never be cleaned up. Reads manageThreads' tombstone
+	// rather than keeping a second one: job threads are one-shot workers, so a duplicate here would
+	// grow per completed job, not per worker restart.
+	if (hasThreadExited(originator)) {
+		operationLog.debug(`Ignoring operation '${name}' announced by exited worker thread ${originator}`);
+		return;
+	}
 	let workerIds = registeredByWorker.get(name);
 	if (!workerIds) registeredByWorker.set(name, (workerIds = new Set()));
 	workerIds.add(originator);
+	// Mirroring only widens what an allowlist may name; enforcement stays on the worker's
+	// chooseOperation. A re-announcement that drops the permission retracts this thread's claim.
+	setWorkerGrantable(name, originator, grantable === true);
 	operationLog.debug(`Registered operation '${name}' announced by worker thread ${originator}`);
+}
+
+/**
+ * A worker that dies mid-execution can never respond, so fail its in-flight forwards rather than
+ * waiting out the timeout, and forget its registrations (a replacement re-registers on load).
+ */
+function handleThreadExit(deadThreadId: number) {
+	for (const [name, workerIds] of registeredByWorker) {
+		if (!workerIds.delete(deadThreadId)) continue;
+		// A surviving worker that never declared a permission must not keep the name admissible.
+		if (workerIds.size === 0) dropRegistration(name);
+		else setWorkerGrantable(name, deadThreadId, false);
+	}
+	for (const [requestId, pending] of pendingExecutions) {
+		if (pending.targetThreadId === deadThreadId) {
+			pendingExecutions.delete(requestId);
+			pending.reject(new ServerError('The worker thread executing this operation exited', 503));
+		}
+	}
+}
+
+function setWorkerGrantable(name: string, threadId: number, grantable: boolean) {
+	let grantableIds = grantableByWorker.get(name);
+	if (grantable) {
+		if (!grantableIds) grantableByWorker.set(name, (grantableIds = new Set()));
+		grantableIds.add(threadId);
+		registerWorkerGrantableOperation(name);
+	} else if (grantableIds?.delete(threadId) && grantableIds.size === 0) {
+		grantableByWorker.delete(name);
+		unregisterWorkerGrantableOperation(name);
+	}
+}
+
+/**
+ * Forget an operation no live worker offers any more. Both prune paths — thread exit, and a failed
+ * send discovering a dead port — route through here so a name can never keep a route without an
+ * owner. Grantability is dropped per owner instead, in `setWorkerGrantable`.
+ */
+function dropRegistration(name: string) {
+	registeredByWorker.delete(name);
+	grantableByWorker.delete(name);
+	unregisterWorkerGrantableOperation(name);
 }
 
 let rotation = 0;
@@ -122,22 +184,14 @@ function attachMainListeners() {
 		if (error) pending.reject(new ServerError(error.message, error.statusCode || 500));
 		else pending.resolve(result);
 	});
-	// A worker that dies mid-execution can never respond; fail its in-flight forwards rather
-	// than waiting out the timeout, and forget its registrations (a replacement worker
-	// re-registers on component load).
-	onThreadExit((deadThreadId: number) => {
-		for (const [name, workerIds] of registeredByWorker) {
-			workerIds.delete(deadThreadId);
-			if (workerIds.size === 0) registeredByWorker.delete(name);
-		}
-		for (const [requestId, pending] of pendingExecutions) {
-			if (pending.targetThreadId === deadThreadId) {
-				pendingExecutions.delete(requestId);
-				pending.reject(new ServerError('The worker thread executing this operation exited', 503));
-			}
-		}
-	});
+	onThreadExit(handleThreadExit);
 }
+
+// Armed at load rather than on first use: serverUtilities imports this module during its own load,
+// before any worker exists. Thread-exit notification fires once per thread and is dropped outright
+// if no listener is attached yet, so a worker dying before its first announcement is processed
+// would otherwise leave a registration nothing could ever clean up.
+if (isMainThread) attachMainListeners();
 
 async function executeRemoteOperation(name: string, body: any, bypassAuth: boolean): Promise<any> {
 	attachMainListeners();
@@ -168,7 +222,10 @@ async function executeRemoteOperation(name: string, body: any, bypassAuth: boole
 			);
 		}
 		if (!sent) {
+			// The port is gone, so this thread's claims go with it — grantability included, which
+			// handleThreadExit would otherwise not retract while other workers still route the name.
 			workerIds.delete(targetThreadId);
+			setWorkerGrantable(name, targetThreadId, false);
 			continue;
 		}
 		return new Promise((promiseResolve, promiseReject) => {
@@ -190,7 +247,7 @@ async function executeRemoteOperation(name: string, body: any, bypassAuth: boole
 			});
 		});
 	}
-	if (registeredByWorker.get(name)?.size === 0) registeredByWorker.delete(name);
+	if (registeredByWorker.get(name)?.size === 0) dropRegistration(name);
 	throw new ServerError(
 		`Operation '${name}' is registered by a component but no worker thread is available to run it`,
 		503

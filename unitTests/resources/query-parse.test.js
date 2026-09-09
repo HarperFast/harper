@@ -174,6 +174,12 @@ describe('Parsing queries', () => {
 		assert.equal(query.conditions.length, 2);
 		assert.deepEqual(query.select, ['name', 'age']);
 	});
+	it('group-by records not-implemented error without falling through into sort', function () {
+		const query = {};
+		parseQuery('group-by(x)', query);
+		assert.match(query.parseError.message, /group by is not implemented yet/);
+		assert.equal(query.sort, undefined);
+	});
 	it('Bracket/array parameter', function () {
 		let query = parseQuery('itemIds[]=1&itemIds[]=2');
 		assert.equal(query.conditions.length, 2);

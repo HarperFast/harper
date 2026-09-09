@@ -1,0 +1,22 @@
+# QA-661 (source:pr:1896) — corners the PR's own eviction-index-null-reindex.test.ts does not
+# reach: multi-worker contention, live writes to an indexed attribute racing the TTL sweep, an
+# array-valued indexed attribute, and the explicit delete()/evict() paths (vs the TTL sweep path).
+#
+# Expiring: short TTL, aggressive scanInterval, TWO indexed attributes — one scalar (bucket, with
+# some null values to also exercise indexNulls) and one array-valued (tags, 0-3 elements).
+# expiration is 15s (not the minimal 5s) to give ~160 rows' worth of awaited HTTP seeding plus the
+# pre-sweep consistency checks headroom on a loaded runner: with scanInterval:1 the first row would
+# otherwise risk expiring mid-seed, undercounting the pre-sweep positive-control row count.
+type Expiring @table(expiration: 15, scanInterval: 1) @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+	tags: [String] @indexed
+	seq: Int
+}
+
+# Perm: no TTL. Used for the explicit delete() and evict() paths (vs TTL-sweep eviction),
+# so the same secondary-index oracle can be applied to all three removal paths.
+type Perm @table @export {
+	id: ID @primaryKey
+	bucket: String @indexed
+}

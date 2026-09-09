@@ -10,6 +10,7 @@ import * as hdbLogger from '../utility/logging/harper_logger.ts';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 import { getDomainSocketPathMaxBytes } from '../utility/domainSocket.ts';
+import { bareHostViolation } from '../utility/nodeIdentity.ts';
 import * as validator from './validationWrapper.ts';
 
 const DEFAULT_LOG_FOLDER = 'log';
@@ -28,6 +29,31 @@ const INVALID_RETENTION_VALUE_MSG =
 // Units accepted for rotation durations, matching convertToMS: note capital M (months) vs lowercase m (minutes).
 const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
+
+/**
+ * What `deploy_component` writes into a root-config entry, plus the deployment-level keys
+ * componentLoader reads off it — the shape of a `sql` application deployed before the name was
+ * reserved. Closed to new keys: nothing new may take this shape.
+ */
+export const LEGACY_SQL_APPLICATION_KEYS = [
+	'package',
+	'files',
+	'path',
+	'install',
+	'credentials',
+	'loadComponent',
+	'urlPath',
+	'host',
+	'branchedDatabases',
+	'network',
+	'port',
+	'securePort',
+];
+
+export function isLegacySqlApplicationEntry(value: unknown): boolean {
+	if (typeof value !== 'object' || value === null) return false;
+	return LEGACY_SQL_APPLICATION_KEYS.some((key) => Object.hasOwn(value, key));
+}
 
 // Directory-path validation. The previous `([...]+)+$` nested quantifier
 // backtracked catastrophically (ReDoS), hanging the CLI at 100% CPU on any
@@ -52,6 +78,10 @@ const DIRECTORY_PATH_PATTERN = /^(?!\s*$)[^\x00-\x1f\x7f\x80-\x9f\u2028\u2029]+$
 const portConstraints = Joi.alternatives([number.min(0), string])
 	.optional()
 	.empty(null);
+// node.hostname / replication.hostname must be a bare host, not a URL (utility/nodeIdentity.ts).
+// `Joi.any` (not `string`) so validateBareHost reports a non-string with its own reason.
+const bareHostConstraints = Joi.any().custom(validateBareHost).optional().empty(null);
+const nodeUrlConstraints = string.custom(validateNodeUrl).optional().empty(null);
 // Controlled-flow ("directional") replication fields. A route's `replicates` is either a boolean
 // (full replication on/off) or an object describing per-direction flow; `sends`/`receives` and
 // `sendsTo`/`receivesFrom` are also accepted as top-level route keys (iterateRoutes normalizes both
@@ -101,6 +131,88 @@ export const routeConstraints = Joi.alternatives([
 		.empty(null),
 	array.items(string),
 ]);
+
+// Models — `models:` block opts a deployment into the per-backend registry.
+// Per-backend shape is validated by a discriminated alternative on the
+// `backend` field. Phase 2 (#629) lands ollama; Phase 3 (#630) lands openai.
+//
+// `.unknown(false)` on each known backend's schema turns field-name typos
+// (`bakend: ollama`, `hsot: ...`) into boot-blocking validation errors.
+// Without it, Joi's top-level `allowUnknown: true` propagates and typos
+// silently survive into bootstrap. Unknown backend types (anything not in
+// the `switch` list) fall through to a permissive schema so future Harper
+// versions or third-party components can register their own backends
+// without core schema edits — `bootstrapModels` logs+skips at runtime.
+//
+// `requestTimeoutMs: min(1)` (not `min(0)`) so the meaning is unambiguous:
+// omit the field for "no timeout". `0` would validate but `composeSignal`
+// treats it as "no timeout" via `if (!timeoutMs)`, surprising a test that
+// sets 0 to mean "fail immediately".
+const commonEntryFields = {
+	model: string.optional(),
+	requestTimeoutMs: number.min(1).optional(),
+	// Ordered fallback group — other logical names tried, in order, after this one (#1326).
+	fallback: Joi.array().items(string).optional(),
+};
+const ollamaEntrySchema = Joi.object({
+	backend: string.valid('ollama').required(),
+	host: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+const openaiEntrySchema = Joi.object({
+	backend: string.valid('openai').required(),
+	// `apiKey` may be a literal secret or a `${ENV_VAR}` placeholder; both
+	// are syntactically strings. `bootstrap.ts` runs `expandEnvVarsDeep`
+	// before construction; the backend rejects unresolved placeholders
+	// with an explicit error pointing at the env-var name.
+	apiKey: string.required(),
+	baseUrl: string.optional(),
+	organization: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+const anthropicEntrySchema = Joi.object({
+	backend: string.valid('anthropic').required(),
+	// Same secret-handling posture as openai's `apiKey`.
+	apiKey: string.required(),
+	baseUrl: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+const bedrockEntrySchema = Joi.object({
+	backend: string.valid('bedrock').required(),
+	// AWS credentials resolve via the SDK chain (env / shared file / IAM
+	// roles for service accounts) — no apiKey field. `region` is
+	// effectively required (Bedrock is regional) but the backend can
+	// fall back to AWS_REGION env, so we leave it optional here.
+	region: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+const unknownBackendEntrySchema = Joi.object({
+	backend: string.required(),
+}).unknown(true);
+const modelEntrySchema = Joi.alternatives().conditional('.backend', {
+	switch: [
+		{ is: 'ollama', then: ollamaEntrySchema },
+		{ is: 'openai', then: openaiEntrySchema },
+		{ is: 'anthropic', then: anthropicEntrySchema },
+		{ is: 'bedrock', then: bedrockEntrySchema },
+	],
+	otherwise: unknownBackendEntrySchema,
+});
+const modelsSchema = Joi.object({
+	embedding: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
+	generative: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
+});
+
+/**
+ * Validate a `models:` block on its own — the hot-reload path applies a watched file's block
+ * without the full boot validation, and must enforce the same schema boot does.
+ */
+export function validateModelsBlock(models) {
+	// `allowUnknown: true` mirrors the boot path, whose top-level option propagates into this
+	// subtree: a sibling of embedding/generative that boots must not block a reload. Entry-level
+	// strictness is preserved by each backend schema's `.unknown(false)`.
+	return modelsSchema.validate(models, { abortEarly: false, allowUnknown: true, errors: { wrap: { label: "'" } } });
+}
 
 let hdbRoot;
 let skipFsVal = false;
@@ -157,76 +269,42 @@ export function configValidator(configJson, skipFsValidation = false) {
 		session: mcpSessionSchema.optional(),
 	});
 
-	// Models — `models:` block opts a deployment into the per-backend registry.
-	// Per-backend shape is validated by a discriminated alternative on the
-	// `backend` field. Phase 2 (#629) lands ollama; Phase 3 (#630) lands openai.
-	//
-	// `.unknown(false)` on each known backend's schema turns field-name typos
-	// (`bakend: ollama`, `hsot: ...`) into boot-blocking validation errors.
-	// Without it, Joi's top-level `allowUnknown: true` propagates and typos
-	// silently survive into bootstrap. Unknown backend types (anything not in
-	// the `switch` list) fall through to a permissive schema so future Harper
-	// versions or third-party components can register their own backends
-	// without core schema edits — `bootstrapModels` logs+skips at runtime.
-	//
-	// `requestTimeoutMs: min(1)` (not `min(0)`) so the meaning is unambiguous:
-	// omit the field for "no timeout". `0` would validate but `composeSignal`
-	// treats it as "no timeout" via `if (!timeoutMs)`, surprising a test that
-	// sets 0 to mean "fail immediately".
-	const commonEntryFields = {
-		model: string.optional(),
-		requestTimeoutMs: number.min(1).optional(),
-		// Ordered fallback group — other logical names tried, in order, after this one (#1326).
-		fallback: Joi.array().items(string).optional(),
-	};
-	const ollamaEntrySchema = Joi.object({
-		backend: string.valid('ollama').required(),
-		host: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const openaiEntrySchema = Joi.object({
-		backend: string.valid('openai').required(),
-		// `apiKey` may be a literal secret or a `${ENV_VAR}` placeholder; both
-		// are syntactically strings. `bootstrap.ts` runs `expandEnvVarsDeep`
-		// before construction; the backend rejects unresolved placeholders
-		// with an explicit error pointing at the env-var name.
-		apiKey: string.required(),
-		baseUrl: string.optional(),
-		organization: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const anthropicEntrySchema = Joi.object({
-		backend: string.valid('anthropic').required(),
-		// Same secret-handling posture as openai's `apiKey`.
-		apiKey: string.required(),
-		baseUrl: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const bedrockEntrySchema = Joi.object({
-		backend: string.valid('bedrock').required(),
-		// AWS credentials resolve via the SDK chain (env / shared file / IAM
-		// roles for service accounts) — no apiKey field. `region` is
-		// effectively required (Bedrock is regional) but the backend can
-		// fall back to AWS_REGION env, so we leave it optional here.
-		region: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const unknownBackendEntrySchema = Joi.object({
-		backend: string.required(),
-	}).unknown(true);
-	const modelEntrySchema = Joi.alternatives().conditional('.backend', {
-		switch: [
-			{ is: 'ollama', then: ollamaEntrySchema },
-			{ is: 'openai', then: openaiEntrySchema },
-			{ is: 'anthropic', then: anthropicEntrySchema },
-			{ is: 'bedrock', then: bedrockEntrySchema },
-		],
-		otherwise: unknownBackendEntrySchema,
-	});
-	const modelsSchema = Joi.object({
-		embedding: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
-		generative: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
-	});
+	// `convert: false` — validateConfig() only writes the coerced value back into configDoc for
+	// threads/componentsRoot/logging/storage/operationsApi, not sql, so leaving Joi's default
+	// convert:true on here would accept a quoted `allowFullScan: "true"` and then silently drop
+	// it (getSqlEngineConfig()'s typeof guard rejects the still-unconverted string).
+	const sqlSettingsSchema = Joi.object({
+		engine: string.valid('legacy', 'new', 'auto').optional(),
+		allowFullScan: boolean.optional(),
+		maxSortRows: number.integer().min(1).optional(),
+		maxHashRows: number.integer().min(1).optional(),
+	})
+		.unknown(false)
+		.prefs({ convert: false });
+
+	// An application deployed under the name before it was reserved still boots; validateConfig()
+	// warns to rename it. Selected positively so a typo'd setting is still held to the settings
+	// schema instead of passing as an application.
+	const legacySqlApplicationSchema = Joi.object({
+		engine: Joi.any().forbidden(),
+		allowFullScan: Joi.any().forbidden(),
+		maxSortRows: Joi.any().forbidden(),
+		maxHashRows: Joi.any().forbidden(),
+	})
+		.unknown(true)
+		.messages({
+			'any.unknown': `{#label} cannot be set while 'sql' names a deployed application; redeploy that application under a different name`,
+		});
+	const sqlSchema = Joi.alternatives()
+		.conditional(
+			Joi.object()
+				.or(...LEGACY_SQL_APPLICATION_KEYS)
+				.unknown(true),
+			{ then: legacySqlApplicationSchema, otherwise: sqlSettingsSchema }
+		)
+		// `false`/null is how componentLoader spells a disabled entry, so an operator who had already
+		// turned a pre-reservation `sql` application off keeps booting.
+		.allow(false, null);
 
 	const configSchema = Joi.object({
 		authentication: Joi.alternatives(
@@ -247,8 +325,8 @@ export function configValidator(configJson, skipFsValidation = false) {
 			replicate: boolean.optional(),
 		}),
 		replication: Joi.object({
-			hostname: Joi.alternatives(string, number).optional().empty(null),
-			url: string.optional().empty(null),
+			hostname: bareHostConstraints,
+			url: nodeUrlConstraints,
 			port: portConstraints,
 			securePort: portConstraints,
 			routes: array.optional().empty(null),
@@ -258,7 +336,16 @@ export function configValidator(configJson, skipFsValidation = false) {
 			pingInterval: number.min(1).optional().empty(null),
 			pingTimeout: number.min(1).optional().empty(null),
 			copyTimeout: number.min(1).optional().empty(null),
+			blobGapReconnectMs: number.min(1000).optional().empty(null),
+			blobGapEscalationCycles: number.integer().min(0).optional().empty(null),
+			blobGapEscalationMs: number.integer().min(0).optional().empty(null),
+			copyCursorFlushBytes: number.min(1).optional().empty(null),
+			copyCursorFlushIntervalMs: number.min(1).optional().empty(null),
 			replayTimeout: number.min(1).optional().empty(null),
+		}).optional(),
+		node: Joi.object({
+			hostname: bareHostConstraints,
+			url: string.optional().empty(null),
 		}).optional(),
 		componentsRoot: rootConstraints.optional(),
 		localStudio: Joi.object({
@@ -359,6 +446,30 @@ export function configValidator(configJson, skipFsValidation = false) {
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
 			caching: boolean.optional(),
+			blobs: Joi.object({
+				compression: Joi.object()
+					.pattern(
+						// exact content type, 'type/*' wildcard, or the 'default' entry
+						/^([\w.+-]+\/(\*|[\w.+-]+)|default)$/,
+						Joi.alternatives([
+							Joi.valid(false),
+							// .unknown(false) so a typo'd nested field (e.g. `treshold`) is rejected instead of
+							// silently inheriting the top-level validate() allowUnknown:true and falling back to
+							// the default threshold — matching config-root.schema.json.
+							Joi.object({ codec: Joi.valid('deflate').optional(), threshold: number.min(0).optional() }).unknown(
+								false
+							),
+						])
+					)
+					// fail on keys that are not a content type, a 'type/*' wildcard, or 'default' —
+					// a typo'd key would otherwise silently never match anything
+					.unknown(false)
+					.optional(),
+			})
+				// reject a misspelled property directly under storage.blobs (e.g. `compresion:`), which the
+				// top-level validate()'s allowUnknown:true would otherwise accept and silently leave off
+				.unknown(false)
+				.optional(),
 			compression: Joi.alternatives([
 				boolean.optional(),
 				Joi.object({ dictionary: string.optional(), threshold: number.optional() }),
@@ -373,6 +484,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 		}).required(),
 		mcp: mcpSchema.optional(),
 		models: modelsSchema.optional(),
+		sql: sqlSchema.optional(),
 		ignoreScripts: boolean.optional(),
 		tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 	});
@@ -395,6 +507,36 @@ function doesPathExist(pathToCheck) {
 	}
 
 	return `Specified path ${pathToCheck} does not exist.`;
+}
+
+function validateBareHost(value, helpers) {
+	const violation = bareHostViolation(value);
+	if (violation) {
+		return helpers.message(
+			`{{#label}} ${violation}; it must be a bare hostname or IP literal (no scheme, port, or path) because it is this node's identity`
+		);
+	}
+	return value;
+}
+
+// A node URL supplies this node's identity via its host (server/nodeName.ts urlToNodeName), so it
+// must have an authority. A hostless scheme ("mailto:", "data:", "file:") parses but has no host.
+// A node URL supplies this node's identity via its host (server/nodeName.ts urlToNodeName). Only
+// reject the unambiguous mistake: a value written as a real URL (with a "//" authority) that still
+// parses to no host. Everything else is deliberately tolerated, because urlToNodeName skips a value
+// it cannot take a host from and identity falls through to another source — a scheme-less
+// "node1.example.com:9933" even parses as a *scheme*, so it is indistinguishable from "mailto:" here,
+// and rejecting that shape would turn a previously harmless config into a boot failure.
+function validateNodeUrl(value, helpers) {
+	if (!value.includes('//')) return value;
+	let host;
+	try {
+		host = new URL(value).hostname;
+	} catch {
+		return value; // unparseable — skipped at runtime, not worth failing the boot over
+	}
+	if (!host) return helpers.message('{{#label}} must be a URL with a host (e.g. "wss://node1.example.com:9933")');
+	return value;
 }
 
 function validatePath(value, helpers) {

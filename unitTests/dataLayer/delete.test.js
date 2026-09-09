@@ -159,6 +159,7 @@ describe('Tests for delete.js', () => {
 			);
 			// the bridge's `entries_deleted` is surfaced as the legacy `transactions_deleted` field
 			expect(result.transactions_deleted).to.equal(3);
+			expect(result.log_files_deleted).to.equal(1);
 		});
 	});
 

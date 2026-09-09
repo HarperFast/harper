@@ -36,6 +36,8 @@ export class RequestTarget extends URLSearchParams {
 	declare select?: Select;
 	/**	 Return an explanation of the query order */
 	declare explain?: boolean;
+	/** Request a total count of matching records for pagination (REST `Prefer: count=exact|estimated`). */
+	declare count?: 'exact' | 'estimated';
 	/**	 Force the query to be executed in the order of conditions */
 	declare enforceExecutionOrder?: boolean;
 	declare lazy?: boolean;

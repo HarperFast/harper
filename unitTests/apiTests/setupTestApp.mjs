@@ -1,4 +1,4 @@
-import { setupTestDBPath } from '../testUtils.js';
+import { setupTestDBPath, ensureSystemTables } from '../testUtils.js';
 import { fileURLToPath } from 'url';
 import hdbTerms from '#src/utility/hdbTerms';
 import { join } from 'path';
@@ -8,7 +8,6 @@ import analytics from '#src/resources/analytics/write';
 import { bypassAuth } from '#src/security/auth';
 import { bypassAuth as bypassAuthMQTT } from '#src/server/mqtt';
 import environmentManager from '#src/utility/environment/environmentManager';
-import { getDatabases } from '#src/resources/databases';
 import {
 	getNextAvailableLoopbackAddress,
 	releaseAllLoopbackAddressesForCurrentProcess,
@@ -75,12 +74,8 @@ export async function setupTestApp() {
 
 	// exit if it is already setup or we are running in the browser
 	if (typeof process === 'undefined') return createdRecords;
-	// Ensure the system database (hdb_role, hdb_user, etc.) is loaded from the
-	// installed Harper path before setupTestDBPath() overrides HDB_ROOT_KEY to the
-	// test PID dir. Without this, the system path preservation logic in
-	// setupTestDBPath() has nothing to preserve and setUp() later can't find hdb_role.
-	getDatabases();
 	let path = setupTestDBPath();
+	await ensureSystemTables();
 
 	if (!serverStarted) {
 		// Acquire a unique loopback address (127.0.0.x) for this process so
@@ -100,6 +95,11 @@ export async function setupTestApp() {
 
 	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET, join(path, 'operations-server'));
 	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, `${testHost}:9925`);
+	// The operations API is always plain HTTP in this harness (matching OPERATIONSAPI_NETWORK_PORT
+	// above); an ambient install whose securePort is also set (e.g. operationsApi.network.securePort:
+	// 9925) would otherwise leave that stale TLS port in the effective config alongside our plain-port
+	// override, so operations-API clients intermittently hit the wrong listener.
+	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT, null);
 	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT, null);
 	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_PORT, `${testHost}:9926`);
 	setProperty(hdbTerms.CONFIG_PARAMS.MQTT_NETWORK_PORT, `${testHost}:1883`);

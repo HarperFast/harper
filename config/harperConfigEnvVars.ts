@@ -25,12 +25,26 @@
 import type { Logger } from '../utility/logging/logger.ts';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
+import { isMainThread } from 'node:worker_threads';
 import * as crypto from 'node:crypto';
 import { cloneDeep } from 'lodash';
 import { getBackupDirPath } from './configHelpers.ts';
+import { atomicWriteFile, renameWithRetry } from './configUtils.ts';
 import * as hdbTerms from '../utility/hdbTerms.ts';
 
 const STATE_FILE_NAME = '.harper-config-state.json';
+// Staged beside the confirmed state while a config-file write is in flight, then renamed over it.
+// Per-process, because every CLI invocation and worker runs this and one shared name would let one
+// clear another's in-flight commit. See DESIGN.md, boot-path config persistence.
+const PENDING_STATE_PREFIX = '.harper-config-state.pending.';
+const PENDING_STATE_SUFFIX = '.json';
+const pendingStateFileName = () => `${PENDING_STATE_PREFIX}${process.pid}${PENDING_STATE_SUFFIX}`;
+// Recovery from a recycled pid only has to be eventual, and deleting a slow-but-live writer's
+// sidecar is the worse error - it strands that writer's config file against an unpromoted state. So
+// the age-out is far longer than a commit (three synchronous steps) could ever legitimately take:
+// long enough that a stalled writer or clock skew between containers sharing a volume cannot reach
+// it, short enough that leaked wreckage does not suspend drift detection indefinitely.
+const PENDING_STATE_STALE_MS = 60 * 60 * 1000;
 
 /**
  * Get logger instance with tag - lazy loaded to avoid circular dependencies
@@ -78,6 +92,10 @@ interface ConfigState {
 	version: string;
 	sources: Record<string, ConfigSource>; // Maps config path to the source that set it
 	originalValues: Record<string, any>; // Original values before env var override (for restoration)
+	// Paths the config file declared as empty objects before an env layer first populated
+	// them (#1618/#1726). Kept separate from originalValues so a marker can never mask, or
+	// be consumed as, a real leaf original at the same path.
+	emptyScopeOriginals: Record<string, true>;
 	snapshots: {
 		// Snapshots of what each env var currently specifies (for detecting changes)
 		HARPER_DEFAULT_CONFIG?: { hash: string; config: ConfigObject };
@@ -410,21 +428,93 @@ function setNestedValue(obj: ConfigObject, path: string, value: any): void {
 }
 
 /**
- * Delete nested value by dot-notation path
+ * Delete nested value by dot-notation path, pruning ancestor objects the deletion
+ * emptied. Removal operates leaf-by-leaf on flattened paths, so deleting the last
+ * leaf under an entry would otherwise leave an `entry: {}` husk in the config file —
+ * invalid wherever validation requires fields, and sticky once persisted (#2067).
+ * Prunes only what this deletion emptied: an absent leaf deletes nothing and prunes
+ * nothing, so a deliberate empty scope (#1618/#1726) is never eaten by a no-op
+ * removal. Returns the pruned ancestor paths, deepest first.
  */
-function deleteNestedValue(obj: ConfigObject, path: string): void {
+function deleteNestedValue(obj: ConfigObject, path: string): string[] {
 	const keys = path.split('.');
+	const ancestors: ConfigObject[] = [];
 	let current = obj;
 
 	for (let i = 0; i < keys.length - 1; i++) {
 		const key = keys[i];
 		if (!isPlainObject(current[key])) {
-			return; // Path doesn't exist
+			return []; // Path doesn't exist
 		}
+		ancestors.push(current);
 		current = current[key];
 	}
 
-	delete current[keys[keys.length - 1]];
+	const leafKey = keys[keys.length - 1];
+	// Own-property check: `in` walks the prototype chain, so a leaf named like an
+	// Object.prototype member (`constructor`, `toString`) would pass, no-op the
+	// delete, and let the prune loop eat a deliberate empty scope.
+	if (!Object.prototype.hasOwnProperty.call(current, leafKey)) {
+		return [];
+	}
+	delete current[leafKey];
+
+	const prunedPaths: string[] = [];
+	for (let i = ancestors.length - 1; i >= 0 && Object.keys(current).length === 0; i--) {
+		delete ancestors[i][keys[i]];
+		prunedPaths.push(keys.slice(0, i + 1).join('.'));
+		current = ancestors[i];
+	}
+	return prunedPaths;
+}
+
+/**
+ * If the deepest existing ancestor of `path` is an empty plain object, record it in
+ * emptyScopeOriginals before a layer populates it: a bare `name: {}` in the config
+ * file is user content (#1618/#1726) even while an env var temporarily fills it. At
+ * most one ancestor can be both existing and empty, so one marker suffices.
+ */
+function recordEmptyAncestorOriginal(fileConfig: ConfigObject, state: ConfigState, path: string): void {
+	const keys = path.split('.');
+	let current = fileConfig;
+	for (let i = 0; i < keys.length - 1; i++) {
+		current = Object.prototype.hasOwnProperty.call(current, keys[i]) ? current[keys[i]] : undefined;
+		if (current === undefined) {
+			// An absent prefix cannot be a live file-declared empty scope, so markers at
+			// or under it are stale (the user deleted the scope while the env var held
+			// it) and must not resurrect it later. Only true absence qualifies: a scalar
+			// here is a higher layer occluding the scope, not the user deleting it, and
+			// emptiness is what an apply's first leaf creates right after recording.
+			const prefix = keys.slice(0, i + 1).join('.');
+			for (const markerPath of Object.keys(state.emptyScopeOriginals)) {
+				if (markerPath === prefix || markerPath.startsWith(prefix + '.')) {
+					delete state.emptyScopeOriginals[markerPath];
+				}
+			}
+			return;
+		}
+		if (!isPlainObject(current)) return;
+		if (Object.keys(current).length === 0) {
+			state.emptyScopeOriginals[keys.slice(0, i + 1).join('.')] = true;
+			return;
+		}
+	}
+}
+
+/**
+ * Counterpart to recordEmptyAncestorOriginal: when a prune removed an ancestor the
+ * file originally declared as `{}`, put the empty scope back. Only paths the deletion
+ * actually pruned are candidates, so a scalar overwrite or an absent-leaf no-op can
+ * never resurrect a scope over live env-layer content.
+ */
+function restorePrunedEmptyAncestor(fileConfig: ConfigObject, state: ConfigState, prunedPaths: string[]): void {
+	for (const prunedPath of prunedPaths) {
+		if (Object.prototype.hasOwnProperty.call(state.emptyScopeOriginals, prunedPath)) {
+			setNestedValue(fileConfig, prunedPath, {});
+			delete state.emptyScopeOriginals[prunedPath];
+			return;
+		}
+	}
 }
 
 /**
@@ -469,46 +559,155 @@ function parseConfigEnvVar(envVarValue: string | undefined, envVarName: string):
 function loadConfigState(rootPath: string): ConfigState {
 	const statePath = path.join(getBackupDirPath(rootPath), STATE_FILE_NAME);
 
-	if (!fs.existsSync(statePath)) {
-		return {
-			version: '1.0',
-			sources: {},
-			originalValues: {},
-			snapshots: {},
-		};
-	}
+	if (!fs.existsSync(statePath)) return freshConfigState();
 
 	try {
 		const state = fs.readJsonSync(statePath) as ConfigState;
-		// Ensure originalValues exists (for backwards compatibility with old state files)
+		// Ensure newer fields exist (for backwards compatibility with old state files)
 		if (!state.originalValues) {
 			state.originalValues = {};
+		}
+		if (!state.emptyScopeOriginals) {
+			// Only the field is recoverable, not the information: a scope an env layer
+			// populated before this field existed has no marker and will not be restored
+			// on vacate (see DESIGN.md, env-config empty objects)
+			state.emptyScopeOriginals = {};
 		}
 		return state;
 	} catch (error) {
 		// If state file is corrupted, start fresh
 		const logger = getLogger();
 		logger.warn(`Failed to load config state file, starting fresh: ${(error as Error).message}`);
-		return {
-			version: '1.0',
-			sources: {},
-			originalValues: {},
-			snapshots: {},
-		};
+		return freshConfigState();
 	}
+}
+
+/**
+ * Clear a sidecar left by an interrupted commit, reporting whether one was there. The caller skips
+ * drift detection for that boot: it cannot tell a manual user edit from the write that was in
+ * flight, and calling it an edit hands those paths to 'user' for good.
+ */
+function takeInterruptedCommit(rootPath: string): boolean {
+	const backupDir = getBackupDirPath(rootPath);
+	let entries: string[];
+	try {
+		entries = fs.readdirSync(backupDir);
+	} catch {
+		return false;
+	}
+	let interrupted = false;
+	for (const entry of entries) {
+		if (!entry.startsWith(PENDING_STATE_PREFIX) || !entry.endsWith(PENDING_STATE_SUFFIX)) continue;
+		const pid = Number(entry.slice(PENDING_STATE_PREFIX.length, -PENDING_STATE_SUFFIX.length));
+		const entryPath = path.join(backupDir, entry);
+		if (pid !== process.pid && isProcessAlive(pid) && !isStale(entryPath)) {
+			// A live owner is mid-commit, so its sidecar is not wreckage to clear - but the pair it is
+			// halfway through is no more comparable than an interrupted one, so drift detection is off
+			// for this boot either way.
+			interrupted = true;
+			continue;
+		}
+		try {
+			fs.removeSync(entryPath);
+		} catch (error) {
+			// Keep drift detection on rather than disabling it every boot over a sidecar we cannot clear
+			getLogger().warn(`Could not remove an interrupted env config commit (${entry}): ${(error as Error).message}`);
+			continue;
+		}
+		interrupted = true;
+	}
+	if (interrupted) getLogger().warn('An env config commit was interrupted; skipping drift detection for this boot');
+	return interrupted;
+}
+
+function isStale(entryPath: string): boolean {
+	try {
+		return Date.now() - fs.statSync(entryPath).mtimeMs > PENDING_STATE_STALE_MS;
+	} catch {
+		return false;
+	}
+}
+
+function isProcessAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'EPERM';
+	}
+}
+
+function freshConfigState(): ConfigState {
+	return {
+		version: '1.0',
+		sources: {},
+		originalValues: {},
+		emptyScopeOriginals: {},
+		snapshots: {},
+	};
 }
 
 /**
  * Save configuration state to file
  */
-function saveConfigState(rootPath: string, state: ConfigState): void {
+function serializeConfigState(state: ConfigState): string {
+	return JSON.stringify(state, null, 2) + '\n';
+}
+
+// Returns true when the file was rewritten, false when it already held this state.
+function saveConfigState(rootPath: string, state: ConfigState): boolean {
 	const backupDir = getBackupDirPath(rootPath);
 	const statePath = path.join(backupDir, STATE_FILE_NAME);
 
 	// Ensure backup directory exists
 	fs.ensureDirSync(backupDir);
 
-	fs.writeJsonSync(statePath, state, { spaces: 2 });
+	// Atomic write: a torn state file resets to fresh on the next load, losing every
+	// restoration record — the blast radius is user config-file content
+	return atomicWriteFile(statePath, serializeConfigState(state), { skipIfUnchanged: true });
+}
+
+function configStateMatchesDisk(rootPath: string, state: ConfigState): boolean {
+	try {
+		const statePath = path.join(getBackupDirPath(rootPath), STATE_FILE_NAME);
+		return fs.readFileSync(statePath, 'utf8') === serializeConfigState(state);
+	} catch {
+		return false;
+	}
+}
+
+function stageConfigState(rootPath: string, state: ConfigState): boolean {
+	const backupDir = getBackupDirPath(rootPath);
+	fs.ensureDirSync(backupDir);
+	return atomicWriteFile(path.join(backupDir, pendingStateFileName()), serializeConfigState(state));
+}
+
+// A rename, so an exhausted volume cannot refuse it and leave the config file described by nothing.
+
+export function commitStagedConfigState(rootPath: string): boolean {
+	const backupDir = getBackupDirPath(rootPath);
+	const pendingPath = path.join(backupDir, pendingStateFileName());
+	try {
+		renameWithRetry(pendingPath, path.join(backupDir, STATE_FILE_NAME));
+		return true;
+	} catch (error) {
+		// Loud: the config file is already on disk, so the confirmed state now describes values it no
+		// longer has, and the next boot reads that difference as a manual user edit.
+		getLogger().error(`Could not promote the staged env config state at ${pendingPath}: ${(error as Error).message}`);
+		return false;
+	}
+}
+
+// Drops the staged state for a config-file write that did not happen; the confirmed record stays.
+
+export function discardConfigState(rootPath: string): void {
+	const pendingPath = path.join(getBackupDirPath(rootPath), pendingStateFileName());
+	try {
+		fs.removeSync(pendingPath);
+	} catch (error) {
+		getLogger().warn(`Could not remove the staged env config state at ${pendingPath}: ${(error as Error).message}`);
+	}
 }
 
 /**
@@ -553,7 +752,7 @@ function applyConfigLayer(
 	const flatEnvConfig = flattenObject(envConfig);
 
 	for (const [path, value] of Object.entries(flatEnvConfig)) {
-		const currentSource = state.sources[path];
+		const currentSource = Object.prototype.hasOwnProperty.call(state.sources, path) ? state.sources[path] : undefined;
 		const currentValue = getNestedValue(fileConfig, path);
 
 		// Skip if this path has a source we should respect
@@ -562,9 +761,14 @@ function applyConfigLayer(
 		}
 
 		// Store original value if requested and this is first time overriding
-		if (storeOriginals && !currentSource && currentValue !== undefined && currentValue !== null) {
-			if (!(path in state.originalValues)) {
-				state.originalValues[path] = currentValue;
+		if (storeOriginals) {
+			if (!currentSource && currentValue != null) {
+				if (!Object.prototype.hasOwnProperty.call(state.originalValues, path)) {
+					state.originalValues[path] = currentValue;
+				}
+			} else if (currentValue == null) {
+				// runs on re-assert too, so a hand-deleted scope clears its stale marker
+				recordEmptyAncestorOriginal(fileConfig, state, path);
 			}
 		}
 
@@ -599,13 +803,13 @@ function handleDeletions(
 				(sourceName === 'HARPER_DEFAULT_CONFIG' ||
 					sourceName === 'HARPER_CONFIG' ||
 					sourceName === 'HARPER_SET_CONFIG') &&
-				path in state.originalValues
+				Object.prototype.hasOwnProperty.call(state.originalValues, path)
 			) {
 				setNestedValue(fileConfig, path, state.originalValues[path]);
 				delete state.originalValues[path];
 			} else {
 				// For other sources or if no original value, delete
-				deleteNestedValue(fileConfig, path);
+				restorePrunedEmptyAncestor(fileConfig, state, deleteNestedValue(fileConfig, path));
 			}
 			delete state.sources[path];
 		}
@@ -619,7 +823,7 @@ function removeValuesWithSource(fileConfig: ConfigObject, state: ConfigState, so
 	const pathsToRemove = Object.keys(state.sources).filter((path) => state.sources[path] === sourceName);
 
 	for (const path of pathsToRemove) {
-		deleteNestedValue(fileConfig, path);
+		restorePrunedEmptyAncestor(fileConfig, state, deleteNestedValue(fileConfig, path));
 		delete state.sources[path];
 	}
 }
@@ -690,7 +894,9 @@ function processEnvVar(
 			// Runtime: Only update values we previously set
 			const flatEnvConfig = flattenObject(parsedConfig);
 			for (const [path, value] of Object.entries(flatEnvConfig)) {
-				const currentSource = state.sources[path];
+				const currentSource = Object.prototype.hasOwnProperty.call(state.sources, path)
+					? state.sources[path]
+					: undefined;
 				const currentValue = getNestedValue(fileConfig, path);
 
 				// Skip if path has a tracked source that's not HARPER_DEFAULT_CONFIG
@@ -702,11 +908,14 @@ function processEnvVar(
 				if (!currentSource) {
 					if (currentValue !== undefined && currentValue !== null) {
 						// Value exists but we never set it - store as original but don't override
-						if (!(path in state.originalValues)) {
+						if (!Object.prototype.hasOwnProperty.call(state.originalValues, path)) {
 							state.originalValues[path] = currentValue;
 						}
 						continue;
 					}
+				}
+				if (currentValue == null) {
+					recordEmptyAncestorOriginal(fileConfig, state, path);
 				}
 
 				// Set the value and track the source (directive leaves compose against current)
@@ -749,13 +958,13 @@ function cleanupRemovedEnvVar(
 	if (sourceName === 'HARPER_DEFAULT_CONFIG' || sourceName === 'HARPER_CONFIG' || sourceName === 'HARPER_SET_CONFIG') {
 		const pathsToCleanup = Object.keys(state.sources).filter((path) => state.sources[path] === sourceName);
 		for (const path of pathsToCleanup) {
-			if (path in state.originalValues) {
+			if (Object.prototype.hasOwnProperty.call(state.originalValues, path)) {
 				// Restore original value
 				setNestedValue(fileConfig, path, state.originalValues[path]);
 				delete state.originalValues[path];
 			} else {
 				// No original, just delete
-				deleteNestedValue(fileConfig, path);
+				restorePrunedEmptyAncestor(fileConfig, state, deleteNestedValue(fileConfig, path));
 			}
 			delete state.sources[path];
 		}
@@ -860,20 +1069,49 @@ export function applyRuntimeEnvConfig(
 	rootPath: string,
 	options: { isInstall?: boolean } = {}
 ): ConfigObject {
+	const { config, commitState } = prepareRuntimeEnvConfig(fileConfig, rootPath, options);
+	commitState();
+	return config;
+}
+
+/**
+ * Apply the env layers and hand the state writes back to the caller, so a caller that also persists
+ * the merged config file can commit the pair as a unit (#847): saveState() stages the new state
+ * beside the confirmed one, confirmConfigWritten() renames it over the confirmed one after the
+ * config file lands, and discardConfigState() drops the staged copy if that write never happens.
+ */
+export function prepareRuntimeEnvConfig(
+	fileConfig: ConfigObject,
+	rootPath: string,
+	options: { isInstall?: boolean } = {}
+): {
+	config: ConfigObject;
+	saveState: () => boolean;
+	confirmConfigWritten: () => boolean;
+	commitState: () => boolean;
+} {
 	const defaultEnvValue = process.env.HARPER_DEFAULT_CONFIG;
 	const configEnvValue = process.env.HARPER_CONFIG;
 	const setEnvValue = process.env.HARPER_SET_CONFIG;
 
-	// Load existing state
+	// Load existing state. Only the main thread persists, so only the main thread has wreckage to
+	// clear - and a worker shares its pid, so letting one scan would delete the main thread's
+	// in-flight sidecar as if it were last boot's.
+	const interruptedCommit = isMainThread && takeInterruptedCommit(rootPath);
 	const state = loadConfigState(rootPath);
 
 	// No env vars set and no previous state, nothing to do
 	if (!defaultEnvValue && !configEnvValue && !setEnvValue && Object.keys(state.snapshots).length === 0) {
-		return fileConfig;
+		return { config: fileConfig, saveState: () => false, confirmConfigWritten: () => false, commitState: () => false };
 	}
 
-	// Detect drift (user manual edits) - only at runtime, not install
-	if (!options.isInstall) {
+	// Detect drift (user manual edits) - only at runtime, not install, not on a boot that found an
+	// interrupted commit (where a difference could equally be the write that was in flight), and only
+	// on the main thread: a worker never owns the state, and one re-deriving inside the main thread's
+	// commit window would call its half-written config file a user edit and drop the env-supplied
+	// value for itself alone - serving different config than its siblings, with nothing on disk to
+	// show why.
+	if (!options.isInstall && !interruptedCommit && isMainThread) {
 		const driftedPaths = detectConfigDrift(fileConfig, state);
 		for (const path of driftedPaths) {
 			state.sources[path] = 'user';
@@ -901,8 +1139,10 @@ export function applyRuntimeEnvConfig(
 	processEnvVar(fileConfig, state, 'HARPER_CONFIG', 'HARPER_CONFIG', options);
 	processEnvVar(fileConfig, state, 'HARPER_SET_CONFIG', 'HARPER_SET_CONFIG', options);
 
-	// Save updated state
-	saveConfigState(rootPath, state);
-
-	return fileConfig;
+	return {
+		config: fileConfig,
+		saveState: () => (configStateMatchesDisk(rootPath, state) ? false : stageConfigState(rootPath, state)),
+		confirmConfigWritten: () => commitStagedConfigState(rootPath),
+		commitState: () => saveConfigState(rootPath, state),
+	};
 }

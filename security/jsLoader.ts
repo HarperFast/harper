@@ -1,9 +1,9 @@
 import { Resource } from '../resources/Resource.ts';
 import { contextStorage, transaction } from '../resources/transaction.ts';
 import { RequestTarget } from '../resources/RequestTarget.ts';
-import { tables, databases } from '../resources/databases.ts';
+import { tables, databases, scopedTableFactory } from '../resources/databases.ts';
 import { models as harperModelsSingleton } from '../resources/models/Models.ts';
-import { defineTable, types } from '../resources/defineTable.ts';
+import { defineTable, defineTableUsing, types } from '../resources/defineTable.ts';
 import { defineResource, t, schemaOf, projectTableFragment } from '../resources/defineResource.ts';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -15,10 +15,12 @@ import logger from '../utility/logging/harper_logger.ts';
 import { createRequire } from 'node:module';
 import * as env from '../utility/environment/environmentManager';
 import * as child_process from 'node:child_process';
-import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
+
 import { contentTypes } from '../server/serverHelpers/contentTypes.ts';
 import type {} from 'ses';
 import {
+	existsSync,
 	mkdirSync,
 	readFileSync,
 	writeFileSync,
@@ -174,13 +176,13 @@ function walkExportsConditions(entry: unknown, conditions: readonly string[]): s
 
 /**
  * Resolve a bare package specifier to a file:// URL using the package's exports map
- * with ESM import conditions. Used as a fallback when createRequire().resolve() throws
- * ERR_PACKAGE_PATH_NOT_EXPORTED for pure-ESM packages (exports map with only "import"
- * conditions and no "require").
+ * with ESM import conditions. Used as a fallback when the runtime's CommonJS resolver
+ * cannot match a pure-ESM package (exports map with only "import" conditions).
  */
 function resolveESMPackageExports(
 	specifier: string,
-	fromDir: string
+	fromDir: string,
+	preferRequireConditions = false
 ): { resolvedUrl: string; packageJsonUrl: string; packageJsonSource: Buffer } | null {
 	const isScoped = specifier.startsWith('@');
 	const parts = specifier.split('/');
@@ -223,11 +225,23 @@ function resolveESMPackageExports(
 
 		if (!entry) return null;
 
-		const relative = walkExportsConditions(entry, ['import', 'node', 'default']);
+		const relative = preferRequireConditions
+			? (walkExportsConditions(entry, ['bun', 'require', 'node', 'default']) ??
+				walkExportsConditions(entry, ['bun', 'import', 'node', 'default']))
+			: walkExportsConditions(entry, ['import', 'node', 'default']);
 		if (!relative) return null;
 
+		let resolvedPath = join(pkgRoot, relative);
+		if (preferRequireConditions && !existsSync(resolvedPath)) {
+			// The runtime's preferred condition (Bun's `require`) named a target that isn't
+			// actually on disk -- fall back to the plain ESM `import` condition instead of
+			// failing resolution outright.
+			const importRelative = walkExportsConditions(entry, ['import', 'node', 'default']);
+			if (importRelative) resolvedPath = join(pkgRoot, importRelative);
+		}
+
 		return {
-			resolvedUrl: pathToFileURL(realpathSync(join(pkgRoot, relative))).toString(),
+			resolvedUrl: pathToFileURL(realpathSync(resolvedPath)).toString(),
 			packageJsonUrl: pathToFileURL(realpathSync(packageJsonPath)).toString(),
 			packageJsonSource,
 		};
@@ -325,9 +339,10 @@ async function loadModuleWithVM(moduleUrl: string, scope: ApplicationScope, useC
 				const referrerDir = resolveReferrer.startsWith('file:')
 					? dirname(fileURLToPath(resolveReferrer))
 					: dirname(resolveReferrer);
-				const esmResolved = resolveESMPackageExports(specifier, referrerDir);
+				const esmResolved = resolveESMPackageExports(specifier, referrerDir, (err as any)?.code === 'MODULE_NOT_FOUND');
 				if (esmResolved) {
 					scope.recordLoadedModule?.(esmResolved.packageJsonUrl, esmResolved.packageJsonSource);
+					scope.recordLoadedModule?.(esmResolved.resolvedUrl, readFileSync(new URL(esmResolved.resolvedUrl)));
 					return esmResolved.resolvedUrl;
 				}
 			}
@@ -849,6 +864,52 @@ function getGlobalObject(scope: ApplicationScope, copyIntrinsics = false) {
 // `Resource`/`tables`/`databases`/`createBlob`/… below are the live, process-wide singletons (the
 // same values surfaced as the top-level package exports and bare globals), not per-compartment
 // copies — only `server`/`logger`/`resources`/`config` are scope-overridable.
+/**
+ * The `databases`/`tables` a scope sees. An application that declared `branchedDatabases` gets a view
+ * in which those names resolve to its private graph and everything else falls through to the real
+ * map, live: `databases` gains entries at runtime (`ensureDB`), so a copy taken at load would
+ * silently stop showing databases created afterwards.
+ *
+ * An unbranched scope gets the process-wide singletons **by identity**, not a view: that is the
+ * overwhelmingly common case and it must stay indistinguishable from before, and it means only
+ * branched applications pay for the indirection. Proxying rather than copying also keeps
+ * `databases.system` — deliberately non-enumerable (`resources/databases.ts`) — reachable for free.
+ */
+function scopedDatabaseBindings(scope: ApplicationScope): { databases: any; tables: any } {
+	const branches = scope.branches;
+	if (!branches?.size) return { databases, tables };
+	// Every branched name already exists on the target as a writable, configurable property (a branch
+	// is only ever taken of a database that exists), so overriding it here breaks no Proxy invariant.
+	const scoped = new Proxy(databases, {
+		get: (target, key, receiver) =>
+			typeof key === 'string' && branches.has(key) ? branches.get(key)!.tables : Reflect.get(target, key, receiver),
+		getOwnPropertyDescriptor(target, key) {
+			if (typeof key !== 'string' || !branches.has(key)) return Reflect.getOwnPropertyDescriptor(target, key);
+			return { value: branches.get(key)!.tables, writable: true, enumerable: true, configurable: true };
+		},
+	});
+	// `tables` is the flat alias for the default database, so it follows that database's branch.
+	return { databases: scoped, tables: branches.get(DEFAULT_DATABASE_NAME)?.tables ?? tables };
+}
+
+/**
+ * `defineTable` for a branched application registers through that application's table factory, so
+ * a branched name lands in its branch; an unbranched application gets `defineTable` itself.
+ */
+function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
+	const branches = scope.branches;
+	if (!branches?.size) return defineTable;
+	const declareTable = scopedTableFactory(branches);
+	return function (name: string, shape: any, options?: any) {
+		return defineTableUsing(declareTable, name, shape, options);
+	} as typeof defineTable;
+}
+
+/** Everything an application sees differently because of what it declared. Built once, at load. */
+export function scopedBindings(scope: ApplicationScope): { databases: any; tables: any; defineTable: any } {
+	return { ...scopedDatabaseBindings(scope), defineTable: scopedDefineTable(scope) };
+}
+
 function getHarperExports(scope: ApplicationScope) {
 	return {
 		server: scope.server ?? server,
@@ -859,9 +920,7 @@ function getHarperExports(scope: ApplicationScope) {
 		// the process-wide singletons below.
 		secrets: getSecretsForComponent(scope.name),
 		Resource,
-		tables,
-		databases,
-		defineTable,
+		...scopedBindings(scope),
 		types,
 		defineResource,
 		t,
@@ -914,7 +973,6 @@ const ALLOWED_NODE_BUILTIN_MODULES = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDB
 				return true;
 			},
 		};
-const ALLOWED_COMMANDS = new Set(env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS) ?? []);
 const child_processConstrained: any = {
 	exec: createSpawn(child_process.exec),
 	execFile: createSpawn(child_process.execFile),
@@ -1070,10 +1128,15 @@ function acquirePidFileLock(
 }
 
 function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess, alwaysAllow?: boolean) {
-	const basePath = env.getHdbBasePath();
 	return function (command: string, args?: any, options?: any, callback?: (...args: any[]) => void) {
-		if (!ALLOWED_COMMANDS.has(command.split(' ')[0]) && !alwaysAllow) {
-			throw new Error(`Command ${command} is not allowed`);
+		// componentLoader imports this module, so it can load before the config is resolved; a value
+		// captured out here would pin an empty allowlist, and an undefined base path, for the life of
+		// the process. Anything but a configured list denies.
+		if (!alwaysAllow) {
+			const allowedCommands = env.get(CONFIG_PARAMS.APPLICATIONS_ALLOWEDSPAWNCOMMANDS);
+			if (!Array.isArray(allowedCommands) || !allowedCommands.includes(command.split(' ')[0])) {
+				throw new Error(`Command ${command} is not allowed`);
+			}
 		}
 		const processName = options?.name;
 		if (!processName)
@@ -1083,7 +1146,7 @@ function createSpawn(spawnFunction: (...args: any) => child_process.ChildProcess
 		const requestedVersion = options?.version;
 
 		// Ensure PID directory exists
-		const pidDir = join(basePath, 'pids');
+		const pidDir = join(env.getHdbBasePath(), 'pids');
 		mkdirSync(pidDir, { recursive: true });
 
 		const pidFilePath = join(pidDir, `${processName}.pid`);

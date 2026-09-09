@@ -54,12 +54,13 @@ describe('Test custom functions operations', () => {
 			fs.removeSync(path.join(CF_DIR_ROOT, 'unit_test'));
 		});
 
-		it('Test addComponent creates the project folder with the correct name', async () => {
+		it('Test addComponent leaves the project folder creation to preparation', async () => {
 			const response = await operations.addComponent({ project: 'unit_test' });
 
 			expect(response.message).to.equal('Successfully added project: unit_test');
 			expect(prepareApplicationStub.calledOnce).to.be.true;
-			expect(fs.existsSync(path.join(CF_DIR_ROOT, 'unit_test'))).to.be.true;
+			expect(fs.existsSync(CF_DIR_ROOT)).to.be.true;
+			expect(fs.existsSync(path.join(CF_DIR_ROOT, 'unit_test'))).to.be.false;
 		});
 
 		it('Test getCustomFunctions returns object with proper length and content', async () => {
@@ -556,11 +557,8 @@ describe('Test custom functions operations', () => {
 				package: '@org/new-package',
 			});
 
-			// Verify addConfig was called
 			expect(addConfigStub.calledOnce).to.be.true;
 			expect(addConfigStub.firstCall.args[0]).to.equal('new-component');
-
-			// Verify prepareApplication was called
 			expect(prepareApplicationStub.calledOnce).to.be.true;
 		});
 
@@ -603,12 +601,9 @@ describe('Test custom functions operations', () => {
 				force: true,
 			});
 
-			// Verify addConfig was called
 			expect(addConfigStub.calledOnce).to.be.true;
 			expect(addConfigStub.firstCall.args[0]).to.equal('graphql');
 			expect(addConfigStub.firstCall.args[1].package).to.equal('@org/override-package');
-
-			// Verify prepareApplication was called
 			expect(prepareApplicationStub.calledOnce).to.be.true;
 		});
 

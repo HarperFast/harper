@@ -11,6 +11,8 @@ import {
 } from 'node:fs';
 import { join, basename, dirname, sep } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
+
+import { isDeployValidating } from '../server/serverHelpers/deployValidationState.ts';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager.ts';
 import { PACKAGE_ROOT } from '../utility/packageUtils.js';
@@ -30,16 +32,18 @@ import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
+import { assertBranchedDatabases } from './Application.ts';
+import { prepareBranches } from '../resources/branchDatabase.ts';
 import { toScopeMount, nestScopeMount, type ScopeMount } from './scopeMount.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
-import { table } from '../resources/databases.ts';
+import { scopedTableFactory } from '../resources/databases.ts';
 import { getHdbBasePath } from '../utility/environment/environmentManager.ts';
 import * as auth from '../security/auth.ts';
 import * as mqtt from '../server/mqtt.ts';
 import { getConfigObj, getConfigPath } from '../config/configUtils.ts';
-import { bootstrapModels } from '../resources/models/bootstrap.ts';
+import { bootstrapModels, startModelsConfigHotReload } from '../resources/models/bootstrap.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
 import { ApplicationScope } from './ApplicationScope.ts';
@@ -47,17 +51,71 @@ import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts
 import * as httpComponent from '../server/http.ts';
 import * as mcpComponent from './mcp/index.ts';
 import { Status } from '../server/status/index.ts';
-import { lifecycle as componentLifecycle } from './status/index.ts';
+import { lifecycle as componentLifecycle, statusForComponent } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { materializeGlobalSecrets, processComponentEnv } from './componentSecrets.ts';
 import { PluginModule } from './PluginModule.ts';
-import { getEnvBuiltInComponents } from './Application.ts';
+import {
+	getEnvBuiltInComponents,
+	recoverInterruptedActivations,
+	recoverInterruptedComponentExtraction,
+	recoverInterruptedComponentExtractions,
+	unsettleableComponentsFromDisk,
+} from './Application.ts';
+import { ComponentPreparationLockTimeoutError } from './componentPreparationLock.ts';
 import { pathToFileURL } from 'node:url';
 
 const CF_ROUTES_DIR = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
+
 let loadedComponents = new Map<any, any>();
+
+// Marks a registry entry as belonging to a deploy validation's throwaway load, so cleanup can tell whether
+// an ordinary load has since ADOPTED that module. Checking "was it already loaded?" before the fact is not
+// enough: ownership changes after that check when a real load reuses the entry while the validation is
+// still running, and deleting it then removes a module a live consumer depends on.
+const VALIDATION_OWNED = Symbol('validationOwnedModule');
 let watchesSetup;
 let resources;
+const componentLoadTails = new Map<string, Promise<void>>();
+type ComponentReadyPromises = WeakMap<object, Promise<void>>;
+
+function serializeComponentLoad<T>(appName: string, load: () => Promise<T>): Promise<T> {
+	const previousLoad = componentLoadTails.get(appName);
+	const currentLoad = previousLoad ? previousLoad.then(load) : load();
+	const loadTail = currentLoad.then(
+		() => undefined,
+		() => undefined
+	);
+	componentLoadTails.set(appName, loadTail);
+	void loadTail.then(() => {
+		if (componentLoadTails.get(appName) === loadTail) componentLoadTails.delete(appName);
+	});
+	return currentLoad;
+}
+
+export async function readyComponentModules(
+	serverModules: Iterable<any>,
+	readyComponentPromises: ComponentReadyPromises = new WeakMap()
+): Promise<void> {
+	const readyPromises: Promise<void>[] = [];
+	for (const serverModule of serverModules) {
+		if (
+			(typeof serverModule !== 'object' && typeof serverModule !== 'function') ||
+			serverModule === null ||
+			typeof serverModule.ready !== 'function'
+		) {
+			continue;
+		}
+		let readyPromise = readyComponentPromises.get(serverModule);
+		if (!readyPromise) {
+			readyPromise = Promise.resolve().then(() => serverModule.ready());
+			readyComponentPromises.set(serverModule, readyPromise);
+			void readyPromise.catch(() => readyComponentPromises.delete(serverModule));
+		}
+		readyPromises.push(readyPromise);
+	}
+	await Promise.all(readyPromises);
+}
 
 /**
  * Load all the applications registered in Harper, those in the components directory as well as any directly
@@ -87,6 +145,23 @@ function rootConfigMount(appName: string): ScopeMount | undefined {
 }
 
 /**
+ * The databases an operator declared that `appName` should get a private fork of, from the root
+ * config — the same place `host`/`urlPath` are declared, and for the same reason. Which databases an
+ * application forks is a deployment decision, not something the application checks in: the operator
+ * deploying it onto a cluster is who knows whether it should run against its own copy.
+ *
+ * ```yaml
+ * my-app:
+ *   host: api.example.com
+ *   branchedDatabases: [data]
+ * ```
+ */
+function rootConfigBranchedDatabases(appName: string): string[] | true | undefined {
+	if (Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, appName)) return undefined;
+	return (getConfigObj()?.[appName] as any)?.branchedDatabases;
+}
+
+/**
  * Resolves the mount for `appName`, or reports the failure and returns `undefined` if the
  * configured `host`/`urlPath` is invalid. The caller must skip loading the application in that
  * case rather than loading it anyway: an invalid mount is a request to CONSTRAIN where the app is
@@ -110,15 +185,114 @@ function tryRootConfigMount(appName: string): { ok: true; mount: ScopeMount | un
 	}
 }
 
-export async function loadComponentDirectories(loadedPluginModules?: Map<any, any>, loadedResources?: Resources) {
+export async function loadComponentDirectories(
+	loadedPluginModules?: Map<any, any>,
+	loadedResources?: Resources,
+	readyComponentPromises: ComponentReadyPromises = new WeakMap(),
+	// Settled by boot BEFORE installApplications(), because that installs from the root config and would
+	// otherwise reinstall the previous release over an already-live candidate. `undefined` on a worker,
+	// which never runs that pass — distinct from an empty map, which would claim nothing is unreconciled.
+	interruptedActivationFailures?: Map<string, Error>
+) {
 	if (loadedResources) resources = loadedResources;
 	if (loadedPluginModules) loadedComponents = loadedPluginModules;
+	const cycleResources = resources;
+	const failedRecoveries = new Map<string, Error>(interruptedActivationFailures ?? []);
+	if (!interruptedActivationFailures) {
+		// No verdict from boot means this is a worker, which never runs the recovery pass. It reads the same
+		// evidence instead: a component whose activation could not be settled must not load here either,
+		// since workers are what actually serve it.
+		//
+		// Settlement itself runs here too, not just the read-only check. A worker can be auto-restarted at any
+		// time — including mid-activation — and the legacy pass below then has an unsettled journal in front
+		// of it, which it refuses to restore against: the component stalls instead of loading. Main-thread
+		// startup sequencing does not protect a worker that restarts later. Safe to run on any thread: each deployment is settled under
+		// the component preparation lock, which is cross-thread and cross-process, and the pass is idempotent.
+		try {
+			for (const [component, error] of await recoverInterruptedActivations(CF_ROUTES_DIR)) {
+				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
+			}
+		} catch (error) {
+			harperLogger.warn(
+				'Could not settle interrupted component activations on this thread:',
+				errorForLog(error instanceof Error ? error : new Error(String(error)))
+			);
+		}
+		// Plus anything a previous pass recorded as unsettleable, which settlement above leaves in place.
+		try {
+			for (const [component, error] of await unsettleableComponentsFromDisk(CF_ROUTES_DIR)) {
+				if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
+			}
+		} catch (error) {
+			harperLogger.warn(
+				'Could not check for unsettled component activations:',
+				errorForLog(error instanceof Error ? error : new Error(String(error)))
+			);
+		}
+	}
+	try {
+		for (const [component, error] of await recoverInterruptedComponentExtractions(CF_ROUTES_DIR)) {
+			if (!failedRecoveries.has(component)) failedRecoveries.set(component, error);
+		}
+	} catch (error) {
+		const recoveryError = error instanceof Error ? error : new Error(String(error));
+		harperLogger.warn(
+			'Loading existing filesystem components without deploy recovery because staging could not be inspected:',
+			errorForLog(recoveryError)
+		);
+	}
 	// Materialize hdb_secret global-tier rows into process.env and snapshot the scoped tier before
 	// any application loads (root components — including the Pro custody registration — have
 	// already loaded by this point). Re-runs on each reload cycle, which is how changed/late-custody
 	// secrets heal. Never throws.
 	await materializeGlobalSecrets();
 	const cfsLoaded: Promise<any>[] = [];
+	const deferredRecoveries = new Map(
+		[...failedRecoveries].filter(([, error]) => error instanceof ComponentPreparationLockTimeoutError)
+	);
+	const unreportedFailedRecoveries = new Map(
+		[...failedRecoveries].filter(([, error]) => !(error instanceof ComponentPreparationLockTimeoutError))
+	);
+	const deferComponentLoad = (appName: string) => {
+		const appFolder = join(CF_ROUTES_DIR, appName);
+		const appWasVisible = existsSync(appFolder);
+		if (appWasVisible) {
+			componentLifecycle.loading(appName, `Component '${appName}' is waiting for in-progress preparation to finish`);
+		}
+		void serializeComponentLoad(appName, () =>
+			recoverInterruptedComponentExtraction(CF_ROUTES_DIR, appName)
+				.then(async () => {
+					if (!existsSync(appFolder)) {
+						if (appWasVisible) {
+							statusForComponent(appName).unknown('Component directory no longer exists after preparation settled');
+						}
+						return;
+					}
+					const mountResult = tryRootConfigMount(appName);
+					if (!mountResult.ok) return;
+					const loadedModules = new Set<any>();
+					await loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
+						isRoot: false,
+						autoReload: false,
+						appName,
+						mount: mountResult.mount,
+						branchedDatabases: rootConfigBranchedDatabases(appName),
+						collectLoadedModules: loadedModules,
+					});
+					await readyComponentModules(loadedModules, readyComponentPromises);
+				})
+				.catch((error) => {
+					const recoveryError = error instanceof Error ? error : new Error(String(error));
+					if (appWasVisible) {
+						componentLifecycle.failed(
+							appName,
+							recoveryError,
+							`Component '${appName}' failed to load after waiting for in-progress preparation`
+						);
+					}
+				})
+		);
+	};
 	if (existsSync(CF_ROUTES_DIR)) {
 		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 		for (const appEntry of cfFolders) {
@@ -127,35 +301,70 @@ export async function loadComponentDirectories(loadedPluginModules?: Map<any, an
 			// Harper's own staging dirs (e.g. deploy aside copies) from loading as components.
 			if (appEntry.name.startsWith('.')) continue;
 			const appName = appEntry.name;
+			const recoveryError = failedRecoveries.get(appName);
+			if (recoveryError) {
+				if (recoveryError instanceof ComponentPreparationLockTimeoutError) {
+					deferredRecoveries.delete(appName);
+					deferComponentLoad(appName);
+					continue;
+				}
+				unreportedFailedRecoveries.delete(appName);
+				componentLifecycle.failed(
+					appName,
+					recoveryError,
+					`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
+				);
+				continue;
+			}
 			const appFolder = join(CF_ROUTES_DIR, appName);
 			const mountResult = tryRootConfigMount(appName);
 			if (!mountResult.ok) continue;
 			cfsLoaded.push(
-				loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, {
-					isRoot: false,
-					autoReload: false,
-					appName,
-					mount: mountResult.mount,
+				serializeComponentLoad(appName, () =>
+					loadComponent(appFolder, cycleResources, HDB_ROOT_DIR_NAME, {
+						isRoot: false,
+						autoReload: false,
+						appName,
+						mount: mountResult.mount,
+						branchedDatabases: rootConfigBranchedDatabases(appName),
+					})
+				).catch((error) => {
+					const loadError = error instanceof Error ? error : new Error(String(error));
+					componentLifecycle.failed(appName, loadError, `Component '${appName}' failed to load`);
 				})
 			);
 		}
 	}
+	for (const [appName, recoveryError] of unreportedFailedRecoveries) {
+		componentLifecycle.failed(
+			appName,
+			recoveryError,
+			`Component '${appName}' failed to load because its interrupted deployment could not be recovered`
+		);
+	}
+	for (const appName of deferredRecoveries.keys()) deferComponentLoad(appName);
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
 		if (getWorkerIndex() === 0) harperLogger.info?.('Loading application from ' + hdbAppFolder);
 		const mountResult = tryRootConfigMount(basename(hdbAppFolder));
 		if (mountResult.ok) {
 			cfsLoaded.push(
-				loadComponent(hdbAppFolder, resources, hdbAppFolder, {
-					isRoot: false,
-					autoReload: Boolean(process.env.DEV_MODE),
-					appName: hdbAppFolder,
-					mount: mountResult.mount,
-				})
+				serializeComponentLoad(hdbAppFolder, () =>
+					loadComponent(hdbAppFolder, cycleResources, hdbAppFolder, {
+						isRoot: false,
+						autoReload: Boolean(process.env.DEV_MODE),
+						// The directory arg above stays the absolute path -- that's a real filesystem
+						// location -- but `appName` here is the branch identity, and a branch path segment
+						// cannot contain `/`; use the same basename the config lookup on the next line uses.
+						appName: basename(hdbAppFolder),
+						mount: mountResult.mount,
+						branchedDatabases: rootConfigBranchedDatabases(basename(hdbAppFolder)),
+					})
+				)
 			);
 		}
 	}
-	return Promise.all(cfsLoaded).then(() => {
+	return await Promise.all(cfsLoaded).then(() => {
 		watchesSetup = true;
 	});
 }
@@ -233,6 +442,51 @@ export const loadedPaths = new Map();
 export const mainThreadInitialized = new Map<string, any>();
 
 let errorReporter;
+/**
+ * Forget that a directory was loaded, so a throwaway load does not retain it forever. `loadedPaths` is
+ * keyed by realpath and never pruned, and every deploy validates a candidate under a fresh
+ * `.deploy-staging/<uuid>/` path — so without this the map grows by one dead entry per deploy for the life
+ * of the process.
+ */
+export function forgetLoadedPath(componentDirectory: string): void {
+	let resolved: string | undefined;
+	try {
+		resolved = realpathSync(componentDirectory);
+	} catch {
+		// Already renamed live or discarded; fall through and prune by prefix anyway.
+	}
+	if (resolved) loadedPaths.delete(resolved);
+	// Nested `loadComponent()` calls register plugin and dependency realpaths UNDER the candidate, so
+	// deleting only the root leaves those behind — one dead entry per nested load, per deploy, forever.
+	const prefixes = [componentDirectory, resolved].filter(Boolean) as string[];
+	for (const key of loadedPaths.keys()) {
+		if (typeof key === 'string' && prefixes.some((prefix) => key === prefix || key.startsWith(prefix + sep))) {
+			loadedPaths.delete(key);
+		}
+	}
+}
+
+/**
+ * Release exactly the modules a throwaway validation load registered, as collected by that load's
+ * `collectLoadedModules` set.
+ *
+ * Exactly those, not a before/after diff of the global registry: validations are serialized with each other
+ * but not with ordinary loads, so a deferred real load for another component can register between the two
+ * snapshots — and a diff would then delete that live module.
+ */
+export function forgetLoadedModules(modules: Iterable<any>): void {
+	// Only entries STILL owned by that validation. Validations serialize with each other but not with
+	// ordinary loads, so a real load can adopt a module the validation registered while it is still running —
+	// re-registering the same entry as live — and deleting it afterwards would take a live module with it.
+	for (const module of modules) {
+		if (loadedComponents.get(module) === VALIDATION_OWNED) loadedComponents.delete(module);
+	}
+}
+
+/** So a caller that installs a reporter can put the previous one back when it is done with it. */
+export function getErrorReporter() {
+	return errorReporter;
+}
 export function setErrorReporter(reporter) {
 	errorReporter = reporter;
 }
@@ -252,22 +506,27 @@ export const getComponentName = () => compName;
  * every non-root component load and repaired if missing or pointing elsewhere.
  */
 function symlinkHarperModule(componentDirectory: string) {
-	return new Promise<void>((resolve, reject) => {
+	return new Promise<void>((resolve) => {
 		const store = Status.primaryStore;
-		// Create timeout to avoid deadlocks
-		const timeout = setTimeout(() => {
-			store.unlock(componentDirectory);
-			reject(new Error('symlinking harperdb module timed out'));
-		}, 10_000);
-
-		const callback = () => {
+		let timeout: NodeJS.Timeout;
+		const onUnlocked = () => {
 			clearTimeout(timeout);
 			resolve();
 		};
-		const lockAcquired = store.tryLock(componentDirectory, callback);
+		const lockAcquired = store.tryLock(componentDirectory, onUnlocked);
 
 		if (!lockAcquired) {
-			clearTimeout(timeout);
+			// The lock holder performs the fixup; wait for its unlock. The timer bounds the wait if
+			// the holder dies without unlocking, and must stay ref'd: the unlock wake arrives via an
+			// unref'd threadsafe function (see the invariant comment in threadServer.startServers).
+			// Timing out resolves rather than rejects: the fixup is idempotent maintenance, never
+			// worth failing the component load over.
+			timeout = setTimeout(() => {
+				harperLogger.warn(
+					`Timed out waiting for another thread to verify the harper module link in ${componentDirectory}; continuing with the link in its current state`
+				);
+				resolve();
+			}, 10_000);
 		} else {
 			try {
 				// validate node_modules directory exists
@@ -310,6 +569,9 @@ function symlinkHarperModule(componentDirectory: string) {
 		}
 	});
 }
+
+// Direct access keeps lock timing deterministic without exposing a broader component-load seam.
+export const _symlinkHarperModuleForTests = symlinkHarperModule;
 
 /**
  * This function handles the `handleApplication` call for a plugin in a sequential manner.
@@ -421,11 +683,14 @@ export interface LoadComponentOptions {
 	autoReload?: boolean;
 	providedLoadedComponents?: Map<any, any>;
 	appName?: string;
+	/** Databases this application forks, from its root-config entry (see `rootConfigBranchedDatabases`). */
+	branchedDatabases?: string[] | true;
 	// When provided, every Scope created during this load is added to this set instead of being
 	// auto-closed on worker shutdown. The caller then owns closing them. Used by transient loads
 	// (e.g. the deploy pre-flight validation) so their deploy-lifecycle listeners don't accumulate
 	// across deploys (#1462).
 	collectScopes?: Set<Scope>;
+	collectLoadedModules?: Set<any>;
 	// Routing the operator declared for this application in the root config (`host`/`urlPath` on
 	// the application's entry). Applied to every plugin scope this load creates, and inherited by
 	// components the application itself declares, so the whole subtree moves together.
@@ -457,6 +722,7 @@ export async function loadComponent(
 		autoReload,
 		appName,
 		mount,
+		collectLoadedModules,
 	} = options;
 	applicationScope.runtimeRoot ??= resolvedFolder;
 	applicationScope.allowedPath ??= realpathSync(componentDirectory);
@@ -477,6 +743,36 @@ export async function loadComponent(
 		}
 		applicationScope.config ??= config;
 
+		// Before any of the application's modules are imported: a branch has to exist by the time its
+		// code first reaches `databases`, and a declared branch that cannot be created must fail this
+		// application's load rather than let it run against the base it asked not to share.
+		// Declaring it in the application's own config.yaml is refused rather than ignored: it is a
+		// deployment decision and lives in the root config, and an application that believed it had a
+		// private fork while silently sharing the base is the one outcome this feature exists to stop.
+		if (!isRoot && config?.branchedDatabases !== undefined) {
+			const misplaced =
+				`Application '${options.appName ?? basename(componentDirectory)}' declares branchedDatabases in its own ` +
+				`config; it belongs in the root config entry for the application, alongside host and urlPath`;
+			// Logged as well as thrown: a component load that rejects this way surfaces downstream only as
+			// the application's routes and operations being absent, which says nothing about the cause.
+			harperLogger.error?.(misplaced);
+			throw new Error(misplaced);
+		}
+		// Only on the application's own load: nested components share its scope and its branches, and
+		// re-preparing per component would key a second branch off the same application name.
+		if (!isRoot && !options.applicationScope && options.branchedDatabases !== undefined) {
+			// The loader's own application identity, not the directory's basename: a branch path is
+			// keyed by this, and two components can share a basename (a nested one and a top-level one)
+			// while being different applications that must not share a fork each believes is private.
+			const branchAppName = options.appName ?? basename(componentDirectory);
+			assertBranchedDatabases(branchAppName, options.branchedDatabases);
+			applicationScope.branches = await prepareBranches(
+				branchAppName,
+				options.branchedDatabases,
+				applicationScope.mode
+			);
+		}
+
 		// For non-root components with empty/null config (e.g., comment-only YAML),
 		// don't synthesize DEFAULT_CONFIG. Empty config means the component has nothing
 		// to load; falling back to DEFAULT_CONFIG would cause OptionsWatcher to wait
@@ -493,7 +789,10 @@ export async function loadComponent(
 		// methods. Per-entry errors are logged and skipped by `bootstrapModels`.
 		// Awaited so module-backed entries (#1471) finish importing before the
 		// per-component iteration below; built-in entries register synchronously.
-		if (isRoot) await bootstrapModels(config);
+		if (isRoot) {
+			await bootstrapModels(config);
+			startModelsConfigHotReload();
+		}
 
 		// The `env:` block declares the component's environment expectations (string literal →
 		// process.env; object → declaration satisfied from the hdb_secret store / process.env).
@@ -601,6 +900,7 @@ export async function loadComponent(
 								autoReload: false,
 								appName: appName || componentName,
 								collectScopes: options.collectScopes,
+								collectLoadedModules,
 								// `host`/`urlPath` on this entry route the component being loaded. For an
 								// application (no plugin module of its own) that entry is the only place an
 								// operator can say where the app is served — its own config.yaml declares the
@@ -640,7 +940,7 @@ export async function loadComponent(
 				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure module loader
 				const ensureTable = (options: any) => {
 					options.origin = origin;
-					return table(options);
+					return scopedTableFactory(applicationScope.branches)(options);
 				};
 				// call the main start hook
 				const network =
@@ -792,7 +1092,17 @@ export async function loadComponent(
 							resources,
 							...componentConfig,
 						})) || extensionModule;
-				loadedComponents.set(extensionModule, true);
+				// `collectLoadedModules` serves two different purposes, so the two decisions below are made
+				// separately. A deferred ORDINARY load passes one too, to await readiness — for that it has to
+				// collect what it loaded whether or not the module was already registered. Only a VALIDATION
+				// restricts its set, because there the set doubles as the cleanup list and a shared
+				// `rest`/`graphql` module already live from a real load must not go on it.
+				const validating = isDeployValidating();
+				if (!validating || !loadedComponents.has(extensionModule)) collectLoadedModules?.add(extensionModule);
+				// Ownership follows the validation CONTEXT, not the presence of a collect set. Keying it on the
+				// set labelled a deferred ordinary load's registrations validation-owned, which would let the
+				// next validation that collects that module delete a live one.
+				loadedComponents.set(extensionModule, validating ? VALIDATION_OWNED : true);
 
 				if (
 					(extensionModule.handleFile ||

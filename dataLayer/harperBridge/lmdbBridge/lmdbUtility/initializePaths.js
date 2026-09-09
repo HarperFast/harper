@@ -7,7 +7,7 @@ const path = require('path');
 const minimist = require('minimist');
 const fs = require('fs-extra');
 const _ = require('lodash');
-const { getConfigPath } = require('../../../../config/configUtils.ts');
+const { getConfigPath, updateConfigObject } = require('../../../../config/configUtils.ts');
 env.initSync();
 
 const { CONFIG_PARAMS, DATABASES_PARAM_CONFIG, SYSTEM_SCHEMA_NAME } = hdbTerms;
@@ -115,7 +115,7 @@ function initSystemSchemaPaths(schema, table) {
 					[SYSTEM_SCHEMA_NAME, DATABASES_PARAM_CONFIG.TABLES, table, DATABASES_PARAM_CONFIG.PATH],
 					systemTablePath
 				);
-				env.setProperty(CONFIG_PARAMS.DATABASES, schemasObj);
+				updateConfigObject(CONFIG_PARAMS.DATABASES, schemasObj);
 				return systemTablePath;
 			}
 
@@ -123,7 +123,7 @@ function initSystemSchemaPaths(schema, table) {
 			const systemSchemaPath = systemSchemaConf?.[DATABASES_PARAM_CONFIG.PATH];
 			if (systemSchemaPath) {
 				_.set(schemasObj, [SYSTEM_SCHEMA_NAME, DATABASES_PARAM_CONFIG.PATH], systemSchemaPath);
-				env.setProperty(CONFIG_PARAMS.DATABASES, schemasObj);
+				updateConfigObject(CONFIG_PARAMS.DATABASES, schemasObj);
 				return systemSchemaPath;
 			}
 		}
@@ -135,7 +135,7 @@ function initSystemSchemaPaths(schema, table) {
 		if (!fs.pathExistsSync(storagePath)) throw new Error(storagePath + ' does not exist');
 		const storageSchemaPath = path.join(storagePath, schema);
 		fs.mkdirsSync(storageSchemaPath);
-		env.setProperty(CONFIG_PARAMS.STORAGE_PATH, storagePath);
+		updateConfigObject(CONFIG_PARAMS.STORAGE_PATH, storagePath);
 
 		return storageSchemaPath;
 	}
