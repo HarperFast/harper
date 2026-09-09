@@ -9,6 +9,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { replace, fake, restore, spy } = require('sinon');
 const chokidar = require('chokidar');
 const configUtils = require('#src/config/configUtils');
+const { useShortReadRetryBudget, restoreReadRetryBudget } = require('../shortReadRetryBudget');
 const { stringify } = require('yaml');
 
 // `function` so the suite can set a timeout: these tests await watcher events that may never
@@ -27,6 +28,7 @@ describe('RootConfigWatcher', function () {
 	});
 
 	afterEach(() => {
+		restoreReadRetryBudget();
 		restore();
 		rmSync(this.fixture, { recursive: true, force: true });
 	});
@@ -149,6 +151,7 @@ describe('RootConfigWatcher', function () {
 	// `harper_logger.start()` awaits this promise with no timeout, so every terminal read outcome
 	// has to settle it.
 	it('resolves ready for a config that parses to nothing', async () => {
+		useShortReadRetryBudget();
 		writeFileSync(this.configFilePath, '# nothing but a comment\n');
 		const configWatcher = new RootConfigWatcher();
 
@@ -159,6 +162,7 @@ describe('RootConfigWatcher', function () {
 	}).timeout(5000);
 
 	it('resolves ready on an empty config once the retry ladder is spent', async () => {
+		useShortReadRetryBudget();
 		writeFileSync(this.configFilePath, '');
 		const configWatcher = new RootConfigWatcher();
 
@@ -191,6 +195,7 @@ describe('RootConfigWatcher', function () {
 	});
 
 	it('resolves ready for a config that cannot be parsed', async () => {
+		useShortReadRetryBudget();
 		writeFileSync(this.configFilePath, 'foo: [unclosed\n');
 		const configWatcher = new RootConfigWatcher();
 

@@ -12,6 +12,7 @@ const { spy } = require('sinon');
 const chokidar = require('chokidar');
 const { DEFAULT_CONFIG } = require('#src/components/DEFAULT_CONFIG');
 const { cloneDeep } = require('lodash');
+const { useShortReadRetryBudget, restoreReadRetryBudget } = require('../shortReadRetryBudget');
 
 /**
  * This function asserts that an event is emitted.
@@ -96,6 +97,8 @@ async function teardown({ fixture, options }) {
 }
 
 describe('OptionsWatcher', () => {
+	afterEach(restoreReadRetryBudget);
+
 	it('should instantiate with a file path and emit a ready event', async () => {
 		const { fixture, configFilePath } = createFixture();
 
@@ -569,6 +572,7 @@ describe('OptionsWatcher', () => {
 	});
 
 	it('still becomes ready when the config cannot be applied at boot', async () => {
+		useShortReadRetryBudget();
 		const fixture = mkdtempSync(getFixtureName());
 		const configFilePath = join(fixture, 'harper-config.yaml');
 		writeFileSync(configFilePath, `${NAME}:\n  str: [unclosed\n`, 'utf-8');
@@ -614,6 +618,7 @@ describe('OptionsWatcher', () => {
 	});
 
 	it('surfaces a denied root config read once the retry ladder is spent', async function () {
+		useShortReadRetryBudget();
 		const fixture = mkdtempSync(getFixtureName());
 		const configFilePath = join(fixture, 'harper-config.yaml');
 		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');
@@ -692,6 +697,7 @@ describe('OptionsWatcher', () => {
 	// componentLoader awaits `Scope.ready` with no timeout, so a file that is still empty when the
 	// ladder is spent has to settle on the defaults rather than strand the component.
 	it('becomes ready on the defaults when the config file stays empty', async () => {
+		useShortReadRetryBudget();
 		const fixture = mkdtempSync(getFixtureName());
 		const configFilePath = join(fixture, 'harper-config.yaml');
 		writeFileSync(configFilePath, '', 'utf-8');
@@ -757,6 +763,7 @@ describe('OptionsWatcher', () => {
 	// A scope that booted unconfigured is in the same state as one whose config file was deleted:
 	// `ready` is how the watcher says it has config again, and `Scope` re-initializes on each one.
 	it('delivers a scope that arrives after the boot fallback as a ready', async () => {
+		useShortReadRetryBudget();
 		const fixture = mkdtempSync(getFixtureName());
 		const configFilePath = join(fixture, 'harper-config.yaml');
 		writeFileSync(configFilePath, '', 'utf-8');
@@ -793,6 +800,7 @@ describe('OptionsWatcher', () => {
 	});
 
 	it('does not surface the source lines yaml frames into a parse failure', async () => {
+		useShortReadRetryBudget();
 		const fixture = mkdtempSync(getFixtureName());
 		const configFilePath = join(fixture, 'harper-config.yaml');
 		writeFileSync(configFilePath, stringify(CONFIG), 'utf-8');

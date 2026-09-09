@@ -16,6 +16,7 @@ const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { stringify } = require('yaml');
 const { DEFAULT_CONFIG } = require('#src/components/DEFAULT_CONFIG');
 const { waitFor } = require('../waitFor');
+const { useShortReadRetryBudget, restoreReadRetryBudget } = require('../shortReadRetryBudget');
 
 const NAME = 'modelsGateway';
 const ENV_KEYS = ['HARPER_SET_CONFIG', 'HARPER_CONFIG', 'HARPER_DEFAULT_CONFIG'];
@@ -35,6 +36,7 @@ describe('OptionsWatcher env-config overlay (#1618)', () => {
 	});
 
 	afterEach(async () => {
+		restoreReadRetryBudget();
 		await watcher?.close();
 		watcher = undefined;
 		for (const key of ENV_KEYS) {
@@ -134,6 +136,7 @@ describe('OptionsWatcher env-config overlay (#1618)', () => {
 	});
 
 	it('settles on the defaults when the env config cannot be composed and the file is empty', async () => {
+		useShortReadRetryBudget();
 		const filePath = join(dir, 'harper-config.yaml');
 		writeFileSync(filePath, '');
 		process.env.HARPER_SET_CONFIG = '{not json';
@@ -227,6 +230,7 @@ describe('OptionsWatcher env-config resilience (#1726 review)', () => {
 	});
 
 	afterEach(async () => {
+		restoreReadRetryBudget();
 		await watcher?.close();
 		watcher = undefined;
 		for (const key of ENV_KEYS) {
