@@ -631,6 +631,68 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await assert.rejects(runtime.stop(), /native queue did not drain/);
 	});
 
+	it('keeps a failed unregister shutdown in the runtime-wide stop() wait', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const failing = new AsyncBackend('unregister-failing', { cursor: cursor(10) });
+		failing.shutdown = () => Promise.reject(new Error('native queue did not drain'));
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		const unregister = runtime.register(registration(failing));
+		await waitFor(() => store.locks.size === 1);
+		await assert.rejects(unregister(), /native queue did not drain/);
+		await assert.rejects(runtime.stop(), /native queue did not drain/);
+		assert.strictEqual(store.locks.size, 1);
+	});
+
+	it('delivers a peer rebuild request to an owner parked on backend backpressure', async () => {
+		const records = new Map([['1:a', { version: 20, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 10, recordId: 'a' })]]]),
+		});
+		const ownerBackend = new AsyncBackend('parked', { cursor: cursor(10), capacity: 0, applyDelay: 2 });
+		const peerBackend = new AsyncBackend('parked', { cursor: cursor(10) });
+		const owner = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		const peer = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		owner.register(registration(ownerBackend, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => owner.getStatus('parked').state === 'deferred');
+		peer.register(registration(peerBackend));
+		assert.strictEqual(peer.requestRebuild('parked'), true);
+		ownerBackend.capacity = Infinity;
+		store.rootStore.emit('committed');
+		await waitFor(() => ownerBackend.resets.length === 1, { timeout: 5000 });
+		await waitFor(() => owner.getReadiness('parked').state === 'ready', { timeout: 5000 });
+		await peer.stop();
+		await owner.stop();
+	});
+
+	it('does not run one more attempt for a budget a previous owner already exhausted', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
+		});
+		const words = new Int32Array(store.getUserSharedBuffer('derived-index:inherited:readiness', new ArrayBuffer(512)));
+		Atomics.store(words, 1, 2);
+		Atomics.store(words, 3, 2);
+		const backend = new AsyncBackend('inherited');
+		const { runtime } = runtimeFor(store, records);
+		runtime.register(registration(backend, { maxRebuildAttempts: 2 }));
+		await waitFor(() => runtime.getStatus('inherited')?.state === 'unavailable');
+		assert.strictEqual(backend.resets.length, 0);
+		await runtime.stop();
+	});
+
+	it('parks a backend that cannot rebuild when a previous owner condemned the generation', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const words = new Int32Array(store.getUserSharedBuffer('derived-index:condemned:readiness', new ArrayBuffer(512)));
+		Atomics.store(words, 1, 3);
+		const backend = new SyncBackend('condemned', cursor(10));
+		const { runtime } = runtimeFor(store, new Map(), { scanRecords: undefined });
+		runtime.register(registration(backend));
+		await waitFor(() => runtime.getStatus('condemned')?.state === 'needs-rebuild');
+		assert.strictEqual(backend.deliveries.length, 0);
+		await waitFor(() => store.locks.size === 0);
+		await runtime.stop();
+	});
+
 	it('keeps tables registered until the backend has settled its shutdown', async () => {
 		const store = new FakeLogStore(new Map([[10, []]]));
 		const backend = new AsyncBackend('registered-until-settled', { cursor: cursor(10) });
@@ -918,7 +980,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.deepStrictEqual(backend.deliveries[0].records[0].state, {
 			kind: 'unindexable',
 			version: 20,
-			reason: 'title must be a string',
+			reason: 'Error (400)',
 		});
 		assert.strictEqual(backend.deliveries[0].records[1].state.kind, 'record');
 		assert.strictEqual(runtime.getMetrics('unindexable').unindexableRecords, 1);

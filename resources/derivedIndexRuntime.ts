@@ -235,8 +235,11 @@ export class DerivedIndexRuntime {
 
 	#track(stopped: Promise<void>): Promise<void> {
 		this.#pendingStops.add(stopped);
-		const settled = () => this.#pendingStops.delete(stopped);
-		stopped.then(settled, settled);
+		// A failed shutdown stays pending: a later stop() must keep reporting the held lock.
+		stopped.then(
+			() => this.#pendingStops.delete(stopped),
+			() => {}
+		);
 		return stopped;
 	}
 
@@ -434,13 +437,12 @@ class DerivedIndexRunner {
 	wake(fromBackend = false) {
 		if (this.#stopped || this.#rebuilding) return;
 		if (this.status.state === 'unavailable') return;
-		if (
-			this.status.state === 'needs-rebuild' &&
-			(this.#rebuildTimer ||
-				(!this.#rebuildRequested && Atomics.load(this.#readinessWords, READINESS_REBUILD_REQUEST) !== 1))
-		)
-			return;
-		if (!fromBackend && (this.status.state === 'deferred' || this.status.state === 'waiting-durable')) return;
+		// A shared rebuild request must reach an owner parked on backpressure or backoff at its next wake.
+		const requested = Atomics.load(this.#readinessWords, READINESS_REBUILD_REQUEST) === 1;
+		if (!requested) {
+			if (this.status.state === 'needs-rebuild' && (this.#rebuildTimer || !this.#rebuildRequested)) return;
+			if (!fromBackend && (this.status.state === 'deferred' || this.status.state === 'waiting-durable')) return;
+		}
 		if (this.#idleTimer) {
 			clearTimeout(this.#idleTimer);
 			this.#idleTimer = undefined;
@@ -600,9 +602,17 @@ class DerivedIndexRunner {
 				this.#release();
 				return;
 			}
-			if ((shared.state === 'needs-rebuild' || shared.state === 'rebuilding') && this.#canRebuild()) {
+			if (shared.state === 'needs-rebuild' || shared.state === 'rebuilding') {
 				// A previous owner condemned this generation; a format-valid cursor does not overrule it.
-				this.#startRebuild();
+				if (this.#canRebuild()) this.#startRebuild();
+				else {
+					this.status = {
+						state: 'needs-rebuild',
+						reason: shared.reason ?? 'condemned by a previous owner',
+						ownerEpoch: this.#ownerEpoch,
+					};
+					this.#release();
+				}
 				return;
 			}
 			this.#resetFromDurableCursor();
@@ -675,12 +685,16 @@ class DerivedIndexRunner {
 
 	#drain() {
 		if (!this.#owned || this.#stopped || this.#rebuilding) return;
-		if (this.status.state === 'needs-rebuild' || this.status.state === 'unavailable') return;
-		if (this.#takeSharedRebuildRequest()) {
+		if (this.#canRebuild() && this.#takeSharedRebuildRequest()) {
+			if (this.#rebuildTimer) {
+				clearTimeout(this.#rebuildTimer);
+				this.#rebuildTimer = undefined;
+			}
 			this.#rebuildAttempts = 0;
 			this.#startRebuild();
 			return;
 		}
+		if (this.status.state === 'needs-rebuild' || this.status.state === 'unavailable') return;
 		const generation = this.#generation;
 		try {
 			if (!this.#checkNewLogs() || !this.#checkRangeHealth()) return;
@@ -803,11 +817,6 @@ class DerivedIndexRunner {
 		this.#flushTimer.unref?.();
 	}
 
-	/**
-	 * One drain turn: read transaction identities within the turn budget, then resolve each distinct
-	 * key once, after its last collected occurrence, so the delivered state is never older than a log
-	 * entry the batch's cursor certifies.
-	 */
 	#collectChunk(): DerivedIndexBatch | typeof CONTINUE | undefined {
 		const chunk = this.#newChunk(false);
 		const collected = this.#collectIdentities(chunk.started);
@@ -1006,9 +1015,10 @@ class DerivedIndexRunner {
 		} catch (error) {
 			const statusCode = (error as { statusCode?: unknown })?.statusCode;
 			if (typeof statusCode !== 'number' || statusCode < 400 || statusCode >= 500) throw error;
-			const reason = error instanceof Error && error.message ? error.message : String(error);
+			// Validation messages can quote record values, which must not reach the backend or the log.
+			const reason = `${error instanceof Error && error.name ? error.name : 'Error'} (${statusCode})`;
 			if (this.#unindexableRecords++ === 0)
-				logger.warn?.(`Derived index '${this.#registration.backend.id}' skipped a record it cannot project`, error);
+				logger.warn?.(`Derived index '${this.#registration.backend.id}' skipped a record it cannot project: ${reason}`);
 			return { kind: 'unindexable', version, reason };
 		}
 	}
@@ -1234,6 +1244,11 @@ class DerivedIndexRunner {
 			this.#idleTimer = undefined;
 		}
 		this.#discardProgress();
+		if (this.#rebuildAttempts >= this.#options.maxRebuildAttempts) {
+			this.#rebuilding = false;
+			this.#becomeUnavailable('rebuild budget exhausted by a previous owner');
+			return;
+		}
 		const generation = this.#generation;
 		this.status = { state: 'rebuilding', ownerEpoch: this.#ownerEpoch };
 		this.#rebuildAttempts++;
@@ -1342,12 +1357,13 @@ class DerivedIndexRunner {
 		});
 	}
 
-	/** The oldest retained committed transaction of every log; logs with none must still retain their beginning. */
 	#captureBoundary(): DerivedIndexCursor {
 		const boundary: DerivedIndexCursor = { format: 1, logs: {} };
 		// Every reload marker committed before this capture is reflected by the scan that follows it, so
 		// the replay from the oldest retained entry must not spend a rebuild on each of them again.
-		const captured = this.#options.now();
+		// Compared against transaction timestamps, which are wall-clock milliseconds; the injectable
+		// budget clock may be monotonic and must not be used here.
+		const captured = Date.now();
 		for (const logName of this.#logStore.rootStore.listLogs()) {
 			this.#reloadsHandledThrough.set(logName, Math.max(this.#reloadsHandledThrough.get(logName) ?? 0, captured));
 			let first: number | undefined;
