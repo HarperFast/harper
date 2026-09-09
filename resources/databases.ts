@@ -3180,13 +3180,14 @@ export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
 	let checkpointing;
 	let hadIndexingErrors = false;
-	let asyncRejectionReported = false;
-	const onIndexPutRejected = (error) => {
+	const attributeErrorReported = {};
+	const onIndexPutRejected = (property, error) => {
 		hadIndexingErrors = true;
-		if (asyncRejectionReported) return;
-		asyncRejectionReported = true;
-		logger.error(`Error indexing ${Table.tableName}`, error);
+		if (attributeErrorReported[property]) return;
+		attributeErrorReported[property] = true;
+		logger.error(`Error indexing attribute ${property}`, error);
 	};
+	const putRejectionHandlers = attributes.map((attribute) => (error) => onIndexPutRejected(attribute.name, error));
 	try {
 		logger.info(`Indexing ${Table.tableName} attributes`, attributes);
 		await signalling.signalSchemaChange(
@@ -3195,17 +3196,15 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		let lastResolution;
 		for (const index of indicesToRemove) {
 			lastResolution = index.drop();
-			if (lastResolution?.then) lastResolution.then(undefined, onIndexPutRejected);
+			if (lastResolution?.then) lastResolution.then(undefined, (error) => onIndexPutRejected(index.name, error));
 		}
 		let interrupted;
-		const attributeErrorReported = {};
 		let indexed = 0;
 		const attributesLength = attributes.length;
 		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
 		if (attributesLength > 0) {
 			const start = resumeStartKey(attributes);
 			if (start === undefined) {
-				// a full scan rewrites every index it builds, so clear them all first
 				for (const attribute of attributes) {
 					if (attribute.dbi.clearAsync) {
 						// LMDB, note that we don't need to wait for this to complete, just gets enqueued in front of the other writes
@@ -3260,6 +3259,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 						const attribute = attributes[i];
 						const property = attribute.name;
 						const index = attribute.dbi;
+						const onPutRejected = putRejectionHandlers[i];
 						try {
 							const resolver = attribute.resolve;
 							const value = record && (resolver ? resolver(record) : record[property]);
@@ -3272,7 +3272,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 							if (values) {
 								for (let i = 0, l = values.length; i < l; i++) {
 									lastResolution = index.put(values[i], key);
-									if (lastResolution?.then) lastResolution.then(undefined, onIndexPutRejected);
+									if (lastResolution?.then) lastResolution.then(undefined, onPutRejected);
 								}
 							}
 						} catch (error) {
@@ -3293,7 +3293,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				when(
 					lastResolution,
 					() => outstanding--,
-					() => outstanding-- // counted and logged by onIndexPutRejected
+					() => outstanding--
 				);
 				if (workerData && workerData.restartNumber !== manageThreads.restartNumber) {
 					interrupted = true;

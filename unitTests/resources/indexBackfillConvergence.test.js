@@ -610,6 +610,64 @@ describe('index backfill convergence (#2536)', () => {
 		assert.strictEqual(findDescriptor(Tbl2, 'tag').value.indexingFailed, undefined, 'the retry should complete');
 	});
 
+	it('does not persist a checkpoint before the record floor, whatever the period', async () => {
+		const TABLE = 'BackfillCheckpointFloor';
+		const N = 25000;
+		const FLOOR = 10000;
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'f-' + String(i).padStart(5, '0'), tag: 't-' + (i % 3) });
+		await last;
+
+		const policy = setIndexingCheckpointPeriod(0, FLOOR);
+		try {
+			resetDatabases();
+			Tbl = table({
+				table: TABLE,
+				database: DB,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'tag', indexed: true },
+				],
+			});
+			assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
+			const checkpoints = [];
+			const originalPut = Tbl.dbisDB.put;
+			Tbl.dbisDB.put = function (key, value, options) {
+				if (value?.name === 'tag' && value.lastIndexedKey !== undefined) checkpoints.push(value.lastIndexedKey);
+				return originalPut.call(this, key, value, options);
+			};
+			try {
+				await Tbl.indexingOperation;
+			} finally {
+				Tbl.dbisDB.put = originalPut;
+			}
+			assert.ok(checkpoints.length > 0, 'a 25k-row backfill should checkpoint');
+			const stringKeys = (key) => typeof key === 'string';
+			const visitedBefore = (key) => Number(key.slice(2)) + (LMDB ? 1 : 0) + 1;
+			assert.ok(
+				visitedBefore(checkpoints[0]) >= FLOOR,
+				`the first checkpoint ${checkpoints[0]} should come after ${FLOOR} records`
+			);
+			for (let i = 1; i < checkpoints.length; i++) {
+				assert.ok(
+					visitedBefore(checkpoints[i]) - visitedBefore(checkpoints[i - 1]) >= FLOOR,
+					`checkpoints ${checkpoints[i - 1]} and ${checkpoints[i]} are closer than ${FLOOR} records`
+				);
+			}
+			assert.ok(checkpoints.every(stringKeys));
+		} finally {
+			setIndexingCheckpointPeriod(policy.ms, policy.minRecords);
+		}
+	});
+
 	it('yields the event loop at a bounded record interval on a plain index whose put resolves synchronously', async () => {
 		const TABLE = 'BackfillYield';
 		const N = 2000;
