@@ -105,3 +105,15 @@ export function deriveGitSecretName(component: string, host: string): string {
 	const componentKey = String(component).replace(/[^\w.-]+/g, '_');
 	return `deploy.${componentKey}.git.${hostKey}`;
 }
+
+/**
+ * The root config namespace holds core settings sections and application entries side by side, so
+ * an application deployed under one of these names overwrites the section and fails the next boot's
+ * config validation. Only `sql` is listed: it is the one section whose schema is closed to unknown
+ * keys, so it is the one a stray application entry breaks.
+ */
+export const RESERVED_COMPONENT_NAMES = new Set(['sql']);
+
+export function isReservedComponentName(project: string): boolean {
+	return typeof project === 'string' && RESERVED_COMPONENT_NAMES.has(project);
+}
