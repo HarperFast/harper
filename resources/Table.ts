@@ -748,8 +748,10 @@ export function makeTable(options) {
 		}
 		return { txnLogKey: version, nodeId };
 	}
-	// User-originated writes only: replication apply and origin cache fills bypass this and never 503.
-	function assertDerivedIndexAdmission() {
+	// Every local write converges on _writeUpdate/_writeDelete; replication apply (isNotification),
+	// replay and origin cache fills (updateRecord directly) must never be shed, only user writes.
+	function assertDerivedIndexAdmission(options: any, replaying: boolean) {
+		if (options?.isNotification || replaying) return;
 		const reason = derivedIndexWriteRejection(auditStore, tableId);
 		if (reason) throw new DerivedIndexLagError(reason);
 	}
@@ -2081,7 +2083,6 @@ export function makeTable(options) {
 			const context = this.getContext();
 			const envTxn = txnForContext(context);
 			if (!envTxn) throw new Error('Can not update a table resource outside of a transaction');
-			assertDerivedIndexAdmission();
 			// record in the list of updating records so it can be written to the database when we commit
 			if (updates === false) {
 				// TODO: Remove from transaction
@@ -2897,6 +2898,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			const transaction = txnForContext(context);
 			const replaying = transaction.isReplay === true;
+			assertDerivedIndexAdmission(options, replaying);
 			checkValidId(id);
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
 				// A source/replication-applied put must carry the record; these applies skip record
@@ -3717,7 +3719,6 @@ export function makeTable(options) {
 		}
 
 		async delete(target: RequestTargetOrId): Promise<boolean> {
-			assertDerivedIndexAdmission();
 			if (isSearchTarget(target)) {
 				let scanTarget = target;
 				if ((target as any).checkPermission && (this.constructor as any).loadAsInstance === false) {
@@ -3768,6 +3769,7 @@ export function makeTable(options) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			const transaction = txnForContext(context);
+			assertDerivedIndexAdmission(options, transaction.isReplay === true);
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 
