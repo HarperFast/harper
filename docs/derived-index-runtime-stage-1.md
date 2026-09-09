@@ -36,8 +36,10 @@ API, blob extraction, generation activation, or HNSW migration.
 - Transaction-log retention removes whole files. `TransactionLog.getStats()` exposes the oldest
   retained file sequence, while `exactStart` proves whether a saved transaction boundary remains
   readable.
-- An `exactStart` miss can scan to the end of a physical log. Harper already avoids this cost in an
-  audit dedup path by reading the first retained entry before attempting an exact lookup.
+- An `exactStart` miss can scan to the end of a physical log. Because transaction timestamps can
+  move backward, neither the first retained timestamp nor `oldestSequenceNumber` can prove that a
+  timestamp cursor was purged. Stage 1 accepts this reconstruction-time scan rather than making an
+  unsafe timestamp comparison.
 - `RocksTransactionLogStore.getRange()` converts native framing failures into
   `corruptFrameStop`; a decode failure yields a sentinel with no table or type. A derived reader
   must consume both signals rather than treating them as end-of-log or an irrelevant entry.
@@ -45,8 +47,12 @@ API, blob extraction, generation activation, or HNSW migration.
   `{ done: true }` without updating `corruptFrameStop`. Stage 1 adds a stable failed-log signal to
   the iterable so derived readers cannot confuse an I/O failure with a clean drain.
 - A peer log can append a transaction key lower than an earlier physical entry. Resumption must use
-  `exactStart` together with `exclusiveStart`: after locating the exact physical boundary,
-  rocksdb-js returns every following transaction regardless of timestamp order.
+  `exactStart` and consume its anchor from the same iterator: after locating the exact physical
+  boundary, rocksdb-js returns every following transaction regardless of timestamp order.
+- Harper replay and rocksdb-js `exactStart` already treat a transaction timestamp as the identity of
+  one transaction within a physical log. Stage 1 keeps that existing invariant rather than adding a
+  second log identity. If the runner observes the same timestamp closing twice in one physical log,
+  it fails the backend closed and requires a rebuild.
 - The installed rocksdb-js crash-recovery contract restores durable committed entries to ordinary
   committed queries on reopen, including entries written after the last RocksDB flush. Stage 1
   verifies that behavior through Harper instead of using `readUncommitted`.
@@ -130,12 +136,15 @@ A runner starts the aggregate with its backend's `startByLog` vector and preserv
 name on every result. Entries from one physical log are assembled through `endTxn`; a drain budget
 is checked only between complete transactions, never in the middle of one.
 
-Before constructing or reconstructing an aggregate iterator, the runner validates every saved log
-cursor independently. The aggregate query retains both `exactStart: true` and
-`exclusiveStart: true` for each `startByLog` value. This locates the saved physical transaction,
-excludes it, and still returns a subsequently appended lower timestamp. One runner serializes all
-logs for one backend, so two logs cannot apply competing states for the same primary key
-concurrently.
+On construction or reconstruction, the aggregate reader exact-seeks each saved log cursor, validates
+and consumes exactly one complete anchor transaction per saved log, then merges from those same
+per-log iterators. It reports a missing or incomplete anchor and a second transaction boundary with
+the same timestamp. Keeping validation and continuation in one iterator closes the race in which an
+independently validated duplicate timestamp could commit before an exclusive resume and then be
+skipped. A later physical transaction with a lower timestamp still follows the anchor and is
+delivered. A newly discovered log without a saved cursor scans from its beginning only when its
+oldest retained sequence is `1`; otherwise it forces a rebuild. One runner serializes all logs for
+one backend, so two logs cannot apply competing states for the same primary key concurrently.
 
 A bounded drain produces one backend batch, not one call per source transaction. Relevant
 transactions retain their log name and boundary; the batch's `through` vector also records the last
@@ -160,21 +169,34 @@ not cross the backend boundary or enter diagnostic logs.
 Native backends may accept several transactions before their next durability barrier. The runtime
 therefore distinguishes:
 
-- **offered progress**: a process-local, cross-worker watermark recording the last transaction a
-  backend accepted into its queue; and
+- **offered progress**: the current owner's in-memory record of complete cursor vectors the backend
+  accepted into its queue; and
 - **durable progress**: the backend-owned cursor included in its durable index state.
 
-Offered progress uses one fixed-size `getUserSharedBuffer()` per `(backend id, log name)` and is read
-or changed only while holding the backend runner lock. A separate shared owner epoch is minted from
-an atomic process-wide counter for each worker-local runner instance. When a new epoch acquires the
-lock— including an individual Harper worker restart—it resets offered progress to the backend's
-durable cursor before constructing its iterator. Replaying work that survived in a native queue is
-safe; trusting the dead worker's non-durable position is not.
+Offered progress is read or changed only while holding the backend runner lock. A shared owner epoch
+is minted from an atomic process-wide counter for each ownership acquisition and included in every
+batch, allowing a backend to distinguish callbacks or queued work from different owners. When a new
+epoch acquires the lock—including after an individual Harper worker restart—it resets offered
+progress to the backend's durable cursor before constructing its iterator. Replaying work that
+survived in a native queue is safe; trusting the dead worker's non-durable position is not.
 
 A backend state-change notification wakes the runner after capacity returns or a barrier advances.
 If the current owner reports that accepted work was lost, it also resets offered progress to durable
 progress and reconstructs the iterator. A full process crash discards all offered progress and
 replays from the durable cursor.
+
+The owner retains the complete cursor vector for each accepted batch until the backend advances its
+durable barrier. A reported durable cursor must exactly equal one of those vectors; validating each
+log independently would allow a backend to assemble a cursor from different batch boundaries and
+hide work. Once a full vector becomes durable, older offered vectors and their duplicate-detection
+window are discarded. The backend must therefore publish the `through` vector atomically with the
+index state made durable by that barrier.
+
+Accepted-but-not-durable progress is capped at 64 batches by default. At the cap, the runner retains
+ownership but stops reading and enters `waiting-durable`; database commit wakes do not retry it. A
+backend state-change wake reconciles its cursor and resumes only after a complete offered vector has
+become durable. Backend-returned `deferred` batches follow the same wake discipline, preventing an
+unrelated database write stream from repeatedly probing a saturated native queue.
 
 The fake Stage 1 backend acknowledges each complete transaction durably before returning
 `accepted`. This proves the cursor and cross-worker mechanics without pretending to implement the
@@ -225,16 +247,21 @@ every known physical log, including logs whose transactions had no entries relev
 otherwise a quiet index could retain an old cursor until normal log retention forced an unnecessary
 rebuild.
 
-Before validation, the runtime checks `rootStore.listLogs()` so querying a removed cursor name does
-not recreate an empty log through `useLog()`. It then reads and caches the first retained transaction
-for each log, invalidating the cache when `oldestSequenceNumber` changes. A cursor older than this
-floor goes directly to `needs-rebuild`, avoiding the known full-log cost of an `exactStart` miss.
-
-Every new iterator—startup, owner handoff, or recovery after lost accepted work—anchors each saved
-log with `exactStart`. The first transaction must match the saved timestamp exactly and close exactly
-once before the aggregate starts exclusively after it. An incomplete transaction, two transaction
-boundaries with the same timestamp, a missing saved log, or an exact-start miss produces
+Before opening an iterator, the runtime checks `rootStore.listLogs()` so querying a removed cursor
+name does not recreate an empty log through `useLog()`. Every new iterator—startup, owner handoff, or
+recovery after lost accepted work—uses `exactStart` for saved logs and asks the aggregate reader to
+resume after one physical transaction rather than applying a value-based exclusive filter. Its
+in-stream anchor phase requires the first matching transaction to close exactly once before any
+following transaction is eligible for delivery. The range's `exactStartFailures` map distinguishes a
+missing, incomplete, or duplicate boundary. Any such failure or a missing saved log produces
 `needs-rebuild` for that backend.
+
+`oldestSequenceNumber` remains useful for lag telemetry and for deciding whether a newly discovered
+log can safely start at its beginning, but it is not compared with a timestamp cursor. The current
+rocksdb-js iterator does not expose the physical sequence and offset of yielded entries, and a lower
+timestamp can be appended in a later sequence. Stage 1 therefore pays a possible full-log scan only
+when reconstructing an owner whose exact cursor has been lost to retention; sticky ownership keeps
+that work off steady-state drains.
 
 After every bounded iterator pass, the runner inspects `corruptFrameStop` and the new failed-log set.
 Any frame break, terminated per-log iterator, audit decode sentinel, primary read failure, or
@@ -279,6 +306,7 @@ type DerivedIndexTransaction = {
 };
 
 type DerivedIndexBatch = {
+	ownerEpoch: bigint;
 	transactions: DerivedIndexTransaction[];
 	through: DerivedIndexCursor;
 };
@@ -294,7 +322,7 @@ interface DerivedIndexBackend {
 	readonly id: string;
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
-	onStateChange(wake: () => void): () => void;
+	onStateChange(wake: (change?: 'changed' | 'accepted-work-lost' | 'failed') => void): () => void;
 }
 
 type DerivedIndexRegistration = {
@@ -307,12 +335,15 @@ type DerivedIndexRegistration = {
 attributes and execute before `deliver()`, so the backend receives only its declared materialized
 view. They are not customer callbacks.
 
-`DerivedIndexDeliveryResult` uses exported numeric constants rather than allocating result objects
-on the drain path. A `deliver()` call is included in the runner's wall-time budget and may not wait
-on a writer mutex or merge. `accepted` means the backend owns the batch; it does not authorize durable
-cursor advancement until the backend's barrier includes its `through` vector. `deferred` preserves the
-cursor and requires a later state-change wake. A permanent failure transitions the backend to
-`needs-rebuild` and emits one contextual error outside the write path.
+`DerivedIndexDeliveryResult` uses the exported numeric constants `DERIVED_INDEX_ACCEPTED`,
+`DERIVED_INDEX_DEFERRED`, and `DERIVED_INDEX_FAILED` rather than allocating result objects on the
+drain path. A `deliver()` call is included in the runner's wall-time budget and may not wait on a
+writer mutex or merge. `accepted` means the backend owns the batch; it does not authorize durable
+cursor advancement until the backend's barrier includes its `through` vector. `deferred` preserves
+the batch and requires a later state-change wake. A backend reports discarded accepted-but-not-
+durable queue contents as `accepted-work-lost`, causing the current owner to reconstruct from the
+durable cursor. A permanent failure transitions the backend to `needs-rebuild` and emits one
+contextual error outside the write path.
 
 The cursor remains backend-owned because its atomic durability mechanism differs by engine:
 Tantivy includes it in published index state, while a future HNSW implementation stores it with the
@@ -327,8 +358,8 @@ flowchart TD
     B -->|yes| W[wait for commit or backend wake]
     W --> L{acquire backend runner lock?}
     L -->|no| W
-    L -->|yes| Q[exact-anchor each log and merge]
-    Q --> T[assemble bounded complete transactions]
+    L -->|yes| Q[merge and validate exact anchors in-stream]
+    Q --> T[discard anchors, assemble bounded complete transactions]
     T --> P[resolve and project current state]
     P --> O{backend outcome}
     O -->|accepted| N[advance offered progress]
@@ -421,7 +452,7 @@ the cursor and batch contracts do not prevent adding cohorts after comparative b
 - Interleave local and replicated writes to the same record across two physical logs; prove one
   backend runner preserves enqueue order and converges to current primary state.
 - Append a lower origin transaction key after a higher key in one physical peer log, resume from
-  the higher boundary, and prove `exactStart + exclusiveStart` still delivers the later physical
+  the higher boundary, and prove same-iterator anchor consumption still delivers the later physical
   entry.
 - Prove one backend's throw, malformed result, deferral, and recovery do not affect another backend
   or the existing subscription and replication listeners.
