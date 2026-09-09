@@ -1899,3 +1899,43 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
 ## A worker that misses an ITC ack gets its OS thread state logged (`server/threads/manageThreads.js`)
 
 `broadcastWithAcknowledgement` already times out (30 s) on a worker whose port stays open but never acks, and that shape is almost always a blocked event loop — a native lock, a runaway synchronous call — which nothing inside the worker can report (harper-pro#788: a restarted node's single http worker went byte-silent while main kept serving `cluster_status`, and the app log only said "not acknowledged by worker thread(s) 2"). So each worker posts its Linux thread id (`readlink /proc/thread-self`) to main once at startup, before anything else runs on it, and the timeout branch reads that thread's kernel state from `/proc/self/task/<tid>`: state, `wchan`, the syscall number (the first token only — the rest of that file is argument registers and stack/instruction pointers), CPU ticks, and context-switch counts, plus two cross-platform signals main already has, `worker.performance.eventLoopUtilization()` and the age of the last 1 s resource report. It samples again a second later and logs the deltas: no CPU ticks, no context switches and `event loop active +1000ms` is "parked on a lock"; ticks climbing with state `R` is "spinning". It is deliberately main-thread-only and best-effort: `workers` and the tid live on the main thread's `Worker` objects, every `/proc` field is reported individually (a hardened container may deny `wchan`/`syscall` while `stat` stays readable), a follow-up sample whose `starttime` differs from the first is discarded (the tid may have been recycled), one diagnostic runs per worker with a 30 s cooldown so concurrent timeouts on the same worker don't multiply reads, and nothing here runs when acks arrive on time. It does not name the lock owner; that still needs a native stack from the next occurrence.
+
+## A table declaration lands where its application's `databases` binding resolves the name (`resources/databases.ts`)
+
+`table()` is the global instance of an internal target-bound factory, `declareTable(target, definition)`.
+A `TableTarget` is the small binding the declaration body needs and nothing more: the root store, the
+`tables` graph the class is published into, what to do after a lost create race (another thread created
+the table first), and who owns the column-family wrappers the declaration opens. The global target is
+`database()` / `databases[name]` / `resetDatabases()`; a branch target (harper#2264) is that branch's
+`rootStore` / `tables` / `reloadBranch`, and it adopts every wrapper into `branch.openedStores` so
+`close()` releases them.
+
+An application that declared `branchedDatabases` declares through `scopedTableFactory(branches)`, which
+routes each declaration by database name — to the branch of that name, or to `table()` itself. GraphQL
+`@table` (`graphql.ts`), `scope.ensureTable` (`components/Scope.ts`, `componentLoader.ts`) and
+`defineTable` (`defineTableUsing`, through `security/jsLoader.ts`) all go through it. **An unbranched
+application gets `table` and `defineTable` by identity** — `scopedTableFactory(undefined) === table` —
+so the request path of every application that does not branch is untouched; only a branched
+application pays for the routing, and only at declaration time.
+
+Consequences to preserve:
+
+- A branch root store's `databaseName` is its STORE identity (`initStores` stamps `storeName`), and the
+  branch's blob roots resolve from it. The create path may only fill the name in when it is unset
+  (`??=`), never overwrite it with the logical name.
+- A branch Table class carries the base's logical name, so the Table statics that resolve the global
+  schema by name (`dropTable`, `addAttributes`, `removeAttributes`, audit-enabling `subscribe`) stay
+  refused through `assertSchemaMutable`. Schema evolution of a branch table is the factory's
+  existing-Table path — the re-declaration `@table`/`defineTable`/`ensureTable` perform on every reload —
+  which runs entirely against the branch's own store and catalog.
+- A branch is scope-private: no `updateTable` event names a branch class (declaration, reload and
+  relationship hydration all pass the announcement policy through), so replication and analytics never
+  observe one. Cross-thread propagation still happens: the ITC schema-change signal carries
+  `branchPath`, and `syncSchemaMetadata` (`server/itc/serverHandlers.js`) hands such a message to
+  `reloadBranchAt`, which re-reads the catalog into the branch's `tables` on every thread that holds
+  that branch open — the same pre-backfill signal the base path relies on so a worker keeps a new index
+  maintained while another worker's backfill runs — instead of running the global rescan.
+- The lost create race is handled per target: the global path rescans everything (`resetDatabases`);
+  a branch reloads only itself, and the relationships that reload queues are hydrated through the
+  application's own branch set (`branch.relatedBranches`, stamped by `prepareBranches`), never the
+  global map.

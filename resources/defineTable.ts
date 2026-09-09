@@ -403,8 +403,21 @@ function compileTypeDef(name: string, shape: Shape, options: DefineTableOptions)
  * index changes) through the same evolution path GraphQL reloads take.
  */
 export function defineTable<S extends Shape>(name: string, shape: S, options: DefineTableOptions = {}): TableHandle<S> {
+	return defineTableUsing(table, name, shape, options);
+}
+
+/**
+ * `defineTable` through a specific table factory: the one a branched application's scope hands out
+ * (`scopedTableFactory`), so the table lands in its branch. Internal -- the public entry is `defineTable`.
+ */
+export function defineTableUsing<S extends Shape>(
+	tableFactory: typeof table,
+	name: string,
+	shape: S,
+	options: DefineTableOptions = {}
+): TableHandle<S> {
 	const typeDef = compileTypeDef(name, shape, options);
-	const tableClass = table(typeDef);
+	const tableClass = tableFactory(typeDef);
 	typeDef.tableClass = tableClass;
 	return tableClass as TableHandle<S>;
 }

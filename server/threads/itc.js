@@ -72,14 +72,24 @@ function validateEvent(event) {
  * @param schema
  * @param table
  * @param attribute
+ * @param branchPath the branch directory when the change is to a scope-private branch of `schema`
+ *   rather than to the database itself (resources/databases.ts `reloadBranchAt`)
  * @constructor
  */
-function SchemaEventMsg(originator, operation, schema, table = undefined, attribute = undefined) {
+function SchemaEventMsg(
+	originator,
+	operation,
+	schema,
+	table = undefined,
+	attribute = undefined,
+	branchPath = undefined
+) {
 	this.originator = originator;
 	this.operation = operation;
 	this.schema = schema;
 	this.table = table;
 	this.attribute = attribute;
+	if (branchPath) this.branchPath = branchPath;
 }
 
 /**
