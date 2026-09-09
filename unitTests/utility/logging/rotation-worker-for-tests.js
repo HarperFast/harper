@@ -5,7 +5,29 @@
 
 const { isMainThread, parentPort, workerData } = require('node:worker_threads');
 
-if (!isMainThread && workerData?.logPath) {
+if (!isMainThread && workerData?.withoutTransport) {
+	(async () => {
+		const fs = require('fs-extra');
+		const { requestStaleDescriptorRelease } = require('#src/utility/logging/logGenerationCoordinator');
+		const {
+			isArchivePendingQuiescence,
+			publishArchivedGeneration,
+			rotateLogFileSync,
+		} = require('#src/utility/logging/logRotation');
+		fs.mkdirpSync(workerData.rotatedDir);
+		fs.writeFileSync(workerData.logPath, 'worker generation with no transport\n');
+		const release = await requestStaleDescriptorRelease();
+		const generation = rotateLogFileSync(workerData.logPath, workerData.rotatedDir, () => {});
+		const published = await publishArchivedGeneration(generation, true);
+		parentPort.postMessage({
+			released: release.released,
+			published,
+			pending: isArchivePendingQuiescence(generation.archivePath),
+			plainExists: fs.pathExistsSync(generation.archivePath),
+			compressedExists: fs.pathExistsSync(`${generation.archivePath}.gz`),
+		});
+	})().catch((error) => parentPort.postMessage({ error: error.stack || error.message }));
+} else if (!isMainThread && workerData?.logPath) {
 	const hdbLogger = require('#src/utility/logging/harper_logger');
 	const logger = hdbLogger.createLogger({
 		stdStreams: false,

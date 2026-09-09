@@ -3,6 +3,7 @@
 const assert = require('node:assert');
 const fs = require('fs-extra');
 const path = require('node:path');
+const { Worker } = require('node:worker_threads');
 const coordinator = require('#src/utility/logging/logGenerationCoordinator');
 const {
 	isArchivePendingQuiescence,
@@ -91,6 +92,26 @@ describe('Test log generation coordinator (#1877)', () => {
 		assert.strictEqual(published, generation.archivePath, 'expected the plain archive to stay authoritative');
 		assert.ok(fs.pathExistsSync(generation.archivePath), 'expected the plain archive to survive');
 		assert.ok(!fs.pathExistsSync(`${generation.archivePath}.gz`), 'expected no .gz to be published');
+	});
+
+	it('keeps a worker archive plain until its thread transport is installed', async () => {
+		const dir = path.join(TEST_ROOT, `workerWithoutTransport${caseNumber++}`);
+		const logPath = path.join(dir, 'hdb.log');
+		const rotatedDir = path.join(dir, 'rotated');
+		const worker = new Worker(path.join(__dirname, 'rotation-worker-for-tests.js'), {
+			workerData: { withoutTransport: true, logPath, rotatedDir },
+		});
+		const result = await new Promise((resolve, reject) => {
+			worker.once('message', resolve);
+			worker.once('error', reject);
+		});
+		await worker.terminate();
+		assert.ifError(result.error);
+		assert.strictEqual(result.released, false, 'a worker without a mesh cannot prove peer release');
+		assert.strictEqual(result.pending, true, 'the unproven generation must be held back from destruction');
+		assert.strictEqual(result.plainExists, true, 'the plain archive must remain authoritative');
+		assert.strictEqual(result.compressedExists, false, 'no compressed replacement may be published');
+		assert.strictEqual(result.published.endsWith('.log'), true);
 	});
 
 	it('treats a peer that exits as having released the generation', async () => {
@@ -265,6 +286,13 @@ describe('Test log generation coordinator (#1877)', () => {
 		// A peer's own registered log paths come back with its answer: a component loads in a worker,
 		// so the thread that runs retention only learns about that log this way.
 		assert.ok(proven.liveLogPaths.has('/a/component/own.log'), 'expected a peer-reported live log path');
+	});
+
+	it('does not shorten a peer release proof to fit an exhausted audit budget', async () => {
+		const transport = fakeTransport({ autoRespond: false, quiescenceTimeout: 50 });
+		const result = await coordinator.requestStaleDescriptorRelease(Date.now() + 10);
+		assert.strictEqual(result.released, false);
+		assert.strictEqual(transport.broadcasts.length, 0, 'a proof must not start when its full timeout cannot fit');
 	});
 
 	it('leaves the plain archive authoritative when compression fails', async () => {

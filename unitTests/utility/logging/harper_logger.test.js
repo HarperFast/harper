@@ -934,33 +934,30 @@ describe('Test harper_logger module', () => {
 
 	describe('Test external/component logger rotation inheritance (#1877)', () => {
 		const ROTATION_TEST_DIR = path.join(__dirname, 'rotationInheritanceTest');
-		let loggersToCleanup;
+		let loggersToCleanup, rotationCaseDir;
+		let rotationCase = 0;
 
 		beforeEach(() => {
-			fs.mkdirpSync(ROTATION_TEST_DIR);
+			rotationCaseDir = path.join(ROTATION_TEST_DIR, `case${rotationCase++}`);
+			fs.mkdirpSync(rotationCaseDir);
 			loggersToCleanup = [];
 		});
 
 		afterEach(async () => {
-			// Stop each rotator interval before removing the directory. There's no public handle to
-			// a logger's internal rotator/file-logger entry, but disabling rotation and re-assigning
-			// `.path` (even to its own current value) goes through the same public `.path` setter
-			// production reload uses, which tears down the old rotator interval on a short internal
-			// timer — the same pattern already used to clean up `httpLogger`/`this.externalLogger`
-			// elsewhere in this file. Any still-open file descriptor is closed by the module's own
-			// safety-timeout, unref'd, so it can't hang the test process.
+			// Retract each logger's policy before removing its unique path so no cached sink remains
+			// claimed by a test-only configuration source.
 			for (const logger of loggersToCleanup) {
 				const currentPath = logger.path;
-				logger.rotation = { enabled: false };
-				logger.path = currentPath;
+				updateLogger(logger, { path: currentPath }, undefined, logger);
+				logger.closeLogFile();
 			}
 			await new Promise((resolve) => setTimeout(resolve, 150));
-			fs.removeSync(ROTATION_TEST_DIR);
+			fs.removeSync(rotationCaseDir);
 		});
 
 		it('inherits the main rotation config (incl. maxSize) and rotates the external log file when no component rotation is configured', async () => {
 			const mainRotation = { enabled: true, maxSize: '1K', auditInterval: 100 };
-			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+			const mainLogPath = path.join(rotationCaseDir, 'hdb.log');
 			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
 			loggersToCleanup.push(testMainLogger);
 			// updateLogSettings() always applies the main logging options (incl. rotation) first,
@@ -971,7 +968,7 @@ describe('Test harper_logger module', () => {
 
 			const externalLogger = testMainLogger.forComponent('external');
 			loggersToCleanup.push(externalLogger);
-			const externalLogPath = path.join(ROTATION_TEST_DIR, 'external.log');
+			const externalLogPath = path.join(rotationCaseDir, 'external.log');
 
 			// This is the same call updateLogSettings() makes for `logging.external`: a path of its
 			// own, but no rotation block — it must inherit the main rotation, not lose it.
@@ -981,7 +978,7 @@ describe('Test harper_logger module', () => {
 
 			for (let i = 0; i < 30; i++) externalLogger.info('x'.repeat(80));
 
-			const rotatedDir = path.join(ROTATION_TEST_DIR, 'rotated');
+			const rotatedDir = path.join(rotationCaseDir, 'rotated');
 			await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0, {
 				timeout: 5000,
 				message: 'Expected the external log to be rotated using the inherited main maxSize',
@@ -989,16 +986,16 @@ describe('Test harper_logger module', () => {
 		});
 
 		it("does not inherit main's rotation path, so a wholesale-inherited rotation archives beside the component's own log instead of risking a cross-device rename (EXDEV)", () => {
-			const mainArchiveDir = path.join(ROTATION_TEST_DIR, 'mainArchive');
+			const mainArchiveDir = path.join(rotationCaseDir, 'mainArchive');
 			const mainRotation = { enabled: true, maxSize: '1K', path: mainArchiveDir };
-			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+			const mainLogPath = path.join(rotationCaseDir, 'hdb.log');
 			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
 			loggersToCleanup.push(testMainLogger);
 			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
 
 			const externalLogger = testMainLogger.forComponent('external');
 			loggersToCleanup.push(externalLogger);
-			updateLogger(externalLogger, { path: path.join(ROTATION_TEST_DIR, 'external.log') }, undefined, testMainLogger);
+			updateLogger(externalLogger, { path: path.join(rotationCaseDir, 'external.log') }, undefined, testMainLogger);
 
 			// maxSize inherits; path does not, so this logger's own rotator defaults beside its file.
 			assert.deepStrictEqual(externalLogger.rotation, { enabled: true, maxSize: '1K' });
@@ -1009,7 +1006,7 @@ describe('Test harper_logger module', () => {
 
 		it('preserves an explicit component rotation override instead of the inherited main config', () => {
 			const mainRotation = { enabled: true, maxSize: '1K' };
-			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+			const mainLogPath = path.join(rotationCaseDir, 'hdb.log');
 			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
 			loggersToCleanup.push(testMainLogger);
 			updateLogger(testMainLogger, { path: mainLogPath, rotation: mainRotation }, undefined, testMainLogger);
@@ -1019,7 +1016,7 @@ describe('Test harper_logger module', () => {
 			const override = { enabled: false };
 			updateLogger(
 				externalLogger,
-				{ path: path.join(ROTATION_TEST_DIR, 'external.log'), rotation: override },
+				{ path: path.join(rotationCaseDir, 'external.log'), rotation: override },
 				undefined,
 				testMainLogger
 			);
@@ -1027,23 +1024,122 @@ describe('Test harper_logger module', () => {
 			assert.deepStrictEqual(externalLogger.rotation, override);
 		});
 
-		it('still allows clearing the main logger rotation itself (no self-referential lock-in)', () => {
-			const mainLogPath = path.join(ROTATION_TEST_DIR, 'hdb.log');
+		it('removes the main sink guard when the main rotation block is removed', async () => {
+			const mainLogPath = path.join(rotationCaseDir, 'hdb.log');
+			const rotatedDir = path.join(rotationCaseDir, 'rotated');
 			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
 			loggersToCleanup.push(testMainLogger);
 
 			updateLogger(
 				testMainLogger,
-				{ path: mainLogPath, rotation: { enabled: true, maxSize: '1K' } },
+				{ path: mainLogPath, rotation: { enabled: true, maxSize: '1K', path: rotatedDir } },
 				undefined,
 				testMainLogger
 			);
-			assert.deepStrictEqual(testMainLogger.rotation, { enabled: true, maxSize: '1K' });
+			for (let i = 0; i < 80; i++) testMainLogger.info(`before removal ${i} ${'x'.repeat(80)}`);
+			await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0, {
+				timeout: 5000,
+				message: 'Expected the configured write guard to rotate before removal',
+			});
 
 			// A reload with no rotation block at all (logOptions.rotation undefined) must still be
 			// able to clear the main logger's own rotation, not fall back to itself and get stuck.
 			updateLogger(testMainLogger, { path: mainLogPath }, undefined, testMainLogger);
 			assert.strictEqual(testMainLogger.rotation, undefined);
+			const archivesAfterRemoval = fs.readdirSync(rotatedDir).length;
+			for (let i = 0; i < 160; i++) testMainLogger.info(`after removal ${i} ${'y'.repeat(80)}`);
+			testMainLogger.notify('flush after rotation removal');
+			await waitFor(() => fs.statSync(mainLogPath).size > 4000, {
+				timeout: 5000,
+				message: 'Expected the active log to grow beyond the former write-path cap',
+			});
+			assert.strictEqual(fs.readdirSync(rotatedDir).length, archivesAfterRemoval);
+		});
+
+		it('does not let an inherited main policy replace an explicit component policy on the shared sink', async () => {
+			const mainLogPath = path.join(rotationCaseDir, 'hdb.log');
+			const rotatedDir = path.join(rotationCaseDir, 'rotated');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			loggersToCleanup.push(testMainLogger);
+			updateLogger(
+				testMainLogger,
+				{ path: mainLogPath, rotation: { enabled: true, maxSize: '1K', path: rotatedDir } },
+				undefined,
+				testMainLogger
+			);
+			const explicit = testMainLogger.forComponent('explicit');
+			loggersToCleanup.push(explicit);
+			updateLogger(explicit, { path: mainLogPath, rotation: { enabled: false } }, 'explicit', testMainLogger);
+			const inherited = testMainLogger.forComponent('inherited');
+			loggersToCleanup.push(inherited);
+			updateLogger(inherited, { path: mainLogPath }, 'inherited', testMainLogger);
+
+			for (let i = 0; i < 160; i++) inherited.info(`explicit policy survives ${i} ${'z'.repeat(80)}`);
+			inherited.notify('flush explicit policy test');
+			await waitFor(() => fs.statSync(mainLogPath).size > 4000);
+			assert.ok(!fs.pathExistsSync(rotatedDir) || fs.readdirSync(rotatedDir).length === 0);
+		});
+
+		it('restores the inherited main policy when an explicit component policy is removed', async () => {
+			const mainLogPath = path.join(rotationCaseDir, 'hdb.log');
+			const rotatedDir = path.join(rotationCaseDir, 'rotated');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			loggersToCleanup.push(testMainLogger);
+			updateLogger(
+				testMainLogger,
+				{ path: mainLogPath, rotation: { enabled: true, maxSize: '1K', path: rotatedDir } },
+				undefined,
+				testMainLogger
+			);
+			const component = testMainLogger.forComponent('component');
+			loggersToCleanup.push(component);
+			updateLogger(component, { path: mainLogPath, rotation: { enabled: false } }, 'component', testMainLogger);
+			updateLogger(component, { path: mainLogPath }, 'component', testMainLogger);
+
+			for (let i = 0; i < 80; i++) component.info(`restored main policy ${i} ${'r'.repeat(80)}`);
+			await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0, {
+				timeout: 5000,
+				message: 'Expected inherited main rotation to resume after the override was removed',
+			});
+		});
+
+		it('clears an explicit component policy when no main policy remains', async () => {
+			const mainLogPath = path.join(rotationCaseDir, 'hdb.log');
+			const rotatedDir = path.join(rotationCaseDir, 'rotated');
+			const testMainLogger = createLogger({ path: mainLogPath, level: 'info' });
+			loggersToCleanup.push(testMainLogger);
+			const component = testMainLogger.forComponent('component');
+			loggersToCleanup.push(component);
+			updateLogger(
+				component,
+				{ path: mainLogPath, rotation: { enabled: true, maxSize: '1K', path: rotatedDir } },
+				'component',
+				testMainLogger
+			);
+			for (let i = 0; i < 80; i++) component.info(`before component removal ${i} ${'c'.repeat(80)}`);
+			await waitFor(() => fs.pathExistsSync(rotatedDir) && fs.readdirSync(rotatedDir).length > 0);
+
+			updateLogger(component, { path: mainLogPath }, 'component', testMainLogger);
+			const archivesAfterRemoval = fs.readdirSync(rotatedDir).length;
+			for (let i = 0; i < 160; i++) component.info(`after component removal ${i} ${'d'.repeat(80)}`);
+			component.notify('flush component removal');
+			await waitFor(() => fs.statSync(mainLogPath).size > 4000);
+			assert.strictEqual(fs.readdirSync(rotatedDir).length, archivesAfterRemoval);
+		});
+
+		it('lets a new explicit logger reclaim an identical cached policy before clearing it', async () => {
+			const mainLogPath = path.join(rotationCaseDir, 'hdb.log');
+			const rotatedDir = path.join(rotationCaseDir, 'rotated');
+			const rotation = { enabled: true, maxSize: '1K', path: rotatedDir };
+			const first = createLogger({ path: mainLogPath, level: 'info', rotation });
+			const replacement = createLogger({ path: mainLogPath, level: 'info', rotation: { ...rotation } });
+			loggersToCleanup.push(first, replacement);
+			updateLogger(replacement, { path: mainLogPath }, undefined, replacement);
+
+			for (let i = 0; i < 160; i++) replacement.info(`replacement cleared ${i} ${'s'.repeat(80)}`);
+			replacement.notify('flush replacement clear');
+			await waitFor(() => fs.statSync(mainLogPath).size > 4000);
+			assert.ok(!fs.pathExistsSync(rotatedDir) || fs.readdirSync(rotatedDir).length === 0);
 		});
 	});
 
