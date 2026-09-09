@@ -219,7 +219,9 @@ describe('Test log generation coordinator (#1877)', () => {
 		const first = { identity: () => stale, close: () => closed.push('first') };
 		const second = { identity: () => stale, close: () => closed.push('second') };
 		coordinator.registerLogSink(logPath, first);
-		coordinator.registerLogSink(path.join(dir, '.', 'hdb.log'), second);
+		// Built by concatenation, not path.join: join normalizes the dot segment away, and the point
+		// is two different raw strings that resolve to one file.
+		coordinator.registerLogSink(`${dir}${path.sep}.${path.sep}hdb.log`, second);
 
 		transport.deliverRotation({ request: 'sameFile', stale: true });
 

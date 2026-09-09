@@ -114,18 +114,11 @@ function logRotator({
 					// archive near-empty.
 					const active = statSync(logger.path);
 					if (active.size >= maxBytes) {
-						const generation = rotateLogFileSync(
-							logger.path,
-							rotatedLogDir,
-							logger?.closeLogFile ?? hdbLogger.closeLogFile,
-							active
-						);
-						lastRotatedLogPath = await publishArchivedGeneration(generation, compressArchives);
+						lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir, logger, compressArchives, active);
 						// The interval clock counts from the last rotation of any kind. Without this an
 						// instance whose uptime has passed `interval` archives a freshly-created log every
 						// interval on top of the size rotations already doing the work.
 						lastRotationTime = Date.now();
-						hdbLogger.notify(`hdb.log rotated, old log moved to ${lastRotatedLogPath}`);
 					}
 				} catch (err) {
 					// A missing or already-rotated active log only invalidates this check; retention below
@@ -236,12 +229,25 @@ function logRotator({
 	};
 }
 
-async function moveLogFile(logPath: string, rotatedLogPath: string, logger?: any, compress?: boolean) {
+async function moveLogFile(
+	logPath: string,
+	rotatedLogPath: string,
+	logger?: any,
+	compress?: boolean,
+	activeStats?: any
+) {
 	// The rename and the descriptor close must not be separated by an await: the descriptor would
 	// otherwise keep feeding the archived inode while the event loop runs. Closing the rotating
 	// logger's own descriptor (not the module-global one) is what makes the next write reopen a
 	// fresh log file rather than append to the moved — and, when compressing, unlinked — inode.
-	const generation = rotateLogFileSync(logPath, rotatedLogPath, logger?.closeLogFile ?? hdbLogger.closeLogFile);
+	// `activeStats` is the caller's own stat of the live generation, when it has one: the size check
+	// must rename the generation it measured, and a second stat here could pick up a newer one.
+	const generation = rotateLogFileSync(
+		logPath,
+		rotatedLogPath,
+		logger?.closeLogFile ?? hdbLogger.closeLogFile,
+		activeStats
+	);
 	const publishedPath = await publishArchivedGeneration(
 		generation,
 		compress ?? envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS)
