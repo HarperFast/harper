@@ -27,7 +27,13 @@ jobs:
   unit-test:
     name: Unit Test (Node.js v${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Covers install, build and all four serial `test:unit:all` legs. `main` itself runs
+    # 8m13s-9m09s here, so the 10 minutes this was left 51s-1m47s of headroom - less than the
+    # runner variance the job actually sees: `npm install` has taken 132s against a ~20s norm,
+    # and `install_node_modules > installs when dry_run is false` 196s against 300ms. Both
+    # cancelled a leg of #2191 that was not otherwise over. Raised to bound a hung run rather
+    # than a slow one; a genuine wedge (`.mocharc.json` sets `timeout: 0`) still ends here.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
