@@ -165,6 +165,11 @@ export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplaye
 					noProgressRun++;
 					continue;
 				}
+				if (type === 'evict') {
+					noProgressRun = 0;
+					lastProgressTime = performance.now();
+					continue;
+				}
 				const Table = tableById.get(tableId);
 				if (!Table) {
 					// Entry for a table this node no longer has (dropped/foreign). Not an

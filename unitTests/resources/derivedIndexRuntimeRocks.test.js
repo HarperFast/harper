@@ -4,6 +4,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
+const { LOCAL_ONLY } = require('#src/resources/auditStore');
 const { DERIVED_INDEX_ACCEPTED, DerivedIndexRuntime } = require('#src/resources/derivedIndexRuntime');
 
 describe('DerivedIndexRuntime with an audited RocksDB table', () => {
@@ -26,6 +27,16 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			audit: true,
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }, { name: 'privateInventory' }],
 		});
+		await Product.put('unregistered-eviction', { title: 'not indexed' });
+		let entry = Product.primaryStore.getEntry('unregistered-eviction');
+		await Product.evict('unregistered-eviction', entry.value, entry.version);
+		assert.strictEqual(
+			[...Product.auditStore.getRange({ start: 1 })].some(
+				(record) => record.type === 'evict' && record.recordId === 'unregistered-eviction'
+			),
+			false
+		);
+
 		await Product.put('anchor', { title: 'anchor' });
 		const anchor = [...Product.auditStore.getRange({ start: 1 })]
 			.filter((entry) => entry.tableId === Product.tableId && entry.recordId === 'anchor')
@@ -53,7 +64,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			const entry = Product.primaryStore.getEntry(recordId);
 			return entry?.value ? { version: entry.version, value: entry.value } : undefined;
 		});
-		runtime.register({
+		const unregister = runtime.register({
 			backend,
 			projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
 		});
@@ -74,6 +85,34 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		await Product.delete('p1');
 		await waitFor(() => mutationsFor(backend, 'p1').some((mutation) => mutation.state.kind === 'absent'));
 		assert.strictEqual(mutationsFor(backend, 'p1').at(-1).state.kind, 'absent');
+
+		await Product.put('evicted', { title: 'resident' });
+		await waitFor(() => mutationsFor(backend, 'evicted').length > 0);
+		entry = Product.primaryStore.getEntry('evicted');
+		await Product.evict('evicted', entry.value, entry.version);
+		await waitFor(() => mutationsFor(backend, 'evicted').at(-1)?.state.kind === 'absent');
+		const markers = [...Product.auditStore.getRange({ start: 1 })].filter(
+			(record) => record.type === 'evict' && record.recordId === 'evicted'
+		);
+		assert.strictEqual(markers.length, 1);
+		assert.strictEqual(markers[0].extendedType & LOCAL_ONLY, LOCAL_ONLY);
+		const history = [];
+		for await (const record of Product.getHistory()) history.push(record);
+		assert.strictEqual(
+			history.some((record) => record.type === 'evict'),
+			false
+		);
+
+		unregister();
+		await Product.put('after-unregister', { title: 'not indexed' });
+		entry = Product.primaryStore.getEntry('after-unregister');
+		await Product.evict('after-unregister', entry.value, entry.version);
+		assert.strictEqual(
+			[...Product.auditStore.getRange({ start: 1 })].some(
+				(record) => record.type === 'evict' && record.recordId === 'after-unregister'
+			),
+			false
+		);
 	});
 });
 
