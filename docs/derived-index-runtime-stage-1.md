@@ -407,10 +407,12 @@ durability follows the root store's WAL setting): a process that restarts after 
 cursor but before the rebuild's `reset` has durably invalidated it finds the marker on acquisition
 and rebuilds instead of trusting the still-format-valid cursor. The marker clears only at the first
 durable `ready` after the rebuild, so a crash before that costs one extra rebuild. A marker that
-cannot be written makes the index `unavailable` with no `reset` issued — without it a crash
-mid-reset would reopen on the condemned cursor — and the write is retried on the next acquisition
-before anything else is trusted; a marker that cannot be read counts as present, and the
-condemnation that follows still has to reach the store before any reset. A backend that cannot rebuild parks on the marker until `requestRebuild` or a
+cannot be written issues no `reset` — without it a crash mid-reset would reopen on the condemned
+cursor: the condemnation stays a shared `needs-rebuild`, the lock is released, and whichever runner
+acquires next retries the write before any reset, spending no rebuild attempt on it; a marker that
+cannot be read counts as present, and the condemnation that follows still has to reach the store.
+Residual: a condemnation the root store never accepted before a process restart is lost with the
+process, the same exposure as any root-store metadata write under a full disk. A backend that cannot rebuild parks on the marker until `requestRebuild` or a
 rebuild-capable registration. Registration that fails part-way (an `attach` or `onStateChange` that throws) leaves
 no readiness subscription or table admission behind.
 
@@ -696,12 +698,14 @@ turn; the turn's generation check prevents its end-of-log path from publishing `
 
 Opt-in writer backpressure, per registration (`maxLagMilliseconds`, 0 = no policy; a budget below
 two flush ages is raised to that, since catch-up is only proven at a durable barrier). The owner
-measures lag as the longest of three terms — cursor distance behind what it has read, time parked
-on backpressure or the durability ceiling, and the age of the oldest accepted work the backend has
-not yet made durable — because a backend that accepts but never barriers cannot hide from the
-third term, while a caught-up owner sitting idle reports zero and a backend keeping up under
-sustained ingest stays within its flush age. Catch-up is proven by a durable advance or an idle
-pass with durable == offered. It
+measures lag as the longest of four terms — cursor distance behind what it has read, time parked
+on backpressure or the durability ceiling, time since the oldest commit it may not have read yet
+(cleared each time a drain reaches the end of the log), and the age of the oldest accepted work the
+backend has not yet made durable — because a reader too slow to reach the end of the log cannot
+hide from the third term and a backend that accepts but never barriers cannot hide from the
+fourth, while a caught-up owner sitting idle reports zero and a runner keeping up under sustained
+ingest stays within drain latency plus flush age. Catch-up is proven by a durable advance or an
+idle pass with durable == offered. It
 samples on every drain turn, idle pass and age tick and on its own lag timer while parked, and
 publishes a lag-exceeded word in the shared readiness buffer: set at `lag >= budget`, cleared only
 once this owner has proved catch-up and lag is below half the budget, so the policy neither flaps

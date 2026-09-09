@@ -474,7 +474,7 @@ class DerivedIndexRunner {
 	#heldLock = false;
 	#quiescing?: { epoch: bigint; promise: Promise<void>; since: number };
 	#condemned = false;
-	#condemnationPending?: string;
+	#unreadSince?: number;
 	#rebuilding = false;
 	#rebuildRequested = false;
 	#boundaryPending = false;
@@ -569,11 +569,12 @@ class DerivedIndexRunner {
 
 	wake(fromBackend = false) {
 		if (this.#stopped || this.#rebuilding) return;
+		// A commit wake may carry unread work; the next drain that reaches the end of the log clears it.
+		if (!fromBackend) this.#unreadSince ??= this.#options.now();
 		if (this.status.state === 'unavailable') {
 			if (
-				this.#condemnationPending === undefined &&
-				(this.#heldLock ||
-					Atomics.load(this.#shared().words, READINESS_STATE) === READINESS_STATES.indexOf('unavailable'))
+				this.#heldLock ||
+				Atomics.load(this.#shared().words, READINESS_STATE) === READINESS_STATES.indexOf('unavailable')
 			)
 				return;
 			this.status = { state: 'idle' };
@@ -676,19 +677,20 @@ class DerivedIndexRunner {
 		return `derived index '${this.id}' is more than ${this.#lagBudget} ms behind; retry this write`;
 	}
 
-	/** Accepted-at time of the oldest offered work the backend has not yet made durable. */
 	#oldestAcceptedAt(): number | undefined {
 		if (this.#offeredCursors.length > 1) return this.#offeredCursors[1].acceptedAt;
 		return this.#unanchoredMutations > 0 ? this.#unanchoredAcceptedAt : undefined;
 	}
 
 	/**
-	 * Owner-only. Lag is the longest of: cursor distance behind what this runner has read, time parked
-	 * on backpressure, and the age of the oldest accepted work not yet durable — the last term is what
-	 * a backend that accepts but never barriers cannot hide, and it is zero for a caught-up owner
-	 * sitting idle and bounded by the flush age for a backend keeping up under sustained ingest. The
-	 * trip survives discard and handoff: a successor clears it only after proving catch-up itself
-	 * (a durable advance or an idle pass with durable == offered), below half the budget.
+	 * Owner-only. Lag is the longest of four terms: cursor distance behind what this runner has read,
+	 * time parked on backpressure, time since the oldest commit this runner may not have read yet (a
+	 * reader too slow to reach the end of the log cannot hide), and the age of the oldest accepted
+	 * work not yet durable (a backend that accepts but never barriers cannot hide). All four are zero
+	 * for a caught-up owner sitting idle and stay within drain latency plus flush age for a runner
+	 * keeping up under sustained ingest. The trip survives discard and handoff: a successor clears it
+	 * only after proving catch-up itself (a durable advance or an idle pass with durable == offered),
+	 * below half the budget.
 	 */
 	#publishLag() {
 		const max = this.#lagBudget;
@@ -698,6 +700,7 @@ class DerivedIndexRunner {
 		const lag = Math.max(
 			this.#cursorLag(),
 			this.#stalledSince === undefined ? 0 : now - this.#stalledSince,
+			this.#unreadSince === undefined ? 0 : now - this.#unreadSince,
 			oldestAccepted === undefined ? 0 : now - oldestAccepted
 		);
 		const words = this.#shared().words;
@@ -795,16 +798,10 @@ class DerivedIndexRunner {
 		this.#owned = true;
 		this.#generation++;
 		this.#lastCaughtUpAt = undefined;
+		this.#unreadSince = this.#options.now();
 		try {
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
-			if (this.#condemnationPending !== undefined) {
-				// A condemnation the store refused earlier is retried before anything else is trusted.
-				const reason = this.#condemnationPending;
-				this.#condemnationPending = undefined;
-				this.#needsRebuild(reason);
-				return;
-			}
 			const condemned = this.#readCondemnation();
 			const shared = this.getReadiness();
 			const reloadsThrough = Number(Atomics.load(this.#shared().reloads, 0));
@@ -835,6 +832,7 @@ class DerivedIndexRunner {
 			if (shared.state === 'needs-rebuild' || shared.state === 'rebuilding') {
 				if (this.#canRebuild()) this.#startRebuild();
 				else {
+					this.#writeCondemnation();
 					this.status = {
 						state: 'needs-rebuild',
 						reason: shared.reason ?? 'condemned by a previous owner',
@@ -1343,6 +1341,7 @@ class DerivedIndexRunner {
 
 	#finishIdlePass() {
 		this.#stalledSince = undefined;
+		this.#unreadSince = undefined;
 		if (this.#rebuilding || !this.#offered) return;
 		const durable = this.#registration.backend.getDurableCursor();
 		if (durable === undefined && this.#boundaryPending) {
@@ -1407,8 +1406,6 @@ class DerivedIndexRunner {
 			this.#offeredCursors.splice(0, offeredIndex);
 			if (!this.#rebuilding && this.status.state !== 'needs-rebuild') this.#settleReady();
 		}
-		// A durable advance proves the backend is catching up; under sustained ingest the log is never
-		// exhausted and durable rarely equals offered, so the idle pass alone would never prove it.
 		if (offeredIndex > 0 || sameCursor(cursor, this.#offered)) this.#lastCaughtUpAt = this.#options.now();
 		return true;
 	}
@@ -1447,11 +1444,22 @@ class DerivedIndexRunner {
 			this.#condemned = this.#logStore.rootStore.getSync(this.#markerKey) !== undefined;
 			return this.#condemned;
 		} catch (error) {
-			// Unreadable counts as present, but only a successful write may set the local flag: the
-			// condemnation that follows must still reach the store before any reset.
 			logger.error(`Derived index '${this.id}' could not read its condemnation marker`, error);
 			return true;
 		}
+	}
+
+	/**
+	 * A condemnation the store refused stays a shared `needs-rebuild` and the lock is released, so
+	 * whichever runner acquires next retries the write before any reset; no attempt is spent on it.
+	 */
+	#deferForCondemnation(shared: string) {
+		logger.error(`Derived index '${this.id}' condemnation could not be persisted; retrying at the next wake`);
+		const reason = this.status.state === 'needs-rebuild' ? this.status.reason : shared;
+		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
+		this.#publishReadiness('needs-rebuild', shared);
+		this.#rebuildRequested = true;
+		this.#release();
 	}
 
 	#clearCondemnation() {
@@ -1512,8 +1520,7 @@ class DerivedIndexRunner {
 		this.#discardProgress();
 		if (!this.#owned) return;
 		if (!this.#writeCondemnation()) {
-			this.#condemnationPending = reason;
-			this.#becomeUnavailable('condemnation could not be persisted; no rebuild until it can', error);
+			this.#deferForCondemnation(shared);
 			return;
 		}
 		if (this.#canRebuild()) {
@@ -1551,6 +1558,7 @@ class DerivedIndexRunner {
 		this.#generation++;
 		this.#stalledSince = undefined;
 		this.#lastCaughtUpAt = undefined;
+		this.#unreadSince = this.#options.now();
 		this.#offered = undefined;
 		this.#pendingBatch = undefined;
 		this.#carried = [];
@@ -1603,6 +1611,11 @@ class DerivedIndexRunner {
 			this.#idleTimer = undefined;
 		}
 		this.#discardProgress();
+		if (!this.#writeCondemnation()) {
+			this.#rebuilding = false;
+			this.#deferForCondemnation(this.status.state === 'needs-rebuild' ? this.status.reason : 'rebuild requested');
+			return;
+		}
 		if (this.#rebuildAttempts >= this.#options.maxRebuildAttempts) {
 			this.#rebuilding = false;
 			this.#becomeUnavailable('rebuild budget exhausted by a previous owner');

@@ -1335,16 +1335,54 @@ describe('DerivedIndexRuntime for native backends', () => {
 		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
 		await waitFor(() => runtime.getReadiness('marker-fails').state === 'ready');
 		backend.stateChange('failed');
-		await waitFor(() => runtime.getStatus('marker-fails')?.state === 'unavailable');
-		assert.match(runtime.getStatus('marker-fails').reason, /condemnation could not be persisted/);
+		await waitFor(() => runtime.getStatus('marker-fails')?.state === 'needs-rebuild' && store.locks.size === 0);
 		assert.strictEqual(backend.resets.length, 0, 'no destructive reset without a durable condemnation');
-		assert.strictEqual(runtime.getReadiness('marker-fails').state, 'unavailable');
-		// The store recovers: the next commit wake retries the marker, and only then does the rebuild run.
+		assert.strictEqual(runtime.getReadiness('marker-fails').state, 'needs-rebuild');
+		store.rootStore.emit('committed');
+		await sleep(30);
+		assert.strictEqual(backend.resets.length, 0, 'a wake retries the marker and still issues no reset');
+		assert.strictEqual(
+			runtime.getMetrics('marker-fails').rebuildAttempts,
+			0,
+			'no attempt is spent on a refused marker'
+		);
+		// The store recovers: the next wake writes the marker, and only then does the rebuild run.
 		delete store.putSync;
 		store.rootStore.emit('committed');
 		await waitFor(() => runtime.getReadiness('marker-fails').state === 'ready', { timeout: 5000 });
 		assert.strictEqual(store.markers.size, 0, 'written, then cleared at the durable ready');
 		assert.strictEqual(backend.resets.length, 1);
+		await runtime.stop();
+	});
+
+	it('trips the lag policy for a reader too slow to reach the end of the log, even with a caught-up backend', async () => {
+		const entries = Array.from({ length: 400 }, (_, i) => audit({ timestamp: 11 + i, recordId: `r${i}` }));
+		const records = new Map(entries.map((entry, i) => [`1:r${i}`, { version: 11 + i, value: { title: 'x' } }]));
+		const store = new FakeLogStore(new Map([[10, entries]]), {
+			onNext: (entry) => {
+				if (!entry) return;
+				const until = performance.now() + 1;
+				while (performance.now() < until);
+			},
+		});
+		const backend = new SyncBackend('slow-reader', cursor(10));
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 });
+		runtime.register(
+			registration(backend, {
+				maxLagMilliseconds: 100,
+				maxFlushAgeMilliseconds: 5,
+				maxMillisecondsPerTurn: 2,
+				maxChunkRecords: 4,
+			})
+		);
+		await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined, { timeout: 5000 });
+		assert.strictEqual(
+			runtime.getMetrics('slow-reader').cursorLagMilliseconds,
+			0,
+			'durable trails what was read by nothing'
+		);
+		await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined, { timeout: 10_000 });
+		assert.strictEqual(backend.cursor.logs.local, 410);
 		await runtime.stop();
 	});
 
