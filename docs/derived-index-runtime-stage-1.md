@@ -563,8 +563,9 @@ reaching `ready` resets it. An owner that acquires while the shared state is `ne
 `rebuilding` rebuilds rather than trusting a format-valid durable cursor: a previous owner
 condemned that generation. `requestRebuild` from a non-owning worker sets a request word in the
 shared record that the owner consumes on its next drain turn and any acquisition consumes first,
-so a request reaches an owner that never idles or is parked on backpressure or backoff (the word
-bypasses those wake gates at the owner's next wake of any kind); a request arriving during a
+so a request reaches an owner that never idles or is parked on backpressure or backoff (the
+requesting worker also notifies the buffer, which wakes the owner directly, and the word bypasses
+those wake gates at the owner's next wake of any kind); a request arriving during a
 rebuild is absorbed by it (the rebuild consumes the word when it starts and again when it
 completes). A non-owning worker never writes the readiness record itself: only the lock holder
 publishes. A budget a previous owner already exhausted is honoured without one more attempt, and
