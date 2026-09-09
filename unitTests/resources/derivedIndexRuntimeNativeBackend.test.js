@@ -560,7 +560,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(backend.pendingFlush, undefined);
 	});
 
-	it('keeps the lock when the backend cannot prove its queue is quiescent', async () => {
+	it('keeps the lock and rejects stop() when the backend cannot prove its queue is quiescent', async () => {
 		const store = new FakeLogStore(new Map([[10, []]]));
 		const backend = new AsyncBackend('held', { cursor: cursor(10) });
 		backend.shutdown = () => Promise.reject(new Error('native queue did not drain'));
@@ -568,10 +568,187 @@ describe('DerivedIndexRuntime for native backends', () => {
 		runtime.register(registration(backend));
 		await waitFor(() => store.locks.size === 1 && runtime.getStatus('held').state === 'idle');
 
-		await runtime.stop();
+		await assert.rejects(runtime.stop(), /native queue did not drain/);
 		assert.strictEqual(store.locks.size, 1);
 		assert.match(readDerivedIndexReadiness(store, 'held').reason, /native queue did not drain/);
 		assert.strictEqual(readDerivedIndexReadiness(store, 'held').state, 'unavailable');
+	});
+
+	it('revives an index whose lock was held by a failed shutdown once the backend can settle', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
+		});
+		const backend = new AsyncBackend('held-revive', { cursor: cursor(7), applyDelay: 2 });
+		let settle = false;
+		backend.shutdown = async () => {
+			if (!settle) throw new Error('native queue did not drain');
+		};
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 5 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => runtime.getStatus('held-revive').state === 'unavailable');
+		assert.strictEqual(store.locks.size, 1);
+
+		settle = true;
+		assert.strictEqual(runtime.requestRebuild('held-revive'), true);
+		await waitFor(() => runtime.getReadiness('held-revive').state === 'ready', { timeout: 5000 });
+		assert.strictEqual(backend.resets.length, 1);
+		await runtime.stop();
+		assert.strictEqual(store.locks.size, 0);
+	});
+
+	it('never publishes ready between a fault found mid-drain and the destructive reset', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, [audit({ timestamp: 8, recordId: 'a' })]]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
+		});
+		let breakOnce = true;
+		store.onNext = () => {
+			if (breakOnce) {
+				breakOnce = false;
+				store.lastIterable.corruptFrameStop.breaks = 1;
+			}
+		};
+		const originalGetRange = store.getRange.bind(store);
+		store.getRange = (options) => (store.lastIterable = originalGetRange(options));
+		const readinessLog = [];
+		const backend = new AsyncBackend('mid-drain', {
+			cursor: cursor(7),
+			applyDelay: 2,
+			onReset: () => readinessLog.push(runtime.getReadiness('mid-drain').state),
+		});
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 1000 });
+		const seen = new Set();
+		const probe = setInterval(() => seen.add(runtime.getReadiness('mid-drain').state), 0);
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
+
+		await waitFor(() => backend.resets.length === 1);
+		clearInterval(probe);
+		assert.deepStrictEqual(readinessLog, ['rebuilding']);
+		assert.strictEqual(seen.has('ready') && backend.resets.length === 1 && seen.size === 1, false);
+		await waitFor(() => runtime.getReadiness('mid-drain').state === 'ready', { timeout: 5000 });
+		assert.strictEqual(runtime.getMetrics('mid-drain').rebuildAttempts, 0);
+		await runtime.stop();
+	});
+
+	it('does not leave a rebuild request dangling when one arrives during a rebuild', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(
+			new Map([
+				[7, []],
+				[8, []],
+			]),
+			{ logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]) }
+		);
+		const backend = new AsyncBackend('dangling', { applyDelay: 2, capacity: 0 });
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 5 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => runtime.getStatus('dangling').state === 'rebuilding' && backend.deliveries.length === 1);
+		assert.strictEqual(runtime.requestRebuild('dangling'), true);
+		backend.capacity = Infinity;
+		backend.stateChange('changed');
+		await waitFor(() => runtime.getReadiness('dangling').state === 'ready', { timeout: 5000 });
+		await waitFor(() => store.locks.size === 0);
+
+		const releasedEpoch = runtime.getStatus('dangling').ownerEpoch;
+		backend.cursor = cursor(8);
+		store.rootStore.emit('committed');
+		await waitFor(
+			() => runtime.getStatus('dangling').ownerEpoch > releasedEpoch && runtime.getStatus('dangling').state === 'idle'
+		);
+		assert.strictEqual(backend.resets.length, 1, 'a healthy re-acquisition must not rebuild again');
+		await runtime.stop();
+	});
+
+	it('routes a rebuild request from a non-owning worker to a busy owner', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
+		});
+		const ownerBackend = new AsyncBackend('routed', { cursor: cursor(7), applyDelay: 2 });
+		const peerBackend = new AsyncBackend('routed', { cursor: cursor(7) });
+		const owner = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		const peer = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
+		owner.register(registration(ownerBackend, { maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => owner.getStatus('routed').state === 'idle' && store.locks.size === 1);
+		peer.register(registration(peerBackend));
+
+		assert.strictEqual(peer.requestRebuild('routed'), true);
+		store.rootStore.emit('committed');
+		await waitFor(() => ownerBackend.resets.length === 1, { timeout: 5000 });
+		await waitFor(() => owner.getReadiness('routed').state === 'ready', { timeout: 5000 });
+		assert.strictEqual(peerBackend.resets.length, 0);
+		await peer.stop();
+		await owner.stop();
+	});
+
+	it('does not spend rebuild attempts on reload markers the scan already covered', async () => {
+		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
+		const reloads = [8, 9, 10].map((timestamp) => ({ ...audit({ timestamp, type: 'reload' }), recordId: null }));
+		const store = new FakeLogStore(
+			new Map([
+				[7, [...reloads, audit({ timestamp: 11, recordId: 'a' })]],
+				[11, []],
+			]),
+			{ logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' }), ...reloads]]]) }
+		);
+		const backend = new AsyncBackend('reloads', { cursor: cursor(7), applyDelay: 2 });
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 1000 });
+		runtime.register(
+			registration(backend, { maxRebuildAttempts: 2, rebuildBackoffMilliseconds: 5, maxFlushAgeMilliseconds: 5 })
+		);
+
+		await waitFor(() => runtime.getReadiness('reloads').state === 'ready', { timeout: 5000 });
+		assert.strictEqual(backend.resets.length, 1);
+		assert.deepStrictEqual(backend.cursor, cursor(11));
+		await runtime.stop();
+	});
+
+	it('splits resolution of the first collected transaction at the chunk byte bound', async () => {
+		const store = new FakeLogStore(
+			new Map([
+				[
+					10,
+					[
+						{ ...audit({ timestamp: 20, recordId: 'a' }), endTxn: false },
+						{ ...audit({ timestamp: 20, recordId: 'b' }), endTxn: false },
+						audit({ timestamp: 20, recordId: 'c' }),
+					],
+				],
+			])
+		);
+		const records = new Map(['a', 'b', 'c'].map((id) => [`1:${id}`, { version: 20, value: { title: id }, size: 100 }]));
+		const backend = new SyncBackend('split', cursor(10));
+		const { runtime } = runtimeFor(store, records, { maxChunkBytes: 150 });
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.cursor.logs.local === 20);
+		assert.deepStrictEqual(
+			backend.deliveries.map((batch) => [
+				batch.records.map((record) => record.recordId).join(''),
+				batch.through.logs.local,
+				batch.transactions[0].partial,
+			]),
+			[
+				['ab', 10, true],
+				['c', 20, undefined],
+			]
+		);
+		await runtime.stop();
+	});
+
+	it('fails closed on a rejected flush request without an unhandled rejection', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const backend = new SyncBackend('flush-reject', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		backend.flush = () => Promise.reject(new Error('msync failed'));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			scanRecords: undefined,
+		});
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 1 }));
+
+		await waitFor(() => runtime.getStatus('flush-reject')?.state === 'needs-rebuild');
+		assert.match(runtime.getStatus('flush-reject').reason, /msync failed/);
+		await runtime.stop();
 	});
 
 	it('exposes the owner-published readiness to a non-owning worker', async () => {

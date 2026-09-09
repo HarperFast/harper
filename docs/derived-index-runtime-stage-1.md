@@ -457,15 +457,20 @@ A drain turn has two phases. **Collection** reads transaction identities from th
 is met: `maxTransactionsPerTurn` and `maxBytesPerTurn` (log entry bytes) between complete
 transactions, `maxMillisecondsPerTurn` after any entry, and `maxChunkRecords` distinct keys
 (default 4096) after any entry. **Resolution** then reads the current primary entry once per distinct
-key and projects it. Resolution happens after every collected occurrence of the key has been read,
-so the delivered state is never older than a log entry the batch's cursor certifies; a concurrent
-writer that commits between the two occurrences of a key is reflected, not skipped. This ordering
-is the reason resolution is not done inline as entries are read.
+key and projects it, checking `maxChunkBytes` and the same wall-time budget after every key; when
+either is reached with at least one record already in the chunk, the remaining collected identities
+(including the rest of the transaction being resolved) are carried to the next turn, so neither
+phase can hold the event loop for more than one budget plus one record. Resolution happens after
+every collected occurrence of the key has been read, so the delivered state is never older than a
+log entry the batch's cursor certifies; a concurrent writer that commits between the two
+occurrences of a key is reflected, not skipped. This ordering is the reason resolution is not done
+inline as entries are read.
 
-An oversized transaction — one that meets the record or time bound before its `endTxn` — is
-delivered in **partial chunks**: the transaction appears in `transactions` with `partial: true`,
-`through` stays at the last complete transaction, and the iterator remains positioned inside the
-transaction for the next turn. The chunk that carries `endTxn` advances `through`. A partial chunk
+An oversized transaction — one that meets the record or time bound before its `endTxn`, or whose
+resolution meets the byte or time bound — is delivered in **partial chunks**: the transaction
+appears in `transactions` with `partial: true`, `through` stays at the last complete transaction,
+and the unread or unresolved remainder is carried to the next turn. The chunk that delivers the
+transaction's last key after its `endTxn` was read advances `through`. A partial chunk
 that advances no cursor is accepted work whose durability the next cursor-advancing batch
 certifies; it does not count against `maxAcceptedBatchesAhead`, and the backend bounds its memory
 with `deferred`, which the runtime honours by holding the chunk until a backend wake. A key repeated
@@ -474,9 +479,9 @@ across chunks is resolved again (idempotent latest state); repeats within a chun
 Payload bytes are an **estimate, not an admission bound**: each resolved record contributes its
 stored size when the resolver reports one (`DerivedIndexRecord.size`; the projection is a subset of
 the record) and the log entry's size otherwise, and nothing is serialized to compute it. The hard
-bound on a chunk is `maxChunkRecords`; `maxChunkBytes` (default 4 MiB) stops adding complete
-transactions to a chunk once the estimate is reached, carrying the remaining collected identities to
-the next turn. `getMetrics()` reports deferred (held chunk) and accepted-not-durable bytes.
+bound on a chunk is `maxChunkRecords`; `maxChunkBytes` (default 4 MiB) stops resolution once the
+estimate is reached, carrying the remaining collected identities to the next turn. `getMetrics()`
+reports deferred (held chunk) and accepted-not-durable bytes.
 
 All bounds are settable per `DerivedIndexRegistration.options`, falling back to the runtime-wide
 values, because a vector backend and a full-text backend want different turn sizes.
@@ -536,9 +541,13 @@ ownership check after every `await`:
 
 The boundary is the oldest retained entry, so replay re-walks the retention window; a tighter
 boundary derived from staged or uncommitted positions is out of scope (see
-[Approaches considered](#approaches-considered)). A `reload` marker that triggered a rebuild is met
-again by that rebuild's replay and is treated as progress-only, since the scan covered it; a later
-reload triggers another rebuild.
+[Approaches considered](#approaches-considered)). Every `reload` marker committed before the
+boundary capture — the one that triggered the rebuild and any older retained one — is treated as
+progress-only by that rebuild's replay, since the scan that follows the capture covers it; markers
+are `LOCAL_ONLY`, so the capture time is compared against the local log's transaction timestamps. A
+reload committed after the capture triggers another rebuild. Residual: a reload staged before the
+capture and committed after it, with a timestamp below the capture, is skipped; that is the same
+staged-transaction window the conservative boundary accepts for ordinary entries.
 
 Failure anywhere in the phase, or a `'failed'` report before the index reaches `ready`, retries
 with capped exponential backoff (`rebuildBackoffMilliseconds` 1 s doubling to
@@ -546,7 +555,12 @@ with capped exponential backoff (`rebuildBackoffMilliseconds` 1 s doubling to
 consecutive attempts the index publishes `unavailable` with the reason, releases the lock, and
 stops; the attempt count travels in the shared readiness record so a peer that acquires afterwards
 honours the exhausted budget instead of starting its own. Only `requestRebuild(backendId)` or
-reaching `ready` resets it. A projection that throws a 4xx-classified error (`ClientError`) for one
+reaching `ready` resets it. An owner that acquires while the shared state is `needs-rebuild` or
+`rebuilding` rebuilds rather than trusting a format-valid durable cursor: a previous owner
+condemned that generation. `requestRebuild` from a non-owning worker sets a request word in the
+shared record that the owner consumes on its next drain turn and any acquisition consumes first,
+so a request reaches an owner that never idles; a request arriving during a rebuild is absorbed by
+it. A projection that throws a 4xx-classified error (`ClientError`) for one
 record yields `state: { kind: 'unindexable' }` — the backend removes any entry and counts it — in
 live delivery and rebuild alike, so one malformed record cannot loop a rebuild; any other exception
 stays fail-closed.
@@ -558,11 +572,15 @@ batch, release the lock, and later run a scheduled apply or a flush completion a
 reset the index. Three mechanisms close it:
 
 - **Shutdown before unlock.** `#release()` drops ownership immediately, calls `flush('shutdown')`
-  then `shutdown(epoch)`, and unlocks only when that settles. A rejected `shutdown` keeps the lock
-  and publishes `unavailable` with the reason: a backend that cannot prove its queue is quiescent
-  must not hand the index to another owner. `DerivedIndexRuntime.stop()` and the unregister
-  function return promises that resolve after every release settled, so a caller cannot close
-  storage while a backend is still draining into it.
+  then `shutdown(epoch)`, and unlocks only when that settles. One `shutdown` runs per epoch: a
+  release that overlaps a rebuild attempt's own quiescence shares its promise instead of calling
+  the backend twice. A rejected `shutdown` keeps the lock and publishes `unavailable` with the
+  reason: a backend that cannot prove its queue is quiescent must not hand the index to another
+  owner. `DerivedIndexRuntime.stop()` and the unregister function return promises that resolve
+  after every release settled and **reject** when a backend's shutdown failed, so a caller cannot
+  close storage on a fulfilled promise while a backend is still draining into it. The runner that
+  holds such a lock can be revived by `requestRebuild`, which retries the quiescence before
+  resetting; there is no automatic bounded hold.
 - **Epoch fence.** `attach(host)` gives the backend `isOwnerEpoch(epoch)`, an `Atomics` read of the
   shared owner-epoch counter. The backend checks it before each apply, after each await, and in
   flush completions; a completion for a superseded epoch is dropped. Each rebuild attempt mints a
@@ -577,13 +595,16 @@ reset the index. Three mechanisms close it:
 `indexStore.isIndexing` is per worker and `getStatus()` is only meaningful on the owner. The owner
 publishes readiness — `ready`, `rebuilding`, `needs-rebuild` or `unavailable`, with a reason, the
 publishing epoch and the rebuild-attempt count — into a 512-byte shared buffer beside the owner-epoch
-counter (`getUserSharedBuffer`), guarded by a sequence lock. `DerivedIndexRuntime.getReadiness(id)`
+counter (`getUserSharedBuffer`), guarded by a sequence lock, with a rebuild-request word beside them. `DerivedIndexRuntime.getReadiness(id)`
 and the exported `readDerivedIndexReadiness(logStore, id)` read it synchronously on any worker, so a
 query path can choose between a 503 and a stale-but-usable answer without holding the runner lock.
 Reads are bounded: a publication abandoned mid-write by a dead owner reads as `unknown` (never a
 spin), and the next owner's publication repairs the sequence. `unknown` also means no runtime in
 this process has evaluated the index yet. `ready` is published on a validated acquisition and after
-a rebuild's final barrier; `rebuilding` before the destructive reset.
+a rebuild's final barrier; `rebuilding` before the destructive reset. A fault detected in the middle
+of a drain turn (a corrupt frame surfacing from the iterator) starts the rebuild from inside that
+turn; the turn's generation check prevents its end-of-log path from publishing `ready` over the
+`rebuilding` just written.
 
 ### Lag policy
 

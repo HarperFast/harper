@@ -87,9 +87,9 @@ export interface DerivedIndexBackend {
 	/** Receives the epoch fence and readiness reader before any delivery. */
 	attach?(host: DerivedIndexBackendHost): void;
 	/** Request a durability barrier; the backend runs it asynchronously and wakes through `onStateChange`. */
-	flush?(reason: DerivedIndexFlushReason): void;
+	flush?(reason: DerivedIndexFlushReason): void | Promise<void>;
 	/** Destroy index state and the durable cursor; `getDurableCursor()` must return `undefined` afterwards. */
-	reset?(ownerEpoch: bigint): void;
+	reset?(ownerEpoch: bigint): void | Promise<void>;
 	/**
 	 * Stop accepting work for `ownerEpoch`, settle or discard what is queued, and resolve once nothing
 	 * further will be applied or published for it. A rejection keeps the runner lock held.
@@ -169,11 +169,14 @@ const READINESS_STATES: DerivedIndexReadinessState[] = [
 	'unavailable',
 ];
 const READINESS_BYTES = 512;
-const READINESS_REASON_OFFSET = 24;
+const READINESS_WORDS = 6;
+const READINESS_EPOCH_OFFSET = 24;
+const READINESS_REASON_OFFSET = 32;
 const READINESS_SEQUENCE = 0;
 const READINESS_STATE = 1;
 const READINESS_REASON_LENGTH = 2;
 const READINESS_ATTEMPTS = 3;
+const READINESS_REBUILD_REQUEST = 4;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -362,6 +365,9 @@ class DerivedIndexRunner {
 	#unflushedBytes = 0;
 	#unflushedMutations = 0;
 	#releasing?: Promise<void>;
+	#releaseFailure?: Error;
+	#heldLock = false;
+	#quiescing?: { epoch: bigint; promise: Promise<void> };
 	#rebuilding = false;
 	#rebuildRequested = false;
 	#boundaryPending = false;
@@ -396,8 +402,8 @@ class DerivedIndexRunner {
 			logStore.getUserSharedBuffer(`derived-index:${registration.backend.id}:owner-epoch`, new ArrayBuffer(8))
 		);
 		const readiness = readinessBuffer(logStore, registration.backend.id);
-		this.#readinessWords = new Int32Array(readiness, 0, 4);
-		this.#readinessEpoch = new BigInt64Array(readiness, 16, 1);
+		this.#readinessWords = new Int32Array(readiness, 0, READINESS_WORDS);
+		this.#readinessEpoch = new BigInt64Array(readiness, READINESS_EPOCH_OFFSET, 1);
 		this.#readinessBytes = new Uint8Array(readiness, READINESS_REASON_OFFSET);
 		registration.backend.attach?.({
 			isOwnerEpoch: (epoch) => Atomics.load(this.#epochCounter, 0) === epoch,
@@ -412,7 +418,12 @@ class DerivedIndexRunner {
 	wake(fromBackend = false) {
 		if (this.#stopped || this.#rebuilding) return;
 		if (this.status.state === 'unavailable') return;
-		if (this.status.state === 'needs-rebuild' && (this.#rebuildTimer || !this.#rebuildRequested)) return;
+		if (
+			this.status.state === 'needs-rebuild' &&
+			(this.#rebuildTimer ||
+				(!this.#rebuildRequested && Atomics.load(this.#readinessWords, READINESS_REBUILD_REQUEST) !== 1))
+		)
+			return;
 		if (!fromBackend && (this.status.state === 'deferred' || this.status.state === 'waiting-durable')) return;
 		if (this.#idleTimer) {
 			clearTimeout(this.#idleTimer);
@@ -428,17 +439,21 @@ class DerivedIndexRunner {
 		});
 	}
 
+	/** Rejects when the backend could not prove its queued work quiescent; the runner lock stays held then. */
 	stop(): Promise<void> {
-		if (this.#stopped) return this.#releasing ?? Promise.resolve();
-		this.#stopped = true;
-		this.status = { state: 'stopped', ownerEpoch: this.#ownerEpoch };
-		if (this.#idleTimer) clearTimeout(this.#idleTimer);
-		if (this.#rebuildTimer) clearTimeout(this.#rebuildTimer);
-		this.#rebuildTimer = undefined;
-		this.#unsubscribeBackend?.();
-		this.#unregisterTables();
-		this.#release();
-		return this.#releasing ?? Promise.resolve();
+		if (!this.#stopped) {
+			this.#stopped = true;
+			this.status = { state: 'stopped', ownerEpoch: this.#ownerEpoch };
+			if (this.#idleTimer) clearTimeout(this.#idleTimer);
+			if (this.#rebuildTimer) clearTimeout(this.#rebuildTimer);
+			this.#rebuildTimer = undefined;
+			this.#unsubscribeBackend?.();
+			this.#unregisterTables();
+			this.#release();
+		}
+		return (this.#releasing ?? Promise.resolve()).then(() => {
+			if (this.#releaseFailure) throw this.#releaseFailure;
+		});
 	}
 
 	getReadiness(): DerivedIndexReadiness {
@@ -479,8 +494,8 @@ class DerivedIndexRunner {
 
 	requestRebuild(): boolean {
 		if (this.#stopped || !this.#canRebuild()) return false;
+		if (this.#rebuilding) return true;
 		this.#rebuildAttempts = 0;
-		this.#rebuildRequested = true;
 		if (this.#rebuildTimer) {
 			clearTimeout(this.#rebuildTimer);
 			this.#rebuildTimer = undefined;
@@ -491,9 +506,22 @@ class DerivedIndexRunner {
 			this.#publishReadiness('needs-rebuild', reason);
 		}
 		if (this.#owned) {
-			if (!this.#rebuilding) this.#startRebuild();
-		} else this.wake(true);
+			this.#startRebuild();
+			return true;
+		}
+		if (this.#heldLock) {
+			// This runner still holds the lock from a shutdown that failed to settle; retry from here.
+			this.#acquired();
+			return true;
+		}
+		// The owner may be another worker that never idles: leave the request where every runner looks.
+		Atomics.store(this.#readinessWords, READINESS_REBUILD_REQUEST, 1);
+		this.wake(true);
 		return true;
+	}
+
+	#takeSharedRebuildRequest(): boolean {
+		return Atomics.exchange(this.#readinessWords, READINESS_REBUILD_REQUEST, 0) === 1;
 	}
 
 	#canRebuild(): boolean {
@@ -517,13 +545,29 @@ class DerivedIndexRunner {
 		};
 		try {
 			if (!this.#logStore.tryLock(this.#lockKey, retry)) return;
+		} catch (error) {
 			this.#waitingForLock = false;
-			this.#owned = true;
-			this.#generation++;
-			this.#ownerEpoch = this.#mintEpoch();
-			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
+			this.#fail('failed to acquire the runner lock', error);
+			return;
+		}
+		this.#waitingForLock = false;
+		this.#acquired();
+	}
+
+	/** The lock is held: mint an epoch and either resume from the durable cursor or rebuild. */
+	#acquired() {
+		this.#heldLock = false;
+		this.#releaseFailure = undefined;
+		this.#owned = true;
+		this.#generation++;
+		this.#ownerEpoch = this.#mintEpoch();
+		this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
+		try {
 			const shared = this.getReadiness();
-			if (!this.#rebuildRequested) this.#rebuildAttempts = shared.rebuildAttempts;
+			if (this.#takeSharedRebuildRequest()) {
+				this.#rebuildRequested = true;
+				this.#rebuildAttempts = 0;
+			} else if (!this.#rebuildRequested) this.#rebuildAttempts = shared.rebuildAttempts;
 			if (this.#rebuildRequested) {
 				this.#startRebuild();
 				return;
@@ -537,11 +581,15 @@ class DerivedIndexRunner {
 				this.#release();
 				return;
 			}
+			if ((shared.state === 'needs-rebuild' || shared.state === 'rebuilding') && this.#canRebuild()) {
+				// A previous owner condemned this generation; a format-valid cursor does not overrule it.
+				this.#startRebuild();
+				return;
+			}
 			this.#resetFromDurableCursor();
 			if (this.#owned && !this.#rebuilding) this.#drain();
 		} catch (error) {
-			this.#waitingForLock = false;
-			this.#fail('failed to acquire or initialize the runner', error);
+			this.#fail('failed to initialize the runner', error);
 		}
 	}
 
@@ -609,6 +657,12 @@ class DerivedIndexRunner {
 	#drain() {
 		if (!this.#owned || this.#stopped || this.#rebuilding) return;
 		if (this.status.state === 'needs-rebuild' || this.status.state === 'unavailable') return;
+		if (this.#takeSharedRebuildRequest()) {
+			this.#rebuildAttempts = 0;
+			this.#startRebuild();
+			return;
+		}
+		const generation = this.#generation;
 		try {
 			if (!this.#checkNewLogs() || !this.#checkRangeHealth()) return;
 			if (this.status.state === 'waiting-durable') {
@@ -617,7 +671,7 @@ class DerivedIndexRunner {
 				this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			}
 			const batch = this.#pendingBatch ?? this.#collectChunk();
-			if (!this.#owned) return;
+			if (!this.#live(generation)) return;
 			if (batch === CONTINUE) {
 				this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 				this.wake();
@@ -627,7 +681,6 @@ class DerivedIndexRunner {
 				this.#finishIdlePass();
 				return;
 			}
-			const generation = this.#generation;
 			const result = this.#deliver(batch);
 			if (result === undefined) return;
 			if (result === DERIVED_INDEX_DEFERRED) {
@@ -710,7 +763,9 @@ class DerivedIndexRunner {
 		const flush = this.#registration.backend.flush;
 		if (!flush) return;
 		try {
-			flush.call(this.#registration.backend, reason);
+			const result = flush.call(this.#registration.backend, reason);
+			if (result && typeof result.then === 'function')
+				result.then(undefined, (error: unknown) => this.#fail('backend flush request rejected', error));
 		} catch (error) {
 			this.#fail('backend flush request threw', error);
 		}
@@ -764,7 +819,7 @@ class DerivedIndexRunner {
 			const projection = projections.get(entry.tableId);
 			if (projection) {
 				if (entry.type === 'reload') {
-					// A rebuild's replay meets the marker that triggered it again; the scan already covered it.
+					// Markers up to a rebuild's capture point are covered by its scan; see #captureBoundary.
 					const handled = this.#reloadsHandledThrough.get(current.logName);
 					if (handled === undefined || handled < current.timestamp) {
 						this.#reloadsHandledThrough.set(current.logName, current.timestamp);
@@ -803,17 +858,30 @@ class DerivedIndexRunner {
 	}
 
 	#resolveCollected(chunk: Chunk, collected: CollectedTransaction[]): DerivedIndexBatch | typeof CONTINUE {
+		const options = this.#options;
 		const through = cloneCursor(this.#offered!);
 		let completed = 0;
 		for (let i = 0; i < collected.length; i++) {
 			const transaction = collected[i];
-			if (i > 0 && chunk.batch.bytes >= this.#options.maxChunkBytes) {
-				this.#carried = collected.slice(i);
-				break;
-			}
 			const mutations: DerivedIndexMutation[] = [];
+			let remaining: CollectedTransaction | undefined;
 			for (const [tableId, byRecord] of transaction.keys) {
 				for (const [key, collectedKey] of byRecord) {
+					if (
+						!remaining &&
+						chunk.batch.records.length > 0 &&
+						(chunk.batch.bytes >= options.maxChunkBytes ||
+							options.now() - chunk.started >= options.maxMillisecondsPerTurn)
+					) {
+						remaining = { ...transaction, keys: new Map(), keyCount: 0 };
+					}
+					if (remaining) {
+						let rest = remaining.keys.get(tableId);
+						if (!rest) remaining.keys.set(tableId, (rest = new Map()));
+						rest.set(key, collectedKey);
+						remaining.keyCount++;
+						continue;
+					}
 					const record = this.#addMutation(chunk, tableId, key, collectedKey);
 					mutations.push({
 						tableId,
@@ -822,6 +890,17 @@ class DerivedIndexRunner {
 						state: record.state,
 					});
 				}
+			}
+			if (remaining) {
+				if (mutations.length)
+					chunk.batch.transactions.push({
+						logName: transaction.logName,
+						timestamp: transaction.timestamp,
+						mutations,
+						partial: true,
+					});
+				this.#carried = [remaining, ...collected.slice(i + 1)];
+				break;
 			}
 			if (transaction.complete) {
 				through.logs[transaction.logName] = transaction.timestamp;
@@ -837,7 +916,6 @@ class DerivedIndexRunner {
 						mutations,
 						partial: true,
 					});
-				// The rest of this transaction is still unread; later turns continue it from an empty identity set.
 				this.#carried = [
 					{
 						logName: transaction.logName,
@@ -948,6 +1026,7 @@ class DerivedIndexRunner {
 	}
 
 	#finishIdlePass() {
+		if (this.#rebuilding || !this.#offered) return;
 		const durable = this.#registration.backend.getDurableCursor();
 		if (durable === undefined && this.#boundaryPending) return;
 		if (!isValidCursor(durable)) {
@@ -1069,6 +1148,7 @@ class DerivedIndexRunner {
 
 	#discardProgress() {
 		this.#generation++;
+		this.#offered = undefined;
 		this.#pendingBatch = undefined;
 		this.#carried = [];
 		this.#iterator = undefined;
@@ -1118,6 +1198,7 @@ class DerivedIndexRunner {
 			() => {
 				if (!this.#live(generation)) return;
 				this.#rebuilding = false;
+				this.#rebuildRequested = false;
 				this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 				this.#drain();
 			},
@@ -1136,12 +1217,13 @@ class DerivedIndexRunner {
 		const backend = this.#registration.backend;
 		// Work accepted under the previous epoch must be quiescent before anything destructive; a new
 		// epoch then fences any completion that still arrives for it.
-		await backend.shutdown?.(this.#ownerEpoch!);
+		await this.#quiesce(this.#ownerEpoch!);
 		if (!this.#live(generation)) return;
 		this.#ownerEpoch = this.#mintEpoch();
 		this.status = { state: 'rebuilding', ownerEpoch: this.#ownerEpoch };
 		this.#publishReadiness('rebuilding');
-		backend.reset!(this.#ownerEpoch);
+		await backend.reset!(this.#ownerEpoch);
+		if (!this.#live(generation)) return;
 		if (backend.getDurableCursor() !== undefined) throw new Error('backend kept a durable cursor after reset');
 		const boundary = this.#captureBoundary();
 		const options = this.#options;
@@ -1217,7 +1299,11 @@ class DerivedIndexRunner {
 	/** The oldest retained committed transaction of every log; logs with none must still retain their beginning. */
 	#captureBoundary(): DerivedIndexCursor {
 		const boundary: DerivedIndexCursor = { format: 1, logs: {} };
+		// Every reload marker committed before this capture is reflected by the scan that follows it, so
+		// the replay from the oldest retained entry must not spend a rebuild on each of them again.
+		const captured = this.#options.now();
 		for (const logName of this.#logStore.rootStore.listLogs()) {
+			this.#reloadsHandledThrough.set(logName, Math.max(this.#reloadsHandledThrough.get(logName) ?? 0, captured));
 			let first: number | undefined;
 			const range = this.#logStore.getRange({ log: logName, start: 0 });
 			for (const entry of range) {
@@ -1252,6 +1338,24 @@ class DerivedIndexRunner {
 		this.#publishReadiness('needs-rebuild', reason);
 		this.#rebuildRequested = true;
 		if (this.#owned) this.#scheduleRebuild();
+	}
+
+	/** One `shutdown(epoch)` per epoch, shared by a rebuild attempt and a release that overlap. */
+	#quiesce(epoch: bigint): Promise<void> {
+		if (this.#quiescing?.epoch === epoch) return this.#quiescing.promise;
+		let promise: Promise<void>;
+		try {
+			promise = Promise.resolve(this.#registration.backend.shutdown?.(epoch));
+		} catch (error) {
+			promise = Promise.reject(error);
+		}
+		const quiescing = { epoch, promise };
+		this.#quiescing = quiescing;
+		const settle = () => {
+			if (this.#quiescing === quiescing) this.#quiescing = undefined;
+		};
+		promise.then(settle, settle);
+		return promise;
 	}
 
 	#publishReadiness(state: DerivedIndexReadinessState, reason = '') {
@@ -1295,21 +1399,20 @@ class DerivedIndexRunner {
 		// another owner while the old epoch may still write into it is the unsafe outcome.
 		const hold = (error: unknown) => {
 			this.#releasing = undefined;
+			this.#heldLock = true;
 			const reason = `backend shutdown failed; runner lock held: ${error instanceof Error ? error.message : String(error)}`;
 			logger.error(`Derived index '${backend.id}' ${reason}`, error);
+			this.#releaseFailure = new Error(reason, { cause: error });
 			this.status = { state: 'unavailable', reason, ownerEpoch: epoch };
 			this.#publishReadiness('unavailable', reason);
 		};
-		let settled: void | Promise<void>;
 		try {
-			backend.flush?.('shutdown');
-			settled = backend.shutdown?.(epoch);
+			const flushed = backend.flush?.('shutdown');
+			if (flushed && typeof flushed.then === 'function') flushed.then(undefined, () => {});
 		} catch (error) {
-			hold(error);
-			return;
+			logger.warn?.(`Derived index '${backend.id}' shutdown flush request threw`, error);
 		}
-		if (settled && typeof settled.then === 'function') this.#releasing = settled.then(unlock, hold);
-		else unlock();
+		this.#releasing = this.#quiesce(epoch).then(unlock, hold);
 	}
 }
 
@@ -1323,7 +1426,6 @@ function readinessBuffer(logStore: RocksTransactionLogStore, backendId: string) 
 }
 
 function readReadiness(words: Int32Array, epoch: BigInt64Array, bytes: Uint8Array): DerivedIndexReadiness {
-	// Bounded seqlock read: a publication abandoned mid-write by a dead owner yields `unknown`, never a spin.
 	for (let spin = 0; spin < 64; spin++) {
 		const before = Atomics.load(words, READINESS_SEQUENCE);
 		if (before & 1) continue;
@@ -1351,8 +1453,8 @@ export function readDerivedIndexReadiness(
 ): DerivedIndexReadiness {
 	const buffer = readinessBuffer(logStore, backendId);
 	return readReadiness(
-		new Int32Array(buffer, 0, 4),
-		new BigInt64Array(buffer, 16, 1),
+		new Int32Array(buffer, 0, READINESS_WORDS),
+		new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
 		new Uint8Array(buffer, READINESS_REASON_OFFSET)
 	);
 }
