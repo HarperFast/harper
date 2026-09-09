@@ -82,13 +82,18 @@ export function transaction<T>(
 						// isCommittingWrites() is not redundant: commit() marks itself CLOSED and clears its
 						// staged writes before the native commit settles, so for that whole window a
 						// write-bearing transaction reads as idle and read-only.
-						if (
-							!transaction.sourceApply &&
-							!transaction.isReplay &&
-							((transaction.open === TRANSACTION_STATE.OPEN && transaction.hasPendingWrites()) ||
-								transaction.isCommittingWrites())
-						) {
-							transaction.abortDueToDisconnect();
+						if (!transaction.sourceApply && !transaction.isReplay) {
+							if (
+								(transaction.open === TRANSACTION_STATE.OPEN && transaction.hasPendingWrites()) ||
+								transaction.isCommittingWrites()
+							) {
+								transaction.abortDueToDisconnect();
+							} else {
+								// Read-only right now, so there is nothing to cut off — but the abort event fires
+								// exactly once, and the scope is still running. Record it, or a write staged after
+								// this point commits for a client that is already gone (addWrite).
+								transaction.disconnectPending = true;
+							}
 						}
 					} catch (error) {
 						harperLogger.debug?.('aborting transaction on client disconnect', error);

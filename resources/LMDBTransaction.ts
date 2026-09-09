@@ -108,6 +108,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 	addWrite(operation: TransactionWrite): any {
 		if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 		if (this.disconnected) throw requestAbortedError();
+		// Same gate as DatabaseTransaction.addWrite: the disconnect arrived while this chain was still
+		// read-only, and this write is what makes it write-bearing.
+		if ((this.root ?? this).disconnectPending) {
+			this.abortDueToDisconnect();
+			throw requestAbortedError();
+		}
 		if (this.open === TRANSACTION_STATE.CLOSED) {
 			throw new Error('Can not use a transaction that is no longer open');
 		}
@@ -476,7 +482,11 @@ function startMonitoringTxns() {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
 				if (deferForCommitInFlight(txn, url, txnExpiration)) continue;
-				if (txn.open === TRANSACTION_STATE.CLOSED && shouldSpareCommitPhase(txn, checkedCommitPhaseChains)) {
+				if (
+					txn.open === TRANSACTION_STATE.CLOSED &&
+					!txn.commitAttemptDoomedByPoison() &&
+					shouldSpareCommitPhase(txn, checkedCommitPhaseChains)
+				) {
 					harperLogger.warn?.(
 						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work; letting it complete, from table: ${
 							(txn.db as any)?.name + (url ? ' path: ' + url : '')

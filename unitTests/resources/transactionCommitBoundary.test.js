@@ -5,8 +5,9 @@ const {
 	TRANSACTION_STATE,
 	deferForCommitInFlight,
 	isReleasedTransaction,
+	setTxnExpiration,
 } = require('#src/resources/DatabaseTransaction');
-const { LMDBTransaction } = require('#src/resources/LMDBTransaction');
+const { LMDBTransaction, setTxnExpiration: setLMDBTxnExpiration } = require('#src/resources/LMDBTransaction');
 const { waitFor } = require('../waitFor');
 
 function makeLMDBWrite(id, commit) {
@@ -336,4 +337,82 @@ describe('Transaction native-submit boundary', () => {
 
 		transaction.commitsInFlight = 0;
 	});
+	it('keeps a closed root deferred while only a detached link owns the native outcome', function () {
+		const root = new DatabaseTransaction();
+		const detached = new DatabaseTransaction();
+		root.commitsInFlight = 1;
+		root.commitSubmitted = true;
+		root.open = TRANSACTION_STATE.CLOSED;
+		root.deferredPoisonDeadline = -Infinity;
+		root.submittedLinks = new Set([detached]);
+		detached.root = root;
+		detached.nativeCommitSubmitted = true;
+		detached.commitsInFlight = 1;
+
+		assert.equal(
+			deferForCommitInFlight(root, '/detached-root', 1),
+			true,
+			'a root that submitted nothing itself must stay supervised for the link that did'
+		);
+
+		detached.commitsInFlight = 0;
+		root.deferredPoisonDeadline = -Infinity;
+		assert.equal(
+			deferForCommitInFlight(root, '/detached-root', 1),
+			false,
+			'the root is reapable again once the detached link settles'
+		);
+
+		root.commitsInFlight = 0;
+	});
+
+	it('does not treat a submitted attempt or a live pre-submit attempt as doomed', function () {
+		const submitted = new DatabaseTransaction();
+		submitted.disconnected = true;
+		submitted.nativeCommitSubmitted = true;
+		assert.equal(submitted.commitAttemptDoomedByPoison(), false);
+
+		const midCommit = new DatabaseTransaction();
+		midCommit.disconnected = true;
+		midCommit.poisonedMidCommit = true;
+		assert.equal(midCommit.commitAttemptDoomedByPoison(), false);
+
+		const live = new DatabaseTransaction();
+		assert.equal(live.commitAttemptDoomedByPoison(), false, 'an unpoisoned attempt still owns its outcome');
+
+		const poisoned = new DatabaseTransaction();
+		poisoned.timedOut = true;
+		assert.equal(poisoned.commitAttemptDoomedByPoison(), true);
+	});
+
+	for (const [name, Transaction, setExpiration] of [
+		['RocksDB', DatabaseTransaction, setTxnExpiration],
+		['LMDB', LMDBTransaction, setLMDBTxnExpiration],
+	]) {
+		it(`releases a poisoned pre-submit ${name} snapshot instead of granting it the commit-phase grace`, async function () {
+			const transaction = new Transaction();
+			let snapshotReleases = 0;
+			transaction.db = { name: 'doomed-commit-phase' };
+			// Parked in commit()'s pre-commit await, then poisoned before anything was submitted: the
+			// continuation throws on that poison, so the attempt has no outcome left to protect.
+			transaction.committing = true;
+			transaction.commitsInFlight = 1;
+			transaction.disconnected = true;
+			transaction.open = TRANSACTION_STATE.CLOSED;
+			if (name === 'RocksDB') transaction.transaction = {};
+			else transaction.readTxn = {};
+			transaction.releaseReadTxn = () => snapshotReleases++;
+			const trackedTxns = setExpiration(20);
+			try {
+				trackedTxns.add(transaction);
+				transaction.timeout = 0;
+				await waitFor(() => snapshotReleases > 0, { message: 'the monitor should reclaim the doomed snapshot' });
+			} finally {
+				trackedTxns.delete(transaction);
+				setExpiration(30000);
+				transaction.commitsInFlight = 0;
+			}
+			assert.equal(transaction.commitPhaseTicks, 0, 'a doomed attempt must not consume the commit-phase grace');
+		});
+	}
 });

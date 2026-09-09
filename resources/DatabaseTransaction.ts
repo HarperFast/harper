@@ -562,6 +562,11 @@ export class DatabaseTransaction implements Transaction {
 	// open (harper#2001). Once poisoned, any further addWrite/commit throws requestAbortedError, mirroring
 	// timedOut above — the difference is only WHY the transaction was cut short.
 	declare disconnected?: boolean;
+	// Set on the chain root by resources/transaction.ts when the client disconnected while this
+	// transaction had nothing to cut off (read-only, no commit in flight). The abort event fires once and
+	// the scope keeps running, so the decision has to outlive the event: addWrite() poisons on the write
+	// that makes the transaction write-bearing.
+	declare disconnectPending?: boolean;
 	// Read references taken through useReadTxn() and not yet returned: the ownership record that bounds a
 	// retained read snapshot. See closeOwnedReadIterators().
 	declare ownedReadIterators?: Set<OwnedReadIterator>;
@@ -1069,6 +1074,12 @@ export class DatabaseTransaction implements Transaction {
 	addWrite(operation: TransactionWrite) {
 		if (this.timedOut || this.postSubmitPoisoned) throw transactionOpenTooLongError();
 		if (this.disconnected) throw requestAbortedError();
+		// The client already disconnected while this chain was still read-only; this write is what makes
+		// it write-bearing, which is the state the disconnect gate exists to cut off.
+		if ((this.root ?? this).disconnectPending) {
+			this.abortDueToDisconnect();
+			throw requestAbortedError();
+		}
 		// A write is activity: it re-arms the idle limit on this link even though the reads it
 		// performs no longer do (see getReadTxn), so a transaction that keeps writing stays alive
 		// and only an idle one holding write intents is reaped.
@@ -1317,6 +1328,16 @@ export class DatabaseTransaction implements Transaction {
 
 	/** Engine hook for a submission that has reached a native outcome. */
 	protected nativeCommitAttemptEnded(): void {}
+
+	/**
+	 * True when a commit attempt is parked on this link that can no longer land: it never submitted, and
+	 * the link is poisoned, so performCommit()'s post-await poison check throws before it commits. The
+	 * monitor's commit-phase grace exists to let real pre-commit work finish; extending it to an attempt
+	 * with no outcome left only pins this link's read snapshot for the rest of the grace.
+	 */
+	commitAttemptDoomedByPoison(): boolean {
+		return !this.nativeCommitSubmitted && !this.poisonedMidCommit && Boolean(this.timedOut || this.disconnected);
+	}
 
 	/** Protected work has no proven resume path, so the monitor may observe but never poison it. */
 	isProtectedCommit(): boolean {
@@ -2560,7 +2581,11 @@ function startMonitoringTxns() {
 			if (txn.timeout <= 0) {
 				const url = (txn.getContext() as any)?.url;
 				if (deferForCommitInFlight(txn, url, txnExpiration)) return;
-				if (txn.open === TRANSACTION_STATE.CLOSED && shouldSpareCommitPhase(txn, checkedCommitPhaseChains)) {
+				if (
+					txn.open === TRANSACTION_STATE.CLOSED &&
+					!txn.commitAttemptDoomedByPoison() &&
+					shouldSpareCommitPhase(txn, checkedCommitPhaseChains)
+				) {
 					harperLogger.warn?.(
 						`Transaction has been in its commit phase past the open-transaction limit, waiting on pre-commit work; letting it complete, from table: ${
 							(txn.db as any)?.name + (url ? ' path: ' + url : '')

@@ -1268,6 +1268,48 @@ describe('Disconnect abort', () => {
 		assert.equal(result?.name, 'readable', 'the read must still complete normally');
 	});
 
+	// The abort event fires exactly once, so "read-only right now" cannot be the whole decision: the
+	// scope keeps running, and the write that arrives afterwards is what the gate exists to cut off.
+	it('rejects a write staged after a disconnect that landed while the transaction was read-only', async function () {
+		await DisconnectResource.put(520, { name: 'readable' }, {}); // seed, own (unrelated) txn
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.get(520, context); // read-only when the client disconnects
+				ac.abort();
+				await delay(10);
+				assert.equal(context.transaction.disconnected, undefined, 'nothing was staged, so nothing is poisoned yet');
+				await DisconnectResource.put(521, { name: 'must not commit' }, context);
+			}),
+			/disconnected/
+		);
+		assert.ok((await DisconnectResource.get(521)) == null, 'a write first staged after the disconnect must not commit');
+	});
+
+	it('rejects a database first touched after a read-only disconnect', async function () {
+		const LateDisconnectResource = table({
+			table: 'LateDisconnectTxnTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		await DisconnectResource.put(522, { name: 'readable' }, {});
+		const ac = new AbortController();
+		const context = { signal: ac.signal };
+		await assert.rejects(
+			transaction(context, async () => {
+				await DisconnectResource.get(522, context); // claims context.transaction, stages nothing
+				ac.abort();
+				await delay(10);
+				// The chain link for this database does not exist yet, so it inherits the pending disconnect
+				// from the chain root rather than carrying its own copy.
+				await LateDisconnectResource.put(523, { name: 'second table, too late' }, context);
+			}),
+			/disconnected/
+		);
+		assert.ok((await LateDisconnectResource.get(523)) == null, 'the late database write must not commit either');
+	});
+
 	it('does not poison a source-apply transaction on disconnect (no resume path, must never drop a write)', async function () {
 		const ac = new AbortController();
 		const context = { signal: ac.signal, sourceApply: true };
