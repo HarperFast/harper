@@ -45,7 +45,7 @@ export function hasDerivedIndexRegistration(auditStore: object, tableId: number)
 	return registrations.get(auditStore)?.has(tableId) ?? false;
 }
 
-/** The reason a write to this table must currently be rejected, or undefined when writes are admitted. Allocation-free. */
+/** The reason a write to this table must currently be rejected, or undefined when writes are admitted. */
 export function derivedIndexWriteRejection(auditStore: object, tableId: number): string | undefined {
 	const byTable = admissions.get(auditStore)?.get(tableId);
 	if (!byTable) return;

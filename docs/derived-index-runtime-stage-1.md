@@ -563,7 +563,8 @@ ownership check after every `await`:
    `value` is null is a tombstone and one whose key is a symbol is a Harper-internal store entry
    such as id allocation — both are skipped, as the live resolver's null value resolves to
    `absent`), project, and deliver chunks bounded by `maxChunkRecords`, `maxChunkBytes` and `maxMillisecondsPerTurn` with
-   `through` absent, yielding between chunks and waiting for a backend wake on `deferred`;
+   `through` absent, yielding between chunks and waiting for a backend wake on `deferred`
+   (re-offering after one flush age at most, so a dropped wake cannot park the rebuild forever);
 5. deliver one final chunk (possibly empty) carrying `through` = boundary. Until that batch is
    durable the backend's cursor stays `undefined`, so a crash mid-rebuild resumes as a fresh
    rebuild rather than a partial index with a certified cursor;
