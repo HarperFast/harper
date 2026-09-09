@@ -555,7 +555,8 @@ ownership check after every `await`:
    transaction (`getRange({ log, start: 0 })`); a log with no committed transaction is omitted and
    must retain its beginning (`oldestSequenceNumber === 1`), otherwise the attempt fails closed;
 4. scan every registered table through `scanRecords` (opened after the capture; a record whose
-   `value` is null is a tombstone and is skipped, as the live resolver's null value resolves to
+   `value` is null is a tombstone and one whose key is a symbol is a Harper-internal store entry
+   such as id allocation — both are skipped, as the live resolver's null value resolves to
    `absent`), project, and deliver chunks bounded by `maxChunkRecords`, `maxChunkBytes` and `maxMillisecondsPerTurn` with
    `through` absent, yielding between chunks and waiting for a backend wake on `deferred`;
 5. deliver one final chunk (possibly empty) carrying `through` = boundary. Until that batch is
@@ -665,22 +666,38 @@ turn; the turn's generation check prevents its end-of-log path from publishing `
 
 ### Lag policy
 
-Opt-in writer backpressure, per registration (`maxLagMilliseconds`, 0 = no policy). The owner
-computes `lag = max(cursorLagMilliseconds, stalledMilliseconds)` on every drain turn, idle pass and
-age tick and publishes a lag-exceeded word in the shared readiness buffer: set at `lag >= max`,
-cleared at `lag < max / 2` so the policy does not flap, and cleared whenever the owner discards
-progress or releases. Every worker's runner registers an admission check for the index's tables
-(`registerDerivedIndexTables(store, tableIds, admission)`), and the write path's
-`derivedIndexWriteRejection(store, tableId)` costs one WeakMap miss on tables without a derived
-index and one `Atomics.load` otherwise. `Table.update()` (put, patch, post) and `Table.delete()`
-throw `DerivedIndexLagError` — a retryable 503 with `code: 'DERIVED_INDEX_LAGGING'` — while the
-word is set; replication apply, scan deletes, eviction and origin cache fills go through
-`updateRecord` directly and are never rejected, because a rejected replicated write would break
-convergence. Why not pin retention to the slowest cursor: rocksdb-js has no protected-position
+Opt-in writer backpressure, per registration (`maxLagMilliseconds`, 0 = no policy; a budget below
+two flush ages is raised to that, since catch-up is only proven at a durable barrier). The owner
+measures lag as the longest of three terms — cursor distance behind what it has read, time parked
+on backpressure or the durability ceiling, and time since it last proved catch-up (end of log with
+durable == offered) — because a slow reader that never idles cannot hide from the third term. It
+samples on every drain turn, idle pass and age tick and on its own lag timer while parked, and
+publishes a lag-exceeded word in the shared readiness buffer: set at `lag >= budget`, cleared only
+once this owner has proved catch-up and lag is below half the budget, so the policy neither flaps
+nor clears on an ownership handoff before the successor has caught up.
+
+Every worker's runner registers an admission check for the index's tables
+(`registerDerivedIndexTables(store, tableIds, admission)`); `derivedIndexWriteRejection(store,
+tableId)` costs one WeakMap miss on tables without a derived index and one `Atomics.load` per
+policy-enabled index otherwise. The check sits at the staging layer, `_writeUpdate` and
+`_writeDelete`, where every local write converges — put, patch, post and `create()`,
+`loadAsInstance: false` writes, held-lock saves, and per-row query deletes — and it bypasses
+replication apply (`isNotification`) and replay, because a rejected replicated write would break
+convergence; origin cache fills call `updateRecord` directly and are not gated. A shed write fails
+with `DerivedIndexLagError`, a `ServerError` with status 503 and `code: 'DERIVED_INDEX_LAGGING'`;
+the status and code are the wire contract on every surface, while `retryable: true` is carried on
+the error object and serialized only where a surface already serializes it.
+
+What the policy guarantees is that local user writes are shed after the configured budget. It does
+not by itself guarantee the cursor is never lost: the budget is chosen by the registration, audit
+retention and emergency storage reclamation are configured separately, and replicated writes keep
+advancing the log; a registration should keep its budget well inside the effective retention
+window. Why not pin retention to the slowest cursor: rocksdb-js has no protected-position
 registration (`purgeLogs()` is time/name filtered and configured retention applies independently).
 Why not metrics only: sustained overload runs the cursor past retention, rebuilds, and falls behind
-again; the bounded retry makes that loop finite, not harmless. A vector backend whose apply is
-slower than the write path sets the threshold; a full-text backend can leave the policy off.
+again; the bounded retry makes that loop finite, not harmless. Rollout is two-phase: deploy with
+the policy off, confirm every worker runs the new runtime (an old worker has no admission check and
+keeps accepting writes after a new owner trips), then enable it per registration.
 
 Regardless of the policy, lag and backpressure remain separate observable signals
 (`cursorLagMilliseconds` and `stalledMilliseconds` versus `deferredBytes` and the `deferred`
@@ -792,6 +809,12 @@ provide the fence, barrier request and quiescence handshake, checked at registra
 because there is no shipped backend yet, so the contract can still be made strict at zero
 migration cost, and because an optional `shutdown` let a queuing backend compile with no fence at
 all.
+
+**Different layer, for the lag policy (adopted from its planning gate).** Gate at the staging layer
+(`_writeUpdate` / `_writeDelete`) rather than at the public verbs: `create()`, `loadAsInstance:
+false` writes and held-lock saves reach the staging layer without passing `update()`, and
+replication already marks its writes (`isNotification`) there. Gating `updateRecord` itself was
+rejected because origin cache fills share it.
 
 **Chosen.** Coalesced view, identity-first bounded collection with partial chunks and no cursor
 publication mid-transaction, runtime-scheduled durability cadence with the age timer as idle

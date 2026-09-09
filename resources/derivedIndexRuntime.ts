@@ -152,7 +152,7 @@ export type DerivedIndexRegistration = {
  */
 export type DerivedIndexRecord = { version: number; value: unknown; size?: number } | undefined;
 
-/** A scan record whose `value` is null or undefined is a tombstone and is not indexed. */
+/** A scan record whose `value` is null or undefined is a tombstone, and one whose `recordId` is a symbol is a Harper-internal store entry; neither is indexed. */
 export type DerivedIndexScanRecord = { recordId: Id; version: number; value: unknown; size?: number };
 
 export type DerivedIndexRuntimeOptions = DerivedIndexRunnerOptions & {
@@ -388,6 +388,11 @@ function resolveRunnerOptions(
 	};
 }
 
+/** Catch-up is proven only at a durable barrier, so a lag budget below two flush ages would trip on cadence alone. */
+function effectiveLagBudget(options: Required<DerivedIndexRunnerOptions>): number {
+	return options.maxLagMilliseconds > 0 ? Math.max(options.maxLagMilliseconds, 2 * options.maxFlushAgeMilliseconds) : 0;
+}
+
 type OfferedProgress = { cursor: DerivedIndexCursor; bytes: number; mutations: number; acceptedAt: number };
 
 type CollectedKey = { recordId: Id; logVersion: number; sizeHint: number | undefined };
@@ -432,6 +437,10 @@ class DerivedIndexRunner {
 	#carried: CollectedTransaction[] = [];
 	#latestSeen = new Map<string, number>();
 	#stalledSince?: number;
+	#acquiredAt?: number;
+	#lastCaughtUpAt?: number;
+	#lagTimer?: NodeJS.Timeout;
+	#lagBudget: number;
 	#reloadsHandledThrough = new Map<string, number>();
 	#scheduled = false;
 	#waitingForLock = false;
@@ -498,6 +507,7 @@ class DerivedIndexRunner {
 		this.#registration = registration;
 		this.#options = options;
 		this.#lockKey = `derived-index:${registration.backend.id}:runner`;
+		this.#lagBudget = effectiveLagBudget(options);
 		this.#epochCounter = new BigInt64Array(
 			logStore.getUserSharedBuffer(`derived-index:${registration.backend.id}:owner-epoch`, new ArrayBuffer(8))
 		);
@@ -519,7 +529,7 @@ class DerivedIndexRunner {
 		this.#unregisterTables = registerDerivedIndexTables(
 			logStore,
 			registration.projections.keys(),
-			options.maxLagMilliseconds > 0 ? () => this.#writeRejection() : undefined
+			this.#lagBudget > 0 ? () => this.#writeRejection() : undefined
 		);
 	}
 
@@ -622,23 +632,42 @@ class DerivedIndexRunner {
 
 	#writeRejection(): string | undefined {
 		if (Atomics.load(this.#readinessWords, READINESS_LAG_EXCEEDED) !== 1) return;
-		return `derived index '${this.id}' is more than ${this.#options.maxLagMilliseconds} ms behind; retry this write`;
+		return `derived index '${this.id}' is more than ${this.#lagBudget} ms behind; retry this write`;
 	}
 
-	/** Owner-only: publish whether the lag policy is tripped, with hysteresis at half the threshold. */
+	/**
+	 * Owner-only. Lag is the longest of: cursor distance behind what this runner has read, time parked
+	 * on backpressure, and time since catch-up (end of log with durable == offered) was last proven —
+	 * the last term is what a slow reader that never idles cannot hide. The trip survives discard and
+	 * handoff: a successor clears it only after proving catch-up itself, below half the budget.
+	 */
 	#publishLag() {
-		const max = this.#options.maxLagMilliseconds;
+		const max = this.#lagBudget;
 		if (max <= 0 || !this.#owned) return;
 		const now = this.#options.now();
-		const lag = Math.max(this.#cursorLag(), this.#stalledSince === undefined ? 0 : now - this.#stalledSince);
+		const unproven = this.#lastCaughtUpAt ?? this.#acquiredAt ?? now;
+		const lag = Math.max(
+			this.#cursorLag(),
+			this.#stalledSince === undefined ? 0 : now - this.#stalledSince,
+			now - unproven
+		);
 		const tripped = Atomics.load(this.#readinessWords, READINESS_LAG_EXCEEDED) === 1;
 		if (!tripped && lag >= max) {
 			Atomics.store(this.#readinessWords, READINESS_LAG_EXCEEDED, 1);
 			logger.warn?.(`Derived index '${this.id}' is ${Math.round(lag)} ms behind; rejecting writes until it catches up`);
-		} else if (tripped && lag < max / 2) {
+		} else if (tripped && lag < max / 2 && this.#lastCaughtUpAt !== undefined) {
 			Atomics.store(this.#readinessWords, READINESS_LAG_EXCEEDED, 0);
 			logger.info?.(`Derived index '${this.id}' caught up; admitting writes again`);
 		}
+		if (this.#lagTimer) clearTimeout(this.#lagTimer);
+		this.#lagTimer = setTimeout(
+			() => {
+				this.#lagTimer = undefined;
+				if (this.#owned && !this.#stopped) this.#publishLag();
+			},
+			Math.min(1000, Math.max(1, max / 4))
+		);
+		this.#lagTimer.unref?.();
 	}
 
 	requestRebuild(): boolean {
@@ -710,6 +739,8 @@ class DerivedIndexRunner {
 		this.#releaseFailure = undefined;
 		this.#owned = true;
 		this.#generation++;
+		this.#acquiredAt = this.#options.now();
+		this.#lastCaughtUpAt = undefined;
 		try {
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
@@ -1234,6 +1265,7 @@ class DerivedIndexRunner {
 			return;
 		}
 		if (!this.#reconcileDurableCursor(durable)) return;
+		if (sameCursor(durable, this.#offered!)) this.#lastCaughtUpAt = this.#options.now();
 		this.#publishLag();
 		if (!sameCursor(durable, this.#offered!)) {
 			this.#armFlushTimer();
@@ -1369,8 +1401,7 @@ class DerivedIndexRunner {
 	#discardProgress() {
 		this.#generation++;
 		this.#stalledSince = undefined;
-		if (this.#owned && this.#options.maxLagMilliseconds > 0)
-			Atomics.store(this.#readinessWords, READINESS_LAG_EXCEEDED, 0);
+		this.#lastCaughtUpAt = undefined;
 		this.#offered = undefined;
 		this.#pendingBatch = undefined;
 		this.#carried = [];
@@ -1499,7 +1530,8 @@ class DerivedIndexRunner {
 	}
 
 	#addScanRecord(chunk: Chunk, tableId: number, record: DerivedIndexScanRecord) {
-		if (record.value == null) return;
+		// Symbol keys are Harper-internal store entries (id allocation and the like), never records.
+		if (record.value == null || typeof record.recordId === 'symbol') return;
 		const key = writeKeyId(record.recordId);
 		let byRecord = chunk.resolved.get(tableId);
 		if (!byRecord) chunk.resolved.set(tableId, (byRecord = new Map()));
@@ -1634,6 +1666,10 @@ class DerivedIndexRunner {
 		this.#owned = false;
 		this.#rebuilding = false;
 		this.#rebuildWaiter?.();
+		if (this.#lagTimer) {
+			clearTimeout(this.#lagTimer);
+			this.#lagTimer = undefined;
+		}
 		this.#discardProgress();
 		const backend = this.#registration.backend;
 		const epoch = this.#ownerEpoch!;

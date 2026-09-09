@@ -1163,7 +1163,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 
 		backend.cursor = cursor(3_000);
 		backend.stateChange();
-		await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined);
+		await waitFor(() => derivedIndexWriteRejection(store, 1) === undefined, { timeout: 5000 });
 		await owner.stop();
 		await peer.stop();
 		assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined, 'unregistering removes the admission check');
@@ -1367,6 +1367,47 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 	});
 	after(() => runtime?.stop());
 
+	it('sheds user writes end to end once a real runner exceeds its lag budget, and admits them after catch-up', async () => {
+		const { table } = require('#src/resources/databases');
+		const Gated = table({
+			database: 'derived-index-lag-rocks',
+			table: 'Gated',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+		});
+		await Gated.put('seed', { title: 'seed' });
+		const anchor = [...Gated.auditStore.getRange({ start: 1 })]
+			.filter((entry) => entry.tableId === Gated.tableId)
+			.at(-1).txnLogKey;
+		const backend = new SyncBackend('gated', { format: 1, logs: { local: anchor } }, () => DERIVED_INDEX_ACCEPTED);
+		const gatedRuntime = new DerivedIndexRuntime(Gated.auditStore, (tableId, recordId) => {
+			const entry = Gated.primaryStore.getEntry(recordId);
+			return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+		});
+		gatedRuntime.register({
+			backend,
+			projections: new Map([[Gated.tableId, (record) => ({ title: record.title })]]),
+			options: { maxLagMilliseconds: 40, maxFlushAgeMilliseconds: 5 },
+		});
+		await Gated.put('g1', { title: 'first' });
+		await waitFor(() => backend.deliveries.length >= 1);
+		// The backend accepts but never makes anything durable, so catch-up is never proven.
+		await waitFor(() => derivedIndexWriteRejection(Gated.auditStore, Gated.tableId) !== undefined, { timeout: 5000 });
+		let rejected;
+		try {
+			await Gated.put('g2', { title: 'blocked' });
+		} catch (error) {
+			rejected = error;
+		}
+		assert.strictEqual(rejected?.code, 'DERIVED_INDEX_LAGGING');
+
+		backend.cursor = backend.deliveries.at(-1).through;
+		backend.stateChange();
+		await waitFor(() => derivedIndexWriteRejection(Gated.auditStore, Gated.tableId) === undefined, { timeout: 5000 });
+		await Gated.put('g2', { title: 'admitted' });
+		await gatedRuntime.stop();
+	});
+
 	it('rebuilds from the primary store on the retained log boundary and replays to the head', async () => {
 		const { table } = require('#src/resources/databases');
 		const Product = table({
@@ -1430,6 +1471,7 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		assert.strictEqual(blocked.code, 'DERIVED_INDEX_LAGGING');
 		assert.strictEqual(blocked.retryable, true);
 		assert.strictEqual((await failure(() => Product.delete('p4'))).statusCode, 503);
+		assert.strictEqual((await failure(() => Product.create({ title: 'created' }))).statusCode, 503);
 		release();
 		await Product.put('p5', { title: 'admitted' });
 		await waitFor(() => backend.applied.has('p5'), { timeout: 5000 });
@@ -1446,6 +1488,7 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		assert.strictEqual(peer.requestRebuild('rocks-rebuild'), true);
 		await waitFor(() => backend.resets.length === 2, { timeout: 5000 });
 		await waitFor(() => runtime.getReadiness('rocks-rebuild').state === 'ready', { timeout: 10_000 });
+		// create() left Harper's internal id-allocation entry in the primary store; the scan must skip it.
 		assert.deepStrictEqual([...backend.applied.keys()].sort(), ['p1', 'p3', 'p4', 'p5']);
 		assert.strictEqual(peerBackend.resets.length, 0);
 		await unregisterPeer();

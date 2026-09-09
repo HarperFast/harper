@@ -67,12 +67,6 @@ export class ServerError extends Error {
 }
 
 /**
- * Thrown when a query targets an attribute whose secondary index is still being (re)built. It is a
- * distinct, retryable 503 so callers can tell a transient "index rebuilding" condition apart from a
- * permanent failure and retry, rather than mis-handling the generic 503 (e.g. as a "no result").
- * See issue #1355.
- */
-/**
  * Thrown when a write targets a table whose derived index has fallen further behind than its
  * registration allows. A distinct, retryable 503 so writers back off before the index's cursor is
  * lost to transaction-log retention, rather than reading a generic 503 as a permanent failure.
@@ -88,6 +82,12 @@ export class DerivedIndexLagError extends ServerError {
 	}
 }
 
+/**
+ * Thrown when a query targets an attribute whose secondary index is still being (re)built. It is a
+ * distinct, retryable 503 so callers can tell a transient "index rebuilding" condition apart from a
+ * permanent failure and retry, rather than mis-handling the generic 503 (e.g. as a "no result").
+ * See issue #1355.
+ */
 export class IndexRebuildingError extends ServerError {
 	code: string;
 	retryable: boolean;
