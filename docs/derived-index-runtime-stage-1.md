@@ -391,7 +391,10 @@ leaves no work behind at release, so the fence, barrier request and quiescence h
 optional for it (a durable cursor that trails offered progress is still allowed); a **queued**
 backend declares `queued: true`, and registration rejects it unless `attach`, `flush` and
 `shutdown` are all implemented, because without them a queued apply can survive an ownership
-handoff and land in the next owner's generation. A backend that queues without declaring it
+handoff and land in the next owner's generation. `attach(host)` hands the backend a
+`DerivedIndexBackendHost` whose `isOwnerEpoch(epoch)` is the fence a queued apply or flush
+completion checks before it mutates or publishes, and whose `getReadiness()` reads the shared
+record without holding the runner lock. A backend that queues without declaring it
 violates the contract. `reset` is optional for both: a backend that omits it keeps Stage 1's
 terminal `needs-rebuild`.
 
