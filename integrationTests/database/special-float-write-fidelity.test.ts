@@ -205,8 +205,7 @@ suite(
 			await runWriteFormat('msgpack');
 		});
 
-		/** A failed write arm leaves the matrix empty, which would make every loop below iterate
-		 *  zero times and pass having measured nothing. */
+		/** An empty matrix would make every loop below iterate zero times and pass. */
 		function rows(): string[] {
 			const expected = TABLES.flatMap((table) => ['cbor', 'msgpack'].map((f) => rowKey(table, f))).sort();
 			deepStrictEqual(Object.keys(matrix).sort(), expected, 'every table x write format must have produced a record');
@@ -260,8 +259,8 @@ suite(
 			]);
 		}
 
-		// Without this, dropping the Float declarations from TypedDoc would silently turn it into a
-		// second copy of Doc's open-attribute path and every arm below would stay green.
+		// Dropping TypedDoc's Float declarations would turn it into a second copy of Doc's
+		// open-attribute path with every arm still green, so the difference is asserted.
 		test('TypedDoc reaches per-type validation and Doc does not', async () => {
 			const send = (table: TableName) =>
 				request(restURL)
@@ -272,9 +271,12 @@ suite(
 					.timeout(20_000);
 
 			const typed = await send('TypedDoc');
-			ok(
-				typed.status >= 400,
-				`a declared Float must reject a non-numeric value, got ${typed.status} — TypedDoc is not reaching per-type validation`
+			// Exactly 400: a 5xx from a broken fixture would satisfy a >= 400 check and leave the
+			// declared-Float branch unexercised, which is the false green this arm exists to stop.
+			strictEqual(
+				typed.status,
+				400,
+				`a declared Float must reject a non-numeric value with 400, got ${typed.status} — TypedDoc is not reaching per-type validation`
 			);
 
 			const open = await send('Doc');
@@ -282,6 +284,8 @@ suite(
 			ok(open.status < 300, `an undeclared attribute must accept any value, got ${open.status}`);
 		});
 
+		// Characterization, not an endorsement: if Harper starts preserving -0 this arm goes red and
+		// the fix is to invert it, not to restore the coercion.
 		test('a genuine IEEE-754 -0 on the wire does not survive the round trip', async () => {
 			for (const table of TABLES) {
 				const bodyFor = {
@@ -306,8 +310,8 @@ suite(
 				for (const [writeFormat, { contentType, build, marker }] of Object.entries(bodyFor)) {
 					const id = `rec-negzero-${writeFormat}`;
 					const body = build(id);
-					// Without this the encoder's integer fast path turns the arm into a test of
-					// cbor-x/msgpackr rather than of Harper, and it still passes.
+					// The encoders' integer fast path erases -0 silently, so the wire is checked
+					// rather than the value handed to encode().
 					ok(
 						body.includes(marker),
 						`${writeFormat} request body must carry float64 -0 (${marker.toString('hex')}), got ${body.toString('hex')}`
