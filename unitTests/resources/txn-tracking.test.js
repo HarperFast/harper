@@ -1447,6 +1447,9 @@ describe('Disconnect abort', () => {
 	// callback's writes to be committed by onComplete with no cancellation armed at all — and that commit
 	// is where they become durable.
 	it('arms cancellation for a synchronous callback whose final commit is asynchronous', async function () {
+		// LMDB reaches txnForContext only after an await inside put(), so a synchronous callback leaves it
+		// nothing staged to commit and the shape does not exist on that engine.
+		if (isLMDB) this.skip();
 		const slow = new PassThrough();
 		const blob = createBlob(slow);
 		const ac = new AbortController();
