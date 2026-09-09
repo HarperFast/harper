@@ -76,6 +76,12 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 	): Promise<MqttClient> {
 		return new Promise((resolvePromise, reject) => {
 			const mqttClient = mqtt.connect(url, opts);
+			// A post-connect 'error' listener is mandatory — an unhandled 'error' on an EventEmitter
+			// throws — but discarding it costs the diagnosis: a broker crash or socket reset would
+			// then surface only as a downstream waitFor timeout. Q4 destroys a transport on purpose,
+			// so this logs rather than fails.
+			const noteLateError = (err: Error) =>
+				console.log(`[QA-681] post-connect mqtt error on ${opts.clientId}: ${err?.message ?? err}`);
 			if (collector) mqttClient.on('message', collector);
 			let timer: ReturnType<typeof setTimeout>;
 			const onError = (err: Error) => {
@@ -87,7 +93,7 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 			const onConnect = () => {
 				clearTimeout(timer);
 				mqttClient.removeListener('error', onError);
-				mqttClient.on('error', () => {});
+				mqttClient.on('error', noteLateError);
 				resolvePromise(mqttClient);
 			};
 			// Remove only this helper's own listeners on timeout. removeAllListeners() would also
@@ -96,7 +102,7 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 			timer = setTimeout(() => {
 				mqttClient.removeListener('error', onError);
 				mqttClient.removeListener('connect', onConnect);
-				mqttClient.on('error', () => {});
+				mqttClient.on('error', noteLateError);
 				mqttClient.end(true);
 				reject(new Error(`mqtt connect timed out for clientId=${opts.clientId}`));
 			}, 10_000);

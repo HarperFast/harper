@@ -160,22 +160,17 @@ suite(`QA-716 lingering-write-commit vs staged writes [${ENGINE}]`, { skip: skip
 		}
 	}
 
-	let q1Bucket: string;
-	let q1FulfilledIds: string[];
-	let q1Sku: string;
-
 	test('Q1 order fulfilled behind an abandoned read iterator is durable and index-consistent immediately', async () => {
-		q1Bucket = 'B1';
-		q1Sku = `SKU-${q1Bucket}`;
-		await seed(q1Bucket, 20);
-		const { fulfilledIds, scanned } = await fulfillPage(q1Bucket, PAGE_SIZE);
-		q1FulfilledIds = fulfilledIds;
+		const bucket = 'B1';
+		const sku = `SKU-${bucket}`;
+		await seed(bucket, 20);
+		const { fulfilledIds, scanned } = await fulfillPage(bucket, PAGE_SIZE);
 		strictEqual(fulfilledIds.length, PAGE_SIZE, `FulfillPage should pick a full page of ${PAGE_SIZE}`);
 		console.log(`[QA-716 Q1 ${ENGINE}] fulfilled=${JSON.stringify(fulfilledIds)} scanned=${scanned}`);
 
 		// Read the TTL'd table before the index round trips below, not after: a slow shard can
 		// otherwise spend the expiry window on unrelated work.
-		const reservations = (await dump('/DumpReservation/')).filter((r: any) => r.sku === q1Sku);
+		const reservations = (await dump('/DumpReservation/')).filter((r: any) => r.sku === sku);
 		strictEqual(
 			reservations.length,
 			PAGE_SIZE,
@@ -184,12 +179,12 @@ suite(`QA-716 lingering-write-commit vs staged writes [${ENGINE}]`, { skip: skip
 
 		await assertOrdersDurablyFulfilled(fulfilledIds);
 
-		const inv = (await dump('/DumpInventory/')).find((r: any) => r.sku === q1Sku);
-		ok(inv, `Inventory/${q1Sku} must exist`);
+		const inv = (await dump('/DumpInventory/')).find((r: any) => r.sku === sku);
+		ok(inv, `Inventory/${sku} must exist`);
 		strictEqual(
 			inv.fulfilledCount,
 			PAGE_SIZE,
-			`Inventory/${q1Sku}.fulfilledCount must reflect all ${PAGE_SIZE} staged writes`
+			`Inventory/${sku}.fulfilledCount must reflect all ${PAGE_SIZE} staged writes`
 		);
 	});
 
@@ -237,7 +232,14 @@ suite(`QA-716 lingering-write-commit vs staged writes [${ENGINE}]`, { skip: skip
 	);
 
 	test('Q3 durability holds past the long-transaction monitor threshold', async () => {
-		strictEqual(q1FulfilledIds?.length, PAGE_SIZE, 'Q1 must have fulfilled a page for this arm to re-check anything');
+		// Its own bucket, like every other arm: sharing Q1's rows made this arm fail on a Q1 failure
+		// and unrunnable in isolation, without testing anything Q1 had not already established.
+		const bucket = 'B3';
+		const sku = `SKU-${bucket}`;
+		await seed(bucket, 20);
+		const { fulfilledIds } = await fulfillPage(bucket, PAGE_SIZE);
+		strictEqual(fulfilledIds.length, PAGE_SIZE, `FulfillPage(${bucket}) should pick a full page`);
+
 		// Elapsed time, not a convergence wait: the claim is that nothing happens to these writes
 		// once the monitor reaches the abandoned transaction, so there is no event to converge on.
 		await sleep(Math.max(6000, MAX_TXN_OPEN_MS * 6));
@@ -249,9 +251,9 @@ suite(`QA-716 lingering-write-commit vs staged writes [${ENGINE}]`, { skip: skip
 		);
 		// Without this the arm is blind: a change that drops the lingering transaction from write
 		// supervision, or renames storage.maxTransactionOpenTime, would leave it sleeping and then
-		// re-reading writes Q1 already proved durable — green having tested only elapsed time. The
-		// line is #1860's release-only branch (resources/DatabaseTransaction.ts), so it is asserted
-		// on RocksDB alone; LMDB never defers a commit and correctly never logs it.
+		// re-reading writes that were already durable. #1860's release-only branch logs this line
+		// (resources/DatabaseTransaction.ts), so it is asserted on RocksDB alone — LMDB never defers
+		// a commit and correctly never logs it.
 		if (ENGINE === 'rocksdb') {
 			ok(
 				releasedLine,
@@ -261,12 +263,12 @@ suite(`QA-716 lingering-write-commit vs staged writes [${ENGINE}]`, { skip: skip
 		// The abort line is not asserted absent: any other transaction in the run may legitimately
 		// cross the deliberately-low threshold and log it.
 
-		await assertOrdersDurablyFulfilled(q1FulfilledIds);
-		const inv = (await dump('/DumpInventory/')).find((r: any) => r.sku === q1Sku);
+		await assertOrdersDurablyFulfilled(fulfilledIds);
+		const inv = (await dump('/DumpInventory/')).find((r: any) => r.sku === sku);
 		strictEqual(
 			inv?.fulfilledCount,
 			PAGE_SIZE,
-			`Inventory/${q1Sku}.fulfilledCount must still reflect all ${PAGE_SIZE} writes post-monitor`
+			`Inventory/${sku}.fulfilledCount must still reflect all ${PAGE_SIZE} writes post-monitor`
 		);
 	});
 
