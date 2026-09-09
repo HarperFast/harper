@@ -565,6 +565,9 @@ class DerivedIndexRunner {
 		if (this.#sharedViews?.words.buffer instanceof SharedArrayBuffer) return this.#sharedViews;
 		this.#sharedViews = sharedViewsOf(readinessBuffer(this.#logStore, this.id));
 		this.#sharedFetchedAt = this.#options.now();
+		// The owner's own publish goes through here; readers on this worker must see the same memory at once.
+		if (this.#sharedViews.words.buffer instanceof SharedArrayBuffer)
+			cachedReadinessViews(this.#logStore).set(this.id, this.#sharedViews);
 		return this.#sharedViews;
 	}
 
@@ -1826,6 +1829,12 @@ function sharedViewsOf(buffer: ArrayBufferLike): SharedViews {
 
 const readinessViews = new WeakMap<object, Map<string, SharedViews>>();
 
+function cachedReadinessViews(logStore: object): Map<string, SharedViews> {
+	let byBackend = readinessViews.get(logStore);
+	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
+	return byBackend;
+}
+
 function readReadiness(words: Int32Array, epoch: BigInt64Array, bytes: Uint8Array): DerivedIndexReadiness {
 	for (let spin = 0; spin < 256; spin++) {
 		const before = Atomics.load(words, READINESS_SEQUENCE);
@@ -1852,8 +1861,7 @@ export function readDerivedIndexReadiness(
 	logStore: RocksTransactionLogStore,
 	backendId: string
 ): DerivedIndexReadiness {
-	let byBackend = readinessViews.get(logStore);
-	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
+	const byBackend = cachedReadinessViews(logStore);
 	let views = byBackend.get(backendId);
 	if (!views || (!(views.words.buffer instanceof SharedArrayBuffer) && Date.now() - views.fetchedAt >= 100)) {
 		views = sharedViewsOf(readinessBuffer(logStore, backendId));
