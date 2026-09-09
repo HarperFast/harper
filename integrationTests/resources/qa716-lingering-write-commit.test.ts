@@ -207,7 +207,7 @@ suite(`QA-716 lingering-write-commit vs staged writes [${ENGINE}]`, { skip: skip
 	});
 
 	test(
-		'Q2 TTL: reservations staged behind the lingering commit expire with no orphaned index entries',
+		'Q2 TTL: reservations staged behind the lingering commit are present, then expire',
 		{ timeout: 60_000 },
 		async () => {
 			// Its own bucket, fulfilled here rather than reused from Q1. Sharing Q1's rows would put
@@ -240,18 +240,12 @@ suite(`QA-716 lingering-write-commit vs staged writes [${ENGINE}]`, { skip: skip
 			}
 			strictEqual(remaining, 0, 'no Reservation row for this sku may still be returned once its TTL has elapsed');
 
-			// Index cleanup lags the base-row delete, so poll a bounded settle window. Scope: search_by_value
-			// materializes its hits and drops any whose base record is gone (resources/Table.ts,
-			// `if (record == null) return canSkip ? SKIP : record`), so this proves the index no longer
-			// RESOLVES an evicted reservation. A dangling entry whose base row is already deleted would
-			// need a raw-index read the operations API does not expose.
-			const indexDeadline = Date.now() + 10_000;
-			let indexHits = await searchByValue('Reservation', 'sku', sku);
-			while (indexHits.size > 0 && Date.now() < indexDeadline) {
-				await sleep(500);
-				indexHits = await searchByValue('Reservation', 'sku', sku);
-			}
-			strictEqual(indexHits.size, 0, 'the sku index must resolve no Reservation rows once the TTL sweep has run');
+			// No index-level assertion follows deliberately. search_by_value goes through the same
+			// materialization as the dump above — it hides a row once expiresAt has passed and drops
+			// one whose base record is gone (resources/Table.ts) — so once the dump is empty an index
+			// query is empty too, whatever the index actually holds. A check there could not fail, and
+			// pinning sweep-time index cleanup needs a raw-index read the operations API does not
+			// expose.
 		}
 	);
 

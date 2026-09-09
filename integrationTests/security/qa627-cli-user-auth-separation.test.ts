@@ -89,6 +89,10 @@ suite(
 			// the fallback arms would exchange an OIDC token instead of using the fallback.
 			delete base.ACTIONS_ID_TOKEN_REQUEST_URL;
 			delete base.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+			// A runner that preloads dotenv through NODE_OPTIONS would re-inject HARPER_CLI_* from
+			// DOTENV_CONFIG_PATH after the scrub above, from outside the throwaway cwd.
+			delete base.NODE_OPTIONS;
+			delete base.DOTENV_CONFIG_PATH;
 			try {
 				const { stdout, stderr } = await execFileAsync(process.execPath, [HARPER_BIN, ...args], {
 					// dotenv.config() runs before auth resolution, so a repo-root `.env` would refill

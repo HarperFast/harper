@@ -38,6 +38,7 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'qa681-mqtt-shared-subscriptio
 const skipSuite = process.env.HARPER_RUNTIME === 'bun' || process.platform === 'win32';
 
 const STREAM_TOPIC = 'Events/stream';
+const Q3_TOPIC = 'Events/q3stream';
 const QOS1_TOPIC = 'Events/qos1stream';
 const SHARE_TOPIC = '$share/g1/Events/stream';
 const SUBACK_TOPIC_FILTER_INVALID = 0x8f; // MQTT v5
@@ -320,11 +321,11 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 					groupSubAcks.push(await subscribe(c, SHARE_TOPIC, 1));
 					groupCollectors.push(collectMessages(c));
 				}
-				await subscribe(ordinary, STREAM_TOPIC, 1);
+				await subscribe(ordinary, Q3_TOPIC, 1);
 				const ordinaryObs = collectMessages(ordinary);
 
 				for (let seq = 0; seq < M; seq++) {
-					await publish(pub, STREAM_TOPIC, JSON.stringify({ seq, tag: 'q3' }));
+					await publish(pub, Q3_TOPIC, JSON.stringify({ seq, tag: 'q3' }));
 				}
 				await waitFor(() => ordinaryObs.messages.length >= M, 8_000);
 				await sleep(800); // only elapsed time can evidence the absence asserted below
@@ -391,6 +392,10 @@ suite('QA-681 MQTT shared-subscription ($share) semantics', { skip: skipSuite },
 						// unsubscribe, which is what leaves the durable session with a backlog to resume.
 						(dropClient as any).stream?.destroy?.();
 						dropClient.end(true);
+						// Converge on the socket actually being down before publishing past the drop
+						// point; otherwise seq 15 can still reach the old session and the boundary
+						// assertion below fails on a run that behaved correctly.
+						await waitFor(() => dropClient?.connected !== true, 5_000);
 					}
 				}
 				await waitFor(() => cA.messages.length >= N && cC.messages.length >= N, 12_000);
