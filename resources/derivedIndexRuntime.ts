@@ -2,6 +2,7 @@ import type { Id } from './ResourceInterface.ts';
 import type { AuditRecord } from './auditStore.ts';
 import type { RocksTransactionLogStore, TransactionLogIterable } from './RocksTransactionLogStore.ts';
 import { writeKeyId } from './DatabaseTransaction.ts';
+import { registerDerivedIndexTables } from './derivedIndexRegistry.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 
 const logger = loggerWithTag('derived-index');
@@ -68,7 +69,7 @@ export type DerivedIndexRunnerStatus =
 	| { state: 'idle' | 'running' | 'deferred' | 'waiting-durable' | 'stopped'; ownerEpoch?: bigint }
 	| { state: 'needs-rebuild'; reason: string; ownerEpoch?: bigint };
 
-const ELIGIBLE_ACTIONS = new Set(['put', 'patch', 'delete', 'invalidate', 'relocate']);
+const ELIGIBLE_ACTIONS = new Set(['put', 'patch', 'delete', 'invalidate', 'relocate', 'evict']);
 
 export class DerivedIndexRuntime {
 	#logStore: RocksTransactionLogStore;
@@ -164,6 +165,7 @@ class DerivedIndexRunner {
 	#stopped = false;
 	#idleTimer?: NodeJS.Timeout;
 	#unsubscribeBackend: () => void;
+	#unregisterTables: () => void;
 	#ownerEpoch?: bigint;
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
 
@@ -181,6 +183,7 @@ class DerivedIndexRunner {
 		this.#unsubscribeBackend = registration.backend.onStateChange((change = 'changed') =>
 			this.#backendStateChanged(change)
 		);
+		this.#unregisterTables = registerDerivedIndexTables(logStore, registration.projections.keys());
 	}
 
 	wake(fromBackend = false) {
@@ -206,6 +209,7 @@ class DerivedIndexRunner {
 		this.status = { state: 'stopped', ownerEpoch: this.#ownerEpoch };
 		if (this.#idleTimer) clearTimeout(this.#idleTimer);
 		this.#unsubscribeBackend?.();
+		this.#unregisterTables();
 		this.#release();
 	}
 

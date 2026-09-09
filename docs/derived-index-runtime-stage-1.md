@@ -30,9 +30,9 @@ API, blob extraction, generation activation, or HNSW migration.
 - Conflict retries can re-resolve a record after its transaction-log payload was first staged. The
   audit entry therefore provides durable mutation identity and version evidence, but its embedded
   record is not authoritative for derived-index projection.
-- `Table.evict()` removes the primary row and its transactional custom indexes without writing an
-  audit entry. A derived index cannot mirror cache eviction until Harper adds a local-only eviction
-  marker to the same RocksDB transaction, limited to tables with derived-index registrations.
+- `Table.evict()` ordinarily removes the primary row and its transactional custom indexes without
+  writing an audit entry. A registered derived index adds a local-only eviction marker to that same
+  RocksDB transaction so asynchronous indexing can mirror the removal.
 - Transaction-log retention removes whole files. `TransactionLog.getStats()` exposes the oldest
   retained file sequence, while `exactStart` proves whether a saved transaction boundary remains
   readable.
@@ -231,14 +231,14 @@ in the existing physical transaction log before removing the primary row. It use
 transaction as the version-guarded removal and is `LOCAL_ONLY`: cache residency is local and must not
 replicate. If the transaction conflicts or aborts, neither removal nor marker commits.
 
-The internal action is a no-op in boot replay and does not increment replayed-record counts. Audit
-and transaction-log read APIs filter it from customer output, and replication continues to reject it
-through `LOCAL_ONLY`. The runtime consumes it before those presentation filters.
+The internal action is a no-op in boot replay and does not increment replayed-record counts.
+Customer-facing history and subscription replay filter it, while raw transaction-log readers retain
+it for the derived runtime. Replication continues to reject it through `LOCAL_ONLY`.
 
 This is the only Stage 1 producer change. It is necessary because HNSW and ordinary secondary
 indexes are currently removed synchronously by `updateIndices`, while an asynchronous derived
 index otherwise has no durable evidence that the cached row disappeared. Tables without a derived
-backend keep the current eviction path and cost.
+backend pay only an O(1) registration guard and retain the existing storage writes.
 
 ### Cursor validation and retention gaps
 
@@ -468,8 +468,8 @@ the cursor and batch contracts do not prevent adding cohorts after comparative b
   presenting a clean end-of-log.
 - Prove direct, expires-at sweep, and `createEvictionBatcher` eviction while delivery is deferred all
   remove the document, while a failed eviction transaction emits neither removal nor marker.
-- Prove internal eviction entries are hidden from audit/log read APIs, ignored and uncounted by boot
-  replay, and never sent to a peer.
+- Prove internal eviction entries are hidden from customer history and subscription APIs, ignored
+  and uncounted by boot replay, and never sent to a peer.
 - Prove an out-of-band reload marker triggers rebuild rather than cursor advancement.
 - Reopen after an unclean shutdown and prove the installed rocksdb-js exposes recovered durable
   entries to the ordinary committed reader; never substitute `readUncommitted` in the runtime.
