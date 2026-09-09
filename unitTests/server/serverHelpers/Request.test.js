@@ -6,12 +6,14 @@ const { EventEmitter } = require('node:events');
 
 describe('Request class', function () {
 	let Request;
+	let ResponseHeaders;
 
 	before(function () {
 		// Clear the module from cache to ensure fresh load
 		const modulePath = require.resolve('../../../server/serverHelpers/Request.ts');
 		delete require.cache[modulePath];
 		Request = require('#src/server/serverHelpers/Request').Request;
+		ResponseHeaders = require('#src/server/serverHelpers/Headers').Headers;
 	});
 
 	afterEach(function () {
@@ -912,12 +914,12 @@ describe('Request class', function () {
 				assert.deepStrictEqual(headers.get('x-multi'), ['one', 'two', 'three']);
 			});
 
-			it('setHeaders() applies a Map and groups set-cookie entries', async function () {
+			it('setHeaders() applies Harper Headers and groups Map set-cookie entries', async function () {
 				const request = makeRequest();
 				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.setHeaders(new ResponseHeaders({ 'X-A': '1' }));
 					res.setHeaders(
 						new Map([
-							['x-a', '1'],
 							['Set-Cookie', ['a=1', 'b=2']],
 							['set-cookie', 'c=3'],
 						])
