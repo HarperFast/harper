@@ -816,10 +816,13 @@ function getFileLogger(path, rotation, isExternalInstance) {
 	}
 	if (isMainThread && reconfigured) {
 		setTimeout(() => {
-			logger.rotator?.end();
-			if (!rotation) return;
-			const { logRotator } = require('./logRotator');
+			// Everything inside the try: a throw from a timer callback is unhandled, and neither
+			// require('./logRotator') (which reaches environmentManager's synchronous init) nor a
+			// rotator teardown may take the process down over log rotation (#847).
 			try {
+				logger.rotator?.end();
+				if (!rotation) return;
+				const { logRotator } = require('./logRotator');
 				logger.rotator = logRotator({
 					logger,
 					...rotation,
