@@ -79,23 +79,45 @@ export interface DerivedIndexBackendHost {
 	getReadiness(): DerivedIndexReadiness;
 }
 
-export interface DerivedIndexBackend {
+interface DerivedIndexBackendBase {
 	readonly id: string;
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
 	onStateChange(wake: (change?: DerivedIndexBackendStateChange) => void): () => void;
-	/** Receives the epoch fence and readiness reader before any delivery. */
-	attach?(host: DerivedIndexBackendHost): void;
-	/** Request a durability barrier; the backend runs it asynchronously and wakes through `onStateChange`. */
-	flush?(reason: DerivedIndexFlushReason): void | Promise<void>;
 	/** Destroy index state and the durable cursor; `getDurableCursor()` must return `undefined` afterwards. */
 	reset?(ownerEpoch: bigint): void | Promise<void>;
+}
+
+/**
+ * A backend whose `deliver()` applies the batch before returning and leaves no work behind at
+ * release. Its durable cursor may still trail offered progress; it must never apply or publish
+ * after the runner released the lock.
+ */
+export interface SynchronousDerivedIndexBackend extends DerivedIndexBackendBase {
+	queued?: false;
+	attach?(host: DerivedIndexBackendHost): void;
+	flush?(reason: DerivedIndexFlushReason): void | Promise<void>;
+	shutdown?(ownerEpoch: bigint): void | Promise<void>;
+}
+
+/**
+ * A backend whose `deliver()` enqueues and applies asynchronously. Registration rejects it unless it
+ * provides the fence, the barrier request and the quiescence handshake the handoff protocol needs.
+ */
+export interface QueuedDerivedIndexBackend extends DerivedIndexBackendBase {
+	readonly queued: true;
+	/** Receives the epoch fence and readiness reader before any delivery. */
+	attach(host: DerivedIndexBackendHost): void;
+	/** Request a durability barrier; the backend runs it asynchronously and wakes through `onStateChange`. */
+	flush(reason: DerivedIndexFlushReason): void | Promise<void>;
 	/**
 	 * Stop accepting work for `ownerEpoch`, settle or discard what is queued, and resolve once nothing
 	 * further will be applied or published for it. A rejection keeps the runner lock held.
 	 */
-	shutdown?(ownerEpoch: bigint): void | Promise<void>;
+	shutdown(ownerEpoch: bigint): void | Promise<void>;
 }
+
+export type DerivedIndexBackend = SynchronousDerivedIndexBackend | QueuedDerivedIndexBackend;
 
 export type DerivedIndexBackendStateChange = 'changed' | 'accepted-work-lost' | 'failed';
 
@@ -216,6 +238,12 @@ export class DerivedIndexRuntime {
 	register(registration: DerivedIndexRegistration): () => Promise<void> {
 		if (this.#stopped) throw new Error('Derived index runtime is stopped');
 		if (!registration.backend.id) throw new Error('Derived index backend id is required');
+		if (registration.backend.queued === true) {
+			for (const hook of ['attach', 'flush', 'shutdown'] as const) {
+				if (typeof registration.backend[hook] !== 'function')
+					throw new TypeError(`Queued derived index backend '${registration.backend.id}' must implement ${hook}()`);
+			}
+		}
 		if (this.#runners.has(registration.backend.id))
 			throw new Error(`Derived index backend '${registration.backend.id}' is already registered`);
 		const runner = new DerivedIndexRunner(this.#logStore, this.#resolveRecord, this.#scanRecords, registration, {
@@ -434,7 +462,6 @@ class DerivedIndexRunner {
 		return this.#registration.backend.id;
 	}
 
-	/** After a failed shutdown on a stopped runner: quiesce the held epoch again and unlock on success. */
 	retryRelease(): Promise<void> {
 		if (!this.#heldLock) return this.#stopResult ?? Promise.resolve();
 		this.#heldLock = false;
@@ -486,7 +513,6 @@ class DerivedIndexRunner {
 		if (this.#stopped || this.#rebuilding) return;
 		if (this.status.state === 'unavailable') {
 			if (this.#heldLock || this.getReadiness().state === 'unavailable') return;
-			// A peer revived the index; drop the local latch so this runner can take over again.
 			this.status = { state: 'idle' };
 		}
 		// A shared rebuild request must reach an owner parked on backpressure or backoff at its next wake.
@@ -517,8 +543,12 @@ class DerivedIndexRunner {
 		if (this.#idleTimer) clearTimeout(this.#idleTimer);
 		if (this.#rebuildTimer) clearTimeout(this.#rebuildTimer);
 		this.#rebuildTimer = undefined;
-		this.#unsubscribeBackend?.();
-		this.#readinessBuffer.cancel?.();
+		try {
+			this.#unsubscribeBackend?.();
+			this.#readinessBuffer.cancel?.();
+		} catch (error) {
+			logger.warn?.(`Derived index '${this.id}' cleanup hook threw`, error);
+		}
 		this.#release();
 		// Tables stay registered until the backend has settled, so an eviction committed during the
 		// drain still writes the marker the next owner replays.
@@ -697,7 +727,6 @@ class DerivedIndexRunner {
 		this.#publishReadiness('ready');
 	}
 
-	/** Point offered progress and the log iterator at `cursor`; false when the log set cannot prove it. */
 	#installCursor(cursor: DerivedIndexCursor): boolean {
 		this.#validateLogSet(cursor);
 		if (this.status.state === 'needs-rebuild') return false;
@@ -799,7 +828,6 @@ class DerivedIndexRunner {
 		}
 	}
 
-	/** Hand a batch to the backend; `undefined` means the runner lost ownership or failed during the call. */
 	#deliver(batch: DerivedIndexBatch): typeof DERIVED_INDEX_ACCEPTED | typeof DERIVED_INDEX_DEFERRED | undefined {
 		const generation = this.#generation;
 		let result: DerivedIndexDeliveryResult;
@@ -1152,7 +1180,12 @@ class DerivedIndexRunner {
 		this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
 		this.#idleTimer = setTimeout(() => {
 			this.#idleTimer = undefined;
-			if (!this.#stopped && sameCursor(this.#registration.backend.getDurableCursor(), this.#offered!)) this.#release();
+			if (this.#stopped) return;
+			try {
+				if (sameCursor(this.#registration.backend.getDurableCursor(), this.#offered!)) this.#release();
+			} catch (error) {
+				this.#fail('backend cursor read threw at idle release', error);
+			}
 		}, this.#options.idleGraceMilliseconds);
 	}
 
@@ -1536,11 +1569,12 @@ class DerivedIndexRunner {
 		const hold = (error: unknown) => {
 			this.#releasing = undefined;
 			this.#heldLock = true;
-			const reason = `backend shutdown failed; runner lock held: ${error instanceof Error ? error.message : String(error)}`;
+			const shared = 'backend shutdown failed; runner lock held';
+			const reason = `${shared}: ${error instanceof Error ? error.message : String(error)}`;
 			logger.error(`Derived index '${backend.id}' ${reason}`, error);
 			this.#releaseFailure = new Error(reason, { cause: error });
 			this.status = { state: 'unavailable', reason, ownerEpoch: epoch };
-			this.#publishReadiness('unavailable', reason);
+			this.#publishReadiness('unavailable', shared);
 		};
 		try {
 			const flushed = backend.flush?.('shutdown');

@@ -107,6 +107,7 @@ class FakeLogStore {
 class AsyncBackend {
 	constructor(id, { cursor, applyDelay = 0, capacity = Infinity, onReset, applyRecord } = {}) {
 		this.id = id;
+		this.queued = true;
 		this.cursor = cursor;
 		this.deliveries = [];
 		this.queue = [];
@@ -584,8 +585,9 @@ describe('DerivedIndexRuntime for native backends', () => {
 
 		await assert.rejects(runtime.stop(), /native queue did not drain/);
 		assert.strictEqual(store.locks.size, 1);
-		assert.match(readDerivedIndexReadiness(store, 'held').reason, /native queue did not drain/);
-		assert.strictEqual(readDerivedIndexReadiness(store, 'held').state, 'unavailable');
+		const shared = readDerivedIndexReadiness(store, 'held');
+		assert.strictEqual(shared.state, 'unavailable');
+		assert.strictEqual(shared.reason, 'backend shutdown failed; runner lock held', 'the backend message stays local');
 	});
 
 	it('revives an index whose lock was held by a failed shutdown once the backend can settle', async () => {
@@ -1111,6 +1113,15 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(callbacks.size, 1);
 		await second.stop();
 		assert.strictEqual(callbacks.size, 0);
+	});
+
+	it('rejects a queued backend that lacks the fence, barrier or quiescence hooks', () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const { runtime } = runtimeFor(store, new Map());
+		const incomplete = new SyncBackend('incomplete-queued', cursor(10));
+		incomplete.queued = true;
+		assert.throws(() => runtime.register(registration(incomplete)), /must implement attach\(\)/);
+		assert.strictEqual(runtime.getStatus('incomplete-queued'), undefined);
 	});
 
 	it('reads a publication abandoned mid-write as unknown instead of spinning', () => {

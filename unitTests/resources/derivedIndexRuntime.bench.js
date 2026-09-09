@@ -115,6 +115,7 @@ class InlineBackend {
 class QueueBackend {
 	constructor(id, { sliceMillis = 4, capacityBytes = 64 * 1024 * 1024 } = {}) {
 		this.id = id;
+		this.queued = true;
 		this.cursor = { format: 1, logs: {} };
 		this.queue = [];
 		this.queuedBytes = 0;

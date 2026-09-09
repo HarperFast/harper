@@ -350,16 +350,31 @@ interface DerivedIndexBackendHost {
 	getReadiness(): DerivedIndexReadiness;
 }
 
-interface DerivedIndexBackend {
+interface SynchronousDerivedIndexBackend {
 	readonly id: string;
+	queued?: false;
 	getDurableCursor(): DerivedIndexCursor | undefined;
-	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
+	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult; // applies before returning
 	onStateChange(wake: (change?: 'changed' | 'accepted-work-lost' | 'failed') => void): () => void;
+	reset?(ownerEpoch: bigint): void | Promise<void>;
 	attach?(host: DerivedIndexBackendHost): void;
-	flush?(reason: 'age' | 'threshold' | 'shutdown'): void;
-	reset?(ownerEpoch: bigint): void;
+	flush?(reason: 'age' | 'threshold' | 'shutdown'): void | Promise<void>;
 	shutdown?(ownerEpoch: bigint): void | Promise<void>;
 }
+
+interface QueuedDerivedIndexBackend {
+	readonly id: string;
+	readonly queued: true;
+	getDurableCursor(): DerivedIndexCursor | undefined;
+	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult; // enqueues; applies asynchronously
+	onStateChange(wake: (change?: 'changed' | 'accepted-work-lost' | 'failed') => void): () => void;
+	reset?(ownerEpoch: bigint): void | Promise<void>;
+	attach(host: DerivedIndexBackendHost): void; // required: the epoch fence
+	flush(reason: 'age' | 'threshold' | 'shutdown'): void | Promise<void>; // required: the barrier request
+	shutdown(ownerEpoch: bigint): void | Promise<void>; // required: the quiescence handshake
+}
+
+type DerivedIndexBackend = SynchronousDerivedIndexBackend | QueuedDerivedIndexBackend;
 
 type DerivedIndexRegistration = {
 	backend: DerivedIndexBackend;
@@ -370,9 +385,14 @@ type DerivedIndexRegistration = {
 
 `records` and `bytes` are non-enumerable properties so the enumerable batch shape stays the Stage 1
 `{ ownerEpoch, transactions, through }` contract; a backend reads them like any other field. The
-four new backend methods are optional: a backend that omits `reset` keeps Stage 1's terminal
-`needs-rebuild`, one that omits `flush` must flush on its own, one that omits `shutdown` is treated
-as quiescent at release, and one that omits `attach` cannot fence stale completions itself.
+contract is split by capability: a **synchronous-durable** backend applies inside `deliver()` and
+leaves no work behind at release, so the fence, barrier request and quiescence handshake are
+optional for it (a durable cursor that trails offered progress is still allowed); a **queued**
+backend declares `queued: true`, and registration rejects it unless `attach`, `flush` and
+`shutdown` are all implemented, because without them a queued apply can survive an ownership
+handoff and land in the next owner's generation. A backend that queues without declaring it
+violates the contract. `reset` is optional for both: a backend that omits it keeps Stage 1's
+terminal `needs-rebuild`.
 
 `DerivedIndexRegistration` belongs to Harper. Its projection functions are compiled from schema
 attributes and execute before `deliver()`, so the backend receives only its declared materialized
@@ -739,6 +759,13 @@ backend can defer. Timer-coalesced idle flushing, also raised by the planning re
 is the do-less form of idle completion: an immediate barrier at every idle pass would cost one barrier
 per write for arrivals spaced just beyond drain completion.
 
+**Different layer, revisited (adopted from the planning recheck).** Enforce the handoff invariant at
+the backend contract rather than by documentation: a queued backend must declare itself and must
+provide the fence, barrier request and quiescence handshake, checked at registration. Adopted
+because there is no shipped backend yet, so the contract can still be made strict at zero
+migration cost, and because an optional `shutdown` let a queuing backend compile with no fence at
+all.
+
 **Chosen.** Coalesced view, identity-first bounded collection with partial chunks and no cursor
 publication mid-transaction, runtime-scheduled durability cadence with the age timer as idle
 completion, rebuild phase on the existing conservative boundary with bounded retry and an observable
@@ -747,7 +774,11 @@ sequence-locked shared readiness. Excluded: a tighter rebuild boundary from stag
 positions (the shared runner resumes after a complete transaction at its exact cursor, so an
 uncommitted anchor would skip its own transaction, and an aborted one may never exist as a boundary;
 that belongs to the storage layer that owns append and commit order) and the transactional
-dirty-key outbox (rejected under _Deeper cause_ above).
+dirty-key outbox, rejected on the facts under _Deeper cause_ above: a second durable write plus a
+compaction stream and cleanup protocol on every indexed mutation, a new column family and therefore
+a storage-format migration for every audited table, and no ability to commit an engine-specific
+native file (an mmap plane) atomically with RocksDB in any case, so the cursor protocol would still
+be needed.
 
 ## Verification
 
