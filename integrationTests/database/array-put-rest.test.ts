@@ -102,6 +102,21 @@ suite('array PUT over REST (harper#2000)', { skip: skipSuite }, (ctx: ContextWit
 		deepStrictEqual(await idsOf('rest-prim'), []);
 	});
 
+	// The same primitive against the override that writes onto the record it is given. Without the
+	// pre-dispatch guard this is a 500: class bodies are strict, so assigning `observedTargetId` onto
+	// a number throws a bare TypeError, which is the outcome DESIGN.md says a malformed body cannot
+	// produce. It is the guard, not the store, that has to catch this one — the override runs first.
+	test('a primitive element reaching a record-writing override is still a 400', async () => {
+		const response = await fetch(`${httpURL}/BatchEcho/`, {
+			method: 'PUT',
+			headers: { 'Authorization': auth, 'Content-Type': 'application/json' },
+			body: JSON.stringify([42]),
+		});
+		const problem = (await response.json()) as { code: string; title: string };
+		strictEqual(response.status, 400, `gave ${response.status}: ${problem.title}`);
+		strictEqual(problem.code, 'ClientError');
+	});
+
 	// The metadata contract, end to end: an override on a collection PUT sees each element's own id
 	// plus the request's query string, and never `checkPermission`. Observations are written onto the
 	// records so the assertion does not depend on which worker served which request.
