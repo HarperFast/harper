@@ -513,6 +513,31 @@ Unchanged and reused:
 - harper-pro#822's topology work: participant derivation from the replication group, per-database
   coordination ownership, the `replication.recordLocks` switch, `cluster_status.recordLocks`.
 
+**Three defects inherited with that substrate.** A cross-model review of the branch at `b26d5e22`
+found them in code this note keeps rather than in the arbitration rule it deletes, so they do not go
+away on their own and are obligations on the replacement:
+
+- **Transport replacement does not fence live authority** (`resources/Table.ts:5474`). Re-registering
+  a transport — a component reload is enough — closes the current coordinator and installs an empty
+  one. `close()` clears coordinator state but does not invalidate handles already handed out, and a
+  handle checks only its own release and lease fields. The successor coordinator can then grant the
+  same key immediately, with no lease time elapsed. Under §5 the equivalent transition is a home
+  restart, and §5's answer applies here too: the replacement must either carry live authority across
+  the swap or fence and settle every outstanding handle before it may grant. Unregister/re-register
+  and transport-object replacement both need coverage.
+- **The direct receive callback has no containment** (`resources/recordLockCoordinator.ts:908`). The
+  resolver calls `Table.lockCoordinator`, which throws `LockUnavailableError` when the node name is
+  unusable, and that throw happens before `applyEntry()`'s own containment can catch it, so it
+  escapes `deliverLockControlEntry()`. The source-subscription sink already handles this
+  (`resources/Table.ts:884`); the direct callback must too. This is §8's rule — a receive boundary
+  settles its callers and keeps admission closed — applied to a path that exists today.
+- **The commit fence scans every write on every commit** (`resources/DatabaseTransaction.ts:1213`).
+  The loop runs on ordinary transactions in core-only deployments that never register a transport, so
+  a bulk transaction with 100,000 plain writes pays 100,000 property checks before submission. §8
+  requires ordinary writes to keep their existing ungated path, so the transaction must track whether
+  it holds any lease-protected write and skip the pass when it does not — while still fencing a
+  released-but-staged locked write, which is the case the loop exists for.
+
 Removed:
 
 - The Ricart–Agrawala state machine — `LOCK_REQUEST`/`LOCK_GRANT` nibbles, per-peer round tracking,
