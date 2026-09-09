@@ -55,9 +55,7 @@ export type DerivedIndexBatch = {
 	 * has been made durable.
 	 */
 	through?: DerivedIndexCursor;
-	/** Estimated payload bytes of `records`; see `DerivedIndexRecord.size`. */
 	bytes: number;
-	/** Present on batches produced by the rebuild scan. */
 	rebuild?: true;
 };
 
@@ -68,7 +66,6 @@ export type DerivedIndexReadinessState = 'unknown' | 'ready' | 'rebuilding' | 'n
 export type DerivedIndexReadiness = {
 	state: DerivedIndexReadinessState;
 	reason?: string;
-	/** Epoch of the owner that published this state; compare with `isOwnerEpoch` to detect a stale publication. */
 	ownerEpoch: bigint;
 	rebuildAttempts: number;
 };
@@ -174,7 +171,10 @@ export type DerivedIndexRunnerMetrics = {
 	acceptedMutations: number;
 	deferredBytes: number;
 	oldestAcceptedAgeMilliseconds: number;
+	/** Lag between the latest transaction this runner has read and the durable cursor; blind while parked. */
 	cursorLagMilliseconds: number;
+	/** How long the runner has been parked on backend backpressure or the durability ceiling. */
+	stalledMilliseconds: number;
 	unindexableRecords: number;
 	rebuildAttempts: number;
 	rebuiltRecords: number;
@@ -422,6 +422,7 @@ class DerivedIndexRunner {
 	/** Collected but unresolved transactions; the last one may still be open (incomplete). */
 	#carried: CollectedTransaction[] = [];
 	#latestSeen = new Map<string, number>();
+	#stalledSince = 0;
 	#reloadsHandledThrough = new Map<string, number>();
 	#scheduled = false;
 	#waitingForLock = false;
@@ -590,6 +591,7 @@ class DerivedIndexRunner {
 			deferredBytes: this.#pendingBatch?.bytes ?? 0,
 			oldestAcceptedAgeMilliseconds: oldestAcceptedAt === undefined ? 0 : Math.max(0, now - oldestAcceptedAt),
 			cursorLagMilliseconds: cursorLag,
+			stalledMilliseconds: this.#stalledSince === 0 ? 0 : Math.max(0, now - this.#stalledSince),
 			unindexableRecords: this.#unindexableRecords,
 			rebuildAttempts: this.#rebuildAttempts,
 			rebuiltRecords: this.#rebuiltRecords,
@@ -738,6 +740,7 @@ class DerivedIndexRunner {
 		this.#unflushedMutations = 0;
 		this.#pendingBatch = undefined;
 		this.#carried = [];
+		this.#latestSeen.clear();
 		this.#pendingTimestamps.clear();
 		this.#seenTimestamps.clear();
 		for (const [logName, timestamp] of Object.entries(cursor.logs)) {
@@ -788,6 +791,7 @@ class DerivedIndexRunner {
 		}
 		if (this.status.state === 'needs-rebuild' || this.status.state === 'unavailable') return;
 		const generation = this.#generation;
+		const now = this.#options.now();
 		try {
 			if (!this.#checkNewLogs() || !this.#checkRangeHealth()) return;
 			if (this.status.state === 'waiting-durable') {
@@ -811,6 +815,7 @@ class DerivedIndexRunner {
 			if (result === DERIVED_INDEX_DEFERRED) {
 				this.#pendingBatch = batch;
 				this.status = { state: 'deferred', ownerEpoch: this.#ownerEpoch };
+				if (this.#stalledSince === 0) this.#stalledSince = now;
 				return;
 			}
 			this.#pendingBatch = undefined;
@@ -819,8 +824,10 @@ class DerivedIndexRunner {
 			if (!this.#reconcileDurableCursor()) return;
 			if (!lastOpen(this.#carried) && this.#offeredCursors.length - 1 >= this.#options.maxAcceptedBatchesAhead) {
 				this.status = { state: 'waiting-durable', ownerEpoch: this.#ownerEpoch };
+				if (this.#stalledSince === 0) this.#stalledSince = now;
 				return;
 			}
+			this.#stalledSince = 0;
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			this.wake();
 		} catch (error) {
@@ -972,6 +979,7 @@ class DerivedIndexRunner {
 			}
 			if (entry.endTxn) {
 				current.complete = true;
+				this.#latestSeen.set(current.logName, current.timestamp);
 				this.#seenTimestamps.get(current.logName)!.add(current.timestamp);
 				let pendingTimestamps = this.#pendingTimestamps.get(current.logName);
 				if (!pendingTimestamps) this.#pendingTimestamps.set(current.logName, (pendingTimestamps = []));
@@ -1003,7 +1011,8 @@ class DerivedIndexRunner {
 						!remaining &&
 						chunk.batch.records.length > 0 &&
 						(chunk.batch.bytes >= options.maxChunkBytes ||
-							options.now() - chunk.started >= options.maxMillisecondsPerTurn)
+							((chunk.batch.records.length & 15) === 0 &&
+								options.now() - chunk.started >= options.maxMillisecondsPerTurn))
 					) {
 						remaining = { ...transaction, keys: new Map(), keyCount: 0 };
 					}
@@ -1036,7 +1045,6 @@ class DerivedIndexRunner {
 			}
 			if (transaction.complete) {
 				through.logs[transaction.logName] = transaction.timestamp;
-				this.#latestSeen.set(transaction.logName, transaction.timestamp);
 				completed++;
 				if (mutations.length)
 					chunk.batch.transactions.push({ logName: transaction.logName, timestamp: transaction.timestamp, mutations });

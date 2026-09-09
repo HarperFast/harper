@@ -302,10 +302,11 @@ unsupported filesystem mutation. A saved boundary normally makes recreation fail
 therefore rebuild.
 
 Harper does not pin transaction-log retention in Stage 1. A backend lagging past retention rebuilds
-when its next exact anchor fails. `getMetrics()` reports `cursorLagMilliseconds` (latest observed
-completed transaction minus the durable position, per log) separately from backend backpressure
-(`deferredBytes`, the `deferred` status) so retention lag and queue memory pressure are
-distinguishable, and the runtime emits one error per transition to `needs-rebuild`, so this
+when its next exact anchor fails. `getMetrics()` reports `cursorLagMilliseconds` (latest transaction this runner has read minus the
+durable position, per log — it cannot see transactions the runner has not read, so a parked
+runner's lag is reported through `stalledMilliseconds`, the time spent on backend backpressure or
+the durability ceiling) separately from backend backpressure (`deferredBytes`, the `deferred`
+status) so retention lag and queue memory pressure are distinguishable, and the runtime emits one error per transition to `needs-rebuild`, so this
 availability loss is visible. Writer backpressure above a lag threshold is a separate decision
 (see [Lag policy](#lag-policy)).
 
@@ -572,7 +573,10 @@ are `LOCAL_ONLY`, so the wall-clock capture time (`Date.now()`, the clock transa
 use, not the injectable budget clock) is compared against the local log's transaction timestamps.
 The capture time is also published in the shared readiness record, so an owner that takes over
 before the replay has passed the marker inherits the bound instead of rebuilding again; a process
-restart in that window costs one extra rebuild. A
+restart in that window costs one extra rebuild. Known residual: if the wall clock steps backwards
+between a capture and a later base-copy reload, that reload's marker sits below the bound and is
+suppressed; closing it needs a log-tail primitive (newest committed timestamp per log at capture)
+that rocksdb-js does not expose today. A
 reload committed after the capture triggers another rebuild. Residual: a reload staged before the
 capture and committed after it, with a timestamp below the capture, is skipped; that is the same
 staged-transaction window the conservative boundary accepts for ordinary entries.
