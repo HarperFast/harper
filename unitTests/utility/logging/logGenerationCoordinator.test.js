@@ -295,11 +295,23 @@ describe('Test log generation coordinator (#1877)', () => {
 		assert.strictEqual(transport.broadcasts.length, 0, 'a proof must not start when its full timeout cannot fit');
 	});
 
+	it('bounds generation release requests while a peer is unresponsive', async () => {
+		const transport = fakeTransport({ autoRespond: false, quiescenceTimeout: 25 });
+		const releases = Array.from({ length: 65 }, () => coordinator.requestStaleDescriptorRelease());
+		await new Promise(setImmediate);
+		assert.strictEqual(transport.broadcasts.length, 64, 'overflow must wait for the audit sweep without broadcasting');
+		const results = await Promise.all(releases);
+		assert.ok(results.every(({ released }) => !released));
+	});
+
 	it('leaves the plain archive authoritative when compression fails', async () => {
 		fakeTransport();
 		const { generation } = newGeneration();
 		fs.removeSync(generation.archivePath);
-		await assert.rejects(publishArchivedGeneration(generation, true));
+		let reported;
+		const published = await publishArchivedGeneration(generation, true, (error) => (reported = error));
+		assert.strictEqual(published, generation.archivePath);
+		assert.ok(reported, 'compression failure must be reported without making rotation fail');
 		assert.ok(!fs.pathExistsSync(`${generation.archivePath}.gz`), 'expected no partial .gz to be published');
 	});
 });

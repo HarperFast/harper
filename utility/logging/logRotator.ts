@@ -22,6 +22,7 @@ import {
 
 // Interval in ms to check log file and decide if it should be rotated.
 const LOG_AUDIT_INTERVAL = 60000;
+const RELEASE_PROOF_REPORT_INTERVAL = 5 * 60 * 1000;
 const INT_SIZE_UNDEFINED_MSG =
 	"'interval' and 'maxSize' are both undefined, to enable logging rotation at least one of these values must be defined in harperdb-config.yaml";
 
@@ -82,6 +83,7 @@ function logRotator({
 	let tickInFlight = false;
 	let ended = false;
 	let releaseProofStalled = false;
+	let nextReleaseProofReport = 0;
 	const auditIntervalMs = auditInterval ?? LOG_AUDIT_INTERVAL;
 	const compressionBudgetMs = Math.max(1, Math.floor(auditIntervalMs / 4));
 	/**
@@ -172,15 +174,17 @@ function logRotator({
 				const { released, liveLogPaths } = await requestStaleDescriptorRelease(tickDeadline);
 				// A peer whose event loop is blocked never answers, and the whole pass then destroys
 				// nothing — correct, but it is also the only thing bounding the rotated directory, so an
-				// operator who configured retention has to be able to see that it has stopped. Latched
-				// rather than repeated, so a permanently stalled peer reports once per stall.
-				if (!released && !releaseProofStalled) {
+				// operator who configured retention has to be able to see that it has stopped. Repeat at
+				// a low rate so a permanent stall does not disappear after one warning.
+				if (!released && Date.now() >= nextReleaseProofReport) {
+					nextReleaseProofReport = Date.now() + RELEASE_PROOF_REPORT_INTERVAL;
 					releaseProofStalled = true;
 					hdbLogger.warn(
 						`Log rotation could not prove every thread released its archived log descriptors; compression and retention are paused for ${rotatedLogDir}`
 					);
 				} else if (released && releaseProofStalled) {
 					releaseProofStalled = false;
+					nextReleaseProofReport = 0;
 					hdbLogger.notify(`Log rotation descriptor release recovered; retention resumed for ${rotatedLogDir}`);
 				}
 				const liveLogs = new Set([...liveLogPaths, logger.path].map((p) => path.resolve(p)));
@@ -265,7 +269,8 @@ async function moveLogFile(
 	);
 	const publishedPath = await publishArchivedGeneration(
 		generation,
-		compress ?? envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS)
+		compress ?? envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS),
+		(error) => hdbLogger.error('Error compressing rotated log', generation.archivePath, error)
 	);
 
 	// This notify log will create a new log file after the previous one has been rotated. It's important to keep this log as notify

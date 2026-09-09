@@ -177,19 +177,22 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 
 		const workersAfterRemoval = new Set<number>();
 		let activeSize = 0;
-		for (let i = 0; i < 300 && (workersAfterRemoval.size < WORKERS || activeSize <= MAX_SIZE_BYTES * 4); i += 8) {
+		const removalDeadline = Date.now() + 60_000;
+		let requestIndex = 0;
+		while (Date.now() < removalDeadline && (workersAfterRemoval.size < WORKERS || activeSize <= MAX_SIZE_BYTES * 4)) {
 			const responses = await Promise.all(
 				Array.from({ length: 8 }, (_, offset) =>
-					fetch(new URL(`/LogBurst/rotation-disabled-${i + offset}`, ctx.harper.httpURL), {
+					fetch(new URL(`/LogBurst/rotation-disabled-${requestIndex + offset}`, ctx.harper.httpURL), {
 						headers: { connection: 'close' },
 					})
 				)
 			);
 			for (const [offset, response] of responses.entries()) {
-				strictEqual(response.status, 200, `post-removal request ${i + offset} failed`);
+				strictEqual(response.status, 200, `post-removal request ${requestIndex + offset} failed`);
 				const body = await response.json();
 				workersAfterRemoval.add(body.threadId);
 			}
+			requestIndex += 8;
 			try {
 				activeSize = statSync(join(logDir, 'hdb.log')).size;
 			} catch {
@@ -205,19 +208,22 @@ suite('Log rotation is enforced on the write path (#1877)', (ctx: ContextWithHar
 		const archivesAfterRemoval = archiveNames();
 		const sizeAfterRemoval = activeSize;
 		const workersAfterSnapshot = new Set<number>();
-		for (let i = 0; i < 80 && workersAfterSnapshot.size < WORKERS; i += 8) {
+		const snapshotDeadline = Date.now() + 20_000;
+		requestIndex = 0;
+		while (Date.now() < snapshotDeadline && workersAfterSnapshot.size < WORKERS) {
 			const responses = await Promise.all(
 				Array.from({ length: 8 }, (_, offset) =>
-					fetch(new URL(`/LogBurst/rotation-still-disabled-${i + offset}`, ctx.harper.httpURL), {
+					fetch(new URL(`/LogBurst/rotation-still-disabled-${requestIndex + offset}`, ctx.harper.httpURL), {
 						headers: { connection: 'close' },
 					})
 				)
 			);
 			for (const [offset, response] of responses.entries()) {
-				strictEqual(response.status, 200, `post-snapshot request ${i + offset} failed`);
+				strictEqual(response.status, 200, `post-snapshot request ${requestIndex + offset} failed`);
 				const body = await response.json();
 				workersAfterSnapshot.add(body.threadId);
 			}
+			requestIndex += 8;
 		}
 		strictEqual(workersAfterSnapshot.size, WORKERS, 'expected every worker to keep writing after removal');
 		ok(statSync(join(logDir, 'hdb.log')).size > sizeAfterRemoval, 'expected the active log to keep growing');

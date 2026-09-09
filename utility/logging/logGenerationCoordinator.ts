@@ -16,6 +16,9 @@ export const LOG_GENERATION_CLOSED = 'log_generation_closed';
 // Under manageThreads' 30s ITC default, so an unanswered generation is decided here (retain the
 // plain archive) rather than by a transport backstop that cannot express "unproven".
 const DEFAULT_QUIESCENCE_TIMEOUT = 15000;
+// A tiny maxSize can rotate faster than a slow peer answers. Overflow is left as a plain archive
+// for the audit sweep instead of retaining one timer and one mesh request per generation.
+const MAX_PENDING_RELEASE_REQUESTS = 64;
 
 interface RotationTransport {
 	broadcast(message: any): void;
@@ -102,6 +105,7 @@ function requestRelease(message: any, deadline?: number): Promise<{ released: bo
 	if (!transport) return Promise.resolve({ released: isMainThread, liveLogPaths });
 	const expected = new Set<number>(transport.peerThreadIds());
 	if (expected.size === 0) return Promise.resolve({ released: true, liveLogPaths });
+	if (pendingByRequest.size >= MAX_PENDING_RELEASE_REQUESTS) return Promise.resolve({ released: false, liveLogPaths });
 	const quiescenceTimeout = transport.quiescenceTimeout ?? DEFAULT_QUIESCENCE_TIMEOUT;
 	if (deadline !== undefined && Date.now() + quiescenceTimeout > deadline)
 		return Promise.resolve({ released: false, liveLogPaths });
