@@ -108,6 +108,12 @@ registrations. Each registered backend/index has its own process-wide lock, curs
 runner; multiple full-text indexes can therefore be owned by different workers and enqueue into
 different Tantivy writers in parallel.
 
+Registration is distinct from runner ownership. Schema activation must install the same table
+registrations in every worker before that worker can accept table operations or run eviction; only
+the derived-index drain is lock-elected. This makes the worker-local O(1) eviction guard reliable
+even when another worker owns the backend runner. Schema deactivation removes those registrations
+only after the worker can no longer evict for the old schema.
+
 The runtime listens to the root store's existing `committed` event. The listener only marks a drain
 scheduled and uses `setImmediate`, so commit bursts coalesce. A scheduled runner attempts the
 backend's process-wide lock. A failed `tryLock(key, onUnlocked)` call does not confer ownership when
