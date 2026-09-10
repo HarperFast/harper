@@ -26,6 +26,7 @@ import {
 } from './longLivedTransactions.ts';
 
 const trackedTxns = new Set<DatabaseTransaction>();
+const readTransactionOwners = new WeakMap<ReadTransaction, DatabaseTransaction>();
 // Read options for a rotated generation's native transactions; shared because they never vary.
 const SNAPSHOT_FREE = Object.freeze({ disableSnapshot: true });
 // Logical transactions the monitor supervises for their WRITES, kept apart from trackedTxns because the
@@ -292,6 +293,58 @@ export function transactionOpenTooLongError(): ServerError {
 	);
 }
 
+class ReadSnapshotExpiredError extends ServerError {
+	constructor() {
+		super('Read scan snapshot expired; retry the read without replaying previously committed writes', 503);
+		this.name = 'ReadSnapshotExpiredError';
+	}
+}
+
+export function trackReadRange(transaction: ReadTransaction, createRange: () => any): any {
+	const owner = readTransactionOwners.get(transaction);
+	if (!owner) return createRange();
+	function checkActive() {
+		if (owner.timedOut) throw transactionOpenTooLongError();
+		if (owner.transaction !== transaction) {
+			throw new ReadSnapshotExpiredError();
+		}
+	}
+	checkActive();
+	const range = createRange();
+	const iterate = range.iterate;
+	range.iterate = function (options) {
+		const iterator = iterate.call(this, options);
+		let done = false;
+		return {
+			next() {
+				if (done) return { done: true, value: undefined };
+				try {
+					checkActive();
+					owner.rangeReadActive = true;
+					const result = iterator.next();
+					done = result.done === true;
+					return result;
+				} catch (error) {
+					this.return();
+					throw error;
+				}
+			},
+			return(value) {
+				if (!done) {
+					done = true;
+					iterator.return?.();
+				}
+				return { done: true, value };
+			},
+			throw(error) {
+				this.return();
+				throw error;
+			},
+		};
+	};
+	return range;
+}
+
 type MaybePromise<T> = T | Promise<T>;
 
 export type CommitOptions = {
@@ -537,8 +590,9 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
-	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
-		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
+	rangeReadActive = false;
+
+	renewReadTimeout(): void {
 		// The limit is an IDLE limit. Writes always re-arm it (see addWrite), but reads only do so
 		// while no uncommitted writes are held: staged writes hold write intents that other writers'
 		// coordinated-retry commits park on, so a handler that wrote once and then only reads — an
@@ -551,6 +605,11 @@ export class DatabaseTransaction implements Transaction {
 		if ((this.writes.length === 0 && !this.next) || this.open !== TRANSACTION_STATE.OPEN || !this.hasPendingWrites()) {
 			this.timeout = Math.max(txnExpiration, this.timeoutBudget);
 		}
+	}
+
+	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
+		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
+		this.renewReadTimeout();
 		if (this.transaction) {
 			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 			return this.transaction;
@@ -585,6 +644,8 @@ export class DatabaseTransaction implements Transaction {
 	// Monitor state is not ownership state: it stays with `trackedTxns.add` in getReadTxn().
 	private attachOwnedTransaction(transaction: RocksTransactionWithRetry): void {
 		this.transaction = transaction;
+		readTransactionOwners.set(transaction, this);
+		this.rangeReadActive = false;
 		this.readTxnsUsed = 1;
 		this.baseReadRefConsumed = false;
 		this.handleOpenedAt = performance.now();
@@ -626,6 +687,7 @@ export class DatabaseTransaction implements Transaction {
 		trackedTxns.delete(this);
 		this.endWriteSupervision();
 		this.transaction = null;
+		this.rangeReadActive = false;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
 		this.handleOpenedAt = 0;
@@ -2044,6 +2106,10 @@ function startMonitoringTxns() {
 		reportNow: number,
 		reportBudget: LongLivedHolderReportBudget
 	) {
+		if (txn.rangeReadActive) {
+			txn.rangeReadActive = false;
+			txn.renewReadTimeout();
+		}
 		reportIfLongLived(txn, reportThresholdMs, reportNow, reportBudget);
 		{
 			const commitChainHead = txn.commitChainHead ?? txn;

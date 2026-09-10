@@ -1,3 +1,4 @@
+import { trackReadRange } from './DatabaseTransaction.ts';
 import {
 	type CountEstimate,
 	type CountEstimateOptions,
@@ -48,7 +49,7 @@ export class RocksIndexStore extends RocksDatabase {
 	 * @param options
 	 */
 	getRange(options: StoreIteratorOptions): Iterable<any> {
-		return super.getRange(translateIndexBounds(options)).map(({ key }) => {
+		return trackReadRange(options.transaction, () => super.getRange(translateIndexBounds(options))).map(({ key }) => {
 			return { key: key[0], value: key.length > 2 ? key.slice(1) : key[1] };
 		});
 	}
