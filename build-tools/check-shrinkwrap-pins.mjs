@@ -180,16 +180,17 @@ function verifyRocksDbDependencyAlignment() {
 	let rocksdbManifest;
 	let satisfies;
 	let validRange;
+	let requireFromRocksDb;
 	const rocksdbManifestPath = `${pkgRoot}/node_modules/@harperfast/rocksdb-js/package.json`;
 	try {
 		rocksdbManifest = JSON.parse(readFileSync(rocksdbManifestPath, 'utf8'));
 		({ satisfies, validRange } = requireFromRoot('semver'));
+		requireFromRocksDb = createRequire(realpathSync(rocksdbManifestPath));
 	} catch (e) {
 		console.error(`::error::could not inspect rocksdb-js dependency alignment: ${e.message}`);
 		failed = true;
 		return;
 	}
-	const requireFromRocksDb = createRequire(realpathSync(rocksdbManifestPath));
 
 	for (const dep of ROCKSDB_SINGLE_INSTANCE_DEPS) {
 		const rootSpec = manifest.dependencies?.[dep];
@@ -283,8 +284,6 @@ function reportMissingRange(dep, range) {
 	failed = true;
 }
 
-// Numeric major.minor.patch comparison, ignoring prerelease/build suffixes; sufficient for
-// the stable registry versions used by the canary check.
 function compareVersions(a, b) {
 	const partsA = a.split(/[-+]/)[0].split('.').map(Number);
 	const partsB = b.split(/[-+]/)[0].split('.').map(Number);
