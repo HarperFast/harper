@@ -60,6 +60,7 @@ export interface ToolDescriptor {
 /** Authenticated user object as Harper builds it (subset we touch). */
 export interface AuthedUser {
 	username?: string;
+	authExpiresAt?: number;
 	// Attribution-only principal that must not be re-resolved against hdb_user (see refreshSessionUser).
 	_scopedToken?: boolean;
 	role?: {

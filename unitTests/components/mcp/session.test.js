@@ -2,18 +2,41 @@ const assert = require('node:assert');
 const {
 	createSession,
 	loadSession,
-	saveSession,
 	deleteSession,
 	touchSession,
+	updateSessionSubscriptions,
 	_setSessionTableForTest,
+	_setSubscriptionLockTimeoutForTest,
 } = require('#src/components/mcp/session');
 
 function makeFakeTable() {
 	const store = new Map();
+	const locks = new Set();
+	const waiters = new Map();
 	return {
 		store,
+		primaryStore: {
+			tryLock(key, callback) {
+				if (!locks.has(key)) {
+					locks.add(key);
+					return true;
+				}
+				const queued = waiters.get(key) ?? [];
+				queued.push(callback);
+				waiters.set(key, queued);
+				return false;
+			},
+			unlock(key) {
+				locks.delete(key);
+				const callback = waiters.get(key)?.shift();
+				if (callback) setImmediate(callback);
+			},
+		},
 		async put(record) {
 			store.set(record.id, { ...record });
+		},
+		async patch(record) {
+			store.set(record.id, { ...store.get(record.id), ...record });
 		},
 		async get(id) {
 			const r = store.get(id);
@@ -33,6 +56,7 @@ describe('mcp/session', () => {
 	});
 	afterEach(() => {
 		_setSessionTableForTest(undefined);
+		_setSubscriptionLockTimeoutForTest(undefined);
 	});
 
 	describe('createSession', () => {
@@ -65,14 +89,10 @@ describe('mcp/session', () => {
 			const loaded = await loadSession('not-a-session');
 			assert.equal(loaded, null);
 		});
-	});
 
-	describe('saveSession', () => {
-		it('persists changes', async () => {
-			const created = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
-			await saveSession({ ...created, initialized: true });
-			const reloaded = await loadSession(created.id);
-			assert.equal(reloaded.initialized, true);
+		it('returns null for a partial record left by a late patch after deletion', async () => {
+			fake.store.set('deleted-session', { id: 'deleted-session', lastActivity: Date.now() });
+			assert.equal(await loadSession('deleted-session'), null);
 		});
 	});
 
@@ -102,6 +122,45 @@ describe('mcp/session', () => {
 			assert.equal(touched.initialized, true);
 			assert.equal(touched.user, 'alice');
 			assert.equal(touched.protocolVersion, '2025-06-18');
+		});
+	});
+
+	describe('updateSessionSubscriptions', () => {
+		it('times out without acquiring a lock later from a stale wake callback', async () => {
+			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			const key = `mcp-subscriptions:${session.id}`;
+			assert.equal(
+				fake.primaryStore.tryLock(key, () => {}),
+				true
+			);
+			_setSubscriptionLockTimeoutForTest(5);
+
+			await assert.rejects(
+				updateSessionSubscriptions(session.id, (subscriptions) => subscriptions),
+				/Timed out acquiring MCP subscription lock/
+			);
+			fake.primaryStore.unlock(key);
+			await new Promise(setImmediate);
+
+			await updateSessionSubscriptions(session.id, (subscriptions) => [...subscriptions, 'recovered']);
+			assert.deepEqual((await loadSession(session.id)).subscriptions, ['recovered']);
+		});
+
+		it('serializes concurrent read-modify-writes for the same session', async () => {
+			const session = await createSession({ user: 'alice', protocolVersion: '2025-06-18' });
+			fake.store.get(session.id).subscriptions = ['first', 'second'];
+			const originalPatch = fake.patch;
+			fake.patch = async (record) => {
+				if (record.subscriptions) await new Promise((resolve) => setImmediate(resolve));
+				return originalPatch.call(fake, record);
+			};
+
+			await Promise.all([
+				updateSessionSubscriptions(session.id, (subscriptions) => subscriptions.filter((uri) => uri !== 'first')),
+				updateSessionSubscriptions(session.id, (subscriptions) => subscriptions.filter((uri) => uri !== 'second')),
+			]);
+
+			assert.deepEqual((await loadSession(session.id)).subscriptions, []);
 		});
 	});
 });
