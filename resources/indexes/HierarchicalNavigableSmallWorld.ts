@@ -1,11 +1,31 @@
+import { closeSync, existsSync, openSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { cosineDistance, euclideanDistance, dotProductDistance } from './vector.ts';
 import { FLOAT32_OPTIONS } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { ClientError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
+import type { DerivedIndexReadiness } from '../derivedIndexRuntime.ts';
 import { SKIP } from '@harperfast/extended-iterable';
+import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { createHash } from 'node:crypto';
+import {
+	getPlaneBinding,
+	invalidatePlaneFile as invalidateHnswPlaneFile,
+	planeFilePathFor,
+	planeStalePathFor,
+	PLANE_NO_ID,
+	type HnswPlane,
+} from './hnswPlaneBinding.ts';
 
 const logger = loggerWithTag('HNSW');
+
+/** Element-wise equality of the array-like projections a derived index stores; anything else that failed `===` counts as changed. */
+export function derivedValuesEqual(a: any, b: any): boolean {
+	if (a === b) return true;
+	if (a == null || b == null || typeof a.length !== 'number' || a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+	return true;
+}
 
 // int8 scalar quantization of stored graph nodes is ON by default. Each node holds the
 // vector as a compact int8 `bin` plus a per-vector `scale`, roughly a 5x size reduction
@@ -104,6 +124,22 @@ function autoScaleEfConstruction(nodeCount: number): number {
 // ef moves with the square root of the count and is capped, so a slightly stale size is immaterial;
 // this only has to be short enough that a table growing from empty picks up a larger ef promptly.
 const NODE_COUNT_TTL = 10_000;
+
+// Native traversal-plane geometry (see hnsw-native-plane.md). The layer-0 cap is derived from
+// M/optimizeRouting at creation to cover the JS graph's effective cap (grace overshoot above it
+// truncates by distance); a configuration deriving past this ceiling is refused as ineligible
+// rather than silently truncated. maxNodes is a fixed sparse reservation — pages materialize on
+// write — and ids at or past it are rejected by the crate, which disables the plane.
+const PLANE_LAYER0_CAP_MAX = 1024;
+const PLANE_MAX_NODES = 1 << 24;
+// An existing plane file that cannot be opened is normally another worker mid-create (retry);
+// past this age it is a crashed create and is deleted so the audit-backed runtime can rebuild it.
+const PLANE_STALE_CREATE_MS = 60_000;
+// Retry cadence while another worker holds the create; its header lands shortly after exclusive open.
+const PLANE_ATTACH_RETRY_MS = 250;
+// Marks an error thrown by an app-supplied filter during a plane search: the caller re-raises
+// it as an ordinary query failure instead of disabling the (healthy) plane.
+const NOT_A_PLANE_FAILURE = Symbol('notAPlaneFailure');
 
 class MinHeap {
 	private data: Candidate[] = [];
@@ -235,6 +271,23 @@ export class HierarchicalNavigableSmallWorld {
 	private convertedNodes = new WeakMap<object, any>();
 	private nodeCount = 0;
 	private nodeCountAt = 0;
+	// Native file-primary index. The RocksDB index store holds identity mappings and replay cursors;
+	// graph nodes and adjacency exist only in this file.
+	// undefined = not yet attached (may retry), null = unavailable or disabled for this process.
+	private plane: HnswPlane | null | undefined;
+	private planeEligible = false;
+	private planeRetryAt = 0;
+	private planeDisabledLogged = false;
+	private filePrimary = false;
+	private nativePlaneMaxNodes = PLANE_MAX_NODES;
+	// Installed by attachDerivedIndexes on every worker: shared readiness of the index and the way
+	// to ask its owner for a rebuild. Only the owning worker's runtime ever destroys native state.
+	private derivedHost?: { readiness: () => DerivedIndexReadiness; requestRebuild: () => boolean };
+	private pendingDerivedMappings = new Map<
+		Id,
+		{ id?: number; signature?: string; version?: number; pending?: boolean }
+	>();
+	postCommit?: true;
 	constructor(indexStore: any, options: any) {
 		this.indexStore = indexStore;
 		if (indexStore) {
@@ -265,8 +318,459 @@ export class HierarchicalNavigableSmallWorld {
 			if (options.optimizeRouting !== undefined) this.optimizeRouting = options.optimizeRouting;
 			if (options.filterExpansion !== undefined) this.filterExpansion = options.filterExpansion;
 		}
+		if (options?.nativePlane) {
+			if (!(indexStore?.rootStore instanceof RocksDatabase)) {
+				throw new ClientError('nativePlane requires the RocksDB storage engine');
+			}
+			const nativeML = 1 / Math.log(16);
+			if (
+				(options.M !== undefined && options.M !== 16) ||
+				(options.efConstruction !== undefined && options.efConstruction !== 200) ||
+				(options.mL !== undefined && options.mL !== nativeML) ||
+				(options.optimizeRouting !== undefined && options.optimizeRouting !== 0.5)
+			) {
+				throw new ClientError('nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5');
+			}
+			this.efConstruction = options.efConstruction ?? 200;
+			this.nativePlaneMaxNodes = options.nativePlaneMaxNodes ?? PLANE_MAX_NODES;
+			if (
+				!Number.isSafeInteger(this.nativePlaneMaxNodes) ||
+				this.nativePlaneMaxNodes < 1 ||
+				this.nativePlaneMaxNodes >= PLANE_NO_ID
+			) {
+				throw new ClientError('nativePlaneMaxNodes must be a positive integer below 2^32-1');
+			}
+			// The plane stores int8 bins and computes asymmetric cosine only, so the flag is a
+			// no-op for float (quantization: "none") and non-cosine indexes; a graph whose derived
+			// layer-0 cap exceeds the plane maximum is refused rather than silently truncated.
+			this.planeEligible =
+				this.int8 && this.distance === cosineDistance && this.planeLayer0Cap() <= PLANE_LAYER0_CAP_MAX;
+			if (!this.planeEligible) {
+				throw new ClientError('nativePlane requires an int8-quantized cosine HNSW index');
+			}
+			this.filePrimary = true;
+			this.postCommit = true;
+		}
 	}
+
+	/** Remove derived native state after the option is disabled. */
+	cleanupDisabledPlane(): void {
+		if (this.planeEligible) return;
+		const filePath = this.planeFilePath();
+		if (!filePath) return;
+		try {
+			if (existsSync(filePath)) this.invalidatePlaneFile(filePath, this.plane);
+			unlinkSync(filePath);
+			logger.info?.('deleted the HNSW plane file of an index no longer using nativePlane');
+		} catch (error: any) {
+			if (error?.code !== 'ENOENT') {
+				// A later re-enable must not adopt a file that missed mutations while disabled.
+				logger.warn?.('could not delete the HNSW plane file; marking it stale', error);
+				this.invalidatePlaneFile(filePath);
+			}
+		}
+	}
+
+	/** Absolute path of this index's plane file, or undefined when the store exposes no path. */
+	planeFilePath(): string | undefined {
+		const storePath = this.indexStore?.path;
+		const storeName = this.indexStore?.name;
+		if (typeof storePath !== 'string' || typeof storeName !== 'string') return undefined;
+		return planeFilePathFor(storePath, storeName);
+	}
+
+	/**
+	 * Open or lazily create the native file. An exclusive create resolves multi-worker races; the
+	 * derived-index runtime owns population, replay, and publication.
+	 */
+	private getPlane(dims?: number, dimsFromVector = false): HnswPlane | null {
+		if (this.plane !== undefined) return this.plane;
+		if (!this.planeEligible) return (this.plane = null);
+		const now = Date.now();
+		if (now < this.planeRetryAt) return null;
+		const Plane = getPlaneBinding();
+		if (!Plane) return (this.plane = null); // the loader warned once already
+		const filePath = this.planeFilePath();
+		if (!filePath) {
+			this.disablePlane(new Error('the index store exposes no path to place the plane file next to'));
+			return null;
+		}
+		try {
+			// a tombstone marks a plane a previous unlink could not remove (Windows EBUSY while
+			// mapped): the file is stale and must never be opened over a fresh graph
+			const stalePath = planeStalePathFor(filePath);
+			if (existsSync(stalePath)) {
+				try {
+					// force: either artifact may already be gone (the documented rollback deletes the
+					// plane file by hand), and an ENOENT here disables the plane on every later attach
+					rmSync(filePath, { force: true });
+					rmSync(stalePath, { force: true });
+				} catch {
+					this.planeRetryAt = now + NODE_COUNT_TTL;
+					return null;
+				}
+			}
+			if (existsSync(filePath)) {
+				try {
+					// Crash recovery is per-slot inside the crate. The clean flag is advisory;
+					// another worker may still be constructing this shared file.
+					return (this.plane = Plane.open(filePath));
+				} catch (openError) {
+					if (now - statSync(filePath).mtimeMs <= PLANE_STALE_CREATE_MS) {
+						// another worker is between its exclusive create and the header write
+						this.planeRetryAt = now + PLANE_ATTACH_RETRY_MS;
+						return null;
+					}
+					logger.warn?.('deleting an unopenable HNSW plane file left by an interrupted create', openError);
+					unlinkSync(filePath);
+					if (this.filePrimary) {
+						// The surviving mappings still name node ids from the file just removed.
+						// Creating a fresh plane here would resolve them against an empty graph;
+						// only reconstruction, which clears the mappings first, is safe.
+						this.planeRetryAt = now + PLANE_ATTACH_RETRY_MS;
+						return null;
+					}
+				}
+			}
+			if (!dims) return null; // open-only call and no file: nothing to attach yet
+			// A search target must not pin an empty index's dimensionality: creation is deferred to
+			// the first committed vector or to the rebuild scan. Return before the exclusive create
+			// rather than creating and unlinking — a concurrent insert that saw the empty file would
+			// read it as another worker's in-progress create and 503 for PLANE_STALE_CREATE_MS.
+			if (!dimsFromVector) return null;
+			let fd: number;
+			try {
+				fd = openSync(filePath, 'wx');
+			} catch {
+				// another worker won the create race; its header lands within moments
+				this.planeRetryAt = now + PLANE_ATTACH_RETRY_MS;
+				return null;
+			}
+			closeSync(fd);
+			try {
+				return (this.plane = Plane.create(filePath, dims, this.planeLayer0Cap(), this.nativePlaneMaxNodes));
+			} catch (createError) {
+				// Never leave a partial file that a later process could trust as current.
+				try {
+					unlinkSync(filePath);
+				} catch {
+					// the disable below already forces the JS path for this process
+				}
+				this.disablePlane(createError);
+				return null;
+			}
+		} catch (error) {
+			this.planeRetryAt = now + NODE_COUNT_TTL;
+			logger.warn?.('could not attach the HNSW plane file; will retry', error);
+			return null;
+		}
+	}
+
+	/** True only while the owning runtime publishes the index as ready, on whichever worker owns it. */
+	private planeSearchReady(plane: HnswPlane): boolean {
+		if (plane.invalidated()) {
+			this.plane = undefined;
+			return false;
+		}
+		return this.derivedReadiness() === 'ready';
+	}
+
+	private derivedReadiness(): DerivedIndexReadiness['state'] {
+		return this.derivedHost?.readiness().state ?? 'unknown';
+	}
+
+	/** The JS graph's effective layer-0 cap for this configuration; sizes the plane's slots. */
+	private planeLayer0Cap(): number {
+		return this.optimizeRouting ? this.M << 3 : this.M << 1;
+	}
+
+	/**
+	 * Detach this process from the plane after a failure and ask the index's owner for a rebuild.
+	 * Only the owner destroys native state (`resetDerivedStorage` under its epoch), so a failure
+	 * observed here after a peer has already replaced the file cannot take out the replacement.
+	 */
+	private disablePlane(error: unknown): void {
+		this.plane = undefined;
+		this.planeRetryAt = Date.now() + PLANE_ATTACH_RETRY_MS;
+		if (!this.planeDisabledLogged) {
+			this.planeDisabledLogged = true;
+			logger.error?.('the HNSW native index failed; requesting a rebuild from its owner', error);
+		}
+		this.derivedHost?.requestRebuild();
+	}
+
+	/**
+	 * Delete the derived plane state before an audit-backed reconstruction. Path invalidation
+	 * makes peers stop using an old mapping even when unlink leaves their mmap inode alive.
+	 */
+	resetDerivedStorage(): void {
+		this.pendingDerivedMappings.clear();
+		const attached = this.plane;
+		this.plane = undefined;
+		this.planeRetryAt = 0;
+		const filePath = this.planeFilePath();
+		if (!filePath) return;
+		if (this.filePrimary && existsSync(filePath)) this.invalidatePlaneFile(filePath, attached);
+		try {
+			unlinkSync(filePath);
+		} catch (error: any) {
+			if (error?.code !== 'ENOENT') {
+				// a stale file that cannot be deleted (e.g. Windows EBUSY while mapped) must not
+				// be reopened as if current — mark it so no process ever adopts it
+				this.plane = null;
+				logger.warn?.('could not delete the HNSW plane file; marking it stale', error);
+				this.invalidatePlaneFile(filePath, attached);
+			}
+		}
+	}
+
+	/** True while any node-id mapping survives, which is the only proof this index holds nodes. */
+	private hasNodeMappings(): boolean {
+		// Node ids are the store's numeric keys, so bounding the probe to that key space keeps this
+		// off a full scan of the primary-key mappings beside them.
+		for (const { key } of this.indexStore.getRange({ start: 0, end: Number.MAX_SAFE_INTEGER })) {
+			if (typeof key === 'number') return true;
+		}
+		return false;
+	}
+
+	/** Make an undeletable plane unadoptable before this process releases it. */
+	private invalidatePlaneFile(filePath: string, attached?: HnswPlane | null): void {
+		try {
+			invalidateHnswPlaneFile(filePath, attached);
+		} catch (error) {
+			logger.warn?.('could not invalidate the stale HNSW plane file', error);
+		}
+	}
+
+	/**
+	 * Native search over the plane: one NAPI crossing, traversal on the libuv pool, promise
+	 * resolution maps node ids back to primary keys through the existing pk resolution. The
+	 * predicate adapter runs on this thread's event loop (batched over a ThreadsafeFunction), so
+	 * this promise must never be awaited by code the predicate itself blocks on; the normal
+	 * request path awaits it safely.
+	 */
+	private searchPlane(
+		plane: HnswPlane,
+		target: number[],
+		ef: number,
+		filter: ((primaryKey: Id) => boolean) | undefined,
+		filterState: FilterState | undefined,
+		options: any
+	): Promise<any[]> {
+		const query = Float32Array.from(target);
+		let resultPromise: Promise<{ id: number; distance: number }[]>;
+		let predicateError: unknown;
+		if (filter && filterState) {
+			const predicate = (ids: number[]): Uint8Array => {
+				const verdicts = new Uint8Array(ids.length);
+				if (predicateError !== undefined) return verdicts; // already failed — deny remaining batches cheaply
+				try {
+					for (let i = 0; i < ids.length; i++) {
+						const primaryKey = this.safeGetSync(ids[i], options)?.primaryKey;
+						if (primaryKey !== undefined && this.admit(filter, filterState, primaryKey)) verdicts[i] = 1;
+					}
+				} catch (error) {
+					// an app-supplied filter threw: deny the batch and surface the error once the
+					// traversal resolves — the same query failure the JS path raises — instead of
+					// letting it escape into the fatal-strategy ThreadsafeFunction callback
+					predicateError ??= error;
+				}
+				return verdicts;
+			};
+			// pass the already-resolved JS visit budget verbatim so both paths stop at the same count
+			resultPromise = plane.searchWithPredicate(query, ef, ef, predicate, undefined, filterState.maxVisits);
+		} else {
+			resultPromise = plane.search(query, ef, ef);
+		}
+		return resultPromise.then((hits) => {
+			if (predicateError !== undefined) {
+				// the plane itself is healthy; mark the failure as the application's so the caller
+				// re-raises it rather than disabling the plane and retrying
+				try {
+					(predicateError as any)[NOT_A_PLANE_FAILURE] = true;
+				} catch {
+					// a frozen/primitive throw still propagates, it just also disables the plane
+				}
+				throw predicateError;
+			}
+			const entries: any[] = [];
+			try {
+				for (const hit of hits) {
+					const mapping = this.safeGetSync(hit.id, options);
+					if (mapping?.pending) continue;
+					const primaryKey = mapping?.primaryKey;
+					if (primaryKey === undefined) continue; // deleted/reused id raced the search
+					entries.push({ key: primaryKey, distance: hit.distance });
+				}
+			} catch (error) {
+				// The traversal already succeeded; this is a RocksDB read of the id mappings, which
+				// can fail transiently or because the store closed under an in-flight search. Tagging
+				// it keeps the caller from reading it as a plane failure and unlinking a healthy file,
+				// which costs a full reconstruction.
+				try {
+					(error as any)[NOT_A_PLANE_FAILURE] = true;
+				} catch {
+					// a frozen/primitive throw still propagates, it just also disables the plane
+				}
+				throw error;
+			}
+			// nodesVisited stays 0 here: layer-0 visits happen inside the native traversal
+			// (filterEvaluations is still counted by the predicate adapter)
+			return withStats(entries, filterState);
+		});
+	}
+
+	attachDerivedHost(host: { readiness: () => DerivedIndexReadiness; requestRebuild: () => boolean }): void {
+		this.derivedHost = host;
+	}
+
+	/**
+	 * The commit path only validates: a malformed vector is the client's 400 here rather than an
+	 * unindexable record later. The shared derived-index runtime reads the committed log; nothing
+	 * is staged on the transaction.
+	 */
+	prepareCommitted(primaryKey: Id, vector: number[], existingVector: number[]): void {
+		// O(dims) on every write to the table, so skip it when the projection did not change — an
+		// unchanged vector was validated when it was first written.
+		if (derivedValuesEqual(vector, existingVector)) return;
+		this.validateVector(primaryKey, vector);
+	}
+
+	/** The runtime's projection guard: what fails here is delivered as unindexable, not applied. */
+	assertDerivedValue(vector: unknown, label: string): void {
+		this.assertPlaneVector(vector as number[], label);
+	}
+
+	private validateVector(primaryKey: Id, vector?: number[]): void {
+		if (!vector) return;
+		this.assertPlaneVector(vector, `Vector for attribute "${String(primaryKey)}"`);
+	}
+
+	/**
+	 * Everything reaching the plane — a committed record's projection or a query target — has to
+	 * convert to the f32 it stores, and to a representable magnitude. What fails here would instead
+	 * throw out of `Float32Array.from` or out of the crate, as an error neither the search path nor
+	 * reconstruction can attribute to the record: a query would unlink a healthy file, and a record
+	 * would abort every rebuild attempt at the same entry.
+	 */
+	private assertPlaneVector(vector: number[], label: string): void {
+		// A positive integer length, not merely a numeric one: a negative or fractional length skips
+		// the component loop and the emptiness check, and reaches Plane.create with it.
+		const length = (vector as any)?.length;
+		if (!Number.isInteger(length) || length < 1) {
+			throw new ClientError(`${label} must be an array of at least one number.`);
+		}
+		let sumOfSquares = 0;
+		for (let i = 0; i < vector.length; i++) {
+			const component = vector[i];
+			// The type check precedes Math.fround, which throws a TypeError on the BigInt a msgpackr
+			// or cbor-x decode produces for a large int64.
+			if (typeof component !== 'number' || !Number.isFinite(Math.fround(component))) {
+				throw new ClientError(
+					`${label} has a component at index ${i} that is not a finite 32-bit float: ${String(component)}.`
+				);
+			}
+			const asFloat32 = Math.fround(component);
+			sumOfSquares += asFloat32 * asFloat32;
+		}
+		// Components can each be f32-finite while their squares are not, which stores invMag 0 and
+		// makes every distance involving that node NaN.
+		if (!Number.isFinite(Math.fround(sumOfSquares))) {
+			throw new ClientError(`${label} has a magnitude too large to represent in 32-bit floats.`);
+		}
+		// The plane's dimensionality is fixed at create time by the first committed vector.
+		const dims = this.plane?.dims;
+		if (dims !== undefined && vector.length !== dims) {
+			throw new ClientError(`${label} has ${vector.length} components, but this index stores ${dims}.`);
+		}
+	}
+
+	applyDerivedValue(primaryKey: Id, vector: number[], version?: number): void {
+		this.validateVector(primaryKey, vector);
+		const safeKey = typeof primaryKey === 'number' ? [KEY_PREFIX, primaryKey] : primaryKey;
+		const pendingMapping = this.pendingDerivedMappings.get(primaryKey);
+		const storedMapping = pendingMapping ?? this.indexStore.getSync(safeKey);
+		const oldNodeId = typeof storedMapping === 'number' ? storedMapping : storedMapping?.id;
+		if (storedMapping?.version != null && version != null && storedMapping.version > version) return;
+		const nativeVector = vector ? Float32Array.from(vector) : undefined;
+		const signature = nativeVector
+			? createHash('sha256')
+					.update(Buffer.from(nativeVector.buffer, nativeVector.byteOffset, nativeVector.byteLength))
+					.digest('base64url')
+			: undefined;
+		if (
+			oldNodeId != null &&
+			signature &&
+			storedMapping.signature === signature &&
+			!pendingMapping &&
+			!storedMapping.pending
+		) {
+			this.indexStore.putSync(safeKey, { id: oldNodeId, signature, version });
+			this.indexStore.putSync(oldNodeId, { primaryKey, version });
+			return;
+		}
+		let plane = vector ? this.getPlane(vector.length, true) : this.getPlane();
+		if (plane?.invalidated()) {
+			this.plane = undefined;
+			plane = vector ? this.getPlane(vector.length, true) : this.getPlane();
+		}
+		// The pre-commit check above ran before this worker had a plane to compare against, so it
+		// cannot have caught a mismatch. Reject before the removal below, or the record loses its
+		// old node on the way to failing.
+		if (vector && plane && vector.length !== plane.dims) {
+			throw new ClientError(
+				`Vector for attribute "${String(primaryKey)}" has ${vector.length} components, but this index stores ${plane.dims}.`
+			);
+		}
+		if (oldNodeId != null) {
+			plane?.remove(oldNodeId);
+			this.indexStore.removeSync(oldNodeId);
+		}
+		if (!vector) {
+			this.indexStore.removeSync(safeKey);
+			this.pendingDerivedMappings.set(primaryKey, { version });
+			return;
+		}
+		if (!plane) throw new ServerError('The native HNSW module is unavailable for a file-primary index', 503);
+		const nodeId = plane.insert(nativeVector!);
+		this.indexStore.putSync(safeKey, { id: nodeId, signature, version, pending: true });
+		this.indexStore.putSync(nodeId, { primaryKey, version, pending: true });
+		this.pendingDerivedMappings.set(primaryKey, { id: nodeId, signature, version, pending: true });
+	}
+
+	async flushDerived(watermark?: number): Promise<void> {
+		const plane = this.getPlane();
+		if (!plane) {
+			if (!getPlaneBinding()) throw new ServerError('The native HNSW module is unavailable', 503);
+			return this.publishDerivedMappings();
+		}
+		await plane.flushAsync(watermark);
+		this.publishDerivedMappings();
+	}
+
+	private publishDerivedMappings(): void {
+		for (const [primaryKey, mapping] of this.pendingDerivedMappings) {
+			const safeKey = typeof primaryKey === 'number' ? [KEY_PREFIX, primaryKey] : primaryKey;
+			if (mapping.id === undefined) {
+				this.indexStore.removeSync(safeKey);
+			} else {
+				const published = { id: mapping.id, signature: mapping.signature, version: mapping.version };
+				this.indexStore.putSync(safeKey, published);
+				this.indexStore.putSync(mapping.id, { primaryKey, version: mapping.version });
+			}
+		}
+		this.pendingDerivedMappings.clear();
+	}
+
 	index(primaryKey: Id, vector: number[], existingVector?: number[], options: any = {}) {
+		if (this.filePrimary) {
+			if (options.transaction) return this.prepareCommitted(primaryKey, vector, existingVector);
+			// runIndexing invokes custom indexes without a transaction. The shared runtime owns the
+			// primary-record rebuild and the log replay; populating here would duplicate native
+			// construction and race the owner's generation reset.
+			return;
+		}
 		// Reject non-finite components before touching the graph. NaN in particular poisons
 		// bisectInsert (arr[mid].distance <= NaN is always false → returns 0, pinning the
 		// candidate to rank 1 of every future search). Infinity causes analogous ordering
@@ -508,18 +1012,15 @@ export class HierarchicalNavigableSmallWorld {
 			}
 
 			// Store the new element
-			this.indexStore.put(
-				nodeId,
-				{
-					vector: storedVector,
-					scale: storedScale,
-					invMag,
-					level,
-					primaryKey,
-					...connections,
-				},
-				options
-			);
+			const storedNode = {
+				vector: storedVector,
+				scale: storedScale,
+				invMag,
+				level,
+				primaryKey,
+				...connections,
+			};
+			this.indexStore.put(nodeId, storedNode, options);
 		} else {
 			// removal of this node, but first make sure we have a valid entry point
 			if (entryPointId === nodeId) {
@@ -1163,6 +1664,56 @@ export class HierarchicalNavigableSmallWorld {
 					filterEvaluations: 0,
 				}
 			: undefined;
+		if (this.filePrimary && distanceFunction !== this.distance) {
+			throw new ClientError('A nativePlane index only supports its configured cosine distance');
+		}
+		// The plane traverses the index's own metric (cosine — the eligibility requirement), so a
+		// query overriding `distance` has to take the JS path: rescoreResults only corrects the
+		// reported distances of whatever candidates came back, not which candidates the beam kept.
+		if (this.planeEligible && distanceFunction === this.distance) {
+			const plane = this.getPlane(target.length, false);
+			// A file-primary index has no JS path to fall through to, so a target the plane cannot
+			// accept has to fail as the client error it is. Otherwise it throws out of
+			// Float32Array.from or the traversal, is read as plane corruption, and unlinks a healthy
+			// file — one malformed query costing a full reconstruction.
+			if (this.filePrimary && plane) this.assertPlaneVector(target, 'Search target');
+			// a non-file-primary query whose dimensionality differs from the graph's takes the JS
+			// path, which tolerates the mismatch, rather than disabling the healthy plane
+			if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {
+				try {
+					return this.searchPlane(plane, target, effectiveEf, filter, filterState, options).catch((error) => {
+						// the query failed for a reason outside the traversal: re-raise instead of disabling the file
+						if (error?.[NOT_A_PLANE_FAILURE]) throw error;
+						// There is no JS graph behind a file-primary index: it stays unavailable until
+						// its audit-backed rebuild succeeds.
+						this.disablePlane(error);
+						throw new ServerError('The native HNSW index is rebuilding', 503);
+					});
+				} catch (error) {
+					// Handle a throw raised before the asynchronous native search returns its promise.
+					this.disablePlane(error);
+					throw new ServerError('The native HNSW index is rebuilding', 503);
+				}
+			}
+		}
+		if (this.filePrimary) {
+			const state = this.derivedReadiness();
+			if (state === 'unavailable') throw new ServerError('The native HNSW index is unavailable', 503);
+			const planePath = this.planeFilePath();
+			if (state !== 'ready' || (planePath && existsSync(planePath))) {
+				throw new ServerError('The native HNSW index is rebuilding', 503);
+			}
+			// The absence of a file is not proof of an empty index — it is also the state just after
+			// any process removes an unopenable one. Only the surviving node mappings prove it.
+			if (this.hasNodeMappings()) {
+				// A table taking no further writes never drains, so a query is the only thing left
+				// that can notice the graph is gone and ask for it back.
+				logger.error?.(`${this.indexStore.name} lost its native file while its node mappings survive`);
+				this.derivedHost?.requestRebuild();
+				throw new ServerError('The native HNSW index is rebuilding', 503);
+			}
+			return withStats([], filterState);
+		}
 		let entryPoint = this.getEntryPoint(options);
 		if (!entryPoint) return withStats([], filterState);
 		let entryPointId = entryPoint.id;

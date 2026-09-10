@@ -4,7 +4,16 @@ import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
 import { join, extname, basename } from 'path';
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	readdirSync,
+	realpathSync,
+	unlinkSync,
+} from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import {
 	getBaseSchemaPath,
@@ -35,10 +44,12 @@ import { databasePaths, deleteRootBlobPathsForDB } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
+import { planeFilePathFor, planeStalePathFor } from './indexes/hnswPlaneBinding.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import { replayLogs } from './replayLogs.ts';
+import { attachDerivedIndexes } from './indexes/hnswDerivedIndex.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { when } from '../utility/when.ts';
@@ -1407,6 +1418,8 @@ function initStores(
 			table.schemaVersion = 1;
 			if (!destination) databaseEventsEmitter.emit('updateTable', table);
 		}
+		void table.derivedIndexRuntime?.close();
+		table.derivedIndexRuntime = attachDerivedIndexes(table);
 		if (Array.isArray(primaryAttribute.relationships)) {
 			relationshipsToHydrate.push({ table, databaseName, tableName, definitions: primaryAttribute.relationships });
 		} else if (primaryAttribute.relationships !== undefined) {
@@ -2350,6 +2363,9 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
 		if (CustomIndex) {
 			indexStore.customIndex = new CustomIndex(indexStore, attribute.indexed);
+			// derived state whose maintaining option is now off must not linger to be adopted
+			// stale on a later re-enable
+			indexStore.customIndex.cleanupDisabledPlane?.();
 		} else {
 			logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
 		}
@@ -2521,6 +2537,18 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
+	if (
+		attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) &&
+		audit !== true &&
+		// An explicit false must fail here even for an already-audited Table. Nothing clears the
+		// static, so the runtime would stay attached while the descriptor persists audit: false,
+		// and the next process start would fail catalog load on the derived-index attach.
+		(audit === false || Table?.audit !== true)
+	) {
+		throw new ClientError(
+			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using nativePlane because its transaction log is the derived-index recovery source`
+		);
+	}
 	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
 
@@ -3130,6 +3158,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
+	void Table.derivedIndexRuntime?.close();
+	Table.derivedIndexRuntime = attachDerivedIndexes(Table);
 
 	Table.origin = origin;
 	// scope-private: replication and other global subscribers must not learn of a branch class
@@ -3360,6 +3390,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		);
 		let lastResolution;
 		for (const index of indicesToRemove) {
+			index.customIndex?.resetDerivedStorage?.();
 			lastResolution = index.drop();
 			if (lastResolution?.then) lastResolution.then(undefined, (error) => onIndexPutRejected(index.name, error));
 		}
@@ -3371,6 +3402,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			const start = resumeStartKey(attributes);
 			if (start === undefined) {
 				for (const attribute of attributes) {
+					// if we are starting from the beginning, clear out any previous index entries since we are rewriting
+					attribute.dbi.customIndex?.resetDerivedStorage?.();
 					if (attribute.dbi.clearAsync) {
 						// LMDB, note that we don't need to wait for this to complete, just gets enqueued in front of the other writes
 						attribute.dbi.clearAsync();
@@ -3623,6 +3656,24 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 					ignoreAlreadyDropped(error);
 				} finally {
 					columnStore.close();
+				}
+				// derived HNSW plane files live next to the store; the normal drop path removes
+				// them through the custom index, but this recovery path drops raw column stores,
+				// and a same-name recreate must never open a stale plane over a fresh CF
+				try {
+					unlinkSync(planeFilePathFor(rootStore.path, columnName));
+				} catch (error: any) {
+					// a stale plane left behind (e.g. Windows EBUSY while still mapped) would be
+					// opened over a fresh same-name CF, resolving another graph's node ids
+					// against it — tombstone it so no attach ever adopts it
+					if (error?.code !== 'ENOENT') {
+						logger.warn(`could not delete the HNSW plane file for ${columnName}; tombstoning it as stale`, error);
+						try {
+							closeSync(openSync(planeStalePathFor(planeFilePathFor(rootStore.path, columnName)), 'w'));
+						} catch (tombstoneError) {
+							logger.warn(`could not tombstone the stale HNSW plane file for ${columnName}`, tombstoneError);
+						}
+					}
 				}
 			}
 		}
