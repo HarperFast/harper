@@ -315,7 +315,12 @@ export function trackReadRange(transaction: ReadTransaction, createRange: () => 
 	range.iterate = function (options) {
 		const iterator = iterate.call(this, options);
 		let done = false;
-		return {
+		// Closing the underlying iterator is the one step here that can throw for a reason the caller
+		// must not see: `next()` only reaches it once the snapshot is already gone, which is the
+		// likeliest moment for the native layer to object, and an error from cleanup would replace the
+		// named 503 with exactly the raw iterator error this wrapper exists to stop surfacing. The
+		// closure reference rather than `this` so a destructured `next` still cleans up.
+		const wrapper = {
 			[Symbol.iterator]() {
 				return this;
 			},
@@ -328,11 +333,11 @@ export function trackReadRange(transaction: ReadTransaction, createRange: () => 
 					done = result.done === true;
 					return result;
 				} catch (error) {
-					this.return();
+					closeQuietly();
 					throw error;
 				}
 			},
-			return(value) {
+			return(value?: any) {
 				if (!done) {
 					done = true;
 					iterator.return?.(value);
@@ -340,10 +345,20 @@ export function trackReadRange(transaction: ReadTransaction, createRange: () => 
 				return { done: true, value };
 			},
 			throw(error) {
-				this.return();
+				// Not delegated to `iterator.throw`: it closes and rethrows the same error anyway, and
+				// delegating after the close below would run it against an iterator already closed.
+				closeQuietly();
 				throw error;
 			},
 		};
+		function closeQuietly() {
+			try {
+				wrapper.return();
+			} catch {
+				// the error being propagated is the actionable one
+			}
+		}
+		return wrapper;
 	};
 	return range;
 }
