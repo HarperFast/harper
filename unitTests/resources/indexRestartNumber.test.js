@@ -28,10 +28,14 @@ async function collect(iter) {
 }
 
 // The per-attribute descriptor is persisted in Table.dbisDB keyed by the attribute's
-// internal key; find it by name rather than reconstructing the key format.
+// internal key; find it by name rather than reconstructing the key format. Scoped to this
+// table's key prefix — the dbisDB is shared by every table in the database (and the 'test'
+// database shares one physical store across unit suites), so an unscoped scan can return a
+// same-named attribute from another suite's table.
 function findDescriptor(Tbl, attrName) {
+	const prefix = Tbl.tableName + '/';
 	for (const { key, value } of Tbl.dbisDB.getRange({ start: false })) {
-		if (value && value.name === attrName) return { key, value };
+		if (value && value.name === attrName && key.toString().startsWith(prefix)) return { key, value };
 	}
 	return null;
 }
