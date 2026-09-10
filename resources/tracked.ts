@@ -4,10 +4,10 @@ import { Blob } from './blob.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
 export const ASSERT_TRACKED_WRITABLE = Symbol('assert-tracked-writable');
+export const GET_TRACKED_WRITE_GENERATION = Symbol('get-tracked-write-generation');
 
-// Table resources implement this hook; nested tracked values forward it to their owning resource.
-function assertWritable(target) {
-	target[ASSERT_TRACKED_WRITABLE]?.();
+function assertWritable(target, generation?) {
+	target[ASSERT_TRACKED_WRITABLE]?.(generation);
 }
 
 function getChanges(target) {
@@ -366,14 +366,19 @@ export class GenericTrackedObject<T extends object = any> {
 	#record: T;
 	#changes: Partial<T>;
 	#writableOwner: any;
+	#writableGeneration: any;
 	constructor(sourceObject?: GenericTrackedObject<T> | T, writableOwner?: any) {
 		if ((sourceObject as GenericTrackedObject<T>)?.getRecord)
 			throw new Error('Can not track an already tracked object, check for circular references');
 		this.#record = sourceObject as any;
 		this.#writableOwner = writableOwner;
+		this.#writableGeneration = writableOwner?.[GET_TRACKED_WRITE_GENERATION]?.();
 	}
 	[ASSERT_TRACKED_WRITABLE]() {
-		this.#writableOwner?.[ASSERT_TRACKED_WRITABLE]?.();
+		this.#writableOwner?.[ASSERT_TRACKED_WRITABLE]?.(this.#writableGeneration);
+	}
+	[GET_TRACKED_WRITE_GENERATION]() {
+		return this.#writableGeneration;
 	}
 	getRecord(): T {
 		return this.#record;
@@ -513,17 +518,23 @@ export function hasChanges(target) {
 const HAS_ARRAY_CHANGES = Symbol.for('has-array-changes');
 const TRACKED_ARRAY_RECORD = Symbol('tracked-array-record');
 const TRACKED_WRITABLE_OWNER = Symbol('tracked-writable-owner');
+const TRACKED_WRITABLE_GENERATION = Symbol('tracked-writable-generation');
 class TrackedArray extends Array {
 	[TRACKED_ARRAY_RECORD]: any;
 	[TRACKED_WRITABLE_OWNER]: any;
+	[TRACKED_WRITABLE_GENERATION]: any;
 	[HAS_ARRAY_CHANGES]: boolean;
 	constructor(length, record, writableOwner) {
 		super(length);
 		this[TRACKED_ARRAY_RECORD] = record;
-		this[TRACKED_WRITABLE_OWNER] = writableOwner ? new WeakRef(writableOwner) : undefined;
+		this[TRACKED_WRITABLE_OWNER] = writableOwner;
+		this[TRACKED_WRITABLE_GENERATION] = writableOwner?.[GET_TRACKED_WRITE_GENERATION]?.();
 	}
 	[ASSERT_TRACKED_WRITABLE]() {
-		this[TRACKED_WRITABLE_OWNER]?.deref()?.[ASSERT_TRACKED_WRITABLE]?.();
+		this[TRACKED_WRITABLE_OWNER]?.[ASSERT_TRACKED_WRITABLE]?.(this[TRACKED_WRITABLE_GENERATION]);
+	}
+	[GET_TRACKED_WRITE_GENERATION]() {
+		return this[TRACKED_WRITABLE_GENERATION];
 	}
 	getRecord() {
 		return this[TRACKED_ARRAY_RECORD];

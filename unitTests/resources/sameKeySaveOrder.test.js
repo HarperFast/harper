@@ -1,4 +1,4 @@
-const assert = require('assert');
+const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -19,6 +19,7 @@ describe('same-key explicit save ordering', () => {
 				{ name: 'status', indexed: true },
 				{ name: 'metadata' },
 				{ name: 'count', type: 'Int' },
+				{ name: 'dates', type: 'array', elements: { type: 'Date' } },
 			],
 		});
 	});
@@ -70,6 +71,21 @@ describe('same-key explicit save ordering', () => {
 		);
 	});
 
+	it('drains multiple unsaved predecessors oldest-first', async () => {
+		await SaveOrder.put('long-chain', { status: 'queued', count: 0 });
+		const context = {};
+		await transaction(context, async () => {
+			await SaveOrder.update('long-chain', { status: 'running' }, context);
+			await SaveOrder.update('long-chain', { metadata: 'middle' }, context);
+			const last = await SaveOrder.update('long-chain', { count: 2 }, context);
+			await last.save();
+		});
+		const committed = await SaveOrder.get('long-chain');
+		assert.equal(committed.status, 'running');
+		assert.equal(committed.metadata, 'middle');
+		assert.equal(committed.count, 2);
+	});
+
 	it('rolls back predecessors staged by an explicit save', async () => {
 		const context = {};
 		await assert.rejects(
@@ -101,8 +117,11 @@ describe('same-key explicit save ordering', () => {
 			assert.throws(() => delete items[0], /after it has been saved/);
 			assert.throws(() => items.pop(), /after it has been saved/);
 			assert.throws(() => update.addTo('count', 1), /after it has been saved/);
+			await update.save();
 
 			update.update();
+			assert.throws(() => (details.nested = 'stale'), /after it has been saved/);
+			assert.throws(() => items.pop(), /after it has been saved/);
 			update.metadata = 'fresh update';
 			update.items.pop();
 			update.addTo('count', 1);
@@ -113,7 +132,20 @@ describe('same-key explicit save ordering', () => {
 		assert.equal(committed.metadata, 'fresh update');
 		assert.equal(committed.details.nested, 'before');
 		assert.deepStrictEqual(committed.items, [1]);
+		assert.strictEqual(Object.getPrototypeOf(committed.items), Array.prototype);
 		assert.equal(committed.count, 1);
+	});
+
+	it('allows validation coercion before closing the instance', async () => {
+		await SaveOrder.put('coercion', { dates: [] });
+		const context = {};
+		await transaction(context, async () => {
+			const update = await SaveOrder.update('coercion', {}, context);
+			update.dates.push('2026-09-09T00:00:00.000Z');
+			await update.save();
+			assert.throws(() => update.dates.push('2026-09-10T00:00:00.000Z'), /after it has been saved/);
+		});
+		assert((await SaveOrder.get('coercion')).dates[0] instanceof Date);
 	});
 
 	it('keeps method-based writes to other keys usable after save', async () => {
@@ -127,6 +159,19 @@ describe('same-key explicit save ordering', () => {
 		});
 		assert.equal((await SaveOrder.get('receiver-a')).status, 'complete');
 		assert.equal((await SaveOrder.get('receiver-b')).status, 'running');
+	});
+
+	it('rejects same-key writes from a closed instance before acquiring a lock', async function () {
+		if (isLMDB) this.skip();
+		await SaveOrder.put('closed-methods', { status: 'queued' });
+		const context = {};
+		await transaction(context, async () => {
+			const receiver = await SaveOrder.update('closed-methods', { status: 'complete' }, context);
+			await receiver.save();
+			await assert.rejects(async () => receiver.delete(), /after it has been saved/);
+			await assert.rejects(receiver.lock(), /after it has been saved/);
+			assert.equal(context.transaction.recordLockFor(SaveOrder.primaryStore, 'closed-methods'), undefined);
+		});
 	});
 
 	it('closes an earlier update when a later same-key save consumes it', async () => {

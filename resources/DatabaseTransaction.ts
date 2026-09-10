@@ -386,7 +386,16 @@ export type TransactionWrite = {
 	reloadCommitBase?: boolean;
 	// Closes the record instance as soon as this write is selected for saving.
 	closeInstance?: () => void;
+	instanceClosed?: boolean;
+	withWritableInstance?: <T>(callback: () => T) => T;
 };
+
+export function closeWriteInstance(operation: TransactionWrite | null | undefined): void {
+	if (operation && !operation.instanceClosed) {
+		operation.instanceClosed = true;
+		operation.closeInstance?.();
+	}
+}
 
 export function getAppliedWriteVersion(recordVersion: number | undefined, txnLogKey: number): number {
 	return recordVersion == null ? txnLogKey : Math.min(recordVersion, txnLogKey);
@@ -436,6 +445,7 @@ export class DatabaseTransaction implements Transaction {
 		this.#scopeOwned = options?.scopeOwned === true;
 	}
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
+	ownedWrites = new WeakSet<TransactionWrite>();
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
 	completions: Promise<void>[] = []; // the set of outstanding async operations to complete
@@ -726,6 +736,7 @@ export class DatabaseTransaction implements Transaction {
 	detachWrite(operation: TransactionWrite): void {
 		const index = this.writes.indexOf(operation);
 		if (index > -1) this.writes[index] = null;
+		this.ownedWrites.delete(operation);
 		if (operation.key === undefined) return;
 		const writesForStore = this.writesByKey?.get(operation.store);
 		if (!writesForStore) return;
@@ -733,7 +744,7 @@ export class DatabaseTransaction implements Transaction {
 		// Membership, not `stagedIn`, which every commit handler clears and so cannot tell a takeover from a
 		// write done in place; a prior already taken over must not become this transaction's basis again.
 		let prior = operation.priorWrite;
-		while (prior && !this.writes.includes(prior)) prior = prior.priorWrite;
+		while (prior && !this.ownedWrites.has(prior)) prior = prior.priorWrite;
 		const tail = writesForStore.get(keyId);
 		if (tail === operation) {
 			if (prior) writesForStore.set(keyId, prior);
@@ -823,7 +834,10 @@ export class DatabaseTransaction implements Transaction {
 		// fire after a commit or abort, and routing it back here would revive a write this transaction
 		// already rolled back — whose blobs abort() has reclaimed. Cleared here, save() resolves the
 		// context's current transaction as it did before `stagedIn` existed.
-		for (const write of this.writes) if (write?.stagedIn === this) write.stagedIn = undefined;
+		for (const write of this.writes) {
+			if (write?.stagedIn === this) write.stagedIn = undefined;
+			if (write) this.ownedWrites.delete(write);
+		}
 		this.writes = [];
 		this.writesByKey = undefined;
 	}
@@ -961,6 +975,7 @@ export class DatabaseTransaction implements Transaction {
 		this.writeTick = monitorTick;
 		this.linkWrite(operation);
 		this.writes.push(operation);
+		this.ownedWrites.add(operation);
 		operation.stagedIn = this;
 		// Hold this write back while any earlier same-key write has not run — out of staging order both
 		// diff against the pre-transaction record (harper#2211, DESIGN.md). The whole chain, not just the
@@ -989,7 +1004,6 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
-		operation.closeInstance?.();
 		const lockHandle = operation.lockHandle;
 		// Guard: a write staged through an expired or released lock handle must not land.
 		// The handle's lease timer already unlocked the native key; another holder may have taken it.
@@ -998,6 +1012,7 @@ export class DatabaseTransaction implements Transaction {
 			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
 			const failedIdx = this.writes.indexOf(operation);
 			if (failedIdx > -1) this.writes[failedIdx] = null;
+			this.ownedWrites.delete(operation);
 			throw lockNotHeldError(lockHandle);
 		}
 		// Lock-write timestamp rules.
@@ -1063,7 +1078,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!operation.saved && operation.pendingPriorWrite && !operation.pendingPriorWrite.saved) {
 			const pendingWrites = [];
 			for (let pending = operation.pendingPriorWrite; pending;) {
-				if (!pending.saved && this.writes.includes(pending)) pendingWrites.push(pending);
+				if (!pending.saved && this.ownedWrites.has(pending)) pendingWrites.push(pending);
 				pending = pending.pendingPriorWrite !== undefined ? pending.pendingPriorWrite : pending.priorWrite;
 			}
 			for (let index = pendingWrites.length - 1; index >= 0; index--)
@@ -1091,9 +1106,12 @@ export class DatabaseTransaction implements Transaction {
 		if (!operation.saved) {
 			operation.saved = true;
 			// immediately execute in this transaction
-			if ((operation.validate?.(writeVersion, this) as any) === false) {
+			const validated = operation.withWritableInstance
+				? operation.withWritableInstance(() => operation.validate?.(writeVersion, this))
+				: operation.validate?.(writeVersion, this);
+			if ((validated as any) === false) {
 				operation.commit = () => {}; // noop if we try again
-				operation.closeInstance?.();
+				closeWriteInstance(operation);
 				return;
 			}
 			let result: Promise<void> = operation.before?.() as Promise<void>;
@@ -1107,7 +1125,7 @@ export class DatabaseTransaction implements Transaction {
 		try {
 			completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
 		} finally {
-			operation.closeInstance?.();
+			closeWriteInstance(operation);
 		}
 		if (operation.trackRecordVersion)
 			operation.appliedRecordVersion = operation.recordVersionApplied ? writeVersion : undefined;

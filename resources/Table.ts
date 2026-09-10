@@ -83,6 +83,7 @@ import {
 	hasChanges,
 	GenericTrackedObject,
 	ASSERT_TRACKED_WRITABLE,
+	GET_TRACKED_WRITE_GENERATION,
 } from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
@@ -753,7 +754,9 @@ export function makeTable(options) {
 		}
 		return { txnLogKey: version, nodeId };
 	}
-	const closedUpdateInstances = new WeakMap<object, Set<unknown>>();
+	const closedUpdateInstances = new WeakSet<object>();
+	const writeGenerations = new WeakMap<object, object>();
+	const internallyWritableInstances = new WeakSet<object>();
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -763,9 +766,15 @@ export function makeTable(options) {
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		declare getProperty: (name: string) => any;
-		[ASSERT_TRACKED_WRITABLE](): void {
-			if (closedUpdateInstances.get(this)?.size)
+		[ASSERT_TRACKED_WRITABLE](generation?: object): void {
+			if (internallyWritableInstances.has(this)) return;
+			if ((generation && generation !== this[GET_TRACKED_WRITE_GENERATION]()) || closedUpdateInstances.has(this))
 				throw new ClientError('Can not modify an update instance after it has been saved; call update() again', 409);
+		}
+		[GET_TRACKED_WRITE_GENERATION](): object {
+			let generation = writeGenerations.get(this);
+			if (!generation) writeGenerations.set(this, (generation = {}));
+			return generation;
 		}
 
 		/**
@@ -775,7 +784,8 @@ export function makeTable(options) {
 		 * #lockHandle (scoped and hold alike), so we never need to search the registry here.
 		 */
 		#assertLiveHandle(id: Id, allowClosed = false): void {
-			if (!allowClosed && closedUpdateInstances.get(this)?.has(writeKeyId(id))) this[ASSERT_TRACKED_WRITABLE]();
+			if (!allowClosed && closedUpdateInstances.has(this) && writeKeyId(id) === writeKeyId(this.getId()))
+				this[ASSERT_TRACKED_WRITABLE]();
 			if (!this.#lockWritable) return;
 			const handle = this.#lockHandle!;
 			// Off-key writes through the same resource instance are ordinary; only guard the
@@ -2067,7 +2077,10 @@ export function makeTable(options) {
 			} else {
 				id = requestTargetToId(target);
 			}
-			if (closedUpdateInstances.get(this)?.size) this.#changes = undefined;
+			if (closedUpdateInstances.has(this)) {
+				this.#changes = undefined;
+				writeGenerations.set(this, {});
+			}
 			this.#assertLiveHandle(id, true);
 			closedUpdateInstances.delete(this);
 
@@ -2126,6 +2139,7 @@ export function makeTable(options) {
 		 */
 		save() {
 			const operation = this.#savingOperation;
+			if (!operation && closedUpdateInstances.has(this)) return;
 			this.#assertLiveHandle(operation?.key ?? this.getId()); // a write through a released or expired lock never lands
 			if ((!operation || operation.dropped) && this.#lockWritable && this.#lockHandle?.hold) {
 				// A held lock's record stages its update here rather than at lock() time: it is often
@@ -2223,7 +2237,10 @@ export function makeTable(options) {
 			}
 		}
 		#closeWriteChain(operation: any) {
-			for (let write = operation; write; write = write.priorWrite) write.closeInstance?.();
+			for (let write = operation; write && !write.instanceClosed; write = write.priorWrite) {
+				write.instanceClosed = true;
+				write.closeInstance?.();
+			}
 		}
 
 		addTo(property: any, value: any) {
@@ -2563,6 +2580,7 @@ export function makeTable(options) {
 			}
 			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : this.getId();
 			checkValidId(id);
+			this.#assertLiveHandle(id);
 			const resolved = resolveLockOptions(options);
 			const context = this.getContext();
 			const link = txnForContext(context);
@@ -2935,6 +2953,15 @@ export function makeTable(options) {
 				}
 			};
 
+			const receiverId = this.getId();
+			let closesReceiver = false;
+			if (!this.isCollection) {
+				try {
+					closesReceiver = writeKeyId(id) === writeKeyId(receiverId);
+				} catch {
+					closesReceiver = false;
+				}
+			}
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -2955,10 +2982,14 @@ export function makeTable(options) {
 				closeInstance: () => {
 					// A collection receiver may stage an entire batch through this one object. It is
 					// not an update instance, so closing it after the first row would reject the rest.
-					if (!this.#lockWritable && !this.isCollection) {
-						let closedKeys = closedUpdateInstances.get(this);
-						if (!closedKeys) closedUpdateInstances.set(this, (closedKeys = new Set()));
-						closedKeys.add(writeKeyId(id));
+					if (!this.#lockWritable && closesReceiver) closedUpdateInstances.add(this);
+				},
+				withWritableInstance: (callback) => {
+					internallyWritableInstances.add(this);
+					try {
+						return callback();
+					} finally {
+						internallyWritableInstances.delete(this);
 					}
 				},
 				validate: (txnTime, committedBy = transaction) => {

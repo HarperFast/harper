@@ -1,5 +1,6 @@
 import {
 	DatabaseTransaction,
+	closeWriteInstance,
 	shouldSpareCommitPhase,
 	transactionOpenTooLongError,
 	type CommitOptions,
@@ -113,12 +114,14 @@ export class LMDBTransaction extends DatabaseTransaction {
 
 		this.linkWrite(operation);
 		this.writes.push(operation); // standard path, add to current transaction
+		this.ownedWrites.add(operation);
 		operation.stagedIn = this;
 	}
 
 	removeWrite(operation: TransactionWrite) {
 		const index = this.writes.indexOf(operation);
 		if (index > -1) this.writes[index] = null;
+		this.ownedWrites.delete(operation);
 	}
 
 	/**
@@ -140,8 +143,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 				this.validated = this.writes.length;
 				for (let i = start; i < this.validated; i++) {
 					const write = this.writes[i];
-					write?.closeInstance?.();
-					if ((write?.validate?.(this.timestamp, this) as any) === false) write.closeInstance?.();
+					try {
+						if (write?.withWritableInstance) write.withWritableInstance(() => write.validate?.(this.timestamp, this));
+						else write?.validate?.(this.timestamp, this);
+					} finally {
+						closeWriteInstance(write);
+					}
 				}
 				let hasBefore;
 				for (let i = start; i < this.validated; i++) {
@@ -208,7 +215,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 			try {
 				completion = write.commit(txnTime, write.entry, retries);
 			} finally {
-				write.closeInstance?.();
+				closeWriteInstance(write);
 			}
 			if (typeof completion?.then === 'function') {
 				// the aggregating Promise.all is attached a turn or more later (after the conditional batch
