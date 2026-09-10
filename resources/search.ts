@@ -1103,7 +1103,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
 			!isPrimaryKey && // no need to use index for primary keys, since we will be iterating over the primary keys
-			Table?.indices[attribute] && // is there an index for this attribute
+			!!(Table && usableIndex(Table, attribute)) && // is there a usable (complete) index for this attribute
 			estimatedIncomingCount > 3; // do we have a valid estimate of multiple incoming records (that is worth using an index for)
 		if (canUseIndex) {
 			if (searchCondition.estimated_count == undefined) estimateCondition(Table)(searchCondition);
@@ -1169,7 +1169,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 function estimateRangeCondition(table, condition, searchType, fraction) {
 	const attributeName = condition[0] ?? condition.attribute;
 	const isPrimaryKey = attributeName === table.primaryKey;
-	const store = isPrimaryKey ? table.primaryStore : table.indices[attributeName];
+	const store = isPrimaryKey ? table.primaryStore : usableIndex(table, attributeName);
 	// LMDB-backed and custom index stores do not implement estimateCount
 	if (typeof store?.estimateCount !== 'function') return undefined;
 	let value = condition[1] ?? condition.value;
@@ -1245,6 +1245,28 @@ function estimateRangeCondition(table, condition, searchType, fraction) {
 	return Math.max(1, Math.round(confidence * count + (1 - confidence) * heuristic));
 }
 
+/** The index a condition can be driven by; searchByIndex refuses a rebuilding one, so it reads as absent. */
+function usableIndex(table, attributeName): any {
+	const index = attributeName == null ? undefined : table.indices[attributeName];
+	return index?.isIndexing ? undefined : index;
+}
+
+/**
+ * True when an index this attribute would have to be driven by is still being built, following a
+ * relationship path to the local join index and on to the related table's leaf index.
+ */
+function drivesRebuildingIndex(table, attributeName, relationshipOffset = 0): boolean {
+	if (!Array.isArray(attributeName))
+		return attributeName != null && attributeName !== table.primaryKey && !!table.indices[attributeName]?.isIndexing;
+	if (relationshipOffset >= attributeName.length - 1)
+		return drivesRebuildingIndex(table, attributeName[relationshipOffset]);
+	const attribute = findAttribute(table.attributes, attributeName[relationshipOffset]);
+	if (!attribute) return false;
+	if (table.indices[attribute.relationship?.from]?.isIndexing) return true;
+	const relatedTable = attribute.definition?.tableClass || attribute.elements?.definition?.tableClass;
+	return !!relatedTable && drivesRebuildingIndex(relatedTable, attributeName, relationshipOffset + 1);
+}
+
 export function estimateCondition(table) {
 	function estimateConditionForTable(condition) {
 		if (condition.estimated_count === undefined) {
@@ -1274,7 +1296,10 @@ export function estimateCondition(table) {
 			// skip if it is cached
 			let searchType = condition.comparator || condition.search_type;
 			searchType = ALTERNATE_COMPARATOR_NAMES[searchType] || searchType;
-			if (condition.negated) {
+			// before comparator dispatch: several branches fall back to a finite table-fraction heuristic
+			if (drivesRebuildingIndex(table, condition[0] ?? condition.attribute)) {
+				condition.estimated_count = Infinity;
+			} else if (condition.negated) {
 				// a negated condition always executes as a full scan (searchByIndex forces
 				// needFullScan), so follow the filter-only convention used by contains/ends_with:
 				// estimate Infinity so its positive-range estimate can never win the driving-condition
@@ -1307,12 +1332,12 @@ export function estimateCondition(table) {
 					}
 				} else {
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
-					const index = table.indices[attribute_name];
+					const index = usableIndex(table, attribute_name);
 					condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
 				}
 			} else if (searchType === 'contains' || searchType === 'ends_with' || searchType === 'ne') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (condition.value === null && searchType === 'ne') {
 					condition.estimated_count = Math.max(
 						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0),
@@ -1321,7 +1346,7 @@ export function estimateCondition(table) {
 				} else condition.estimated_count = Infinity;
 			} else if (searchType === 'in') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (Array.isArray(condition.value) && index) {
 					// Sum of per-value matches (over-counts duplicates but is a fine ceiling)
 					let estimate = 0;
@@ -1342,7 +1367,7 @@ export function estimateCondition(table) {
 					BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (searchType === 'sort') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (index?.customIndex?.estimateCountAsSort)
 					// allow custom index to define its own estimation of counts
 					condition.estimated_count = index.customIndex.estimateCountAsSort(condition);
@@ -1350,7 +1375,7 @@ export function estimateCondition(table) {
 			} else {
 				// for the search types that use the broadest range, try do them last
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (index?.customIndex?.estimateCount)
 					// allow custom index to define its own estimation of counts
 					condition.estimated_count = index.customIndex.estimateCount(condition.value);
