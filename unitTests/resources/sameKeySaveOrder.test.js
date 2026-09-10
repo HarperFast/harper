@@ -148,6 +148,47 @@ describe('same-key explicit save ordering', () => {
 		assert((await SaveOrder.get('coercion')).dates[0] instanceof Date);
 	});
 
+	it('can correct and retry a write after validation fails', async function () {
+		if (isLMDB) this.skip();
+		await SaveOrder.put('retry-validation', { dates: [] });
+		const context = {};
+		await transaction(context, async () => {
+			const update = await SaveOrder.update('retry-validation', {}, context);
+			update.dates.push({ invalid: true });
+			assert.throws(() => update.save(), /must be a Date/);
+			update.dates[0] = '2026-09-09T00:00:00.000Z';
+			await update.save();
+		});
+		assert((await SaveOrder.get('retry-validation')).dates[0] instanceof Date);
+	});
+
+	it('retries a failed predecessor before saving its successor', async function () {
+		if (isLMDB) this.skip();
+		await SaveOrder.put('retry-predecessor', { dates: [] });
+		const context = {};
+		await transaction(context, async () => {
+			const predecessor = await SaveOrder.update('retry-predecessor', {}, context);
+			predecessor.dates.push({ invalid: true });
+			const successor = await SaveOrder.update('retry-predecessor', { status: 'complete' }, context);
+			assert.throws(() => successor.save(), /must be a Date/);
+			predecessor.dates[0] = '2026-09-09T00:00:00.000Z';
+			await successor.save();
+		});
+		const committed = await SaveOrder.get('retry-predecessor');
+		assert(committed.dates[0] instanceof Date);
+		assert.equal(committed.status, 'complete');
+	});
+
+	it('keeps a collection receiver open across a bulk put', async function () {
+		if (isLMDB) this.skip();
+		await SaveOrder.put([
+			{ id: 'bulk-a', status: 'queued' },
+			{ id: 'bulk-b', status: 'running' },
+		]);
+		assert.equal((await SaveOrder.get('bulk-a')).status, 'queued');
+		assert.equal((await SaveOrder.get('bulk-b')).status, 'running');
+	});
+
 	it('keeps method-based writes to other keys usable after save', async () => {
 		await SaveOrder.put('receiver-a', { status: 'queued' });
 		const context = {};
@@ -181,6 +222,7 @@ describe('same-key explicit save ordering', () => {
 			const earlier = await SaveOrder.update('indirect-close', { status: 'running' }, context);
 			await SaveOrder.patch('indirect-close', { metadata: 'saved later' }, context);
 			assert.throws(() => (earlier.status = 'late'), /after it has been saved/);
+			await earlier.save();
 		});
 		const committed = await SaveOrder.get('indirect-close');
 		assert.equal(committed.status, 'running');

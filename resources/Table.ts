@@ -41,6 +41,8 @@ import {
 	isReleasedTransaction,
 	TRANSACTION_STATE,
 	writeKeyId,
+	closeWriteInstance,
+	type WriteGeneration,
 } from './DatabaseTransaction.ts';
 import {
 	acquireRecordKey,
@@ -754,9 +756,6 @@ export function makeTable(options) {
 		}
 		return { txnLogKey: version, nodeId };
 	}
-	const closedUpdateInstances = new WeakSet<object>();
-	const writeGenerations = new WeakMap<object, object>();
-	const internallyWritableInstances = new WeakSet<object>();
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -765,16 +764,15 @@ export function makeTable(options) {
 		#savingOperation?: any; // operation for the record is currently being saved
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
+		#writeGeneration: WriteGeneration = { closed: false, internalWrites: 0 };
 		declare getProperty: (name: string) => any;
-		[ASSERT_TRACKED_WRITABLE](generation?: object): void {
-			if (internallyWritableInstances.has(this)) return;
-			if ((generation && generation !== this[GET_TRACKED_WRITE_GENERATION]()) || closedUpdateInstances.has(this))
+		[ASSERT_TRACKED_WRITABLE](generation = this.#writeGeneration): void {
+			if (generation.internalWrites > 0) return;
+			if (generation !== this.#writeGeneration || generation.closed)
 				throw new ClientError('Can not modify an update instance after it has been saved; call update() again', 409);
 		}
-		[GET_TRACKED_WRITE_GENERATION](): object {
-			let generation = writeGenerations.get(this);
-			if (!generation) writeGenerations.set(this, (generation = {}));
-			return generation;
+		[GET_TRACKED_WRITE_GENERATION](): WriteGeneration {
+			return this.#writeGeneration;
 		}
 
 		/**
@@ -784,7 +782,7 @@ export function makeTable(options) {
 		 * #lockHandle (scoped and hold alike), so we never need to search the registry here.
 		 */
 		#assertLiveHandle(id: Id, allowClosed = false): void {
-			if (!allowClosed && closedUpdateInstances.has(this) && writeKeyId(id) === writeKeyId(this.getId()))
+			if (!allowClosed && this.#writeGeneration.closed && writeKeyId(id) === writeKeyId(this.getId()))
 				this[ASSERT_TRACKED_WRITABLE]();
 			if (!this.#lockWritable) return;
 			const handle = this.#lockHandle!;
@@ -2077,12 +2075,11 @@ export function makeTable(options) {
 			} else {
 				id = requestTargetToId(target);
 			}
-			if (closedUpdateInstances.has(this)) {
+			if (this.#writeGeneration.closed) {
 				this.#changes = undefined;
-				writeGenerations.set(this, {});
+				this.#writeGeneration = { closed: false, internalWrites: 0 };
 			}
 			this.#assertLiveHandle(id, true);
-			closedUpdateInstances.delete(this);
 
 			const context = this.getContext();
 			const envTxn = txnForContext(context);
@@ -2139,7 +2136,7 @@ export function makeTable(options) {
 		 */
 		save() {
 			const operation = this.#savingOperation;
-			if (!operation && closedUpdateInstances.has(this)) return;
+			if (this.#writeGeneration.closed) return;
 			this.#assertLiveHandle(operation?.key ?? this.getId()); // a write through a released or expired lock never lands
 			if ((!operation || operation.dropped) && this.#lockWritable && this.#lockHandle?.hold) {
 				// A held lock's record stages its update here rather than at lock() time: it is often
@@ -2200,7 +2197,13 @@ export function makeTable(options) {
 				// resolve before that native commit actually settles. Chain on innerCommit (as the
 				// lock-writable hold branch above already does) so callers awaiting save() see the
 				// write durably land, not just the outer (possibly premature) resolution.
-				const result = this.#saveOperation(operation);
+				let result;
+				try {
+					result = this.#saveOperation(operation);
+				} catch (error) {
+					this.#savingOperation = operation;
+					throw error;
+				}
 				const innerCommit = operation.innerCommit;
 				return innerCommit ? when(innerCommit, () => result) : result;
 			}
@@ -2237,9 +2240,9 @@ export function makeTable(options) {
 			}
 		}
 		#closeWriteChain(operation: any) {
+			const owner = operation.stagedIn;
 			for (let write = operation; write && !write.instanceClosed; write = write.priorWrite) {
-				write.instanceClosed = true;
-				write.closeInstance?.();
+				if (write === operation || owner?.ownedWrites.has(write)) closeWriteInstance(write);
 			}
 		}
 
@@ -2954,14 +2957,11 @@ export function makeTable(options) {
 			};
 
 			const receiverId = this.getId();
-			let closesReceiver = false;
-			if (!this.isCollection) {
-				try {
-					closesReceiver = writeKeyId(id) === writeKeyId(receiverId);
-				} catch {
-					closesReceiver = false;
-				}
-			}
+			const closesReceiver =
+				!this.isCollection &&
+				!isSearchTarget(receiverId) &&
+				(id === receiverId ||
+					(typeof id === 'object' && typeof receiverId === 'object' && compareKeys(id, receiverId) === 0));
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -2979,19 +2979,7 @@ export function makeTable(options) {
 				// Only attach the hold handle when it covers exactly this key; off-key writes
 				// are ordinary and must not carry an unrelated hold's handle.
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
-				closeInstance: () => {
-					// A collection receiver may stage an entire batch through this one object. It is
-					// not an update instance, so closing it after the first row would reject the rest.
-					if (!this.#lockWritable && closesReceiver) closedUpdateInstances.add(this);
-				},
-				withWritableInstance: (callback) => {
-					internallyWritableInstances.add(this);
-					try {
-						return callback();
-					} finally {
-						internallyWritableInstances.delete(this);
-					}
-				},
+				writeGeneration: !this.#lockWritable && closesReceiver ? this.#writeGeneration : undefined,
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {

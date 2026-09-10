@@ -309,6 +309,11 @@ type ReadTransaction = (LMDBTransaction | RocksTransaction) & {
 	isCommitted?: boolean;
 };
 
+export type WriteGeneration = {
+	closed: boolean;
+	internalWrites: number;
+};
+
 export type TransactionWrite = {
 	key: Id;
 	store: any; // using any here because of circular dependency and complex RootDatabaseKind
@@ -384,16 +389,24 @@ export type TransactionWrite = {
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
-	// Closes the record instance as soon as this write is selected for saving.
-	closeInstance?: () => void;
+	writeGeneration?: WriteGeneration;
 	instanceClosed?: boolean;
-	withWritableInstance?: <T>(callback: () => T) => T;
 };
 
 export function closeWriteInstance(operation: TransactionWrite | null | undefined): void {
 	if (operation && !operation.instanceClosed) {
 		operation.instanceClosed = true;
-		operation.closeInstance?.();
+		if (operation.writeGeneration) operation.writeGeneration.closed = true;
+	}
+}
+
+export function validateWrite(operation: TransactionWrite, txnTime: number, transaction: DatabaseTransaction): any {
+	const generation = operation.writeGeneration;
+	if (generation) generation.internalWrites++;
+	try {
+		return operation.validate?.(txnTime, transaction);
+	} finally {
+		if (generation) generation.internalWrites--;
 	}
 }
 
@@ -1104,16 +1117,15 @@ export class DatabaseTransaction implements Transaction {
 			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
 		}
 		if (!operation.saved) {
-			operation.saved = true;
 			// immediately execute in this transaction
-			const validated = operation.withWritableInstance
-				? operation.withWritableInstance(() => operation.validate?.(writeVersion, this))
-				: operation.validate?.(writeVersion, this);
+			const validated = validateWrite(operation, writeVersion, this);
 			if ((validated as any) === false) {
+				operation.saved = true;
 				operation.commit = () => {}; // noop if we try again
 				closeWriteInstance(operation);
 				return;
 			}
+			operation.saved = true;
 			let result: Promise<void> = operation.before?.() as Promise<void>;
 			if (result?.then) this.stageCompletion(result);
 			result = operation.beforeIntermediate?.() as Promise<void>;

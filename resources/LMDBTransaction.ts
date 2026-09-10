@@ -1,6 +1,7 @@
 import {
 	DatabaseTransaction,
 	closeWriteInstance,
+	validateWrite,
 	shouldSpareCommitPhase,
 	transactionOpenTooLongError,
 	type CommitOptions,
@@ -144,8 +145,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				for (let i = start; i < this.validated; i++) {
 					const write = this.writes[i];
 					try {
-						if (write?.withWritableInstance) write.withWritableInstance(() => write.validate?.(this.timestamp, this));
-						else write?.validate?.(this.timestamp, this);
+						if (write) validateWrite(write, this.timestamp, this);
 					} finally {
 						closeWriteInstance(write);
 					}

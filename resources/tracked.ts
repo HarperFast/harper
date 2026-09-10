@@ -349,7 +349,10 @@ function trackObject(sourceObject: any, typeDef?: any, writableOwner?: any) {
 			}
 			return new Proxy(trackedArray, {
 				set(target, name, value, receiver) {
-					if (typeof name === 'string') assertWritable(target);
+					if (typeof name === 'string') {
+						assertWritable(target);
+						target[HAS_ARRAY_CHANGES] = true;
+					}
 					return Reflect.set(target, name, value, receiver);
 				},
 				deleteProperty(target, name) {
@@ -433,6 +436,7 @@ export function updateAndFreeze(target, changes = target.getChanges?.()) {
 	let mergedUpdatedObject: any;
 	if (!target) return changes;
 	if (target.getRecord && target.constructor === Array && !Object.isFrozen(target)) {
+		if (!hasChanges(target)) return (target as any).getRecord();
 		// Materialize a plain array so the stored value retains neither the mutation proxy nor its owner.
 		mergedUpdatedObject = new Array(target.length);
 		for (let i = 0, l = target.length; i < l; i++) {
