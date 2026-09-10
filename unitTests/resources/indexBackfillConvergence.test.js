@@ -11,6 +11,7 @@ const path = require('node:path');
 const { readFileSync, rmSync } = require('node:fs');
 const { spawn } = require('node:child_process');
 const { setupTestDBPath } = require('../testUtils');
+const { waitFor } = require('../waitFor.js');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 const {
@@ -347,12 +348,6 @@ describe('index backfill convergence (#2536)', () => {
 		return promise;
 	}
 
-	async function waitFor(condition, what, timeoutMs = 20000) {
-		const deadline = Date.now() + timeoutMs;
-		while (!condition() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-		assert.ok(condition(), `timed out waiting for ${what}`);
-	}
-
 	it('freezes the checkpoint when an index write rejects only after a later checkpoint was reached', async () => {
 		const TABLE = 'BackfillLateRejection';
 		const N = 600;
@@ -474,7 +469,10 @@ describe('index backfill convergence (#2536)', () => {
 		);
 		// The scan has to reach the failing record before there is anything to release; a loaded runner
 		// only makes that slower, never skips it.
-		await waitFor(() => release.issued || settled, 'the failing index write to be issued');
+		await waitFor(() => release.issued || settled, {
+			timeout: 20000,
+			message: 'the failing index write was never issued',
+		});
 		// Release as soon as indexing resolves, which is what a build that ignores the unsettled write
 		// does; the deadline only bounds the case where it correctly refuses to resolve. So a slow runner
 		// can make this test lenient, never make it fail spuriously.
@@ -592,6 +590,57 @@ describe('index backfill convergence (#2536)', () => {
 		assert.ok(
 			peakInFlight <= 1100,
 			`the backfill left ${peakInFlight} index writes in flight, past the outstanding bound`
+		);
+	});
+
+	it('keeps the algorithm stamp on a completed index across a later descriptor rewrite', async () => {
+		const TABLE = 'BackfillCompletedStamp';
+		const N = 200;
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }, { name: 'group' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: 't-' + (i % 3), group: 'g-' + (i % 2) });
+		await last;
+
+		resetDatabases();
+		Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag', indexed: true }, { name: 'group' }],
+		});
+		assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
+		await Tbl.indexingOperation;
+		const built = findDescriptor(Tbl, 'tag').value;
+		assert.strictEqual(built.lastIndexedKey, undefined, 'a clean completion clears the checkpoint');
+		assert.strictEqual(
+			built.checkpointAlgorithm,
+			CHECKPOINT_ALGORITHM,
+			'a completed index should record the algorithm that built it'
+		);
+
+		// Indexing a second attribute rewrites every descriptor for the table; the stamp has to survive it,
+		// or a completed index becomes indistinguishable from one an older release built.
+		resetDatabases();
+		const Tbl2 = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+				{ name: 'group', indexed: true },
+			],
+		});
+		if (Tbl2.indexingOperation) await Tbl2.indexingOperation;
+		assert.strictEqual(
+			findDescriptor(Tbl2, 'tag').value.checkpointAlgorithm,
+			CHECKPOINT_ALGORITHM,
+			'the completed index should still carry its stamp after an unrelated descriptor rewrite'
 		);
 	});
 
