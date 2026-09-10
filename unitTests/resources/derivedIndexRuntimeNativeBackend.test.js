@@ -1396,14 +1396,12 @@ describe('DerivedIndexRuntime for native backends', () => {
 				while (performance.now() < until);
 			},
 		});
-		// The first owner accepts but never makes anything durable, trips the policy, and leaves.
 		const first = new SyncBackend('inherited', cursor(10), () => DERIVED_INDEX_ACCEPTED);
 		const owner = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
 		owner.register(registration(first, { maxLagMilliseconds: 100, maxFlushAgeMilliseconds: 5, maxChunkRecords: 4 }));
 		await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined, { timeout: 5000 });
 		await owner.stop();
 
-		// The successor makes every batch durable at once but still has the whole backlog to read.
 		const second = new SyncBackend('inherited', cursor(10));
 		const successor = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 }).runtime;
 		successor.register(
@@ -1452,6 +1450,10 @@ describe('DerivedIndexRuntime for native backends', () => {
 			'still parked: it cannot rebuild'
 		);
 		assert.strictEqual(runtime.getReadiness('marker-fails-no-reset').state, 'needs-rebuild');
+		const rangeCalls = store.rangeCalls.length;
+		store.rootStore.emit('committed');
+		await sleep(20);
+		assert.strictEqual(store.rangeCalls.length, rangeCalls, 'a parked runner whose marker is written stays parked');
 		await runtime.stop();
 	});
 

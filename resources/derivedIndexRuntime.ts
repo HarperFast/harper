@@ -833,7 +833,7 @@ class DerivedIndexRunner {
 			if (shared.state === 'needs-rebuild' || shared.state === 'rebuilding') {
 				if (this.#canRebuild()) this.#startRebuild();
 				else {
-					this.#writeCondemnation();
+					if (this.#writeCondemnation()) this.#rebuildRequested = false;
 					this.status = {
 						state: 'needs-rebuild',
 						reason: shared.reason ?? 'condemned by a previous owner',
