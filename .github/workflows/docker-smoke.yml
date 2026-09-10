@@ -20,7 +20,10 @@ on:
       - utility/processManagement/processManagement.js
       - .github/workflows/docker-smoke.yml
   push:
-    branches: [main]
+    # Release branches too: the image is built from a release branch at publish time, so a branch
+    # that never runs this has no boot coverage for the artifact it actually ships. Same pattern
+    # unit-test.yml uses.
+    branches: [main, 'v[0-9]+.[0-9]+']
     paths:
       - Dockerfile
       - .dockerignore
