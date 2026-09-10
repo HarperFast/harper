@@ -1,3 +1,4 @@
+import { trackReadRange } from './DatabaseTransaction.ts';
 import {
 	DBI,
 	type StoreIteratorOptions,
@@ -35,7 +36,7 @@ export class RocksIndexStore extends RocksDatabase {
 			end = [end, MAXIMUM_KEY];
 		}
 		const translatedOptions = { ...options, start, end };
-		return super.getRange(translatedOptions).map(({ key }) => {
+		return trackReadRange(options.transaction, () => super.getRange(translatedOptions)).map(({ key }) => {
 			return { key: key[0], value: key.length > 2 ? key.slice(1) : key[1] };
 		});
 	}

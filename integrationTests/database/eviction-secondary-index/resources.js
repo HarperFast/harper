@@ -1,3 +1,5 @@
+import { setTimeout as delay } from 'node:timers/promises';
+
 // QA-179 — TTL background expiration/eviction sweep vs secondary-index consistency under
 // long-transaction force-commit.
 //
@@ -68,6 +70,19 @@ export class DumpP extends Resource {
 	async get() {
 		const out = [];
 		for await (const r of tables.Permanent.search({})) out.push({ id: r.id, bucket: r.bucket, seq: r.seq });
+		return out;
+	}
+}
+
+export class PacedDumpP extends Resource {
+	static loadAsInstance = false;
+	async get() {
+		const out = [];
+		for await (const row of tables.Permanent.search({})) {
+			out.push(row.id);
+			// Model a streaming consumer spanning several 5ms idle-monitor ticks.
+			await delay(2);
+		}
 		return out;
 	}
 }

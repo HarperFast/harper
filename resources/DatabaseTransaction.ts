@@ -16,6 +16,7 @@ import type { Entry } from './RecordEncoder.ts';
 import { toBufferKey } from 'ordered-binary';
 
 const trackedTxns = new Set<DatabaseTransaction>();
+const readTransactionOwners = new WeakMap<ReadTransaction, DatabaseTransaction>();
 // Read options for a rotated generation's native transactions; shared because they never vary.
 const SNAPSHOT_FREE = Object.freeze({ disableSnapshot: true });
 // Logical transactions the monitor supervises for their WRITES, kept apart from trackedTxns because the
@@ -236,6 +237,76 @@ export function transactionOpenTooLongError(): ServerError {
 	);
 }
 
+class ReadSnapshotExpiredError extends ServerError {
+	constructor() {
+		super('Read scan snapshot expired; retry the read without replaying previously committed writes', 503);
+		this.name = 'ReadSnapshotExpiredError';
+	}
+}
+
+export function trackReadRange(transaction: ReadTransaction, createRange: () => any): any {
+	const owner = readTransactionOwners.get(transaction);
+	if (!owner) return createRange();
+	function checkActive() {
+		if (owner.timedOut) throw transactionOpenTooLongError();
+		if (owner.transaction !== transaction) {
+			throw new ReadSnapshotExpiredError();
+		}
+	}
+	checkActive();
+	const range = createRange();
+	const iterate = range.iterate;
+	range.iterate = function (options) {
+		const iterator = iterate.call(this, options);
+		let done = false;
+		// Closing the underlying iterator is the one step here that can throw for a reason the caller
+		// must not see: `next()` only reaches it once the snapshot is already gone, which is the
+		// likeliest moment for the native layer to object, and an error from cleanup would replace the
+		// named 503 with exactly the raw iterator error this wrapper exists to stop surfacing. The
+		// closure reference rather than `this` so a destructured `next` still cleans up.
+		const wrapper = {
+			[Symbol.iterator]() {
+				return this;
+			},
+			next() {
+				if (done) return { done: true, value: undefined };
+				try {
+					checkActive();
+					owner.rangeReadActive = true;
+					const result = iterator.next();
+					done = result.done === true;
+					return result;
+				} catch (error) {
+					closeQuietly();
+					throw error;
+				}
+			},
+			return(value?: any) {
+				if (!done) {
+					done = true;
+					iterator.return?.(value);
+				}
+				return { done: true, value };
+			},
+			throw(error) {
+				// Not delegated to `iterator.throw`: it closes and rethrows the same error anyway, and
+				// delegating after the close below would run it against an iterator already closed.
+				closeQuietly();
+				throw error;
+			},
+		};
+		function closeQuietly() {
+			try {
+				wrapper.return();
+			} catch {
+				// the error being propagated is the actionable one
+			}
+		}
+		return wrapper;
+	};
+	return range;
+}
+
 type MaybePromise<T> = T | Promise<T>;
 
 export type CommitOptions = {
@@ -419,8 +490,9 @@ export class DatabaseTransaction implements Transaction {
 	// back what it asked for.
 	snapshotFree = false;
 
-	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
-		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
+	rangeReadActive = false;
+
+	renewReadTimeout(): void {
 		// The limit is an IDLE limit. Writes always re-arm it (see addWrite), but reads only do so
 		// while no uncommitted writes are held: staged writes hold write intents that other writers'
 		// coordinated-retry commits park on, so a handler that wrote once and then only reads — an
@@ -433,6 +505,11 @@ export class DatabaseTransaction implements Transaction {
 		if ((this.writes.length === 0 && !this.next) || this.open !== TRANSACTION_STATE.OPEN || !this.hasPendingWrites()) {
 			this.timeout = Math.max(txnExpiration, this.timeoutBudget);
 		}
+	}
+
+	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
+		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
+		this.renewReadTimeout();
 		if (this.transaction) {
 			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 			return this.transaction;
@@ -467,6 +544,8 @@ export class DatabaseTransaction implements Transaction {
 	// Monitor state is not ownership state: it stays with `trackedTxns.add` in getReadTxn().
 	private attachOwnedTransaction(transaction: RocksTransactionWithRetry): void {
 		this.transaction = transaction;
+		readTransactionOwners.set(transaction, this);
+		this.rangeReadActive = false;
 		this.readTxnsUsed = 1;
 		this.baseReadRefConsumed = false;
 	}
@@ -507,6 +586,7 @@ export class DatabaseTransaction implements Transaction {
 		trackedTxns.delete(this);
 		this.endWriteSupervision();
 		this.transaction = null;
+		this.rangeReadActive = false;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
 		return transaction;
@@ -995,6 +1075,8 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
+							// Commit retries can construct fresh ranges on this live handle after read ownership ends.
+							readTransactionOwners.delete(transaction);
 							// The transaction was created with coordinatedRetry:true (see
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed
@@ -1581,6 +1663,10 @@ function startMonitoringTxns() {
 	}, txnExpiration).unref();
 
 	function monitorTransaction(txn: DatabaseTransaction) {
+		if (txn.rangeReadActive) {
+			txn.rangeReadActive = false;
+			txn.renewReadTimeout();
+		}
 		{
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
 			// branches below — a tracked link that keeps its own idle limit alive by reading must not
