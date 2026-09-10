@@ -805,6 +805,7 @@ export function makeTable(options) {
 		static tableName = tableName;
 		static tableId = tableId;
 		static indices = indices;
+		static derivedIndexRuntime: { close(): Promise<void> } | undefined;
 		static audit = audit;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
@@ -1646,6 +1647,12 @@ export function makeTable(options) {
 
 		static async dropTable() {
 			TableResource.assertSchemaMutable('drop a table');
+			// Release post-commit derived-index delivery before any destructive work: the runner's
+			// backend must have quiesced before its stores and native file are destroyed, and a
+			// same-name recreate must not race an owner still applying to the old generation.
+			const derivedIndexRuntime = TableResource.derivedIndexRuntime;
+			TableResource.derivedIndexRuntime = undefined;
+			await derivedIndexRuntime?.close();
 			const rootStore = primaryStore.rootStore;
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
@@ -1782,6 +1789,7 @@ export function makeTable(options) {
 							const index = indices[attribute.name];
 							if (index)
 								try {
+									index.customIndex?.resetDerivedStorage?.();
 									index.dropSync();
 								} catch (error) {
 									ignoreAlreadyDropped(error);
@@ -1802,7 +1810,10 @@ export function makeTable(options) {
 					const drops = [];
 					for (const attribute of attributes) {
 						const index = indices[attribute.name];
-						if (index) drops.push(index.drop().catch(ignoreAlreadyDropped));
+						if (index) {
+							index.customIndex?.resetDerivedStorage?.();
+							drops.push(index.drop().catch(ignoreAlreadyDropped));
+						}
 					}
 					drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
 					await Promise.all(drops);
@@ -6223,6 +6234,7 @@ export function makeTable(options) {
 			const promises = [primaryStore.clear()];
 			for (const key in indices) {
 				const index = indices[key];
+				index.customIndex?.resetDerivedStorage?.();
 				promises.push(index.clearAsync ? index.clearAsync() : index.clear());
 			}
 			return Promise.all(promises);
@@ -6230,6 +6242,7 @@ export function makeTable(options) {
 		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
 		static cleanup() {
 			disposed = true;
+			void TableResource.derivedIndexRuntime?.close();
 			clearTimeout(cleanupTimer);
 			settlePendingCleanup();
 			clearInterval(recordExpirationInterval);

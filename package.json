@@ -262,6 +262,7 @@
 		}
 	},
 	"optionalDependencies": {
+		"@harperfast/hnsw": "0.2.1",
 		"bufferutil": "4.1.0",
 		"segfault-handler": "1.3.0",
 		"utf-8-validate": "5.0.10"

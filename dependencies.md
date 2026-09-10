@@ -243,3 +243,15 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Security: Microsoft-maintained TypeScript compiler, same publisher/package as the 5.x devDependency.
 - Overlap: Complements, does not replace, the `typescript` devDependency — TypeScript 7.0 ships no compiler API yet (planned for 7.1), so `@typescript-eslint/parser` still needs `typescript` 5.x. The 5.x and 7.x versions never coexist in `node_modules` at once: 5.x is the installed devDependency, 7.x is fetched on-demand by `npx` purely for `typecheck:fast`.
 - Eventual removal: Once TypeScript 7 stabilizes as the primary `typescript` devDependency (post-7.1's compiler API), this becomes redundant and `typecheck:fast` can be dropped.
+
+## @harperfast/hnsw (optional dependency)
+
+- Need for usage: Supplies the file-primary memory-mapped HNSW index used only by indexes that opt in with `nativePlane: true`. Harper keeps primary-key mappings and the replay cursor vector in RocksDB; graph nodes and adjacency exist only in the native file.
+- Size/memory cost: The JS/package metadata is about 250 KB unpacked plus one platform-specific native binary. Runtime mapped-file size is approximately 1,344 bytes per 768-dimensional int8 node at layer-0 cap 128; mappings are shared by the OS page cache across workers.
+- Security: First-party Apache-2.0 Harper package. It runs native code in-process, so Harper exact-pins the package and its own manifest exact-pins every platform prebuild to the same version. The dedicated CI job loads the registry prebuild and tests Harper against it.
+- Environment interaction: Lazily loaded only when an eligible index enables `nativePlane`; it creates a memory-mapped `.hnsw` derived-index file next to the index store and may create a `.stale` invalidation sidecar. It does not modify globals or install polyfills.
+- Overlap: None for an opted-in index. Ordinary HNSW indexes continue to use the JS/RocksDB graph; `nativePlane` indexes use native insert, mutation, and search through the shared post-commit derived-index runtime.
+- Transitive dependencies: Only exact-version, platform-specific optional prebuild packages; no JS runtime dependency tree.
+- Binary compilation: Supported Linux glibc x64/arm64, macOS arm64, and Windows x64 targets use prebuilds. Other targets attempt a Rust source build. Because the root package is optional Harper still installs if that build fails, but opted-in indexes remain unavailable until the module is present.
+- Can be deferred: Yes for ordinary HNSW indexes. The adapter loads lazily; an opted-in index returns 503 and retries rebuild when the native module is unavailable.
+- Eventual removal: Disable `nativePlane`, allow the schema reindex to rebuild the ordinary JS/CF graph, then remove the optional dependency and adapter integration.

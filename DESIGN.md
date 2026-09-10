@@ -2210,3 +2210,122 @@ flowchart TD
     K -->|yes, after backoff| Y
     K -->|no| U[publish unavailable, release lock]
 ```
+
+## Native HNSW plane: a file-primary mmap graph on the derived-index runtime (`resources/indexes/HierarchicalNavigableSmallWorld.ts`, `resources/indexes/hnswDerivedIndex.ts`, `resources/indexes/hnswPlaneBinding.ts`)
+
+`@indexed(type: "HNSW", nativePlane: true)` replaces the RocksDB graph with a memory-mapped
+fixed-slot file owned by the native package `@harperfast/hnsw` (Rust, napi-rs, exact-pinned optional
+dependency; crate at HarperFast/hnsw). The file **is the index**: graph nodes, adjacency, the entry
+point, the id allocator and the freelist exist only there. RocksDB keeps the primary records, the
+`pk ↔ nodeId` mappings and the one durable replay cursor. Ordinary HNSW indexes are untouched.
+
+Why the whole search loop is native and not just the distance kernel: at 5M nodes / ef 512, ~85% of
+a warm JS visit is object bookkeeping (candidate heap, visited `Set`, property access, GC), the int8
+cosine is 10%, and a warm RocksDB `Get` per visit (~1–2 µs) is 20–40× the SIMD distance it feeds. A
+native loop over direct-addressed slots (`base + id × slot_size`, ~100–200 ns) with one NAPI crossing
+per query is the only shape that reaches the ceiling; measured 7.2 ms → 0.75 ms p50 at 1M × 768-d,
+recall@10 0.997 → 0.999.
+
+### File format
+
+One file per index, `<index store path>/<store name>.hnsw`, created sparse at `nativePlaneMaxNodes`
+slots (16M default; a structural, create-time header field — exhausting it makes the index
+unavailable until the value is raised and the index rebuilt). Header page: magic + format version
+(mismatch → rebuild, by contract), dims, quantization mode, `slot_size`/`layer0_cap`/`upper_cap`
+(derived from M/optimizeRouting at creation), entry point, atomic `id_high_water`, tag-guarded
+freelist head, a transaction watermark advanced only after an `msync` barrier, and a clean-shutdown
+flag. Layer-0 slot: seqlock word, flags + level, `scale`/`invMag`, degree, int8 vector padded to a
+4-byte boundary, `u32` neighbour ids — 1,344 B at 768-d with cap 128. Upper layers (~6% of nodes)
+live in a fixed-entry region in the same file (format v2), per-entry seqlocked. Per-edge cached
+distances are dropped: recomputing costs ~50 ns natively, storing costs 8 B and ~40% of a node.
+
+Degree cap is **128** for int8 (Kris, 2026-08-31, after measurement): cap 64 saved only 23.5% of
+the slot (the 768 B vector dominates) and lost 2.2 pts recall at 1M. It is a header field, so
+revising it is a rebuild, not a format change; a binary-code v2 slot reopens the question.
+
+### Concurrency
+
+Per-slot lock word: bit 31 locked, low bits the owner's pid; unlocked values are generations that
+readers validate seqlock-style. A lock unchanged for 20 ms whose owner pid is dead is taken over and
+the slot sanitized (marked invalid — a dead writer's payload is half-written; invisible until
+rewritten, never spliced-but-valid). Elapsed time alone never robs a live writer. There is no
+cross-slot atomicity: an insert writes its slot plus ~M neighbours' back-edges independently, and a
+traversal may see a half-linked state — a missing edge or a just-deleted neighbour is skipped. That
+relaxed adherence is safe _here_ because the read path loads the record and rescores exactly, which
+rejects a wrong candidate; it is not a general storage pattern. Fields a reader acts on are read
+through aligned `read_volatile`; the stored vector is an ordinary load so the int8 kernel keeps
+autovectorizing, and a torn vector only perturbs a distance the generation check discards.
+
+### Durability
+
+`msync` on a cadence, not per commit; the header watermark advances after a completed barrier. The
+graph therefore has bounded-lag durability with deterministic catch-up, while the source of truth
+(records, mappings, cursor) stays transactional. Backup treats the file as node-local derived state:
+include it after a barrier, or rebuild on restore. A file whose format or checksum does not validate
+is rebuilt from records. macOS `msync` is a weaker barrier than Linux (an `F_FULLFSYNC` pass is a
+known follow-up); Windows is supported through the prebuild; performance is a Linux target.
+
+### Search
+
+One crossing per query: `plane.search(query, k, ef, filter?)` runs on the module's thread pool with
+an epoch-stamped visited array and a fixed-capacity heap, asymmetric int8 distance with SIMD
+(AVX2/VNNI, NEON) and a scalar fallback. Filtering has two paths: a bitset over node ids for
+allow-lists and companion-condition candidate sets (zero callbacks), and a pipelined
+`ThreadsafeFunction` batch path for arbitrary JS predicates that keeps expanding in distance order
+while verdicts are in flight, bounded by the same `filterExpansion` visit budget as the JS path.
+Traversal never blocks on the event loop. A plane-backed `customIndex.search()` returns a
+promise-backed, async-only iterable (`resources/search.ts` wraps it); a synchronous consumer throws.
+Auto-ef reads the node count from `id_high_water` minus the freelist, which fixes the lifetime
+high-water inflation of the RocksDB graph (harper#2182). Every vector reaching the plane — a
+committed projection or a query target — passes one invariant (`assertPlaneVector`): array-like of
+positive length, every component a finite f32, a magnitude representable in f32, and the plane's
+`dims` once known. What fails it is the client's 400, never a plane failure; a query the plane
+cannot accept must not be read as corruption and cost a rebuild.
+
+### Delivery: a backend on the shared runtime
+
+Maintenance is off the record transaction. The commit path (`prepareCommitted`) only validates a
+changed projection; the derived-index runtime (§ above) reads the committed log and delivers batches
+to `HnswDerivedIndexBackend`:
+
+- `deliver()` enqueues and returns `accepted` (or `deferred` at 64 MiB queued); an applier drains
+  in 5 ms `setImmediate` slices. Each `records` entry (last-write-wins per key) becomes one
+  `applyDerivedValue(pk, vector | undefined, version)`: the stored mapping's signature short-circuits
+  an unchanged vector, an older observation is discarded, otherwise the old node is removed and the
+  new vector inserted with the mapping written **pending**, hidden from search.
+- `flush()` runs when the queue is empty: `plane.flushAsync()`, then pending mappings are published,
+  then the batch's `through` vector is written as the cursor under `Symbol.for('derived-index-cursor')`.
+  Application pauses while a barrier is in flight so the barrier publishes exactly the mappings it
+  covers. That order is the crash contract: a crash before the barrier leaves pending mappings that
+  replay re-derives; after it, a cursor that replays idempotently; never a published mapping to a
+  node the file did not durably get, and never a cursor over uncovered state.
+- `reset(epoch)` removes the cursor first, then the file (invalidated in-band and via a `.stale`
+  sidecar so no peer adopts a stale inode or an undeletable Windows file), then the mappings.
+- A vector the plane cannot hold at apply time (a dimensionality mismatch only the plane-holding
+  worker can see) is skipped and counted, never a rebuild.
+
+Readiness is the runtime's shared record on every worker, not `indexStore.isIndexing`: a search on
+a non-`ready` index is a 503 (`unavailable` after the rebuild budget); a `ready` index with no file
+and no surviving node mapping answers no results; one whose file is gone while mappings survive
+asks its owner for a rebuild. A search failure detaches this process from the plane and requests a
+rebuild — only the owner's `reset` destroys state, so a failure observed after a peer has already
+replaced the file cannot take out the replacement. Writer backpressure is the runtime's lag policy
+(`maxLagMilliseconds`, 30 s default on a `nativePlane` attribute), required because accepting
+unique-key load above native insert throughput and then rebuilding at that same throughput cannot
+converge.
+
+### What `nativePlane: true` requires, and what it does not promise
+
+| requirement                                                                                                                                                                                     | enforcement                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Explicit `audit: true` on the table — the transaction log is the recovery source, and a vector-index option must not silently widen the audit-readable surface by inheriting the global setting | `ClientError` from `table()` and `attachDerivedIndexes()`; enabling logs once that the audit API retains full record history for the retention window |
+| RocksDB; `M=16`, `efConstruction=200`, `mL=1/ln(16)`, `optimizeRouting=0.5`, int8 cosine (the package's standalone `insert` fixes this geometry)                                                | `ClientError` at index construction — never a silent rebuild under native defaults                                                                    |
+| `@harperfast/hnsw` loads on the platform                                                                                                                                                        | absence is 503, not degraded: there is no JS graph to fall back to                                                                                    |
+| The log retains entries back to the cursor                                                                                                                                                      | a cursor the log cannot resolve rebuilds from records; 503 for the rebuild's duration                                                                 |
+
+Not promised: a single total order across concurrent CRDT/source-resolution arrivals (both delivery
+and replay re-read the authoritative record, so the index converges on what the primary store
+resolved; divergence is bounded by candidate selection, which the exact rescore filters), byte-identical
+graphs across nodes or rebuilds, or in-place format upgrades. Rebuild rate falls with graph size
+(≈4,700 inserts/s at 100k, 1,242/s at 1M measured), so a 16M rebuild is hours of 503; a native batch
+insert is the phase-3 follow-up.
