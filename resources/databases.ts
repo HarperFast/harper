@@ -2094,9 +2094,6 @@ export function canonicalizeIndexOptions(value: any): any {
 }
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
-<<<<<<< HEAD
-async function runIndexing(Table, attributes, indicesToRemove) {
-=======
 const INDEXING_YIELD_INTERVAL = 100;
 // A resumable checkpoint is written only after a flush (see flushIndexStores), at most once per period
 // and never before this many more records: the flush seals every column family in the database, so a
@@ -2139,7 +2136,7 @@ export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 	}
 	return start;
 }
-async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
+async function runIndexing(Table, attributes, indicesToRemove) {
 	let checkpointing;
 	let hadIndexingErrors = false;
 	const attributeErrorReported = {};
@@ -2150,7 +2147,6 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		logger.error(`Error indexing attribute ${property}`, error);
 	};
 	const putRejectionHandlers = attributes.map((attribute) => (error) => onIndexPutRejected(attribute.name, error));
->>>>>>> 2e8171fa9 (Merge pull request #2539 from HarperFast/fix/index-backfill-convergence)
 	try {
 		logger.info(`Indexing ${Table.tableName} attributes`, attributes);
 		await signalling.signalSchemaChange(
