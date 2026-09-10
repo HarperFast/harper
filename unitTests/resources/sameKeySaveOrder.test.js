@@ -1,0 +1,154 @@
+const assert = require('assert');
+const { setupTestDBPath } = require('../testUtils');
+const { table } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { transaction } = require('#src/resources/transaction');
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+
+describe('same-key explicit save ordering', () => {
+	let SaveOrder;
+
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		SaveOrder = table({
+			table: 'SaveOrder',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'status', indexed: true },
+				{ name: 'metadata' },
+				{ name: 'count', type: 'Int' },
+			],
+		});
+	});
+
+	it('preserves a create followed by an explicitly saved patch', async () => {
+		const context = {};
+		await transaction(context, async () => {
+			await SaveOrder.create({ id: 'create-patch', status: 'queued' }, context);
+			await SaveOrder.patch('create-patch', { metadata: 'required' }, context);
+			if (!isLMDB) {
+				const staged = await SaveOrder.get('create-patch', context);
+				assert.equal(staged.id, 'create-patch');
+				assert.equal(staged.status, 'queued');
+				assert.equal(staged.metadata, 'required');
+			}
+		});
+		const committed = await SaveOrder.get('create-patch');
+		assert.equal(committed.id, 'create-patch');
+		assert.equal(committed.status, 'queued');
+		assert.equal(committed.metadata, 'required');
+	});
+
+	it('preserves repeated explicitly saved patches and their index changes', async () => {
+		const context = {};
+		await transaction(context, async () => {
+			await SaveOrder.create({ id: 'repeated', status: 'queued' }, context);
+			await SaveOrder.patch('repeated', { status: 'running' }, context);
+			await SaveOrder.patch('repeated', { metadata: 'complete' }, context);
+			if (!isLMDB) {
+				const staged = await SaveOrder.get('repeated', context);
+				assert.equal(staged.status, 'running');
+				assert.equal(staged.metadata, 'complete');
+			}
+		});
+		const committed = await SaveOrder.get('repeated');
+		assert.equal(committed.status, 'running');
+		assert.equal(committed.metadata, 'complete');
+		const oldIndex = [];
+		for await (const record of SaveOrder.search([{ attribute: 'status', value: 'queued' }])) oldIndex.push(record);
+		assert.equal(
+			oldIndex.some((record) => record.id === 'repeated'),
+			false
+		);
+		const newIndex = [];
+		for await (const record of SaveOrder.search([{ attribute: 'status', value: 'running' }])) newIndex.push(record);
+		assert.equal(
+			newIndex.some((record) => record.id === 'repeated'),
+			true
+		);
+	});
+
+	it('rolls back predecessors staged by an explicit save', async () => {
+		const context = {};
+		await assert.rejects(
+			transaction(context, async () => {
+				await SaveOrder.create({ id: 'rollback', status: 'queued' }, context);
+				await SaveOrder.patch('rollback', { metadata: 'must-not-land' }, context);
+				throw new Error('forced rollback');
+			}),
+			/forced rollback/
+		);
+		assert.equal(await SaveOrder.get('rollback'), undefined);
+	});
+
+	it('closes an ordinary update instance when it is saved', async () => {
+		await SaveOrder.put('closed', { status: 'queued', details: { nested: 'before' }, items: [1, 2], count: 0 });
+		const context = {};
+		await transaction(context, async () => {
+			const update = await SaveOrder.update('closed', {}, context);
+			const details = update.details;
+			const items = update.items;
+			update.status = 'running';
+			await update.save();
+			assert.throws(
+				() => (update.status = 'late'),
+				(error) => error.statusCode === 409 && /after it has been saved/.test(error.message)
+			);
+			assert.throws(() => (details.nested = 'late'), /after it has been saved/);
+			assert.throws(() => (items[0] = 9), /after it has been saved/);
+			assert.throws(() => delete items[0], /after it has been saved/);
+			assert.throws(() => items.pop(), /after it has been saved/);
+			assert.throws(() => update.addTo('count', 1), /after it has been saved/);
+
+			update.update();
+			update.metadata = 'fresh update';
+			update.items.pop();
+			update.addTo('count', 1);
+			await update.save();
+		});
+		const committed = await SaveOrder.get('closed');
+		assert.equal(committed.status, 'running');
+		assert.equal(committed.metadata, 'fresh update');
+		assert.equal(committed.details.nested, 'before');
+		assert.deepStrictEqual(committed.items, [1]);
+		assert.equal(committed.count, 1);
+	});
+
+	it('keeps method-based writes to other keys usable after save', async () => {
+		await SaveOrder.put('receiver-a', { status: 'queued' });
+		const context = {};
+		await transaction(context, async () => {
+			const receiver = await SaveOrder.update('receiver-a', { status: 'complete' }, context);
+			await receiver.save();
+			await receiver.put('receiver-b', { status: 'running' });
+			await assert.rejects(async () => receiver.put('receiver-a', { status: 'late' }), /after it has been saved/);
+		});
+		assert.equal((await SaveOrder.get('receiver-a')).status, 'complete');
+		assert.equal((await SaveOrder.get('receiver-b')).status, 'running');
+	});
+
+	it('closes an earlier update when a later same-key save consumes it', async () => {
+		await SaveOrder.put('indirect-close', { status: 'queued' });
+		const context = {};
+		await transaction(context, async () => {
+			const earlier = await SaveOrder.update('indirect-close', { status: 'running' }, context);
+			await SaveOrder.patch('indirect-close', { metadata: 'saved later' }, context);
+			assert.throws(() => (earlier.status = 'late'), /after it has been saved/);
+		});
+		const committed = await SaveOrder.get('indirect-close');
+		assert.equal(committed.status, 'running');
+		assert.equal(committed.metadata, 'saved later');
+	});
+
+	it('closes an update when its transaction commits it', async () => {
+		await SaveOrder.put('commit-close', { status: 'queued' });
+		let update;
+		await transaction(async (context) => {
+			update = await SaveOrder.update('commit-close', { status: 'complete' }, context);
+		});
+		assert.throws(() => (update.status = 'late'), /after it has been saved/);
+		assert.equal((await SaveOrder.get('commit-close')).status, 'complete');
+	});
+});

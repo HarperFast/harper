@@ -76,7 +76,14 @@ import {
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
-import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
+import {
+	Addition,
+	assignTrackedAccessors,
+	updateAndFreeze,
+	hasChanges,
+	GenericTrackedObject,
+	ASSERT_TRACKED_WRITABLE,
+} from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
@@ -746,6 +753,7 @@ export function makeTable(options) {
 		}
 		return { txnLogKey: version, nodeId };
 	}
+	const closedUpdateInstances = new WeakMap<object, Set<unknown>>();
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -755,6 +763,10 @@ export function makeTable(options) {
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
 		declare getProperty: (name: string) => any;
+		[ASSERT_TRACKED_WRITABLE](): void {
+			if (closedUpdateInstances.get(this)?.size)
+				throw new ClientError('Can not modify an update instance after it has been saved; call update() again', 409);
+		}
 
 		/**
 		 * Shared guard: if this instance is lock-writable but the handle is gone (expired or
@@ -762,7 +774,8 @@ export function makeTable(options) {
 		 * in addition to the save() path. Every lock-writable instance carries its own handle in
 		 * #lockHandle (scoped and hold alike), so we never need to search the registry here.
 		 */
-		#assertLiveHandle(id: Id): void {
+		#assertLiveHandle(id: Id, allowClosed = false): void {
+			if (!allowClosed && closedUpdateInstances.get(this)?.has(writeKeyId(id))) this[ASSERT_TRACKED_WRITABLE]();
 			if (!this.#lockWritable) return;
 			const handle = this.#lockHandle!;
 			// Off-key writes through the same resource instance are ordinary; only guard the
@@ -2054,6 +2067,9 @@ export function makeTable(options) {
 			} else {
 				id = requestTargetToId(target);
 			}
+			if (closedUpdateInstances.get(this)?.size) this.#changes = undefined;
+			this.#assertLiveHandle(id, true);
+			closedUpdateInstances.delete(this);
 
 			const context = this.getContext();
 			const envTxn = txnForContext(context);
@@ -2109,8 +2125,8 @@ export function makeTable(options) {
 		 * Save any changes into this instance to the current transaction
 		 */
 		save() {
-			this.#assertLiveHandle(this.getId()); // a write through a released or expired lock never lands
 			const operation = this.#savingOperation;
+			this.#assertLiveHandle(operation?.key ?? this.getId()); // a write through a released or expired lock never lands
 			if ((!operation || operation.dropped) && this.#lockWritable && this.#lockHandle?.hold) {
 				// A held lock's record stages its update here rather than at lock() time: it is often
 				// written after the acquiring transaction has already completed, which would have
@@ -2195,13 +2211,23 @@ export function makeTable(options) {
 				// merge and index diff would be relative to a record that may never land.
 				operation.priorWrite = undefined;
 				operation.deferSave = false;
-				return when(transaction.addWrite(operation), () => operation.promise ?? operation.result);
+				const result = when(transaction.addWrite(operation), () => operation.promise ?? operation.result);
+				this.#closeWriteChain(operation);
+				return result;
 			}
 			const owner = holder ?? transaction;
-			if (owner.save) return owner.save(operation) || operation.promise || operation.result;
+			if (owner.save) {
+				const result = owner.save(operation) || operation.promise || operation.result;
+				this.#closeWriteChain(operation);
+				return result;
+			}
+		}
+		#closeWriteChain(operation: any) {
+			for (let write = operation; write; write = write.priorWrite) write.closeInstance?.();
 		}
 
 		addTo(property: any, value: any) {
+			this[ASSERT_TRACKED_WRITABLE]();
 			if (typeof value === 'number' || typeof value === 'bigint') {
 				if (this.#savingOperation?.fullUpdate)
 					(this as any).set(property, (+this.getProperty(property) || 0) + (value as any));
@@ -2915,6 +2941,7 @@ export function makeTable(options) {
 				entry,
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
+				chainsStagedState: true,
 				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
 				reloadCommitBase: options?.isCopyApply !== true,
 				deferSave: true,
@@ -2925,6 +2952,15 @@ export function makeTable(options) {
 				// Only attach the hold handle when it covers exactly this key; off-key writes
 				// are ordinary and must not carry an unrelated hold's handle.
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				closeInstance: () => {
+					// A collection receiver may stage an entire batch through this one object. It is
+					// not an update instance, so closing it after the first row would reject the rest.
+					if (!this.#lockWritable && !this.isCollection) {
+						let closedKeys = closedUpdateInstances.get(this);
+						if (!closedKeys) closedUpdateInstances.set(this, (closedKeys = new Set()));
+						closedKeys.add(writeKeyId(id));
+					}
+				},
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {

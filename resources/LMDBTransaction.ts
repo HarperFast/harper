@@ -140,7 +140,8 @@ export class LMDBTransaction extends DatabaseTransaction {
 				this.validated = this.writes.length;
 				for (let i = start; i < this.validated; i++) {
 					const write = this.writes[i];
-					write?.validate?.(this.timestamp, this);
+					write?.closeInstance?.();
+					if ((write?.validate?.(this.timestamp, this) as any) === false) write.closeInstance?.();
 				}
 				let hasBefore;
 				for (let i = start; i < this.validated; i++) {
@@ -203,7 +204,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 		let writeIndex = 0;
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		const doWrite = (write) => {
-			const completion = write.commit(txnTime, write.entry, retries);
+			let completion;
+			try {
+				completion = write.commit(txnTime, write.entry, retries);
+			} finally {
+				write.closeInstance?.();
+			}
 			if (typeof completion?.then === 'function') {
 				// the aggregating Promise.all is attached a turn or more later (after the conditional batch
 				// or the exclusive transaction resolves), so handle rejection here to keep the gap from

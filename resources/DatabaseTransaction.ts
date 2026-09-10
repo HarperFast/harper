@@ -384,6 +384,8 @@ export type TransactionWrite = {
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
+	// Closes the record instance as soon as this write is selected for saving.
+	closeInstance?: () => void;
 };
 
 export function getAppliedWriteVersion(recordVersion: number | undefined, txnLogKey: number): number {
@@ -987,6 +989,7 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
+		operation.closeInstance?.();
 		const lockHandle = operation.lockHandle;
 		// Guard: a write staged through an expired or released lock handle must not land.
 		// The handle's lease timer already unlocked the native key; another holder may have taken it.
@@ -1057,6 +1060,16 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
+		if (!operation.saved && operation.pendingPriorWrite && !operation.pendingPriorWrite.saved) {
+			const pendingWrites = [];
+			for (let pending = operation.pendingPriorWrite; pending;) {
+				if (!pending.saved && this.writes.includes(pending)) pendingWrites.push(pending);
+				pending = pending.pendingPriorWrite !== undefined ? pending.pendingPriorWrite : pending.priorWrite;
+			}
+			for (let index = pendingWrites.length - 1; index >= 0; index--)
+				this.save(pendingWrites[index], transaction, false, options);
+			operation.pendingPriorWrite = null;
+		}
 		// `txnTime` is this transaction's timestamp — the key its entries take in the per-origin log.
 		// A write applied from elsewhere carries the origin's record version too, and that is what the
 		// record is stored at; the two coincide for every locally-originated write. Gated on the apply
@@ -1080,6 +1093,7 @@ export class DatabaseTransaction implements Transaction {
 			// immediately execute in this transaction
 			if ((operation.validate?.(writeVersion, this) as any) === false) {
 				operation.commit = () => {}; // noop if we try again
+				operation.closeInstance?.();
 				return;
 			}
 			let result: Promise<void> = operation.before?.() as Promise<void>;
@@ -1089,7 +1103,12 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 		if (operation.trackRecordVersion) operation.recordVersionApplied = false;
-		const completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		let completion: Promise<void>;
+		try {
+			completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		} finally {
+			operation.closeInstance?.();
+		}
 		if (operation.trackRecordVersion)
 			operation.appliedRecordVersion = operation.recordVersionApplied ? writeVersion : undefined;
 		if (typeof completion?.then === 'function') this.stageCompletion(completion);
