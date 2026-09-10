@@ -342,8 +342,15 @@ describe('index backfill convergence (#2536)', () => {
 		let reject;
 		const promise = new Promise((_, r) => (reject = r));
 		promise.catch(() => {}); // the rejection is delivered through runIndexing's own handler
+		release.issued = true;
 		release.fire = () => reject(new Error('simulated deferred index put failure'));
 		return promise;
+	}
+
+	async function waitFor(condition, what, timeoutMs = 20000) {
+		const deadline = Date.now() + timeoutMs;
+		while (!condition() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.ok(condition(), `timed out waiting for ${what}`);
 	}
 
 	it('freezes the checkpoint when an index write rejects only after a later checkpoint was reached', async () => {
@@ -465,11 +472,15 @@ describe('index backfill convergence (#2536)', () => {
 			() => (settled = true),
 			() => (settled = true)
 		);
+		// The scan has to reach the failing record before there is anything to release; a loaded runner
+		// only makes that slower, never skips it.
+		await waitFor(() => release.issued || settled, 'the failing index write to be issued');
 		// Release as soon as indexing resolves, which is what a build that ignores the unsettled write
 		// does; the deadline only bounds the case where it correctly refuses to resolve. So a slow runner
-		// can only make this test lenient, never make it fail spuriously.
+		// can make this test lenient, never make it fail spuriously.
 		const deadline = Date.now() + 2000;
 		while (!settled && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.ok(release.issued, 'the failing index write should have been issued by now');
 		release.fire();
 		try {
 			await Tbl.indexingOperation;
@@ -480,6 +491,50 @@ describe('index backfill convergence (#2536)', () => {
 			findDescriptor(Tbl, 'tag').value.indexingFailed,
 			true,
 			'the build must be parked, not completed, when a write it issued rejected'
+		);
+	});
+
+	// LMDB only: RocksDB awaits its clear inline, so only the LMDB path enqueues one whose rejection the
+	// barriers have to catch. A full rebuild clears first, so a rejected clear is the one way a checkpoint
+	// could certify over stale index entries with no put ever failing.
+	(LMDB ? it : it.skip)('parks the build when the clear that precedes a full rebuild rejects', async () => {
+		const TABLE = 'BackfillClearRejects';
+		const N = 300;
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: 't-' + (i % 3) });
+		await last;
+
+		resetDatabases();
+		Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
+		const tagIndex = Tbl.indices.tag;
+		assert.strictEqual(typeof tagIndex.clearAsync, 'function', 'the LMDB path should clear asynchronously');
+		let cleared = false;
+		tagIndex.clearAsync = () => {
+			cleared = true;
+			return new Promise((_, reject) => setTimeout(() => reject(new Error('simulated clear failure')), 25));
+		};
+		await Tbl.indexingOperation;
+		assert.ok(cleared, 'a full rebuild should have cleared the index first');
+		assert.strictEqual(
+			findDescriptor(Tbl, 'tag').value.indexingFailed,
+			true,
+			'a rejected clear must park the build rather than let it complete'
 		);
 	});
 
