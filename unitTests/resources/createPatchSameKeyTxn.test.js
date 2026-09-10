@@ -169,4 +169,27 @@ describe('create followed by patch on the same key in one transaction', () => {
 		assert.strictEqual(await isIndexedUnder('queued', 'f'), false);
 		assert.strictEqual(await isIndexedUnder('done', 'f'), true);
 	});
+
+	it('retains later edits on an instance whose write was pulled forward', async () => {
+		await Inst.put({ id: 'late-save', status: 'queued', count: 1 });
+		const context = {};
+		await transaction(context, async () => {
+			const instance = await Inst.update('late-save', context);
+			await Inst.patch('late-save', { metadata: 'required-value' }, context);
+			instance.count = 5;
+			await instance.save();
+		});
+		assert.strictEqual((await Inst.get('late-save')).count, 5);
+	});
+
+	it('retains later edits until commit without an explicit instance save', async () => {
+		await Inst.put({ id: 'late-commit', status: 'queued', count: 1 });
+		const context = {};
+		await transaction(context, async () => {
+			const instance = await Inst.update('late-commit', context);
+			await Inst.patch('late-commit', { metadata: 'required-value' }, context);
+			instance.count = 5;
+		});
+		assert.strictEqual((await Inst.get('late-commit')).count, 5);
+	});
 });
