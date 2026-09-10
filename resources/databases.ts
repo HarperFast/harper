@@ -2127,9 +2127,9 @@ export function canonicalizeIndexOptions(value: any): any {
 	}
 	return value;
 }
-// Bumped when a change alters which keys a checkpoint may certify; a descriptor stamped by any other
-// version resumes as uncertified (full rebuild) rather than being trusted. Version 2 is the first that
-// waits for every index mutation a checkpoint covers, not just the last put of each record.
+// Bumped when a change alters which keys a checkpoint may certify. A descriptor stamped by any other
+// version resumes as uncertified (full rebuild) rather than being trusted, and a completed index keeps
+// the stamp of the build that wrote it.
 export const CHECKPOINT_ALGORITHM = 2;
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
@@ -2272,19 +2272,22 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
 		);
 		let lastResolution;
-		// Every index mutation this build has issued and not yet settled. A record fans out into one put
-		// per indexed value but only the last was ever awaited, so the checkpoint and completion barriers
-		// have to be this whole set: anything still in flight may reject after they read hadIndexingErrors.
+		// A record fans out into one put per indexed value and only the last was ever awaited, so the
+		// checkpoint and completion barriers have to cover this whole set: anything still in flight may
+		// reject after they read hadIndexingErrors.
 		const pendingMutations = new Set();
+		let settleWaiter;
 		const track = (result, onRejected) => {
 			if (!result?.then) return result;
 			const tracked = result.then(
 				() => {
 					pendingMutations.delete(tracked);
+					settleWaiter?.();
 					return false;
 				},
 				(error) => {
 					pendingMutations.delete(tracked);
+					settleWaiter?.();
 					onRejected(error);
 					return true;
 				}
@@ -2292,13 +2295,21 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			pendingMutations.add(tracked);
 			return result;
 		};
-		// Waits on a snapshot of what is in flight now and reports whether any of it failed. The tracked
-		// promises absorb their own rejections, so one failure never abandons its siblings in flight, and
-		// the answer is scoped to the snapshot: a later record failing meanwhile is not this drain's news.
+		// The tracked promises absorb their own rejections, so one failure never abandons its siblings in
+		// flight, and the answer covers only the snapshot taken here.
 		const drainMutations = async () => {
 			if (!pendingMutations.size) return false;
 			return (await Promise.all([...pendingMutations])).some(Boolean);
 		};
+		// Resolves on the next settlement of any tracked mutation: waiting on a chosen entry would stall
+		// behind a slow one that the others have already overtaken.
+		const nextSettlement = () =>
+			new Promise((resolve) => {
+				settleWaiter = () => {
+					settleWaiter = undefined;
+					resolve(undefined);
+				};
+			});
 		for (const index of indicesToRemove) {
 			track(index.drop(), (error) => onIndexPutRejected(index.name, error));
 		}
@@ -2311,8 +2322,8 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			if (start === undefined) {
 				for (const attribute of attributes) {
 					if (attribute.dbi.clearAsync) {
-						// LMDB: enqueued ahead of the index writes, so the scan need not wait for it, but the
-						// barriers must — a rejected clear otherwise certifies a checkpoint over stale entries.
+						// LMDB enqueues this ahead of the index writes, so the scan need not wait for it — but the
+						// barriers must, or a rejected clear certifies a checkpoint over stale entries.
 						track(attribute.dbi.clearAsync(), (error) => onIndexPutRejected(attribute.name, error));
 					} else {
 						await attribute.dbi.clear();
@@ -2412,16 +2423,15 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					await checkpointing;
 					checkpointing = persistCheckpoint(key);
 				}
-				// Bound what the tracker retains: the oldest entry settles first, so awaiting it is what
-				// lets the set shrink back under the cap.
-				while (pendingMutations.size > MAX_OUTSTANDING_INDEXING) await pendingMutations.values().next().value;
+				// Checked once per record, so a record's own fan-out can overshoot before the bound applies.
+				while (pendingMutations.size > MAX_OUTSTANDING_INDEXING) await nextSettlement();
 				if (atInterval || didSynchronousIndexing || pendingMutations.size > MIN_OUTSTANDING_INDEXING)
 					await yieldEventTurn();
 			}
 		}
 		await checkpointing;
-		// Completion may only be declared once every mutation this build issued has settled: one that
-		// rejects afterwards has no checkpoint left to freeze and no build left to park.
+		// A mutation that rejects after completion is declared has no checkpoint left to freeze and no
+		// build left to park.
 		await drainMutations();
 		// the tail since the last checkpoint is not durable until flushed; announcing the index complete
 		// before that would outlive a crash that loses it
@@ -2462,7 +2472,9 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			for (const attribute of attributes) {
 				delete attribute.lastIndexedKey;
 				delete attribute.checkpointCertified;
-				delete attribute.checkpointAlgorithm;
+				// Survives completion, unlike the checkpoint fields: without it an index built here is
+				// indistinguishable from one a release that could skip a failed record declared complete.
+				attribute.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
 				delete attribute.indexingPID;
 				delete attribute.indexingFailed;
 				delete attribute.restartNumber;
