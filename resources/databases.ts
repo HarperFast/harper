@@ -2975,6 +2975,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						attribute.indexingBuildId = attributeDescriptor.indexingBuildId;
 						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
 					}
+					// The declared attribute never carries the stamp, so any rewrite of a descriptor that has
+					// one would drop it and make a completed index look like a pre-stamp build.
+					if (attribute.checkpointAlgorithm === undefined && attributeDescriptor?.checkpointAlgorithm !== undefined)
+						attribute.checkpointAlgorithm = attributeDescriptor.checkpointAlgorithm;
 					attributesDbi.put(dbiKey, attribute);
 				}
 				// If a migration is in progress (indexingPID set), any newly opened dbi must also
@@ -3281,9 +3285,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
 		let lastResolution;
-		// A record fans out into one put per indexed value and only the last was ever awaited, so the
-		// checkpoint and completion barriers have to cover this whole set: anything still in flight may
-		// reject after they read hadIndexingErrors.
+		// The checkpoint and completion barriers have to cover every mutation still in flight: any of them
+		// may reject after those barriers read hadIndexingErrors.
 		const pendingMutations = new Set();
 		let settleWaiter;
 		const track = (result, onRejected) => {
@@ -3304,14 +3307,12 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			pendingMutations.add(tracked);
 			return result;
 		};
-		// The tracked promises absorb their own rejections, so one failure never abandons its siblings in
-		// flight, and the answer covers only the snapshot taken here.
+		// The tracked promises absorb their own rejections, so one failure never abandons its siblings.
 		const drainMutations = async () => {
 			if (!pendingMutations.size) return false;
 			return (await Promise.all([...pendingMutations])).some(Boolean);
 		};
-		// Resolves on the next settlement of any tracked mutation: waiting on a chosen entry would stall
-		// behind a slow one that the others have already overtaken.
+		// Waiting on a chosen entry would stall behind a slow one the others have already overtaken.
 		const nextSettlement = () =>
 			new Promise((resolve) => {
 				settleWaiter = () => {
@@ -3439,8 +3440,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			}
 		}
 		await checkpointing;
-		// A mutation that rejects after completion is declared has no checkpoint left to freeze and no
-		// build left to park.
+		// A mutation that rejects after completion is declared has no build left to park.
 		await drainMutations();
 		// the tail since the last checkpoint is not durable until flushed; announcing the index complete
 		// before that would outlive a crash that loses it
