@@ -30,6 +30,31 @@ const INVALID_RETENTION_VALUE_MSG =
 const VALID_ROTATION_DURATION_UNITS = ['D', 'd', 'H', 'h', 'M', 'm'];
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 
+/**
+ * What `deploy_component` writes into a root-config entry, plus the deployment-level keys
+ * componentLoader reads off it — the shape of a `sql` application deployed before the name was
+ * reserved. Closed to new keys: nothing new may take this shape.
+ */
+export const LEGACY_SQL_APPLICATION_KEYS = [
+	'package',
+	'files',
+	'path',
+	'install',
+	'credentials',
+	'loadComponent',
+	'urlPath',
+	'host',
+	'branchedDatabases',
+	'network',
+	'port',
+	'securePort',
+];
+
+export function isLegacySqlApplicationEntry(value: unknown): boolean {
+	if (typeof value !== 'object' || value === null) return false;
+	return LEGACY_SQL_APPLICATION_KEYS.some((key) => Object.hasOwn(value, key));
+}
+
 // Directory-path validation. The previous `([...]+)+$` nested quantifier
 // backtracked catastrophically (ReDoS), hanging the CLI at 100% CPU on any
 // value with a character outside its allow-list after a run of valid ones — a
@@ -107,6 +132,88 @@ export const routeConstraints = Joi.alternatives([
 	array.items(string),
 ]);
 
+// Models — `models:` block opts a deployment into the per-backend registry.
+// Per-backend shape is validated by a discriminated alternative on the
+// `backend` field. Phase 2 (#629) lands ollama; Phase 3 (#630) lands openai.
+//
+// `.unknown(false)` on each known backend's schema turns field-name typos
+// (`bakend: ollama`, `hsot: ...`) into boot-blocking validation errors.
+// Without it, Joi's top-level `allowUnknown: true` propagates and typos
+// silently survive into bootstrap. Unknown backend types (anything not in
+// the `switch` list) fall through to a permissive schema so future Harper
+// versions or third-party components can register their own backends
+// without core schema edits — `bootstrapModels` logs+skips at runtime.
+//
+// `requestTimeoutMs: min(1)` (not `min(0)`) so the meaning is unambiguous:
+// omit the field for "no timeout". `0` would validate but `composeSignal`
+// treats it as "no timeout" via `if (!timeoutMs)`, surprising a test that
+// sets 0 to mean "fail immediately".
+const commonEntryFields = {
+	model: string.optional(),
+	requestTimeoutMs: number.min(1).optional(),
+	// Ordered fallback group — other logical names tried, in order, after this one (#1326).
+	fallback: Joi.array().items(string).optional(),
+};
+const ollamaEntrySchema = Joi.object({
+	backend: string.valid('ollama').required(),
+	host: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+const openaiEntrySchema = Joi.object({
+	backend: string.valid('openai').required(),
+	// `apiKey` may be a literal secret or a `${ENV_VAR}` placeholder; both
+	// are syntactically strings. `bootstrap.ts` runs `expandEnvVarsDeep`
+	// before construction; the backend rejects unresolved placeholders
+	// with an explicit error pointing at the env-var name.
+	apiKey: string.required(),
+	baseUrl: string.optional(),
+	organization: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+const anthropicEntrySchema = Joi.object({
+	backend: string.valid('anthropic').required(),
+	// Same secret-handling posture as openai's `apiKey`.
+	apiKey: string.required(),
+	baseUrl: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+const bedrockEntrySchema = Joi.object({
+	backend: string.valid('bedrock').required(),
+	// AWS credentials resolve via the SDK chain (env / shared file / IAM
+	// roles for service accounts) — no apiKey field. `region` is
+	// effectively required (Bedrock is regional) but the backend can
+	// fall back to AWS_REGION env, so we leave it optional here.
+	region: string.optional(),
+	...commonEntryFields,
+}).unknown(false);
+const unknownBackendEntrySchema = Joi.object({
+	backend: string.required(),
+}).unknown(true);
+const modelEntrySchema = Joi.alternatives().conditional('.backend', {
+	switch: [
+		{ is: 'ollama', then: ollamaEntrySchema },
+		{ is: 'openai', then: openaiEntrySchema },
+		{ is: 'anthropic', then: anthropicEntrySchema },
+		{ is: 'bedrock', then: bedrockEntrySchema },
+	],
+	otherwise: unknownBackendEntrySchema,
+});
+const modelsSchema = Joi.object({
+	embedding: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
+	generative: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
+});
+
+/**
+ * Validate a `models:` block on its own — the hot-reload path applies a watched file's block
+ * without the full boot validation, and must enforce the same schema boot does.
+ */
+export function validateModelsBlock(models) {
+	// `allowUnknown: true` mirrors the boot path, whose top-level option propagates into this
+	// subtree: a sibling of embedding/generative that boots must not block a reload. Entry-level
+	// strictness is preserved by each backend schema's `.unknown(false)`.
+	return modelsSchema.validate(models, { abortEarly: false, allowUnknown: true, errors: { wrap: { label: "'" } } });
+}
+
 let hdbRoot;
 let skipFsVal = false;
 
@@ -162,76 +269,42 @@ export function configValidator(configJson, skipFsValidation = false) {
 		session: mcpSessionSchema.optional(),
 	});
 
-	// Models — `models:` block opts a deployment into the per-backend registry.
-	// Per-backend shape is validated by a discriminated alternative on the
-	// `backend` field. Phase 2 (#629) lands ollama; Phase 3 (#630) lands openai.
-	//
-	// `.unknown(false)` on each known backend's schema turns field-name typos
-	// (`bakend: ollama`, `hsot: ...`) into boot-blocking validation errors.
-	// Without it, Joi's top-level `allowUnknown: true` propagates and typos
-	// silently survive into bootstrap. Unknown backend types (anything not in
-	// the `switch` list) fall through to a permissive schema so future Harper
-	// versions or third-party components can register their own backends
-	// without core schema edits — `bootstrapModels` logs+skips at runtime.
-	//
-	// `requestTimeoutMs: min(1)` (not `min(0)`) so the meaning is unambiguous:
-	// omit the field for "no timeout". `0` would validate but `composeSignal`
-	// treats it as "no timeout" via `if (!timeoutMs)`, surprising a test that
-	// sets 0 to mean "fail immediately".
-	const commonEntryFields = {
-		model: string.optional(),
-		requestTimeoutMs: number.min(1).optional(),
-		// Ordered fallback group — other logical names tried, in order, after this one (#1326).
-		fallback: Joi.array().items(string).optional(),
-	};
-	const ollamaEntrySchema = Joi.object({
-		backend: string.valid('ollama').required(),
-		host: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const openaiEntrySchema = Joi.object({
-		backend: string.valid('openai').required(),
-		// `apiKey` may be a literal secret or a `${ENV_VAR}` placeholder; both
-		// are syntactically strings. `bootstrap.ts` runs `expandEnvVarsDeep`
-		// before construction; the backend rejects unresolved placeholders
-		// with an explicit error pointing at the env-var name.
-		apiKey: string.required(),
-		baseUrl: string.optional(),
-		organization: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const anthropicEntrySchema = Joi.object({
-		backend: string.valid('anthropic').required(),
-		// Same secret-handling posture as openai's `apiKey`.
-		apiKey: string.required(),
-		baseUrl: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const bedrockEntrySchema = Joi.object({
-		backend: string.valid('bedrock').required(),
-		// AWS credentials resolve via the SDK chain (env / shared file / IAM
-		// roles for service accounts) — no apiKey field. `region` is
-		// effectively required (Bedrock is regional) but the backend can
-		// fall back to AWS_REGION env, so we leave it optional here.
-		region: string.optional(),
-		...commonEntryFields,
-	}).unknown(false);
-	const unknownBackendEntrySchema = Joi.object({
-		backend: string.required(),
-	}).unknown(true);
-	const modelEntrySchema = Joi.alternatives().conditional('.backend', {
-		switch: [
-			{ is: 'ollama', then: ollamaEntrySchema },
-			{ is: 'openai', then: openaiEntrySchema },
-			{ is: 'anthropic', then: anthropicEntrySchema },
-			{ is: 'bedrock', then: bedrockEntrySchema },
-		],
-		otherwise: unknownBackendEntrySchema,
-	});
-	const modelsSchema = Joi.object({
-		embedding: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
-		generative: Joi.object().pattern(Joi.string(), modelEntrySchema).optional(),
-	});
+	// `convert: false` — validateConfig() only writes the coerced value back into configDoc for
+	// threads/componentsRoot/logging/storage/operationsApi, not sql, so leaving Joi's default
+	// convert:true on here would accept a quoted `allowFullScan: "true"` and then silently drop
+	// it (getSqlEngineConfig()'s typeof guard rejects the still-unconverted string).
+	const sqlSettingsSchema = Joi.object({
+		engine: string.valid('legacy', 'new', 'auto').optional(),
+		allowFullScan: boolean.optional(),
+		maxSortRows: number.integer().min(1).optional(),
+		maxHashRows: number.integer().min(1).optional(),
+	})
+		.unknown(false)
+		.prefs({ convert: false });
+
+	// An application deployed under the name before it was reserved still boots; validateConfig()
+	// warns to rename it. Selected positively so a typo'd setting is still held to the settings
+	// schema instead of passing as an application.
+	const legacySqlApplicationSchema = Joi.object({
+		engine: Joi.any().forbidden(),
+		allowFullScan: Joi.any().forbidden(),
+		maxSortRows: Joi.any().forbidden(),
+		maxHashRows: Joi.any().forbidden(),
+	})
+		.unknown(true)
+		.messages({
+			'any.unknown': `{#label} cannot be set while 'sql' names a deployed application; redeploy that application under a different name`,
+		});
+	const sqlSchema = Joi.alternatives()
+		.conditional(
+			Joi.object()
+				.or(...LEGACY_SQL_APPLICATION_KEYS)
+				.unknown(true),
+			{ then: legacySqlApplicationSchema, otherwise: sqlSettingsSchema }
+		)
+		// `false`/null is how componentLoader spells a disabled entry, so an operator who had already
+		// turned a pre-reservation `sql` application off keeps booting.
+		.allow(false, null);
 
 	const configSchema = Joi.object({
 		authentication: Joi.alternatives(
@@ -411,6 +484,7 @@ export function configValidator(configJson, skipFsValidation = false) {
 		}).required(),
 		mcp: mcpSchema.optional(),
 		models: modelsSchema.optional(),
+		sql: sqlSchema.optional(),
 		ignoreScripts: boolean.optional(),
 		tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 	});

@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,13 +10,26 @@ const script = join(root, 'build-tools/check-shrinkwrap-pins.mjs');
 const dependencies = ['@harperfast/rocksdb-js', 'fastify', '@aws-sdk/client-s3'];
 const alignedDependencies = {
 	'@harperfast/extended-iterable': '1.0.3',
-	'msgpackr': '2.0.5',
+	'msgpackr': '2.0.6',
+};
+const rocksdbDependencyRanges = {
+	'@harperfast/extended-iterable': '^1.0.3',
+	'msgpackr': '^2.0.6',
 };
 
 describe('shrinkwrap pin canaries', function () {
 	it('keeps the checked canaries present and ranged in the real manifest', async function () {
 		const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-		const fixture = await createFixture(manifest.dependencies);
+		const rocksdbManifestPath = join(root, 'node_modules/@harperfast/rocksdb-js/package.json');
+		let rocksdbManifest;
+		try {
+			rocksdbManifest = JSON.parse(await readFile(rocksdbManifestPath, 'utf8'));
+		} catch (error) {
+			assert.fail(
+				`the installed rocksdb-js manifest is required at ${rocksdbManifestPath}: ${error?.message ?? error}`
+			);
+		}
+		const fixture = await createFixture(manifest.dependencies, {}, false, '', 3, {}, rocksdbManifest.dependencies);
 		try {
 			const result = runCheck(fixture);
 			assert.strictEqual(result.status, 0, result.stderr);
@@ -25,7 +38,7 @@ describe('shrinkwrap pin canaries', function () {
 		}
 	});
 
-	it('fails when a root encoder pin diverges from rocksdb-js', async function () {
+	it('fails when a root encoder pin is outside the rocksdb-js range', async function () {
 		const fixture = await createFixture({
 			'@harperfast/rocksdb-js': '2.7.1',
 			'fastify': '^5.8.2',
@@ -36,12 +49,56 @@ describe('shrinkwrap pin canaries', function () {
 				join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js/package.json'),
 				JSON.stringify({
 					version: '1.0.0',
-					dependencies: { ...alignedDependencies, msgpackr: '2.0.6' },
+					dependencies: { ...rocksdbDependencyRanges, msgpackr: '^3.0.0' },
 				})
 			);
 			const result = runCheck(fixture);
 			assert.strictEqual(result.status, 1);
-			assert.match(result.stderr, /root msgpackr pin 2\.0\.5 does not match rocksdb-js 2\.0\.6/);
+			assert.match(result.stderr, /root msgpackr pin 2\.0\.6 is outside rocksdb-js \^3\.0\.0/);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('fails when rocksdb-js no longer declares a guarded dependency', async function () {
+		const fixture = await createFixture({
+			'@harperfast/rocksdb-js': '2.7.1',
+			'fastify': '^5.8.2',
+			'@aws-sdk/client-s3': '^3.1012.0',
+		});
+		try {
+			await writeFile(
+				join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js/package.json'),
+				JSON.stringify({
+					version: '1.0.0',
+					dependencies: { '@harperfast/extended-iterable': '^1.0.3' },
+				})
+			);
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 1);
+			assert.match(result.stderr, /rocksdb-js no longer declares msgpackr/);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('fails when rocksdb-js uses a non-semver dependency spec', async function () {
+		const fixture = await createFixture({
+			'@harperfast/rocksdb-js': '2.7.1',
+			'fastify': '^5.8.2',
+			'@aws-sdk/client-s3': '^3.1012.0',
+		});
+		try {
+			await writeFile(
+				join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js/package.json'),
+				JSON.stringify({
+					version: '1.0.0',
+					dependencies: { ...rocksdbDependencyRanges, msgpackr: 'workspace:*' },
+				})
+			);
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 1);
+			assert.match(result.stderr, /rocksdb-js declares msgpackr with unsupported range workspace:\*/);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -52,30 +109,90 @@ describe('shrinkwrap pin canaries', function () {
 			'@harperfast/rocksdb-js': '2.7.1',
 			'fastify': '^5.8.2',
 			'@aws-sdk/client-s3': '^3.1012.0',
-			'msgpackr': '^2.0.5',
+			'msgpackr': '^2.0.6',
 		});
 		try {
 			const result = runCheck(fixture);
 			assert.strictEqual(result.status, 1);
-			assert.match(result.stderr, /root msgpackr spec must be exact, received \^2\.0\.5/);
+			assert.match(result.stderr, /root msgpackr spec must be exact, received \^2\.0\.6/);
 		} finally {
 			await fixture.cleanup();
 		}
 	});
 
-	it('fails when rocksdb-js installs a nested encoder instance', async function () {
+	for (const [dependency, version] of Object.entries(alignedDependencies)) {
+		it(`fails when rocksdb-js installs a nested ${dependency} instance`, async function () {
+			const fixture = await createFixture({
+				'@harperfast/rocksdb-js': '2.7.1',
+				'fastify': '^5.8.2',
+				'@aws-sdk/client-s3': '^3.1012.0',
+			});
+			try {
+				const nestedDir = join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js/node_modules', dependency);
+				await mkdir(nestedDir, { recursive: true });
+				await writeFile(join(nestedDir, 'package.json'), JSON.stringify({ version, main: 'index.js' }));
+				await writeFile(join(nestedDir, 'index.js'), '');
+				const result = runCheck(fixture);
+				assert.strictEqual(result.status, 1);
+				assert(result.stderr.includes(`rocksdb-js loaded a nested ${dependency}@${version}`), result.stderr);
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+	}
+
+	it('follows a linked rocksdb-js package to detect its private dependency instance', async function () {
 		const fixture = await createFixture({
 			'@harperfast/rocksdb-js': '2.7.1',
 			'fastify': '^5.8.2',
 			'@aws-sdk/client-s3': '^3.1012.0',
 		});
 		try {
-			const nestedDir = join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js/node_modules/msgpackr');
-			await mkdir(nestedDir, { recursive: true });
-			await writeFile(join(nestedDir, 'package.json'), JSON.stringify({ version: '2.0.5' }));
+			const rocksdbDir = join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js');
+			const linkedDir = join(dirname(fixture.packageRoot), 'linked-rocksdb-js');
+			const linkedMsgpackrDir = join(linkedDir, 'node_modules/msgpackr');
+			await mkdir(linkedMsgpackrDir, { recursive: true });
+			await writeFile(
+				join(linkedDir, 'package.json'),
+				JSON.stringify({ version: '1.0.0', dependencies: rocksdbDependencyRanges })
+			);
+			await writeFile(join(linkedMsgpackrDir, 'package.json'), JSON.stringify({ version: '2.0.6', main: 'index.js' }));
+			await writeFile(join(linkedMsgpackrDir, 'index.js'), '');
+			await rm(rocksdbDir, { recursive: true, force: true });
+			await symlink(linkedDir, rocksdbDir, 'junction');
+
 			const result = runCheck(fixture);
 			assert.strictEqual(result.status, 1);
-			assert.match(result.stderr, /rocksdb-js loaded a nested msgpackr@2\.0\.5/);
+			assert.match(result.stderr, /rocksdb-js loaded a nested msgpackr@2\.0\.6/);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('reports divergent resolutions outside the classic nested layout', async function () {
+		const fixture = await createFixture({
+			'@harperfast/rocksdb-js': '2.7.1',
+			'fastify': '^5.8.2',
+			'@aws-sdk/client-s3': '^3.1012.0',
+		});
+		try {
+			const rocksdbDir = join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js');
+			const linkedDir = join(dirname(fixture.packageRoot), 'linked-rocksdb-js');
+			const siblingMsgpackrDir = join(dirname(linkedDir), 'node_modules/msgpackr');
+			await mkdir(linkedDir, { recursive: true });
+			await mkdir(siblingMsgpackrDir, { recursive: true });
+			await writeFile(
+				join(linkedDir, 'package.json'),
+				JSON.stringify({ version: '1.0.0', dependencies: rocksdbDependencyRanges })
+			);
+			await writeFile(join(siblingMsgpackrDir, 'package.json'), JSON.stringify({ version: '2.0.6', main: 'index.js' }));
+			await writeFile(join(siblingMsgpackrDir, 'index.js'), '');
+			await rm(rocksdbDir, { recursive: true, force: true });
+			await symlink(linkedDir, rocksdbDir, 'junction');
+
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 1);
+			assert.match(result.stderr, /rocksdb-js resolves msgpackr from .* but the root resolves it from /);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -310,7 +427,8 @@ async function createFixture(
 	allRangeVersionsCurrent = false,
 	failedRange = '',
 	failedAttempts = 3,
-	registryResponses = {}
+	registryResponses = {},
+	rocksdbDependencies = rocksdbDependencyRanges
 ) {
 	const tempDir = await mkdtemp(join(tmpdir(), 'harper-shrinkwrap-canary-'));
 	const packageRoot = join(tempDir, 'package');
@@ -318,6 +436,7 @@ async function createFixture(
 	const queryLog = join(tempDir, 'queries.log');
 	await mkdir(packageRoot, { recursive: true });
 	await mkdir(binDir, { recursive: true });
+	await cp(join(root, 'node_modules/semver'), join(packageRoot, 'node_modules/semver'), { recursive: true });
 	await writeFile(queryLog, '');
 	const packageDependencies = { ...alignedDependencies, ...manifestDependencies };
 	await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ dependencies: packageDependencies }));
@@ -339,11 +458,12 @@ async function createFixture(
 				(dependency in alignedDependencies ? packageDependencies[dependency] : '1.0.0'),
 		};
 		if (dependency === '@harperfast/rocksdb-js') {
-			dependencyManifest.dependencies = Object.fromEntries(
-				Object.keys(alignedDependencies).map((dep) => [dep, packageDependencies[dep]])
-			);
+			dependencyManifest.dependencies = rocksdbDependencies;
+		} else if (dependency in alignedDependencies) {
+			dependencyManifest.main = 'index.js';
 		}
 		await writeFile(join(dependencyDir, 'package.json'), JSON.stringify(dependencyManifest));
+		if (dependency in alignedDependencies) await writeFile(join(dependencyDir, 'index.js'), '');
 	}
 	await writeFile(
 		join(binDir, 'npm'),

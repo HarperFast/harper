@@ -2288,6 +2288,7 @@ export function makeTable(options) {
 				entry: this.#entry,
 				recordVersion: options?.version,
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
@@ -2347,6 +2348,7 @@ export function makeTable(options) {
 				entry: this.#entry,
 				recordVersion: options?.version,
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				reloadCommitBase: true,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
@@ -2941,6 +2943,8 @@ export function makeTable(options) {
 				entry,
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
+				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
+				reloadCommitBase: options?.isCopyApply !== true,
 				deferSave: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
 				recordVersion: options?.version,
@@ -3001,10 +3005,13 @@ export function makeTable(options) {
 											: txnTime;
 							}
 							if (createdTimeProperty) {
-								if (entry?.value) {
+								// the reloaded commit base, not the pre-read one: a full PUT racing a create
+								// would otherwise stamp a fresh created time over the real one
+								const base = write.entry;
+								if (base?.value) {
 									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
 										// make sure to retain original created time
-										recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
+										recordUpdate[createdTimeProperty.name] = base.value[createdTimeProperty.name];
 									}
 								} else {
 									// new entry, set created time
@@ -3523,8 +3530,8 @@ export function makeTable(options) {
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
 					if (residencyId == undefined) {
-						if (entry?.residencyId)
-							(context as any).previousResidency = TableResource.getResidencyRecord(entry.residencyId);
+						if (existingEntry?.residencyId)
+							(context as any).previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 						const residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
 						if (residency) {
 							if (!residency.includes(server.hostname)) {
@@ -3773,6 +3780,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				entry,
 				chainsStagedState: true,
+				reloadCommitBase: true,
 				nodeName: (context as any)?.nodeName,
 				recordVersion: options?.version,
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
@@ -3996,6 +4004,7 @@ export function makeTable(options) {
 			// objects. Entries are small and shallow; the clone is cheap next to the query.
 			conditions = cloneConditions(conditions);
 			let orderAlignedCondition;
+			let syntheticOrderCondition;
 			const filtered = {};
 
 			function prepareConditions(conditions: any[], operator: string) {
@@ -4134,7 +4143,7 @@ export function makeTable(options) {
 							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index.
 							// the primary key has no secondary index, but the primary store is itself keyed in
 							// primary-key order, so scanning it is already aligned with the sort
-							orderAlignedCondition = { ...sort, comparator: 'sort' };
+							orderAlignedCondition = syntheticOrderCondition = { ...sort, comparator: 'sort' };
 							conditions.push(orderAlignedCondition);
 						} else if (conditions.length === 0 && !target.allowFullScan)
 							throw handleHDBError(
@@ -4164,8 +4173,10 @@ export function makeTable(options) {
 						};
 					}
 				} else {
-					// if we had to add an aligned condition that isn't first, we remove it and do ordering later
-					if (orderAlignedCondition) conditions.splice(conditions.indexOf(orderAlignedCondition), 1);
+					// if we had to add an aligned condition that isn't first, we remove it and do ordering later —
+					// only the one we added; a caller's own condition on the sort attribute is still a filter
+					const syntheticIndex = syntheticOrderCondition ? conditions.indexOf(syntheticOrderCondition) : -1;
+					if (syntheticIndex >= 0) conditions.splice(syntheticIndex, 1);
 					postOrdering = sort;
 				}
 			}

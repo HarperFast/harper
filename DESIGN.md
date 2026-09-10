@@ -68,13 +68,16 @@ a version tie with the _executing_ node's name, and a fill from a shared source 
 identity of its own, so two replicas resolving the same tie could keep different values at the same
 version — the one state anti-entropy cannot repair. On a tie the raced record wins on every replica. A
 RocksDB replacement whose candidate cannot advance the current version stores at the current version
-and carries `VERSION_NOT_UNIQUE_FLAG`; rocksdb-js 2.8.0 ([#766](https://github.com/HarperFast/rocksdb-js/pull/766))
+and carries `VERSION_REUSED` (`resources/RecordEncoder.ts`, aliasing rocksdb-js's own
+`VERSION_NOT_UNIQUE_FLAG`); rocksdb-js 2.8.0 ([#766](https://github.com/HarperFast/rocksdb-js/pull/766))
 then refuses to publish or confirm that version through the VerificationTable. This avoids inventing
 an epsilon timestamp solely to force replacement while keeping stale record-cache values from being
 vouched as fresh.
 
-The flag is also applied to ordinary resequenced RocksDB writes. Those records remain ineligible for
-VerificationTable fast-path confirmation until a later write advances their version.
+The flag is applied generically to every RocksDB record write whose version does not advance past
+the record it replaces (`recordUpdater` in `RecordEncoder.ts`), not just this source-fill path — an
+ordinary resequenced (out-of-order CRDT-merged) write gets it too. Those records remain ineligible
+for VerificationTable fast-path confirmation until a later write advances their version.
 
 ## Blob orphan cleanup: pre-saved files outlive cancelled commits
 
@@ -111,6 +114,12 @@ Opt-in deflate compression for file-backed blobs (harper#2443) has three load-be
 **Extending the budget for one known-long write:** `DatabaseTransaction.timeoutBudget` is a per-transaction RocksDB floor applied whenever the transaction is re-armed (initial reads, writes, and active multi-store-chain propagation); the effective timeout is `Math.max(txnExpiration, timeoutBudget)`. This makes the budget sticky across a write's pre-commit existing-entry read and later writes, while never shortening a larger global `STORAGE_MAXTRANSACTIONOPENTIME`; RocksDB links added for another store inherit the same floor. Reads after a pending write do not re-arm the transaction: that preserves the idle-limit invariant for orphaned write-holding requests. Also, `resources/transaction.ts`'s `transaction(callback)` (no explicit context) joins whatever transaction is already open on the ambient AsyncLocalStorage context rather than guaranteeing a fresh one. `components/deploymentRecorder.ts`'s `withIsolatedTransaction` builds a new context from only the ambient audit/session/cancellation fields, so every recorder write commits independently without inheriting transaction controls. It uses the sticky budget to give `ingestPayload`'s blob-gated writes a size-appropriate limit instead of the generic default, while coalesced progress flushes are drained and suppressed until ingest settles to avoid same-row transaction conflicts. The ingest helper deliberately floors the shared `deployment_timeout` at ten minutes because `0` means “poll once” for peer waits; consequently an ingest can pin its system-database snapshot for that minimum. Known gap (harper#2057): the extension only reaches RocksDB transactions — on `HARPER_STORAGE_ENGINE=lmdb`, `Table.txnForContext()` chains a separate `LMDBTransaction` (`txn.next`) with its own independently-reset timeout that the LMDB engine's monitor tracks instead.
 
 **A commit's conflict retries have their own deadline, separate from the open-transaction limit** (issue #2450). rocksdb-js ≥2.8 wakes a commit parked on another transaction's write intent after `ROCKSDB_JS_PARK_TIMEOUT_MS` (5s) and returns `RETRY_NOW_VALUE` even when the holder never releases, so a wedged intent presents as a stream of transient conflicts rather than one hung commit — and the `MAX_RETRIES` cap alone then keeps the request pending for ~40 park timeouts, minutes past the configured queue limit. `DatabaseTransaction.commitStartedAt` is stamped on the **chain root** at its first native submission and read at both retry decisions (the coordinated `RETRY_NOW_VALUE` resolve path and the `ERR_BUSY`/`ERR_TRY_AGAIN` rejection path); past `Math.max(STORAGE_MAXTRANSACTIONQUEUETIME, timeoutBudget)` the commit takes the existing `abortChainAfterRetries()` cleanup and throws a 503 `TransactionCommitConflictTimeoutError`. One clock per _logical_ commit, deliberately not per attempt: the per-attempt clock is `trackOutstandingCommit()`'s, which measures native liveness and drives `checkOverloaded()`'s thread-wide shedding, so back-dating it would let one uncapped `sourceApply` retry shed every unrelated request on the thread. The clock is released through the promise `commit()` returns (which settles only after the chained stores' commits), so a reused transaction's next batch starts fresh. `retryable` is true only on a chain root that has not rotated through a mid-scope commit — anywhere else an earlier store already wrote durable audit entries and ran its hooks that a replayed request would repeat. `sourceApply` is exempt, as it is from the attempt cap, for the harper-pro#348 divergence reason above.
+
+## RocksDB range activity and snapshot expiration
+
+`PrimaryRocksDatabase.getRange` and `RocksIndexStore.getRange` pass native ranges through `trackReadRange`. The native transaction's owner is captured once when constructing the range; each `next()` records activity before native access, including entries later discarded by filters. The transaction monitor consumes that activity at its existing cadence and applies the same read-only idle policy as point reads. It never renews a pending write holder merely because a scan advances. Iterator references still own the original snapshot; the wrapper does not reopen or rotate it. When a handle with no outstanding reader references is handed to the native commit/retry loop, its read-owner association is removed: retry handlers can construct new synchronous ranges on that still-live write handle without being mistaken for expired readers. Existing wrapped ranges retain their captured owner and cannot resume after their read ownership ends.
+
+RocksDB 2.9.0 binds ranges to their supplied transaction and invalidates them when that transaction ends. An abandoned range is still bounded by the idle monitor. Resuming after its snapshot has been released throws an `ReadSnapshotExpiredError` (503) before accessing the native iterator; retry only the read, without replaying previously committed writes. A poisoned write-bearing transaction retains its existing 422 error and rollback behavior. Early iterator return remains a cleanup operation, including after expiration.
 
 ## Repeat writes to the same key in one transaction carry their state forward (`DatabaseTransaction`/`Table`)
 
@@ -1899,3 +1908,43 @@ degrades to the historical behavior rather than replacing it. Invariants that ar
 ## A worker that misses an ITC ack gets its OS thread state logged (`server/threads/manageThreads.js`)
 
 `broadcastWithAcknowledgement` already times out (30 s) on a worker whose port stays open but never acks, and that shape is almost always a blocked event loop — a native lock, a runaway synchronous call — which nothing inside the worker can report (harper-pro#788: a restarted node's single http worker went byte-silent while main kept serving `cluster_status`, and the app log only said "not acknowledged by worker thread(s) 2"). So each worker posts its Linux thread id (`readlink /proc/thread-self`) to main once at startup, before anything else runs on it, and the timeout branch reads that thread's kernel state from `/proc/self/task/<tid>`: state, `wchan`, the syscall number (the first token only — the rest of that file is argument registers and stack/instruction pointers), CPU ticks, and context-switch counts, plus two cross-platform signals main already has, `worker.performance.eventLoopUtilization()` and the age of the last 1 s resource report. It samples again a second later and logs the deltas: no CPU ticks, no context switches and `event loop active +1000ms` is "parked on a lock"; ticks climbing with state `R` is "spinning". It is deliberately main-thread-only and best-effort: `workers` and the tid live on the main thread's `Worker` objects, every `/proc` field is reported individually (a hardened container may deny `wchan`/`syscall` while `stat` stays readable), a follow-up sample whose `starttime` differs from the first is discarded (the tid may have been recycled), one diagnostic runs per worker with a 30 s cooldown so concurrent timeouts on the same worker don't multiply reads, and nothing here runs when acks arrive on time. It does not name the lock owner; that still needs a native stack from the next occurrence.
+
+## A table declaration lands where its application's `databases` binding resolves the name (`resources/databases.ts`)
+
+`table()` is the global instance of an internal target-bound factory, `declareTable(target, definition)`.
+A `TableTarget` is the small binding the declaration body needs and nothing more: the root store, the
+`tables` graph the class is published into, what to do after a lost create race (another thread created
+the table first), and who owns the column-family wrappers the declaration opens. The global target is
+`database()` / `databases[name]` / `resetDatabases()`; a branch target (harper#2264) is that branch's
+`rootStore` / `tables` / `reloadBranch`, and it adopts every wrapper into `branch.openedStores` so
+`close()` releases them.
+
+An application that declared `branchedDatabases` declares through `scopedTableFactory(branches)`, which
+routes each declaration by database name — to the branch of that name, or to `table()` itself. GraphQL
+`@table` (`graphql.ts`), `scope.ensureTable` (`components/Scope.ts`, `componentLoader.ts`) and
+`defineTable` (`defineTableUsing`, through `security/jsLoader.ts`) all go through it. **An unbranched
+application gets `table` and `defineTable` by identity** — `scopedTableFactory(undefined) === table` —
+so the request path of every application that does not branch is untouched; only a branched
+application pays for the routing, and only at declaration time.
+
+Consequences to preserve:
+
+- A branch root store's `databaseName` is its STORE identity (`initStores` stamps `storeName`), and the
+  branch's blob roots resolve from it. The create path may only fill the name in when it is unset
+  (`??=`), never overwrite it with the logical name.
+- A branch Table class carries the base's logical name, so the Table statics that resolve the global
+  schema by name (`dropTable`, `addAttributes`, `removeAttributes`, audit-enabling `subscribe`) stay
+  refused through `assertSchemaMutable`. Schema evolution of a branch table is the factory's
+  existing-Table path — the re-declaration `@table`/`defineTable`/`ensureTable` perform on every reload —
+  which runs entirely against the branch's own store and catalog.
+- A branch is scope-private: no `updateTable` event names a branch class (declaration, reload and
+  relationship hydration all pass the announcement policy through), so replication and analytics never
+  observe one. Cross-thread propagation still happens: the ITC schema-change signal carries
+  `branchPath`, and `syncSchemaMetadata` (`server/itc/serverHandlers.js`) hands such a message to
+  `reloadBranchAt`, which re-reads the catalog into the branch's `tables` on every thread that holds
+  that branch open — the same pre-backfill signal the base path relies on so a worker keeps a new index
+  maintained while another worker's backfill runs — instead of running the global rescan.
+- The lost create race is handled per target: the global path rescans everything (`resetDatabases`);
+  a branch reloads only itself, and the relationships that reload queues are hydrated through the
+  application's own branch set (`branch.relatedBranches`, stamped by `prepareBranches`), never the
+  global map.

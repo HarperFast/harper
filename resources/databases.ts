@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { randomBytes } from 'node:crypto';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
@@ -529,6 +530,21 @@ function applyDurableDeclaration(attribute: any, descriptor: any) {
 		else delete attribute[field];
 	}
 }
+
+/**
+ * True when a descriptor claims an index build no live operation in this process can own. The PID and
+ * worker generation cannot answer that alone: a container reuses PID 1 and starts the in-memory
+ * generation back at 1 while the persisted one is higher. A descriptor with no incarnation was written
+ * before the field existed, so it belongs to an earlier process; a thread started without one of its
+ * own cannot judge, and falls back rather than declaring a live build dead.
+ */
+function isAbandonedIndexBuild(descriptor: any, currentRestartGeneration: number): boolean {
+	if (!descriptor) return false;
+	if (descriptor.indexingPID && descriptor.indexingPID !== process.pid) return true;
+	if (descriptor.restartNumber < currentRestartGeneration) return true;
+	const incarnation = manageThreads.processIncarnation;
+	return !!descriptor.indexingPID && incarnation != null && descriptor.indexingIncarnation !== incarnation;
+}
 // How many times the schema load will try to finish a tombstoned drop before
 // giving up for the rest of this process's lifetime. A drop that fails once
 // almost always fails identically forever - the usual cause is a RocksDB
@@ -795,9 +811,11 @@ export function hydrateBranchRelationships(branch: BranchDatabase, branches: Map
 		// data -- the fallback belongs to a database the application did not branch, never to one it did.
 		return targetBranch ? targetBranch.tables?.[target.table] : databases[target.database]?.[target.table];
 	};
-	for (const hydration of branch.pendingRelationships.splice(0)) {
+	// Kept, not drained, like the global list: a target declared later (on this or another thread) is
+	// picked up by the next pass, and `hydrateTableRelationships` is a no-op once everything resolves.
+	for (const hydration of branch.pendingRelationships) {
 		try {
-			hydrateTableRelationships(hydration, resolveTarget);
+			hydrateTableRelationships(hydration, resolveTarget, false);
 		} catch (error) {
 			logger.error(
 				`Unable to hydrate persisted relationships for branch table ${hydration.databaseName}.${hydration.tableName}`,
@@ -830,7 +848,8 @@ const resolveTargetGlobally: ResolveRelationshipTarget = (target) => databases[t
 
 function hydrateTableRelationships(
 	{ table, databaseName, tableName, definitions }: RelationshipHydration,
-	resolveTarget: ResolveRelationshipTarget = resolveTargetGlobally
+	resolveTarget: ResolveRelationshipTarget = resolveTargetGlobally,
+	announce = true
 ): void {
 	const hydratable: { definition: PersistedRelationship; targetTable: any }[] = [];
 	for (let index = 0; index < definitions.length; index++) {
@@ -879,7 +898,7 @@ function hydrateTableRelationships(
 	table.attributes.splice(0, table.attributes.length, ...attributes);
 	table.schemaVersion++;
 	table.updatedAttributes();
-	databaseEventsEmitter.emit('updateTable', table);
+	if (announce) databaseEventsEmitter.emit('updateTable', table);
 }
 
 function validRelationshipDefinition(definition: any, definitions: unknown[], index: number): boolean {
@@ -990,6 +1009,7 @@ export function readMetaDb(
 			lmdbDatabaseEnvs.set(path, rootStore);
 		}
 
+		rootStore.dbisDb?.resetReadTxn();
 		return initStores(path, rootStore, databaseName, { defaultTable, auditPath, isLegacy });
 	} catch (error) {
 		error.message += ` opening database ${path}`;
@@ -1075,6 +1095,7 @@ function initStores(
 		} else {
 			attributesDbi = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 		}
+		openedStores?.push(attributesDbi);
 		rootStore.dbisDb = markInternalDbiNonVersioned(attributesDbi);
 	}
 
@@ -1283,6 +1304,8 @@ function initStores(
 						indices[attribute.name] = dbi;
 						indices[attribute.name].indexNulls = attribute.indexNulls;
 					}
+					// the only way a thread that never declares the schema reaches Table.indices
+					indices[attribute.name].isIndexing = !!attribute.indexingPID;
 					const existingAttribute = existingAttributes.find(
 						(existingAttribute) => existingAttribute.name === attribute.name
 					);
@@ -1433,6 +1456,19 @@ export function resolveBranchPath(baseName: string, appName: string): string {
 export interface BranchDatabase {
 	tables: Tables;
 	rootStore: RootDatabaseKind;
+	/** The realpath of the branch directory; what a schema-change signal names to address this branch. */
+	path: string;
+	/** The logical name the application uses (`data`); every Table class in `tables` carries it. */
+	databaseName: string;
+	/** The branch's own store identity, which its blob roots resolve from. */
+	storeName: string;
+	/**
+	 * Every column-family wrapper opened on this store -- by the open, by a reload, or by a table
+	 * declaration -- so `close()` can release them all. Recorded at acquisition rather than
+	 * reconstructed from `tables` at close: a re-declaration displaces the index and catalog wrappers it
+	 * replaces, and a failed declaration can leave one that no class ever held.
+	 */
+	openedStores: any[];
 	/**
 	 * Relationships this branch's tables declared, still un-hydrated. They cannot be resolved at open
 	 * time: a branch's definitions name the BASE database (its tables carry the base's logical names),
@@ -1440,6 +1476,11 @@ export interface BranchDatabase {
 	 * base. `hydrateBranchRelationships` finishes the job once the whole branch set is known.
 	 */
 	pendingRelationships: RelationshipHydration[];
+	/**
+	 * The application's whole branch set, once `prepareBranches` has opened it, so a reload can hydrate
+	 * a relationship whose target the application also branched against that branch.
+	 */
+	relatedBranches?: Map<string, BranchDatabase>;
 	close(): void;
 }
 
@@ -1645,10 +1686,10 @@ function branchDirectoryExistsFor(storeName: string): boolean {
  * worker's shutdown path, so a branch left open on an exiting worker does not linger in the
  * process-global RocksDB registry.
  *
- * NOT SAFE FOR SCHEMA MUTATION. A branch's Table classes carry the base's logical name, so a
- * `dropTable()` or equivalent through one resolves against the global schema and would delete the
- * live base Table class — which is why schema operations through a branch are refused
- * (branchGuard.ts).
+ * Schema changes reach a branch only through its own bound factory (`scopedTableFactory`): a
+ * declaration re-asserted against the branch's store. A branch's Table classes carry the base's
+ * logical name, so the Table statics (`dropTable()`, `addAttributes()`) — which resolve the global
+ * schema by that name and would act on the live base table — stay refused (`assertSchemaMutable`).
  *
  * A branch's blob roots are a hard-link clone of the base's, taken with the checkpoint, so a row
  * whose blob predates the branch reads back normally and the branch allocates new file ids in its own
@@ -1713,13 +1754,17 @@ export function openBranchDatabase(
 		releaseBranchIdentity(storeName);
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
-		closeBranchHandles(path, stranded, openedStores);
+		closeBranchHandles(path, stranded, openedStores, tables);
 		throw error;
 	}
 	let closed = false;
 	const branch: BranchDatabase = {
 		tables,
 		rootStore,
+		path,
+		databaseName,
+		storeName,
+		openedStores,
 		pendingRelationships: relationshipsToHydrate.splice(queuedRelationshipsAt),
 		close() {
 			// guard on the handle, not on the registrations: those are keyed by path, and a closed
@@ -1729,7 +1774,7 @@ export function openBranchDatabase(
 			openBranches.delete(path);
 			releaseBranchIdentity(storeName);
 			rocksdbDatabaseEnvs.delete(path);
-			closeBranchHandles(path, rootStore, openedStores);
+			closeBranchHandles(path, rootStore, openedStores, tables);
 		},
 	};
 	openBranches.set(path, branch);
@@ -1745,17 +1790,32 @@ export function openBranchDatabase(
  * memoized blob roots in `databasePaths`. A real database is opened once per thread; harper#643
  * makes branch open/close routine, so both would grow with branch churn.
  */
-function closeBranchHandles(path: string, rootStore?: RootDatabaseKind, openedStores: any[] = []): void {
+function closeBranchHandles(
+	path: string,
+	rootStore?: RootDatabaseKind,
+	openedStores: any[] = [],
+	tables: Tables = {}
+): void {
 	const reclamationPaths = new Set<string>([path]);
 	(rootStore as any)?.auditStore?.stopAuditCleanup?.();
 	const closeStore = (store: any, description: string) => {
-		if (store?.path) reclamationPaths.add(store.path);
+		if (!store || store.status === 'closed') return;
+		if (store.path) reclamationPaths.add(store.path);
 		try {
-			store?.close?.();
+			store.close?.();
 		} catch (error) {
 			logger.warn(`Error closing ${description} for branch database at ${path}`, error);
 		}
 	};
+	// the class, before its stores: an expiration timer or a reclamation handler on a closed store
+	// would otherwise keep firing against it for the life of the process
+	for (const tableName in tables) {
+		try {
+			tables[tableName]?.cleanup?.();
+		} catch (error) {
+			logger.warn(`Error releasing table ${tableName} of branch database at ${path}`, error);
+		}
+	}
 	for (const store of openedStores) closeStore(store, 'column family');
 	if (rootStore) closeDerivedIndexStores(rootStore, `for branch database at ${path}`);
 	closeStore((rootStore as any)?.dbisDb, 'attributes store');
@@ -2312,6 +2372,102 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
  * @param replicate
  */
 export function table<TableResourceType>(tableDefinition: TableDefinition): TableResourceType {
+	return declareTable(GLOBAL_TARGET, tableDefinition);
+}
+
+/**
+ * Where a declaration lands. `table()` is bound to the global catalog; a branched application's
+ * declarations are bound to its branch (`scopedTableFactory`). Everything in `declareTable` that is
+ * global by construction -- the root store, the `tables` graph a class is published into, the reload
+ * after a lost create race, who owns the handles it opens -- goes through this, and nothing else does,
+ * so the unbranched path is the same code with the same objects behind it.
+ */
+interface TableTarget {
+	rootStore(databaseName: string, tableName: string): RootDatabaseKind;
+	tables(databaseName: string): Tables;
+	/** Another thread created the table this declaration was about to; make `tables` reflect it. */
+	reload(databaseName: string): void;
+	/** Records a column-family wrapper the declaration opened, for whoever closes the store. */
+	adopt(store: any): void;
+	/** Set for a branch: its Table classes refuse DDL, and its schema signals address it by path. */
+	branch?: BranchDatabase;
+}
+
+const GLOBAL_TARGET: TableTarget = {
+	rootStore: (databaseName, tableName) => database({ database: databaseName, table: tableName }),
+	tables: (databaseName) => databases[databaseName],
+	reload: () => resetDatabases(),
+	// a real database's stores live until the process (or `closeDatabase`, which walks the graph) ends
+	adopt: () => {},
+};
+
+/**
+ * The factory a branched application declares tables through: each declaration goes to the branch
+ * of the database it names, or to `table()` itself for a database the application did not branch.
+ * An unbranched application gets `table` by identity -- no wrapper, no per-call routing.
+ */
+export function scopedTableFactory(branches?: Map<string, BranchDatabase>): typeof table {
+	if (!branches?.size) return table;
+	return function scopedTable<TableResourceType>(tableDefinition: TableDefinition): TableResourceType {
+		// `||`, not `??`: `table()` resolves every falsy name to the default database
+		const branch = branches.get(tableDefinition.database || DEFAULT_DATABASE_NAME);
+		return branch ? declareTable(branchTarget(branch), tableDefinition) : table(tableDefinition);
+	};
+}
+
+function branchTarget(branch: BranchDatabase): TableTarget {
+	return {
+		rootStore: () => branch.rootStore,
+		tables: () => branch.tables,
+		reload: () => reloadBranch(branch),
+		adopt: (store) => branch.openedStores.push(store),
+		branch,
+	};
+}
+
+/**
+ * Re-read a branch's catalog into its `tables`: tables and indexes another thread declared since the
+ * open (or since the last reload) are opened here, the same way a schema-change rescan does for a
+ * real database. Existing classes are kept and their attribute lists refreshed.
+ */
+function reloadBranch(branch: BranchDatabase): void {
+	const { rootStore, tables, databaseName, storeName, openedStores } = branch;
+	const queuedRelationshipsAt = relationshipsToHydrate.length;
+	try {
+		initStores(rootStore.path, rootStore, databaseName, { destination: tables, storeName, openedStores });
+	} finally {
+		for (const hydration of relationshipsToHydrate.splice(queuedRelationshipsAt))
+			queueBranchHydration(branch, hydration);
+	}
+	// Until `prepareBranches` has the whole set, a cross-database target cannot be resolved without
+	// falling through to the base; it hydrates the complete set once. After that, every sibling is
+	// re-hydrated: the table this reload brought in may be the target a sibling's relationship waited for.
+	if (!branch.relatedBranches) return;
+	for (const sibling of branch.relatedBranches.values()) hydrateBranchRelationships(sibling, branch.relatedBranches);
+}
+
+/** One pending hydration per table: a re-declaration replaces the entry the earlier declaration queued. */
+function queueBranchHydration(branch: BranchDatabase, hydration: RelationshipHydration): void {
+	const existing = branch.pendingRelationships.findIndex(
+		(pending) => pending.databaseName === hydration.databaseName && pending.tableName === hydration.tableName
+	);
+	if (existing >= 0) branch.pendingRelationships[existing] = hydration;
+	else branch.pendingRelationships.push(hydration);
+}
+
+/**
+ * The receiving side of a branch's schema-change signal: a thread that holds this branch open reloads
+ * it, any other thread has nothing to do. Returns the branch's tables so the caller can address the
+ * table the signal named.
+ */
+export function reloadBranchAt(path: string): Tables | undefined {
+	const branch = openBranches.get(path);
+	if (!branch) return undefined;
+	reloadBranch(branch);
+	return branch.tables;
+}
+
+function declareTable<TableResourceType>(target: TableTarget, tableDefinition: TableDefinition): TableResourceType {
 	let {
 		table: tableName,
 		database: databaseName,
@@ -2350,8 +2506,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	if (isBranchIdentity(databaseName)) {
 		throw new ClientError(`'${databaseName}' is in use as a branch store identity and cannot be a database name`);
 	}
-	const rootStore = database({ database: databaseName, table: tableName });
-	const tables = databases[databaseName];
+	const rootStore = target.rootStore(databaseName, tableName);
+	const tables = target.tables(databaseName);
 	logger.trace(`Defining ${tableName} in ${databaseName}`);
 	let Table = tables?.[tableName];
 	if (rootStore.status === 'closed') {
@@ -2517,6 +2673,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					internalDbiInit as any
 				);
 			}
+			target.adopt(attributesDbi);
 			markInternalDbiNonVersioned(attributesDbi);
 
 			exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
@@ -2525,8 +2682,8 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// table was created while we were setting up; the lock is not reentrant, so release
 				// before the recursive reload
 				releaseLock();
-				resetDatabases();
-				return table(tableDefinition);
+				target.reload(databaseName);
+				return declareTable(target, tableDefinition);
 			}
 
 			let primaryStore;
@@ -2556,9 +2713,12 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
+			target.adopt(primaryStore);
 			unpublishedPrimaryStore = primaryStore;
 			primaryStore = handleLocalTimeForGets(primaryStore, rootStore);
-			rootStore.databaseName = databaseName;
+			// only a store no table has loaded yet is unnamed; a branch's store carries its own store
+			// identity here, which its blob roots resolve from, and must not take the logical name
+			rootStore.databaseName ??= databaseName;
 			primaryStore.tableId = attributesDbi.getSync(NEXT_TABLE_ID);
 			logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
 			if (!primaryStore.tableId) primaryStore.tableId = 1;
@@ -2566,6 +2726,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 
 			primaryKeyAttribute.tableId = primaryStore.tableId;
 			Table = makeTable({
+				isBranch: Boolean(target.branch),
 				primaryStore,
 				auditStore,
 				audit,
@@ -2604,6 +2765,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 			} else {
 				(rootStore as any).dbisDb = (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 			}
+			target.adopt((rootStore as any).dbisDb);
 			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 		}
 		Table.dbisDB = attributesDbi;
@@ -2698,8 +2860,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				const abandonedIndexBuild =
 					attribute.indexed &&
 					(attributeDescriptor.indexingFailed ||
-						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
-						attributeDescriptor.restartNumber < (workerData?.restartNumber ?? manageThreads.restartNumber));
+						isAbandonedIndexBuild(attributeDescriptor, workerData?.restartNumber ?? manageThreads.restartNumber));
 				if (abandonedIndexBuild) {
 					// Recovery is the exception to skipping the handling below, because without it `isIndexing`
 					// stays pinned on with nothing left to clear it and every query on the attribute fails with
@@ -2710,6 +2871,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				} else {
 					if (attribute.indexed) {
 						const dbi = openIndex(dbiKey, rootStore, attribute);
+						target.adopt(dbi);
 						// Persisting the indexFormat openIndex just resolved adds a field the descriptor lacks
 						// rather than rewriting one it has. Without it an empty index resolves 'versioned', writes
 						// versioned nodes, then re-derives 'legacy' on the next load — see indexFormatNeedsPersist.
@@ -2773,6 +2935,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
 				const dbi = openIndex(dbiKey, rootStore, attribute);
+				target.adopt(dbi);
 				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
 				// custom-object) index. An index created before this field existed has no indexFormat on
@@ -2787,8 +2950,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					changed ||
 					indexFormatNeedsPersist ||
 					attributeDescriptor?.indexingFailed ||
-					(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
-					attributeDescriptor?.restartNumber < currentRestartGeneration
+					isAbandonedIndexBuild(attributeDescriptor, currentRestartGeneration)
 				) {
 					hasChanges = true;
 					exclusiveLock();
@@ -2796,8 +2958,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 					if (
 						structurallyChanged ||
 						attributeDescriptor?.indexingFailed ||
-						(attributeDescriptor?.indexingPID && attributeDescriptor?.indexingPID !== process.pid) ||
-						attributeDescriptor?.restartNumber < currentRestartGeneration
+						isAbandonedIndexBuild(attributeDescriptor, currentRestartGeneration)
 					) {
 						hasChanges = true;
 						if (attribute.indexNulls === undefined) attribute.indexNulls = true;
@@ -2817,9 +2978,17 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							// resumes rather than restarts. Canonicalized to match structurallyChanged above.
 							const indexOptionsChanged =
 								canonicalIndexKey(attributeDescriptor?.indexed) !== canonicalIndexKey(attribute.indexed);
-							attribute.lastIndexedKey = indexOptionsChanged
-								? undefined
-								: (attributeDescriptor?.lastIndexedKey ?? undefined);
+							// Only a checkpoint runIndexing stamped with its own key resumes: earlier releases advanced
+							// lastIndexedKey past failed and unflushed index writes, so any other is a full rebuild.
+							const uncertifiedCheckpoint =
+								attributeDescriptor?.lastIndexedKey !== undefined &&
+								(attributeDescriptor.checkpointCertified === undefined ||
+									compareKeys(attributeDescriptor.checkpointCertified, attributeDescriptor.lastIndexedKey) !== 0);
+							attribute.lastIndexedKey =
+								indexOptionsChanged || uncertifiedCheckpoint
+									? undefined
+									: (attributeDescriptor?.lastIndexedKey ?? undefined);
+							if (attribute.lastIndexedKey !== undefined) attribute.checkpointCertified = attribute.lastIndexedKey;
 							// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
 							// object store to the versioned, VT-cacheable format. A full rebuild from scratch
 							// (lastIndexedKey === undefined) clears the store and rewrites every node, so the
@@ -2843,6 +3012,9 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							// the new process reuses the old PID. Cleared on clean completion; left in place
 							// on failure/crash so the next, higher-numbered restart re-triggers the backfill.
 							attribute.restartNumber = currentRestartGeneration;
+							if (manageThreads.processIncarnation != null)
+								attribute.indexingIncarnation = manageThreads.processIncarnation;
+							attribute.indexingBuildId = randomBytes(8).toString('hex');
 							delete attribute.indexingFailed; // clear failure flag for the new run
 							dbi.isIndexing = true;
 							Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
@@ -2856,6 +3028,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 							if (attributeDescriptor?.indexingPID && attributeDescriptor.indexingPID !== process.pid)
 								reindexReasons.push(`crash-recovery(pid=${attributeDescriptor.indexingPID})`);
 							if (attributeDescriptor?.restartNumber < currentRestartGeneration) reindexReasons.push('restart-number');
+							if (uncertifiedCheckpoint) reindexReasons.push('uncertified-checkpoint');
+							if (
+								attributeDescriptor?.indexingPID === process.pid &&
+								manageThreads.processIncarnation != null &&
+								attributeDescriptor.indexingIncarnation !== manageThreads.processIncarnation
+							)
+								reindexReasons.push('abandoned-build(previous process incarnation)');
 							logger.info(
 								`reindex ${databaseName}.${tableName}.${attribute.name}: reason=${reindexReasons.join(',') || 'unknown'}`
 							);
@@ -2869,9 +3048,13 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 						// workers / a reload would treat the still-partial index as ready and return incomplete results.
 						attribute.indexingPID = attributeDescriptor.indexingPID;
 						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
+						if (attributeDescriptor.checkpointCertified !== undefined)
+							attribute.checkpointCertified = attributeDescriptor.checkpointCertified;
 						// Carry the in-progress restart generation too, so persisting this metadata-only
 						// change doesn't drop it and break the crash-recovery trigger for the running backfill.
 						attribute.restartNumber = attributeDescriptor.restartNumber;
+						attribute.indexingIncarnation = attributeDescriptor.indexingIncarnation;
+						attribute.indexingBuildId = attributeDescriptor.indexingBuildId;
 						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
 					}
 					attributesDbi.put(dbiKey, attribute);
@@ -2934,15 +3117,23 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 		Table.updatedAttributes();
 	}
 	logger.trace(`${tableName} table loading, running index`);
+	const branchPath = target.branch?.path;
 	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
-		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove);
+		// captured before the backfill can rewrite the attributes
+		const buildIds = new Map(attributesToIndex.map((attribute) => [attribute, attribute.indexingBuildId]));
+		const markSettled = () => markAbandonedIndexBuild(Table, rootStore, buildIds);
+		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove, branchPath).then(
+			markSettled,
+			markSettled
+		);
 	} else if (hasChanges)
 		signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
+			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
 
 	Table.origin = origin;
-	if (hasChanges || refreshRelationshipAttributes) {
+	// scope-private: replication and other global subscribers must not learn of a branch class
+	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
 	if (expiration || eviction || scanInterval)
@@ -3064,29 +3255,122 @@ export function canonicalizeIndexOptions(value: any): any {
 }
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
-async function runIndexing(Table, attributes, indicesToRemove) {
+const INDEXING_YIELD_INTERVAL = 100;
+// A resumable checkpoint is written only after a flush (see flushIndexStores), at most once per period
+// and never before this many more records: the flush seals every column family in the database, so a
+// slow backfill must not impose the period's flush rate on unrelated tables.
+let indexingCheckpointPeriodMs = 5000;
+let indexingCheckpointMinRecords = 10000;
+export function setIndexingCheckpointPeriod(ms: number, minRecords = indexingCheckpointMinRecords) {
+	const previous = { ms: indexingCheckpointPeriodMs, minRecords: indexingCheckpointMinRecords };
+	indexingCheckpointPeriodMs = ms;
+	indexingCheckpointMinRecords = minRecords;
+	return previous;
+}
+const yieldEventTurn = () => new Promise((resolve) => setImmediate(resolve));
+// RocksDB index stores have no WAL (openRocksDatabase defaults disableWAL), so a flush is what makes the
+// entries a checkpoint certifies durable. A flush only covers writes issued before it started, so a caller
+// never joins one in flight: it joins the next one, which every backfill on that database asking meanwhile
+// shares — at most one in flight and one queued.
+const indexingFlushes = new WeakMap<object, { inFlight?: Promise<void>; queued?: Promise<void> }>();
+function flushIndexStores(rootStore: any): Promise<void> | undefined {
+	if (!(rootStore instanceof RocksDatabase)) return;
+	let flushes = indexingFlushes.get(rootStore);
+	if (!flushes) indexingFlushes.set(rootStore, (flushes = {}));
+	if (flushes.queued) return flushes.queued;
+	const start = () => {
+		flushes.queued = undefined;
+		const flush = rootStore.flush().finally(() => {
+			if (flushes.inFlight === flush) flushes.inFlight = undefined;
+		});
+		flushes.inFlight = flush;
+		return flush;
+	};
+	if (!flushes.inFlight) return start();
+	return (flushes.queued = flushes.inFlight.then(start, start));
+}
+export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
+	let start: any;
+	for (const attribute of attributes) {
+		if (attribute.lastIndexedKey == undefined) return undefined;
+		if (start === undefined || compareKeys(attribute.lastIndexedKey, start) < 0) start = attribute.lastIndexedKey;
+	}
+	return start;
+}
+
+/**
+ * Persists the failure marker for a build that ended without running one of runIndexing's own exit
+ * paths, so something re-triggers it. Fenced on `indexingBuildId` inside the storage engine's catalog
+ * serialization boundary, because a replacement generation (or another thread declaring different index
+ * options) can claim the attribute before an outgoing build's promise settles, and marking that would fail
+ * a live build. The fence read and write stay synchronous, and nothing here may throw because
+ * `Table.indexingOperation` reaches operations-API callers.
+ */
+async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, string>) {
+	for (const [attribute, buildId] of buildIds) {
+		try {
+			let marked;
+			if (buildId == null || Table.dbisDB.getSync(attribute.key)?.indexingBuildId !== buildId) continue;
+			const markIfOwned = () => {
+				const descriptor = Table.dbisDB.getSync(attribute.key);
+				if (descriptor?.indexingBuildId === buildId && !descriptor.indexingFailed) {
+					Table.dbisDB.putSync(attribute.key, { ...descriptor, indexingFailed: true });
+					marked = true;
+				}
+			};
+			if (rootStore instanceof RocksDatabase) {
+				acquireUpdateAttributesLock(rootStore, `abandoned index build '${Table.tableName}.${attribute.name}'`);
+				try {
+					markIfOwned();
+				} finally {
+					releaseUpdateAttributesLock(rootStore);
+				}
+			} else {
+				rootStore.transactionSync(markIfOwned);
+			}
+			if (marked)
+				logger.warn(
+					`Indexing of ${Table.databaseName}.${Table.tableName}.${attribute.name} ended without completing. ` +
+						`The index stays incomplete and every query on the attribute reports it as not indexed yet; ` +
+						`the next load of the table retries the backfill from the last checkpoint (indexingFailed=true).`
+				);
+		} catch (error) {
+			// A store closed by shutdown is the common case, and it cannot be written to at all.
+			try {
+				logger.debug(`Could not mark the abandoned index build of ${Table.tableName}.${attribute.name}`, error);
+			} catch {}
+		}
+	}
+}
+async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
+	let checkpointing;
+	let hadIndexingErrors = false;
+	const attributeErrorReported = {};
+	const onIndexPutRejected = (property, error) => {
+		hadIndexingErrors = true;
+		if (attributeErrorReported[property]) return;
+		attributeErrorReported[property] = true;
+		logger.error(`Error indexing attribute ${property}`, error);
+	};
+	const putRejectionHandlers = attributes.map((attribute) => (error) => onIndexPutRejected(attribute.name, error));
 	try {
 		logger.info(`Indexing ${Table.tableName} attributes`, attributes);
 		await signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
+			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
 		let lastResolution;
 		for (const index of indicesToRemove) {
 			lastResolution = index.drop();
+			if (lastResolution?.then) lastResolution.then(undefined, (error) => onIndexPutRejected(index.name, error));
 		}
 		let interrupted;
-		let hadIndexingErrors = false;
-		const attributeErrorReported = {};
 		let indexed = 0;
 		const attributesLength = attributes.length;
 		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
 		if (attributesLength > 0) {
-			let start: any;
-			for (const attribute of attributes) {
-				// if we are resuming, we need to start from the last key we indexed by all attributes
-				if (compareKeys(attribute.lastIndexedKey, start) < 0) start = attribute.lastIndexedKey;
-				if (attribute.lastIndexedKey == undefined) {
-					// if we are starting from the beginning, clear out any previous index entries since we are rewriting
+			const start = resumeStartKey(attributes);
+			if (start === undefined) {
+				for (const attribute of attributes) {
 					if (attribute.dbi.clearAsync) {
 						// LMDB, note that we don't need to wait for this to complete, just gets enqueued in front of the other writes
 						attribute.dbi.clearAsync();
@@ -3096,6 +3380,26 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				}
 			}
 			let outstanding = 0;
+			// A resumed scan starts at the checkpoint, so it must only name a key whose every predecessor is
+			// durably indexed: persisted once the writes it covers have settled and flushed, frozen after any
+			// record fails so the retry re-covers it, and stamped with its own key (see the trigger in table()).
+			const persistCheckpoint = async (key) => {
+				if (hadIndexingErrors) return;
+				try {
+					await flushIndexStores(Table.primaryStore.rootStore);
+					const puts = [];
+					for (const attribute of attributes) {
+						attribute.lastIndexedKey = key;
+						attribute.checkpointCertified = key;
+						puts.push(Table.dbisDB.put(attribute.key, attribute));
+					}
+					await Promise.all(puts);
+				} catch (error) {
+					logger.warn(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
+				}
+			};
+			let nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
+			let nextCheckpointRecord = indexingCheckpointMinRecords;
 			// this means that a new attribute has been introduced that needs to be indexed
 			for (const { key, value: record } of Table.primaryStore.getRange({
 				start,
@@ -3103,7 +3407,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				versions: true,
 				snapshot: false, // don't hold a read transaction this whole time
 			})) {
-				if (!record) continue; // deletion entry
+				const atInterval = ++indexed % INDEXING_YIELD_INTERVAL === 0;
 				// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
 				//if (Table.schemaVersion !== schemaVersion) return; // break out if there are any schema changes and let someone else pick it up
 				outstanding++;
@@ -3115,71 +3419,77 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				// we index, that's fine because indexing is idempotent, we can just put the same values again. If it changes
 				// during the indexing, the indexing here will fail. This is also fine because it means the other thread will have
 				// performed indexing and we don't need to do anything further
-				for (let i = 0; i < attributesLength; i++) {
-					const attribute = attributes[i];
-					const property = attribute.name;
-					const index = attribute.dbi;
-					try {
-						const resolver = attribute.resolve;
-						const value = record && (resolver ? resolver(record) : record[property]);
-						if (index.customIndex) {
-							index.customIndex.index(key, value);
-							didSynchronousIndexing = true;
-							continue;
-						}
-						const values = getIndexedValues(value, index.indexNulls);
-						if (values) {
-							for (let i = 0, l = values.length; i < l; i++) {
-								lastResolution = index.put(values[i], key);
+				if (record) {
+					for (let i = 0; i < attributesLength; i++) {
+						const attribute = attributes[i];
+						const property = attribute.name;
+						const index = attribute.dbi;
+						const onPutRejected = putRejectionHandlers[i];
+						try {
+							const resolver = attribute.resolve;
+							const value = record && (resolver ? resolver(record) : record[property]);
+							if (index.customIndex) {
+								index.customIndex.index(key, value);
+								didSynchronousIndexing = true;
+								continue;
 							}
-						}
-					} catch (error) {
-						hadIndexingErrors = true;
-						if (!attributeErrorReported[property]) {
-							// just report an indexing error once per attribute so we don't spam the logs.
-							// A store closed by worker shutdown surfaces here as "Database not open"; that is
-							// a benign interruption (the next generation re-runs the backfill), so don't log
-							// it as an error — the outer catch returns quietly once the iterator also throws.
-							attributeErrorReported[property] = true;
-							if (Table.primaryStore?.rootStore?.status === 'closed')
-								logger.debug(`Indexing attribute ${property} interrupted by store shutdown`, error);
-							else logger.error(`Error indexing attribute ${property}`, error);
+							const values = getIndexedValues(value, index.indexNulls);
+							if (values) {
+								for (let i = 0, l = values.length; i < l; i++) {
+									lastResolution = index.put(values[i], key);
+									if (lastResolution?.then) lastResolution.then(undefined, onPutRejected);
+								}
+							}
+						} catch (error) {
+							hadIndexingErrors = true;
+							if (!attributeErrorReported[property]) {
+								// just report an indexing error once per attribute so we don't spam the logs.
+								// A store closed by worker shutdown surfaces here as "Database not open"; that is
+								// a benign interruption (the next generation re-runs the backfill), so don't log
+								// it as an error — the outer catch returns quietly once the iterator also throws.
+								attributeErrorReported[property] = true;
+								if (Table.primaryStore?.rootStore?.status === 'closed')
+									logger.debug(`Indexing attribute ${property} interrupted by store shutdown`, error);
+								else logger.error(`Error indexing attribute ${property}`, error);
+							}
 						}
 					}
 				}
 				when(
 					lastResolution,
 					() => outstanding--,
-					(error) => {
-						outstanding--;
-						hadIndexingErrors = true;
-						logger.error(error);
-					}
+					() => outstanding--
 				);
 				if (workerData && workerData.restartNumber !== manageThreads.restartNumber) {
 					interrupted = true;
 				}
-				if (++indexed % 100 === 0 || interrupted) {
-					// occasionally update our progress so if we crash, we can resume
-					for (const attribute of attributes) {
-						attribute.lastIndexedKey = key;
-						Table.dbisDB.put(attribute.key, attribute);
+				if (interrupted) {
+					try {
+						await lastResolution;
+					} catch {
+						// already counted and logged by the rejection handler above
 					}
-					if (interrupted) return;
+					await checkpointing;
+					await persistCheckpoint(key);
+					return;
+				}
+				if (atInterval && indexed >= nextCheckpointRecord && performance.now() >= nextCheckpointAt) {
+					nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
+					nextCheckpointRecord = indexed + indexingCheckpointMinRecords;
+					await checkpointing;
+					checkpointing = when(
+						lastResolution,
+						() => persistCheckpoint(key),
+						() => {}
+					);
 				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
-				else if (outstanding > MIN_OUTSTANDING_INDEXING)
-					await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
-				else if (didSynchronousIndexing) await new Promise((resolve) => setImmediate(resolve)); // custom indexes (e.g. HNSW) index synchronously and never raise `outstanding`; without this yield a large backfill runs in a single event-loop turn, starving keepalive/replication and queries and never letting the isIndexing flag be observed
+				if (atInterval || didSynchronousIndexing || outstanding > MIN_OUTSTANDING_INDEXING) await yieldEventTurn();
 			}
 		}
-		// Await the last pending put. If it rejects, that is also an indexing error.
-		// Note: the when() calls above already attach rejection handlers to each record's
-		// last-put promise; this try-catch specifically handles the case where lastResolution
-		// itself rejects (i.e. the very last put in the loop failed) which would otherwise
-		// throw past the hadIndexingErrors check to the outer catch. The broader issue of
-		// unhandled rejections from non-last puts in multi-value attributes is pre-existing
-		// and out of scope for this fix.
+		await checkpointing;
+		// Await the last pending put. If it rejects, that is also an indexing error (already counted by
+		// onIndexPutRejected); catching it here keeps it from escaping to the outer catch.
 		try {
 			await lastResolution;
 		} catch (error) {
@@ -3190,6 +3500,16 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
 		// before we decide whether to mark indexing as complete.
 		await new Promise((resolve) => setImmediate(resolve));
+		// the tail since the last checkpoint is not durable until flushed; announcing the index complete
+		// before that would outlive a crash that loses it
+		if (!hadIndexingErrors) {
+			try {
+				await flushIndexStores(Table.primaryStore.rootStore);
+			} catch (error) {
+				hadIndexingErrors = true;
+				logger.error(`Could not flush the indexes of ${Table.tableName} before marking them complete`, error);
+			}
+		}
 		if (hadIndexingErrors) {
 			// Some records failed to index. Persist the failure marker in the descriptor so
 			// the next call to table() (including after a restart with a fresh PID) re-triggers
@@ -3218,9 +3538,12 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			// update the attributes to indicate that we are finished
 			for (const attribute of attributes) {
 				delete attribute.lastIndexedKey;
+				delete attribute.checkpointCertified;
 				delete attribute.indexingPID;
 				delete attribute.indexingFailed;
 				delete attribute.restartNumber;
+				delete attribute.indexingIncarnation;
+				delete attribute.indexingBuildId;
 				attribute.dbi.isIndexing = false;
 				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
 				// differ from attribute.dbi if a resetDatabases() call during this migration
@@ -3232,11 +3555,12 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			await lastResolution;
 			// now notify all the threads that we are done and the index is ready to use
 			await signalling.signalSchemaChange(
-				new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName)
+				new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName, undefined, branchPath)
 			);
 			logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 		}
 	} catch (error) {
+		await checkpointing;
 		// A worker shutting down closes its stores mid-backfill, so the range iterator or a
 		// put throws (e.g. "Database not open" / "Iterator not initialized"). This is an
 		// interruption, not a data error: the next worker generation re-runs the backfill via

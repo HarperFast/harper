@@ -271,6 +271,89 @@ describe('Test configValidator module', () => {
 			expect(configValidator(config).error.message).to.include("'replication.blobGapEscalationMs' must be an integer");
 		});
 
+		it('accepts a well-formed sql config section', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { engine: 'new', allowFullScan: true, maxSortRows: 500, maxHashRows: 500 };
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('rejects an unknown sql.engine value rather than silently keeping the default', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { engine: 'gibberish' };
+			expect(configValidator(config).error.message).to.include("'sql.engine' must be one of [legacy, new, auto]");
+		});
+
+		it('rejects a quoted-string sql.allowFullScan value (convert is off for this section)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { allowFullScan: 'true' };
+			expect(configValidator(config).error.message).to.include("'sql.allowFullScan' must be a boolean");
+		});
+
+		it('rejects non-positive/non-integer sql.maxSortRows and sql.maxHashRows', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { maxSortRows: 0, maxHashRows: 2.5 };
+			expect(configValidator(config).error.message).to.include("'sql.maxSortRows' must be greater than or equal to 1");
+			expect(configValidator(config).error.message).to.include("'sql.maxHashRows' must be an integer");
+		});
+
+		it('rejects a quoted-number sql.maxSortRows value (convert is off for this section)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { maxSortRows: '500' };
+			expect(configValidator(config).error.message).to.include("'sql.maxSortRows' must be a number");
+		});
+
+		it('rejects an unknown key inside sql (typos fail loudly instead of being silently ignored)', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { allowFullScan: true, allwoFullScan: true };
+			expect(configValidator(config).error.message).to.include("'sql.allwoFullScan' is not allowed");
+		});
+
+		it('accepts an empty sql section', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = {};
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('accepts a disabled entry, the loader spelling for an application turned off', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = false;
+			expect(configValidator(config).error).to.be.undefined;
+			config.sql = null;
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('accepts an application deployed under the sql name before it was reserved', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { package: '@org/sql-app', urlPath: '/sql', install: { timeout: 1000 } };
+			expect(configValidator(config).error).to.be.undefined;
+		});
+
+		it('rejects sql engine settings on an entry that is a deployed application', () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { package: '@org/sql-app', engine: 'new' };
+			expect(configValidator(config).error.message).to.include(
+				"'sql.engine' cannot be set while 'sql' names a deployed application"
+			);
+		});
+
+		it("rejects a typo'd sql setting rather than reading it as an application entry", () => {
+			const config = testUtils.deepClone(FAKE_CONFIG);
+			config.sql = { allwoFullScan: true };
+			expect(configValidator(config).error.message).to.include("'sql.allwoFullScan' is not allowed");
+		});
+
+		// The predicate configUtils.validateConfig() uses to decide whether to warn that 'sql' holds
+		// an application; the schema branch above is driven by the same key list.
+		it('identifies an application-shaped sql entry positively, by the keys a deploy writes', () => {
+			const { isLegacySqlApplicationEntry } = config_val;
+			expect(isLegacySqlApplicationEntry({ package: '@org/sql-app' })).to.be.true;
+			expect(isLegacySqlApplicationEntry({ host: 'sql.example.com' })).to.be.true;
+			expect(isLegacySqlApplicationEntry({ engine: 'new' })).to.be.false;
+			expect(isLegacySqlApplicationEntry({ allwoFullScan: true })).to.be.false;
+			expect(isLegacySqlApplicationEntry({})).to.be.false;
+			expect(isLegacySqlApplicationEntry(undefined)).to.be.false;
+		});
+
 		it('rejects a URL / port / numeric node.hostname, and accepts a bare host (#2218)', () => {
 			const config = testUtils.deepClone(FAKE_CONFIG);
 			for (const [bad, reason] of [

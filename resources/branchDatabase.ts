@@ -571,7 +571,7 @@ function branchRootOf(branchPath: string): string {
  * shared by every worker thread that loaded the application, so a thread that gives up its handle --
  * a failed load, most often -- must not delete storage another thread is serving queries from.
  */
-async function closeBranchAt(branchPath: string): Promise<void> {
+export async function closeBranchAt(branchPath: string): Promise<void> {
 	const pending = branchesByPath.get(branchPath);
 	branchesByPath.delete(branchPath);
 	const opened = await pending?.catch(() => null);
@@ -888,11 +888,10 @@ export async function prepareBranches(
 
 	getDatabases();
 	if (branchedDatabases === true) {
-		// A snapshot, not a subscription: this is every database that exists at THIS load. One created
-		// afterward -- by another application, or by this one once schema declarations can target a
-		// branch -- is not retroactively branched. `system` is excluded the same way an explicit
-		// declaration of it is refused (assertBranchedDatabases): it carries the instance's own catalog,
-		// users and jobs, not application data.
+		// A snapshot, not a subscription: every database that exists at THIS load. One created afterward
+		// is not retroactively branched, and this application's own declarations into an unbranched
+		// database land in the base. `system` is excluded the same way an explicit declaration of it is
+		// refused (assertBranchedDatabases): it carries the instance's catalog, users and jobs.
 		branchedDatabases = Object.keys(databases).filter((name) => name !== 'system');
 	}
 	if (!branchedDatabases.length) return branches;
@@ -924,8 +923,12 @@ export async function prepareBranches(
 			if (isNew) opened.push(branchPath);
 		}
 		// Only now: a relationship whose target this application also branched has to resolve to that
-		// branch, and the whole set has to exist before any of them can resolve that way.
-		for (const branch of branches.values()) hydrateBranchRelationships(branch, branches);
+		// branch, and the whole set has to exist before any of them can resolve that way. The set stays
+		// on each branch for the reloads its own schema declarations trigger later.
+		for (const branch of branches.values()) {
+			branch.relatedBranches = branches;
+			hydrateBranchRelationships(branch, branches);
+		}
 	} catch (error) {
 		// A partially branched application is worse than one that failed to load: some of its names
 		// would resolve to a branch and the rest to the base. Only this application's handles go, and

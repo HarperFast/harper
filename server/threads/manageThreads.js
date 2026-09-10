@@ -173,6 +173,11 @@ module.exports = {
 	isThreadRunning,
 	waitUntilConfirmedGone,
 	restartNumber: workerData?.restartNumber || 1,
+	// Identifies this process incarnation, where the PID cannot: a container reuses PID 1. Minted once
+	// on the main thread and carried to workers, so live siblings agree on it — one derived per thread
+	// would not. `undefined` on a worker started without it; consumers must fall back, not treat that
+	// as a mismatch.
+	processIncarnation: workerData ? workerData.processIncarnation : randomBytes(8).toString('hex'),
 };
 
 connectedPorts.onMessageByType = onMessageByType;
@@ -239,6 +244,7 @@ const RESERVED_WORKER_DATA_KEYS = [
 	'workerCount',
 	'name',
 	'restartNumber',
+	'processIncarnation',
 	'ticketKeys',
 	'noServerStart',
 	'__proto__', // never a legitimate payload name; spread would define it as an own property
@@ -433,6 +439,7 @@ function startWorker(path, options = {}) {
 			workerCount: (workerCount = options.threadCount),
 			name: options.name,
 			restartNumber: module.exports.restartNumber,
+			processIncarnation: module.exports.processIncarnation,
 			ticketKeys: getTicketKeys(),
 		},
 		transferList: portsToSend,
