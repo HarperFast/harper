@@ -1055,7 +1055,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
 			!isPrimaryKey && // no need to use index for primary keys, since we will be iterating over the primary keys
-			Table?.indices[attribute] && // is there an index for this attribute
+			!!(Table && usableIndex(Table, attribute)) && // is there a usable (complete) index for this attribute
 			estimatedIncomingCount > 3; // do we have a valid estimate of multiple incoming records (that is worth using an index for)
 		if (canUseIndex) {
 			if (searchCondition.estimated_count == undefined) estimateCondition(Table)(searchCondition);
@@ -1112,6 +1112,116 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	}
 }
 
+<<<<<<< HEAD
+=======
+/**
+ * Estimates a range comparator's entry count from the store's statistical estimate, blended with
+ * the table-fraction heuristic by the estimate's confidence so low-confidence estimates degrade
+ * to the old behavior. Returns undefined (caller falls back to the heuristic) when the store
+ * cannot estimate, the shape is unexpected, or the executed range wouldn't match this one.
+ */
+function estimateRangeCondition(table, condition, searchType, fraction) {
+	const attributeName = condition[0] ?? condition.attribute;
+	const isPrimaryKey = attributeName === table.primaryKey;
+	const store = isPrimaryKey ? table.primaryStore : usableIndex(table, attributeName);
+	// LMDB-backed and custom index stores do not implement estimateCount
+	if (typeof store?.estimateCount !== 'function') return undefined;
+	let value = condition[1] ?? condition.value;
+	if (value instanceof Date) value = value.getTime();
+	let range;
+	switch (searchType) {
+		case 'lt':
+			// `start: true` mirrors searchByIndex: `true` sorts above `null`, so an indexNulls
+			// index's `[null, primaryKey]` entries are outside the executed range
+			range = { start: true, end: value };
+			break;
+		case 'le':
+			range = { start: true, end: value, inclusiveEnd: true };
+			break;
+		case 'gt':
+			range = { start: value, exclusiveStart: true };
+			break;
+		case 'ge':
+			range = { start: value };
+			break;
+		case 'between':
+		case 'gele':
+		case 'gelt':
+		case 'gtlt':
+		case 'gtle': {
+			if (!Array.isArray(value)) return undefined;
+			let [start, end] = value;
+			if (start instanceof Date) start = start.getTime();
+			if (end instanceof Date) end = end.getTime();
+			range = {
+				start,
+				end,
+				inclusiveEnd: searchType === 'between' || searchType === 'gele' || searchType === 'gtle',
+				exclusiveStart: searchType === 'gtlt' || searchType === 'gtle',
+			};
+			break;
+		}
+		case 'starts_with': {
+			const prefix = value?.toString();
+			if (!prefix) return undefined;
+			range = { start: prefix, end: getStringPrefixUpperBound(prefix) };
+			break;
+		}
+		case 'prefix': {
+			let start = Array.isArray(value) ? value : [value, null];
+			if (start[start.length - 1] != null) start = start.concat(null);
+			const end = start.slice(0);
+			end[end.length - 1] = MAXIMUM_KEY;
+			range = { start, end };
+			break;
+		}
+		default:
+			return undefined;
+	}
+	// Long string bounds get truncated + filtered at execution (searchByIndex), so the
+	// executed range is wider than this one; don't estimate what won't be iterated.
+	if (
+		(typeof range.start === 'string' && range.start.length > MAX_SEARCH_KEY_LENGTH) ||
+		(typeof range.end === 'string' && range.end.length > MAX_SEARCH_KEY_LENGTH)
+	) {
+		return undefined;
+	}
+	let count, confidence;
+	try {
+		({ count, confidence } = store.estimateCount(range) ?? {});
+	} catch {
+		// a concurrently closing/dropped store must degrade the plan, not fail the query
+		return undefined;
+	}
+	if (!Number.isFinite(count) || count < 0 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1)
+		return undefined;
+	const heuristic = fraction * estimatedEntryCount(table.primaryStore) + 1;
+	return Math.max(1, Math.round(confidence * count + (1 - confidence) * heuristic));
+}
+
+/** The index a condition can be driven by; searchByIndex refuses a rebuilding one, so it reads as absent. */
+function usableIndex(table, attributeName): any {
+	const index = attributeName == null ? undefined : table.indices[attributeName];
+	return index?.isIndexing ? undefined : index;
+}
+
+/**
+ * True when an index this attribute would have to be driven by is still being built, following a
+ * relationship path to the local join index and on to the related table's leaf index.
+ */
+function drivesRebuildingIndex(table, attributeName, relationshipOffset = 0): boolean {
+	if (!Array.isArray(attributeName))
+		return attributeName != null && attributeName !== table.primaryKey && !!table.indices[attributeName]?.isIndexing;
+	if (relationshipOffset >= attributeName.length - 1)
+		return drivesRebuildingIndex(table, attributeName[relationshipOffset]);
+	const attribute = findAttribute(table.attributes, attributeName[relationshipOffset]);
+	if (!attribute) return false;
+	if (table.indices[attribute.relationship?.from]?.isIndexing) return true;
+	const relatedTable = attribute.definition?.tableClass || attribute.elements?.definition?.tableClass;
+	return !!relatedTable && drivesRebuildingIndex(relatedTable, attributeName, relationshipOffset + 1);
+}
+
+>>>>>>> d1fb096ff (Merge pull request #2543 from HarperFast/fix/index-rebuilding-thread-consistency)
 export function estimateCondition(table) {
 	function estimateConditionForTable(condition) {
 		if (condition.estimated_count === undefined) {
@@ -1141,7 +1251,21 @@ export function estimateCondition(table) {
 			// skip if it is cached
 			let searchType = condition.comparator || condition.search_type;
 			searchType = ALTERNATE_COMPARATOR_NAMES[searchType] || searchType;
+<<<<<<< HEAD
 			if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
+=======
+			// before comparator dispatch: several branches fall back to a finite table-fraction heuristic
+			if (drivesRebuildingIndex(table, condition[0] ?? condition.attribute)) {
+				condition.estimated_count = Infinity;
+			} else if (condition.negated) {
+				// a negated condition always executes as a full scan (searchByIndex forces
+				// needFullScan), so follow the filter-only convention used by contains/ends_with:
+				// estimate Infinity so its positive-range estimate can never win the driving-condition
+				// ordering. Short-circuit here rather than computing (and discarding) a positive-range
+				// estimate that would cross the native FFI boundary for nothing.
+				condition.estimated_count = Infinity;
+			} else if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
+>>>>>>> d1fb096ff (Merge pull request #2543 from HarperFast/fix/index-rebuilding-thread-consistency)
 				const attribute_name = condition[0] ?? condition.attribute;
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
 				else if (Array.isArray(attribute_name) && attribute_name.length > 1) {
@@ -1167,12 +1291,12 @@ export function estimateCondition(table) {
 					}
 				} else {
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
-					const index = table.indices[attribute_name];
+					const index = usableIndex(table, attribute_name);
 					condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
 				}
 			} else if (searchType === 'contains' || searchType === 'ends_with' || searchType === 'ne') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (condition.value === null && searchType === 'ne') {
 					condition.estimated_count = Math.max(
 						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0),
@@ -1181,7 +1305,7 @@ export function estimateCondition(table) {
 				} else condition.estimated_count = Infinity;
 			} else if (searchType === 'in') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (Array.isArray(condition.value) && index) {
 					// Sum of per-value matches (over-counts duplicates but is a fine ceiling)
 					let estimate = 0;
@@ -1199,7 +1323,7 @@ export function estimateCondition(table) {
 				condition.estimated_count = BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (searchType === 'sort') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (index?.customIndex?.estimateCountAsSort)
 					// allow custom index to define its own estimation of counts
 					condition.estimated_count = index.customIndex.estimateCountAsSort(condition);
@@ -1207,7 +1331,7 @@ export function estimateCondition(table) {
 			} else {
 				// for the search types that use the broadest range, try do them last
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (index?.customIndex?.estimateCount)
 					// allow custom index to define its own estimation of counts
 					condition.estimated_count = index.customIndex.estimateCount(condition.value);
