@@ -636,6 +636,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 			await withChainLinks(async (links, childLine, childId, refreshChildWrite) => {
 				resetLongLivedTransactionReportsForTests();
+				const missingActiveReport = 'the child must be reported on the first monitor tick after a write';
 				let lastChildLine;
 				let reportedChildLine;
 				try {
@@ -666,11 +667,11 @@ describe('Long-lived transaction reporting (#2471)', () => {
 						},
 						{
 							timeout: 10000,
-							message: 'the child must be reported on the first monitor tick after a write',
+							message: missingActiveReport,
 						}
 					);
 				} catch (error) {
-					if (error.code === 'ERR_ASSERTION' && lastChildLine)
+					if (error.message === missingActiveReport && lastChildLine)
 						assert.match(lastChildLine, /state: [^,]*active/, 'the last reported child state must be active');
 					throw error;
 				}
