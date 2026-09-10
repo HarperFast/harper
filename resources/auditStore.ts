@@ -264,7 +264,7 @@ export function openAuditStore(rootStore) {
 				let lastKey: any;
 				try {
 					if (isRocksAuditStore) {
-						const before = Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority);
+						const before = retentionCutoff(1 + passCleanupPriority * passCleanupPriority);
 						raiseAuditFloor(auditStore, before);
 						auditStore.rootStore.purgeLogs({ before });
 					} else {
@@ -272,7 +272,7 @@ export function openAuditStore(rootStore) {
 						// close landing mid-pass closes the env under it. for-of calls next() before the body, so a
 						// check inside the body advances the cursor first — the guard has to precede every next().
 						// remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
-						const end = Date.now() - auditRetention / (1 + passCleanupPriority * passCleanupPriority);
+						const end = retentionCutoff(1 + passCleanupPriority * passCleanupPriority);
 						// Probe before raising, so an idle database does not write a floor transaction on every
 						// pass forever. `end` is fixed and audit keys only move forward, so an empty probe means
 						// the loop below finds nothing either.
@@ -613,9 +613,9 @@ function updateAuditFloor(
  */
 export function boundedAuditPruneEnd(auditStore: any, cutoff: number): number {
 	// Non-numbers pass through untouched for `raiseAuditFloor` to reject. `>` coerces, so without this
-	// a numeric STRING ('9999999999999', 'Infinity') or a future Date compared true against the bound
-	// and came back AS the bound — a number raiseAuditFloor accepts — so an input it used to reject as
-	// a type error became a whole-log prune (#2458, kriszyp).
+	// a numeric STRING ('9999999999999', 'Infinity') or a future Date compares true against the bound
+	// and comes back AS the bound — a number raiseAuditFloor accepts — turning a type error into a
+	// whole-log prune.
 	if (typeof cutoff !== 'number') return cutoff;
 	let bound = Date.now();
 	for (const newest of auditStore.getKeys({ reverse: true, limit: 1 })) {
@@ -634,7 +634,7 @@ export function boundedAuditPruneEnd(auditStore: any, cutoff: number): number {
  * purge that finds no whole droppable file, a retention pass that stops at MAX_DELETES_PER_CLEANUP
  * with a large backlog still eligible. Over-reporting costs a consumer one unnecessary resync;
  * under-reporting loses its data silently. For the three retention paths the over-report is bounded
- * by the thing that already bounds the promise — they pass `Date.now() - auditRetention`, so the
+ * by the thing that already bounds the promise — they pass `Date.now() - auditRetention` (never below 0), so the
  * floor cannot climb above the horizon `logging.auditRetention` already declines to retain past. The
  * two operator-supplied bounds (`deleteHistory`, and the bridge's whole-database purge) have no such
  * ceiling of their own and must be run through `boundedAuditPruneEnd` first; a bound above everything
@@ -758,7 +758,7 @@ export function establishAuditFloor(auditStore: any): void {
 		// Date.now() outright.
 		//
 		// Neither is a reason to refuse to stamp — the unknown sentinel is absorbing, so that would make
-		// every upgraded deployment fail closed forever (a recorded ruling in #2458). They are the reason
+		// every upgraded deployment fail closed forever. They are the reason
 		// the guess is RECORDED as a guess: written first, so it cannot be lost behind a floor that
 		// outlives it, and left in place afterwards so the repair reading stays available.
 		let fresh = Date.now();
@@ -850,6 +850,18 @@ export function setAuditRetention(retentionTime, defaultDelay = DEFAULT_AUDIT_CL
 }
 
 /**
+ * The retention cutoff a prune uses: `Date.now() - auditRetention`, scaled down by `divisor` for a
+ * higher-priority pass, and never below 0. A retention above ~55.7 years (or `Infinity`, to keep
+ * logs indefinitely) would otherwise go negative, and a negative bound is not "nothing eligible" —
+ * `raiseAuditFloor` rejects it, so every boot purge and retention pass would warn and the floor
+ * would never be raised on that install. At 0 the pass is a harmless no-op: nothing sits before
+ * the epoch, and a floor that already exists is never lowered to it.
+ */
+function retentionCutoff(divisor = 1): number {
+	return Math.max(0, Date.now() - auditRetention / divisor);
+}
+
+/**
  * One-shot purge of transaction-log files already older than the audit retention window,
  * intended to run during startup/recovery before transaction-log replay. The steady-state
  * cleanup loop (scheduleAuditCleanup) only starts once a worker reaches steady state, so a node
@@ -861,7 +873,7 @@ export function setAuditRetention(retentionTime, defaultDelay = DEFAULT_AUDIT_CL
 export function purgeAgedLogs(rootStore: RocksDatabase): string[] {
 	// Mirror the read-only guard in scheduleAuditCleanup: never delete log files in read-only mode.
 	if (isReadOnlyMode()) return [];
-	const before = Date.now() - auditRetention;
+	const before = retentionCutoff();
 	// The audit store is reachable this early because initStores opens it before replayLogs runs this.
 	raiseAuditFloor((rootStore as any).auditStore, before);
 	return rootStore.purgeLogs({ before });

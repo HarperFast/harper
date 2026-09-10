@@ -97,6 +97,22 @@ describe('purgeAgedLogs', () => {
 		assert.deepEqual(purged, ['000001.txnlog', '000002.txnlog'], 'returns the purged file list');
 	});
 
+	it('treats a retention window longer than the epoch as "nothing eligible", not as an error', () => {
+		// `Date.now() - auditRetention` goes negative past ~55.7 years, and for `Infinity` (keep logs
+		// forever). A negative bound is not harmless: raiseAuditFloor rejects it, so every boot purge and
+		// retention pass would warn and the floor would never be raised on that install. Clamped at 0 the
+		// pass is a no-op: nothing is before the epoch, and the existing floor is never lowered to it.
+		for (const retention of [Infinity, 100 * 365.25 * 86_400_000]) {
+			setAuditRetention(retention);
+			const store = fakeStore();
+			const purged = purgeAgedLogs(store);
+			assert.strictEqual(store.calls.length, 1, `${retention}: the purge must still be asked, with a bound`);
+			assert.strictEqual(store.calls[0].before, 0, `${retention}: the bound must clamp to 0, not go negative`);
+			assert.deepStrictEqual(store.floorWrites, [], `${retention}: a floor of 1 already covers 0 — no write`);
+			assert.deepStrictEqual(purged, ['000001.txnlog', '000002.txnlog'], 'and the purge result is returned');
+		}
+	});
+
 	it('records the staleness floor at the same cutoff, before purging anything', () => {
 		setAuditRetention(60_000);
 		const store = fakeStore();

@@ -589,6 +589,9 @@ describe('audit staleness floor', () => {
 			assert.ok(Number.isFinite(floor), `the floor must stay finite, got ${floor}`);
 			assert.strictEqual(floorOf(spared), floor, 'precondition: one floor per database');
 			// the sibling was never touched, so a cursor taken after the wipe must still resume
+			// the clamp sits at `newest + 1` when the newest key's fractional millisecond is at or past the
+			// clock, so a write in the same millisecond lands below the floor; let the clock pass it first
+			while (Date.now() <= floor) await new Promise((resolve) => setTimeout(resolve, 1));
 			await spared.put('s-2', { name: 'two' });
 			const later = auditEntries(spared.auditStore)
 				.map((entry) => entry.logKey)
@@ -619,6 +622,9 @@ describe('audit staleness floor', () => {
 			assert.ok(floor <= Date.now() + 1, `and must not be left sitting in the future, got ${floor}`);
 			// The property the verbatim floor destroyed: a write after the prune is still resumable. The
 			// sibling was never pruned, so this must hold for it regardless of what `wiped` asked for.
+			// the clamp sits at `newest + 1` when the newest key's fractional millisecond is at or past the
+			// clock, so a write in the same millisecond lands below the floor; let the clock pass it first
+			while (Date.now() <= floor) await new Promise((resolve) => setTimeout(resolve, 1));
 			await spared.put('s-2', { name: 'two' });
 			const later = auditEntries(spared.auditStore)
 				.map((entry) => entry.logKey)
