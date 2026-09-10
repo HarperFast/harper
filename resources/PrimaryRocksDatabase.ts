@@ -1,9 +1,5 @@
-<<<<<<< HEAD
-import { RocksDatabase, type RocksDatabaseOptions, constants, type Store } from '@harperfast/rocksdb-js';
-=======
 import { trackReadRange } from './DatabaseTransaction.ts';
-import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transaction } from '@harperfast/rocksdb-js';
->>>>>>> b349f8ec8 (Merge pull request #2556 from HarperFast/fix/rocksdb-290-integration-failures)
+import { RocksDatabase, type RocksDatabaseOptions, constants, type Store } from '@harperfast/rocksdb-js';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';

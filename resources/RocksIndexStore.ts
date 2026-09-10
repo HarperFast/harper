@@ -28,7 +28,6 @@ export class RocksIndexStore extends RocksDatabase {
 	 * @param options
 	 */
 	getRange(options: StoreIteratorOptions): Iterable<any> {
-<<<<<<< HEAD
 		let { start, end, exclusiveStart, inclusiveEnd, reverse } = options;
 		if ((reverse ? !exclusiveStart : exclusiveStart) && start !== undefined) {
 			start = [start, MAXIMUM_KEY];
@@ -37,10 +36,7 @@ export class RocksIndexStore extends RocksDatabase {
 			end = [end, MAXIMUM_KEY];
 		}
 		const translatedOptions = { ...options, start, end };
-		return super.getRange(translatedOptions).map(({ key }) => {
-=======
-		return trackReadRange(options.transaction, () => super.getRange(translateIndexBounds(options))).map(({ key }) => {
->>>>>>> b349f8ec8 (Merge pull request #2556 from HarperFast/fix/rocksdb-290-integration-failures)
+		return trackReadRange(options.transaction, () => super.getRange(translatedOptions)).map(({ key }) => {
 			return { key: key[0], value: key.length > 2 ? key.slice(1) : key[1] };
 		});
 	}

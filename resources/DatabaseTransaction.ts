@@ -1662,22 +1662,11 @@ function startMonitoringTxns() {
 		for (const txn of supervisedWriteRoots) if (!trackedTxns.has(txn)) monitorTransaction(txn);
 	}, txnExpiration).unref();
 
-<<<<<<< HEAD
 	function monitorTransaction(txn: DatabaseTransaction) {
-=======
-	function monitorTransaction(
-		txn: DatabaseTransaction,
-		checkedCommitPhaseChains: Set<DatabaseTransaction>,
-		reportThresholdMs: number,
-		reportNow: number,
-		reportBudget: LongLivedHolderReportBudget
-	) {
 		if (txn.rangeReadActive) {
 			txn.rangeReadActive = false;
 			txn.renewReadTimeout();
 		}
-		reportIfLongLived(txn, reportThresholdMs, reportNow, reportBudget);
->>>>>>> b349f8ec8 (Merge pull request #2556 from HarperFast/fix/rocksdb-290-integration-failures)
 		{
 			// Decay write recency once per tick for every tracked link, independent of the `timeout`
 			// branches below — a tracked link that keeps its own idle limit alive by reading must not
