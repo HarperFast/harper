@@ -320,7 +320,7 @@ describe('Test log rotation on the write path (#1877)', () => {
 		assert.ok(fs.pathExistsSync(rotatedDir), 'expected the removed rotation directory to be recreated');
 	});
 
-	it('keeps records and an in-file diagnostic when the rotation target cannot be written', () => {
+	it('keeps records and an in-file diagnostic when the rotation target cannot be written', async () => {
 		const { logger, logPath, rotatedDir } = newCase({ maxSize: '4K' });
 		logger.error('one line so the rotated directory exists');
 		// Replacing the rotated directory with a file makes every rename fail with ENOTDIR, which is
@@ -328,7 +328,20 @@ describe('Test log rotation on the write path (#1877)', () => {
 		fs.removeSync(rotatedDir);
 		fs.writeFileSync(rotatedDir, 'not a directory');
 		for (let i = 0; i < 60; i++) logger.error(`failing rotation line ${i} ${'w'.repeat(60)}`);
-		const contents = fs.readFileSync(logPath, 'utf8');
+		const contents = await waitFor(
+			() => {
+				// A failed rotation preserves its diagnostic for the next append, so keep exercising that
+				// contract while waiting instead of assuming a timer-only flush can publish the notice.
+				logger.error(`diagnostic probe ${'w'.repeat(60)}`);
+				const all = readGenerations(logPath, rotatedDir);
+				return ['failing rotation line 0 ', 'failing rotation line 59 ', 'Harper log rotation problem'].every(
+					(marker) => all.includes(marker)
+				)
+					? all
+					: false;
+			},
+			{ timeout: 10000, message: 'the failed rotation never preserved its records and diagnostic' }
+		);
 		assert.match(contents, /failing rotation line 0 /);
 		assert.match(contents, /failing rotation line 59 /);
 		assert.match(contents, /Harper log rotation problem/);
