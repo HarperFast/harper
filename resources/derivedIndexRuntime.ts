@@ -851,6 +851,7 @@ class DerivedIndexRunner {
 						reason: shared.reason ?? 'condemned by a previous owner',
 						ownerEpoch: this.#ownerEpoch,
 					};
+					this.#admitWrites();
 					this.#release();
 				}
 				return;
@@ -1470,6 +1471,9 @@ class DerivedIndexRunner {
 		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
 		this.#publishReadiness('needs-rebuild', shared);
 		this.#rebuildRequested = true;
+		// The retry needs a wake, and wakes come from commits: shedding them would be the only thing
+		// keeping this park from ever ending.
+		this.#admitWrites();
 		this.#release();
 	}
 
@@ -1546,6 +1550,7 @@ class DerivedIndexRunner {
 			return;
 		}
 		this.#publishReadiness('needs-rebuild', shared);
+		this.#admitWrites();
 		this.#release();
 	}
 

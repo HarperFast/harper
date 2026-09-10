@@ -1266,6 +1266,26 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('admits writes again when a lagging index parks in needs-rebuild it can never leave', async () => {
+		const records = new Map([['1:a', { version: 8, value: { title: 'a' } }]]);
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 11, recordId: 'a' })]]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 10, recordId: 'a' })]]]),
+		});
+		// No reset(): the runtime cannot rebuild this backend, so needs-rebuild is a terminal park.
+		const backend = new SyncBackend('parked-lagging', cursor(10), () => DERIVED_INDEX_ACCEPTED);
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 60_000 });
+		runtime.register(registration(backend, { maxLagMilliseconds: 20, maxFlushAgeMilliseconds: 5 }));
+		await waitFor(() => derivedIndexWriteRejection(store, 1) !== undefined, { timeout: 5000 });
+		backend.stateChange('failed');
+		await waitFor(() => runtime.getStatus('parked-lagging')?.state === 'needs-rebuild', { timeout: 5000 });
+		assert.strictEqual(
+			derivedIndexWriteRejection(store, 1),
+			undefined,
+			'an index parked in needs-rebuild with no way to rebuild must not shed writes forever'
+		);
+		await runtime.stop();
+	});
+
 	it('arms one retry timer while tryLock keeps throwing under a commit stream', async () => {
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
 		let attempts = 0;
