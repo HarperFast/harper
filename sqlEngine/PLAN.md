@@ -119,9 +119,9 @@ type LogicalPlan =
 | `PhysicalProject`                | per-row evaluation of projection list.                                                                                                                                                                                                |
 | `PhysicalRelationshipJoin`       | single `Table.search` using the array-attribute relationship syntax (`core/resources/search.ts:138-196`) — fastest join path when the join is on a declared `relationship` attribute.                                                 |
 | `PhysicalIndexNestedLoopJoin`    | outer side streams via index scan; per outer row, probe inner side with `Table.search({ conditions: [{ attribute: innerKey, value: outerRow[outerKey], comparator: 'equals' }] })`. LEFT OUTER fills nulls when probe returns 0 rows. |
-| `PhysicalHashJoin`               | build smaller side into `Map<key, row[]>`; probe the other; cap build size by `sql.engine.maxHashRows`.                                                                                                                               |
+| `PhysicalHashJoin`               | build smaller side into `Map<key, row[]>`; probe the other; cap build size by `sql.maxHashRows`.                                                                                                                                      |
 | `PhysicalNestedLoopJoin`         | only for cross / non-equi join. Last resort.                                                                                                                                                                                          |
-| `PhysicalSort`                   | in-memory sort with `sql.engine.maxSortRows` cap.                                                                                                                                                                                     |
+| `PhysicalSort`                   | in-memory sort with `sql.maxSortRows` cap.                                                                                                                                                                                            |
 | `PhysicalLimit`                  | counts rows; calls `child.return()` when limit is reached.                                                                                                                                                                            |
 | `PhysicalStreamingAggregate`     | requires input sorted on group keys (set by `outputOrder` properties on physical operators); O(1) memory per group.                                                                                                                   |
 | `PhysicalHashAggregate`          | `Map<groupKey, accumulators>`; capped by `maxHashRows`.                                                                                                                                                                               |
@@ -217,7 +217,7 @@ core/sqlEngine/
 **Modified files (small edits):**
 
 - `core/sqlTranslator/index.js`: in `processAST` (line 130), after the switch resolves `sqlFunction`, route through `core/sqlEngine/router.ts` instead of calling `search`/`convertInsert`/`cbUpdateUpdate`/`deleteTranslator` directly.
-- `config/...`: add the `sql.engine`, `sql.engine.allowFullScan`, `sql.engine.maxSortRows`, `sql.engine.maxHashRows` settings.
+- `config/...`: add the `sql.engine`, `sql.allowFullScan`, `sql.maxSortRows`, `sql.maxHashRows` settings (siblings under `sql`, not nested under `engine` — matches `SqlEngineConfig` in `config.ts`).
 - No changes to `core/dataLayer/SQLSearch.js`, `SelectValidator.js`, `sql_statement_bucket.js` until the final cutover phase.
 
 ## Custom function porting

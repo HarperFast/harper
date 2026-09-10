@@ -1,0 +1,16 @@
+# ItemF (audit:false) reaches Table.ts _writeDelete()'s non-audit commit branch, where the
+# base-row removal is the one write that has to be told about the ambient transaction; before
+# #1869 it was not. ItemT (audit:true) removes through updateRecord(), which has always threaded
+# {transaction}, and is the control: a red ItemT arm means the divergence is not the one this
+# anchor pins.
+type ItemF @table(audit: false) @export {
+	id: ID! @primaryKey
+	category: String @indexed
+	value: String
+}
+
+type ItemT @table(audit: true) @export {
+	id: ID! @primaryKey
+	category: String @indexed
+	value: String
+}

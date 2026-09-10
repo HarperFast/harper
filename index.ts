@@ -28,8 +28,10 @@ export type {
 	Session,
 	SourceContext,
 	SubscriptionRequest,
+	RecordLockOptions,
 	RequestTargetOrId,
 	ResourceInterface,
+	WritableRecord,
 } from './resources/ResourceInterface.ts';
 export type { User } from './security/user.ts';
 export type { RecordObject } from './resources/RecordEncoder.ts';

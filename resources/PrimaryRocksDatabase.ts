@@ -1,9 +1,9 @@
-import { RocksDatabase, type RocksDatabaseOptions, constants, type Store } from '@harperfast/rocksdb-js';
+import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transaction } from '@harperfast/rocksdb-js';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
 import { when } from '../utility/when.ts';
-import { entryMap, METADATA, type Entry } from './RecordEncoder.ts';
+import { assignStoredFields, entryMap, METADATA, VERSION_REUSED, type Entry } from './RecordEncoder.ts';
 
 /**
  * RocksDatabase subclass that owns all primary-store behaviour for Harper tables:
@@ -41,6 +41,33 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		}
 	}
 
+	// Match LMDB's remove(key, version) contract without splitting the version check from the delete.
+	async removeIfVersion(id: any, version: number): Promise<boolean> {
+		let retried = false;
+		while (true) {
+			let transaction: Transaction | undefined;
+			try {
+				transaction = new Transaction(this.store);
+				const entry = this.#processEntry(super.getSync(id, { transaction }), id);
+				if (!entry || entry.version !== version) {
+					transaction.abort();
+					return false;
+				}
+				this.#cache?.delete(id);
+				super.removeSync(id, { transaction });
+				await transaction.commit();
+				return true;
+			} catch (error: any) {
+				try {
+					transaction?.abort();
+				} catch {}
+				// rocksdb-js reports a writer that committed between our read and our commit as ERR_BUSY
+				if (retried || error?.code !== 'ERR_BUSY') throw error;
+				retried = true;
+			}
+		}
+	}
+
 	/**
 	 * Initialises encoder/decoder state. Must be called once after open() with the root
 	 * RocksDatabase. Equivalent to the RocksDB branch of handleLocalTimeForGets, but as
@@ -60,7 +87,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			if (entry.value.constructor === Object && this.#enc.structPrototype) {
 				const originalValue = entry.value;
 				entry.value = new this.#enc.structPrototype.constructor();
-				Object.assign(entry.value, originalValue);
+				assignStoredFields(entry.value, originalValue, this.#enc);
 			}
 			if (typeof entry.value === 'object' && entry.value !== null) {
 				entryMap.set(entry.value, entry);
@@ -94,6 +121,13 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	 */
 	getEntry(id: any, options?: any): any {
 		this.readCount++;
+		// Commit-path base reads must reflect the caller's transaction snapshot; the cache vouch
+		// answers "latest committed" — the wrong question there, and wrong outright for a version a
+		// resequenced write reused — so read the store directly, touching neither cache nor VT.
+		if (options?.uncachedRead) {
+			if (options.async) return when(super.get(id, options), (result) => this.#processEntry(result, id));
+			return this.#processEntry(super.getSync(id, options), id);
+		}
 		const cache = this.#cache;
 		// The cache stores the record *value* (weakly, via setValue) rather than
 		// the Entry: a WeakRef-wrapped value lets the LRFU expirer release it once
@@ -131,11 +165,16 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 				if (cache && cachedValue !== undefined) cache.delete(id);
 				return undefined;
 			}
-			// Only object values can be weakly cached and mapped back to their Entry;
-			// primitive/empty values fall through uncached (no fast path, still correct).
-			if (entry.version != null && cache && entry.value != null && typeof entry.value === 'object') {
-				entryMap.set(entry.value, entry);
-				cache.setValue(id, entry.value, (entry.size ?? 0) >> 10);
+			if (entry.version != null && cache) {
+				// its version no longer identifies its value, so drop any copy already held
+				if (entry.metadataFlags & VERSION_REUSED) {
+					if (cachedValue !== undefined) cache.delete(id);
+				} else if (entry.value != null && typeof entry.value === 'object') {
+					// Only object values can be weakly cached and mapped back to their Entry;
+					// primitive/empty values fall through uncached (no fast path, still correct).
+					entryMap.set(entry.value, entry);
+					cache.setValue(id, entry.value, (entry.size ?? 0) >> 10);
+				}
 			}
 			return entry;
 		});
@@ -164,7 +203,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 			if (entry.value?.constructor === Object && enc.structPrototype) {
 				const originalValue = entry.value;
 				entry.value = new enc.structPrototype.constructor();
-				for (const key in originalValue) entry.value[key] = originalValue[key];
+				assignStoredFields(entry.value, originalValue, enc);
 			}
 			return entry;
 		});

@@ -12,7 +12,7 @@ import harperLogger from './logging/harper_logger.ts';
 
 import { CONFIG_PARAMS } from './hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
-import { nonInteractiveSpawn } from '../components/Application.ts';
+import { nonInteractiveSpawn, packageManagerInstallArguments } from '../components/Application.ts';
 import { withComponentPreparationLock } from '../components/componentPreparationLock.ts';
 import { isThreadRunning } from '../server/threads/manageThreads.js';
 
@@ -26,18 +26,19 @@ export async function installModules(req: any) {
 		'install_node_modules is deprecated. Dependencies are automatically installed on' +
 		' deploy, and install_node_modules can lead to inconsistent behavior';
 	harperLogger.warn(deprecationWarning, req.projects);
-	const validation = modulesValidator(req);
+	const { error: validation, value: validatedRequest } = modulesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	let { projects, dryRun } = req;
+	const { projects, dry_run: dryRun } = validatedRequest;
 
 	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
 	const responseObject: any = {};
 
-	const args = ['install', '--force', '--omit=dev', '--json'];
+	// `allowInstallScripts` is true because this operation has always run a project's install lifecycle
+	const args = [...packageManagerInstallArguments('npm', true, true), '--json'];
 	if (dryRun) args.push('--dry-run');
 
 	for (const project of projects) {
@@ -91,15 +92,16 @@ function parseNPMStdErr(stderr: string) {
 }
 
 /**
- * Validator for both installModules & auditModules
+ * Validator for installModules
  * @param {Object} req
- * @returns {*}
  */
 function modulesValidator(req: any) {
+	// `dryRun` was the only spelling that worked before dry_run was honored; keep it accepted, but
+	// reject a request that carries both rather than picking a winner
 	const funcSchema = Joi.object({
 		projects: Joi.array().min(1).items(Joi.string()).required(),
 		dry_run: Joi.boolean().default(false),
-	});
+	}).rename('dryRun', 'dry_run', { ignoreUndefined: true });
 
-	return validator.validateBySchema(req, funcSchema);
+	return validator.validateAndConvertBySchema(req, funcSchema);
 }

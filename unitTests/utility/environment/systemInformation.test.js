@@ -130,7 +130,7 @@ const EXPECTED_PROPERTIES = {
 		'node_version',
 		'npm_version',
 	],
-	time: ['current', 'uptime', 'timezone', 'timezoneName'],
+	time: ['current', 'uptime', 'timezone', 'timezoneName', 'process_uptime'],
 	cpu: [
 		'manufacturer',
 		'brand',
@@ -253,6 +253,12 @@ describe('test systemInformation module', () => {
 	it('test getTimeInfo function', () => {
 		const results = system_information.getTimeInfo();
 		assert.deepEqual(Object.keys(results).sort(), EXPECTED_PROPERTIES.time.sort());
+		// process_uptime is process.uptime() in seconds (matching the sibling `uptime`), not ms.
+		assert.equal(typeof results.process_uptime, 'number');
+		assert.ok(
+			Math.abs(results.process_uptime - process.uptime()) <= 2,
+			'process_uptime should be process uptime in seconds'
+		);
 	});
 
 	it('test getCPUInfo function', async () => {

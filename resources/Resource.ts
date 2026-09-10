@@ -10,7 +10,12 @@ import {
 	RequestTargetOrId,
 } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
-import { DatabaseTransaction, TRANSACTION_STATE, type Transaction } from './DatabaseTransaction.ts';
+import {
+	DatabaseTransaction,
+	isJoinableScope,
+	isReleasedTransaction,
+	type Transaction,
+} from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.ts';
@@ -224,6 +229,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 				record = idPrefix;
 			}
 		}
+		if (isReleasedTransaction(context)) context = undefined;
 		if (context) {
 			if ((context as any).getContext) context = (context as any).getContext();
 		} else {
@@ -589,6 +595,9 @@ function transactional(
 	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
 		let id, query, isCollection;
 		let data;
+		// An absent argument, not a context — and not this call's data either.
+		if (isReleasedTransaction(dataOrContext)) dataOrContext = undefined;
+		if (isReleasedTransaction(context)) context = undefined;
 		// First we do our argument normalization. There are two main types of methods, with or without content
 		if (hasContent) {
 			// for put, post, patch, publish, query
@@ -760,9 +769,10 @@ function transactional(
 			if (isCollection) resourceOptions.isCollection = true;
 		} else resourceOptions = options;
 		const loadAsInstance = this.loadAsInstance;
-		// Only join an existing transaction if it is still genuinely OPEN (mirrors the reuse check
-		// resources/transaction.ts's transaction() helper already applies to itself). A `context`
-		// object can carry a *stale* `.transaction` left over from an earlier, unrelated call that
+		// Only join an existing transaction that can actually be a scope (isJoinableScope: OPEN, and it
+		// stages its writes rather than committing each one — the same gate resources/transaction.ts's
+		// transaction() helper applies to itself). Beyond that, a `context` object can carry a *stale*
+		// `.transaction` left over from an earlier, unrelated call that
 		// already ran to completion: ambient contexts obtained via contextStorage.getStore() are
 		// no longer guaranteed to be fresh, one-shot objects now that processLocalTransaction (#1591/
 		// #1592) installs one shared, long-lived context for the lifetime of an entire operation
@@ -786,7 +796,7 @@ function transactional(
 		//    starting fresh) makes the write throw transactionOpenTooLongError via addWrite()/commit()'s
 		//    poison check, correctly propagating the abort to the caller. See
 		//    integrationTests/resources/txn-overtime-atomicity.test.ts.
-		if (context?.transaction?.open === TRANSACTION_STATE.OPEN || context?.transaction?.timedOut) {
+		if (isJoinableScope(context?.transaction) || context?.transaction?.timedOut) {
 			// we are already in a transaction (or it was poisoned by a timeout abort and must fail), proceed
 			const resource = this.getResource(query, context, resourceOptions);
 			return resource.then
@@ -953,15 +963,23 @@ function registerLiveSubscriptionForContext(subscription: any, resource: any, ad
 		// JWT exp of the bearer credential (set by the auth layer); undefined for password/mTLS/session.
 		authExpiresAt: user.authExpiresAt,
 		recheck: async () => {
-			// Re-fetch current user state — the user/role cache is rebuilt on mutations — so a dropped or
-			// role-stripped user no longer authorizes.
-			const { findAndValidateUser } = require('../security/user');
-			const fresh: any = await findAndValidateUser(username, undefined, false);
-			if (!fresh?.role) return false;
-			// Advance the subscription's context to the fresh user so downstream checks — context.user
-			// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
-			// not the stale user captured at subscribe time.
-			if (context) (context as any).user = fresh;
+			let fresh: any;
+			if (user._scopedToken) {
+				// A scoped token's identity IS its embedded role — never re-resolve its attribution
+				// username against hdb_user (it may not exist, or may name an unrelated principal
+				// created later). Expiry (authExpiresAt above) is its only revocation.
+				fresh = user;
+			} else {
+				// Re-fetch current user state — the user/role cache is rebuilt on mutations — so a dropped or
+				// role-stripped user no longer authorizes.
+				const { findAndValidateUser } = require('../security/user');
+				fresh = await findAndValidateUser(username, undefined, false);
+				if (!fresh?.role) return false;
+				// Advance the subscription's context to the fresh user so downstream checks — context.user
+				// and getCurrentUser() (which reads the resource's context) — evaluate against current state,
+				// not the stale user captured at subscribe time.
+				if (context) (context as any).user = fresh;
+			}
 			// Re-run the same operation-level allowRead that granted the subscription.
 			const reTarget: any = cloneRequestTarget(admittedTarget);
 			reTarget.checkPermission = fresh.role?.permission;

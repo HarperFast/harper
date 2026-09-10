@@ -1631,5 +1631,41 @@ describe('Test operations permissions', function () {
 			const result = op_auth.verifyPerms(TEST_JSON, write.insert.name);
 			assert.equal(result, null);
 		});
+
+		it('allowlist gates structure_user: create_schema denied when not listed', function () {
+			const req_json = makeOpUserRequest(['read_only']);
+			req_json.hdb_user.role.permission.structure_user = true;
+			req_json.operation = terms.OPERATIONS_ENUM.CREATE_SCHEMA;
+			req_json.schema = 'newschema';
+			delete req_json.table;
+			const result = op_auth.verifyPerms(req_json, schema.createSchema.name);
+			assert.notStrictEqual(result, null);
+			// create_schema resolves to its canonical api_name, create_database
+			assert.ok(
+				JSON.stringify(result).includes(
+					TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(terms.OPERATIONS_ENUM.CREATE_DATABASE)
+				)
+			);
+		});
+
+		it('allowlist + structure_user: create_schema allowed when explicitly listed', function () {
+			const req_json = makeOpUserRequest([terms.OPERATIONS_ENUM.CREATE_DATABASE]);
+			req_json.hdb_user.role.permission.structure_user = true;
+			req_json.operation = terms.OPERATIONS_ENUM.CREATE_SCHEMA;
+			req_json.schema = 'newschema';
+			delete req_json.table;
+			const result = op_auth.verifyPerms(req_json, schema.createSchema.name);
+			assert.equal(result, null);
+		});
+
+		it('allowlist gates super_user (inline-asserted role): unlisted op denied', function () {
+			const req_json = makeOpUserRequest(['read_only'], { insert: true });
+			req_json.hdb_user.role.permission.super_user = true;
+			const result = op_auth.verifyPerms(req_json, write.insert.name);
+			assert.notStrictEqual(result, null);
+			assert.ok(
+				JSON.stringify(result).includes(TEST_OPERATION_AUTH_ERROR.OP_NOT_IN_OPERATIONS(terms.OPERATIONS_ENUM.INSERT))
+			);
+		});
 	});
 });

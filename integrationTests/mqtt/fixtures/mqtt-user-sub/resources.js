@@ -54,3 +54,21 @@ server.mqtt.authorizeClient = (connection_message, user) => {
 		throw new Error('Invalid client id, client id from connection must match the client id in the token payload.');
 	}
 };
+
+// Registered so the fan-out tests can prove the SERVER performs one serialization per publish
+// rather than one per subscriber (server/serverHelpers/sharedMessageEncoding.ts). The count is
+// stamped into the payload, so every subscriber of a given message must report the same value and
+// consecutive publishes must differ by exactly one, however many subscribers there are. Asserting
+// this from outside the process is otherwise impossible — byte equality holds either way.
+let serializationCount = 0;
+server.contentTypes.set('application/x-count-serializations', {
+	serialize(message) {
+		serializationCount++;
+		const body = message && typeof message === 'object' && !Buffer.isBuffer(message) ? message : { value: message };
+		return Buffer.from(JSON.stringify({ ...body, serialization: serializationCount }));
+	},
+	deserialize(data) {
+		return JSON.parse(data.toString());
+	},
+	q: 1,
+});

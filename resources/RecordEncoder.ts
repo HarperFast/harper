@@ -6,7 +6,7 @@
  */
 
 import { Encoder } from 'msgpackr';
-import { createStructon } from 'structon';
+import { createStructon, SOURCE_SYMBOL } from 'structon';
 import {
 	HAS_PREVIOUS_RESIDENCY_ID,
 	HAS_CURRENT_RESIDENCY_ID,
@@ -30,7 +30,7 @@ import {
 } from './blob.ts';
 import { getThisNodeId } from './nodeIdMapping.ts';
 import { recordAction } from './analytics/write.ts';
-import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { constants, RocksDatabase } from '@harperfast/rocksdb-js';
 import { when } from '../utility/when.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
@@ -41,6 +41,33 @@ const StructonEncoder = createStructon(Encoder) as typeof Encoder;
 // missing on this node (see HarperFast/harper#1163). Surfaces the otherwise-silent condition in
 // monitoring; the store name is passed as the metric path.
 const MISSING_STRUCTURE_METRIC = 'decode-missing-structure';
+
+// Reaching this bound is not an error: novel shapes fall back to plain msgpackr encoding, which
+// round-trips correctly but gives up random-access field reads.
+export const DEFAULT_MAX_TYPED_STRUCTURES = 256;
+
+export interface StructureCounts {
+	typed: number;
+	classic: number;
+	typedLimit: number;
+	typedEnabled: boolean;
+}
+
+// Mirrors structon's onLoadedStructures over the four durable payload shapes it accepts. The
+// bare-array and cbor-x forms carry named structures only; structon keeps the encoder's own typed
+// dictionary for them, and they are written by the capped fallback path (msgpackr's base save
+// overwriting the combined payload, before structon's best-effort re-save). That window is by
+// definition a saturated store, so reporting zero there would show an empty dictionary at the one
+// moment the count matters most.
+function countDurableStructures(sharedData: any, localTyped: number): { typed: number; classic: number } {
+	if (!sharedData) return { typed: 0, classic: 0 };
+	if (sharedData instanceof Map)
+		return { typed: sharedData.get('typed')?.length ?? 0, classic: sharedData.get('named')?.length ?? 0 };
+	if (Array.isArray(sharedData)) return { typed: localTyped, classic: sharedData.length };
+	if (!sharedData.named && !sharedData.typed && Array.isArray(sharedData.structures))
+		return { typed: localTyped, classic: sharedData.structures.length };
+	return { typed: sharedData.typed?.length ?? 0, classic: sharedData.named?.length ?? 0 };
+}
 
 // Terminal error messages msgpackr/structon throw when a record references a shared structure that
 // is not in this node's structures buffer. Both the typed (random-access) path (structon's
@@ -77,6 +104,8 @@ export type Entry = {
 export const TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 4, 0x40, 0, 0]);
 // the first byte here indicates that we use the last timestamp
 export const LAST_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 1, 0, 0, 0]);
+// Never write this into an audit entry value: the substitution resolves to 2.0 when no previous time
+// was recorded, and the audit format reads a leading byte other than 0x42 as "no field here". See harper#2247.
 export const PREVIOUS_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 3, 0x40, 0, 0]);
 export const NEW_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 0, 0x40, 0, 0]);
 export const LOCAL_TIMESTAMP = Symbol('local-timestamp');
@@ -95,6 +124,26 @@ export const HAS_NODE_ID = 64;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 export const HAS_ADDITIONAL_AUDIT_REFS = 0x80;
+// A resequenced write keeps the (newer) version it merged onto, so one version identifies two
+// different stored values and version equality proves nothing. The metadata word this is set in is
+// the same header word the VerificationTable reads at value offset 8 — ACTION_32_BIT is the tag
+// byte its predicate requires — so the bit is what stops the native layer vouching for the version.
+export const VERSION_REUSED = constants.VERSION_NOT_UNIQUE_FLAG;
+// The bit is persisted in every resequenced record, so a rocksdb-js that moved it down onto one of
+// the flags above (or up into the tag byte) would silently change what records already on disk
+// mean: it must stay a single bit strictly between them.
+if (
+	typeof VERSION_REUSED !== 'number' ||
+	(VERSION_REUSED & (VERSION_REUSED - 1)) !== 0 ||
+	VERSION_REUSED < 0x10000 ||
+	VERSION_REUSED > 0x800000
+)
+	throw new Error(
+		`rocksdb-js VERSION_NOT_UNIQUE_FLAG (${VERSION_REUSED}) is not a single bit in the range Harper record metadata reserves for it — requires @harperfast/rocksdb-js >= 2.8.0`
+	);
+function versionIsReused(newVersion: number, existingEntry: { version?: number } | undefined): boolean {
+	return existingEntry?.version != null && newVersion <= existingEntry.version;
+}
 
 const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publish']);
 // For now we use this as the private property mechanism for mapping records to entries.
@@ -123,12 +172,90 @@ let timestampNextEncoding = 0,
 	additionalAuditRefsNextEncoding: Array<{ version: number; nodeId: number }> | undefined;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
 export let lastMetadata: Entry | null = null;
+/**
+ * A resolver owns its attribute's name, so no durable form of a record may carry a value under it.
+ * A value gets there either through the response `toJSON` the table installs on the record prototype
+ * (msgpackr consults an instance's toJSON when it encodes one) or as an own key from a source or
+ * peer payload.
+ */
+export function storedFieldsOnly(encoder: any, record: any) {
+	if (record === null || typeof record !== 'object') return record;
+	// Optional: this also runs for a store whose encode hook was grafted onto a foreign encoder
+	// (copyDb's migration target), which carries no table schema.
+	const resolved = encoder?.resolvedAttributeNames;
+	if (resolved === undefined) return record;
+	const resolvedList = encoder.resolvedAttributeNamesList ?? Array.from(resolved);
+	// A typed-struct instance keeps its stored fields as accessors on a structon-generated child
+	// prototype carrying structon's own toJSON, so it never reaches the response projection — and
+	// copying its own keys would encode an empty record.
+	let project =
+		encoder.surfacedToJSON !== undefined &&
+		record.toJSON === encoder.surfacedToJSON &&
+		record[SOURCE_SYMBOL] === undefined;
+	if (!project && typeof record.toJSON === 'function' && record[SOURCE_SYMBOL] === undefined) {
+		// A class instance with its own serialization: the encoder will consult that toJSON, so the
+		// projection has to run on its OUTPUT, or the serialized form smuggles resolver-owned keys past
+		// a check that only saw the instance. A non-object (or self) result is left for the encoder,
+		// which invokes toJSON again — serializers are assumed pure.
+		const json = record.toJSON();
+		if (json !== record && json !== null && typeof json === 'object') record = json;
+	}
+	if (!project) {
+		for (let i = 0; i < resolvedList.length; i++) {
+			if (Object.hasOwn(record, resolvedList[i])) {
+				project = true;
+				break;
+			}
+		}
+	}
+	if (!project) return record;
+	const stored = {};
+	for (const key of Object.keys(record)) {
+		if (resolved.has(key)) continue;
+		// '__proto__' as an own key must stay a data property: plain assignment would run the inherited
+		// setter, dropping the field from the durable write and swapping the temporary's prototype.
+		if (key === '__proto__')
+			Object.defineProperty(stored, key, { value: record[key], enumerable: true, writable: true, configurable: true });
+		else stored[key] = record[key];
+	}
+	return stored;
+}
+
+/**
+ * A resolver-owned name is skipped rather than assigned during record-instance promotion: through a
+ * read-only resolver the assignment throws, and through a writable one (a many-to-one
+ * `@relationship`) it would derive a foreign key from the stale stored value.
+ */
+export function assignStoredFields(target: any, source: any, encoder: any) {
+	const resolved = encoder?.resolvedAttributeNames;
+	if (resolved === undefined) return Object.assign(target, source);
+	// Own keys, matching the Object.assign fallback above and storedFieldsOnly: a decoded plain
+	// object has no inherited enumerables of its own, so walking the chain could only ever pick up
+	// somebody else's (a polluted Object.prototype included).
+	for (const key of Object.keys(source)) {
+		if (resolved.has(key)) continue;
+		if (key === '__proto__')
+			Object.defineProperty(target, key, { value: source[key], enumerable: true, writable: true, configurable: true });
+		else target[key] = source[key];
+	}
+	return target;
+}
+
 export class RecordEncoder extends StructonEncoder {
 	rootStore: any;
 	declare saveStructures: any;
 	declare getStructures: any;
 	declare _writeStruct: any;
+	declare typedStructs: any[];
+	declare structures: any[];
+	declare maxOwnStructures: number;
+	randomAccessStructure = false;
 	structureUpdate?: any;
+	// Set by TableResource.updatedAttributes. Undefined for a store with no resolved attributes, which
+	// is what keeps the projection off that store's writes entirely.
+	resolvedAttributeNames?: Set<string>;
+	resolvedAttributeNamesList?: string[];
+	surfacedToJSON?: () => any;
 	isRocksDB: boolean;
 	name: string;
 	useVersions: boolean;
@@ -143,7 +270,7 @@ export class RecordEncoder extends StructonEncoder {
 		// Bound the per-encoder typed-structure dictionary. It is append-only and pinned on the
 		// long-lived primary store, so a wide/sparse schema (whose records vary by per-field value
 		// width) can grow it unbounded and exhaust memory. Caller-overridable; default caps it.
-		options.maxOwnStructures ??= 256;
+		options.maxOwnStructures ??= DEFAULT_MAX_TYPED_STRUCTURES;
 		/**
 		 * The base class for records that provides the read-only methods for accessing
 		 * metadata and will be assigned computed property getters. On its own, these instances
@@ -159,6 +286,7 @@ export class RecordEncoder extends StructonEncoder {
 		// (e.g. __dbis__, useVersions=false) must not — see the encode hook + harper#1307. Default to
 		// true when unspecified so an option that doesn't propagate can't silently strip prefixes.
 		this.useVersions = options.useVersions !== false;
+		this.randomAccessStructure = options.randomAccessStructure === true;
 		// structon (the StructonEncoder base) always installs the struct write hook. For DBIs
 		// that don't opt into struct mode (non-primary, e.g. __dbis__), force it to bail (return
 		// 0) so objects are written in plain msgpackr records mode — decodable by readers without
@@ -343,12 +471,14 @@ export class RecordEncoder extends StructonEncoder {
 				// HAS_STRUCTURE_UPDATE in the audit log for a structure that was never persisted.
 				if (committed === true) {
 					this.structureUpdate = structures;
+					this.checkStructureCapacity();
 					return true;
 				}
 				return false;
 			} else {
 				const result = superSaveStructures.call(this, structures, isCompatible);
 				this.structureUpdate = structures;
+				if (result !== false) this.checkStructureCapacity();
 				return result;
 			}
 		};
@@ -358,9 +488,50 @@ export class RecordEncoder extends StructonEncoder {
 				const buffer = this.rootStore.getBinarySync(sharedStructuresKey);
 				return buffer ? this.decode(buffer) : undefined;
 			} else {
-				return superGetStructures.call(this);
+				// msgpackr only defines getStructures when the option was supplied; a store with no
+				// shared-structures mechanism has no durable dictionary to report.
+				return superGetStructures?.call(this);
 			}
 		};
+	}
+	/**
+	 * Sizes of this store's record-structure dictionaries. Read from the durable payload, not this
+	 * encoder's arrays: each worker owns an encoder and loads lazily, so a worker that never encoded
+	 * for this store holds empty arrays for a store whose dictionary is full.
+	 */
+	getStructureCounts(): StructureCounts {
+		const { typed, classic } = countDurableStructures(this.getStructures(), this.typedStructs?.length ?? 0);
+		return {
+			typed,
+			classic,
+			typedLimit: this.maxOwnStructures ?? DEFAULT_MAX_TYPED_STRUCTURES,
+			typedEnabled: this.randomAccessStructure,
+		};
+	}
+	/**
+	 * Warn once per encoder when its typed dictionary is at the bound. Fires from the post-save path,
+	 * so it needs some structure save to happen -- any save, including a classic one -- and it needs
+	 * this encoder to have loaded the dictionary. Several workers can therefore each warn for one
+	 * table, and a worker that never saves after loading a full dictionary stays silent. The counts
+	 * above are the reliable signal; this is the heads-up. It must not escape into the save's return
+	 * value -- the structures are committed.
+	 */
+	#reportedStructureSaturation = false;
+	checkStructureCapacity() {
+		if (this.#reportedStructureSaturation) return;
+		const typedLimit = this.maxOwnStructures ?? DEFAULT_MAX_TYPED_STRUCTURES;
+		if ((this.typedStructs?.length ?? 0) < typedLimit) return;
+		this.#reportedStructureSaturation = true;
+		try {
+			harperLogger.warn(
+				`Typed-structure dictionary for store ${this.name ?? this.rootStore?.name ?? '(unnamed)'} reached its limit of ` +
+					`${typedLimit} structures; new record shapes will be stored without random-access field ` +
+					'encoding. Dictionary size follows the variety of shapes written -- field set, key order, ' +
+					'and per-field value width -- not column count (see HarperFast/harper#2220).'
+			);
+		} catch {
+			// the structures are already committed; a failing sink must not fail the write
+		}
 	}
 	decode(buffer, options) {
 		lastMetadata = null;
@@ -539,7 +710,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
 					const originalValue = entry.value;
 					entry.value = new store.encoder.structPrototype.constructor();
-					Object.assign(entry.value, originalValue);
+					assignStoredFields(entry.value, originalValue, store.encoder);
 				}
 				entryMap.set(entry.value, entry); // allow the record to access the entry
 			}
@@ -591,7 +762,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 					// if an object was deserialized as a plain object, give it the right prototype for computed properties to be accessible
 					const originalValue = entry.value;
 					entry.value = new store.encoder.structPrototype.constructor();
-					for (const key in originalValue) entry.value[key] = originalValue[key];
+					assignStoredFields(entry.value, originalValue, store.encoder);
 				}
 			}
 			return entry;
@@ -708,6 +879,10 @@ export function recordUpdater(store, tableId, auditStore) {
 		// harper#1309: reset so a record===undefined call (delete/no-op) cannot carry stale bytes
 		// into the audit encodedRecord or write-size analytics of this call.
 		lastValueEncoding = undefined;
+		// Every durable form of the record — the stored value, the audit entry's encodedRecord and so the
+		// transaction log and replication payload — comes from this record, so projecting it here covers
+		// them all; nested values keep their own toJSON serialization.
+		record = storedFieldsOnly(store.encoder, record);
 		const isRocksDB = store instanceof RocksDatabase;
 		// determine if and how we apply the local timestamp
 		if (isRocksDB) {
@@ -731,6 +906,10 @@ export function recordUpdater(store, tableId, auditStore) {
 		if (expiresAt >= 0) assignMetadata |= HAS_EXPIRATION;
 		metadataInNextEncoding = assignMetadata;
 		expiresAtNextEncoding = expiresAt;
+		// Math.max normalizes the -1 "no metadata word" sentinel to 0 first: OR-ing the flag into
+		// -1 directly would stay -1 and silently drop the metadata word (and the flag with it).
+		if (isRocksDB && record !== undefined && versionIsReused(newVersion, existingEntry))
+			metadataInNextEncoding = Math.max(metadataInNextEncoding, 0) | VERSION_REUSED;
 		const putOptions: {
 			version: number;
 			instructedWrite?: boolean;
@@ -751,9 +930,9 @@ export function recordUpdater(store, tableId, auditStore) {
 				metadataInNextEncoding |= HAS_RESIDENCY_ID;
 				extendedType |= HAS_CURRENT_RESIDENCY_ID;
 			} else residencyIdAtNextEncoding = 0;
-			const nodeId = options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
-			if (nodeId >= 0) {
-				nodeIdAtNextEncoding = nodeId;
+			const recordNodeId = options?.recordNodeId ?? options?.nodeId ?? (audit ? getThisNodeId(auditStore) : undefined);
+			if (recordNodeId >= 0) {
+				nodeIdAtNextEncoding = recordNodeId;
 				metadataInNextEncoding |= HAS_NODE_ID;
 			} else nodeIdAtNextEncoding = -1;
 			const additionalAuditRefs = options?.additionalAuditRefs;
@@ -809,6 +988,10 @@ export function recordUpdater(store, tableId, auditStore) {
 			if (audit) {
 				const username = typeof options?.user === 'string' ? options.user : options?.user?.username;
 				if (auditRecord) {
+					// The audit encodedRecord is durable record state too (it is the transaction log and the
+					// replication payload), so it takes the same projection — except for message/publish
+					// entries, whose auditRecord IS the published payload and must reach subscribers verbatim.
+					if (type !== 'message' && type !== 'publish') auditRecord = storedFieldsOnly(store.encoder, auditRecord);
 					encodeBlobsWithFilePath(() => store.encoder.encode(auditRecord), id, store.rootStore);
 					if (blobsWereEncoded) {
 						extendedType |= HAS_BLOBS;
@@ -822,8 +1005,22 @@ export function recordUpdater(store, tableId, auditStore) {
 				const nodeId = options?.nodeId ?? getThisNodeId(auditStore) ?? 0;
 				const viaNodeId = options?.viaNodeId ?? nodeId;
 				if (resolveRecord && existingEntry?.localTime) {
-					const replacingId = existingEntry?.localTime;
-					const replacingEntry = auditStore.get(replacingId, tableId, id);
+					let replacingId = existingEntry.localTime;
+					let replacingEntry;
+					if (isRocksDB && existingEntry.additionalAuditRefs) {
+						for (const ref of existingEntry.additionalAuditRefs) {
+							const candidate = auditStore.get(ref.version, tableId, id, ref.nodeId);
+							if (
+								candidate?.version === existingEntry.version &&
+								(candidate.nodeId ?? 0) === (existingEntry.nodeId ?? 0)
+							) {
+								replacingId = ref.version;
+								replacingEntry = candidate;
+								break;
+							}
+						}
+					}
+					replacingEntry ??= auditStore.get(replacingId, tableId, id, existingEntry.nodeId);
 					if (replacingEntry) {
 						const previousVersion = replacingEntry.previousVersion;
 						result = auditStore[isRocksDB ? 'putSync' : 'put'](
@@ -852,7 +1049,7 @@ export function recordUpdater(store, tableId, auditStore) {
 				result = auditStore[isRocksDB ? 'putSync' : 'put'](
 					record === undefined ? NEW_TIMESTAMP_PLACEHOLDER : LAST_TIMESTAMP_PLACEHOLDER,
 					{
-						version: newVersion,
+						version: options?.recordVersion ?? newVersion,
 						tableId,
 						recordId: id,
 						previousVersion: isRocksDB ? existingEntry?.version : existingEntry?.localTime,

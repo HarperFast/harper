@@ -1,0 +1,22 @@
+# QA-706 — regression anchor for harper#1572 / PR #1911: "fix(query): stop query planning
+# from mutating the caller's conditions".
+#
+# Product-catalog service. `category`, `price`, and `createdAt` are secondary-indexed so a
+# `sort` can take three different planner paths:
+#   - sort by `category`: matches an EXISTING top-level condition -> planner aligns the
+#     existing entry in place (sets `descending` on it) instead of pushing a new pseudo-condition.
+#   - sort by `price` / `createdAt`: indexed but only present INSIDE the nested `or` group,
+#     not at the top level -> planner can't find an alignment target and pushes a NEW
+#     `{ comparator: 'sort' }` pseudo-condition onto the TOP-level array.
+#   - sort by `id` (primary key): no secondary index but still index-order-aligned -> same
+#     pseudo-condition push, different code branch (`attribute.isPrimaryKey`).
+# `rank` is intentionally NOT indexed, to exercise the in-memory postOrdering sort path
+# (no pseudo-condition pushed at all).
+type Product @table @export {
+	id: ID @primaryKey
+	category: String @indexed
+	price: Float @indexed
+	createdAt: Date @indexed
+	rank: Int
+	name: String
+}

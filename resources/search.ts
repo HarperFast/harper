@@ -1,11 +1,12 @@
 import { ClientError, IndexRebuildingError, Violation } from '../utility/errors/hdbError.ts';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.ts';
 import { compareKeys, MAXIMUM_KEY, writeKey } from 'ordered-binary';
-import { SKIP } from '@harperfast/extended-iterable';
+import { SKIP, ExtendedIterable } from '@harperfast/extended-iterable';
 import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata } from './RecordEncoder.ts';
+import { writeKeyId } from './DatabaseTransaction.ts';
 import { recordAction } from './analytics/write';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 
@@ -229,6 +230,41 @@ function composeRecordFilter(recordFilters, table, context): (primaryKey: Id) =>
 }
 
 /**
+ * A record's index entries are not adjacent — the composite `[indexedValue, primaryKey]` key sorts
+ * on the indexed value first — so comparing neighbours cannot collapse them and the scan has to
+ * remember what it already yielded (#2434).
+ *
+ * Heap cost is one key per distinct record in the scanned range, held for the life of the scan, and
+ * a page window does not cap it: sibling-condition and row filters run downstream, so a selective
+ * filter keeps the scan running and the set growing while the page fills. On a multi-million-row
+ * range that is hundreds of MB where main streamed at O(1). Accepted for #2434 over the bounded
+ * alternative, which costs a primary read per index entry.
+ */
+function distinctRecords(entries: any): AsyncIterable<Id> {
+	const distinct = new ExtendedIterable();
+	(distinct as any).iterate = (options) => {
+		// A non-scalar key decodes to a fresh instance per entry, so identity never matches it;
+		// `writeKeyId` is the store's own key equality. Its bytes get their own set because a scalar
+		// string id can legitimately carry exactly those bytes, and one set would fold the two —
+		// the collision `flattenKey` has, and the reason Table.ts prefixes its key ids.
+		const yieldedKeys = new Set();
+		const yieldedEncodedKeys = new Set();
+		// map rather than filter: filter clears `continueOnRecoverableError` for everything below it
+		return entries
+			.map((primaryKey) => {
+				const isEncoded = typeof primaryKey === 'object' && primaryKey !== null;
+				const yielded = isEncoded ? yieldedEncodedKeys : yieldedKeys;
+				const identity = isEncoded ? writeKeyId(primaryKey) : primaryKey;
+				if (yielded.has(identity)) return SKIP;
+				yielded.add(identity);
+				return primaryKey;
+			})
+			.iterate(options);
+	};
+	return distinct as any;
+}
+
+/**
  * Search for records or keys, based on the search condition, using an index if available. The four
  * leading parameters are required at every call site; everything optional is named, so a new
  * capability can be added without shifting positions at callers that don't use it.
@@ -265,6 +301,9 @@ export function searchByIndex(
 		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
 	}
 	let needFullScan;
+	// `[indexedValue, primaryKey]` is unique, so a scan that stays inside one indexed value cannot
+	// reach a record twice and skips the collapse below
+	let scansOneIndexedValue;
 	if (Array.isArray(attribute_name)) {
 		const firstAttributeName = attribute_name[0];
 		// get the potential relationship attribute
@@ -390,6 +429,7 @@ export function searchByIndex(
 				start = value;
 				end = value;
 				inclusiveEnd = true;
+				scansOneIndexedValue = true;
 				break;
 			case 'in':
 				// Phase 1: route through filter — index-merge optimization is a Phase 2 follow-up.
@@ -535,7 +575,7 @@ export function searchByIndex(
 			}
 			return loaded;
 		}
-		return index.getRange(rangeOptions).map(
+		const scanned = index.getRange(rangeOptions).map(
 			filter
 				? function ({ key, value }) {
 						let recordMatcher: any;
@@ -558,6 +598,14 @@ export function searchByIndex(
 					}
 				: ({ value }) => value
 		);
+		// Collapsing AFTER the map is required, not incidental: the condition's own filter tests one
+		// element at a time, so a record whose first entry fails it and whose second passes must
+		// still be reached. Collapsing first would settle that record on the failing entry and drop
+		// it. Scoped to attributes the schema declares multi-valued; a runtime array under an
+		// undeclared attribute repeats the same way but stays outside this boundary.
+		return scansOneIndexedValue || !findAttribute(Table.attributes, attribute_name)?.elements
+			? scanned
+			: distinctRecords(scanned);
 	} else {
 		return Table.primaryStore
 			.getRange(reverse ? { end: true, transaction, reverse: true } : { start: true, transaction })
@@ -1059,7 +1107,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 		canUseIndex =
 			canUseIndex && // is it a comparator that makes sense to use index
 			!isPrimaryKey && // no need to use index for primary keys, since we will be iterating over the primary keys
-			Table?.indices[attribute] && // is there an index for this attribute
+			!!(Table && usableIndex(Table, attribute)) && // is there a usable (complete) index for this attribute
 			estimatedIncomingCount > 3; // do we have a valid estimate of multiple incoming records (that is worth using an index for)
 		if (canUseIndex) {
 			if (searchCondition.estimated_count == undefined) estimateCondition(Table)(searchCondition);
@@ -1116,6 +1164,113 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 	}
 }
 
+/**
+ * Estimates a range comparator's entry count from the store's statistical estimate, blended with
+ * the table-fraction heuristic by the estimate's confidence so low-confidence estimates degrade
+ * to the old behavior. Returns undefined (caller falls back to the heuristic) when the store
+ * cannot estimate, the shape is unexpected, or the executed range wouldn't match this one.
+ */
+function estimateRangeCondition(table, condition, searchType, fraction) {
+	const attributeName = condition[0] ?? condition.attribute;
+	const isPrimaryKey = attributeName === table.primaryKey;
+	const store = isPrimaryKey ? table.primaryStore : usableIndex(table, attributeName);
+	// LMDB-backed and custom index stores do not implement estimateCount
+	if (typeof store?.estimateCount !== 'function') return undefined;
+	let value = condition[1] ?? condition.value;
+	if (value instanceof Date) value = value.getTime();
+	let range;
+	switch (searchType) {
+		case 'lt':
+			// `start: true` mirrors searchByIndex: `true` sorts above `null`, so an indexNulls
+			// index's `[null, primaryKey]` entries are outside the executed range
+			range = { start: true, end: value };
+			break;
+		case 'le':
+			range = { start: true, end: value, inclusiveEnd: true };
+			break;
+		case 'gt':
+			range = { start: value, exclusiveStart: true };
+			break;
+		case 'ge':
+			range = { start: value };
+			break;
+		case 'between':
+		case 'gele':
+		case 'gelt':
+		case 'gtlt':
+		case 'gtle': {
+			if (!Array.isArray(value)) return undefined;
+			let [start, end] = value;
+			if (start instanceof Date) start = start.getTime();
+			if (end instanceof Date) end = end.getTime();
+			range = {
+				start,
+				end,
+				inclusiveEnd: searchType === 'between' || searchType === 'gele' || searchType === 'gtle',
+				exclusiveStart: searchType === 'gtlt' || searchType === 'gtle',
+			};
+			break;
+		}
+		case 'starts_with': {
+			const prefix = value?.toString();
+			if (!prefix) return undefined;
+			range = { start: prefix, end: getStringPrefixUpperBound(prefix) };
+			break;
+		}
+		case 'prefix': {
+			let start = Array.isArray(value) ? value : [value, null];
+			if (start[start.length - 1] != null) start = start.concat(null);
+			const end = start.slice(0);
+			end[end.length - 1] = MAXIMUM_KEY;
+			range = { start, end };
+			break;
+		}
+		default:
+			return undefined;
+	}
+	// Long string bounds get truncated + filtered at execution (searchByIndex), so the
+	// executed range is wider than this one; don't estimate what won't be iterated.
+	if (
+		(typeof range.start === 'string' && range.start.length > MAX_SEARCH_KEY_LENGTH) ||
+		(typeof range.end === 'string' && range.end.length > MAX_SEARCH_KEY_LENGTH)
+	) {
+		return undefined;
+	}
+	let count, confidence;
+	try {
+		({ count, confidence } = store.estimateCount(range) ?? {});
+	} catch {
+		// a concurrently closing/dropped store must degrade the plan, not fail the query
+		return undefined;
+	}
+	if (!Number.isFinite(count) || count < 0 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1)
+		return undefined;
+	const heuristic = fraction * estimatedEntryCount(table.primaryStore) + 1;
+	return Math.max(1, Math.round(confidence * count + (1 - confidence) * heuristic));
+}
+
+/** The index a condition can be driven by; searchByIndex refuses a rebuilding one, so it reads as absent. */
+function usableIndex(table, attributeName): any {
+	const index = attributeName == null ? undefined : table.indices[attributeName];
+	return index?.isIndexing ? undefined : index;
+}
+
+/**
+ * True when an index this attribute would have to be driven by is still being built, following a
+ * relationship path to the local join index and on to the related table's leaf index.
+ */
+function drivesRebuildingIndex(table, attributeName, relationshipOffset = 0): boolean {
+	if (!Array.isArray(attributeName))
+		return attributeName != null && attributeName !== table.primaryKey && !!table.indices[attributeName]?.isIndexing;
+	if (relationshipOffset >= attributeName.length - 1)
+		return drivesRebuildingIndex(table, attributeName[relationshipOffset]);
+	const attribute = findAttribute(table.attributes, attributeName[relationshipOffset]);
+	if (!attribute) return false;
+	if (table.indices[attribute.relationship?.from]?.isIndexing) return true;
+	const relatedTable = attribute.definition?.tableClass || attribute.elements?.definition?.tableClass;
+	return !!relatedTable && drivesRebuildingIndex(relatedTable, attributeName, relationshipOffset + 1);
+}
+
 export function estimateCondition(table) {
 	function estimateConditionForTable(condition) {
 		if (condition.estimated_count === undefined) {
@@ -1135,7 +1290,7 @@ export function estimateCondition(table) {
 					for (const subCondition of condition.conditions) {
 						estimateConditionForTable(subCondition);
 						estimatedCount = isFinite(estimatedCount)
-							? (estimatedCount * subCondition.estimated_count) / estimatedEntryCount(table.primaryStore)
+							? (estimatedCount * subCondition.estimated_count) / (estimatedEntryCount(table.primaryStore) || 1)
 							: subCondition.estimated_count;
 					}
 				}
@@ -1145,7 +1300,17 @@ export function estimateCondition(table) {
 			// skip if it is cached
 			let searchType = condition.comparator || condition.search_type;
 			searchType = ALTERNATE_COMPARATOR_NAMES[searchType] || searchType;
-			if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
+			// before comparator dispatch: several branches fall back to a finite table-fraction heuristic
+			if (drivesRebuildingIndex(table, condition[0] ?? condition.attribute)) {
+				condition.estimated_count = Infinity;
+			} else if (condition.negated) {
+				// a negated condition always executes as a full scan (searchByIndex forces
+				// needFullScan), so follow the filter-only convention used by contains/ends_with:
+				// estimate Infinity so its positive-range estimate can never win the driving-condition
+				// ordering. Short-circuit here rather than computing (and discarding) a positive-range
+				// estimate that would cross the native FFI boundary for nothing.
+				condition.estimated_count = Infinity;
+			} else if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
 				else if (Array.isArray(attribute_name) && attribute_name.length > 1) {
@@ -1171,19 +1336,21 @@ export function estimateCondition(table) {
 					}
 				} else {
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
-					const index = table.indices[attribute_name];
+					const index = usableIndex(table, attribute_name);
 					condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
 				}
 			} else if (searchType === 'contains' || searchType === 'ends_with' || searchType === 'ne') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (condition.value === null && searchType === 'ne') {
-					condition.estimated_count =
-						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0);
+					condition.estimated_count = Math.max(
+						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0),
+						0
+					);
 				} else condition.estimated_count = Infinity;
 			} else if (searchType === 'in') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (Array.isArray(condition.value) && index) {
 					// Sum of per-value matches (over-counts duplicates but is a fine ceiling)
 					let estimate = 0;
@@ -1194,14 +1361,17 @@ export function estimateCondition(table) {
 				} else if (Array.isArray(condition.value)) {
 					condition.estimated_count = Infinity;
 				} else condition.estimated_count = Infinity;
-				// for range queries (betweens, startsWith, greater, etc.), just arbitrarily guess
 			} else if (searchType === 'starts_with' || searchType === 'prefix')
-				condition.estimated_count = STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+				condition.estimated_count =
+					estimateRangeCondition(table, condition, searchType, STARTS_WITH_ESTIMATE) ??
+					STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (searchType === 'between')
-				condition.estimated_count = BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+				condition.estimated_count =
+					estimateRangeCondition(table, condition, searchType, BETWEEN_ESTIMATE) ??
+					BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (searchType === 'sort') {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (index?.customIndex?.estimateCountAsSort)
 					// allow custom index to define its own estimation of counts
 					condition.estimated_count = index.customIndex.estimateCountAsSort(condition);
@@ -1209,11 +1379,14 @@ export function estimateCondition(table) {
 			} else {
 				// for the search types that use the broadest range, try do them last
 				const attribute_name = condition[0] ?? condition.attribute;
-				const index = table.indices[attribute_name];
+				const index = usableIndex(table, attribute_name);
 				if (index?.customIndex?.estimateCount)
 					// allow custom index to define its own estimation of counts
 					condition.estimated_count = index.customIndex.estimateCount(condition.value);
-				else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+				else
+					condition.estimated_count =
+						estimateRangeCondition(table, condition, searchType, OPEN_RANGE_ESTIMATE) ??
+						OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			}
 			// we give a condition significantly more weight/preference if we will be ordering by it
 			if (typeof condition.descending === 'boolean') condition.estimated_count /= 2;
@@ -1399,6 +1572,7 @@ function parseBlock(query, expectedEnd) {
 						break;
 					case 'group-by':
 						recordError('group by is not implemented yet');
+						break;
 					case 'sort':
 						query.sort = toSortObject(args);
 						break;
@@ -1623,16 +1797,18 @@ export function flattenKey(key) {
 	return key;
 }
 
-function estimatedEntryCount(store) {
+export function estimatedEntryCount(store) {
 	const now = Date.now();
 	if ((store.estimatedEntryCountExpires || 0) < now) {
-		// use getStats for LMDB because it is fast path, otherwise RocksDB can handle fast path on its own
-		store.estimatedEntryCount = store instanceof RocksDatabase ? store.getKeysCount() : store.getStats().entryCount;
+		// getStats is the LMDB fast path; for RocksDB, estimate-num-keys is O(1) where an exact
+		// getKeysCount() would iterate the entire store
+		store.estimatedEntryCount =
+			store instanceof RocksDatabase ? store.getEstimatedKeyCount() : store.getStats().entryCount;
 		store.estimatedEntryCountExpires = now + 10000;
 	}
 	return store.estimatedEntryCount;
 }
 
 export function intersectionEstimate(store, left, right) {
-	return (left * right) / estimatedEntryCount(store);
+	return (left * right) / Math.max(estimatedEntryCount(store), 1);
 }

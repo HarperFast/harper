@@ -63,13 +63,16 @@ export class SystemInformationResponse {
 	}
 }
 
-type TimeData = si.Systeminformation.TimeData;
+type TimeData = si.Systeminformation.TimeData & { process_uptime: number };
 
 /**
- * Returns the current local time, uptime, timezone, and timezone name.
+ * Returns the current local time, timezone, and two uptimes in seconds: `uptime` (host uptime, from
+ * `si.time()`) and `process_uptime` (this Harper process's uptime). `process.uptime()` is accurate
+ * here because this operation runs in the Harper server process — unlike `harper status`, a separate
+ * CLI process.
  */
 export function getTimeInfo(): TimeData {
-	return si.time();
+	return { ...si.time(), process_uptime: Math.round(process.uptime()) };
 }
 
 type CpuInfo = Pick<
@@ -514,6 +517,7 @@ const rocksDBDatabaseLevelStats = new Set<string>([
 	'numberKeysWritten',
 	'numberReseeksIteration',
 	'numRunningFlushes',
+	'numSnapshots',
 	'oldestSnapshotTime',
 	'stallMicros',
 	'txnOverheadMutexOldCommitMap',
@@ -544,6 +548,12 @@ type RocksDBStats = {
 	numberKeysWritten: number;
 	numberReseeksIteration: number;
 	numRunningFlushes: number;
+	// Live RocksDB snapshots for this database. In-flight reads legitimately hold one, so what
+	// matters is a count that stays nonzero while nothing is reading: obsolete versions behind the
+	// oldest snapshot cannot be discarded for as long as it is held (#2107). oldestSnapshotTime
+	// alone can't show accrual — it stops moving once the oldest snapshot is pinned.
+	// Optional: rocksdb-js 2.7.1 does not yet report rocksdb.num-snapshots.
+	numSnapshots?: number;
 	oldestSnapshotTime: number;
 	stallMicros: number;
 	txnOverheadMutexOldCommitMap: number;

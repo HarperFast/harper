@@ -10,9 +10,15 @@ const configUtils = require('../config/configUtils.ts');
 const { hdbErrors } = require('../utility/errors/hdbError.ts');
 const { HDB_ERROR_MSGS } = hdbErrors;
 const { ENV_ENCRYPTED_PREFIX } = require('../utility/envFile.ts');
-
-// File name can only be alphanumeric, dash and underscores
-const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
+// File and project names can only be alphanumeric, dash and underscores. Both patterns are shared
+// with the CLI (utility/componentNames.ts): `harper deploy setup=true` resolves a project name and a
+// credential host client-side, and has to reject exactly what these schemas would.
+const {
+	PROJECT_NAME_PATTERN: PROJECT_FILE_NAME_REGEX,
+	GIT_HOST_PATTERN,
+	isReservedComponentName,
+} = require('../utility/componentNames.ts');
+const { assertBranchedDatabases } = require('./Application.ts');
 
 // dotenv's accepted key character set. Restricting keys to this prevents a crafted key (e.g. one
 // containing `=` or a newline) from injecting extra assignments into a .env file.
@@ -70,6 +76,31 @@ function checkProjectExists(checkExists, project, helpers) {
 		hdbLogger.error(err);
 		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
 	}
+}
+
+// Drop/package/file operations deliberately don't call this: an application deployed under the
+// name before it was reserved has to stay removable.
+function checkReservedProjectName(project, helpers) {
+	if (isReservedComponentName(project)) return helpers.message(HDB_ERROR_MSGS.RESERVED_PROJECT_NAME(project));
+	return project;
+}
+
+/**
+ * The file writers create the project directory as a side effect of writing into it, so they refuse
+ * only the creation — an application that already holds the name stays editable until it is
+ * migrated off it.
+ */
+function checkReservedProjectCreation(project, helpers) {
+	if (!isReservedComponentName(project)) return project;
+	let projectDir;
+	try {
+		const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+		if (componentsRoot) projectDir = path.join(componentsRoot, project);
+	} catch (err) {
+		hdbLogger.error(err);
+	}
+	if (projectDir && fs.existsSync(projectDir)) return project;
+	return helpers.message(HDB_ERROR_MSGS.RESERVED_PROJECT_NAME(project));
 }
 
 function checkFilePath(path, helpers) {
@@ -153,6 +184,7 @@ function setComponentFileValidator(req) {
 	const setCompSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkReservedProjectCreation)
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		file: Joi.string().custom(checkFilePath).required(),
@@ -213,6 +245,7 @@ function setEnvValueValidator(req) {
 	const schema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkReservedProjectCreation)
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		file: Joi.string().custom(checkFilePath).optional(),
@@ -329,6 +362,7 @@ function addComponentValidator(req) {
 	const addFuncSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkReservedProjectName)
 			.custom(checkProjectExists.bind(null, false))
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
@@ -371,6 +405,12 @@ function packageComponentValidator(req) {
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		skip_node_modules: Joi.boolean(),
 		skip_symlinks: Joi.boolean(),
+		// Response shape selectors — see packageComponent() in operations.js. Deliberately not
+		// declared as Joi exclusive peers: `oxor` conflicts on *presence*, so it would reject a
+		// caller that always sends both fields and sets one to false. `estimate` wins when both
+		// are true, which the handler enforces by checking it first.
+		stream: Joi.boolean(),
+		estimate: Joi.boolean(),
 	});
 
 	return validator.validateBySchema(req, packageProjSchema);
@@ -413,7 +453,7 @@ const GIT_CREDENTIAL_ENTRY = Joi.object({
 	// A bare host, optionally with a port — `github.com`, `git.example.com:8443`. A scheme or path is
 	// tolerated and normalized away, but a credential is matched by host, so keep the grammar tight.
 	host: Joi.string()
-		.pattern(/^[^\s/@\\]+$/)
+		.pattern(GIT_HOST_PATTERN)
 		.required()
 		.messages({ 'string.pattern.base': `'host' must be a bare git host, e.g. 'github.com'` }),
 	// The username half of git's HTTPS basic auth. Defaults to GitHub's `x-access-token` convention;
@@ -448,6 +488,7 @@ function deployComponentValidator(req) {
 	const deployProjSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkReservedProjectName)
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		package: Joi.string().optional(),
@@ -489,6 +530,20 @@ function deployComponentValidator(req) {
 			})
 			.optional()
 			.messages({ 'string.bracketedHost': '{#label} must not be bracketed; use the bare IPv6 literal' }),
+		// Databases this application forks a private copy of (harper#642/#643). Deployment routing
+		// like urlPath/host above, not component config: reusing assertBranchedDatabases here (rather
+		// than re-deriving its rules in Joi) gives a synchronous 400 at deploy time instead of a load
+		// failure discovered much later and disconnected from the request that caused it.
+		branchedDatabases: Joi.custom((value, helpers) => {
+			try {
+				assertBranchedDatabases(req.project, value);
+			} catch (error) {
+				return helpers.error('any.invalid', { reason: error.message });
+			}
+			return value;
+		}, 'branchedDatabases')
+			.optional()
+			.messages({ 'any.invalid': '{{#reason}}' }),
 		// Deploy credentials. The array is kind-heterogeneous: an entry's kind is implied by its
 		// identifying key rather than a separate discriminator field, so a new kind is added as
 		// another item alternative here without reshaping the field. Today: npm registry auth

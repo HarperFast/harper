@@ -1,0 +1,6 @@
+# #2062 — a write whose pre-commit blob save outruns storage.maxTransactionOpenTime.
+type Doc @table @export {
+	id: ID @primaryKey
+	size: Int
+	blob: Blob
+}

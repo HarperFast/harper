@@ -6,11 +6,16 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
+const { INVALIDATED } = require('#src/resources/Table');
+const { exportIdMapping } = require('#src/resources/nodeIdMapping');
+const { transaction } = require('#src/resources/transaction');
 const { waitFor } = require('../waitFor.js');
 
 describe('Caching', () => {
 	let CachingTable,
 		IndexedCachingTable,
+		ConflictCachingTable,
 		CachingTableStaleWhileRevalidate,
 		SwrQueryTable,
 		Source,
@@ -18,9 +23,29 @@ describe('Caching', () => {
 		sourceResponses = 0;
 	let swrEnabled = true;
 	let sourceGate = null; // when set, SwrQueryTable's source defers responding until the test releases it
+	let ConflictSideEffectTable;
+	let conflictSourceRequest;
+	let conflictSourceWriteId = null;
+	let conflictTimestamp = 0;
+	// Apply a record the way replication does, attributed to `nodeId`, so a version tie against a fill is
+	// resolved against a *peer's* identity rather than this node's own.
+	async function applyFromPeer(id, record, timestamp, nodeId) {
+		const context = { source: {}, timestamp };
+		await transaction(context, async () => {
+			const resource = await ConflictCachingTable.getResource(id, context);
+			return resource._writeUpdate(id, record, true, { isNotification: true, nodeId });
+		});
+	}
+	function nextConflictTimestamp() {
+		return (conflictTimestamp = Math.max(
+			conflictTimestamp + 1000,
+			ConflictCachingTable.primaryStore.getMonotonicTimestamp() + 1000
+		));
+	}
 	let observedSwrIds = []; // ids the SwrQueryTable SWR hook saw via this.getId(), for the per-row-identity test
 	let events = [];
 	let timer = 0;
+	let sourceExpiresAt;
 	let return_value = true;
 	let return_error;
 	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
@@ -48,11 +73,12 @@ describe('Caching', () => {
 		});
 		Source = class extends Resource {
 			get() {
-				let expiresAt = Date.now() + 2;
+				let expiresAt = sourceExpiresAt ?? Date.now() + 2;
 				this.getContext().expiresAt = expiresAt;
+				// counted at request start so a concurrent duplicate is observable before the first response
+				sourceRequests++;
 				return new Promise((resolve, reject) => {
 					setTimeout(() => {
-						sourceRequests++;
 						if (return_error) {
 							let error = new Error('test source error');
 							error.statusCode = return_error;
@@ -70,9 +96,10 @@ describe('Caching', () => {
 		};
 
 		CachingTable.sourcedFrom({
-			get(id) {
+			get(id, context) {
 				return new Promise((resolve) => {
 					sourceRequests++;
+					if (sourceExpiresAt !== undefined) context.expiresAt = sourceExpiresAt;
 					setTimeout(() => {
 						sourceResponses++;
 						resolve(
@@ -86,6 +113,40 @@ describe('Caching', () => {
 			},
 		});
 		IndexedCachingTable.sourcedFrom(Source);
+		ConflictCachingTable = table({
+			table: 'ConflictCachingTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'createdAt', type: 'Date', assignCreatedTime: true },
+			],
+		});
+		ConflictSideEffectTable = table({
+			table: 'ConflictSideEffectTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		ConflictCachingTable.sourcedFrom({
+			get(id, context) {
+				return new Promise((resolve) => {
+					conflictSourceRequest = {
+						id,
+						timestamp: context.timestamp,
+						respond(value, lastModified) {
+							if (conflictSourceWriteId != null)
+								ConflictSideEffectTable.put(
+									conflictSourceWriteId,
+									{ id: conflictSourceWriteId, name: 'side-effect' },
+									context
+								);
+							context.lastModified = lastModified;
+							resolve(value);
+						},
+					};
+				});
+			},
+		});
 		let subscription = await CachingTable.subscribe({});
 
 		subscription.on('data', (event) => {
@@ -140,35 +201,63 @@ describe('Caching', () => {
 		sourceRequests = 0;
 		events = [];
 		const start = new Date();
-		CachingTable.setTTLExpiration(0.01);
-		await CachingTable.invalidate(23);
-		let result = await CachingTable.get(23);
-		assert.equal(result.id, 23);
-		assert.equal(result.name, 'name ' + 23);
-		assert(result.createdAt >= start);
-		assert(result.updatedAt >= start);
-		assert.equal(sourceRequests, 1);
-		await delay(5);
-		let target23 = new RequestTarget();
-		target23.id = 23;
-		result = await CachingTable.get(target23);
-		assert.equal(target23.loadedFromSource, false);
-		assert.equal(result.id, 23);
-		assert.equal(sourceRequests, 1);
-		// let it expire
-		await delay(10);
-		result = await CachingTable.get(target23);
-		assert.equal(result.id, 23);
-		assert.equal(result.name, 'name ' + 23);
-		assert.equal(sourceRequests, 2);
-		if (events.length > 0) console.log(events);
-		//assert.equal(events.length, 0);
-		await CachingTable.put(23, { name: 'expires in past' }, { expiresAt: 0 });
-		result = await CachingTable.get(target23);
-		assert(result.createdAt >= start);
-		assert(result.updatedAt >= start);
-		assert.equal(sourceRequests, 3);
-		assert.equal(target23.loadedFromSource, true);
+		// expiry here is driven by the expiration the source reports, not by sleeping against the TTL
+		CachingTable.setTTLExpiration(30);
+		// the fill lock is only released once the fill has settled; a past expiration may also have been
+		// evicted by the cleanup scan by the time it is observed
+		const entryCommitted = (expiresAt) => {
+			if (CachingTable.primaryStore.hasLock(23)) return false;
+			const entry = CachingTable.primaryStore.getEntry(23);
+			return entry ? entry.expiresAt === expiresAt : expiresAt < Date.now();
+		};
+		try {
+			const liveExpiresAt = (sourceExpiresAt = Date.now() + 60000);
+			await CachingTable.invalidate(23);
+			let result = await CachingTable.get(23);
+			assert.equal(result.id, 23);
+			assert.equal(result.name, 'name ' + 23);
+			assert(result.createdAt >= start);
+			assert(result.updatedAt >= start);
+			assert.equal(sourceRequests, 1);
+			await waitFor(() => entryCommitted(liveExpiresAt), { message: 'the source fill should commit' });
+			let target23 = new RequestTarget();
+			target23.id = 23;
+			result = await CachingTable.get(target23);
+			assert.equal(target23.loadedFromSource, false);
+			assert.equal(result.id, 23);
+			assert.equal(sourceRequests, 1);
+			const expiredAt = (sourceExpiresAt = Date.now() - 1);
+			await CachingTable.invalidate(23);
+			await CachingTable.get(23);
+			assert.equal(sourceRequests, 2);
+			await waitFor(() => entryCommitted(expiredAt), { message: 'the expired source fill should commit' });
+			// reloading restores a live entry, so the `expiresAt: 0` write below is the only reason the
+			// last get can miss
+			const reloadedExpiresAt = (sourceExpiresAt = Date.now() + 60000);
+			result = await CachingTable.get(target23);
+			assert.equal(result.id, 23);
+			assert.equal(result.name, 'name ' + 23);
+			assert.equal(target23.loadedFromSource, true);
+			assert.equal(sourceRequests, 3);
+			await waitFor(() => entryCommitted(reloadedExpiresAt), { message: 'the reload should commit a live entry' });
+			if (events.length > 0) console.log(events);
+			//assert.equal(events.length, 0);
+			const finalExpiresAt = (sourceExpiresAt = Date.now() - 1);
+			await CachingTable.put(23, { name: 'expires in past' }, { expiresAt: 0 });
+			await waitFor(() => entryCommitted(0), { message: 'the put should commit its past expiration' });
+			const expiredTarget23 = new RequestTarget();
+			expiredTarget23.id = 23;
+			result = await CachingTable.get(expiredTarget23);
+			assert.equal(result.name, 'name ' + 23);
+			assert(result.createdAt >= start);
+			assert(result.updatedAt >= start);
+			assert.equal(sourceRequests, 4);
+			assert.equal(expiredTarget23.loadedFromSource, true);
+			// the tests below expect their own first get(23) to reach the source
+			await waitFor(() => entryCommitted(finalExpiresAt), { message: 'the last fill should commit expired' });
+		} finally {
+			sourceExpiresAt = undefined;
+		}
 	});
 
 	it('loadedFromSource is observable on the target with loadAsInstance = false (#1576)', async function () {
@@ -473,6 +562,330 @@ describe('Caching', () => {
 			return_value = true;
 		}
 	});
+	it('orders first source fills from fetch start without overwriting a later write', async function () {
+		const id = 610;
+		const sourceTimestamp = nextConflictTimestamp();
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: sourceTimestamp });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		assert.equal(conflictSourceRequest.timestamp, undefined);
+		await ConflictCachingTable.put(id, { id, name: 'authoritative' }, { timestamp: sourceTimestamp + 1 });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'authoritative');
+		const authoritativeVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
+		conflictSourceRequest.respond({ id, name: 'source' });
+		assert.equal((await fill).name, 'source');
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		assert.equal(ConflictCachingTable.primaryStore.getSync(id).name, 'authoritative');
+		assert.equal(ConflictCachingTable.primaryStore.getEntry(id).version, authoritativeVersion);
+		assert(ConflictCachingTable.primaryStore.getEntry(id).version > sourceTimestamp);
+	});
+
+	it('reuses a revalidation version when the request timestamp predates the cached record', async function () {
+		const id = 614;
+		await ConflictCachingTable.put(id, { id, name: 'seed-regression' });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'seed-regression');
+		const existingVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
+		await ConflictCachingTable.invalidate(id);
+		await waitFor(() => ConflictCachingTable.primaryStore.getEntry(id)?.metadataFlags & INVALIDATED);
+		const invalidatedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
+		conflictSourceRequest = null;
+		const requestTimestamp = existingVersion - 1000;
+		const fill = ConflictCachingTable.get(id, { timestamp: requestTimestamp });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		assert.equal(conflictSourceRequest.timestamp, undefined);
+		conflictSourceRequest.respond({ id, name: 'refreshed' });
+		assert.equal((await fill).name, 'refreshed');
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		assert.equal(ConflictCachingTable.primaryStore.getSync(id).name, 'refreshed');
+		const refreshedEntry = ConflictCachingTable.primaryStore.getEntry(id);
+		assert.equal(refreshedEntry.version, invalidatedVersion);
+		assert(refreshedEntry.metadataFlags & VERSION_REUSED);
+	});
+
+	it('uses a source-reported version before the transaction timestamp', async function () {
+		const id = 615;
+		const requestTimestamp = nextConflictTimestamp();
+		const reportedVersion = requestTimestamp - 100;
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: requestTimestamp });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		conflictSourceRequest.respond({ id, name: 'reported-version' }, reportedVersion);
+		assert.equal((await fill).getUpdatedTime(), reportedVersion);
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		assert.equal(ConflictCachingTable.primaryStore.getEntry(id).version, reportedVersion);
+	});
+
+	it('delivers a subscription event for a fill whose source-reported version predates the log position', async function () {
+		// A dedicated table: ConflictCachingTable's history carries deliberately future-stamped
+		// writes, and a fresh subscriber's catch-up cursor raises startTime to the newest record
+		// time it sees, which would gate off real-time events until wall-clock catches up.
+		const id = 645;
+		let reportedVersion;
+		const ReportedVersionTable = table({
+			table: 'ReportedVersionTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		ReportedVersionTable.sourcedFrom(
+			class extends Resource {
+				get() {
+					reportedVersion = Date.now() - 1000;
+					this.getContext().lastModified = reportedVersion;
+					return { id: this.getId(), name: 'reported-version-event' };
+				}
+			}
+		);
+		const subscription = await ReportedVersionTable.subscribe({});
+		const events = [];
+		subscription.on('data', (event) => events.push(event));
+		try {
+			await ReportedVersionTable.get(id);
+			await waitFor(() => !ReportedVersionTable.primaryStore.hasLock(id), {
+				message: 'the reported-version fill should finish committing',
+			});
+			assert.equal(ReportedVersionTable.primaryStore.getEntry(id).version, reportedVersion);
+			await waitFor(() => events.some((event) => event.id === id && event.type === 'put'), {
+				message: 'a backdated source-reported fill should still reach the subscription',
+			});
+		} finally {
+			subscription.close();
+		}
+	});
+
+	it('clamps an older source-reported revalidation version instead of using the request timestamp', async function () {
+		const id = 620;
+		await ConflictCachingTable.put(id, { id, name: 'seed-reported-version' });
+		await ConflictCachingTable.invalidate(id);
+		await waitFor(() => ConflictCachingTable.primaryStore.getEntry(id)?.metadataFlags & INVALIDATED);
+		const invalidatedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
+		const requestTimestamp = nextConflictTimestamp();
+		const reportedVersion = invalidatedVersion - 1000;
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: requestTimestamp });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		conflictSourceRequest.respond({ id, name: 'reported-revalidation' }, reportedVersion);
+		assert.equal((await fill).getUpdatedTime(), invalidatedVersion);
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		const refreshedEntry = ConflictCachingTable.primaryStore.getEntry(id);
+		assert.equal(refreshedEntry.version, invalidatedVersion);
+		assert(refreshedEntry.metadataFlags & VERSION_REUSED);
+	});
+
+	it('falls back from an invalid source-reported version', async function () {
+		for (const [id, reportedVersion] of [
+			[616, Infinity],
+			[617, NaN],
+			[618, -1],
+			[619, Number.MAX_VALUE],
+		]) {
+			const requestTimestamp = nextConflictTimestamp();
+			conflictSourceRequest = null;
+			const fill = ConflictCachingTable.get(id, { timestamp: requestTimestamp });
+			await waitFor(() => conflictSourceRequest?.id === id);
+			conflictSourceRequest.respond({ id, name: 'fallback-version' }, reportedVersion);
+			assert.equal((await fill).getUpdatedTime(), requestTimestamp);
+			await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+			assert.equal(ConflictCachingTable.primaryStore.getEntry(id).version, requestTimestamp);
+		}
+	});
+
+	it('first source fill replaces an older raced record and its index entries', async function () {
+		const id = 611;
+		const sourceTimestamp = nextConflictTimestamp();
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: sourceTimestamp });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		const createdAt = new Date(sourceTimestamp - 0.0001);
+		await ConflictCachingTable.put(id, { id, name: 'older', createdAt }, { timestamp: sourceTimestamp - 1 });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'older');
+		const racedEntry = ConflictCachingTable.primaryStore.getEntry(id);
+		assert(racedEntry.version < sourceTimestamp);
+		const racedCreatedAt = racedEntry.value.createdAt;
+		conflictSourceRequest.respond({ id, name: 'source' });
+		assert.equal((await fill).name, 'source');
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'source');
+		const stored = ConflictCachingTable.primaryStore.getSync(id);
+		assert.equal(stored.createdAt.getTime(), racedCreatedAt.getTime());
+		const oldIndex = [];
+		for await (const record of ConflictCachingTable.search({ conditions: [{ attribute: 'name', value: 'older' }] }))
+			oldIndex.push(record);
+		assert.equal(oldIndex.length, 0);
+		const sourceIndex = [];
+		for await (const record of ConflictCachingTable.search({ conditions: [{ attribute: 'name', value: 'source' }] }))
+			sourceIndex.push(record);
+		assert.deepEqual(
+			sourceIndex.map((record) => record.id),
+			[id]
+		);
+	});
+
+	it('revalidation retains exact-CAS when a lower-version write races the source', async function () {
+		const id = 612;
+		await ConflictCachingTable.put(id, { id, name: 'seed' });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'seed');
+		await ConflictCachingTable.invalidate(id);
+		await waitFor(() => ConflictCachingTable.primaryStore.getEntry(id)?.metadataFlags & INVALIDATED);
+		conflictSourceRequest = null;
+		const sourceTimestamp = nextConflictTimestamp();
+		const fill = ConflictCachingTable.get(id, { timestamp: sourceTimestamp });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		await ConflictCachingTable.put(id, { id, name: 'raced' }, { timestamp: sourceTimestamp - 1 });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'raced');
+		assert(ConflictCachingTable.primaryStore.getEntry(id).version < sourceTimestamp);
+		const racedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
+		conflictSourceRequest.respond({ id, name: 'source' });
+		assert.equal((await fill).name, 'source');
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		assert.equal(ConflictCachingTable.primaryStore.getSync(id).name, 'raced');
+		assert.equal(ConflictCachingTable.primaryStore.getEntry(id).version, racedVersion);
+	});
+
+	it('source deletion does not remove a record that raced the fill', async function () {
+		const id = 613;
+		const sourceTimestamp = nextConflictTimestamp();
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: sourceTimestamp });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		await ConflictCachingTable.put(id, { id, name: 'older-delete' }, { timestamp: sourceTimestamp - 1 });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'older-delete');
+		assert(ConflictCachingTable.primaryStore.getEntry(id).version < sourceTimestamp);
+		const racedVersion = ConflictCachingTable.primaryStore.getEntry(id).version;
+		conflictSourceRequest.respond(undefined);
+		assert.equal(await fill, undefined);
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		assert.equal(ConflictCachingTable.primaryStore.getEntry(id).version, racedVersion);
+		const indexed = [];
+		for await (const record of ConflictCachingTable.search({
+			conditions: [{ attribute: 'name', value: 'older-delete' }],
+		}))
+			indexed.push(record);
+		assert.deepEqual(
+			indexed.map((record) => record.id),
+			[id]
+		);
+	});
+
+	it('caps a source-reported version ahead of local time so later local writes still land', async function () {
+		const id = 621;
+		conflictSourceRequest = null;
+		// no request timestamp: the ceiling is local time, which is what a skewed source clock outruns
+		const fill = ConflictCachingTable.get(id);
+		await waitFor(() => conflictSourceRequest?.id === id);
+		const futureVersion = Date.now() + 10_000_000;
+		conflictSourceRequest.respond({ id, name: 'source-future' }, futureVersion);
+		assert.equal((await fill).name, 'source-future');
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		const filled = ConflictCachingTable.primaryStore.getEntry(id);
+		assert(
+			filled.version < futureVersion,
+			`a future source version (${futureVersion}) must not become the record version (${filled.version})`
+		);
+		// the point of the cap: an ordinary local write is not resequenced away behind the source's floor
+		await ConflictCachingTable.put(id, { id, name: 'later-write' });
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'later-write', {
+			message: 'a local write after a future-dated fill must not be silently discarded',
+		});
+		assert(ConflictCachingTable.primaryStore.getEntry(id).version > filled.version);
+	});
+
+	it('keeps a raced record when a first fill ties its version', async function () {
+		const id = 622;
+		// The raced record is attributed to a peer whose name sorts *before* this node's, so
+		// precedesExistingVersion() would break the tie in the fill's favor here and in the peer's favor
+		// on a node whose name sorts before it — the divergence the fill guard must not depend on.
+		const peerNodeId = ConflictCachingTable.auditStore.ensureLogExists('!tie-peer');
+		const localNodeName = Object.keys(exportIdMapping(ConflictCachingTable.auditStore)).find(
+			(name) => name !== '!tie-peer'
+		);
+		assert('!tie-peer' < localNodeName, 'the peer node name must sort before this node for this test to bite');
+		const sourceTimestamp = nextConflictTimestamp();
+		conflictSourceRequest = null;
+		const fill = ConflictCachingTable.get(id, { timestamp: sourceTimestamp });
+		await waitFor(() => conflictSourceRequest?.id === id);
+		await applyFromPeer(id, { id, name: 'raced-tie' }, sourceTimestamp, peerNodeId);
+		await waitFor(() => ConflictCachingTable.primaryStore.getSync(id)?.name === 'raced-tie');
+		const racedEntry = ConflictCachingTable.primaryStore.getEntry(id);
+		assert.equal(racedEntry.version, sourceTimestamp);
+		conflictSourceRequest.respond({ id, name: 'source-tie' }, sourceTimestamp);
+		assert.equal((await fill).name, 'source-tie');
+		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
+		assert.equal(ConflictCachingTable.primaryStore.getSync(id).name, 'raced-tie');
+		assert.equal(ConflictCachingTable.primaryStore.getEntry(id).version, racedEntry.version);
+	});
+
+	it('converges on the same entry whether the raced write lands during or after the fill', async function () {
+		// The same two effects (a first fill at `sourceVersion`, a local write at `writeVersion`) applied in
+		// both orders must leave the same (version, value) — the property the single-ordering tests above
+		// each pin one instance of. Two replicas resolving the same missing key see exactly this pair of
+		// orderings when a write races the fetch on one of them.
+		let id = 630;
+		// a base in the past: the source-version cap is local time, so a future base would clamp the
+		// reported versions together and collapse the two cases this is comparing
+		const base = Date.now() - 60_000;
+		const commitWrite = async (key, record, timestamp) => {
+			const context = { timestamp };
+			await transaction(context, () => {
+				ConflictCachingTable.put(key, record, context);
+			});
+		};
+		for (const sourceWins of [true, false]) {
+			const results = [];
+			const sourceVersion = sourceWins ? base + 100 : base;
+			const writeVersion = sourceWins ? base : base + 100;
+			for (const writeDuringFetch of [true, false]) {
+				const key = id++;
+				const fillWith = { id: key, name: 'source' };
+				const writeWith = { id: key, name: 'write' };
+				conflictSourceRequest = null;
+				const fill = ConflictCachingTable.get(key, { timestamp: base });
+				await waitFor(() => conflictSourceRequest?.id === key);
+				if (writeDuringFetch) {
+					await commitWrite(key, writeWith, writeVersion);
+					conflictSourceRequest.respond(fillWith, sourceVersion);
+					await fill;
+					await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(key));
+				} else {
+					conflictSourceRequest.respond(fillWith, sourceVersion);
+					await fill;
+					await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(key));
+					await commitWrite(key, writeWith, writeVersion);
+				}
+				const entry = ConflictCachingTable.primaryStore.getEntry(key);
+				results.push({ name: entry.value.name, version: entry.version });
+			}
+			assert.deepEqual(
+				results[0],
+				results[1],
+				`fill@${sourceWins ? 'newer' : 'older'} must converge regardless of when the raced write lands`
+			);
+			assert.equal(results[0].name, sourceWins ? 'source' : 'write');
+		}
+	});
+
+	it('does not backdate a write the source performs while resolving', async function () {
+		const id = 640;
+		const sideId = 641;
+		const requestTimestamp = Date.now() - 3_600_000;
+		const before = Date.now();
+		conflictSourceWriteId = sideId;
+		try {
+			conflictSourceRequest = null;
+			const fill = ConflictCachingTable.get(id, { timestamp: requestTimestamp });
+			await waitFor(() => conflictSourceRequest?.id === id);
+			assert.equal(conflictSourceRequest.timestamp, undefined);
+			conflictSourceRequest.respond({ id, name: 'source-with-write' });
+			await fill;
+			await waitFor(() => ConflictSideEffectTable.primaryStore.getSync(sideId)?.name === 'side-effect');
+			const sideEntry = ConflictSideEffectTable.primaryStore.getEntry(sideId);
+			assert(
+				sideEntry.version >= before,
+				`a source-side write must carry its own transaction time (${sideEntry.version}), not the inherited request timestamp (${requestTimestamp})`
+			);
+		} finally {
+			conflictSourceWriteId = null;
+		}
+	});
+
 	it('Source throw error', async function () {
 		try {
 			IndexedCachingTable.setTTLExpiration(0.005);
@@ -511,38 +924,101 @@ describe('Caching', () => {
 		}
 	});
 	it('Can load cached indexed data', async function () {
-		sourceRequests = 0;
-		events = [];
-		IndexedCachingTable.setTTLExpiration(0.005);
-		let result = await IndexedCachingTable.get(23);
-		assert.equal(result.id, 23);
-		events = [];
-		assert.equal(result.name, 'name ' + 23);
-		assert.equal(sourceRequests, 1);
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		let results = [];
-		for await (let record of IndexedCachingTable.search({ conditions: [{ attribute: 'name', value: 'name 23' }] })) {
-			results.push(record);
+		const indexedEvents = [];
+		const indexedSubscription = await IndexedCachingTable.subscribe({});
+		indexedSubscription.on('data', (event) => {
+			indexedEvents.push(event);
+		});
+		let fenceId = 24;
+		// publications are delivered in commit order, so a delivered fill of a scratch id proves
+		// everything committed before it has been delivered too
+		const fenceEvents = async () => {
+			const id = fenceId++;
+			await IndexedCachingTable.get(id);
+			await waitFor(() => indexedEvents.some((event) => event.id === id), {
+				message: 'the fencing source fill should reach the indexed subscription',
+			});
+		};
+		try {
+			sourceRequests = 0;
+			IndexedCachingTable.setTTLExpiration({ expiration: 50, eviction: 100 });
+			const firstExpiresAt = (sourceExpiresAt = Date.now() + 1);
+			let result = await IndexedCachingTable.get(23);
+			assert.equal(result.id, 23);
+			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23), {
+				message: 'initial source fill should finish committing',
+			});
+			assert.equal(result.name, 'name ' + 23);
+			assert.equal(sourceRequests, 1);
+			await waitFor(
+				() =>
+					IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt === firstExpiresAt && firstExpiresAt < Date.now(),
+				{
+					message: 'initial source fill should expire',
+				}
+			);
+			const revalidatedExpiresAt = (sourceExpiresAt = Date.now() + 1000);
+			let results = [];
+			for await (let record of IndexedCachingTable.search({ conditions: [{ attribute: 'name', value: 'name 23' }] })) {
+				results.push(record);
+			}
+			assert.equal(results.length, 1);
+			// every revalidation this query can trigger starts before the refreshed entry commits, so
+			// waiting on the commit makes the count below exact rather than a floor
+			await waitFor(
+				() =>
+					IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt === revalidatedExpiresAt &&
+					!IndexedCachingTable.primaryStore.hasLock(23),
+				{ message: 'indexed query should revalidate the expired entry and commit the refreshed cache write' }
+			);
+			assert.equal(sourceRequests, 2);
+			result = await IndexedCachingTable.get(23);
+			assert.equal(result.id, 23);
+			await IndexedCachingTable.invalidate(23);
+			const secondExpiresAt = (sourceExpiresAt = Date.now() + 1);
+			await IndexedCachingTable.get(23);
+			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23), {
+				message: 'second source fill should finish committing',
+			});
+			await waitFor(
+				() =>
+					IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt === secondExpiresAt && secondExpiresAt < Date.now(),
+				{
+					message: 'second source fill should expire',
+				}
+			);
+			await fenceEvents();
+			indexedEvents.length = 0;
+			sourceExpiresAt = Date.now() + 1000;
+			sourceRequests = 0;
+			result = await IndexedCachingTable.get(23);
+			assert.equal(result.id, 23);
+			assert.equal(result.name, 'name ' + 23);
+			assert.equal(sourceRequests, 1);
+			assert(result.getExpiresAt());
+			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23), {
+				message: 'source revalidation lock should be released',
+			});
+			await fenceEvents();
+			assert.deepEqual(
+				indexedEvents.filter((event) => event.id === 23),
+				[],
+				'source revalidation should not publish an update event'
+			);
+			const entry = IndexedCachingTable.primaryStore.getEntry(23);
+			assert(entry, 'source revalidation should leave a cache entry to evict');
+			await IndexedCachingTable.evict(23, entry.value, entry.version);
+			// evict should completely eliminate the record
+			await waitFor(() => IndexedCachingTable.primaryStore.getSync(23) === undefined, {
+				message: 'eviction should remove the primary record',
+			});
+			await waitFor(() => IndexedCachingTable.indices.name.getValuesCount('name 23') === 0, {
+				message: 'eviction should remove the secondary index entry',
+			});
+		} finally {
+			sourceExpiresAt = undefined;
+			indexedSubscription.close();
 		}
-		assert.equal(results.length, 1);
-		assert.equal(sourceRequests, 2);
-		result = await IndexedCachingTable.get(23);
-		assert.equal(result.id, 23);
-		sourceRequests = 0;
-		// let it expire
-		await delay(10);
-		result = await IndexedCachingTable.get(23);
-		assert.equal(result.id, 23);
-		assert.equal(result.name, 'name ' + 23);
-		assert.equal(sourceRequests, 1);
-		assert.equal(events.length, 0);
-		result = await IndexedCachingTable.get(23);
-		await delay(10); // give the lock a chance to be released
-		assert(result.getExpiresAt());
-		result = IndexedCachingTable.primaryStore.getEntry(23);
-		await IndexedCachingTable.evict(23, result, result.version);
-		// evict should completely eliminate the record
-		await waitFor(() => IndexedCachingTable.primaryStore.getSync(23) === undefined);
 	});
 
 	it('Bigger stampede is handled', async function () {

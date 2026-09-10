@@ -8,6 +8,7 @@ const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { writeFile, rm } = require('node:fs/promises');
 const { stringify } = require('yaml');
 const { spy } = require('sinon');
+const chokidar = require('chokidar');
 const { DEFAULT_CONFIG } = require('#src/components/DEFAULT_CONFIG');
 const { cloneDeep } = require('lodash');
 
@@ -711,6 +712,48 @@ describe('OptionsWatcher', () => {
 			assert.equal(errorSpy.callCount, 0, 'all exhaustion errors should be swallowed');
 
 			await teardown({ fixture, options });
+		});
+
+		it('a synchronous throw from close() stays inside the reopen chain', async () => {
+			// The reopen used to be spelled `Promise.resolve(this.#watcher.close())`, whose argument
+			// is evaluated eagerly: a close() that throws synchronously threw out of the 'error'
+			// listener itself, past the chained .catch(), and Node reported it as an uncaught
+			// exception instead of reopening on polling.
+			const realWatch = chokidar.default.watch;
+			const handlers = {};
+			const fakeWatcher = {
+				on(event, handler) {
+					handlers[event] = handler;
+					return fakeWatcher;
+				},
+				close() {
+					throw new Error('close failed synchronously');
+				},
+			};
+			chokidar.default.watch = () => fakeWatcher;
+
+			let options;
+			let fixture;
+			try {
+				const created = createFixture();
+				fixture = created.fixture;
+				options = new OptionsWatcher(NAME, created.configFilePath);
+				handlers.ready?.();
+				await options.ready;
+
+				assert.doesNotThrow(() => handlers.error(Object.assign(new Error('boom'), { code: 'ENOSPC' })));
+				await new Promise((resolve) => setImmediate(resolve));
+
+				assert.equal(options._usingPollingForTests, true, 'should have flipped to polling');
+				assert.equal(options._openCountForTests, 2, 'should have reopened after the failed close()');
+			} finally {
+				chokidar.default.watch = realWatch;
+				// The fake watcher's close() always throws; swap it for a real no-op before
+				// teardown so options.close() (unrelated to this test) doesn't also throw.
+				fakeWatcher.close = () => {};
+				await options?.close();
+				if (fixture) rmSync(fixture, { recursive: true, force: true });
+			}
 		});
 
 		it('does not reopen watcher if close() is called during recovery', async () => {

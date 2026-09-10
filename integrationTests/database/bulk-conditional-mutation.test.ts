@@ -183,17 +183,27 @@ suite(
 		let client: Client;
 
 		before(async () => {
-			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-				config: {
-					threads: { count: 4 },
-					logging: { console: true, level: 'error' },
-				},
-				env: {},
-			});
-			client = createApiClient(ctx.harper);
-			// Wait until the Order table route is ready
-			await restartHttpWorkers(client, `/${TABLE}/`, 120_000);
-			log(`Harper started, seeding ${N} rows`);
+			try {
+				await setupHarperWithFixture(ctx, FIXTURE_PATH, {
+					config: {
+						threads: { count: 4 },
+						logging: { console: true, level: 'error' },
+					},
+					env: {},
+				});
+				client = createApiClient(ctx.harper);
+				// Wait until the Order table route is ready
+				await restartHttpWorkers(client, `/${TABLE}/`, 120_000);
+				log(`Harper started, seeding ${N} rows`);
+			} catch (error) {
+				// node:test cascades a `before` failure into a generic, contentless "cancelled" for
+				// every sibling test; surface the real cause loudly here instead.
+				console.error(
+					`\n🛑 SUITE SETUP FAILED — "bulk conditional mutation [engine=${ENGINE}]": ${(error as Error)?.message ?? error}\n` +
+						`   All subtests reported below as cancelled/failed did not run; this single failure is the root cause of all of them, not independent bugs.\n`
+				);
+				throw error;
+			}
 		});
 
 		after(async () => {

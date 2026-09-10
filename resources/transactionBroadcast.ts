@@ -95,7 +95,7 @@ export function addSubscription(table, key, listener?: (key) => any, startTime?:
  * subscription and get the initial state.
  */
 class Subscription extends IterableEventQueue {
-	listener: (recordId: Id, auditEntry: any, localTime: number, beginTxn: boolean) => void;
+	listener: (recordId: Id, auditEntry: any, txnLogKey: number, beginTxn: boolean) => void;
 	subscriptions: any;
 	startTime?: number;
 	includeDescendants?: boolean;
@@ -178,8 +178,11 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 			}
 			if (result.done) break;
 			const auditRecord = result.value;
-			const timestamp: number = auditRecord.localTime ?? auditRecord.version;
+			const timestamp: number = auditRecord.txnLogKey;
 			subscriptions.lastTxnTime = timestamp;
+			// the transaction extent: RocksDB entries committed together share the log key (record
+			// versions may differ); LMDB's transaction-log key is per-entry, so version delimits there
+			const txnKey = auditStore.reusableIterable ? timestamp : auditRecord.version;
 			if (ACTIONS_OF_INTEREST.includes(auditRecord.type)) {
 				const tableSubscriptions = subscriptions[auditRecord.tableId];
 				if (tableSubscriptions) {
@@ -204,7 +207,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 								}
 								try {
 									let beginTxn;
-									if (subscription.supportsTransactions && subscription.txnInProgress !== auditRecord.version) {
+									if (subscription.supportsTransactions && subscription.txnInProgress !== txnKey) {
 										// if the subscriber supports transactions, we mark this as the beginning of a new transaction
 										// tracking the subscription so that we can delimit the transaction on next transaction
 										// (with a beginTxn flag, which may be on an endTxn event)
@@ -214,10 +217,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 											if (!subscribersWithTxns) subscribersWithTxns = [subscription];
 											else subscribersWithTxns.push(subscription);
 										}
-										// the version defines the extent of a transaction, all audit records with the same version
-										// are part of the same transaction, and when the version changes, we know it is a new
-										// transaction
-										subscription.txnInProgress = auditRecord.version;
+										subscription.txnInProgress = txnKey;
 									}
 									subscription.listener(recordId, auditRecord, timestamp, beginTxn);
 								} catch (error) {

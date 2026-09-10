@@ -27,6 +27,8 @@
 
 import { table, type Table } from './databases.ts';
 import { attributeToFragment } from './jsonSchemaTypes.ts';
+import type { RecordLockOptions } from './recordLock.ts';
+import type { WritableRecord } from './ResourceInterface.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Field model — phantom-typed Field. Flags are set via GETTER PROPERTIES (no call):
@@ -235,6 +237,7 @@ interface TypedVerbs<S extends Shape> {
 	post(record: InsertOf<S>, context?: any): MaybePromise<unknown>;
 	patch(id: IdOf<S>, changes: PatchOf<S>, context?: any): MaybePromise<unknown>;
 	update(id: IdOf<S>, updates?: PatchOf<S>, context?: any): MaybePromise<InstanceOf<S>>;
+	lock(id: IdOf<S>, options?: RecordLockOptions, context?: any): Promise<WritableRecord<InstanceOf<S>>>;
 	delete(id: IdOf<S>, context?: any): MaybePromise<unknown>;
 	search(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
 	query(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
@@ -248,7 +251,7 @@ interface TypedVerbs<S extends Shape> {
  */
 export type TableHandle<S extends Shape = Shape> = Omit<
 	Table,
-	'get' | 'put' | 'post' | 'patch' | 'update' | 'delete' | 'search' | 'query'
+	'get' | 'put' | 'post' | 'patch' | 'update' | 'lock' | 'delete' | 'search' | 'query'
 > &
 	TypedVerbs<S> & {
 		// phantom projection carriers — discovery surface, zero runtime cost
@@ -400,8 +403,21 @@ function compileTypeDef(name: string, shape: Shape, options: DefineTableOptions)
  * index changes) through the same evolution path GraphQL reloads take.
  */
 export function defineTable<S extends Shape>(name: string, shape: S, options: DefineTableOptions = {}): TableHandle<S> {
+	return defineTableUsing(table, name, shape, options);
+}
+
+/**
+ * `defineTable` through a specific table factory: the one a branched application's scope hands out
+ * (`scopedTableFactory`), so the table lands in its branch. Internal -- the public entry is `defineTable`.
+ */
+export function defineTableUsing<S extends Shape>(
+	tableFactory: typeof table,
+	name: string,
+	shape: S,
+	options: DefineTableOptions = {}
+): TableHandle<S> {
 	const typeDef = compileTypeDef(name, shape, options);
-	const tableClass = table(typeDef);
+	const tableClass = tableFactory(typeDef);
 	typeDef.tableClass = tableClass;
 	return tableClass as TableHandle<S>;
 }

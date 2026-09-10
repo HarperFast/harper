@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { PrimaryRocksDatabase } = require('#src/resources/PrimaryRocksDatabase');
@@ -18,7 +19,12 @@ describe('PrimaryRocksDatabase', function () {
 		TestTable = table({
 			table: 'PrimaryRocksTest',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'count' },
+				{ name: 'expiresAt', expiresAt: true, indexed: true },
+			],
 		});
 	});
 
@@ -108,5 +114,76 @@ describe('PrimaryRocksDatabase', function () {
 		await TestTable.put(8, { name: 'eight updated' }); // clears cache entry
 		const result = await TestTable.get(8);
 		assert.equal(result.name, 'eight updated');
+	});
+
+	it('marks a record whose version was reused by a resequenced write, preserving its expiresAt', async function () {
+		const now = Date.now();
+		const expiresAt = now + 60_000;
+		await TestTable.put(13, { name: 'base', count: 0 });
+		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		const inOrder = TestTable.primaryStore.getEntry(13);
+		await TestTable.patch(13, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50, expiresAt });
+		const resequenced = TestTable.primaryStore.getEntry(13);
+		assert.equal(resequenced.version, inOrder.version);
+		assert.equal(resequenced.value.count, 2);
+		assert.equal(resequenced.expiresAt, expiresAt);
+		assert(resequenced.metadataFlags & VERSION_REUSED);
+	});
+
+	it('VT does not vouch for a version a resequenced write reused', async function () {
+		const store = TestTable.primaryStore;
+		const now = Date.now();
+		await TestTable.put(9, { name: 'base', count: 0 });
+		await TestTable.patch(9, { name: 'newer', count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		await TestTable.get(9);
+		const inOrder = store.getEntry(9);
+		assert(store.verifyVersion(9, inOrder.version), 'VT should vouch for an in-order version');
+
+		// out-of-order: merges onto the newer record and stores under its (reused) version
+		await TestTable.patch(9, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		const resequenced = store.getEntry(9);
+		assert.equal(resequenced.version, inOrder.version, 'resequenced write keeps the existing version');
+		assert.equal(resequenced.value.count, 2, 'both increments are applied');
+		assert(resequenced.metadataFlags & VERSION_REUSED, 'the stored record is marked non-unique for the native layer');
+		assert(!store.verifyVersion(9, resequenced.version), 'VT must not vouch for a version shared by two stored values');
+		assert.notEqual(store.getEntry(9).value, resequenced.value, 'a flagged record is never served from cache');
+		assert(!store.verifyVersion(9, resequenced.version), 'reading a flagged record must not publish its version');
+		const client = await TestTable.get(9);
+		assert.equal(client.count, 2, 'a client-level read sees the merged value, not a stale cache vouch');
+	});
+
+	it('an uncachedRead bypasses the cache vouch and returns the stored record', async function () {
+		const store = TestTable.primaryStore;
+		await TestTable.put(12, { name: 'stored', count: 5 });
+		await TestTable.get(12); // warm the cache and seed the VT slot
+		const cached = store.getEntry(12);
+		assert(store.verifyVersion(12, cached.version), 'VT vouches for the in-order version');
+		// the vouch fast path returns the cached object itself, so identity is what distinguishes them
+		assert.equal(store.getEntry(12).value, cached.value, 'the vouch path serves the cached object');
+		const direct = store.getEntry(12, { uncachedRead: true });
+		assert.notEqual(direct.value, cached.value, 'uncachedRead must decode from the store, not serve the cache');
+		assert.equal(direct.value.name, 'stored');
+		assert.equal(direct.value.count, 5);
+		assert.equal(direct.version, cached.version, 'the decoded entry carries the stored version');
+	});
+
+	it('an in-order write after a resequenced one restores vouching', async function () {
+		const store = TestTable.primaryStore;
+		const now = Date.now();
+		await TestTable.put(11, { name: 'base', count: 0 });
+		await TestTable.patch(11, { name: 'newer', count: { __op__: 'add', value: 1 } }, { timestamp: now + 100 });
+		await TestTable.patch(11, { count: { __op__: 'add', value: 1 } }, { timestamp: now + 50 });
+		const reused = store.getEntry(11);
+		assert(reused.metadataFlags & VERSION_REUSED, 'the reused version is marked');
+		assert(!store.verifyVersion(11, reused.version), 'the reused version is not vouched for');
+
+		// the next in-order write gives the record a version of its own; vouching resumes with the
+		// same one-read lag as any cold key
+		await TestTable.patch(11, { name: 'later' }, { timestamp: now + 200 });
+		const advanced = store.getEntry(11);
+		assert(advanced.version > reused.version, 'the in-order write advances the version');
+		assert.equal(advanced.value.count, 2, 'the merged count survives the in-order write');
+		store.getEntry(11);
+		assert(store.verifyVersion(11, advanced.version), 'vouching resumes for a version of its own');
 	});
 });

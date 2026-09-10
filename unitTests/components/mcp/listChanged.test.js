@@ -190,6 +190,34 @@ describe('mcp/listChanged', () => {
 		assert.equal(rec.user, aliceWithFoo, 'record.user updated to the freshly-resolved user');
 	});
 
+	it('a scoped-token session is never re-resolved by name (no privilege substitution)', async () => {
+		// A scoped token's attribution username may later collide with a real hdb_user; re-resolving
+		// it here would advertise that user's surface. The session's embedded role must stay put.
+		const scopedUser = {
+			username: 'reporting-svc',
+			_scopedToken: true,
+			role: { permission: { operations: ['read_only'] } },
+		};
+		const collidingRealUser = {
+			username: 'reporting-svc',
+			role: { permission: { super_user: true } },
+		};
+		let resolverCalled = false;
+		_setUserResolverForTest(async () => {
+			resolverCalled = true;
+			return collidingRealUser;
+		});
+
+		initListChanged();
+		const rec = registerSession('scoped-sid', 'application', scopedUser);
+		seedSessionSnapshot('scoped-sid');
+
+		fakeItc._fireUser();
+		await new Promise((r) => setTimeout(r, 20));
+		assert.equal(resolverCalled, false, 'scoped session must not trigger a by-name user resolve');
+		assert.equal(rec.user, scopedUser, 'record.user must remain the embedded scoped principal');
+	});
+
 	it('schema events also fan out (application profile)', async () => {
 		initListChanged();
 		addTool({

@@ -113,6 +113,59 @@ describe('getDirectorySizeAsync', () => {
 		const size = await getDirectorySizeAsync(join(tmpDir, 'nope'));
 		expect(size).to.equal(0);
 	});
+
+	// harper#2240: the walk used to fan out over every entry in the tree with an unbounded
+	// Promise.all, so it held a path string, a dirent and a pending stat for EVERY file at once. On a
+	// node whose root carries a large blob store that grew the main thread's heap ~72 MB/s until V8
+	// aborted — on every boot, since the metric runs on the first analytics cycle. It measures about
+	// every ten minutes, so the footprint matters and the wall clock does not.
+	it('stats one file at a time', async () => {
+		const FILES = 300;
+		await Promise.all(
+			Array.from({ length: FILES }, (unused, i) => writeFile(join(tmpDir, `f${i}.txt`), 'x'.repeat(10)))
+		);
+		let outstanding = 0;
+		let peak = 0;
+		const statFile = async (_path) => {
+			outstanding++;
+			if (outstanding > peak) peak = outstanding;
+			await new Promise((resolve) => setImmediate(resolve));
+			outstanding--;
+			return { size: 10 };
+		};
+		const size = await getDirectorySizeAsync(tmpDir, { statFile });
+		expect(size).to.equal(FILES * 10);
+		expect(peak).to.equal(1);
+	});
+
+	it('sums a directory far wider than any plausible batch', async () => {
+		const FILES = 2000;
+		await Promise.all(Array.from({ length: FILES }, (unused, i) => writeFile(join(tmpDir, `w${i}.bin`), 'ab')));
+		expect(await getDirectorySizeAsync(tmpDir)).to.equal(FILES * 2);
+	});
+
+	it('descends through many nested levels', async () => {
+		let dir = tmpDir;
+		for (let i = 0; i < 60; i++) {
+			dir = join(dir, `d${i}`);
+			await mkdir(dir);
+		}
+		await writeFile(join(dir, 'deep.txt'), 'abcd');
+		expect(await getDirectorySizeAsync(tmpDir)).to.equal(4);
+	});
+
+	it('skips a file whose stat fails instead of zeroing the whole tree', async () => {
+		// The old Promise.all rejected on one bad stat and the outer catch returned 0 for everything
+		// under dirPath — a file removed mid-walk erased the entire measurement.
+		await writeFile(join(tmpDir, 'good1.txt'), 'aaaa');
+		await writeFile(join(tmpDir, 'gone.txt'), 'bbbbbb');
+		await writeFile(join(tmpDir, 'good2.txt'), 'cc');
+		const statFile = async (path) => {
+			if (path.endsWith('gone.txt')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+			return { size: path.endsWith('good1.txt') ? 4 : 2 };
+		};
+		expect(await getDirectorySizeAsync(tmpDir, { statFile })).to.equal(6);
+	});
 });
 
 describe('calculateCPUUtilization', () => {

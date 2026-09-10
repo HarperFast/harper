@@ -40,13 +40,36 @@ export function structuresWouldShrink(existing: any, updated: any): boolean {
 	return false;
 }
 
-export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void> {
-	if (!isMainThread) return; // ideally we don't do it like this, but for now this is predictable
-	return new Promise((resolve) => {
+/** The total wall-clock budget (ms) a replay may spend, as configured for this process. */
+export function replayTimeBudgetMs(): number {
+	const configuredReplayTimeout = Number(envGet(CONFIG_PARAMS.REPLICATION_REPLAYTIMEOUT));
+	return configuredReplayTimeout > 0 ? configuredReplayTimeout : REPLAY_WALL_CLOCK_LIMIT_MS;
+}
+
+/**
+ * `electedReplayer` marks a caller that has already won a cross-thread election for this store —
+ * the branch claim (branchDatabase.ts) — and so may replay off the main thread. It also makes the
+ * replay strict: the promise settles (never hangs), and a failure to apply the tail — a commit or
+ * write error, a stall or wall-clock abort — rejects instead of quietly serving a rewound store.
+ * Undecodable entries and a torn tail stay tolerated in both modes: a crash tears the last frame of
+ * a log by construction, and end-of-log is the designed reading of it (see replayLogsGuards.ts). A
+ * **mid-log** break is different — entries behind it were acknowledged and are now quarantined — so
+ * an elected replay rejects on one rather than publish a branch as a trustworthy point-in-time copy
+ * over known lost writes; boot replay still logs it and continues (harper#2016, harper#2063).
+ */
+export function replayLogs(rootStore: RocksDatabase, tables: any, electedReplayer?: boolean): Promise<void> {
+	if (!isMainThread && !electedReplayer) return Promise.resolve(); // ideally we don't do it like this, but for now this is predictable
+	return new Promise((resolve, reject) => {
 		const acquired = rootStore.tryLock('replayLogs', async () => {
 			resolve();
 		});
-		if (!acquired) return;
+		if (!acquired) {
+			// An elected replayer is the store's sole opener, so a held lock is a protocol violation;
+			// hanging its awaited promise would wedge the branch claim in CREATING. The boot-scan
+			// caller keeps the settle-on-unlock semantics (nothing awaits it).
+			if (electedReplayer) reject(new Error(`The replay lock for ${(rootStore as any).databaseName} is already held`));
+			return;
+		}
 		// Shed transaction-log files already older than the audit retention window before
 		// replaying. A node that crash-loops during recovery never reaches the steady-state
 		// cleanup loop, so without this its aged backlog only grows and enlarges each subsequent
@@ -75,9 +98,13 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 			tableById.set(table.tableId, table);
 		}
 		// replay all the logs
-		let transaction: DatabaseTransaction;
+		let transaction: DatabaseTransaction | undefined;
 		let lastTimestamp = 0;
 		let writes = 0;
+		// Writes staged on the currently-open transaction, so a discard can be taken back out of `writes`.
+		let stagedWrites = 0;
+		// Records dropped because a corrupt frame truncated the transaction they belong to.
+		let discardedWrites = 0;
 		let skipped = 0;
 		// Track forward progress so a backlog of unwritable entries can't grind the boot thread
 		// forever (harper#1266). `noProgressRun` counts every entry processed without a successful
@@ -89,13 +116,33 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 		let lastProgressTime = replayStartTime;
 		// Total wall-clock budget (ms) for replay, configurable via `replication.replayTimeout`;
 		// falls back to the 10-minute default (harper#1316).
-		const configuredReplayTimeout = Number(envGet(CONFIG_PARAMS.REPLICATION_REPLAYTIMEOUT));
-		const replayTimeoutMs = configuredReplayTimeout > 0 ? configuredReplayTimeout : REPLAY_WALL_CLOCK_LIMIT_MS;
+		const replayTimeoutMs = replayTimeBudgetMs();
+		// Set on the first unrecoverable failure in elected mode; rejects below instead of publishing
+		// a store the replay knows is incomplete.
+		let strictFailure: Error | undefined;
+		const strictAbort = (error: Error, staged: DatabaseTransaction | undefined): void => {
+			try {
+				staged?.abort();
+			} catch (abortError) {
+				logger.warn('Error aborting a strict replay transaction', abortError);
+			}
+			strictFailure = error;
+		};
 		const txnLog: RocksTransactionLogStore = (rootStore as any).auditStore;
-		for (const auditRecord of txnLog.getRange({ startFromLastFlushed: true, readUncommitted: true }) as any) {
+		const entries = txnLog.getRange({
+			startFromLastFlushed: true,
+			readUncommitted: true,
+			trackCorruptTransactions: true,
+		});
+		for (const auditRecord of entries as any) {
 			if (noProgressRun > 0 && shouldAbortStalledReplay(noProgressRun, performance.now() - lastProgressTime)) {
+				const stallDiagnostic = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table.`;
+				if (electedReplayer) {
+					strictAbort(new Error(stallDiagnostic), transaction);
+					break;
+				}
 				logger.fatal(
-					`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: ${noProgressRun} consecutive audit entries with no successful write (${skipped} skipped as unrecoverable, ${writes} replayed so far). This backlog is making no forward progress and was blocking startup (harper#1266) — typically a peer transaction log whose values reference unresolvable shared structures (harper#1163), or a backlog for a dropped table. Continuing boot without replaying the remainder; shed or relocate the oversized/undecodable peer transaction log(s), or re-clone this node, to recover the unreplayed data.`
+					`${stallDiagnostic} Continuing boot without replaying the remainder; shed or relocate the oversized/undecodable peer transaction log(s), or re-clone this node, to recover the unreplayed data.`
 				);
 				break;
 			}
@@ -105,6 +152,7 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				nodeId,
 				recordId,
 				version,
+				txnLogKey,
 				residencyId,
 				expiresAt,
 				originatingOperation,
@@ -165,14 +213,35 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					warnedReplayHappening = true;
 					console.warn('Harper was not properly shutdown, replaying transaction logs to synchronize database');
 				}
-				if (lastTimestamp !== version) {
-					lastTimestamp = version;
+				// Transactions are delimited by the log key — which is also what `truncatedVersions` records —
+				// and each write is replayed at its own stored record version. The two differ for a source
+				// fill, and stamping such a record at the log key would move its version forward and make a
+				// later legitimate write in between look stale (harper#2411).
+				if (lastTimestamp !== txnLogKey) {
+					const torn = entries.corruptFrameStop.truncatedVersions.has(lastTimestamp);
+					lastTimestamp = txnLogKey;
 					try {
-						// commit the last transaction since we are starting a new one
-						transaction?.directCommitSync();
+						// commit the last transaction since we are starting a new one, unless a corrupt
+						// frame swallowed the rest of it — half of a source transaction must never become
+						// durable, so it is dropped whole and stays in the log for a repaired retry
+						if (torn) {
+							writes -= stagedWrites;
+							discardedWrites += stagedWrites;
+							transaction?.abort();
+						} else transaction?.directCommitSync();
 					} catch (error) {
-						logger.error('Error committing replay transaction', error);
+						// directCommitSync aborts and detaches its transaction on failure; no cleanup here.
+						// The torn branch already backed stagedWrites out of writes before this try, so
+						// only a failed COMMIT (never applied) needs it backed out here too — otherwise a
+						// commit failure left `writes` counting records that never actually landed.
+						if (!torn) writes -= stagedWrites;
+						if (electedReplayer) {
+							strictFailure = error;
+							break;
+						}
+						logger.error(`Error ${torn ? 'discarding a torn' : 'committing'} replay transaction`, error);
 					}
+					stagedWrites = 0;
 					// Abort if replay has exceeded the total wall-clock budget even while making progress
 					// (harper#1316, facet a). shouldAbortStalledReplay resets its counters on every write,
 					// so a slow-but-progressing replay (deep out-of-order audit chain walk per entry) can
@@ -181,15 +250,18 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					// is not yet staged, so aborting never tears a same-version (same source-transaction)
 					// write batch in half. Re-clone to recover the unreplayed remainder.
 					if (shouldAbortSlowReplay(performance.now() - replayStartTime, replayTimeoutMs)) {
-						logger.fatal(
-							`Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`
-						);
-						transaction = undefined as any; // already committed above; nothing staged for the new version
+						const slowMessage = `Aborting transaction-log replay in ${(rootStore as any).databaseName} database: replay has exceeded the wall-clock time limit (${writes} written, ${skipped} skipped). The transaction log contains a pathologically deep out-of-order write history that is too expensive to reconcile during boot (harper#1316). Re-clone this node from a healthy leader to recover the unreplayed data.`;
+						transaction = undefined; // already committed above; nothing staged for the new version
+						if (electedReplayer) {
+							strictFailure = new Error(slowMessage);
+							break;
+						}
+						logger.fatal(slowMessage);
 						break;
 					}
 					transaction = new DatabaseTransaction();
 					transaction.db = primaryStore;
-					transaction.timestamp = version;
+					transaction.timestamp = txnLogKey;
 					// retries=1 routes operation.commit() through its retry path (no duplicate audit staging)
 					transaction.retries = 1;
 					// Explicit replay marker: skips schema validation (harper#1316) and makes save() stamp
@@ -198,8 +270,9 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 					transaction.isReplay = true;
 				}
 				context.transaction = transaction;
-				const options = { context, residencyId, nodeId, originatingOperation };
+				const options = { context, residencyId, nodeId, originatingOperation, version };
 				writes++;
+				stagedWrites++;
 				switch (type) {
 					case 'put':
 						tableInstance._writeUpdate(recordId, record, true, options);
@@ -274,6 +347,10 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				noProgressRun = 0;
 				lastProgressTime = performance.now();
 			} catch (err) {
+				if (electedReplayer) {
+					strictAbort(err, transaction);
+					break;
+				}
 				// A write that threw made no forward progress either — count it toward the stall
 				// bound so a continuous stream of throwing writes can't grind the boot thread
 				// indefinitely (and the per-entry error log below can't spam unboundedly). harper#1266
@@ -283,18 +360,62 @@ export function replayLogs(rootStore: RocksDatabase, tables: any): Promise<void>
 				});
 			}
 		}
-		try {
-			transaction?.directCommitSync();
-		} catch (error) {
-			logger.error('Error committing replay transaction', error);
+		const finalTorn = entries.corruptFrameStop.truncatedVersions.has(lastTimestamp);
+		if (!strictFailure) {
+			try {
+				if (finalTorn) {
+					writes -= stagedWrites;
+					discardedWrites += stagedWrites;
+					transaction?.abort();
+				} else transaction?.directCommitSync();
+			} catch (error) {
+				// directCommitSync aborts and detaches its transaction on failure; no cleanup here.
+				// Mirrors the interior version-boundary catch above: a failed commit never applied, so
+				// it must not stay counted in `writes`.
+				if (!finalTorn) writes -= stagedWrites;
+				if (electedReplayer) strictFailure = error;
+				logger.error(`Error ${finalTorn ? 'discarding a torn' : 'committing'} replay transaction`, error);
+			}
+		}
+		// `breaks` also counts a torn tail — the designed, benign reading of a crash's last frame, and
+		// the reporter already logged it at `warn`. Only a mid-log break lost entries, so it alone earns
+		// this quarantine/repair summary; duplicating it for a torn tail would tell an operator to
+		// repair or re-clone the node on every ordinary unclean shutdown.
+		if (entries.corruptFrameStop.midLogBreak) {
+			logger.error(
+				`Transaction-log replay in ${(rootStore as any).databaseName} database stopped at a corrupt entry after replaying ${writes} records. Every entry after the break is quarantined — neither replayed nor replicated — and ${discardedWrites} record(s) of the transaction the break truncated were discarded rather than applied in part. Repair the transaction log or re-clone this node to recover them.`
+			);
+			// electedReplayer must not resolve past known loss — see the doc comment above. Only set
+			// strictFailure if nothing has already failed the replay for an unrelated reason, so this
+			// diagnostic never shadows a more specific commit/write error.
+			if (electedReplayer && !strictFailure) {
+				strictFailure = new Error(
+					`Elected replay in ${(rootStore as any).databaseName} database stopped at a mid-log corrupt transaction-log frame; entries behind the break were acknowledged and are now quarantined. Refusing to publish a branch over known lost writes — repair the transaction log or re-clone this node.`
+				);
+			}
 		}
 		if (writes > 0) logger.warn(`Replayed ${writes} records in ${(rootStore as any).databaseName} database`);
 		if (skipped > 0)
 			logger.warn(
 				`Skipped ${skipped} unrecoverable audit entries in ${(rootStore as any).databaseName} database during replay`
 			);
-		// we never actually release the lock because we only want to ever run one time
-		// rootStore.unlock('replayLogs');
+		if (strictFailure) {
+			// A failed strict replay must be re-runnable: the branch claim resets for a retry, so the
+			// lock must not be what survives to wedge it. Only a COMPLETED replay keeps the lock
+			// forever (the once-per-boot guarantee). Reject BEFORE unlocking: unlock wakes tryLock
+			// callbacks — including this holder's own resolve() — and the first settle must be the
+			// rejection, or a failed replay reads as success.
+			reject(strictFailure);
+			try {
+				rootStore.unlock('replayLogs');
+			} catch (unlockError) {
+				logger.warn('Error releasing the replay lock after a failed replay', unlockError);
+			}
+		} else {
+			// we never actually release the lock because we only want to ever run one time
+			// rootStore.unlock('replayLogs');
+			resolve();
+		}
 	});
 }
 function asBinary(buffer) {

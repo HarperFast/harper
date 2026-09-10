@@ -6,15 +6,27 @@ const { getRecordAtTime, applyForward, addValues } = require('#src/resources/crd
 // entry by its exact version (matching the real store, which is only ever queried by exact
 // version via the previousVersion chain).
 function makeStore(events) {
+	const byPosition = new Map();
 	const byVersion = new Map();
-	for (const event of events) byVersion.set(event.version, event);
+	for (const event of events) {
+		const txnLogKey = event.txnLogKey ?? event.version;
+		const nodeId = event.nodeId ?? 1;
+		byPosition.set(`${nodeId}:${txnLogKey}`, event);
+		const atVersion = byVersion.get(txnLogKey) ?? [];
+		atVersion.push(event);
+		byVersion.set(txnLogKey, atVersion);
+	}
 	const auditStore = {
-		get(version) {
-			const event = byVersion.get(version);
+		get(version, _tableId, _recordId, nodeId) {
+			const event = nodeId == null ? byVersion.get(version)?.at(-1) : byPosition.get(`${nodeId}:${version}`);
 			if (!event) return undefined;
 			return {
 				type: event.type,
+				version: event.version,
+				nodeId: event.nodeId ?? 1,
 				previousVersion: event.previousVersion,
+				previousNodeId: event.previousNodeId,
+				previousAdditionalAuditRefs: event.previousAdditionalAuditRefs,
 				getValue: () => event.value,
 			};
 		},
@@ -23,11 +35,111 @@ function makeStore(events) {
 }
 
 // currentEntry mirrors the live record entry getRecordAtTime starts the reverse walk from.
-function currentEntry(value, localTime) {
-	return { value, localTime };
+function currentEntry(value, localTime, options = {}) {
+	return { value, localTime, ...options };
 }
 
 describe('crdt getRecordAtTime', () => {
+	it('walks divergent heads through ref-based transaction-log keys', () => {
+		const events = [
+			{ txnLogKey: 100, version: 10, type: 'put', value: { id: 'D', count: 1 }, previousVersion: 0 },
+			{
+				txnLogKey: 150,
+				version: 15,
+				type: 'patch',
+				value: { ignored: true },
+				previousVersion: 10,
+				previousAdditionalAuditRefs: [{ version: 100, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 200,
+				version: 20,
+				type: 'patch',
+				value: { count: { __op__: 'add', value: 2 } },
+				previousVersion: 10,
+				previousAdditionalAuditRefs: [{ version: 150, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 300,
+				version: 30,
+				type: 'patch',
+				value: { ignored: true },
+				previousVersion: 20,
+				previousAdditionalAuditRefs: [{ version: 200, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 200,
+				nodeId: 2,
+				version: 999,
+				type: 'put',
+				value: { id: 'D', count: 999 },
+				previousVersion: 0,
+			},
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'D', count: 3 }, 20, {
+			version: 20,
+			nodeId: 1,
+			additionalAuditRefs: [{ version: 300, nodeId: 1 }],
+		});
+		assert.deepStrictEqual(getRecordAtTime(current, 150, store, 1, 'D'), { id: 'D', count: 1 });
+	});
+
+	it('crosses a dual-clock delete through its ref-based predecessor', () => {
+		const events = [
+			{ txnLogKey: 100, version: 10, type: 'put', value: { id: 'D', count: 1 }, previousVersion: 0 },
+			{
+				txnLogKey: 200,
+				version: 20,
+				type: 'patch',
+				value: { count: { __op__: 'add', value: 2 } },
+				previousVersion: 10,
+				previousAdditionalAuditRefs: [{ version: 100, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 300,
+				version: 30,
+				type: 'delete',
+				value: null,
+				previousVersion: 20,
+				previousAdditionalAuditRefs: [{ version: 200, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 400,
+				version: 40,
+				type: 'put',
+				value: { id: 'D', count: 9 },
+				previousVersion: 30,
+				previousAdditionalAuditRefs: [{ version: 300, nodeId: 1 }],
+			},
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'D', count: 9 }, 40, {
+			version: 40,
+			nodeId: 1,
+			additionalAuditRefs: [{ version: 400, nodeId: 1 }],
+		});
+		assert.deepStrictEqual(getRecordAtTime(current, 250, store, 1, 'D'), { id: 'D', count: 3 });
+	});
+
+	it('falls back to the reported position when no ref resolves the head', () => {
+		// A ref that names an audit key whose entry carries a different record version resolves nothing,
+		// so the walk has to start from the position the record reports for itself. Only the RocksDB
+		// shape reaches this: LMDB records carry no refs.
+		const events = [
+			{ version: 10, type: 'put', value: { id: 'F', count: 1 }, previousVersion: 0 },
+			{ version: 20, type: 'patch', value: { count: { __op__: 'add', value: 2 } }, previousVersion: 10 },
+			{ txnLogKey: 900, version: 999, type: 'put', value: { id: 'F', count: 999 }, previousVersion: 0 },
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'F', count: 3 }, 20, {
+			version: 20,
+			nodeId: 1,
+			additionalAuditRefs: [{ version: 900, nodeId: 1 }],
+		});
+		assert.deepStrictEqual(getRecordAtTime(current, 10, store, 1, 'F'), { id: 'F', count: 1 });
+	});
+
 	describe('record deleted then re-inserted under the same key (issue #1330)', () => {
 		// put(n:1) -> patch(n:2) -> patch(n:3) -> delete -> put(n:4, re-insert, current)
 		const events = [
@@ -171,6 +283,33 @@ describe('crdt getRecordAtTime', () => {
 		it('reverses patches back to the original put', () => {
 			assert.deepStrictEqual(getRecordAtTime(current, 10, store, 1, 'N'), { id: 'N', v: 1 });
 		});
+	});
+
+	it('starts the reverse walk from the audit-store key when the record version is a different clock (LMDB)', () => {
+		// On LMDB the audit-store key (`localTime`) and the record version are separate clocks and
+		// the entry carries no additionalAuditRefs. Seeding the walk from `version` misses the head
+		// entry and returns the live record for every historical timestamp (harper#2275).
+		const events = [
+			{ txnLogKey: 100, version: 7, type: 'put', value: { id: 'L', name: 'first', count: 1 }, previousVersion: 0 },
+			{
+				txnLogKey: 200,
+				version: 8,
+				type: 'patch',
+				value: { name: 'update 2', count: { __op__: 'add', value: 1 } },
+				previousVersion: 100,
+			},
+			{
+				txnLogKey: 300,
+				version: 9,
+				type: 'patch',
+				value: { name: 'update 3', count: { __op__: 'add', value: 1 } },
+				previousVersion: 200,
+			},
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'L', name: 'update 3', count: 3 }, 300, { version: 9 });
+		assert.deepStrictEqual(getRecordAtTime(current, 200, store, 1, 'L'), { id: 'L', name: 'update 2', count: 2 });
+		assert.deepStrictEqual(getRecordAtTime(current, 100, store, 1, 'L'), { id: 'L', name: 'first', count: 1 });
 	});
 
 	it('reconstructs a counter later overwritten by a plain set without leaking the op object', () => {

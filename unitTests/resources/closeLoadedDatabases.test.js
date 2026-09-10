@@ -9,7 +9,18 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table, database, getDatabases, closeDatabase, closeLoadedDatabases } = require('#src/resources/databases');
+const { mkdtempSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
+const {
+	table,
+	database,
+	getDatabases,
+	closeDatabase,
+	closeLoadedDatabases,
+	openBranchDatabase,
+	closeBranchDatabases,
+} = require('#src/resources/databases');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
 
 describe('RocksDB handle release', function () {
@@ -54,6 +65,28 @@ describe('RocksDB handle release', function () {
 
 		assert.strictEqual(refCountFor(a.path), 0, 'database a should be released');
 		assert.strictEqual(refCountFor(b.path), 0, 'database b should be released');
+	});
+
+	it('closeLoadedDatabases releases a branch database (invisible to the databases map it walks)', async function () {
+		this.timeout(30000);
+		const rootStore = openRocksDb('closerelease4');
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const scratchRoot = mkdtempSync(join(tmpdir(), 'harper.unit-test.branch-close-'));
+		const checkpointDir = join(scratchRoot, 'checkpoint');
+		try {
+			await rootStore.createCheckpoint(checkpointDir);
+			const branch = openBranchDatabase(checkpointDir, 'closerelease4', 'appA__closerelease4');
+			assert.ok(refCountFor(branch.rootStore.path) > 0, 'branch should be open');
+
+			closeLoadedDatabases();
+
+			// a branch is not in `databases`, so the walk below cannot reach it — an exiting job worker
+			// would leak its handles process-wide unless this is the single teardown entry point
+			assert.strictEqual(refCountFor(checkpointDir), 0, 'branch should be released on thread teardown');
+		} finally {
+			closeBranchDatabases();
+			rmSync(scratchRoot, { recursive: true, force: true });
+		}
 	});
 
 	it('closeLoadedDatabases releases a tableless database (root store not reachable via any table)', async function () {
