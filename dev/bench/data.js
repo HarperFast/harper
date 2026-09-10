@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789031573977,
+  "lastUpdate": 1789031578584,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -19985,6 +19985,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 1822.8,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b349f8ec88769860467fb7404b63da7429807d55",
+          "message": "Merge pull request #2556 from HarperFast/fix/rocksdb-290-integration-failures\n\nKeep active RocksDB scans alive during eviction",
+          "timestamp": "2026-09-10T04:40:00Z",
+          "url": "https://github.com/HarperFast/harper/commit/b349f8ec88769860467fb7404b63da7429807d55"
+        },
+        "date": 1789031577343,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 6324.71,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 6324.71,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 158.8,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 366.8,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 484.2,
             "unit": "ms"
           }
         ]
