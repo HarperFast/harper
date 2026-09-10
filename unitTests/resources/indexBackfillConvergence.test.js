@@ -19,6 +19,7 @@ const {
 	closeDatabase,
 	resumeStartKey,
 	setIndexingCheckpointPeriod,
+	CHECKPOINT_ALGORITHM,
 } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -333,6 +334,266 @@ describe('index backfill convergence (#2536)', () => {
 		});
 	}
 
+	// A record fans out into one index put per indexed value and only the last was ever awaited, so a
+	// rejection from any earlier one used to be seen only if it happened to settle before the next
+	// checkpoint. These cases release the rejection at a chosen point in the scan instead of on a timer,
+	// so the interleaving is the same on a fast and a slow runner.
+	function deferredPut(release) {
+		let reject;
+		const promise = new Promise((_, r) => (reject = r));
+		promise.catch(() => {}); // the rejection is delivered through runIndexing's own handler
+		release.fire = () => reject(new Error('simulated deferred index put failure'));
+		return promise;
+	}
+
+	it('freezes the checkpoint when an index write rejects only after a later checkpoint was reached', async () => {
+		const TABLE = 'BackfillLateRejection';
+		const N = 600;
+		const FAILING_ID = 'k-' + pad(250);
+		// Past the k-0299 checkpoint the failed record must not reach, and before the next one at k-0399,
+		// so the scan is never waiting on the release.
+		const RELEASE_AT = 'k-' + pad(310);
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: ['t-' + (i % 3), 'u-' + (i % 5)] });
+		await last;
+
+		resetDatabases();
+		Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
+		const release = {};
+		const tagIndex = Tbl.indices.tag;
+		const originalPut = tagIndex.put;
+		tagIndex.put = function (indexedValue, primaryKey, options) {
+			// the first of the record's two values, so a resolving put follows it
+			if (primaryKey === FAILING_ID && indexedValue === 't-1') return deferredPut(release);
+			return originalPut.call(this, indexedValue, primaryKey, options);
+		};
+		const observed = observeRange(Tbl, {
+			onKey: (key) => {
+				if (key === RELEASE_AT) release.fire();
+			},
+		});
+		try {
+			await Tbl.indexingOperation;
+		} finally {
+			tagIndex.put = originalPut;
+			observed.restore();
+		}
+
+		const parked = findDescriptor(Tbl, 'tag').value;
+		assert.strictEqual(parked.indexingFailed, true, 'a backfill with a failed record should be parked');
+		const persisted = await settledCheckpoint(Tbl, 'tag');
+		assert.ok(
+			persisted === undefined || persisted < FAILING_ID,
+			`checkpoint ${persisted} must not pass the failed record ${FAILING_ID}`
+		);
+
+		resetDatabases();
+		const Tbl2 = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(Tbl2.indexingOperation, 'a parked backfill should retrigger');
+		const resumed = observeRange(Tbl2);
+		try {
+			await Tbl2.indexingOperation;
+		} finally {
+			resumed.restore();
+		}
+		assert.ok(resumed.keys.includes(FAILING_ID), 'the retry must revisit the record that failed');
+		const viaIndex = await collect(Tbl2.search({ conditions: [{ attribute: 'tag', value: 't-1' }] }));
+		assert.ok(
+			viaIndex.some((row) => row.id === FAILING_ID),
+			'the record whose index write failed must be indexed after the retry'
+		);
+	});
+
+	it('does not declare the index complete while an index write is still in flight', async () => {
+		const TABLE = 'BackfillCompletionRace';
+		const N = 400;
+		const FAILING_ID = 'k-' + pad(250);
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: ['t-' + (i % 3), 'u-' + (i % 5)] });
+		await last;
+
+		resetDatabases();
+		Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
+		const release = {};
+		const tagIndex = Tbl.indices.tag;
+		const originalPut = tagIndex.put;
+		tagIndex.put = function (indexedValue, primaryKey, options) {
+			if (primaryKey === FAILING_ID && indexedValue === 't-1') return deferredPut(release);
+			return originalPut.call(this, indexedValue, primaryKey, options);
+		};
+		let settled = false;
+		Tbl.indexingOperation.then(
+			() => (settled = true),
+			() => (settled = true)
+		);
+		// Release as soon as indexing resolves, which is what a build that ignores the unsettled write
+		// does; the deadline only bounds the case where it correctly refuses to resolve. So a slow runner
+		// can only make this test lenient, never make it fail spuriously.
+		const deadline = Date.now() + 2000;
+		while (!settled && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+		release.fire();
+		try {
+			await Tbl.indexingOperation;
+		} finally {
+			tagIndex.put = originalPut;
+		}
+		assert.strictEqual(
+			findDescriptor(Tbl, 'tag').value.indexingFailed,
+			true,
+			'the build must be parked, not completed, when a write it issued rejected'
+		);
+	});
+
+	it('bounds how many index writes it leaves in flight', async () => {
+		const TABLE = 'BackfillBackpressure';
+		const N = 4000;
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: ['t-' + (i % 3), 'u-' + (i % 5)] });
+		await last;
+
+		resetDatabases();
+		Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
+		const tagIndex = Tbl.indices.tag;
+		const originalPut = tagIndex.put;
+		// The first value of each record resolves only after a delay, the second immediately: the shape
+		// that leaves one unsettled write per record behind a per-record counter.
+		let inFlight = 0;
+		let peakInFlight = 0;
+		tagIndex.put = function (indexedValue, primaryKey, options) {
+			const result = originalPut.call(this, indexedValue, primaryKey, options);
+			if (!String(indexedValue).startsWith('t-')) return result;
+			inFlight++;
+			if (inFlight > peakInFlight) peakInFlight = inFlight;
+			return new Promise((resolve) =>
+				setTimeout(() => {
+					inFlight--;
+					resolve(result);
+				}, 400)
+			);
+		};
+		try {
+			await Tbl.indexingOperation;
+		} finally {
+			tagIndex.put = originalPut;
+		}
+		assert.ok(peakInFlight > 0, 'the slow puts should actually have been in flight');
+		// MAX_OUTSTANDING_INDEXING is 1000; the loop checks after issuing a record's writes, so it may
+		// overshoot by that record's fan-out before the bound applies.
+		assert.ok(
+			peakInFlight <= 1100,
+			`the backfill left ${peakInFlight} index writes in flight, past the outstanding bound`
+		);
+	});
+
+	it('rebuilds instead of resuming a checkpoint stamped by an earlier checkpoint algorithm', async () => {
+		const TABLE = 'BackfillLegacyStamp';
+		const N = 400;
+		setupTestDBPath();
+		setMainIsWorker(true);
+
+		let Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'tag' }],
+		});
+		let last;
+		for (let i = 0; i < N; i++) last = Tbl.put({ id: 'k-' + pad(i), tag: 't-' + (i % 3) });
+		await last;
+
+		resetDatabases();
+		Tbl = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		await Tbl.indexingOperation;
+
+		// A checkpoint the pre-fix code left behind: certified and self-consistent, but possibly advanced
+		// past a record whose index write failed, so it must not be resumed from.
+		const { key, value } = findDescriptor(Tbl, 'tag');
+		value.indexingFailed = true;
+		value.lastIndexedKey = 'k-' + pad(200);
+		value.checkpointCertified = value.lastIndexedKey;
+		delete value.checkpointAlgorithm;
+		Tbl.dbisDB.putSync(key, value);
+
+		resetDatabases();
+		const Tbl2 = table({
+			table: TABLE,
+			database: DB,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'tag', indexed: true },
+			],
+		});
+		assert.ok(Tbl2.indexingOperation, 'a parked index should retrigger');
+		const resumed = observeRange(Tbl2);
+		try {
+			await Tbl2.indexingOperation;
+		} finally {
+			resumed.restore();
+		}
+		assert.strictEqual(resumed.start, undefined, 'an unversioned checkpoint must force a full rebuild');
+	});
+
 	it('resumes from the minimum of unequal persisted checkpoints, and scans everything when one is absent', async () => {
 		const TABLE = 'BackfillUnequalCheckpoints';
 		const N = 500;
@@ -363,10 +624,14 @@ describe('index backfill convergence (#2536)', () => {
 				const { key, value } = findDescriptor(Tbl, name);
 				value.indexingFailed = true;
 				delete value.checkpointCertified;
+				delete value.checkpointAlgorithm;
 				if (lastIndexedKey === undefined) delete value.lastIndexedKey;
 				else {
 					value.lastIndexedKey = lastIndexedKey;
-					if (certified) value.checkpointCertified = lastIndexedKey;
+					if (certified) {
+						value.checkpointCertified = lastIndexedKey;
+						value.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
+					}
 				}
 				Tbl.dbisDB.putSync(key, value);
 			}
