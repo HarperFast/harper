@@ -36,13 +36,6 @@ export type DerivedIndexTransaction = {
 	logName: string;
 	timestamp: number;
 	mutations: DerivedIndexMutation[];
-	/**
-	 * Present on a chunk of an oversized transaction that does not include its `endTxn` entry. A
-	 * backend applies such chunks like any other and may expose a transaction's earlier chunks before
-	 * its later ones: the runtime withholds the cursor until the closing chunk, but query-visible
-	 * atomicity of one transaction is not preserved across chunks.
-	 */
-	partial?: true;
 };
 
 export type DerivedIndexBatch = {
@@ -68,9 +61,30 @@ export type DerivedIndexFlushReason = 'age' | 'threshold' | 'shutdown';
 
 export type DerivedIndexReadinessState = 'unknown' | 'ready' | 'rebuilding' | 'needs-rebuild' | 'unavailable';
 
+/**
+ * Why an index is not `ready`, as a code every worker can read from shared memory. The owner's log
+ * line carries the full message; the code is what a peer or a successor can act on.
+ */
+export type DerivedIndexReadinessReason =
+	| 'none'
+	| 'cursor-missing'
+	| 'cursor-unoffered'
+	| 'log-missing'
+	| 'log-retention'
+	| 'log-corrupt'
+	| 'reload'
+	| 'backend-failed'
+	| 'runner-failed'
+	| 'condemned'
+	| 'shutdown-failed'
+	| 'rebuild-failed'
+	| 'rebuild-exhausted'
+	| 'rebuild-requested';
+
 export type DerivedIndexReadiness = {
 	state: DerivedIndexReadinessState;
-	reason?: string;
+	reason?: DerivedIndexReadinessReason;
+	/** The most recently minted owner epoch; a backend fences queued work against it through `isOwnerEpoch`. */
 	ownerEpoch: bigint;
 	rebuildAttempts: number;
 };
@@ -81,10 +95,26 @@ export interface DerivedIndexBackendHost {
 	getReadiness(): DerivedIndexReadiness;
 }
 
-interface DerivedIndexBackendBase {
+/**
+ * A backend queues expensive work and publishes durability later: `deliver()` may only enqueue, a
+ * barrier completes asynchronously, and the durable cursor trails delivery. Work that survives a
+ * method return is the safety boundary, so every backend provides the epoch fence, the barrier
+ * request and the quiescence handshake the handoff protocol needs, even one that happens to complete
+ * everything before returning.
+ */
+export interface DerivedIndexBackend {
 	readonly id: string;
+	/** Receives the epoch fence and readiness reader before any delivery. */
+	attach(host: DerivedIndexBackendHost): void;
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
+	/** Request a durability barrier; the backend completes it and wakes through `onStateChange`. */
+	flush(reason: DerivedIndexFlushReason): void | Promise<void>;
+	/**
+	 * Stop accepting work for `ownerEpoch`, settle or discard what is queued, and resolve once nothing
+	 * further will be applied or published for it. A rejection keeps the runner lock held.
+	 */
+	shutdown(ownerEpoch: bigint): void | Promise<void>;
 	onStateChange(wake: (change?: DerivedIndexBackendStateChange) => void): () => void;
 	/**
 	 * Destroy index state and the durable cursor; `getDurableCursor()` must return `undefined`
@@ -95,39 +125,6 @@ interface DerivedIndexBackendBase {
 	 */
 	reset?(ownerEpoch: bigint): void | Promise<void>;
 }
-
-/**
- * A backend with no asynchronous effects: `deliver()` applies and makes the batch durable before
- * returning, `flush` (if any) completes before returning, and nothing it does survives a method
- * return, so nothing of its can publish after the runner released the lock.
- */
-export interface SynchronousDerivedIndexBackend extends DerivedIndexBackendBase {
-	asynchronous?: false;
-	attach?(host: DerivedIndexBackendHost): void;
-	flush?(reason: DerivedIndexFlushReason): void;
-	shutdown?(ownerEpoch: bigint): void | Promise<void>;
-}
-
-/**
- * A backend with asynchronous effects — a queued apply, a barrier that completes later, or a
- * durable cursor that trails delivery. Work that survives a method return is the safety boundary,
- * so registration rejects it unless it provides the fence, the barrier request and the quiescence
- * handshake the handoff protocol needs.
- */
-export interface AsynchronousDerivedIndexBackend extends DerivedIndexBackendBase {
-	readonly asynchronous: true;
-	/** Receives the epoch fence and readiness reader before any delivery. */
-	attach(host: DerivedIndexBackendHost): void;
-	/** Request a durability barrier; the backend runs it asynchronously and wakes through `onStateChange`. */
-	flush(reason: DerivedIndexFlushReason): void | Promise<void>;
-	/**
-	 * Stop accepting work for `ownerEpoch`, settle or discard what is queued, and resolve once nothing
-	 * further will be applied or published for it. A rejection keeps the runner lock held.
-	 */
-	shutdown(ownerEpoch: bigint): void | Promise<void>;
-}
-
-export type DerivedIndexBackend = SynchronousDerivedIndexBackend | AsynchronousDerivedIndexBackend;
 
 export type DerivedIndexBackendStateChange = 'changed' | 'accepted-work-lost' | 'failed';
 
@@ -197,7 +194,7 @@ export type DerivedIndexRunnerMetrics = {
 	unindexableRecords: number;
 	rebuildAttempts: number;
 	rebuiltRecords: number;
-	/** How long the current epoch's quiescence (backend shutdown, undeclared asynchronous work) has been pending. */
+	/** How long the current epoch's quiescence (backend shutdown) has been pending. */
 	quiescenceAgeMilliseconds: number;
 };
 
@@ -215,20 +212,42 @@ const READINESS_STATES: DerivedIndexReadinessState[] = [
 	'needs-rebuild',
 	'unavailable',
 ];
-const READINESS_BYTES = 512;
+const READINESS_REASONS: DerivedIndexReadinessReason[] = [
+	'none',
+	'cursor-missing',
+	'cursor-unoffered',
+	'log-missing',
+	'log-retention',
+	'log-corrupt',
+	'reload',
+	'backend-failed',
+	'runner-failed',
+	'condemned',
+	'shutdown-failed',
+	'rebuild-failed',
+	'rebuild-exhausted',
+	'rebuild-requested',
+];
 const CONDEMNED_MARKER = new Uint8Array([1]);
+// One shared allocation per backend: five independently read Int32 words, then the owner-epoch
+// counter. Each word is self-consistent on its own; nothing needs to observe two of them atomically.
 const READINESS_WORDS = 6;
-const READINESS_EPOCH_OFFSET = 24;
-const READINESS_RELOADS_OFFSET = 32;
-const READINESS_REASON_OFFSET = 40;
-const READINESS_SEQUENCE = 0;
-const READINESS_STATE = 1;
-const READINESS_REASON_LENGTH = 2;
-const READINESS_ATTEMPTS = 3;
-const READINESS_REBUILD_REQUEST = 4;
-const READINESS_LAG_EXCEEDED = 5;
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
+const READINESS_EPOCH_OFFSET = READINESS_WORDS * 4;
+export const READINESS_BYTES = READINESS_EPOCH_OFFSET + 8;
+const READINESS_STATE = 0;
+const READINESS_REASON = 1;
+const READINESS_ATTEMPTS = 2;
+const READINESS_REBUILD_REQUEST = 3;
+const READINESS_LAG_EXCEEDED = 4;
+
+/** A failure raised inside the collector that already knows its shareable reason. */
+class RunnerError extends Error {
+	code: DerivedIndexReadinessReason;
+	constructor(code: DerivedIndexReadinessReason, message: string) {
+		super(message);
+		this.code = code;
+	}
+}
 
 export class DerivedIndexRuntime {
 	#logStore: RocksTransactionLogStore;
@@ -261,13 +280,9 @@ export class DerivedIndexRuntime {
 	register(registration: DerivedIndexRegistration): () => Promise<void> {
 		if (this.#stopped) throw new Error('Derived index runtime is stopped');
 		if (!registration.backend.id) throw new Error('Derived index backend id is required');
-		if (registration.backend.asynchronous === true) {
-			for (const hook of ['attach', 'flush', 'shutdown'] as const) {
-				if (typeof registration.backend[hook] !== 'function')
-					throw new TypeError(
-						`Asynchronous derived index backend '${registration.backend.id}' must implement ${hook}()`
-					);
-			}
+		for (const hook of ['attach', 'flush', 'shutdown'] as const) {
+			if (typeof registration.backend[hook] !== 'function')
+				throw new TypeError(`Derived index backend '${registration.backend.id}' must implement ${hook}()`);
 		}
 		if (this.#runners.has(registration.backend.id))
 			throw new Error(`Derived index backend '${registration.backend.id}' is already registered`);
@@ -456,7 +471,6 @@ class DerivedIndexRunner {
 	#lagTimer?: NodeJS.Timeout;
 	#lockRetryTimer?: NodeJS.Timeout;
 	#lagBudget: number;
-	#reloadsHandledThrough = new Map<string, number>();
 	#scheduled = false;
 	#waitingForLock = false;
 	#owned = false;
@@ -488,11 +502,9 @@ class DerivedIndexRunner {
 	#unsubscribeBackend: () => void;
 	#unregisterTables: () => void;
 	#ownerEpoch?: bigint;
-	#epochView: BigInt64Array;
 	#readinessBuffer: SharedReadinessBuffer;
 	#sharedViews: SharedViews;
 	#resetting?: Promise<void>;
-	#undeclaredAsync?: Promise<void>;
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
 
 	get id() {
@@ -537,12 +549,9 @@ class DerivedIndexRunner {
 			if (this.#owned) this.wake(true);
 		});
 		this.#sharedViews = sharedViewsOf(this.#readinessBuffer);
-		this.#epochView = new BigInt64Array(
-			logStore.getUserSharedBuffer(`derived-index:${registration.backend.id}:owner-epoch`, new ArrayBuffer(8))
-		);
 		try {
-			registration.backend.attach?.({
-				isOwnerEpoch: (epoch) => Atomics.load(this.#epochView, 0) === epoch,
+			registration.backend.attach({
+				isOwnerEpoch: (epoch) => Atomics.load(this.#sharedViews.epoch, 0) === epoch,
 				getReadiness: () => this.getReadiness(),
 			});
 			this.#unsubscribeBackend = registration.backend.onStateChange((change = 'changed') =>
@@ -627,8 +636,7 @@ class DerivedIndexRunner {
 	}
 
 	getReadiness(): DerivedIndexReadiness {
-		const views = this.#shared();
-		return readReadiness(views.words, views.epoch, views.bytes);
+		return readReadiness(this.#shared());
 	}
 
 	getMetrics(): DerivedIndexRunnerMetrics {
@@ -817,13 +825,6 @@ class DerivedIndexRunner {
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			const condemned = this.#readCondemnation();
 			const shared = this.getReadiness();
-			const reloadsThrough = Number(Atomics.load(this.#shared().reloads, 0));
-			if (reloadsThrough > 0)
-				for (const logName of this.#logStore.rootStore.listLogs())
-					this.#reloadsHandledThrough.set(
-						logName,
-						Math.max(this.#reloadsHandledThrough.get(logName) ?? 0, reloadsThrough)
-					);
 			if (this.#takeSharedRebuildRequest()) {
 				this.#rebuildRequested = true;
 				this.#rebuildAttempts = 0;
@@ -835,7 +836,7 @@ class DerivedIndexRunner {
 			if (shared.state === 'unavailable') {
 				this.status = {
 					state: 'unavailable',
-					reason: shared.reason ?? 'index unavailable',
+					reason: `unavailable by a previous owner (${shared.reason ?? 'none'})`,
 					ownerEpoch: this.#ownerEpoch,
 				};
 				this.#admitWrites();
@@ -848,7 +849,7 @@ class DerivedIndexRunner {
 					if (this.#writeCondemnation()) this.#rebuildRequested = false;
 					this.status = {
 						state: 'needs-rebuild',
-						reason: shared.reason ?? 'condemned by a previous owner',
+						reason: `condemned by a previous owner (${shared.reason ?? 'none'})`,
 						ownerEpoch: this.#ownerEpoch,
 					};
 					this.#admitWrites();
@@ -857,7 +858,7 @@ class DerivedIndexRunner {
 				return;
 			}
 			if (condemned) {
-				this.#needsRebuild('condemned before a restart; the durable cursor is not trusted');
+				this.#needsRebuild('condemned before a restart; the durable cursor is not trusted', 'condemned');
 				return;
 			}
 			this.#resetFromDurableCursor();
@@ -868,13 +869,16 @@ class DerivedIndexRunner {
 	}
 
 	#mintEpoch(): bigint {
-		return Atomics.add(this.#epochView, 0, 1n) + 1n;
+		return Atomics.add(this.#sharedViews.epoch, 0, 1n) + 1n;
 	}
 
 	#resetFromDurableCursor() {
 		const durable = this.#registration.backend.getDurableCursor();
 		if (!isValidCursor(durable)) {
-			this.#needsRebuild(durable ? 'backend returned an invalid durable cursor' : 'backend has no durable cursor');
+			this.#needsRebuild(
+				durable ? 'backend returned an invalid durable cursor' : 'backend has no durable cursor',
+				'cursor-missing'
+			);
 			return;
 		}
 		if (!this.#installCursor(durable)) return;
@@ -915,7 +919,7 @@ class DerivedIndexRunner {
 		const current = new Set(currentLogs);
 		for (const logName of Object.keys(cursor.logs)) {
 			if (!current.has(logName)) {
-				this.#needsRebuild(`saved transaction log '${logName}' is missing`);
+				this.#needsRebuild(`saved transaction log '${logName}' is missing`, 'log-missing');
 				return;
 			}
 		}
@@ -924,7 +928,7 @@ class DerivedIndexRunner {
 			if (cursor.logs[logName] !== undefined) continue;
 			const oldestSequenceNumber = this.#logStore.rootStore.useLog(logName).getStats().oldestSequenceNumber;
 			if (oldestSequenceNumber !== 1) {
-				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`);
+				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`, 'log-retention');
 				return;
 			}
 		}
@@ -995,13 +999,14 @@ class DerivedIndexRunner {
 		try {
 			result = this.#registration.backend.deliver(batch);
 		} catch (error) {
-			this.#fail('backend delivery threw', error);
+			this.#fail('backend delivery threw', error, 'backend-failed');
 			return;
 		}
 		if (!this.#live(generation)) return;
 		if (result === DERIVED_INDEX_DEFERRED || result === DERIVED_INDEX_ACCEPTED) return result;
 		this.#needsRebuild(
-			result === DERIVED_INDEX_FAILED ? 'backend rejected a delivery batch' : 'backend returned an invalid result'
+			result === DERIVED_INDEX_FAILED ? 'backend rejected a delivery batch' : 'backend returned an invalid result',
+			'backend-failed'
 		);
 	}
 
@@ -1039,26 +1044,16 @@ class DerivedIndexRunner {
 		}
 		this.#unflushedBytes = 0;
 		this.#unflushedMutations = 0;
-		const flush = this.#registration.backend.flush;
-		if (!flush) return;
 		const generation = this.#generation;
 		try {
-			const result = flush.call(this.#registration.backend, reason) as void | Promise<void>;
+			const result = this.#registration.backend.flush(reason);
 			if (result && typeof result.then === 'function') {
-				if (this.#registration.backend.asynchronous !== true) {
-					this.#noteUndeclaredAsync(result);
-					this.#fail(
-						'backend declared no asynchronous effects but returned a promise from flush',
-						new Error('undeclared asynchronous flush')
-					);
-					return;
-				}
 				result.then(undefined, (error: unknown) => {
-					if (this.#live(generation)) this.#fail('backend flush request rejected', error);
+					if (this.#live(generation)) this.#fail('backend flush request rejected', error, 'backend-failed');
 				});
 			}
 		} catch (error) {
-			this.#fail('backend flush request threw', error);
+			this.#fail('backend flush request threw', error, 'backend-failed');
 			return;
 		}
 		// A backend may coalesce this into a barrier already running; keep asking while work is not durable.
@@ -1103,7 +1098,11 @@ class DerivedIndexRunner {
 		while (keyCount < options.maxChunkRecords) {
 			const next = iterator.next();
 			if (next.done) {
-				if (current) throw new Error(`transaction ${current.timestamp} from '${current.logName}' is incomplete`);
+				if (current)
+					throw new RunnerError(
+						'log-corrupt',
+						`transaction ${current.timestamp} from '${current.logName}' is incomplete`
+					);
 				break;
 			}
 			const entry = next.value;
@@ -1114,23 +1113,26 @@ class DerivedIndexRunner {
 				let seen = this.#seenTimestamps.get(logName);
 				if (!seen) this.#seenTimestamps.set(logName, (seen = new Set()));
 				if (seen.has(timestamp))
-					throw new Error(`transaction log '${logName}' repeated completed timestamp ${timestamp}`);
+					throw new RunnerError(
+						'log-corrupt',
+						`transaction log '${logName}' repeated completed timestamp ${timestamp}`
+					);
 				current = { logName, timestamp, keys: new Map(), keyCount: 0, complete: false };
 				collected.push(current);
 			} else if (entry.logName !== current.logName || entry.txnLogKey !== current.timestamp) {
-				throw new Error(`transaction ${current.timestamp} from '${current.logName}' ended without an endTxn boundary`);
+				throw new RunnerError(
+					'log-corrupt',
+					`transaction ${current.timestamp} from '${current.logName}' ended without an endTxn boundary`
+				);
 			}
 			readBytes += entry.size ?? 0;
 			entries++;
 			const projection = projections.get(entry.tableId);
 			if (projection) {
 				if (entry.type === 'reload') {
-					// Markers up to a rebuild's capture point are covered by its scan; see #captureBoundary.
-					const handled = this.#reloadsHandledThrough.get(current.logName);
-					if (handled === undefined || handled < current.timestamp) {
-						this.#reloadsHandledThrough.set(current.logName, current.timestamp);
-						throw new Error(`table ${entry.tableId} requires a derived-index rebuild`);
-					}
+					// A rebuild anchors its replay at the committed tail captured before its scan, so a marker
+					// is met exactly once: here, before the rebuild it demands.
+					throw new RunnerError('reload', `table ${entry.tableId} requires a derived-index rebuild`);
 				} else if (ELIGIBLE_ACTIONS.has(entry.type)) {
 					let byRecord = current.keys.get(entry.tableId);
 					if (!byRecord) current.keys.set(entry.tableId, (byRecord = new Map()));
@@ -1201,12 +1203,7 @@ class DerivedIndexRunner {
 			}
 			if (remaining) {
 				if (mutations.length)
-					chunk.batch.transactions.push({
-						logName: transaction.logName,
-						timestamp: transaction.timestamp,
-						mutations,
-						partial: true,
-					});
+					chunk.batch.transactions.push({ logName: transaction.logName, timestamp: transaction.timestamp, mutations });
 				this.#carried = [remaining, ...collected.slice(i + 1)];
 				break;
 			}
@@ -1217,12 +1214,7 @@ class DerivedIndexRunner {
 					chunk.batch.transactions.push({ logName: transaction.logName, timestamp: transaction.timestamp, mutations });
 			} else {
 				if (mutations.length)
-					chunk.batch.transactions.push({
-						logName: transaction.logName,
-						timestamp: transaction.timestamp,
-						mutations,
-						partial: true,
-					});
+					chunk.batch.transactions.push({ logName: transaction.logName, timestamp: transaction.timestamp, mutations });
 				this.#carried = [
 					{
 						logName: transaction.logName,
@@ -1268,11 +1260,6 @@ class DerivedIndexRunner {
 		return record;
 	}
 
-	/** Undeclared asynchronous work may still write: the epoch's quiescence waits for it before any unlock or reset. */
-	#noteUndeclaredAsync(pending: Promise<void>) {
-		this.#undeclaredAsync = Promise.allSettled([this.#undeclaredAsync, pending]).then(() => undefined);
-	}
-
 	/** A chunk the projection rejected outright is worth one warning per streak, never an outage. */
 	#noteChunkProjection(chunk: Chunk) {
 		const records = chunk.batch.records;
@@ -1311,7 +1298,7 @@ class DerivedIndexRunner {
 
 	#assertRecord(record: AuditRecord) {
 		if (!record || record.logName === undefined || record.tableId === undefined || record.type === undefined)
-			throw new Error('transaction log yielded an undecodable audit entry');
+			throw new RunnerError('log-corrupt', 'transaction log yielded an undecodable audit entry');
 	}
 
 	#checkNewLogs(): boolean {
@@ -1319,7 +1306,7 @@ class DerivedIndexRunner {
 		const currentSet = new Set(current);
 		for (const logName of this.#knownLogs) {
 			if (!currentSet.has(logName)) {
-				this.#needsRebuild(`transaction log '${logName}' was removed`);
+				this.#needsRebuild(`transaction log '${logName}' was removed`, 'log-missing');
 				return false;
 			}
 		}
@@ -1327,7 +1314,7 @@ class DerivedIndexRunner {
 			if (this.#knownLogs.has(logName)) continue;
 			const oldest = this.#logStore.rootStore.useLog(logName).getStats().oldestSequenceNumber;
 			if (oldest !== 1) {
-				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`);
+				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`, 'log-retention');
 				return false;
 			}
 			this.#knownLogs.add(logName);
@@ -1338,16 +1325,19 @@ class DerivedIndexRunner {
 	#checkRangeHealth(iterable = this.#iterable): boolean {
 		if (!iterable) return true;
 		if (iterable.corruptFrameStop.breaks > 0) {
-			this.#needsRebuild('transaction log contains a corrupt frame');
+			this.#needsRebuild('transaction log contains a corrupt frame', 'log-corrupt');
 			return false;
 		}
 		if (iterable.failedLogs.size > 0) {
-			this.#needsRebuild(`transaction log iterator failed for '${iterable.failedLogs.values().next().value}'`);
+			this.#needsRebuild(
+				`transaction log iterator failed for '${iterable.failedLogs.values().next().value}'`,
+				'log-corrupt'
+			);
 			return false;
 		}
 		if (iterable.exactStartFailures.size > 0) {
 			const [logName, failure] = iterable.exactStartFailures.entries().next().value;
-			this.#needsRebuild(`transaction log '${logName}' has a ${failure} durable cursor boundary`);
+			this.#needsRebuild(`transaction log '${logName}' has a ${failure} durable cursor boundary`, 'log-retention');
 			return false;
 		}
 		return true;
@@ -1364,7 +1354,7 @@ class DerivedIndexRunner {
 			return;
 		}
 		if (!isValidCursor(durable)) {
-			this.#needsRebuild('backend lost its durable cursor');
+			this.#needsRebuild('backend lost its durable cursor', 'cursor-missing');
 			return;
 		}
 		if (!this.#reconcileDurableCursor(durable)) return;
@@ -1383,7 +1373,7 @@ class DerivedIndexRunner {
 			try {
 				if (sameCursor(this.#registration.backend.getDurableCursor(), this.#offered!)) this.#release();
 			} catch (error) {
-				this.#fail('backend cursor read threw at idle release', error);
+				this.#fail('backend cursor read threw at idle release', error, 'backend-failed');
 			}
 		}, this.#options.idleGraceMilliseconds);
 	}
@@ -1391,25 +1381,19 @@ class DerivedIndexRunner {
 	#reconcileDurableCursor(cursor = this.#registration.backend.getDurableCursor()): boolean {
 		if (cursor === undefined && this.#boundaryPending) return true;
 		if (!isValidCursor(cursor)) {
-			this.#needsRebuild('backend returned an invalid durable cursor');
+			this.#needsRebuild('backend returned an invalid durable cursor', 'cursor-missing');
 			return false;
 		}
 		const offeredIndex = this.#offeredCursors.findIndex((offered) => sameCursor(cursor, offered.cursor));
 		if (offeredIndex < 0) {
-			this.#needsRebuild('backend advanced to an unoffered cursor vector');
+			this.#needsRebuild('backend advanced to an unoffered cursor vector', 'cursor-unoffered');
 			return false;
 		}
+		// Every timestamp of an offered vector was pushed to its log's pending list, so the durable one is
+		// present; everything before it is no longer needed for repeat detection.
 		for (const [logName, timestamp] of Object.entries(cursor.logs)) {
-			const pending = this.#pendingTimestamps.get(logName);
-			if (!pending) {
-				this.#needsRebuild(`backend advanced unknown transaction log '${logName}'`);
-				return false;
-			}
+			const pending = this.#pendingTimestamps.get(logName)!;
 			const index = pending.indexOf(timestamp);
-			if (index < 0) {
-				this.#needsRebuild(`backend advanced '${logName}' to an unoffered cursor`);
-				return false;
-			}
 			if (index > 0) {
 				const retained = pending.slice(index);
 				this.#pendingTimestamps.set(logName, retained);
@@ -1465,11 +1449,11 @@ class DerivedIndexRunner {
 	}
 
 	/** No rebuild attempt is spent on a refused marker; the next acquirer retries it before any reset. */
-	#deferForCondemnation(shared: string) {
+	#deferForCondemnation(code: DerivedIndexReadinessReason) {
 		logger.error(`Derived index '${this.id}' condemnation could not be persisted; retrying at the next wake`);
-		const reason = this.status.state === 'needs-rebuild' ? this.status.reason : shared;
+		const reason = this.status.state === 'needs-rebuild' ? this.status.reason : 'condemnation not persisted';
 		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
-		this.#publishReadiness('needs-rebuild', shared);
+		this.#publishReadiness('needs-rebuild', code);
 		this.#rebuildRequested = true;
 		// The retry needs a wake, and wakes come from commits: shedding them would be the only thing
 		// keeping this park from ever ending.
@@ -1493,12 +1477,12 @@ class DerivedIndexRunner {
 	#backendStateChanged(change: DerivedIndexBackendStateChange) {
 		if (this.#stopped || this.status.state === 'unavailable') return;
 		if (change === 'failed') {
-			this.#needsRebuild('backend reported a permanent failure');
+			this.#needsRebuild('backend reported a permanent failure', 'backend-failed');
 			return;
 		}
 		if (this.#rebuilding) {
 			if (change === 'accepted-work-lost') {
-				this.#rebuildFailed('backend lost accepted rebuild work');
+				this.#rebuildFailed('backend lost accepted rebuild work', 'backend-failed');
 				return;
 			}
 			if (this.#rebuildWaiter) this.#rebuildWaiter();
@@ -1511,22 +1495,25 @@ class DerivedIndexRunner {
 			try {
 				this.#resetFromDurableCursor();
 			} catch (error) {
-				this.#fail('failed to reset lost accepted work', error);
+				this.#fail('failed to reset lost accepted work', error, 'backend-failed');
 				return;
 			}
 		}
 		this.wake(true);
 	}
 
-	/** `reason` is shareable; the error's message stays in the local status and log, since backend messages can quote record content. */
-	#fail(reason: string, error: unknown) {
+	/**
+	 * The error's message stays in the local status and log, since backend messages can quote record
+	 * content; only the code reaches shared memory. A collector error carries its own code.
+	 */
+	#fail(reason: string, error: unknown, code: DerivedIndexReadinessReason = 'runner-failed') {
 		const detail = error instanceof Error && error.message ? `${reason}: ${error.message}` : reason;
-		this.#needsRebuild(detail, error, reason);
+		this.#needsRebuild(detail, error instanceof RunnerError ? error.code : code, error);
 	}
 
-	#needsRebuild(reason: string, error?: unknown, shared = reason) {
+	#needsRebuild(reason: string, code: DerivedIndexReadinessReason, error?: unknown) {
 		if (this.#rebuilding) {
-			this.#rebuildFailed(reason, error, shared);
+			this.#rebuildFailed(reason, code, error);
 			return;
 		}
 		if (this.status.state !== 'needs-rebuild')
@@ -1535,32 +1522,32 @@ class DerivedIndexRunner {
 		this.#discardProgress();
 		if (!this.#owned) return;
 		if (!this.#writeCondemnation()) {
-			this.#deferForCondemnation(shared);
+			this.#deferForCondemnation(code);
 			return;
 		}
 		if (this.#canRebuild()) {
 			// A failure after a rebuild but before `ready` is that rebuild failing late; it counts against the cap.
 			if (this.#rebuildAttempts >= this.#options.maxRebuildAttempts) {
-				this.#becomeUnavailable(reason, error, shared);
+				this.#becomeUnavailable(reason, code, error);
 				return;
 			}
-			this.#publishReadiness('needs-rebuild', shared);
+			this.#publishReadiness('needs-rebuild', code);
 			this.#rebuildRequested = true;
 			this.#scheduleRebuild();
 			return;
 		}
-		this.#publishReadiness('needs-rebuild', shared);
+		this.#publishReadiness('needs-rebuild', code);
 		this.#admitWrites();
 		this.#release();
 	}
 
-	#becomeUnavailable(reason: string, error?: unknown, shared = reason) {
+	#becomeUnavailable(reason: string, code: DerivedIndexReadinessReason, error?: unknown) {
 		logger.error(
 			`Derived index '${this.#registration.backend.id}' is unavailable after ${this.#rebuildAttempts} rebuild attempts: ${reason}`,
 			error
 		);
 		this.status = { state: 'unavailable', reason, ownerEpoch: this.#ownerEpoch };
-		this.#publishReadiness('unavailable', shared);
+		this.#publishReadiness('unavailable', code);
 		this.#admitWrites();
 		this.#release();
 	}
@@ -1628,14 +1615,17 @@ class DerivedIndexRunner {
 			this.#idleTimer = undefined;
 		}
 		this.#discardProgress();
+		// The lag policy guards a durable cursor against retention; a rebuild has none to guard, and its
+		// replay anchor is captured fresh after the scan starts. Readers act on `rebuilding` instead.
+		this.#admitWrites();
 		if (!this.#writeCondemnation()) {
 			this.#rebuilding = false;
-			this.#deferForCondemnation(this.status.state === 'needs-rebuild' ? this.status.reason : 'rebuild requested');
+			this.#deferForCondemnation('rebuild-requested');
 			return;
 		}
 		if (this.#rebuildAttempts >= this.#options.maxRebuildAttempts) {
 			this.#rebuilding = false;
-			this.#becomeUnavailable('rebuild budget exhausted by a previous owner');
+			this.#becomeUnavailable('rebuild budget exhausted by a previous owner', 'rebuild-exhausted');
 			return;
 		}
 		const generation = this.#generation;
@@ -1655,8 +1645,8 @@ class DerivedIndexRunner {
 				if (!this.#live(generation)) return;
 				this.#rebuildFailed(
 					error instanceof Error && error.message ? error.message : String(error),
-					error,
-					'rebuild attempt failed'
+					error instanceof RunnerError ? error.code : 'rebuild-failed',
+					error
 				);
 			}
 		);
@@ -1711,7 +1701,7 @@ class DerivedIndexRunner {
 		this.#rebuiltRecords = indexed;
 		if (!this.#installCursor(boundary)) return;
 		this.#boundaryPending = true;
-		logger.info?.(`Rebuilt derived index '${backend.id}' from ${indexed} records; replaying the retained log`);
+		logger.info?.(`Rebuilt derived index '${backend.id}' from ${indexed} records; replaying what committed since`);
 	}
 
 	#addScanRecord(chunk: Chunk, tableId: number, record: DerivedIndexScanRecord): DerivedIndexMutation | undefined {
@@ -1764,40 +1754,41 @@ class DerivedIndexRunner {
 		});
 	}
 
+	/**
+	 * The committed tail of every log, captured before the scan. A committed read is a contiguous
+	 * physical prefix (rocksdb-js advances `lastCommittedPosition` only to the earliest still-uncommitted
+	 * write), so nothing committed after this point can sit behind it: the scan covers everything up to
+	 * the tail and the replay from it covers everything after, including any reload marker committed
+	 * during the scan, which then demands its own rebuild. A log with no committed transaction is left
+	 * out of the cursor and read from its beginning, which it must still retain.
+	 */
 	#captureBoundary(): DerivedIndexCursor {
 		const boundary: DerivedIndexCursor = { format: 1, logs: {} };
-		// Every reload marker committed before this capture is reflected by the scan that follows it, so
-		// the replay from the oldest retained entry must not spend a rebuild on each of them again.
-		// Compared against transaction timestamps, which are wall-clock milliseconds; the injectable
-		// budget clock may be monotonic and must not be used here.
-		const captured = Date.now();
-		Atomics.store(this.#shared().reloads, 0, BigInt(Math.floor(captured)));
 		for (const logName of this.#logStore.rootStore.listLogs()) {
-			this.#reloadsHandledThrough.set(logName, Math.max(this.#reloadsHandledThrough.get(logName) ?? 0, captured));
-			let first: number | undefined;
+			let tail: number | undefined;
 			const range = this.#logStore.getRange({ log: logName, start: 0 });
-			for (const entry of range) {
-				first = entry.txnLogKey;
-				break;
-			}
+			for (const entry of range) if (entry.endTxn) tail = entry.txnLogKey;
 			if (range.corruptFrameStop.breaks > 0 || range.failedLogs.size > 0)
-				throw new Error(`transaction log '${logName}' cannot be read at its retained beginning`);
-			if (first === undefined) {
+				throw new RunnerError('log-corrupt', `transaction log '${logName}' cannot be read to its committed tail`);
+			if (tail === undefined) {
 				if (this.#logStore.rootStore.useLog(logName).getStats().oldestSequenceNumber !== 1)
-					throw new Error(`transaction log '${logName}' retains no committed transaction and has lost its beginning`);
+					throw new RunnerError(
+						'log-retention',
+						`transaction log '${logName}' retains no committed transaction and has lost its beginning`
+					);
 				continue;
 			}
-			boundary.logs[logName] = first;
+			boundary.logs[logName] = tail;
 		}
 		return boundary;
 	}
 
-	#rebuildFailed(reason: string, error?: unknown, shared = reason) {
+	#rebuildFailed(reason: string, code: DerivedIndexReadinessReason, error?: unknown) {
 		this.#rebuilding = false;
 		this.#rebuildWaiter?.();
 		this.#discardProgress();
 		if (this.#rebuildAttempts >= this.#options.maxRebuildAttempts) {
-			this.#becomeUnavailable(reason, error, shared);
+			this.#becomeUnavailable(reason, code, error);
 			return;
 		}
 		logger.error(
@@ -1805,7 +1796,7 @@ class DerivedIndexRunner {
 			error
 		);
 		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
-		this.#publishReadiness('needs-rebuild', shared);
+		this.#publishReadiness('needs-rebuild', code);
 		this.#rebuildRequested = true;
 		if (this.#owned) this.#scheduleRebuild();
 	}
@@ -1814,9 +1805,8 @@ class DerivedIndexRunner {
 	#quiesce(epoch: bigint): Promise<void> {
 		if (this.#quiescing?.epoch === epoch) return this.#quiescing.promise;
 		let promise: Promise<void>;
-		const shutdown = () => this.#registration.backend.shutdown?.(epoch);
 		try {
-			promise = this.#undeclaredAsync ? this.#undeclaredAsync.then(shutdown) : Promise.resolve(shutdown());
+			promise = Promise.resolve(this.#registration.backend.shutdown(epoch));
 		} catch (error) {
 			promise = Promise.reject(error);
 		}
@@ -1829,17 +1819,12 @@ class DerivedIndexRunner {
 		return promise;
 	}
 
-	#publishReadiness(state: DerivedIndexReadinessState, reason = '') {
-		const { words, bytes, epoch } = this.#shared();
-		// Force the sequence odd rather than incrementing, so a publication abandoned by a dead owner is repaired.
-		const sequence = Atomics.load(words, READINESS_SEQUENCE) | 1;
-		Atomics.store(words, READINESS_SEQUENCE, sequence);
-		const encoded = textEncoder.encodeInto(reason, bytes);
-		Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf(state));
-		Atomics.store(words, READINESS_REASON_LENGTH, encoded.written);
+	#publishReadiness(state: DerivedIndexReadinessState, reason: DerivedIndexReadinessReason = 'none') {
+		const { words } = this.#shared();
+		// State last: a reader that sees the new state sees a reason and attempt count at least as new.
+		Atomics.store(words, READINESS_REASON, READINESS_REASONS.indexOf(reason));
 		Atomics.store(words, READINESS_ATTEMPTS, state === 'ready' ? 0 : this.#rebuildAttempts);
-		Atomics.store(epoch, 0, this.#ownerEpoch ?? 0n);
-		Atomics.store(words, READINESS_SEQUENCE, sequence + 1);
+		Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf(state));
 	}
 
 	#release() {
@@ -1876,24 +1861,16 @@ class DerivedIndexRunner {
 			this.#releasing = undefined;
 			this.#releasingSince = undefined;
 			this.#heldLock = true;
-			const shared = 'backend shutdown failed; runner lock held';
-			const reason = `${shared}: ${error instanceof Error ? error.message : String(error)}`;
+			const reason = `backend shutdown failed; runner lock held: ${error instanceof Error ? error.message : String(error)}`;
 			logger.error(`Derived index '${backend.id}' ${reason}`, error);
 			this.#releaseFailure = new Error(reason, { cause: error });
 			this.status = { state: 'unavailable', reason, ownerEpoch: epoch };
-			this.#publishReadiness('unavailable', shared);
+			this.#publishReadiness('unavailable', 'shutdown-failed');
 			this.#admitWrites();
 		};
 		let flushed: void | Promise<void>;
 		try {
-			flushed = backend.flush?.('shutdown') as void | Promise<void>;
-			if (flushed && typeof flushed.then === 'function' && backend.asynchronous !== true) {
-				this.#noteUndeclaredAsync(flushed);
-				flushed = undefined;
-				logger.error(
-					`Derived index '${backend.id}' declared no asynchronous effects but returned a promise from flush`
-				);
-			}
+			flushed = backend.flush('shutdown');
 		} catch (error) {
 			logger.warn?.(`Derived index '${backend.id}' shutdown flush request threw`, error);
 		}
@@ -1924,40 +1901,27 @@ function readinessBuffer(
 type SharedViews = {
 	words: Int32Array;
 	epoch: BigInt64Array;
-	reloads: BigInt64Array;
-	bytes: Uint8Array;
 };
 
 function sharedViewsOf(buffer: ArrayBufferLike): SharedViews {
 	return {
 		words: new Int32Array(buffer, 0, READINESS_WORDS),
 		epoch: new BigInt64Array(buffer, READINESS_EPOCH_OFFSET, 1),
-		reloads: new BigInt64Array(buffer, READINESS_RELOADS_OFFSET, 1),
-		bytes: new Uint8Array(buffer, READINESS_REASON_OFFSET),
 	};
 }
 
 const readinessViews = new WeakMap<object, Map<string, SharedViews>>();
 
-function readReadiness(words: Int32Array, epoch: BigInt64Array, bytes: Uint8Array): DerivedIndexReadiness {
-	for (let spin = 0; spin < 256; spin++) {
-		const before = Atomics.load(words, READINESS_SEQUENCE);
-		if (before & 1) continue;
-		const state = READINESS_STATES[Atomics.load(words, READINESS_STATE)] ?? 'unknown';
-		const length = Atomics.load(words, READINESS_REASON_LENGTH);
-		const rebuildAttempts = Atomics.load(words, READINESS_ATTEMPTS);
-		const ownerEpoch = Atomics.load(epoch, 0);
-		const reason = length > 0 ? textDecoder.decode(bytes.slice(0, length)) : undefined;
-		if (Atomics.load(words, READINESS_SEQUENCE) !== before) continue;
-		return reason === undefined
-			? { state, ownerEpoch, rebuildAttempts }
-			: { state, reason, ownerEpoch, rebuildAttempts };
-	}
-	return {
-		state: 'unknown',
+function readReadiness({ words, epoch }: SharedViews): DerivedIndexReadiness {
+	const state = READINESS_STATES[Atomics.load(words, READINESS_STATE)] ?? 'unknown';
+	const reason = READINESS_REASONS[Atomics.load(words, READINESS_REASON)] ?? 'none';
+	const readiness: DerivedIndexReadiness = {
+		state,
 		ownerEpoch: Atomics.load(epoch, 0),
 		rebuildAttempts: Atomics.load(words, READINESS_ATTEMPTS),
 	};
+	if (reason !== 'none') readiness.reason = reason;
+	return readiness;
 }
 
 /** Read an index's shared readiness on any worker, without a registered runtime. */
@@ -1969,7 +1933,7 @@ export function readDerivedIndexReadiness(
 	if (!byBackend) readinessViews.set(logStore, (byBackend = new Map()));
 	let views = byBackend.get(backendId);
 	if (!views) byBackend.set(backendId, (views = sharedViewsOf(readinessBuffer(logStore, backendId))));
-	return readReadiness(views.words, views.epoch, views.bytes);
+	return readReadiness(views);
 }
 
 function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is DerivedIndexCursor {

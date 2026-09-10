@@ -13,6 +13,7 @@ const {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
 	DerivedIndexRuntime,
+	READINESS_BYTES,
 	readDerivedIndexReadiness,
 } = require('#src/resources/derivedIndexRuntime');
 
@@ -126,7 +127,6 @@ class FakeLogStore {
 class AsyncBackend {
 	constructor(id, { cursor, applyDelay = 0, capacity = Infinity, onReset, applyRecord } = {}) {
 		this.id = id;
-		this.asynchronous = true;
 		this.cursor = cursor;
 		this.deliveries = [];
 		this.queue = [];
@@ -229,13 +229,26 @@ class AsyncBackend {
 	}
 }
 
+// A backend that applies and makes each batch durable inside deliver(): the hooks are trivial, but
+// the contract still requires them so no backend can compile without the fence and the handshake.
 class SyncBackend {
 	constructor(id, cursor, deliver) {
 		this.id = id;
 		this.cursor = cursor;
 		this.deliveries = [];
 		this.deliverImpl = deliver;
+		this.flushes = [];
 	}
+
+	attach(host) {
+		this.host = host;
+	}
+
+	flush(reason) {
+		this.flushes.push(reason);
+	}
+
+	shutdown() {}
 
 	getDurableCursor() {
 		return this.cursor;
@@ -398,8 +411,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await sleep(5);
 		assert(runtime.getMetrics('oversized').stalledMilliseconds > 0, 'a parked runner reports how long it has stalled');
 		assert.strictEqual(backend.deliveries[0].records.length, 3);
-		assert.strictEqual(backend.deliveries[0].transactions[0].partial, true);
-		assert.deepStrictEqual(backend.deliveries[0].through, cursor(10));
+		assert.deepStrictEqual(backend.deliveries[0].through, cursor(10), 'an open transaction advances no cursor');
 		assert.strictEqual(runtime.getMetrics('oversized').deferredBytes, 96);
 		defer = false;
 		backend.stateChange();
@@ -415,15 +427,9 @@ describe('DerivedIndexRuntime for native backends', () => {
 			]
 		);
 		assert.deepStrictEqual(
-			chunks.map((batch) => batch.transactions.map((transaction) => [transaction.timestamp, transaction.partial])),
-			[
-				[[20, true]],
-				[[20, true]],
-				[
-					[20, undefined],
-					[30, undefined],
-				],
-			]
+			chunks.map((batch) => batch.transactions.map((transaction) => transaction.timestamp)),
+			[[20], [20], [20, 30]],
+			'each chunk carries the transaction it is part of'
 		);
 		await runtime.stop();
 	});
@@ -502,16 +508,12 @@ describe('DerivedIndexRuntime for native backends', () => {
 			['1:a', { version: 5, value: { title: 'a' } }],
 			['1:b', { version: 6, value: { title: 'b' } }],
 		]);
-		const store = new FakeLogStore(
-			new Map([
-				[7, [audit({ timestamp: 8, recordId: 'c' }), audit({ timestamp: 9, recordId: 'ignored', tableId: 2 })]],
+		// The retained log ends at transaction 8, so the scan covers `c` and the replay resumes after 8.
+		const store = new FakeLogStore(new Map([[8, [audit({ timestamp: 9, recordId: 'ignored', tableId: 2 })]]]), {
+			logEntries: new Map([
+				['local', [audit({ timestamp: 7, recordId: 'a' }), audit({ timestamp: 8, recordId: 'c' })]],
 			]),
-			{
-				logEntries: new Map([
-					['local', [audit({ timestamp: 7, recordId: 'a' }), audit({ timestamp: 8, recordId: 'c' })]],
-				]),
-			}
-		);
+		});
 		records.set('1:c', { version: 8, value: { title: 'c' } });
 		const observed = [];
 		const backend = new AsyncBackend('rebuild', {
@@ -529,7 +531,8 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(scanChunks.length, 4, 'one-record chunks plus the boundary chunk');
 		assert.deepStrictEqual(
 			scanChunks.map((batch) => batch.through),
-			[undefined, undefined, undefined, cursor(7)]
+			[undefined, undefined, undefined, cursor(8)],
+			'the boundary chunk carries the committed tail captured before the scan'
 		);
 		assert.strictEqual(runtime.getMetrics('rebuild').rebuiltRecords, 3);
 		assert.strictEqual(runtime.getMetrics('rebuild').rebuildAttempts, 0);
@@ -621,7 +624,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(store.locks.size, 1);
 		const shared = readDerivedIndexReadiness(store, 'held');
 		assert.strictEqual(shared.state, 'unavailable');
-		assert.strictEqual(shared.reason, 'backend shutdown failed; runner lock held', 'the backend message stays local');
+		assert.strictEqual(shared.reason, 'shutdown-failed', 'the backend message stays local; the code is shared');
 	});
 
 	it('revives an index whose lock was held by a failed shutdown once the backend can settle', async () => {
@@ -715,9 +718,11 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const store = new FakeLogStore(new Map([[7, []]]), {
 			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
 		});
-		const words = new Int32Array(store.getUserSharedBuffer('derived-index:inherited:readiness', new ArrayBuffer(512)));
-		Atomics.store(words, 1, 2);
-		Atomics.store(words, 3, 2);
+		const words = new Int32Array(
+			store.getUserSharedBuffer('derived-index:inherited:readiness', new ArrayBuffer(READINESS_BYTES))
+		);
+		Atomics.store(words, 0, 2); // rebuilding
+		Atomics.store(words, 2, 2); // attempts
 		const backend = new AsyncBackend('inherited');
 		const { runtime } = runtimeFor(store, records);
 		runtime.register(registration(backend, { maxRebuildAttempts: 2 }));
@@ -728,8 +733,10 @@ describe('DerivedIndexRuntime for native backends', () => {
 
 	it('parks a backend that cannot rebuild when a previous owner condemned the generation', async () => {
 		const store = new FakeLogStore(new Map([[10, []]]));
-		const words = new Int32Array(store.getUserSharedBuffer('derived-index:condemned:readiness', new ArrayBuffer(512)));
-		Atomics.store(words, 1, 3);
+		const words = new Int32Array(
+			store.getUserSharedBuffer('derived-index:condemned:readiness', new ArrayBuffer(READINESS_BYTES))
+		);
+		Atomics.store(words, 0, 3); // needs-rebuild
 		const backend = new SyncBackend('condemned', cursor(10));
 		const { runtime } = runtimeFor(store, new Map(), { scanRecords: undefined });
 		runtime.register(registration(backend));
@@ -806,8 +813,10 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const store = new FakeLogStore(new Map([[7, []]]), {
 			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' })]]]),
 		});
-		const words = new Int32Array(store.getUserSharedBuffer('derived-index:latched:readiness', new ArrayBuffer(512)));
-		Atomics.store(words, 1, 4);
+		const words = new Int32Array(
+			store.getUserSharedBuffer('derived-index:latched:readiness', new ArrayBuffer(READINESS_BYTES))
+		);
+		Atomics.store(words, 0, 4); // unavailable
 		const latched = runtimeFor(store, records, { idleGraceMilliseconds: 5 }).runtime;
 		latched.register(registration(new AsyncBackend('latched', { applyDelay: 2 })));
 		await waitFor(() => latched.getStatus('latched').state === 'unavailable');
@@ -827,12 +836,13 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await latched.stop();
 	});
 
-	it('hands the reload-suppression bound to the next owner through shared memory', async () => {
+	it('lets a successor that takes over mid-rebuild replay from its own tail without meeting the marker again', async () => {
 		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
 		const reload = { ...audit({ timestamp: 8, type: 'reload' }), recordId: null };
 		const store = new FakeLogStore(
 			new Map([
 				[7, [reload, audit({ timestamp: 9, recordId: 'a' })]],
+				[8, [audit({ timestamp: 9, recordId: 'a' })]],
 				[9, []],
 			]),
 			{ logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' }), reload]]]) }
@@ -841,7 +851,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const firstBackend = new AsyncBackend('reload-handoff', { cursor: cursor(7), applyDelay: 2, capacity: 0 });
 		first.register(registration(firstBackend, { maxFlushAgeMilliseconds: 5 }));
 		await waitFor(() => firstBackend.resets.length === 1 && firstBackend.deliveries.length >= 1);
-		// The boundary is captured; the first owner leaves before its replay passes the marker.
+		// The first owner leaves mid-rebuild; the successor rebuilds the condemned generation itself.
 		firstBackend.capacity = Infinity;
 		await first.stop();
 
@@ -1036,12 +1046,13 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
-	it('does not spend rebuild attempts on reload markers the scan already covered', async () => {
+	it('does not spend rebuild attempts on reload markers behind the captured tail', async () => {
 		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
 		const reloads = [8, 9, 10].map((timestamp) => ({ ...audit({ timestamp, type: 'reload' }), recordId: null }));
 		const store = new FakeLogStore(
 			new Map([
 				[7, [...reloads, audit({ timestamp: 11, recordId: 'a' })]],
+				[10, [audit({ timestamp: 11, recordId: 'a' })]],
 				[11, []],
 			]),
 			{ logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' }), ...reloads]]]) }
@@ -1081,11 +1092,10 @@ describe('DerivedIndexRuntime for native backends', () => {
 			backend.deliveries.map((batch) => [
 				batch.records.map((record) => record.recordId).join(''),
 				batch.through.logs.local,
-				batch.transactions[0].partial,
 			]),
 			[
-				['ab', 10, true],
-				['c', 20, undefined],
+				['ab', 10],
+				['c', 20],
 			]
 		);
 		await runtime.stop();
@@ -1101,14 +1111,12 @@ describe('DerivedIndexRuntime for native backends', () => {
 		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 1 }));
 
 		await waitFor(() => runtime.getStatus('flush-reject')?.state === 'needs-rebuild');
-		assert.match(runtime.getStatus('flush-reject').reason, /backend flush request rejected/);
+		// The runner may already have re-acquired and parked on its own condemnation; either way the
+		// local reason attributes the fault to the backend.
+		assert.match(runtime.getStatus('flush-reject').reason, /backend flush request rejected|\(backend-failed\)/);
 		const shared = runtime.getReadiness('flush-reject');
 		assert.strictEqual(shared.state, 'needs-rebuild');
-		assert.strictEqual(
-			shared.reason,
-			'backend flush request rejected',
-			'the backend message never reaches the shared record'
-		);
+		assert.strictEqual(shared.reason, 'backend-failed', 'the backend message never reaches the shared record');
 		await runtime.stop();
 	});
 
@@ -1617,46 +1625,15 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
-	it('rejects an asynchronous backend that lacks the fence, barrier or quiescence hooks', () => {
+	it('rejects a backend that lacks the fence, barrier or quiescence hooks', () => {
 		const store = new FakeLogStore(new Map([[10, []]]));
 		const { runtime } = runtimeFor(store, new Map());
-		const incomplete = new SyncBackend('incomplete-queued', cursor(10));
-		incomplete.asynchronous = true;
-		assert.throws(() => runtime.register(registration(incomplete)), /must implement attach\(\)/);
-		assert.strictEqual(runtime.getStatus('incomplete-queued'), undefined);
-	});
-
-	it('fails closed when a backend that declared no asynchronous effects returns a promise from flush', async () => {
-		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
-		const backend = new SyncBackend('undeclared-async', cursor(10), () => DERIVED_INDEX_ACCEPTED);
-		backend.flush = () => Promise.resolve();
-		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
-			scanRecords: undefined,
-		});
-		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 1 }));
-		await waitFor(() => runtime.getStatus('undeclared-async')?.state === 'needs-rebuild');
-		assert.match(runtime.getStatus('undeclared-async').reason, /declared no asynchronous effects/);
-		await runtime.stop();
-	});
-
-	it('holds the lock under an undeclared asynchronous flush until its promise settles', async () => {
-		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
-		const backend = new SyncBackend('undeclared-pending', cursor(10), () => DERIVED_INDEX_ACCEPTED);
-		const settlers = [];
-		backend.flush = () => new Promise((resolve) => settlers.push(resolve));
-		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
-			scanRecords: undefined,
-		});
-		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 1 }));
-		await waitFor(() => runtime.getStatus('undeclared-pending')?.state === 'needs-rebuild');
-		await sleep(20);
-		assert(store.locks.has('derived-index:undeclared-pending:runner'), 'the lock is held while the promise is pending');
-		const stopped = runtime.stop();
-		await sleep(20);
-		assert(store.locks.has('derived-index:undeclared-pending:runner'), 'stop() waits for the promise too');
-		for (const settle of settlers) settle();
-		await stopped;
-		assert(!store.locks.has('derived-index:undeclared-pending:runner'));
+		for (const hook of ['attach', 'flush', 'shutdown']) {
+			const incomplete = new SyncBackend(`incomplete-${hook}`, cursor(10));
+			incomplete[hook] = undefined;
+			assert.throws(() => runtime.register(registration(incomplete)), new RegExp(`must implement ${hook}\\(\\)`));
+			assert.strictEqual(runtime.getStatus(incomplete.id), undefined);
+		}
 	});
 
 	it('waits for the shutdown flush of an asynchronous backend before releasing the lock', async () => {
@@ -1696,14 +1673,6 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.throws(() => runtime.register(registration(throwing, { maxLagMilliseconds: 50 })), /subscribe failed/);
 		assert.strictEqual(store.sharedBuffers.get('derived-index:partial-registration:readiness').callbacks.size, 0);
 		assert.strictEqual(hasDerivedIndexRegistration(store, 1), false);
-	});
-
-	it('reads a publication abandoned mid-write as unknown instead of spinning', () => {
-		const store = new FakeLogStore(new Map());
-		const words = new Int32Array(store.getUserSharedBuffer('derived-index:abandoned:readiness', new ArrayBuffer(512)));
-		Atomics.store(words, 0, 3);
-		Atomics.store(words, 1, 1);
-		assert.strictEqual(readDerivedIndexReadiness(store, 'abandoned').state, 'unknown');
 	});
 
 	it('skips and counts a record the projection rejects instead of rebuilding', async () => {
@@ -1764,7 +1733,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const readiness = readDerivedIndexReadiness(store, 'exhausted');
 		assert.strictEqual(readiness.state, 'unavailable');
 		assert.strictEqual(readiness.rebuildAttempts, 3);
-		assert.match(readiness.reason, /permanent failure/);
+		assert.strictEqual(readiness.reason, 'backend-failed');
 
 		// A peer worker (its own backend instance) honours the shared budget instead of starting its own attempts.
 		const peerBackend = new AsyncBackend('exhausted');
@@ -1800,12 +1769,13 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
-	it('handles the reload marker that triggered a rebuild once when the replay meets it again', async () => {
+	it('meets the reload marker that triggered a rebuild once, because the replay resumes after the tail', async () => {
 		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
 		const reload = { ...audit({ timestamp: 8, recordId: undefined, type: 'reload' }), recordId: null };
 		const store = new FakeLogStore(
 			new Map([
 				[7, [reload, audit({ timestamp: 9, recordId: 'a' })]],
+				[8, [audit({ timestamp: 9, recordId: 'a' })]],
 				[9, []],
 			]),
 			{ logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'a' }), reload]]]) }
@@ -1914,11 +1884,12 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 
 		await waitFor(() => runtime.getReadiness('rocks-rebuild').state === 'ready', { timeout: 10_000 });
 		assert.deepStrictEqual([...backend.applied.keys()].sort(), ['p1', 'p3']);
-		const oldest = Product.auditStore.getRange({ log: 'local', start: 0 })[Symbol.iterator]().next().value.txnLogKey;
+		let tail;
+		for (const entry of Product.auditStore.getRange({ log: 'local', start: 0 }))
+			if (entry.endTxn) tail = entry.txnLogKey;
 		const scanChunks = backend.deliveries.filter((batch) => batch.rebuild);
-		assert.strictEqual(scanChunks.at(-1).through.logs.local, oldest, 'the boundary is the oldest retained transaction');
-		assert.strictEqual(backend.cursor.format, 1);
-		assert(backend.cursor.logs.local >= oldest);
+		assert.strictEqual(scanChunks.at(-1).through.logs.local, tail, 'the boundary is the committed tail at capture');
+		assert.deepStrictEqual(backend.cursor, { format: 1, logs: { local: tail } }, 'nothing to replay after the tail');
 
 		await Product.put('p4', { title: 'title p4' });
 		await waitFor(() => backend.applied.has('p4'), { timeout: 5000 });
@@ -1954,19 +1925,19 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		// wrapper of the same key observes the owner's publication, and never a SharedArrayBuffer.
 		const wrapper = Product.auditStore.getUserSharedBuffer(
 			'derived-index:rocks-rebuild:readiness',
-			new ArrayBuffer(512)
+			new ArrayBuffer(READINESS_BYTES)
 		);
 		assert(!(wrapper instanceof SharedArrayBuffer));
 		assert.strictEqual(readDerivedIndexReadiness(Product.auditStore, 'rocks-rebuild').state, 'ready');
-		assert.notStrictEqual(new Int32Array(wrapper)[0], 0, 'the wrapper sees the published sequence word');
+		assert.strictEqual(new Int32Array(wrapper)[0], 1, 'the wrapper sees the published state word');
 		// A real worker thread, through the binding alone, reads the owner's publication.
 		const { Worker } = require('node:worker_threads');
 		const worker = new Worker(
 			`const { parentPort, workerData } = require('node:worker_threads');
 			const { RocksDatabase } = require(workerData.binding);
 			const db = new RocksDatabase(workerData.path).open();
-			const words = new Int32Array(db.getUserSharedBuffer(workerData.key, new ArrayBuffer(512)), 0, 8);
-			parentPort.postMessage({ state: Atomics.load(words, 1), sequence: Atomics.load(words, 0) });
+			const words = new Int32Array(db.getUserSharedBuffer(workerData.key, new ArrayBuffer(workerData.bytes)), 0, 6);
+			parentPort.postMessage({ state: Atomics.load(words, 0) });
 			db.close();`,
 			{
 				eval: true,
@@ -1974,6 +1945,7 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 					binding: require.resolve('@harperfast/rocksdb-js'),
 					path: Product.auditStore.rootStore.path,
 					key: 'derived-index:rocks-rebuild:readiness',
+					bytes: READINESS_BYTES,
 				},
 			}
 		);
@@ -1983,7 +1955,6 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		});
 		await new Promise((resolve) => worker.once('exit', resolve));
 		assert.strictEqual(seen.state, 1, 'a worker thread reads the ready state the owner published');
-		assert(seen.sequence > 0 && seen.sequence % 2 === 0, 'and a settled sequence word');
 		// The marker is written through the audit store's symbol-keyed putSync and read back through the
 		// root store: one keyspace on the real binding.
 		const condemnable = new AsyncBackend('rocks-condemn', { applyDelay: 2 });
