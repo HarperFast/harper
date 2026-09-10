@@ -926,12 +926,17 @@ class DerivedIndexRunner {
 		this.#knownLogs = current;
 		for (const logName of currentLogs) {
 			if (cursor.logs[logName] !== undefined) continue;
-			const oldestSequenceNumber = this.#logStore.rootStore.useLog(logName).getStats().oldestSequenceNumber;
-			if (oldestSequenceNumber !== 1) {
+			if (!this.#retainsBeginning(logName)) {
 				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`, 'log-retention');
 				return;
 			}
 		}
+	}
+
+	/** A log that never wrote a file has nothing to have lost; one with files must still hold the first. */
+	#retainsBeginning(logName: string): boolean {
+		const stats = this.#logStore.rootStore.useLog(logName).getStats();
+		return stats.fileCount === 0 || stats.oldestSequenceNumber === 1;
 	}
 
 	#drain() {
@@ -1312,8 +1317,7 @@ class DerivedIndexRunner {
 		}
 		for (const logName of current) {
 			if (this.#knownLogs.has(logName)) continue;
-			const oldest = this.#logStore.rootStore.useLog(logName).getStats().oldestSequenceNumber;
-			if (oldest !== 1) {
+			if (!this.#retainsBeginning(logName)) {
 				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`, 'log-retention');
 				return false;
 			}
@@ -1771,7 +1775,7 @@ class DerivedIndexRunner {
 			if (range.corruptFrameStop.breaks > 0 || range.failedLogs.size > 0)
 				throw new RunnerError('log-corrupt', `transaction log '${logName}' cannot be read to its committed tail`);
 			if (tail === undefined) {
-				if (this.#logStore.rootStore.useLog(logName).getStats().oldestSequenceNumber !== 1)
+				if (!this.#retainsBeginning(logName))
 					throw new RunnerError(
 						'log-retention',
 						`transaction log '${logName}' retains no committed transaction and has lost its beginning`
