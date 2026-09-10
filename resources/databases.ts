@@ -2167,6 +2167,34 @@ export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 	return start;
 }
 
+// Bounded, unlike the exclusiveLock() spin above: that one runs on the declaring path, where the
+// caller is waiting on the result and there is nothing useful to do without the lock. This one runs
+// after a backfill has already settled, so a holder that never releases would wedge the worker's
+// event loop for nothing. Giving up costs only the marker, and the next load of the table
+// re-triggers the build regardless.
+export const ABANDONED_MARK_LOCK_TIMEOUT = 10000;
+const abandonedMarkLockWait = new Int32Array(new SharedArrayBuffer(4));
+// `timeout` is the test seam; production callers take the default.
+export function tryAcquireUpdateAttributesLock(
+	rootStore: RocksDatabase,
+	timeout = ABANDONED_MARK_LOCK_TIMEOUT
+): boolean {
+	if (rootStore.tryLock('update-attributes')) return true;
+	const startTime = performance.now();
+	let waitTime = 1;
+	while (!rootStore.tryLock('update-attributes')) {
+		const elapsed = performance.now() - startTime;
+		if (elapsed >= timeout) return false;
+		// Atomics.wait rather than a busy spin: the section this guards is synchronous, so the wait
+		// blocks this thread either way, but sleeping does not burn a core while it does.
+		if (elapsed >= 2) {
+			Atomics.wait(abandonedMarkLockWait, 0, 0, Math.min(waitTime, timeout - elapsed));
+			if (waitTime < 16) waitTime *= 2;
+		}
+	}
+	return true;
+}
+
 /**
  * Persists the failure marker for a build that ended without running one of runIndexing's own exit
  * paths, so something re-triggers it. Fenced on `indexingBuildId` inside the storage engine's catalog
@@ -2188,7 +2216,14 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 				}
 			};
 			if (rootStore instanceof RocksDatabase) {
-				while (!rootStore.tryLock('update-attributes')) {} // spin lock, matching exclusiveLock() above
+				if (!tryAcquireUpdateAttributesLock(rootStore)) {
+					logger.warn(
+						`Could not mark the abandoned index build of ${Table.databaseName}.${Table.tableName}.${attribute.name}: ` +
+							`timed out after ${ABANDONED_MARK_LOCK_TIMEOUT}ms waiting for the exclusive 'update-attributes' lock. ` +
+							`The index stays incomplete and the next load of the table re-triggers the backfill.`
+					);
+					continue;
+				}
 				try {
 					markIfOwned();
 				} finally {

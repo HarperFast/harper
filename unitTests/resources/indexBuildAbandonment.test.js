@@ -16,11 +16,12 @@ require('../testUtils');
 const assert = require('node:assert');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, tryAcquireUpdateAttributesLock } = require('#src/resources/databases');
 const manageThreads = require('#js/server/threads/manageThreads');
 const { forComponent } = require('#src/utility/logging/harper_logger');
 
-// resources/Table.ts keys the exclusive schema lock on these bytes
+// raw ASCII bytes are ordered-binary's encoding of the string databases.ts locks on, so this
+// addresses the same native lock
 const UPDATE_ATTRIBUTES_LOCK_KEY = Buffer.from('update-attributes');
 
 describe('an index build that ends without completing is marked and recovered', function () {
@@ -309,5 +310,44 @@ describe('an index build that ends without completing is marked and recovered', 
 		const Live = seed(tableName, true);
 		assert.strictEqual(Live.indexingOperation, completedBuild, 'a live build in this process must not be re-triggered');
 		assert.strictEqual(Live.indices.tag.isIndexing, true, 'a live build must still read as incomplete');
+	});
+
+	// v5.2 only: main takes this lock through resources/Table.ts's acquireUpdateAttributesLock, which
+	// throws on timeout. That helper does not exist here, so the marker path has its own bounded
+	// acquire — the cost of giving up is one skipped marker, and the next load re-triggers the build.
+	describe('the marker path gives up on the attribute lock rather than spinning forever', () => {
+		it('returns false once the timeout elapses, without throwing', () => {
+			let attempts = 0;
+			const neverAvailable = {
+				tryLock() {
+					attempts++;
+					return false;
+				},
+			};
+			const startTime = performance.now();
+			assert.strictEqual(tryAcquireUpdateAttributesLock(neverAvailable, 50), false);
+			const elapsed = performance.now() - startTime;
+			assert.ok(elapsed >= 50, `must wait out the timeout, waited ${Math.round(elapsed)}ms`);
+			assert.ok(elapsed < 2000, `must not overshoot the timeout, waited ${Math.round(elapsed)}ms`);
+			assert.ok(attempts > 1, 'must retry rather than give up on the first refusal');
+		});
+
+		it('acquires as soon as the holder releases', () => {
+			let refusalsLeft = 3;
+			const releasedShortly = { tryLock: () => refusalsLeft-- <= 0 };
+			assert.strictEqual(tryAcquireUpdateAttributesLock(releasedShortly, 5000), true);
+		});
+
+		it('takes an uncontended lock without waiting at all', () => {
+			let attempts = 0;
+			const free = {
+				tryLock() {
+					attempts++;
+					return true;
+				},
+			};
+			assert.strictEqual(tryAcquireUpdateAttributesLock(free), true);
+			assert.strictEqual(attempts, 1, 'the uncontended path must not enter the wait loop');
+		});
 	});
 });
