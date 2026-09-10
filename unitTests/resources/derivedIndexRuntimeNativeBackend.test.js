@@ -39,7 +39,15 @@ class FakeLogStore {
 		this.exactStartFailures = new Map();
 		this.rootStore = new EventEmitter();
 		this.rootStore.listLogs = () => logNames.slice();
-		this.rootStore.useLog = (name) => ({ name, getStats: () => ({ oldestSequenceNumber: 1 }) });
+		// Like rocksdb-js: a log that never wrote a file reports no files and oldest sequence 0.
+		this.rootStore.useLog = (name) => ({
+			name,
+			getStats: () => {
+				const retained = this.logEntries.get(name);
+				if (retained !== undefined && retained.length === 0) return { fileCount: 0, oldestSequenceNumber: 0 };
+				return { fileCount: 1, oldestSequenceNumber: 1 };
+			},
+		});
 		this.rootStore.getSync = (key) => this.markers.get(key);
 		this.rootStore.removeSync = (key) => this.markers.delete(key);
 	}
@@ -1027,7 +1035,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.notStrictEqual(readDerivedIndexReadiness(store, 'flush-liveness').state, 'needs-rebuild');
 	});
 
-	it('rebuilds across several physical logs, omitting an empty log that still retains its beginning', async () => {
+	it('rebuilds across several physical logs, omitting a log that has never written a file', async () => {
 		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
 		const store = new FakeLogStore(new Map([[7, []]]), {
 			logNames: ['local', 'remote'],
