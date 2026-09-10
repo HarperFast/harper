@@ -80,7 +80,7 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericT
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
+import { HAS_BLOBS, auditRetention, removeAuditEntry, raiseAuditFloor, boundedAuditPruneEnd } from './auditStore.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -6069,10 +6069,27 @@ export function makeTable(options) {
 			}
 			const drainRemovals = () => Promise.all(inFlightRemovals);
 			let entriesDeleted = 0;
+			// LMDB only: RocksTransactionLogStore.remove() is a no-op, so a RocksDB deleteHistory removes
+			// nothing and must not claim it did.
+			// A request unbounded ABOVE must not become a floor unbounded above: `raiseAuditFloor` only
+			// raises and `establishAuditFloor` skips a store that has a record, so a floor above anything
+			// reachable never comes down — for this whole database, every sibling table included,
+			// permanently (#2458). Infinity is the absorbing unknown sentinel and the worst case, but a
+			// finite year-2286 bound is the same defect by degree, and entries written after this call
+			// would land below such a floor. `boundedAuditPruneEnd` clamps any cutoff to just above the
+			// newest key in the log, and the scan below uses that same value as its range end, so the
+			// prune provably cannot remove an entry the floor does not cover.
+			let pruneEnd = endTime;
+			if (!isRocksDB) {
+				pruneEnd = boundedAuditPruneEnd(auditStore, endTime);
+				raiseAuditFloor(auditStore, pruneEnd);
+			}
 			try {
 				for (const auditRecord of auditStore.getRange({
-					start: 1, // must not be zero; see getHistory below for why
-					end: endTime,
+					// must not be zero: 0 encodes to all zero bytes and so overlaps the symbol keys, as in
+					// getHistory below
+					start: 1,
+					end: pruneEnd,
 				})) {
 					await rest(); // yield to other async operations
 					if (auditRecord.tableId !== tableId) continue;
