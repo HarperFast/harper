@@ -25,7 +25,9 @@ describe('shrinkwrap pin canaries', function () {
 		try {
 			rocksdbManifest = JSON.parse(await readFile(rocksdbManifestPath, 'utf8'));
 		} catch (error) {
-			assert.fail(`the installed rocksdb-js manifest is required at ${rocksdbManifestPath}: ${error.message}`);
+			assert.fail(
+				`the installed rocksdb-js manifest is required at ${rocksdbManifestPath}: ${error?.message ?? error}`
+			);
 		}
 		const fixture = await createFixture(manifest.dependencies, {}, false, '', 3, {}, rocksdbManifest.dependencies);
 		try {

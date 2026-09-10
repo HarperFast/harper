@@ -256,7 +256,7 @@ function verifyRocksDbDependencyAlignment() {
 			}
 			failed = true;
 		} catch (e) {
-			console.error(`::error::could not resolve the shared ${dep} instance: ${e.message}`);
+			console.error(`::error::could not resolve the shared ${dep} instance: ${e?.message ?? e}`);
 			failed = true;
 		}
 	}
