@@ -127,14 +127,28 @@ describe('same-key explicit save ordering', () => {
 			update.items.pop();
 			update.addTo('count', 1);
 			await update.save();
+			update.update();
+			update.metadata = 'third update';
+			await update.save();
 		});
 		const committed = await SaveOrder.get('closed');
 		assert.equal(committed.status, 'running');
-		assert.equal(committed.metadata, 'fresh update');
+		assert.equal(committed.metadata, 'third update');
 		assert.equal(committed.details.nested, 'before');
 		assert.deepStrictEqual(committed.items, [1]);
 		assert.strictEqual(Object.getPrototypeOf(committed.items), Array.prototype);
 		assert.equal(committed.count, 1);
+	});
+
+	it('closes a receiver for an equivalent numeric key spelling', async () => {
+		await SaveOrder.put(1, { status: 'queued' });
+		const context = {};
+		await transaction(context, async () => {
+			const receiver = await SaveOrder.update(1, {}, context);
+			await receiver.put(1n, { status: 'running' });
+			assert.throws(() => (receiver.status = 'late'), /after it has been saved/);
+		});
+		assert.equal((await SaveOrder.get(1)).status, 'running');
 	});
 
 	it('allows validation coercion before closing the instance', async () => {

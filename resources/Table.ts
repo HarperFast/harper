@@ -764,15 +764,16 @@ export function makeTable(options) {
 		#savingOperation?: any; // operation for the record is currently being saved
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
-		#writeGeneration: WriteGeneration = { closed: false, internalWrites: 0 };
+		#writeGeneration?: WriteGeneration;
 		declare getProperty: (name: string) => any;
 		[ASSERT_TRACKED_WRITABLE](generation = this.#writeGeneration): void {
+			if (!generation) return;
 			if (generation.internalWrites > 0) return;
 			if (generation !== this.#writeGeneration || generation.closed)
 				throw new ClientError('Can not modify an update instance after it has been saved; call update() again', 409);
 		}
 		[GET_TRACKED_WRITE_GENERATION](): WriteGeneration {
-			return this.#writeGeneration;
+			return (this.#writeGeneration ??= { closed: false, internalWrites: 0 });
 		}
 
 		/**
@@ -782,7 +783,7 @@ export function makeTable(options) {
 		 * #lockHandle (scoped and hold alike), so we never need to search the registry here.
 		 */
 		#assertLiveHandle(id: Id, allowClosed = false): void {
-			if (!allowClosed && this.#writeGeneration.closed && writeKeyId(id) === writeKeyId(this.getId()))
+			if (!allowClosed && this.#writeGeneration?.closed && writeKeyId(id) === writeKeyId(this.getId()))
 				this[ASSERT_TRACKED_WRITABLE]();
 			if (!this.#lockWritable) return;
 			const handle = this.#lockHandle!;
@@ -2075,9 +2076,9 @@ export function makeTable(options) {
 			} else {
 				id = requestTargetToId(target);
 			}
-			if (this.#writeGeneration.closed) {
+			if (this.#writeGeneration?.closed) {
 				this.#changes = undefined;
-				this.#writeGeneration = { closed: false, internalWrites: 0 };
+				this.#writeGeneration = undefined;
 			}
 			this.#assertLiveHandle(id, true);
 
@@ -2128,7 +2129,7 @@ export function makeTable(options) {
 					});
 				}
 			}
-			return when(this._writeUpdate(id, this.#changes, fullUpdate), () => this);
+			return when(this._writeUpdate(id, (this.#changes ??= Object.create(null)), fullUpdate), () => this);
 		}
 
 		/**
@@ -2136,7 +2137,12 @@ export function makeTable(options) {
 		 */
 		save() {
 			const operation = this.#savingOperation;
-			if (this.#writeGeneration.closed && (!operation || operation.writeGeneration === this.#writeGeneration)) return;
+			if (
+				!this.#lockWritable &&
+				this.#writeGeneration?.closed &&
+				(!operation || operation.writeGeneration === this.#writeGeneration)
+			)
+				return;
 			this.#assertLiveHandle(operation?.key ?? this.getId()); // a write through a released or expired lock never lands
 			if ((!operation || operation.dropped) && this.#lockWritable && this.#lockHandle?.hold) {
 				// A held lock's record stages its update here rather than at lock() time: it is often
@@ -2960,8 +2966,7 @@ export function makeTable(options) {
 			const closesReceiver =
 				!this.isCollection &&
 				!isSearchTarget(receiverId) &&
-				(id === receiverId ||
-					(typeof id === 'object' && typeof receiverId === 'object' && compareKeys(id, receiverId) === 0));
+				(id === receiverId || writeKeyId(id) === writeKeyId(receiverId));
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -2979,7 +2984,7 @@ export function makeTable(options) {
 				// Only attach the hold handle when it covers exactly this key; off-key writes
 				// are ordinary and must not carry an unrelated hold's handle.
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
-				writeGeneration: !this.#lockWritable && closesReceiver ? this.#writeGeneration : undefined,
+				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
