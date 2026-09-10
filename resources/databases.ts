@@ -350,35 +350,6 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
-<<<<<<< HEAD
-=======
-// Restore every field used by `commonChanged`, plus `indexed` and `indexNulls`,
-// from the durable descriptor. In particular, preserve `indexNulls: false` so
-// an index that excludes nulls is not reopened as though it contains them.
-const PEER_REDEFINABLE_FIELDS = [
-	'type',
-	'indexed',
-	'indexNulls',
-	'nullable',
-	'enumerable',
-	'version',
-	'elements',
-	'properties',
-	'embed',
-];
-// `indexNulls` is derived from the durable descriptor, never sent by a peer, so naming it in the
-// discard warn would blame the peer for a field it did not write.
-const PEER_DECLARABLE_FIELDS = PEER_REDEFINABLE_FIELDS.filter((field) => field !== 'indexNulls');
-
-// A cluster-origin caller's list can predate a declaration another thread has already committed, so on
-// that path the descriptor — not the caller — decides what the attribute is, in both directions.
-function applyDurableDeclaration(attribute: any, descriptor: any) {
-	for (const field of PEER_REDEFINABLE_FIELDS) {
-		if (field in descriptor) attribute[field] = descriptor[field];
-		else delete attribute[field];
-	}
-}
-
 /**
  * True when a descriptor claims an index build no live operation in this process can own. The PID and
  * worker generation cannot answer that alone: a container reuses PID 1 and starts the in-memory
@@ -393,7 +364,6 @@ function isAbandonedIndexBuild(descriptor: any, currentRestartGeneration: number
 	const incarnation = manageThreads.processIncarnation;
 	return !!descriptor.indexingPID && incarnation != null && descriptor.indexingIncarnation !== incarnation;
 }
->>>>>>> d1fb096ff (Merge pull request #2543 from HarperFast/fix/index-rebuilding-thread-consistency)
 // How many times the schema load will try to finish a tombstoned drop before
 // giving up for the rest of this process's lifetime. A drop that fails once
 // almost always fails identically forever - the usual cause is a RocksDB
@@ -683,12 +653,8 @@ export function readMetaDb(
 			lmdbDatabaseEnvs.set(path, rootStore);
 		}
 
-<<<<<<< HEAD
-		return initStores(path, rootStore, databaseName, defaultTable, auditPath, isLegacy);
-=======
 		rootStore.dbisDb?.resetReadTxn();
-		return initStores(path, rootStore, databaseName, { defaultTable, auditPath, isLegacy });
->>>>>>> d1fb096ff (Merge pull request #2543 from HarperFast/fix/index-rebuilding-thread-consistency)
+		return initStores(path, rootStore, databaseName, defaultTable, auditPath, isLegacy);
 	} catch (error) {
 		error.message += ` opening database ${path}`;
 		throw error;
@@ -1893,49 +1859,6 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				continue;
 			}
 
-<<<<<<< HEAD
-=======
-			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
-
-			if (origin === 'cluster' && attributeDescriptor) {
-				// An existing descriptor is a local declaration this caller may not have seen yet, so it wins
-				// over the incoming definition and is never written back from it.
-				applyDurableDeclaration(attribute, attributeDescriptor);
-				const abandonedIndexBuild =
-					attribute.indexed &&
-					(attributeDescriptor.indexingFailed ||
-						isAbandonedIndexBuild(attributeDescriptor, workerData?.restartNumber ?? manageThreads.restartNumber));
-				if (abandonedIndexBuild) {
-					// Recovery is the exception to skipping the handling below, because without it `isIndexing`
-					// stays pinned on with nothing left to clear it and every query on the attribute fails with
-					// IndexRebuildingError for the life of the worker. It persists the attribute (here and again
-					// from runIndexing), so restate the declaration from a descriptor read under the lock.
-					exclusiveLock();
-					applyDurableDeclaration(attribute, attributesDbi.getSync(dbiKey) ?? attributeDescriptor);
-				} else {
-					if (attribute.indexed) {
-						const dbi = openIndex(dbiKey, rootStore, attribute);
-						target.adopt(dbi);
-						// Persisting the indexFormat openIndex just resolved adds a field the descriptor lacks
-						// rather than rewriting one it has. Without it an empty index resolves 'versioned', writes
-						// versioned nodes, then re-derives 'legacy' on the next load — see indexFormatNeedsPersist.
-						if (attribute.indexFormat != null && attributeDescriptor.indexFormat == null) {
-							exclusiveLock();
-							const durableDescriptor = attributesDbi.getSync(dbiKey);
-							if (durableDescriptor && durableDescriptor.indexFormat == null) {
-								hasChanges = true;
-								attributesDbi.put(dbiKey, { ...durableDescriptor, indexFormat: attribute.indexFormat });
-							}
-						}
-						if (attributeDescriptor.indexingPID) dbi.isIndexing = true;
-						dbi.indexNulls = attribute.indexNulls;
-						indices[attribute.name] = dbi;
-					}
-					continue;
-				}
-			}
-
->>>>>>> d1fb096ff (Merge pull request #2543 from HarperFast/fix/index-rebuilding-thread-consistency)
 			// note that non-indexed attributes do not need a dbi
 			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
 			// Some index options affect only search, not the stored structure (e.g. HNSW's
@@ -2126,17 +2049,10 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 	}
 	logger.trace(`${tableName} table loading, running index`);
 	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
-<<<<<<< HEAD
-		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove);
-=======
 		// captured before the backfill can rewrite the attributes
 		const buildIds = new Map(attributesToIndex.map((attribute) => [attribute, attribute.indexingBuildId]));
 		const markSettled = () => markAbandonedIndexBuild(Table, rootStore, buildIds);
-		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove, branchPath).then(
-			markSettled,
-			markSettled
-		);
->>>>>>> d1fb096ff (Merge pull request #2543 from HarperFast/fix/index-rebuilding-thread-consistency)
+		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove).then(markSettled, markSettled);
 	} else if (hasChanges)
 		signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
@@ -2250,9 +2166,6 @@ export function resumeStartKey(attributes: { lastIndexedKey?: any }[]): any {
 	}
 	return start;
 }
-<<<<<<< HEAD
-async function runIndexing(Table, attributes, indicesToRemove) {
-=======
 
 /**
  * Persists the failure marker for a build that ended without running one of runIndexing's own exit
@@ -2275,11 +2188,11 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 				}
 			};
 			if (rootStore instanceof RocksDatabase) {
-				acquireUpdateAttributesLock(rootStore, `abandoned index build '${Table.tableName}.${attribute.name}'`);
+				while (!rootStore.tryLock('update-attributes')) {} // spin lock, matching exclusiveLock() above
 				try {
 					markIfOwned();
 				} finally {
-					releaseUpdateAttributesLock(rootStore);
+					rootStore.unlock('update-attributes');
 				}
 			} else {
 				rootStore.transactionSync(markIfOwned);
@@ -2298,8 +2211,7 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 		}
 	}
 }
-async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
->>>>>>> d1fb096ff (Merge pull request #2543 from HarperFast/fix/index-rebuilding-thread-consistency)
+async function runIndexing(Table, attributes, indicesToRemove) {
 	let checkpointing;
 	let hadIndexingErrors = false;
 	const attributeErrorReported = {};
