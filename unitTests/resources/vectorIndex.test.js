@@ -936,6 +936,24 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	let T;
 	const N = 600;
+<<<<<<< HEAD
+=======
+	const ROUTING_EF = 1; // must track ROUTING_EF in resources/indexes/HierarchicalNavigableSmallWorld.ts
+	// Each graph's level assignment is pinned with a seeded PRNG (mulberry32) so a run is
+	// reproducible: greedy-vs-full equality is only statistically true over random graphs — ~2-3%
+	// of random 600-node graphs legitimately route to a different entry point and change the
+	// top-10 tail, which is what flaked on CI. One pinned graph samples that property once, so the
+	// assertion sweeps several: all of these are non-divergent at this head (measured over 40
+	// arbitrary seeds, 4 diverged, so a divergent seed here after an intentional index change is a
+	// re-pin rather than necessarily a regression — see DESIGN.md).
+	const SEEDS = [0x9e3779b9, 0x85ebca6b, 0xc2b2ae35, 0x27d4eb2f, 0x165667b1, 0x7feb352d, 0x846ca68b, 0xff51afd7];
+	const targets = [
+		[1, 0, 0, 0],
+		[0, 1, 0.5, 0.2],
+		[-0.6, 0.3, 0.9, 0.4],
+		[0.2, -0.8, 0.1, 0.7],
+	];
+>>>>>>> bdd4f37d6 (Merge pull request #2373 from HarperFast/fix/hnsw-routing-test-graph-flake)
 
 	before(async () => {
 		setupTestDBPath();
@@ -948,12 +966,33 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
 			],
 		});
+<<<<<<< HEAD
+=======
+		let seedState = seed;
+		let draws = 0;
+		T.indices.vector.customIndex.random = () => {
+			draws++;
+			seedState = (seedState + 0x6d2b79f5) | 0;
+			let t = Math.imul(seedState ^ (seedState >>> 15), 1 | seedState);
+			t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+			return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+		};
+>>>>>>> bdd4f37d6 (Merge pull request #2373 from HarperFast/fix/hnsw-routing-test-graph-flake)
 		for (let i = 0; i < N; i++) {
 			const a = (i / N) * Math.PI * 2;
 			const b = ((i * 7) % N) / N;
 			await T.put(i, { vector: [Math.cos(a), Math.sin(a), b, (i % 11) / 11] });
 		}
+<<<<<<< HEAD
 	});
+=======
+		// A seed only names a graph while each node takes exactly one draw: a second consumer of the
+		// stream shifts every level after it and silently re-pins all eight graphs to something the
+		// measurements below were never taken on.
+		assert.strictEqual(draws, N, 'the pinned stream must serve one level draw per node and nothing else');
+		return T;
+	}
+>>>>>>> bdd4f37d6 (Merge pull request #2373 from HarperFast/fix/hnsw-routing-test-graph-flake)
 
 	after(() => {
 		T.dropTable();
@@ -963,6 +1002,106 @@ describe('HNSW greedy routing above layer 0 (ROUTING_EF)', () => {
 	// accuracy. Compare against the same graph searched with the full ef at every layer — the
 	// pre-change behaviour — rather than against a fixed expectation.
 	it('returns the same neighbours as searching every layer at the full ef', async () => {
+<<<<<<< HEAD
+=======
+		const descentSensitive = [];
+		for (const seed of SEEDS) {
+			const label = '0x' + (seed >>> 0).toString(16);
+			const T = await buildGraph(seed);
+			try {
+				const customIndex = T.indices.vector.customIndex;
+				const originalSearchLayer = customIndex.searchLayer;
+				const greedy = [];
+				const routingEfs = new Set();
+				customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+					if (level > 0) routingEfs.add(ef);
+					return originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+				};
+				try {
+					for (const target of targets) {
+						greedy.push(await topTenIds(T, target));
+					}
+				} finally {
+					customIndex.searchLayer = originalSearchLayer;
+				}
+				// Hand the upper layers the full ef and both sides of the greedy-vs-full comparison
+				// below search identically, so only this assertion notices the optimization going away.
+				assert.deepStrictEqual(
+					[...routingEfs],
+					[ROUTING_EF],
+					`the layers above 0 must route at ROUTING_EF (seed ${label})`
+				);
+
+				// Every layer at the ef layer 0 actually resolves to — what search() passed down before
+				// greedy descent. Read it from a real query rather than efConstructionSearch, which is
+				// only the pre-change value when a schema configures one; this index takes the
+				// auto-scaled path.
+				const resolvedLayer0Ef = await captureLayer0Ef(T, { limit: 10 });
+				assert(resolvedLayer0Ef > 1, `expected an auto-scaled layer-0 ef, got ${resolvedLayer0Ef} (seed ${label})`);
+				customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+					return originalSearchLayer.call(this, v, epId, ep, level > 0 ? resolvedLayer0Ef : ef, level, ...rest);
+				};
+				try {
+					for (let i = 0; i < targets.length; i++) {
+						assert.strictEqual(
+							greedy[i],
+							await topTenIds(T, targets[i]),
+							`greedy descent changed the result set for target ${i} (seed ${label})`
+						);
+					}
+				} finally {
+					customIndex.searchLayer = originalSearchLayer;
+				}
+
+				// On many graphs layer 0 alone reaches the true neighbours from wherever it starts, and
+				// there the comparison above passes with the descent deleted outright. That is a
+				// property of the graph, not of this seed list, so the sweep as a whole has to contain
+				// at least one graph the descent decides — otherwise nothing here tests the descent.
+				customIndex.searchLayer = function (v, epId, ep, ef, level, ...rest) {
+					return level > 0 ? [] : originalSearchLayer.call(this, v, epId, ep, ef, level, ...rest);
+				};
+				try {
+					for (let i = 0; i < targets.length; i++) {
+						if ((await topTenIds(T, targets[i])) !== greedy[i]) {
+							descentSensitive.push(label);
+							break;
+						}
+					}
+				} finally {
+					customIndex.searchLayer = originalSearchLayer;
+				}
+			} finally {
+				await T.dropTable();
+			}
+		}
+		assert(
+			descentSensitive.length > 0,
+			'no seed routes differently without the descent: check whether the graph still has a hierarchy worth descending (mL, MAX_LEVEL) before re-picking SEEDS against this control'
+		);
+	});
+});
+
+describe('HNSW entry-point level clamp', () => {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+	let T;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		T = table({
+			table: 'HNSWClampTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', distance: 'cosine' }, type: 'Array' },
+			],
+		});
+	});
+	after(() => {
+		T.dropTable();
+	});
+
+	it('caps the first node of an empty index at MAX_LEVEL', async () => {
+>>>>>>> bdd4f37d6 (Merge pull request #2373 from HarperFast/fix/hnsw-routing-test-graph-flake)
 		const customIndex = T.indices.vector.customIndex;
 		const originalSearchLayer = customIndex.searchLayer;
 		const targets = [

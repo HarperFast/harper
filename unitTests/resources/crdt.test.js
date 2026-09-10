@@ -28,6 +28,109 @@ function currentEntry(value, localTime) {
 }
 
 describe('crdt getRecordAtTime', () => {
+<<<<<<< HEAD
+=======
+	it('walks divergent heads through ref-based transaction-log keys', () => {
+		const events = [
+			{ txnLogKey: 100, version: 10, type: 'put', value: { id: 'D', count: 1 }, previousVersion: 0 },
+			{
+				txnLogKey: 150,
+				version: 15,
+				type: 'patch',
+				value: { ignored: true },
+				previousVersion: 10,
+				previousAdditionalAuditRefs: [{ version: 100, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 200,
+				version: 20,
+				type: 'patch',
+				value: { count: { __op__: 'add', value: 2 } },
+				previousVersion: 10,
+				previousAdditionalAuditRefs: [{ version: 150, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 300,
+				version: 30,
+				type: 'patch',
+				value: { ignored: true },
+				previousVersion: 20,
+				previousAdditionalAuditRefs: [{ version: 200, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 200,
+				nodeId: 2,
+				version: 999,
+				type: 'put',
+				value: { id: 'D', count: 999 },
+				previousVersion: 0,
+			},
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'D', count: 3 }, 20, {
+			version: 20,
+			nodeId: 1,
+			additionalAuditRefs: [{ version: 300, nodeId: 1 }],
+		});
+		assert.deepStrictEqual(getRecordAtTime(current, 150, store, 1, 'D'), { id: 'D', count: 1 });
+	});
+
+	it('crosses a dual-clock delete through its ref-based predecessor', () => {
+		const events = [
+			{ txnLogKey: 100, version: 10, type: 'put', value: { id: 'D', count: 1 }, previousVersion: 0 },
+			{
+				txnLogKey: 200,
+				version: 20,
+				type: 'patch',
+				value: { count: { __op__: 'add', value: 2 } },
+				previousVersion: 10,
+				previousAdditionalAuditRefs: [{ version: 100, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 300,
+				version: 30,
+				type: 'delete',
+				value: null,
+				previousVersion: 20,
+				previousAdditionalAuditRefs: [{ version: 200, nodeId: 1 }],
+			},
+			{
+				txnLogKey: 400,
+				version: 40,
+				type: 'put',
+				value: { id: 'D', count: 9 },
+				previousVersion: 30,
+				previousAdditionalAuditRefs: [{ version: 300, nodeId: 1 }],
+			},
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'D', count: 9 }, 40, {
+			version: 40,
+			nodeId: 1,
+			additionalAuditRefs: [{ version: 400, nodeId: 1 }],
+		});
+		assert.deepStrictEqual(getRecordAtTime(current, 250, store, 1, 'D'), { id: 'D', count: 3 });
+	});
+
+	it('falls back to the reported position when no ref resolves the head', () => {
+		// A ref that names an audit key whose entry carries a different record version resolves nothing,
+		// so the walk has to start from the position the record reports for itself. Only the RocksDB
+		// shape reaches this: LMDB records carry no refs.
+		const events = [
+			{ version: 10, type: 'put', value: { id: 'F', count: 1 }, previousVersion: 0 },
+			{ version: 20, type: 'patch', value: { count: { __op__: 'add', value: 2 } }, previousVersion: 10 },
+			{ txnLogKey: 900, version: 999, type: 'put', value: { id: 'F', count: 999 }, previousVersion: 0 },
+		];
+		const store = makeStore(events);
+		const current = currentEntry({ id: 'F', count: 3 }, 20, {
+			version: 20,
+			nodeId: 1,
+			additionalAuditRefs: [{ version: 900, nodeId: 1 }],
+		});
+		assert.deepStrictEqual(getRecordAtTime(current, 10, store, 1, 'F'), { id: 'F', count: 1 });
+	});
+
+>>>>>>> bdd4f37d6 (Merge pull request #2373 from HarperFast/fix/hnsw-routing-test-graph-flake)
 	describe('record deleted then re-inserted under the same key (issue #1330)', () => {
 		// put(n:1) -> patch(n:2) -> patch(n:3) -> delete -> put(n:4, re-insert, current)
 		const events = [
