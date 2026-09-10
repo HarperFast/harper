@@ -316,6 +316,9 @@ export function trackReadRange(transaction: ReadTransaction, createRange: () => 
 		const iterator = iterate.call(this, options);
 		let done = false;
 		return {
+			[Symbol.iterator]() {
+				return this;
+			},
 			next() {
 				if (done) return { done: true, value: undefined };
 				try {
@@ -332,7 +335,7 @@ export function trackReadRange(transaction: ReadTransaction, createRange: () => 
 			return(value) {
 				if (!done) {
 					done = true;
-					iterator.return?.();
+					iterator.return?.(value);
 				}
 				return { done: true, value };
 			},
@@ -1308,6 +1311,8 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
+							// Commit retries can construct fresh ranges on this live handle after read ownership ends.
+							readTransactionOwners.delete(transaction);
 							// The transaction was created with coordinatedRetry:true (see
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed

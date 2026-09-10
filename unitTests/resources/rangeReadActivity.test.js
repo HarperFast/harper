@@ -113,6 +113,13 @@ describe('RocksDB range read activity', function () {
 		});
 	}
 
+	it('key-only primary range iterators remain iterable themselves', function () {
+		const { native } = openRead();
+		const iterator = Rows.primaryStore.getRange({ transaction: native, values: false })[Symbol.iterator]();
+		assert.strictEqual(iterator[Symbol.iterator](), iterator);
+		assert.equal([...iterator].length, 20);
+	});
+
 	it('Table.search releases the retained snapshot on early consumer return', async function () {
 		const context = {};
 		await transaction(context, async (txn) => {
@@ -153,6 +160,28 @@ describe('RocksDB range read activity', function () {
 			}
 		});
 		await Rows.delete(100);
+	});
+
+	it('commit retry handlers can scan a live handle after read ownership is handed off', async function () {
+		const txn = new DatabaseTransaction();
+		txn.db = Rows.primaryStore;
+		opened.push(txn);
+		let attempts = 0;
+		txn.addWrite({
+			key: 19,
+			store: Rows.primaryStore,
+			commit(_version, _entry, _retry, native) {
+				attempts++;
+				const iterator = Rows.primaryStore.getRange({ transaction: native })[Symbol.iterator]();
+				assert.notEqual(iterator.next().done, true);
+				iterator.return();
+				Rows.primaryStore.putSync(19, { id: 19, bucket: 'before' }, { transaction: native });
+			},
+		});
+		await Rows.put({ id: 19, bucket: 'before' });
+		await txn.commit();
+		assert.ok(attempts > 1, 'the concurrent write must force a real native conflict retry');
+		assert.equal((await Rows.get(19)).bucket, 'before');
 	});
 
 	it('range activity cannot extend an idle write holder and its write is rolled back', async function () {
