@@ -636,15 +636,25 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 			await withChainLinks(async (links, childLine, childId, refreshChildWrite) => {
 				resetLongLivedTransactionReportsForTests();
-				warnings.length = 0;
-				await refreshChildWrite();
-				await waitFor(() => childLine() !== undefined, 10000);
+				const reportedChildLine = await waitFor(
+					async () => {
+						const trackedTxns = setTxnExpiration(30000);
+						warnings.length = 0;
+						await refreshChildWrite();
+						assert.ok(!trackedTxns.has(links[1]), 'the child must remain reachable only through the root chain');
+						setTxnExpiration(20);
+						await waitFor(() => warningsMatching('Harper transaction has held').length > 0, 2000);
+						setTxnExpiration(30000);
+						return childLine();
+					},
+					{ timeout: 10000, message: 'the child must be reported on the first monitor tick after a write' }
+				);
 				assert.match(
-					childLine(),
+					reportedChildLine,
 					new RegExp(`transaction ${childId}\\b`),
 					'the link must be named under its own native id, which is what the sweep line joins to'
 				);
-				assert.match(childLine(), /state: [^,]*active/);
+				assert.match(reportedChildLine, /state: [^,]*active/);
 			});
 		});
 
