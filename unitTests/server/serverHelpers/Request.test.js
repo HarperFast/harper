@@ -973,6 +973,24 @@ describe('Request class', function () {
 				assert.strictEqual(nodeResponse.listenerCount('timeout'), 0);
 			});
 
+			it('delivers the Node response timeout without an explicit setTimeout call', async function () {
+				const nodeResponse = new EventEmitter();
+				const request = new Request({ ...mockNodeRequest }, nodeResponse);
+				const timeoutSocket = {};
+				let timeoutArgument;
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.on('timeout', (socket) => (timeoutArgument = socket));
+					nodeResponse.emit('timeout', timeoutSocket);
+					res.end();
+				});
+
+				const { body } = await responsePromise;
+				assert.strictEqual(timeoutArgument, timeoutSocket);
+				for await (const chunk of body) void chunk;
+				if (!body.closed) await new Promise((resolve) => body.once('close', resolve));
+				assert.strictEqual(nodeResponse.listenerCount('timeout'), 0);
+			});
+
 			it('informational responses call back even when the transport has no Node response', function () {
 				const request = new Request({ ...mockNodeRequest }, {});
 				let calledBack = 0;

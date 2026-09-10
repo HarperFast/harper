@@ -30,7 +30,6 @@ class UnsupportedResponseMethodError extends Error {
 
 const ignoreError = () => {};
 
-/** The `ServerResponse` passed to a `withNodeAdapter()` handler and returned as its response body. */
 export class NodeAdapterResponse extends PassThrough implements NodeServerResponse {
 	statusCode = 200;
 	statusMessage = '';
@@ -45,7 +44,6 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 	#committedStatus: number | undefined;
 	#headerText: string | undefined;
 	#nodeResponse: NodeServerResponse | undefined;
-	#forwardsTimeout = false;
 	#resolve: (response: AdaptedResponse) => void;
 	#reject: (reason: unknown) => void;
 
@@ -62,6 +60,26 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		this.#resolve = resolve;
 		this.#reject = reject;
 		this.on('error', ignoreError);
+		if (typeof nodeResponse?.on === 'function') {
+			const forward = (...args: any[]) => this.emit('timeout', ...args);
+			let forwarding = false;
+			const syncForwarding = (wanted: boolean) => {
+				if (wanted === forwarding) return;
+				forwarding = wanted;
+				if (wanted) nodeResponse.on('timeout', forward);
+				else nodeResponse.removeListener('timeout', forward);
+			};
+			const onNewListener = (event: string | symbol) => event === 'timeout' && syncForwarding(true);
+			const onRemoveListener = (event: string | symbol) =>
+				event === 'timeout' && syncForwarding(this.listenerCount('timeout') > 0);
+			this.on('newListener', onNewListener);
+			this.on('removeListener', onRemoveListener);
+			this.once('close', () => {
+				syncForwarding(false);
+				this.removeListener('newListener', onNewListener);
+				this.removeListener('removeListener', onRemoveListener);
+			});
+		}
 	}
 
 	get headersSent() {
@@ -78,7 +96,8 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		if (this.#headerText === undefined) {
 			let text = `HTTP/1.1 ${this.#committedStatus} ${this.statusMessage}\r\n`;
 			for (const [name, value] of this.#headers) {
-				for (const entry of Array.isArray(value) ? value : [value]) text += `${name}: ${entry}\r\n`;
+				if (Array.isArray(value)) for (const entry of value) text += `${name}: ${entry}\r\n`;
+				else text += `${name}: ${value}\r\n`;
 			}
 			this.#headerText = text + '\r\n';
 		}
@@ -173,27 +192,8 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		const nodeResponse = this.#nodeResponse;
 		if (typeof nodeResponse?.setTimeout !== 'function') return this;
 		nodeResponse.setTimeout(msecs);
-		if (this.#forwardsTimeout) return this;
-		this.#forwardsTimeout = true;
-		// Node destroys a timed-out socket only when no request, response or server listener handled the
-		// event, judged by emit()'s return value, so the forwarder exists exactly while this response has
-		// 'timeout' listeners of its own.
-		const forward = (...args: any[]) => this.emit('timeout', ...args);
-		let forwarding = false;
-		const syncForwarding = (wanted: boolean) => {
-			if (wanted === forwarding) return;
-			forwarding = wanted;
-			if (wanted) nodeResponse.on('timeout', forward);
-			else nodeResponse.removeListener('timeout', forward);
-		};
-		this.on('newListener', (event) => event === 'timeout' && syncForwarding(true));
-		this.on('removeListener', (event) => event === 'timeout' && syncForwarding(this.listenerCount('timeout') > 0));
-		this.once('close', () => syncForwarding(false));
-		syncForwarding(this.listenerCount('timeout') > 0);
 		return this;
 	}
-	// Informational responses go to the real Node response; a Request built without one still gets the
-	// callback so a handler awaiting it cannot hang.
 	writeContinue(callback?: () => void) {
 		if (typeof this.#nodeResponse?.writeContinue === 'function') this.#nodeResponse.writeContinue(callback);
 		else callback?.();
