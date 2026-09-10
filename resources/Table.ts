@@ -2136,7 +2136,7 @@ export function makeTable(options) {
 		 */
 		save() {
 			const operation = this.#savingOperation;
-			if (this.#writeGeneration.closed) return;
+			if (this.#writeGeneration.closed && (!operation || operation.writeGeneration === this.#writeGeneration)) return;
 			this.#assertLiveHandle(operation?.key ?? this.getId()); // a write through a released or expired lock never lands
 			if ((!operation || operation.dropped) && this.#lockWritable && this.#lockHandle?.hold) {
 				// A held lock's record stages its update here rather than at lock() time: it is often
@@ -2201,7 +2201,7 @@ export function makeTable(options) {
 				try {
 					result = this.#saveOperation(operation);
 				} catch (error) {
-					this.#savingOperation = operation;
+					if (!operation.saved) this.#savingOperation = operation;
 					throw error;
 				}
 				const innerCommit = operation.innerCommit;
@@ -2242,7 +2242,7 @@ export function makeTable(options) {
 		#closeWriteChain(operation: any) {
 			const owner = operation.stagedIn;
 			for (let write = operation; write && !write.instanceClosed; write = write.priorWrite) {
-				if (write === operation || owner?.ownedWrites.has(write)) closeWriteInstance(write);
+				if (write === operation || owner?.ownedWrites?.has(write)) closeWriteInstance(write);
 			}
 		}
 

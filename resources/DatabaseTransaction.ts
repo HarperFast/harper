@@ -458,7 +458,7 @@ export class DatabaseTransaction implements Transaction {
 		this.#scopeOwned = options?.scopeOwned === true;
 	}
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
-	ownedWrites = new WeakSet<TransactionWrite>();
+	ownedWrites?: WeakSet<TransactionWrite>;
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
 	completions: Promise<void>[] = []; // the set of outstanding async operations to complete
@@ -749,7 +749,7 @@ export class DatabaseTransaction implements Transaction {
 	detachWrite(operation: TransactionWrite): void {
 		const index = this.writes.indexOf(operation);
 		if (index > -1) this.writes[index] = null;
-		this.ownedWrites.delete(operation);
+		this.ownedWrites?.delete(operation);
 		if (operation.key === undefined) return;
 		const writesForStore = this.writesByKey?.get(operation.store);
 		if (!writesForStore) return;
@@ -757,7 +757,7 @@ export class DatabaseTransaction implements Transaction {
 		// Membership, not `stagedIn`, which every commit handler clears and so cannot tell a takeover from a
 		// write done in place; a prior already taken over must not become this transaction's basis again.
 		let prior = operation.priorWrite;
-		while (prior && !this.ownedWrites.has(prior)) prior = prior.priorWrite;
+		while (prior && !this.ownedWrites?.has(prior)) prior = prior.priorWrite;
 		const tail = writesForStore.get(keyId);
 		if (tail === operation) {
 			if (prior) writesForStore.set(keyId, prior);
@@ -849,7 +849,7 @@ export class DatabaseTransaction implements Transaction {
 		// context's current transaction as it did before `stagedIn` existed.
 		for (const write of this.writes) {
 			if (write?.stagedIn === this) write.stagedIn = undefined;
-			if (write) this.ownedWrites.delete(write);
+			if (write) this.ownedWrites?.delete(write);
 		}
 		this.writes = [];
 		this.writesByKey = undefined;
@@ -988,7 +988,7 @@ export class DatabaseTransaction implements Transaction {
 		this.writeTick = monitorTick;
 		this.linkWrite(operation);
 		this.writes.push(operation);
-		this.ownedWrites.add(operation);
+		(this.ownedWrites ??= new WeakSet()).add(operation);
 		operation.stagedIn = this;
 		// Hold this write back while any earlier same-key write has not run — out of staging order both
 		// diff against the pre-transaction record (harper#2211, DESIGN.md). The whole chain, not just the
@@ -1025,7 +1025,7 @@ export class DatabaseTransaction implements Transaction {
 			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
 			const failedIdx = this.writes.indexOf(operation);
 			if (failedIdx > -1) this.writes[failedIdx] = null;
-			this.ownedWrites.delete(operation);
+			this.ownedWrites?.delete(operation);
 			throw lockNotHeldError(lockHandle);
 		}
 		// Lock-write timestamp rules.
@@ -1088,10 +1088,10 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
-		if (!operation.saved && operation.pendingPriorWrite && !operation.pendingPriorWrite.saved) {
+		if (!operation.saved && operation.pendingPriorWrite) {
 			const pendingWrites = [];
 			for (let pending = operation.pendingPriorWrite; pending;) {
-				if (!pending.saved && this.ownedWrites.has(pending)) pendingWrites.push(pending);
+				if (!pending.saved && this.ownedWrites?.has(pending)) pendingWrites.push(pending);
 				pending = pending.pendingPriorWrite !== undefined ? pending.pendingPriorWrite : pending.priorWrite;
 			}
 			for (let index = pendingWrites.length - 1; index >= 0; index--)

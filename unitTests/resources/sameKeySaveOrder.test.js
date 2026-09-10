@@ -115,6 +115,7 @@ describe('same-key explicit save ordering', () => {
 			assert.throws(() => (details.nested = 'late'), /after it has been saved/);
 			assert.throws(() => (items[0] = 9), /after it has been saved/);
 			assert.throws(() => delete items[0], /after it has been saved/);
+			assert.throws(() => Object.defineProperty(items, '0', { value: 9 }), /after it has been saved/);
 			assert.throws(() => items.pop(), /after it has been saved/);
 			assert.throws(() => update.addTo('count', 1), /after it has been saved/);
 			await update.save();
@@ -200,6 +201,15 @@ describe('same-key explicit save ordering', () => {
 		});
 		assert.equal((await SaveOrder.get('receiver-a')).status, 'complete');
 		assert.equal((await SaveOrder.get('receiver-b')).status, 'running');
+	});
+
+	it('commits an off-key write through a closed receiver without an explicit scope', async () => {
+		await SaveOrder.put('standalone-a', { status: 'queued' });
+		const receiver = await SaveOrder.update('standalone-a', { status: 'complete' });
+		await receiver.save();
+		await receiver.put('standalone-b', { status: 'running' });
+		assert.equal((await SaveOrder.get('standalone-a')).status, 'complete');
+		assert.equal((await SaveOrder.get('standalone-b')).status, 'running');
 	});
 
 	it('rejects same-key writes from a closed instance before acquiring a lock', async function () {

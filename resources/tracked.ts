@@ -347,16 +347,27 @@ function trackObject(sourceObject: any, typeDef?: any, writableOwner?: any) {
 				if (element && typeof element === 'object') element = trackObject(element, typeDef?.elements, trackedArray);
 				trackedArray[i] = element;
 			}
+			if (!writableOwner) return trackedArray;
 			return new Proxy(trackedArray, {
-				set(target, name, value, receiver) {
+				set(target, name, value) {
 					if (typeof name === 'string') {
 						assertWritable(target);
 						target[HAS_ARRAY_CHANGES] = true;
 					}
-					return Reflect.set(target, name, value, receiver);
+					return Reflect.set(target, name, value, target);
+				},
+				defineProperty(target, name, descriptor) {
+					if (typeof name === 'string') {
+						assertWritable(target);
+						target[HAS_ARRAY_CHANGES] = true;
+					}
+					return Reflect.defineProperty(target, name, descriptor);
 				},
 				deleteProperty(target, name) {
-					if (typeof name === 'string') assertWritable(target);
+					if (typeof name === 'string') {
+						assertWritable(target);
+						target[HAS_ARRAY_CHANGES] = true;
+					}
 					return Reflect.deleteProperty(target, name);
 				},
 			});

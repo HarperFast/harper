@@ -115,14 +115,14 @@ export class LMDBTransaction extends DatabaseTransaction {
 
 		this.linkWrite(operation);
 		this.writes.push(operation); // standard path, add to current transaction
-		this.ownedWrites.add(operation);
+		(this.ownedWrites ??= new WeakSet()).add(operation);
 		operation.stagedIn = this;
 	}
 
 	removeWrite(operation: TransactionWrite) {
 		const index = this.writes.indexOf(operation);
 		if (index > -1) this.writes[index] = null;
-		this.ownedWrites.delete(operation);
+		this.ownedWrites?.delete(operation);
 	}
 
 	/**
