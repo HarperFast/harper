@@ -1,4 +1,9 @@
+<<<<<<< HEAD
 import { RocksDatabase, type RocksDatabaseOptions, constants, type Store } from '@harperfast/rocksdb-js';
+=======
+import { trackReadRange } from './DatabaseTransaction.ts';
+import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transaction } from '@harperfast/rocksdb-js';
+>>>>>>> b349f8ec8 (Merge pull request #2556 from HarperFast/fix/rocksdb-290-integration-failures)
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 import { WeakLRUCache } from 'weak-lru-cache';
@@ -151,7 +156,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	}
 
 	getRange(options?: any): any {
-		const iterable = super.getRange(options);
+		const iterable = trackReadRange(options?.transaction, () => super.getRange(options));
 		if (options?.valuesForKey) return iterable.map((v: any) => v?.value);
 		if (options?.values === false || options?.onlyCount) return iterable;
 		if (!this.#enc.isRocksDB) return iterable;
