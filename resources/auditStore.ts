@@ -560,10 +560,9 @@ function updateAuditFloor(
 			: transactionOwner.transactionSync(() => {
 					const stored = auditStore.getBinary(key);
 					const floor = resolve(decodeAuditFloor(stored), stored !== undefined);
-					// `put` rather than `putSync`, and inside the transaction: lmdb's putSync is itself
-					// `put(...) === SYNC_PROMISE_SUCCESS`, so it drops whatever put returns — and a put that
-					// hands back a real rejection (a replaced one, as the marker-failure fixtures install)
-					// leaks it with no owner. Within a write transaction put writes synchronously and returns
+					// `put` rather than `putSync`, and inside the transaction: lmdb's putSync is
+					// `put(...) === SYNC_PROMISE_SUCCESS`, so it drops whatever put returns, and a rejected put
+					// would leak with no owner. Within a write transaction put writes synchronously and returns
 					// an already-resolved sentinel, so the value is visible immediately either way and this
 					// only takes ownership of the failure case.
 					// asBinary: a legacy standalone audit root's encoder has no Uint8Array passthrough, so raw

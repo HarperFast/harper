@@ -11,7 +11,7 @@
  */
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { table, closeDatabase } = require('#src/resources/databases');
 const {
 	getAuditFloor,
 	establishAuditFloor,
@@ -719,6 +719,39 @@ describe('audit staleness floor', () => {
 		assert.ok(
 			floorDuringPurge >= cutoff,
 			`floor should already be recorded when purgeLogs runs, saw ${floorDuringPurge}`
+		);
+	});
+
+	it('keeps the floor across a close and reopen of an ordinary database, on this engine', async function () {
+		// Every other assertion in this file reads the floor back through the handle that wrote it. The
+		// guarantee rests on the record being on disk: a floor that did not persist is re-stamped from the
+		// bootstrap epoch on the next open — at or above the newest SURVIVING key — and from then on
+		// certifies history a prune removed before the restart, which is the one failure the floor exists
+		// to prevent. The legacy-root test below covers only the standalone LMDB layout; this is the path
+		// every ordinary database takes, on whichever engine is running. Clean close in one process: a
+		// crash or power-loss window is not exercised here.
+		const durable = tableInOwnDatabase('Durable');
+		await durable.put('d-1', { name: 'one' });
+		const stamped = floorOf(durable);
+		assert.ok(Number.isFinite(stamped), `precondition: a known floor, got ${stamped}`);
+		const provenance = bootstrapEpoch(durable.auditStore);
+		assert.ok(Number.isFinite(provenance), 'precondition: a recorded bootstrap epoch');
+		const raised = stamped + 5_000;
+		raiseAuditFloor(durable.auditStore, raised);
+		assert.strictEqual(floorOf(durable), raised, 'precondition: the raise landed in-process');
+
+		assert.ok(closeDatabase('auditFloor_Durable'), 'precondition: the database was open to be closed');
+		const reopened = tableInOwnDatabase('Durable');
+		assert.notStrictEqual(reopened.auditStore, durable.auditStore, 'precondition: a fresh store, not the cached one');
+		assert.strictEqual(
+			floorOf(reopened),
+			raised,
+			'the floor must come back from disk, not be re-stamped from the bootstrap epoch'
+		);
+		assert.strictEqual(
+			bootstrapEpoch(reopened.auditStore),
+			provenance,
+			'and the provenance record must survive with it, or a later repair has nothing to read'
 		);
 	});
 

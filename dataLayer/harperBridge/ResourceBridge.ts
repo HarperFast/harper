@@ -528,12 +528,11 @@ export class ResourceBridge extends BridgeMethods {
 						? Number.NaN
 						: Number(deleteObj.timestamp)
 					: deleteObj.timestamp;
-		// Neither NaN nor a non-finite bound is harmless: audit keys are raw float64, so NaN and negatives
-		// sort above every real timestamp and the prune range spans the whole log, while Infinity purges
-		// everything AND records the unknown sentinel — which `raiseAuditFloor` will never lift again. So
-		// require a finite, non-negative number and reject anything else as the operator input error it is,
-		// rather than letting raiseAuditFloor stop it with a bare Error that reports as a server fault.
-		// `Number.isFinite` does the type check too: it never coerces, so a non-number is false.
+		// Audit keys are raw float64, so NaN and negatives sort above every real timestamp and a prune range
+		// ending there spans the whole log, while Infinity records the unknown sentinel that `raiseAuditFloor`
+		// never lifts. Require a finite, non-negative number and report anything else as the operator input
+		// error it is, rather than letting raiseAuditFloor surface it as a server fault. `Number.isFinite`
+		// never coerces, so it is the type check as well.
 		if (!Number.isFinite(before) || before < 0 || Object.is(before, -0))
 			throw handleHDBError(
 				new Error(),
@@ -566,12 +565,10 @@ export class ResourceBridge extends BridgeMethods {
 				for (const table of Object.values(tables)) {
 					if (table.primaryStore instanceof RocksDatabase) {
 						// Clamp before recording: an operator-supplied bound has no ceiling of its own, and a
-						// floor above everything reachable never comes down — `raiseAuditFloor` only raises and
-						// `establishAuditFloor` skips a store that has a record. `Date.now() * 1000`, or a bare
-						// '9999999999999', would otherwise pin this whole database's floor in the year 2286+,
-						// retiring the floor for every table in it, including cursors saved after
-						// this call (#2458). The purge takes the same clamped bound, so it cannot remove an entry
-						// the floor does not cover.
+						// floor above everything reachable never comes down (`raiseAuditFloor` only raises and
+						// `establishAuditFloor` skips a store that has a record), so a far-future bound would
+						// retire the floor for every table in this database. The purge takes the same clamped
+						// bound, so it cannot remove an entry the floor does not cover.
 						const pruneEnd = boundedAuditPruneEnd(table.auditStore, before);
 						raiseAuditFloor(table.auditStore, pruneEnd);
 						const deleted = table.primaryStore.purgeLogs({ before: pruneEnd, includeEntryCounts: true });
