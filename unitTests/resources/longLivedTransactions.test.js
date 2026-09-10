@@ -654,7 +654,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 								).then(
 									() => true,
 									(error) => {
-										if (error.code !== 'ERR_ASSERTION') throw error;
+										if (error?.code !== 'ERR_ASSERTION') throw error;
 										return false;
 									}
 								);
@@ -671,7 +671,7 @@ describe('Long-lived transaction reporting (#2471)', () => {
 						}
 					);
 				} catch (error) {
-					if (error.message === missingActiveReport && lastChildLine)
+					if (error?.message === missingActiveReport && lastChildLine)
 						assert.match(lastChildLine, /state: [^,]*active/, 'the last reported child state must be active');
 					throw error;
 				}
