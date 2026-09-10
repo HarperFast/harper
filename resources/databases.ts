@@ -2711,41 +2711,38 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 			}
 		}
-		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
-		// iterate through the attributes to ensure that we have all the dbis created and indexed
-		for (const attribute of attributes || []) {
-			if (attribute.relationship) {
-				refreshRelationshipAttributes = true;
-				continue;
-			}
-			if (attribute.computed) hasChanges = true;
-			let dbiKey = tableName + '/' + (attribute.name || '');
-			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
-			let attributeDescriptor = attributesDbi.getSync(dbiKey);
-			if (attribute.isPrimaryKey) {
-				if (deferredPrimaryRow) continue;
-				attributeDescriptor = attributeDescriptor || attributesDbi.getSync((dbiKey = tableName + '/')) || {};
-				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
-				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
-				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
-				// but other workers' next disk-load re-reads the stale value. The whole settings update is
-				// gated off for cluster-origin callers: their values come from this worker's (possibly
-				// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
-				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
-				// primary key can't change indexing, but settings can change
-				if (
-					origin !== 'cluster' &&
-					(schemaDefinedMismatch ||
-						(audit !== undefined && audit !== Table.audit) ||
-						(sealed !== undefined && sealed !== Table.sealed) ||
-						(replicate !== undefined && replicate !== Table.replicate) ||
-						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
-						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-						attribute.type !== attributeDescriptor.type)
-				) {
-					exclusiveLock();
-					const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
-					if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) continue;
+		// The settings reconcile runs once per table against the primary catalog row, not per
+		// attribute: a table declared without a primary key has no isPrimaryKey attribute (its
+		// catalog row is keyed at `tableName + '/'` with no name), and it must still pick up
+		// directive changes. Skipped on the create path (deferredPrimaryRow publishes the row
+		// itself), so create and update resolve the same declaration.
+		if (!deferredPrimaryRow) {
+			const declaredPrimaryAttribute = (attributes || []).find((attribute) => attribute.isPrimaryKey);
+			const primaryCatalogKey = primaryDescriptorKey();
+			const primaryDescriptor = attributesDbi.getSync(primaryCatalogKey) || {};
+			// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
+			// a stale `false` (from a v4-era write or replicated event) survives every reload: the
+			// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
+			// but other workers' next disk-load re-reads the stale value. The whole settings update is
+			// gated off for cluster-origin callers: their values come from this worker's (possibly
+			// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
+			const schemaDefinedMismatch = schemaDefinedExplicit && primaryDescriptor.schemaDefined !== schemaDefined;
+			// primary key can't change indexing, but settings can change; compared against the persisted
+			// descriptor (not the live Table) so a stale disk value is corrected too, same class of bug
+			// as the schemaDefined re-assert above
+			if (
+				origin !== 'cluster' &&
+				(schemaDefinedMismatch ||
+					(audit !== undefined && audit !== primaryDescriptor.audit) ||
+					(sealed !== undefined && sealed !== primaryDescriptor.sealed) ||
+					(replicate !== undefined && replicate !== primaryDescriptor.replicate) ||
+					(+expiration || undefined) !== (+primaryDescriptor.expiration || undefined) ||
+					(+eviction || undefined) !== (+primaryDescriptor.eviction || undefined) ||
+					(declaredPrimaryAttribute && declaredPrimaryAttribute.type !== primaryDescriptor.type))
+			) {
+				exclusiveLock();
+				const currentPrimaryAttribute = attributesDbi.getSync(primaryCatalogKey);
+				if (currentPrimaryAttribute && !tableIsDropping(currentPrimaryAttribute, primaryCatalogKey)) {
 					const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
 					if (typeof audit === 'boolean') {
 						if (audit) Table.enableAuditing();
@@ -2755,14 +2752,25 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					if (eviction) updatedPrimaryAttribute.eviction = +eviction;
 					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
-					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
+					if (declaredPrimaryAttribute?.type) updatedPrimaryAttribute.type = declaredPrimaryAttribute.type;
 					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
 					hasChanges = true; // send out notification of the change
-					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
+					attributesDbi.put(primaryCatalogKey, updatedPrimaryAttribute);
 				}
-
+			}
+		}
+		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
+		// iterate through the attributes to ensure that we have all the dbis created and indexed
+		for (const attribute of attributes || []) {
+			if (attribute.relationship) {
+				refreshRelationshipAttributes = true;
 				continue;
 			}
+			if (attribute.computed) hasChanges = true;
+			const dbiKey = tableName + '/' + (attribute.name || '');
+			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
+			if (attribute.isPrimaryKey) continue;
+			let attributeDescriptor = attributesDbi.getSync(dbiKey);
 
 			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
 
