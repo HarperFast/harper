@@ -528,11 +528,10 @@ export class ResourceBridge extends BridgeMethods {
 						? Number.NaN
 						: Number(deleteObj.timestamp)
 					: deleteObj.timestamp;
-		// Audit keys are raw float64, so NaN and negatives sort above every real timestamp and a prune range
-		// ending there spans the whole log, while Infinity records the unknown sentinel that `raiseAuditFloor`
-		// never lifts. Require a finite, non-negative number and report anything else as the operator input
-		// error it is, rather than letting raiseAuditFloor surface it as a server fault. `Number.isFinite`
-		// never coerces, so it is the type check as well.
+		// Audit keys are raw float64: NaN and negatives sort above every real timestamp (a range ending
+		// there spans the whole log), and Infinity records the unknown sentinel raiseAuditFloor never lifts.
+		// Reject anything but a finite non-negative number here, as the 400 it is rather than a server
+		// fault. `Number.isFinite` never coerces, so it is the type check too.
 		if (!Number.isFinite(before) || before < 0 || Object.is(before, -0))
 			throw handleHDBError(
 				new Error(),

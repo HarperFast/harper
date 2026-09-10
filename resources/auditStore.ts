@@ -134,13 +134,11 @@ const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
  * questions.
  */
 const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
-// The epoch `establishAuditFloor` stamped, kept for the life of the store. Its PRESENCE marks the
-// floor's provenance as unverified — a guess bounded by what survived, which cannot see history a
-// legacy prune removed before tracking began — and nothing short of a database generation (#2451)
-// retires that mark. In particular no comparison does: a later prune that raises the floor above this
-// value certifies only what it removed, so `floor > bootstrap` says nothing about the older gap. The
-// stored number records only how far the guess reached, for that repair to consume. Never raised,
-// never removed. See `establishAuditFloor`.
+// The epoch `establishAuditFloor` stamped, never raised or removed. Its PRESENCE marks the floor as
+// unverified provenance — a guess bounded by what survived, blind to history a legacy prune removed
+// before tracking began — until a database generation (#2451) retires the mark. No comparison does:
+// a later prune certifies only what it removed, so `floor > bootstrap` says nothing about the older
+// gap. The value records how far the guess reached, for that repair. See `establishAuditFloor`.
 const AUDIT_FLOOR_BOOTSTRAP_KEY = Symbol.for('audit-floor-bootstrap');
 /**
  * The floor's own eight bytes, deliberately NOT the FLOAT_TARGET/FLOAT_BUFFER pair the `last-removed`
@@ -521,11 +519,9 @@ function encodeAuditFloor(floor: number): Uint8Array {
  * alone. `key` selects the record: the floor itself, or the bootstrap-provenance record beside it,
  * which wants the same verified commit rather than a second write path.
  *
- * The transaction is the point: pruning is not confined to one worker — the retention loop,
- * a boot purge, `deleteHistory` and `delete_transaction_logs_before` can all advance the floor — and
- * two unsynchronized read-then-writes can interleave so the lower cutoff lands last, leaving a floor
- * below history the higher one already removed. In read-only mode nothing is written, which is
- * consistent because nothing is pruned there either.
+ * The transaction is the point: several paths advance the floor from different workers, and two
+ * unsynchronized read-then-writes can interleave so the lower cutoff lands last — a floor below
+ * history the higher one already removed. Read-only mode writes nothing, and prunes nothing.
  */
 function updateAuditFloor(
 	auditStore: any,
@@ -629,15 +625,12 @@ export function boundedAuditPruneEnd(auditStore: any, cutoff: number): number {
  *
  * **Call this before removing anything.** A floor written after the removal is lost if the process
  * dies in between, and the surviving lower floor then certifies a cursor whose history is gone.
- * Ordering it first also means it covers a prune that removes less than `cutoff` spans — a RocksDB
- * purge that finds no whole droppable file, a retention pass that stops at MAX_DELETES_PER_CLEANUP
- * with a large backlog still eligible. Over-reporting costs a consumer one unnecessary resync;
- * under-reporting loses its data silently. For the three retention paths the over-report is bounded
- * by the thing that already bounds the promise — they pass `Date.now() - auditRetention` (never below 0), so the
- * floor cannot climb above the horizon `logging.auditRetention` already declines to retain past. The
- * two operator-supplied bounds (`deleteHistory`, and the bridge's whole-database purge) have no such
- * ceiling of their own and must be run through `boundedAuditPruneEnd` first; a bound above everything
- * reachable would otherwise be recorded verbatim and never come down.
+ * Ordering it first also covers a prune that removes less than `cutoff` spans (a RocksDB purge with
+ * no whole droppable file, a retention pass stopping at MAX_DELETES_PER_CLEANUP): over-reporting costs
+ * one unnecessary resync, under-reporting loses data silently. The retention paths bound that
+ * over-report at the configured horizon (`Date.now() - auditRetention`, never below 0); the two
+ * operator-supplied bounds have no ceiling of their own and go through `boundedAuditPruneEnd` first,
+ * since a bound above everything reachable would be recorded verbatim and never come down.
  *
  * Throws if the floor cannot be persisted, which is why it is called first — the throw is what stops
  * the prune from proceeding unrecorded. Never lowers the floor, so a narrower prune cannot undo a
@@ -645,19 +638,13 @@ export function boundedAuditPruneEnd(auditStore: any, cutoff: number): number {
  * cutoff that says nothing about the history it has already lost.
  */
 export function raiseAuditFloor(auditStore: any, cutoff: number): void {
-	// Throw rather than no-op on a bound we will not store. A NaN or negative cutoff is NOT harmless
-	// here: transactionKeyEncoder writes keys as raw float64, so NaN (0x7FF8…) and negatives (sign bit
-	// set) sort ABOVE every real timestamp, and `getRange({ start: 1, end: NaN })` therefore spans the
-	// whole log. `delete_transaction_logs_before` reaches that via Number.parseInt on a non-numeric
-	// timestamp, so silently declining the floor update would leave the prune deleting everything.
-	// Infinity is accepted and IS stored, decoding back to "unknown" — but no production caller passes
-	// it any more, because storing it retires the accessor for the whole database (see
-	// `boundedAuditPruneEnd`, which `deleteHistory` uses to bound an unbounded request, and the 400 the
-	// bridge returns for one). Kept accepted rather than rejected so the sentinel stays reachable for a
-	// caller that genuinely cannot bound its prune; there is currently no such caller.
-	// `-0` and a non-number slip past a naive `< 0` check but are still ordered keys the range honors:
-	// -0 sets the float64 sign bit and a non-number takes the ordered-binary branch of the key encoder,
-	// so both sort outside the timestamp space the prune means to bound.
+	// Throw rather than no-op on a bound we will not store: audit keys are raw float64, so NaN and
+	// negatives (sign bit set) sort ABOVE every real timestamp and a range ending there spans the whole
+	// log — declining the floor silently would leave the prune deleting everything. `-0` and a non-number
+	// slip past a naive `< 0` check but are still ordered keys the range honors, so they are rejected too.
+	// Infinity is accepted and stored, decoding back to "unknown": every production caller clamps before
+	// reaching here (`boundedAuditPruneEnd`, the bridge's 400), so it stays reachable only for a caller
+	// that genuinely cannot bound its prune.
 	if (typeof cutoff !== 'number' || Number.isNaN(cutoff) || cutoff < 0 || Object.is(cutoff, -0))
 		throw new Error(`Invalid audit prune bound: ${String(cutoff)}`);
 	// Read-only mode does not exempt a prune from recording its floor; it means the prune must not

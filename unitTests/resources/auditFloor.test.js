@@ -51,7 +51,9 @@ function auditEntries(auditStore) {
 /** The epoch `establishAuditFloor` recorded as a guess, or undefined when it recorded none. */
 function bootstrapEpoch(auditStore) {
 	const stored = auditStore.getBinary(AUDIT_FLOOR_BOOTSTRAP_KEY);
-	return stored === undefined ? undefined : new Float64Array(stored.slice().buffer)[0];
+	// copy first: on a pooled Node Buffer `stored.buffer` is the whole pool, so a Float64Array over it
+	// would read pool offset 0, not this record — production copies with FLOOR_BUFFER.set(stored)
+	return stored === undefined ? undefined : new Float64Array(Uint8Array.from(stored).buffer)[0];
 }
 
 /** Clear a record on either engine: on RocksDB the floor lives in the root store, whose log store's own remove() is a no-op. */
@@ -740,7 +742,18 @@ describe('audit staleness floor', () => {
 		raiseAuditFloor(durable.auditStore, raised);
 		assert.strictEqual(floorOf(durable), raised, 'precondition: the raise landed in-process');
 
+		// `closeDatabase` fires `close()` without awaiting it, and on LMDB that close is asynchronous (the
+		// drop path in databases.ts awaits the same call). Reopening the path while the env is still
+		// closing can throw or read pre-flush bytes, so capture the promise closeDatabase discards and
+		// await it. RocksDB's close is synchronous and returns undefined, which awaits as a no-op.
+		const root = durable.auditStore.rootStore;
+		let closing;
+		const realClose = root.close.bind(root);
+		root.close = (...args) => (closing = realClose(...args));
 		assert.ok(closeDatabase('auditFloor_Durable'), 'precondition: the database was open to be closed');
+		if (!durable.auditStore.reusableIterable)
+			assert.ok(closing && typeof closing.then === 'function', 'precondition: the LMDB env close was captured');
+		await closing;
 		const reopened = tableInOwnDatabase('Durable');
 		assert.notStrictEqual(reopened.auditStore, durable.auditStore, 'precondition: a fresh store, not the cached one');
 		assert.strictEqual(
