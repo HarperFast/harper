@@ -1,4 +1,3 @@
-// A later same-key write's explicit save() must not run ahead of an earlier staged write (harper#2553).
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
@@ -6,8 +5,9 @@ const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
 
-// LMDB applies staged writes only in the commit batch, so a read inside the transaction cannot see them
-const readsOwnWrites = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
+// LMDB runs every write in the commit batch: an explicit save() executes nothing and a read inside the
+// transaction cannot see a staged write
+const executesOnSave = process.env.HARPER_STORAGE_ENGINE !== 'lmdb';
 
 async function collect(iter) {
 	const out = [];
@@ -35,6 +35,7 @@ describe('create followed by patch on the same key in one transaction', () => {
 				{ name: 'status', indexed: true },
 				{ name: 'metadata' },
 				{ name: 'count' },
+				{ name: 'amount', type: 'Int' },
 			],
 			audit: true,
 		});
@@ -51,7 +52,7 @@ describe('create followed by patch on the same key in one transaction', () => {
 		await transaction(context, async () => {
 			await Inst.create({ id: 'a', status: 'queued' }, context);
 			await Inst.patch('a', { metadata: 'required-value' }, context);
-			if (readsOwnWrites)
+			if (executesOnSave)
 				assert.deepStrictEqual(
 					fields(await Inst.get('a', context)),
 					{ id: 'a', status: 'queued', metadata: 'required-value', count: undefined },
@@ -73,7 +74,7 @@ describe('create followed by patch on the same key in one transaction', () => {
 			await Inst.patch('b', { status: 'running' }, context);
 			await Inst.patch('b', { metadata: 'first' }, context);
 			await Inst.patch('b', { metadata: 'second', status: 'done' }, context);
-			if (readsOwnWrites)
+			if (executesOnSave)
 				assert.deepStrictEqual(fields(await Inst.get('b', context)), {
 					id: 'b',
 					status: 'done',
@@ -93,7 +94,7 @@ describe('create followed by patch on the same key in one transaction', () => {
 			transaction(context, async () => {
 				await Inst.create({ id: 'c', status: 'queued' }, context);
 				await Inst.patch('c', { metadata: 'required-value' }, context);
-				if (readsOwnWrites)
+				if (executesOnSave)
 					assert.deepStrictEqual(fields(await Inst.get('c', context)), {
 						id: 'c',
 						status: 'queued',
@@ -136,6 +137,21 @@ describe('create followed by patch on the same key in one transaction', () => {
 		assert.strictEqual(record.metadata, 'required-value');
 		assert.strictEqual(record.status, undefined, 'the delete ran after the create');
 		assert.strictEqual(await isIndexedUnder('queued', 'e'), false);
+	});
+
+	it('a predecessor that fails validation rejects the later explicit save and lands nothing', async () => {
+		const context = {};
+		await assert.rejects(
+			transaction(context, async () => {
+				await Inst.create({ id: 'g', status: 'queued', amount: 'not-an-int' }, context);
+				const patch = Inst.patch('g', { metadata: 'required-value' }, context);
+				if (executesOnSave) await assert.rejects(patch, /amount/);
+				else await patch;
+			}),
+			/amount/
+		);
+		assert.equal(await Inst.get('g'), null);
+		assert.strictEqual(await isIndexedUnder('queued', 'g'), false);
 	});
 
 	it('put after create replaces the created record', async () => {

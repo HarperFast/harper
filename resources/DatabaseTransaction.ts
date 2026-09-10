@@ -984,14 +984,13 @@ export class DatabaseTransaction implements Transaction {
 	}
 
 	save(operation: TransactionWrite, transaction?: RocksTransaction, reloadEntry = false, options?: CommitOptions) {
-		// Staging order is execution order for a write that composes on staged state: an explicit save of
-		// a later same-key write runs the earlier ones it would otherwise overtake first (harper#2553).
-		// addWrite's deferral covers the eager trigger; this covers save() itself. Oldest first, iteratively.
+		// A write that composes on staged state must not run ahead of an earlier same-key write it would
+		// otherwise overtake through an explicit save (harper#2553): its unsaved predecessors run first.
 		if (operation.chainsStagedState === true && operation.priorWrite) {
 			let predecessors: TransactionWrite[] | undefined;
 			for (let prior = operation.priorWrite; prior; prior = prior.priorWrite) {
 				if (!prior.saved) (predecessors ??= []).push(prior);
-				// an executed chaining write ran everything before it; an eager non-chaining one says nothing
+				// an executed chaining write ran everything before it; an executed eager one says nothing
 				else if (prior.chainsStagedState === true) break;
 			}
 			if (predecessors) {
@@ -1001,10 +1000,11 @@ export class DatabaseTransaction implements Transaction {
 						const predecessor = predecessors[--index];
 						// a predecessor's immediate commit (CLOSED transaction) sweeps `writes`, running the rest
 						if (predecessor.saved) continue;
-						const result: any = this.#saveOne(predecessor, transaction, reloadEntry, options);
+						const result: any = this.#saveOne(predecessor, transaction);
 						if (typeof result?.then === 'function') return result.then(saveNext);
 					}
-					if (!operation.saved) return this.#saveOne(operation, transaction, reloadEntry, options);
+					if (operation.saved) return operation.innerCommit ?? operation.promise ?? operation.result;
+					return this.#saveOne(operation, transaction, reloadEntry, options);
 				};
 				return saveNext();
 			}

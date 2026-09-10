@@ -1090,7 +1090,7 @@ describe('Record locks (harper#483)', () => {
 			await transaction(async () => {
 				const scoped = await LockTest.lock(recordId);
 				scoped.set('n', 1);
-				// staged behind the scoped write and left for the commit sweep, like the scoped write itself
+				// staged behind the scoped write, unsaved until the commit sweep
 				const other = await LockTest.update(recordId);
 				other.name = 'static';
 				holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
@@ -1105,9 +1105,7 @@ describe('Record locks (harper#483)', () => {
 		});
 
 		it('a static same-key write saved explicitly runs the pending scoped change first', async function () {
-			// program order (harper#2553): the scoped change precedes the static write, so it lands and the
-			// later scoped→hold upgrade has nothing left to detach
-			if (isLMDB) return this.skip();
+			if (isLMDB) return this.skip(); // LMDB executes every write in the commit batch, in staging order
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0, name: 'before' });
 			let holder;

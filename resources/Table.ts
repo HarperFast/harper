@@ -2176,8 +2176,7 @@ export function makeTable(options) {
 			}
 		}
 		#saveOperation(operation: any) {
-			// already executed, pulled forward by a later same-key write's save (DatabaseTransaction.save):
-			// it belongs to the transaction that ran it, so it is neither re-run nor taken over
+			// already run ahead of a later same-key write's save: it stays with the transaction that ran it
 			if (operation.saved) return operation.innerCommit ?? operation.promise ?? operation.result;
 			const transaction = txnForContext(this.getContext());
 			const holder = operation.stagedIn;
