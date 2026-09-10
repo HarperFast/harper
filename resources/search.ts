@@ -1255,18 +1255,16 @@ function usableIndex(table, attributeName): any {
  * True when an index this attribute would have to be driven by is still being built, following a
  * relationship path to the local join index and on to the related table's leaf index.
  */
-function drivesRebuildingIndex(table, attributeName): boolean {
+function drivesRebuildingIndex(table, attributeName, relationshipOffset = 0): boolean {
 	if (!Array.isArray(attributeName))
-		return attributeName !== table.primaryKey && !!table.indices[attributeName]?.isIndexing;
-	if (attributeName.length < 2) return drivesRebuildingIndex(table, attributeName[0]);
-	const attribute = findAttribute(table.attributes, attributeName[0]);
+		return attributeName != null && attributeName !== table.primaryKey && !!table.indices[attributeName]?.isIndexing;
+	if (relationshipOffset >= attributeName.length - 1)
+		return drivesRebuildingIndex(table, attributeName[relationshipOffset]);
+	const attribute = findAttribute(table.attributes, attributeName[relationshipOffset]);
 	if (!attribute) return false;
 	if (table.indices[attribute.relationship?.from]?.isIndexing) return true;
 	const relatedTable = attribute.definition?.tableClass || attribute.elements?.definition?.tableClass;
-	return (
-		!!relatedTable &&
-		drivesRebuildingIndex(relatedTable, attributeName.length > 2 ? attributeName.slice(1) : attributeName[1])
-	);
+	return !!relatedTable && drivesRebuildingIndex(relatedTable, attributeName, relationshipOffset + 1);
 }
 
 export function estimateCondition(table) {
