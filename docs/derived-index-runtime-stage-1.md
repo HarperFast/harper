@@ -700,7 +700,9 @@ Opt-in writer backpressure, per registration (`maxLagMilliseconds`, 0 = no polic
 two flush ages is raised to that, since catch-up is only proven at a durable barrier). The owner
 measures lag as the longest of four terms — cursor distance behind what it has read, time parked
 on backpressure or the durability ceiling, time since the oldest commit it may not have read yet
-(cleared each time a drain reaches the end of the log), and the age of the oldest accepted work the
+(cleared each time a drain reaches the end of the log, and bounded by how far the newest entry it
+has read trails the clock, so a reader that never quite empties a steadily fed log is behind by
+that distance rather than by the age of its first unread commit), and the age of the oldest accepted work the
 backend has not yet made durable — because a reader too slow to reach the end of the log cannot
 hide from the third term and a backend that accepts but never barriers cannot hide from the
 fourth, while a caught-up owner sitting idle reports zero and a runner keeping up under sustained

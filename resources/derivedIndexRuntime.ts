@@ -677,6 +677,18 @@ class DerivedIndexRunner {
 		return `derived index '${this.id}' is more than ${this.#lagBudget} ms behind; retry this write`;
 	}
 
+	/**
+	 * Time since the oldest commit this runner may not have read, bounded by how far the newest
+	 * entry it has read trails the clock: a reader that never quite empties a steadily fed log is
+	 * behind by that distance, not by the age of its first unread commit.
+	 */
+	#unreadAge(now: number): number {
+		if (this.#unreadSince === undefined) return 0;
+		let newestRead = -Infinity;
+		for (const latest of this.#latestSeen.values()) if (latest > newestRead) newestRead = latest;
+		return Math.max(0, Math.min(now - this.#unreadSince, now - newestRead));
+	}
+
 	#oldestAcceptedAt(): number | undefined {
 		if (this.#offeredCursors.length > 1) return this.#offeredCursors[1].acceptedAt;
 		return this.#unanchoredMutations > 0 ? this.#unanchoredAcceptedAt : undefined;
@@ -700,7 +712,7 @@ class DerivedIndexRunner {
 		const lag = Math.max(
 			this.#cursorLag(),
 			this.#stalledSince === undefined ? 0 : now - this.#stalledSince,
-			this.#unreadSince === undefined ? 0 : now - this.#unreadSince,
+			this.#unreadAge(now),
 			oldestAccepted === undefined ? 0 : now - oldestAccepted
 		);
 		const words = this.#shared().words;
