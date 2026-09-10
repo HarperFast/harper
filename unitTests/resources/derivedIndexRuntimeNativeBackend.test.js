@@ -1450,10 +1450,12 @@ describe('DerivedIndexRuntime for native backends', () => {
 			'still parked: it cannot rebuild'
 		);
 		assert.strictEqual(runtime.getReadiness('marker-fails-no-reset').state, 'needs-rebuild');
-		const rangeCalls = store.rangeCalls.length;
+		let lockAttempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => (lockAttempts++, tryLock(key, onUnlocked));
 		store.rootStore.emit('committed');
 		await sleep(20);
-		assert.strictEqual(store.rangeCalls.length, rangeCalls, 'a parked runner whose marker is written stays parked');
+		assert.strictEqual(lockAttempts, 0, 'a parked runner whose marker is written stays parked');
 		await runtime.stop();
 	});
 
