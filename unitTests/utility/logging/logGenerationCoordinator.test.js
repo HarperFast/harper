@@ -114,6 +114,26 @@ describe('Test log generation coordinator (#1877)', () => {
 		assert.strictEqual(result.published.endsWith('.log'), true);
 	});
 
+	it('keeps a worker archive plain even when its local peer release succeeds', async () => {
+		const dir = path.join(TEST_ROOT, `workerWithTransport${caseNumber++}`);
+		const logPath = path.join(dir, 'hdb.log');
+		const rotatedDir = path.join(dir, 'rotated');
+		const worker = new Worker(path.join(__dirname, 'rotation-worker-for-tests.js'), {
+			workerData: { withTransport: true, logPath, rotatedDir },
+		});
+		const result = await new Promise((resolve, reject) => {
+			worker.once('message', resolve);
+			worker.once('error', reject);
+		});
+		await worker.terminate();
+		assert.ifError(result.error);
+		assert.strictEqual(result.released, true, 'expected the worker-local release proof to succeed');
+		assert.strictEqual(result.pending, false, 'a successful release should need no local retry');
+		assert.strictEqual(result.plainExists, true, 'the main-thread audit must remain the destructive publisher');
+		assert.strictEqual(result.compressedExists, false, 'the worker must not publish a compressed replacement');
+		assert.strictEqual(result.published.endsWith('.log'), true);
+	});
+
 	it('treats a peer that exits as having released the generation', async () => {
 		const transport = fakeTransport({ peers: [1, 2], autoRespond: false });
 		const { generation } = newGeneration();
@@ -150,32 +170,43 @@ describe('Test log generation coordinator (#1877)', () => {
 		// A generation this sink never held must not close anything.
 		transport.deliverRotation({ logPath, request: 'g2', ino: held.ino + 1, dev: held.dev, originator: 0 });
 		assert.strictEqual(closed, 1, 'expected a foreign generation to leave the descriptor alone');
+		coordinator.unregisterLogSink(logPath);
+
+		// The per-generation release needs the same fail-closed treatment as the stale sweep below.
+		coordinator.registerLogSink(logPath, { identity: () => ({ ino: 0, dev: 0 }), close: () => closed++ });
+		transport.deliverRotation({ logPath, request: 'g3', ino: held.ino, dev: held.dev, originator: 0 });
+		assert.strictEqual(closed, 2, 'expected an indistinguishable announced generation to be released');
+		coordinator.unregisterLogSink(logPath);
+		coordinator.registerLogSink(logPath, {
+			identity: () => ({ ino: held.ino, dev: held.dev }),
+			close: () => closed++,
+		});
 
 		// The batched form retention uses is the inverse, and each sink judges its own path: release
 		// every descriptor that is not on the live generation of the file it is writing.
 		transport.deliverRotation({ request: 'r1', stale: true });
-		assert.strictEqual(closed, 1, 'expected the live generation to be kept');
+		assert.strictEqual(closed, 2, 'expected the live generation to be kept');
 		coordinator.unregisterLogSink(logPath);
 		coordinator.registerLogSink(logPath, {
 			identity: () => ({ ino: held.ino + 1, dev: held.dev }),
 			close: () => closed++,
 		});
 		transport.deliverRotation({ request: 'r2', stale: true });
-		assert.strictEqual(closed, 2, 'expected a descriptor on an older generation to be released');
+		assert.strictEqual(closed, 3, 'expected a descriptor on an older generation to be released');
 		coordinator.unregisterLogSink(logPath);
 
 		// A filesystem that reports ino 0 cannot prove a descriptor is on the live generation, and
 		// answering "released" without releasing is what lets an archive be destroyed under a peer.
 		coordinator.registerLogSink(logPath, { identity: () => ({ ino: 0, dev: 0 }), close: () => closed++ });
 		transport.deliverRotation({ request: 'r3', stale: true });
-		assert.strictEqual(closed, 3, 'expected an indistinguishable descriptor to be released');
+		assert.strictEqual(closed, 4, 'expected an indistinguishable descriptor to be released');
 		coordinator.unregisterLogSink(logPath);
 
 		// A log whose file is gone can only be holding an archived inode.
 		fs.removeSync(logPath);
 		coordinator.registerLogSink(logPath, { identity: () => ({ ino: held.ino, dev: held.dev }), close: () => closed++ });
 		transport.deliverRotation({ request: 'r4', stale: true });
-		assert.strictEqual(closed, 4, 'expected a descriptor on a vanished path to be released');
+		assert.strictEqual(closed, 5, 'expected a descriptor on a vanished path to be released');
 		coordinator.unregisterLogSink(logPath);
 	});
 

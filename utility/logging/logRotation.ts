@@ -18,7 +18,7 @@ import { createGzip } from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { threadId } from 'node:worker_threads';
+import { isMainThread, threadId } from 'node:worker_threads';
 import { nextGenerationId, requestGenerationClose } from './logGenerationCoordinator.ts';
 
 // Bounds each writer's blind window at one quantum plus the flush that crosses it, so the file is
@@ -111,7 +111,10 @@ export async function publishArchivedGeneration(
 		rememberUnprovenArchive(generation.archivePath, { generation, compress });
 		return generation.archivePath;
 	}
-	if (compress) {
+	// A worker's peer set is eventually consistent while replacements join. Its release request can
+	// make peers reopen promptly, but only the main thread has an authoritative worker list and may
+	// destroy the plain archive; its audit will obtain a fresh proof for the archived snapshot.
+	if (compress && isMainThread) {
 		try {
 			return await compressArchive(generation.archivePath);
 		} catch (error) {

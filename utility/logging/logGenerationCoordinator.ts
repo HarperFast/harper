@@ -165,7 +165,8 @@ function releaseLocally(message: any) {
 		const identity = sink.identity();
 		// No identity to compare (no descriptor open, or a filesystem that cannot report one) means
 		// closing is the only answer that can still be called a release.
-		if (!identity || (identity.ino === message.ino && identity.dev === message.dev)) sink.close();
+		if (!identity || !identity.ino || !message.ino || (identity.ino === message.ino && identity.dev === message.dev))
+			sink.close();
 	}
 }
 

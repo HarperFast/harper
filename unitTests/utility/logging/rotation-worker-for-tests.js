@@ -3,20 +3,32 @@
 // A second isolate writing to the same log file as the main thread, which is how Harper actually
 // produces request logs: every HTTP worker holds its own descriptor on one path.
 
-const { isMainThread, parentPort, workerData } = require('node:worker_threads');
+const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 
-if (!isMainThread && workerData?.withoutTransport) {
+if (!isMainThread && (workerData?.withoutTransport || workerData?.withTransport)) {
 	(async () => {
 		const fs = require('fs-extra');
-		const { requestStaleDescriptorRelease } = require('#src/utility/logging/logGenerationCoordinator');
+		const coordinator = require('#src/utility/logging/logGenerationCoordinator');
 		const {
 			isArchivePendingQuiescence,
 			publishArchivedGeneration,
 			rotateLogFileSync,
 		} = require('#src/utility/logging/logRotation');
+		if (workerData.withTransport) {
+			coordinator.setRotationTransport({
+				threadId,
+				broadcast() {},
+				sendToThread() {},
+				onMessage() {},
+				onThreadExit() {},
+				peerThreadIds() {
+					return [];
+				},
+			});
+		}
 		fs.mkdirpSync(workerData.rotatedDir);
-		fs.writeFileSync(workerData.logPath, 'worker generation with no transport\n');
-		const release = await requestStaleDescriptorRelease();
+		fs.writeFileSync(workerData.logPath, 'worker generation\n');
+		const release = await coordinator.requestStaleDescriptorRelease();
 		const generation = rotateLogFileSync(workerData.logPath, workerData.rotatedDir, () => {});
 		const published = await publishArchivedGeneration(generation, true);
 		parentPort.postMessage({
