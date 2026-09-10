@@ -66,6 +66,12 @@ class FakeBackend {
 		this.deliverImpl = deliver;
 	}
 
+	attach() {}
+
+	flush() {}
+
+	shutdown() {}
+
 	getDurableCursor() {
 		return this.cursor;
 	}

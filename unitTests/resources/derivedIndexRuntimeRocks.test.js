@@ -46,6 +46,9 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			id: 'products',
 			cursor: { format: 1, logs: { local: anchor } },
 			deliveries: [],
+			attach() {},
+			flush() {},
+			shutdown() {},
 			getDurableCursor() {
 				return this.cursor;
 			},

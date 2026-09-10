@@ -91,6 +91,9 @@ class InlineBackend {
 		this.applies = 0;
 		this.useRecords = useRecords;
 	}
+	attach() {}
+	flush() {}
+	shutdown() {}
 	getDurableCursor() {
 		return this.cursor;
 	}
@@ -116,7 +119,6 @@ class InlineBackend {
 class QueueBackend {
 	constructor(id, { sliceMillis = 4, capacityBytes = 64 * 1024 * 1024 } = {}) {
 		this.id = id;
-		this.asynchronous = true;
 		this.cursor = { format: 1, logs: {} };
 		this.queue = [];
 		this.queuedBytes = 0;
