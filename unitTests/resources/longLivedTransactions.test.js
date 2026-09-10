@@ -643,9 +643,23 @@ describe('Long-lived transaction reporting (#2471)', () => {
 						await refreshChildWrite();
 						assert.ok(!trackedTxns.has(links[1]), 'the child must remain reachable only through the root chain');
 						setTxnExpiration(20);
-						await waitFor(() => warningsMatching('Harper transaction has held').length > 0, 2000);
-						setTxnExpiration(30000);
-						return childLine();
+						try {
+							const monitorRan = await waitFor(
+								() => warningsMatching('Harper transaction has held').length > 0,
+								2000
+							).then(
+								() => true,
+								(error) => {
+									if (error.code !== 'ERR_ASSERTION') throw error;
+									return false;
+								}
+							);
+							if (!monitorRan) return false;
+							const line = childLine();
+							return /state: [^,]*active/.test(line) && line;
+						} finally {
+							setTxnExpiration(30000);
+						}
 					},
 					{ timeout: 10000, message: 'the child must be reported on the first monitor tick after a write' }
 				);
