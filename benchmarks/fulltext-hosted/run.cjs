@@ -31,6 +31,12 @@ let RocksDerivedIndexStorage;
 	const fulltextNative = await import(pathToFileURL(join(options.fulltextRoot, 'dist', 'native.js')).href);
 	const runtime = await fulltextNative.runtimeInfo();
 	assert(runtime.storageBackends.includes('harper'));
+	const productVariants = [
+		['Waterproof Trail Running Shoes', 'Lightweight outdoor footwear with durable grip', 'shoes'],
+		['Wireless Noise Cancelling Headphones', 'Portable audio product with long battery life', 'electronics'],
+		['Organic Cotton Blue Shirt', 'Comfortable everyday apparel in multiple sizes', 'clothing'],
+		['Stainless Steel Water Bottle', 'Insulated outdoor product for hiking and travel', 'outdoors'],
+	];
 	let nextStoreIdentity = 0n;
 
 	const testRoot = setupTestDBPath();
@@ -222,7 +228,13 @@ let RocksDerivedIndexStorage;
 		};
 		if (arm === 'native') {
 			const path = await mkdtemp(join(testRoot, 'fulltext-native-control-'));
-			const index = await fulltextNative.openNativeFullTextIndex({ ...common, path });
+			let index;
+			try {
+				index = await fulltextNative.openNativeFullTextIndex({ ...common, path });
+			} catch (error) {
+				await rm(path, { recursive: true, force: true }).catch(() => undefined);
+				throw error;
+			}
 			return {
 				arm,
 				index,
@@ -262,7 +274,15 @@ let RocksDerivedIndexStorage;
 				maxErrorBytes: 64 * 1024,
 			},
 		};
-		const index = await fulltextHarper.openHarperFullTextIndex(config);
+		let index;
+		try {
+			index = await fulltextHarper.openHarperFullTextIndex(config);
+		} catch (error) {
+			try {
+				rawStorage.close();
+			} catch {}
+			throw error;
+		}
 		return {
 			arm,
 			index,
@@ -414,6 +434,7 @@ let RocksDerivedIndexStorage;
 		if (!context) return undefined;
 		const expected = await context.index.search({ text: 'waterproof trail shoes', limit: 10, exactTotal: true });
 		assert(expected.hits.length > 0);
+		assert.strictEqual(expected.total, Math.ceil(options.documents / productVariants.length));
 		await context.index.close();
 		let reopened;
 		let reopenedStorage;
@@ -558,13 +579,7 @@ let RocksDerivedIndexStorage;
 	}
 
 	function product(id) {
-		const variants = [
-			['Waterproof Trail Running Shoes', 'Lightweight outdoor footwear with durable grip', 'shoes'],
-			['Wireless Noise Cancelling Headphones', 'Portable audio product with long battery life', 'electronics'],
-			['Organic Cotton Blue Shirt', 'Comfortable everyday apparel in multiple sizes', 'clothing'],
-			['Stainless Steel Water Bottle', 'Insulated outdoor product for hiking and travel', 'outdoors'],
-		];
-		const [title, description, category] = variants[id % variants.length];
+		const [title, description, category] = productVariants[id % productVariants.length];
 		return { id: `product-${id}`, fields: { title: `${title} ${id}`, description, category } };
 	}
 
