@@ -194,6 +194,29 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('accepts a monotone cursor when the source log set grows', async () => {
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const { backend } = makeBackend(lifecycle([engine]));
+		await backend.acquire(1n);
+		assert.strictEqual(
+			backend.deliver(
+				batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], {
+					format: 1,
+					logs: { local: 20, peer: 5 },
+				})
+			),
+			DERIVED_INDEX_ACCEPTED
+		);
+		await backend.shutdown(1n);
+	});
+
+	it('omits non-text projection fields without failing the accepted batch', () => {
+		const converted = toFullTextMutationBatch(
+			batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'valid', price: 42 } })], cursor(20))
+		);
+		assert.deepStrictEqual({ ...converted.upserts[0].fields }, { title: 'valid' });
+	});
+
 	it('keeps deliveries after a requested barrier in the next publication', async () => {
 		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		const { backend } = makeBackend(lifecycle([engine]));
@@ -224,6 +247,33 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.deepStrictEqual({ ...loss.cursor.logs }, cursor(10).logs);
 		assert.deepStrictEqual(first.closes, [{ mode: 'rollback' }]);
 		await backend.shutdown(1n);
+	});
+
+	it('joins a recovery reopen before shutdown releases quiescence', async () => {
+		let finishOpen;
+		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		first.applyError = new Error('write contention');
+		const reopened = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const { backend } = makeBackend(
+			lifecycle([
+				first,
+				() =>
+					new Promise((resolve) => {
+						finishOpen = () => resolve(reopened);
+					}),
+			])
+		);
+		await backend.acquire(1n);
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		await waitFor(() => first.closes.length === 1 && finishOpen);
+		let settled = false;
+		const shuttingDown = backend.shutdown(1n).then(() => (settled = true));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(settled, false);
+		finishOpen();
+		await shuttingDown;
+		assert.strictEqual(reopened.closes.length, 1);
+		assert.strictEqual(backend.getDurableCursor(), undefined);
 	});
 
 	it('reconciles an ambiguous publish from the reopened committed payload', async () => {
@@ -259,6 +309,22 @@ describe('FullTextDerivedIndexBackend', () => {
 		await waitFor(() => changes.includes('failed'));
 		assert.strictEqual(backend.deliver(batch(1n, [], cursor(20))), DERIVED_INDEX_FAILED);
 		await backend.shutdown(1n);
+	});
+
+	it('retains a rejected recovery engine until shutdown proves it closed', async () => {
+		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		first.applyError = new Error('apply failed');
+		const reopened = new FakeEngine('{bad json');
+		reopened.closeError = new Error('writer still active');
+		const { backend } = makeBackend(lifecycle([first, reopened]));
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		await backend.acquire(1n);
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		await waitFor(() => changes.includes('failed'));
+		reopened.closeError = undefined;
+		await backend.shutdown(1n);
+		assert.strictEqual(reopened.closes.length, 2);
 	});
 
 	it('closes at shutdown, clears the cache, and reopens on the next owner epoch', async () => {
