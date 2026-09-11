@@ -479,14 +479,17 @@ export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
 export const REMOTE_SEQUENCE_UPDATE = 11;
 /**
- * Cluster record-lock coordination (harper#483 Phase 1). These replicate — unlike the reload marker
- * they are NOT `LOCAL_ONLY` — and carry a control payload rather than a record, so they are written
- * with `recordId: null`: an entry sharing a real record's `(version, tableId, recordId, nodeId)`
- * would be returned by `RocksTransactionLogStore.getSync` ahead of that record's own audit entry and
- * make `_writeUpdate`'s keyed dedup drop the holder's write. 13 is spare; 14/15 are the width flags.
+ * Cluster record-lock coordination (harper#483 Phase 1). This replicates — unlike the reload marker
+ * it is NOT `LOCAL_ONLY` — and carries a control payload rather than a record, so it is written with
+ * `recordId: null`: an entry sharing a real record's `(version, tableId, recordId, nodeId)` would be
+ * returned by `RocksTransactionLogStore.getSync` ahead of that record's own audit entry and make
+ * `_writeUpdate`'s keyed dedup drop the holder's write.
+ *
+ * Only the release entry exists. Nibbles 9 and 10 briefly held `lockRequest`/`lockGrant` for the
+ * Ricart–Agrawala arbitration rule that `docs/record-lock-ownership.md` replaces; that rule never
+ * shipped enabled, so they were retired rather than migrated — and 9 has since been taken by
+ * eviction. 10 and 13 are spare; 14/15 are the width flags.
  */
-export const LOCK_REQUEST = 9;
-export const LOCK_GRANT = 10;
 export const LOCK_RELEASE = 12;
 export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
@@ -525,10 +528,6 @@ const EVENT_TYPES = {
 	[EVICT]: 'evict',
 	remoteSequenceUpdate: REMOTE_SEQUENCE_UPDATE,
 	[REMOTE_SEQUENCE_UPDATE]: 'remoteSequenceUpdate',
-	lockRequest: LOCK_REQUEST | HAS_RECORD,
-	[LOCK_REQUEST]: 'lockRequest',
-	lockGrant: LOCK_GRANT | HAS_RECORD,
-	[LOCK_GRANT]: 'lockGrant',
 	lockRelease: LOCK_RELEASE | HAS_RECORD,
 	[LOCK_RELEASE]: 'lockRelease',
 };
@@ -584,7 +583,7 @@ function isDecodableAction(action: number) {
  * paths, where the common answer is false on the first comparison.
  */
 export function isLockControlType(type: unknown): boolean {
-	return type === 'lockRequest' || type === 'lockGrant' || type === 'lockRelease';
+	return type === 'lockRelease';
 }
 const ORIGINATING_OPERATIONS = {
 	insert: 1,

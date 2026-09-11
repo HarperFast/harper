@@ -625,8 +625,9 @@ Unchanged and reused:
   coordination ownership, the `replication.recordLocks` switch, `cluster_status.recordLocks`.
 
 **Three defects inherited with that substrate.** A cross-model review of the branch at `b26d5e22`
-found them in code this note keeps rather than in the arbitration rule it deletes, so they do not go
-away on their own and are obligations on the replacement. They are tracked as part of harper#2541:
+found them in code this note keeps rather than in the arbitration rule it deletes, so they did not go
+away on their own. **All three are fixed on this branch** as part of landing the replacement; they are
+recorded here because the reasoning is the design's, not the fix's:
 
 - **Transport replacement does not fence live authority** (`resources/Table.ts:5474`). Re-registering
   a transport — a component reload is enough — closes the current coordinator and installs an empty
@@ -649,21 +650,29 @@ away on their own and are obligations on the replacement. They are tracked as pa
   it holds any lease-protected write and skip the pass when it does not — while still fencing a
   released-but-staged locked write, which is the case the loop exists for.
 
-Removed:
+Removed — **done on this branch**:
 
 - The Ricart–Agrawala state machine — `LOCK_REQUEST`/`LOCK_GRANT` nibbles, per-peer round tracking,
   deferral queues, `(tsR, nodeName)` ordering, synthesized grants, withdraw-on-timeout, and
-  `agreedDown` DOWN-exclusion.
+  `agreedDown` DOWN-exclusion. Nibbles 9 and 10 are retired rather than migrated; 9 has since been
+  taken by eviction on `main`, so a migration was never available.
 
-Added:
+Added — **core's half is done on this branch**:
 
-- The epoch protocol (§4) and its durable per-database record, in harper-pro, with
-  `transport.epoch(database)` exposing it to core. It is also what finally lets harper-pro assert
-  `agreedDown`, the gap #822 records as a core follow-up.
-- `transport.requestDelegation(...)` and a delegation server — unicast request/grant/recall over the
-  existing replication connections (`sendOperationToNode`, harper-pro `replication/replicator.ts`,
-  is the existing precedent for a node-addressed request).
-- The home ring, the delegation table, the wait queue, and §8's aggregate caps.
+- The home ring (§4.5), the delegation table, recall-and-drain (§6), ordered fencing tokens (§5.1)
+  and §8's aggregate caps, in `resources/recordLockCoordinator.ts`.
+- The transport interface core needs from harper-pro: `epoch(database)`,
+  `requestDelegation(...)` and `recallDelegation(...)`, plus the inbound handlers core exposes so a
+  transport can route a peer's request or recall to the right coordinator.
+
+Added — **still owed by harper-pro**:
+
+- The epoch protocol (§4) and its durable per-database record, behind `transport.epoch(database)`
+  (harper-pro#825). It is also what finally lets harper-pro assert `agreedDown`, the gap #822 records
+  as a core follow-up.
+- The delegation server itself — unicast request/grant/recall over the existing replication
+  connections (`sendOperationToNode`, harper-pro `replication/replicator.ts`, is the existing
+  precedent for a node-addressed request).
 
 ### Protocol version and mixed deployments
 
@@ -727,9 +736,11 @@ as the new protocol.
 ## 13. Rollout
 
 harper#2498 stays a draft and does not ship Ricart–Agrawala as the arbitration rule. The substrate in
-§11 lands (reusable under every option considered, and already reviewed); the arbitration is
-replaced. harper-pro#822 keeps its capability, participant-set, ownership and switch work and
-replaces its transport implementation. Neither is enabled by default at any point.
+§11 lands (reusable under every option considered, and already reviewed); the arbitration **is
+replaced on the branch**. harper-pro#822 keeps its capability, participant-set, ownership and switch
+work and replaces its transport implementation. Neither is enabled by default at any point, and with
+harper#2542 and harper-pro#825 outstanding the branch cannot be enabled even deliberately: core fails
+closed without an agreed epoch, and no core build supplies one.
 
 ## 14. Round 3 record, and what still blocks implementation
 
@@ -753,6 +764,16 @@ still is:
 Everything else above is implementable as written. The work is decomposed as harper-pro#825 (the
 epoch protocol, §4), harper#2541 (home ring, delegations, drain and caps, §§5/6/8, plus the three
 inherited substrate defects in §11) and harper#2542 (successor freshness, §7).
+
+**Status.** harper#2541's core half is implemented on this branch: the Ricart–Agrawala state machine
+is gone, and the home ring, the delegation table, recall-and-drain, ordered fencing tokens, the
+aggregate caps and the transport-swap grant fence are in place, with all three inherited defects
+fixed. What is not here, and is what keeps the feature unusable rather than merely disabled:
+harper-pro#825's durable epoch — core fails closed without one and no core build supplies one — and
+harper#2542's freshness fence, without which a handoff carries exclusion but not the clean-handoff
+freshness §2 states. **The measurement gate (harper-pro#824) still has not run**, and the decision to
+implement ahead of it was the human's, recorded here so the sequence is not mistaken for the one this
+note recommends.
 
 **The documentation obligation is harper#2547, and it is not optional.** §10's rule that the two
 limitations may not be softened is the condition on which exclusion-only was chosen over harper#2540;

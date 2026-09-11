@@ -5736,12 +5736,16 @@ export function makeTable(options) {
 				return undefined;
 			}
 			if (lockCoordinator?.transport !== transport) {
-				lockCoordinator?.close();
+				// The transport object changed, but this node's delegations and the handles they admitted
+				// did not. The successor adopts that live authority in its constructor; the predecessor
+				// is closed afterwards so nothing is dropped in between. See LockCoordinatorOptions.adopt.
+				const predecessor = lockCoordinator;
 				lockCoordinator = new LockCoordinator({
 					database: databaseName,
 					table: tableName,
 					nodeId: getThisNodeName(),
 					transport,
+					adopt: predecessor,
 					// Writing to the local transaction log IS the send, so a transport that only computes
 					// the participant set gets core's writer.
 					writeControl: transport.writeControl
@@ -5750,6 +5754,7 @@ export function makeTable(options) {
 					keyIdOf: writeKeyId,
 					nextTimestamp: () => (primaryStore as any).getMonotonicTimestamp(),
 				});
+				predecessor?.close();
 			}
 			return lockCoordinator;
 		}
@@ -6455,11 +6460,7 @@ export function makeTable(options) {
 				end: endTime,
 			})) {
 				await rest(); // yield to other async operations
-				if (
-					auditRecord.tableId !== tableId ||
-					auditRecord.type === 'evict' ||
-					isLockControlType(auditRecord.type)
-				)
+				if (auditRecord.tableId !== tableId || auditRecord.type === 'evict' || isLockControlType(auditRecord.type))
 					continue;
 				yield {
 					id: auditRecord.recordId,

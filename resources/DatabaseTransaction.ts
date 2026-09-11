@@ -620,6 +620,15 @@ export class DatabaseTransaction implements Transaction {
 	declare commitChainHead?: DatabaseTransaction;
 	// O(1) lookup in recordLockFor; only lock() handles are registered here (no gate handles).
 	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
+	/**
+	 * Whether any staged write was made through a record lock handle. The commit-time lease fence
+	 * below is skipped entirely when this is false, which is every transaction in a core-only
+	 * deployment: without it a bulk transaction of 100,000 plain writes pays 100,000 property checks
+	 * before submission, on a path that is supposed to be untouched when no lock is involved. It
+	 * latches rather than tracking a count, because a write whose handle was released or expired after
+	 * staging is exactly what the fence exists to catch.
+	 */
+	declare hasLeaseProtectedWrite?: boolean;
 	// Tracks in-flight acquireRecordKey calls so concurrent lock() calls for the same key in one
 	// link (e.g. Promise.all([T.lock(id), T.lock(id)])) can coalesce rather than self-block.
 	declare pendingLocks?: Map<any, Map<unknown, Promise<RecordLockHandle>>>;
@@ -1113,6 +1122,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		// Lock-write timestamp rules.
 		if (lockHandle) {
+			this.hasLeaseProtectedWrite = true;
 			if (this.open === TRANSACTION_STATE.CLOSED || this.saveCommits) {
 				// CLOSED path (second+ write per ImmediateTransaction cycle) OR the first write in
 				// an ImmediateTransaction (open=OPEN until commit sets it CLOSED, but saveCommits
@@ -1385,7 +1395,7 @@ export class DatabaseTransaction implements Transaction {
 							// retry/replay path re-saves every operation and is fenced there instead. Lease expiry
 							// only: an unlock() inside the lease leaves the staged write valid, an elapsed lease
 							// does not, whether or not the caller also unlocked.
-							for (let i = 0; i < this.writes.length; i++) {
+							for (let i = 0; this.hasLeaseProtectedWrite && i < this.writes.length; i++) {
 								const lapsed = this.writes[i].lockHandle;
 								if (!lapsed?.isLeaseExpired()) continue;
 								try {
