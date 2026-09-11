@@ -305,9 +305,6 @@ interface RocksRootDatabase extends RocksDatabaseEx {
 	rootStore?: RocksRootDatabase;
 }
 
-const DERIVED_INDEX_STORES = Symbol('derived-index-stores');
-const DERIVED_INDEX_STORE_PREFIX = '`derived-index`/';
-
 export type RootDatabaseKind = LMDBRootDatabase | RocksRootDatabase;
 
 export type DatabaseWatcherEventMap = {
@@ -354,7 +351,7 @@ export function toRocksCompression(compression: unknown): unknown {
 	return compression;
 }
 
-function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }, raw: boolean = false) {
+function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
 	const legacyOptions = options as { compression?: unknown };
 	// A configured codec applies to every column family, overriding whatever per-table metadata
@@ -399,8 +396,6 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	let db: RocksRootDatabase;
 	if (options.dupSort) {
 		db = new RocksIndexStore(path, options).open() as any;
-	} else if (raw) {
-		db = new RocksDatabase(path, options).open() as RocksRootDatabase;
 	} else {
 		db = new PrimaryRocksDatabase(path, options).open() as unknown as RocksRootDatabase;
 		// the RocksDB put and remove return promises, which masks thrown errors in non-awaiting calls to put/remove,
@@ -415,84 +410,6 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	}
 	db.env = {};
 	return db;
-}
-
-/**
- * Open an unencoded RocksDB column family for a derived index. The returned handle participates in
- * Harper's existing RocksDB descriptor, memory configuration, compression policy, and backup
- * boundary, but its lifecycle remains with the derived-index owner until that owner is registered
- * in the database close graph.
- */
-export function openDerivedIndexStore(rootStore: RootDatabaseKind, dbiKey: string): RocksDatabase {
-	if (!(rootStore instanceof RocksDatabase)) throw new Error('Derived indexes require RocksDB storage');
-	if (!rootStore.isOpen()) throw new Error('Cannot open a derived index on a closed RocksDB root store');
-	if (rocksdbDatabaseEnvs.get(rootStore.path) !== rootStore) {
-		throw new Error('Derived index storage requires the RocksDB root store, not a column-family handle');
-	}
-	if (rootStore.store.disableWAL) {
-		throw new Error('Derived indexes require a WAL-enabled RocksDB root store');
-	}
-	if (typeof dbiKey !== 'string' || dbiKey.length === 0) {
-		throw new TypeError('Derived index store name must be a non-empty string');
-	}
-	const store = openRocksDatabase(
-		rootStore.path,
-		{
-			// Backticks are forbidden in customer schema names, so this can never alias a table,
-			// secondary index, or existing Harper internal column family.
-			name: `${DERIVED_INDEX_STORE_PREFIX}${dbiKey}`,
-			disableWAL: false,
-			encoding: 'binary',
-			keyEncoding: 'binary',
-		},
-		true
-	);
-	((rootStore as any)[DERIVED_INDEX_STORES] ??= new Set()).add(store);
-	return store;
-}
-
-/** Release a derived handle opened by openDerivedIndexStore without closing its shared root. */
-export function closeDerivedIndexStore(rootStore: RootDatabaseKind, store: RocksDatabase): void {
-	if (store.isOpen()) store.close();
-	// A failed close may still own a native descriptor claim. Keep it discoverable so a later
-	// database teardown can retry instead of converting the resource leak into unreachable state.
-	(rootStore as any)[DERIVED_INDEX_STORES]?.delete(store);
-}
-
-/** Drop a retired derived column family, tolerating another worker having already dropped it. */
-export function dropDerivedIndexStore(rootStore: RootDatabaseKind, store: RocksDatabase): void {
-	let dropError: unknown;
-	try {
-		store.dropSync();
-	} catch (error) {
-		try {
-			ignoreAlreadyDropped(error);
-		} catch (error) {
-			dropError = error;
-		}
-	}
-	try {
-		closeDerivedIndexStore(rootStore, store);
-	} catch (closeError) {
-		if (!dropError) throw closeError;
-		logger.warn('Error closing derived index store after its drop failed:', closeError);
-	}
-	if (dropError) throw dropError;
-}
-
-function closeDerivedIndexStores(rootStore: RootDatabaseKind, description: string): void {
-	const stores: Set<RocksDatabase> | undefined = (rootStore as any)[DERIVED_INDEX_STORES];
-	if (!stores) return;
-	for (const store of stores) {
-		try {
-			if (store.isOpen()) store.close();
-			stores.delete(store);
-		} catch (error) {
-			// Retain a handle whose close failed; removing it would make the live native claim
-			// unreachable and prevent a later teardown attempt from releasing it.
-			logger.warn(`Error closing derived index store ${description}:`, error);
-		}
-	}
 }
 
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
@@ -1816,7 +1733,6 @@ function closeBranchHandles(
 		}
 	}
 	for (const store of openedStores) closeStore(store, 'column family');
-	if (rootStore) closeDerivedIndexStores(rootStore, `for branch database at ${path}`);
 	closeStore((rootStore as any)?.dbisDb, 'attributes store');
 	closeStore((rootStore as any)?.auditStore, 'audit store');
 	closeStore(rootStore, 'root store');
@@ -2096,7 +2012,6 @@ export async function dropDatabase(databaseName) {
 			// already running has released the stores this is about to close and unlink
 			await rootStore.auditStore?.stopAuditCleanup?.();
 			removeStorageReclamation(rootStore.path);
-			closeDerivedIndexStores(rootStore, `while dropping database ${databaseName}`);
 			if (rootStore.status === 'open') {
 				if (rootStore instanceof RocksDatabase) {
 					rootStore.close();
@@ -2113,7 +2028,6 @@ export async function dropDatabase(databaseName) {
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
 			await rootStore.auditStore?.stopAuditCleanup?.();
 			removeStorageReclamation(rootStore.path);
-			closeDerivedIndexStores(rootStore, `while dropping database ${databaseName}`);
 			if (rootStore instanceof RocksDatabase) {
 				rootStore.close();
 				rootStore.destroy();
@@ -2172,7 +2086,6 @@ export function closeDatabase(databaseName: string): boolean {
 	}
 	for (const rootStore of rootStores) {
 		removeStorageReclamation(rootStore.path);
-		closeDerivedIndexStores(rootStore, `while closing database ${databaseName}`);
 		closeStore(rootStore.dbisDb, 'attributes store');
 		closeStore(rootStore, 'root store');
 		lmdbDatabaseEnvs.delete(rootStore.path);
