@@ -1107,16 +1107,18 @@ async function renameThroughTransientHolder(
 			const code = (error as NodeJS.ErrnoException).code ?? '';
 			if (!TRANSIENT_RENAME_CODES.has(code)) throw error;
 			if (performance.now() >= deadline) {
-				// Which side was still there is what separates a holder on the source from a destination
-				// something recreated, and neither survives on the rethrown error.
-				const exists = async (path: string) =>
+				// Which side was still there separates a holder on the source from a destination something
+				// recreated, and neither survives on the rethrown error. A failed probe reports its own code:
+				// an `EPERM` reading the destination is itself evidence, and calling it absent would send the
+				// next investigation the wrong way.
+				const state = async (path: string) =>
 					lstat(path).then(
 						() => 'present',
-						() => 'absent'
+						(probeError) => (probeError as NodeJS.ErrnoException)?.code ?? 'unreadable'
 					);
 				logger.warn(
 					`Could not rename ${fromPath} to ${toPath}: ${code} after ${attempts} attempts ` +
-						`(source ${await exists(fromPath)}, destination ${await exists(toPath)})`
+						`(source ${await state(fromPath)}, destination ${await state(toPath)})`
 				);
 				throw error;
 			}

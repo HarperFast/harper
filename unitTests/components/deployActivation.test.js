@@ -543,29 +543,42 @@ describe('activation transaction', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	// The Windows sharing lock these stand in for cannot be produced here, so they use the one portable
-	// way to make a rename fail and then stop failing: the write permission on its parent directory.
-	// POSIX only, and not as root, where permissions are not enforced.
+	// A Windows sharing lock cannot be produced on POSIX, so these use the one portable way to make a
+	// rename fail and then stop failing: the write permission on its parent directory. Not as root, where
+	// permissions are not enforced.
 	const transientRenameTest = (title, body) =>
 		it(title, async function () {
 			if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
 			await body();
 		});
 
-	// `.complete` is the last thing written before the activation reaches its first rename, so holding the
-	// lock past it is what makes the block land on the rename under test rather than on the setup ahead of
-	// it — a fixed timer would let a loaded runner finish the setup late and never retry at all.
-	async function unlockAfterFirstAttempt(deploymentDir, unlock, holdMs = 100) {
-		while (!existsSync(path.join(deploymentDir, '.complete'))) await sleep(5);
-		await sleep(holdMs);
-		await unlock();
+	// Bounded, because an activation that throws before the marker appears would otherwise leave the
+	// release promise pending forever and mocha's `timeout: 0` would hang the run instead of reporting it.
+	async function waitFor(condition, what) {
+		const deadline = Date.now() + 20000;
+		while (!(await condition())) {
+			if (Date.now() >= deadline) throw new Error(`timed out waiting for ${what}`);
+			await sleep(5);
+		}
 	}
 
-	// The activation journal lands in the deployment directory after `.complete`, and its temp file is
-	// removed right after; both have to be done before that directory can be locked.
-	async function journalSettled(deploymentDir) {
+	// The activation journal is the last thing written into the deployment directory before the renames
+	// start, and `writeControlFileDurably` removes its temp file right after. Both have to be done before
+	// that directory can be locked, or the lock blocks the journal write instead of the swap.
+	const journalSettled = (deploymentDir) => async () => {
 		const entries = await fs.readdir(deploymentDir).catch(() => []);
 		return entries.includes('.activation.json') && !entries.some((entry) => entry.includes('.partial-'));
+	};
+
+	/**
+	 * Park the activation in B1's retry (the components root is already locked when it gets there), then
+	 * hand the swap a lock of its own and let B1 through. Deterministic in ORDER rather than in timing:
+	 * B1 retries for five seconds, so arming the second stage cannot arrive too late.
+	 */
+	async function lockSwapWhileB1Retries(root, deploymentDir) {
+		await waitFor(journalSettled(deploymentDir), 'the activation journal');
+		await fs.chmod(deploymentDir, 0o500);
+		await fs.chmod(root, 0o700);
 	}
 
 	transientRenameTest('retries a transient failure moving the live tree aside', async () => {
@@ -580,17 +593,24 @@ describe('activation transaction', () => {
 		app.dirPath = live;
 
 		await fs.chmod(root, 0o500);
-		const release = unlockAfterFirstAttempt(deployment, () => fs.chmod(root, 0o700));
-		const startedAt = Date.now();
+		const release = (async () => {
+			await waitFor(journalSettled(deployment), 'the activation journal');
+			await sleep(150);
+			await fs.chmod(root, 0o700);
+		})();
+		let elapsed;
 		try {
+			const startedAt = Date.now();
 			await activateCandidateApplication(app, 'd1');
+			elapsed = Date.now() - startedAt;
 		} finally {
-			await release;
+			await release.catch(() => {});
 			await fs.chmod(root, 0o700).catch(() => {});
 		}
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the holder released and the deploy landed');
-		assert.ok(Date.now() - startedAt >= 100, 'and it got there by retrying, not by winning a race with the lock');
+		// Measured across the activation alone, so it cannot be satisfied by waiting on the release timer.
+		assert.ok(elapsed >= 150, `B1 retried rather than winning a race with the lock (took ${elapsed}ms)`);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -606,26 +626,32 @@ describe('activation transaction', () => {
 		app.dirPath = live;
 
 		await fs.chmod(root, 0o500);
-		const release = unlockAfterFirstAttempt(deployment, () => fs.chmod(root, 0o700));
-		const startedAt = Date.now();
+		const release = (async () => {
+			await waitFor(journalSettled(deployment), 'the activation journal');
+			await sleep(150);
+			await fs.chmod(root, 0o700);
+		})();
+		let elapsed;
 		try {
+			const startedAt = Date.now();
 			await activateCandidateApplication(app, 'd1');
+			elapsed = Date.now() - startedAt;
 		} finally {
-			await release;
+			await release.catch(() => {});
 			await fs.chmod(root, 0o700).catch(() => {});
 		}
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
 		assert.strictEqual(app.isNewComponent, true);
-		assert.ok(Date.now() - startedAt >= 100, 'reached by retrying B2');
+		assert.ok(elapsed >= 150, `B2 retried rather than winning a race with the lock (took ${elapsed}ms)`);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
 	transientRenameTest(
 		'completes the swap after putting the previous version back and taking it away again',
 		async () => {
-			// The redeploy case the other tests miss: nothing else drives the put-back cycle to a
-			// successful attempt.
+			// The redeploy case the other tests miss: nothing else drives the put-back cycle to a successful
+			// attempt.
 			const root = await newRoot('b2-cycle');
 			const live = path.join(root, 'web');
 			await writeTree(live, 'LIVE\n');
@@ -636,23 +662,24 @@ describe('activation transaction', () => {
 			const app = new Application({ name: 'web' });
 			app.dirPath = live;
 
-			// Lock the deployment directory — B2's source parent — only once the journal is written, so
-			// nothing ahead of the swap is blocked and every B2 attempt fails until the second unlock.
+			await fs.chmod(root, 0o500);
 			const release = (async () => {
-				while (!(await journalSettled(deployment))) await sleep(5);
-				await fs.chmod(deployment, 0o500);
+				await lockSwapWhileB1Retries(root, deployment);
 				await sleep(400);
 				await fs.chmod(deployment, 0o700);
 			})();
-			const startedAt = Date.now();
+			let elapsed;
 			try {
+				const startedAt = Date.now();
 				await activateCandidateApplication(app, 'd1');
+				elapsed = Date.now() - startedAt;
 			} finally {
-				await release;
+				await release.catch(() => {});
 				await fs.chmod(deployment, 0o700).catch(() => {});
+				await fs.chmod(root, 0o700).catch(() => {});
 			}
 
-			assert.ok(Date.now() - startedAt >= 400, 'the swap waited out the lock rather than winning a race');
+			assert.ok(elapsed >= 400, `the swap waited out the lock rather than winning a race (took ${elapsed}ms)`);
 			assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the candidate is live');
 			assert.strictEqual(
 				existsSync(path.join(root, ASIDE_STAGING_DIR, 'web')),
@@ -674,21 +701,14 @@ describe('activation transaction', () => {
 		const app = new Application({ name: 'web' });
 		app.dirPath = live;
 
-		// Two stages, so the rename that keeps failing is B2 and only B2: the root starts read-only, which
-		// parks B1 in its retry, and the timer then locks B2's source parent and unlocks the root. Sampling
-		// starts with the lock, so it observes only the window B2 is retrying in.
 		await fs.chmod(root, 0o500);
 		const samples = [];
 		let swapLocked = false;
 		let done = false;
-		const lockSwap = setTimeout(() => {
-			void fs
-				.chmod(deployment, 0o500)
-				.then(() => fs.chmod(root, 0o700))
-				.then(() => {
-					swapLocked = true;
-				});
-		}, 150);
+		const release = (async () => {
+			await lockSwapWhileB1Retries(root, deployment);
+			swapLocked = true;
+		})();
 		const sampler = (async () => {
 			while (!swapLocked && !done) await sleep(5);
 			while (!done) {
@@ -700,8 +720,8 @@ describe('activation transaction', () => {
 		try {
 			await assert.rejects(() => activateCandidateApplication(app, 'd1'), { code: 'EACCES' });
 		} finally {
-			clearTimeout(lockSwap);
 			done = true;
+			await release.catch(() => {});
 			await sampler;
 			await fs.chmod(deployment, 0o700).catch(() => {});
 			await fs.chmod(root, 0o700).catch(() => {});
@@ -715,13 +735,38 @@ describe('activation transaction', () => {
 			'a readable live path during the retry is always the previous release, never a partial tree'
 		);
 		// Each attempt still moves the tree aside for the rename itself, so a few misses are expected; the
-		// property under test is that the WAIT happens with the previous version in place. Retrying where
-		// the rename stands would read close to zero here.
+		// property under test is that the WAIT happens with the previous version in place.
 		assert.ok(
 			readable.length > samples.length * 0.75,
 			`the previous version should be in place for most of the retry window; ${readable.length}/${samples.length} reads found it`
 		);
 		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n', 'and it is what is live once the deploy gives up');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	// The only coverage that runs on the platform this change is for. Opportunistic by construction: it
+	// holds a handle inside the candidate across the swap and releases it, so it passes whether or not
+	// Windows refuses the rename — what it proves is that the activation still completes with a handle
+	// open in the tree it is moving, which nothing else on the Windows gate exercises.
+	it('activates with a file handle open inside the candidate', async function () {
+		if (process.platform !== 'win32') return this.skip();
+		const root = await newRoot('win-handle');
+		const live = path.join(root, 'web');
+		await writeTree(live, 'LIVE\n');
+		const candidate = candidateApplicationPath(live, 'd1');
+		await writeTree(candidate, 'CANDIDATE\n');
+		const app = new Application({ name: 'web' });
+		app.dirPath = live;
+
+		const handle = await fs.open(path.join(candidate, 'index.js'), 'r');
+		const release = sleep(200).then(() => handle.close());
+		try {
+			await activateCandidateApplication(app, 'd1');
+		} finally {
+			await release.catch(() => handle.close().catch(() => {}));
+		}
+
+		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 

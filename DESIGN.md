@@ -577,9 +577,10 @@ refuses a rename outright (`EPERM`) while anything holds a handle in the source 
 `deploy_component` hit on the Windows nightly, on the swap itself. The holder was never identified —
 every Harper-held handle on the candidate is closed before the swap, so it is something outside the
 process, but that is inference, not evidence. `renameThroughTransientHolder` retries every rename in
-the activation transaction and its recovery against one five-second deadline with capped exponential
-backoff; a rename it performs from inside a backoff shares that deadline rather than opening its own,
-so the whole activation stays bounded by it.
+the activation transaction and its recovery with capped exponential backoff against a five-second
+deadline. The deadline is per top-level rename, not per activation: a redeploy held up the whole way
+spends up to five seconds each on the move-aside, the swap, and the compensating restore. A rename
+performed from inside a backoff shares its caller's deadline rather than opening a fourth.
 
 The swap's backoff is not a plain sleep: it renames the aside back to the live path, waits there, and
 displaces it again for the next attempt, so the component is missing for one rename rather than for the
