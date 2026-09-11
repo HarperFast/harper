@@ -53,11 +53,12 @@ released.
 `acquire()` is an owner-lifecycle hook, not another election mechanism. It does not read source
 records, choose a generation, or advance progress. Fulltext uses it only to open the generation and
 validate its committed payload. It retries transient open failures within a bounded policy before
-rejecting; a rejection is treated as a missing cursor and enters the existing rebuild path. A
-never-settling acquisition intentionally prevents shutdown and lock release because quiescence
-cannot be proved. `reset(newEpoch)` already runs inside a separately minted epoch and returns with
-the replacement generation open, so the runtime does not call `acquire()` again during that rebuild
-attempt.
+rejecting. A rejection is treated as transient: the runtime releases ownership and retries after
+its existing rebuild backoff without condemning the generation. A successfully opened generation
+with a missing or invalid commit payload returns no cursor and enters rebuild. A never-settling
+acquisition intentionally prevents shutdown and lock release because quiescence cannot be proved.
+`reset(newEpoch)` already runs inside a separately minted epoch and returns with the replacement
+generation open, so the runtime does not call `acquire()` again during that rebuild attempt.
 
 ## Backend boundary
 
@@ -84,6 +85,9 @@ this unit neither opens a column family nor adds a global close hook.
 
 The encoder collaborator accepts the Harper mutation input and returns Fulltext's packed batch. The
 backend owns the mapping from `DerivedIndexBatch.records`; it never serializes the batch object.
+Only string and string-array projection fields are forwarded. Other values are omitted so one
+schema-drifted record cannot poison a batch; the later schema integration validates configured
+attributes at the projection boundary so Harper can count them as unindexable.
 The shared runtime carries the canonical `writeKeyId()` string it already computes into each
 mutation, avoiding a second ordered-binary encode during a catalog rebuild. Record ids base64url
 encode that string's bytes and use `<decimal table id>.<key>`; `.` is outside the base64url alphabet,
@@ -125,9 +129,9 @@ active epoch.
 ## Failure and fencing behavior
 
 The backend maintains an active local epoch in addition to `host.isOwnerEpoch()`. `shutdown(epoch)`
-revokes that local epoch before awaiting queued work, closing the window where the shared epoch still
-equals the released owner because no successor has minted a new value. A revived held-lock path can
-re-arm the same numeric epoch only through a fresh `acquire()` call.
+stops new delivery and joins all accepted work before the runtime releases the owner lock. A recovery
+reopen that completes during shutdown is closed by that same join before another worker can acquire.
+A revived held-lock path can re-arm the same numeric epoch only through a fresh `acquire()` call.
 
 Every apply, barrier, recovery installation, reset, and shutdown checks both fences before and after
 its asynchronous boundary. A recoverable apply or publish failure discards later queued work,
@@ -138,7 +142,8 @@ keeps the runner lock held. A closed and quiescent but corrupt generation emits 
 shutdown may resolve so the runtime can enter rebuild.
 
 State notifications always run in a later macrotask. The backend never re-enters the runtime from an
-engine callback or synchronous host-storage callback.
+engine callback or synchronous host-storage callback, and it does not wake a runner whose shutdown
+is already joining the drain.
 
 ## Shutdown and reset
 
@@ -150,8 +155,10 @@ the in-memory cursor only after native close proves that no task or callback can
 `reset(newEpoch)` attempts to open the old generation, publishes a cursorless tombstone, and closes
 it before calling `replace(newEpoch)`. If the old generation is unopenable, replacement still
 proceeds: the lifecycle collaborator must durably select the new cursorless physical generation
-before it drops or mutates the old one. The returned replacement must have no committed cursor;
-otherwise reset fails closed. The replacement stays open for rebuild delivery under the new epoch.
+before it drops or mutates the old one. If an opened generation cannot publish its tombstone or
+prove close, reset stops before replacement. The returned replacement must have no committed
+cursor; otherwise reset fails closed. The replacement stays open for rebuild delivery under the new
+epoch.
 
 Physical generation naming, metadata, orphan cleanup, and column-family drop remain the lifecycle
 collaborator's responsibility and are implemented with the real package integration. Harper's

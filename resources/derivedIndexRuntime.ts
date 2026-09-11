@@ -912,7 +912,17 @@ class DerivedIndexRunner {
 
 	#acquisitionFailed(generation: number, error: unknown) {
 		if (!this.#live(generation)) return;
-		this.#needsRebuild('backend could not acquire its durable generation', 'cursor-missing', error);
+		logger.warn?.(`Derived index '${this.id}' could not acquire its backend; retrying`, error);
+		this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
+		this.#release();
+		this.#releasing?.then(() => {
+			if (this.#stopped || this.#lockRetryTimer) return;
+			this.#lockRetryTimer = setTimeout(() => {
+				this.#lockRetryTimer = undefined;
+				this.wake(true);
+			}, this.#options.rebuildBackoffMilliseconds);
+			this.#lockRetryTimer.unref?.();
+		});
 	}
 
 	#mintEpoch(): bigint {
@@ -1189,15 +1199,17 @@ class DerivedIndexRunner {
 					// is met exactly once: here, before the rebuild it demands.
 					throw new RunnerError('reload', `table ${entry.tableId} requires a derived-index rebuild`);
 				} else if (ELIGIBLE_ACTIONS.has(entry.type)) {
-					let byRecord = current.keys.get(entry.tableId);
-					if (!byRecord) current.keys.set(entry.tableId, (byRecord = new Map()));
 					const key = writeKeyId(entry.recordId);
-					const known = byRecord.get(key);
-					if (known) known.logVersion = entry.version;
-					else {
-						byRecord.set(key, { recordId: entry.recordId, logVersion: entry.version, sizeHint: entry.size });
-						current.keyCount++;
-						keyCount++;
+					if (typeof key === 'string') {
+						let byRecord = current.keys.get(entry.tableId);
+						if (!byRecord) current.keys.set(entry.tableId, (byRecord = new Map()));
+						const known = byRecord.get(key);
+						if (known) known.logVersion = entry.version;
+						else {
+							byRecord.set(key, { recordId: entry.recordId, logVersion: entry.version, sizeHint: entry.size });
+							current.keyCount++;
+							keyCount++;
+						}
 					}
 				}
 			}

@@ -9,6 +9,9 @@ import {
 	type DerivedIndexCursor,
 	type DerivedIndexDeliveryResult,
 } from './derivedIndexRuntime.ts';
+import { loggerWithTag } from '../utility/logging/logger.ts';
+
+const logger = loggerWithTag('fulltext-derived-index');
 
 const DEFAULT_MAX_QUEUED_BATCHES = 16;
 const DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
@@ -137,7 +140,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	attach(host: DerivedIndexBackendHost): void {
-		if (this.#host && this.#host !== host) throw new Error('Full-text derived index backend is already attached');
+		if (this.#host && this.#host !== host && (this.#engine || this.#draining || this.#recovering || this.#wake))
+			throw new Error('Full-text derived index backend is already attached');
 		this.#host = host;
 	}
 
@@ -149,9 +153,17 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#shutdown = undefined;
 		this.#failed = false;
 		const engine = await this.#open(ownerEpoch);
+		let cursor: DerivedIndexCursor | undefined;
+		let payloadError: unknown;
 		try {
 			this.#assertSharedEpoch(ownerEpoch);
-			const cursor = decodeFullTextCursorPayload(engine.committedPayload, this.#maxCursorPayloadBytes);
+			try {
+				cursor = decodeFullTextCursorPayload(engine.committedPayload, this.#maxCursorPayloadBytes);
+			} catch (error) {
+				payloadError = error;
+				throw error;
+			}
+			this.#assertSharedEpoch(ownerEpoch);
 			this.#installEngine(engine, ownerEpoch, cursor);
 			return cursor;
 		} catch (error) {
@@ -163,6 +175,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				this.#failed = true;
 				throw new FullTextDerivedIndexError('Full-text acquisition could not close its engine', closeError);
 			}
+			if (error === payloadError) return;
 			throw error;
 		}
 	}
@@ -207,7 +220,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	shutdown(ownerEpoch: bigint): Promise<void> {
 		if (this.#shutdown?.epoch === ownerEpoch) return this.#shutdown.promise;
-		if (!this.#engine || this.#activeEpoch !== ownerEpoch) return Promise.resolve();
+		if (this.#activeEpoch !== ownerEpoch) return Promise.resolve();
 		this.#queueBarrier(ownerEpoch);
 		let resolve: () => void;
 		let reject: (error: unknown) => void;
@@ -302,9 +315,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#fail(error);
 		} finally {
 			this.#draining = false;
-			this.#notify('changed');
 			if (this.#shutdown && !this.#shutdown.closing) void this.#closeForShutdown(this.#shutdown);
-			else if (this.#commands.length > 0) this.#scheduleDrain();
+			else {
+				this.#notify('changed');
+				if (this.#commands.length > 0) this.#scheduleDrain();
+			}
 		}
 	}
 
@@ -341,7 +356,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#assertCommandEpoch(command.epoch);
 			this.#lastPublishedSequence = command.horizon;
 			if (cursor) this.#durableCursor = cloneCursor(cursor);
-			this.#notify('changed');
+			if (!this.#shutdown) this.#notify('changed');
 		} catch (error) {
 			await this.#recoverAcceptedWork(command.epoch, error);
 		}
@@ -363,7 +378,13 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				const cursor = decodeFullTextCursorPayload(reopened.committedPayload, this.#maxCursorPayloadBytes);
 				this.#installEngine(reopened, ownerEpoch, cursor);
 			} catch (error) {
-				await reopened.close({ mode: 'rollback' }).catch(() => undefined);
+				try {
+					await reopened.close({ mode: 'rollback' });
+				} catch (closeError) {
+					this.#engine = reopened;
+					this.#activeEpoch = ownerEpoch;
+					throw new FullTextDerivedIndexError('Recovered full-text generation could not close', closeError);
+				}
 				throw error;
 			}
 			this.#notify('accepted-work-lost');
@@ -409,7 +430,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			await engine.publish(encodeFullTextCursorPayload(undefined, this.#maxCursorPayloadBytes));
 			this.#assertSharedEpoch(ownerEpoch);
 			await engine.close({ mode: 'require-clean' });
-		} catch {
+		} catch (error) {
 			try {
 				await engine.close({ mode: 'rollback' });
 			} catch (closeError) {
@@ -419,6 +440,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				throw new FullTextDerivedIndexError('Old full-text generation could not close before replacement', closeError);
 			}
 			this.#assertSharedEpoch(ownerEpoch);
+			throw new FullTextDerivedIndexError('Old full-text generation could not publish its cursor tombstone', error);
 		}
 		this.#assertSharedEpoch(ownerEpoch);
 	}
@@ -462,8 +484,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#fail(error: unknown): void {
 		this.#failed = true;
 		this.#discardCommands();
+		logger.error('Full-text derived index backend failed', error);
 		this.#notify('failed');
-		if (error instanceof Error && !error.message) error.message = 'Full-text derived index backend failed';
 	}
 
 	#assertAttached(): void {
@@ -484,7 +506,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		setImmediate(() => {
 			try {
 				this.#wake?.(change);
-			} catch {}
+			} catch (error) {
+				logger.error('Full-text derived index state notification failed', error);
+			}
 		});
 	}
 }
@@ -514,7 +538,7 @@ export function encodeFullTextCursorPayload(
 			? {
 					format: 1,
 					logs: Object.fromEntries(
-						Object.entries(normalized.logs).sort(([left], [right]) => left.localeCompare(right))
+						Object.entries(normalized.logs).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
 					),
 				}
 			: null,
@@ -556,12 +580,11 @@ export function decodeFullTextCursorPayload(
 }
 
 function fullTextFields(projection: unknown): Record<string, string | string[]> {
-	if (!plainObject(projection)) throw new TypeError('Full-text projection must be an object');
 	const fields: Record<string, string | string[]> = Object.create(null);
+	if (!plainObject(projection)) return fields;
 	for (const [name, value] of Object.entries(projection)) {
 		if (typeof value === 'string') fields[name] = value;
 		else if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) fields[name] = value;
-		else throw new TypeError(`Full-text projection field '${name}' must be a string or string array`);
 	}
 	return fields;
 }
@@ -588,7 +611,6 @@ function normalizedCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
 function cursorAtOrAfter(cursor: DerivedIndexCursor, previous: DerivedIndexCursor | undefined): boolean {
 	if (!previous) return true;
 	const names = Object.keys(previous.logs);
-	if (Object.keys(cursor.logs).length !== names.length) return false;
 	return names.every((name) => Object.hasOwn(cursor.logs, name) && cursor.logs[name] >= previous.logs[name]);
 }
 

@@ -450,6 +450,43 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('releases and retries a transient backend acquisition failure without rebuilding', async () => {
+		const store = new FakeLogStore(
+			new Map([
+				[10, [audit({ timestamp: 20, recordId: 'a' })]],
+				[20, []],
+			])
+		);
+		const records = new Map([['1:a', { version: 20, value: { title: 'a' } }]]);
+		const backend = new AcquiringBackend('acquire-retry', cursor(10), (_epoch, target) => {
+			if (target.acquisitions.length === 1) throw new Error('writer still closing');
+			return target.persistedCursor;
+		});
+		const { runtime } = runtimeFor(store, records, { rebuildBackoffMilliseconds: 1 });
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.deliveries.length === 1);
+		assert.strictEqual(backend.acquisitions.length, 2);
+		assert.strictEqual(runtime.getReadiness('acquire-retry').state, 'ready');
+		await runtime.stop();
+	});
+
+	it('skips internal non-record audit keys while advancing the transaction cursor', async () => {
+		const store = new FakeLogStore(
+			new Map([
+				[10, [audit({ timestamp: 20, recordId: Symbol.for('internal') })]],
+				[20, []],
+			])
+		);
+		const backend = new SyncBackend('internal-key', cursor(10));
+		const { runtime } = runtimeFor(store, new Map());
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.cursor.logs.local === 20);
+		assert.deepStrictEqual(backend.deliveries[0].records, []);
+		await runtime.stop();
+	});
+
 	it('resolves a key after its last collected occurrence so a concurrent write cannot be certified stale', async () => {
 		const records = new Map([['1:a', { version: 100, value: { title: 'v1' } }]]);
 		const store = new FakeLogStore(

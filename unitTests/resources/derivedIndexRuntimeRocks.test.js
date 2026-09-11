@@ -176,8 +176,12 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		await waitFor(() => lifecycle.engines.some((engine) => engine.publications === 1));
 		await new Promise((resolve) => setImmediate(resolve));
 		const engine = lifecycle.engines.at(-1);
-		assert.strictEqual(engine.applications, 1, 'derived storage commits do not feed back into the source audit log');
-		assert.ok(committedEvents >= 5, 'one source write and the fake multi-write engine all notify the shared root');
+		assert.strictEqual(engine.applications, 1, 'derived storage writes add no source audit entries');
+		assert.strictEqual(
+			committedEvents,
+			5,
+			'one source write and four fake-engine writes notify the shared root once each'
+		);
 
 		await unregister();
 		rootStore.off('committed', countCommit);
