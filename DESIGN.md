@@ -296,6 +296,34 @@ A package-manager timeout must not release this lock while npm descendants are s
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
 
+<<<<<<< HEAD
+=======
+Every npm install Harper invokes directly — automatic component installation and the deprecated
+`install_node_modules` operation alike — composes its arguments in `packageManagerInstallArguments()`,
+which is production-only and adds `--omit=dev --no-audit --no-fund`. `--no-audit` is load-bearing, not
+hygiene: npm 10 puts even a `file:` link into its audit bulk request, and the registry's answer to that
+is unbounded from Harper's side. The operation accepts the established `install_allow_scripts`
+spelling (and `allowInstallScripts` for compatibility), defaulting to its historical `true`; false
+reaches the shared builder and adds `--ignore-scripts`.
+`installApplication()` skips the package-manager child entirely when the root manifest declares no
+production dependencies, non-empty workspaces, or enabled install lifecycle. An explicitly selected
+non-npm manager still runs so it can discover workspace configuration outside `package.json`, and it
+retains its own install defaults. A configured `install_command` remains the explicit escape hatch for
+build-time tooling, but not for lifecycle-script policy: unless `install_allow_scripts` is true, its
+spawn gets `npm_config_ignore_scripts=true`, which covers npm nested anywhere in the command without
+adding an argument that could break non-npm tooling. The setting uses npm's configuration namespace;
+other package managers that consume `npm_config_*` options can honor it too. When the policy is
+omitted, Harper warns that package lifecycle scripts—including `npm run` pre/post hooks—are suppressed
+and names both the operations-API and root-config opt-ins.
+`readInstalledPackageMetadata()` must use the same automatic-work predicate so a
+dev-only npm manifest does not force a restart on every redeploy for lacking a lockfile while an
+explicit non-npm workspace install still does. Absolute local archives are classified before
+package-protocol detection: a Windows drive letter's colon is path syntax, not an npm protocol. File
+type detection remains asynchronous in extraction. Bare absolute Windows directory inputs retain
+npm's copy/pack behavior rather than becoming live links; explicit `file:` and relative directory
+inputs retain their existing symlink behavior.
+
+>>>>>>> 7f0d5a08c (Honor install script policy in every install path)
 ## Peer-side deploy_component payload read: retryable blob stalls and `Readable.from()` cancellation
 
 `readPayloadBlobWithRetry` (`components/deploymentRecorder.ts`) wraps the peer's read of a replicated `hdb_deployment` row's `payload_blob` so a transient 503 `BlobReadError` (`BLOB_UNAVAILABLE_STATUS`, `resources/blob.ts`) — content bytes not arriving within `blobReadTimeout`, e.g. a parked blob send on the origin — retries instead of failing the whole deploy. Two non-obvious constraints shaped the design:
