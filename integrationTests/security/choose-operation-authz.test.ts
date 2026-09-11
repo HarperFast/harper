@@ -7,18 +7,8 @@
  * export job's query is checked. `search_operation` is caller-supplied, so both the principal it
  * carries and the operation name it declares have to be ignored for those two decisions.
  *
- *   CONTROL       — plain `add_user` is refused, proving the role really lacks the grant.
- *   PRINCIPAL     — a nested `hdb_user` does not become the authorization subject.
- *   DISPATCH      — a nested `operation: 'sql'` does not decide which check runs.
- *   DISPATCH-SU   — the same, for an operation registered `requires_su`.
- *   SUBJECT       — a nested object does not become the table subject: `search_operation: {}` on a
- *                   read and on a write must not empty out the table checks.
- *   FORGED-AST    — a body-supplied `parsed_sql_object` does not stand in for an authorized parse.
- *   POSITIVE-SQL  — a direct SQL call the role is granted still works.
- *   POSITIVE-JOB  — a super_user job with a SQL `search_operation` runs to completion.
- *
- * The two POSITIVE cases matter as much as the denials: the checks are additive rather than
- * exclusive, so the fix has to leave the SQL and job paths working.
+ * The POSITIVE cases matter as much as the denials: the checks are additive rather than exclusive,
+ * so the fix has to leave the SQL and job paths working.
  *
  * Run:
  *   npm run build && npm run test:integration -- "integrationTests/security/choose-operation-authz.test.ts"
