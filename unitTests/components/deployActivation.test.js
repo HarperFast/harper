@@ -7,6 +7,8 @@ const { existsSync } = require('node:fs');
 const os = require('node:os');
 const { Readable } = require('node:stream');
 const { setTimeout: sleep } = require('node:timers/promises');
+const { waitFor } = require('../waitFor.js');
+const harperLogger = require('#src/utility/logging/harper_logger');
 
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
@@ -552,16 +554,6 @@ describe('activation transaction', () => {
 			await body();
 		});
 
-	// Bounded, because an activation that throws before the marker appears would otherwise leave the
-	// release promise pending forever and mocha's `timeout: 0` would hang the run instead of reporting it.
-	async function waitFor(condition, what) {
-		const deadline = Date.now() + 20000;
-		while (!(await condition())) {
-			if (Date.now() >= deadline) throw new Error(`timed out waiting for ${what}`);
-			await sleep(5);
-		}
-	}
-
 	// The activation journal is the last thing written into the deployment directory before the renames
 	// start, and `writeControlFileDurably` removes its temp file right after. Both have to be done before
 	// that directory can be locked, or the lock blocks the journal write instead of the swap.
@@ -571,14 +563,31 @@ describe('activation transaction', () => {
 	};
 
 	/**
-	 * Park the activation in B1's retry (the components root is already locked when it gets there), then
-	 * hand the swap a lock of its own and let B1 through. Deterministic in ORDER rather than in timing:
-	 * B1 retries for five seconds, so arming the second stage cannot arrive too late.
+	 * Park the activation in the move-aside's retry (the components root is locked before it gets there),
+	 * then hand the swap a lock of its own and let the move-aside through. The hold covers the microseconds
+	 * between the journal landing and the first rename; the retry counts the callers assert are what turn a
+	 * miss into a failure rather than a silent pass.
 	 */
 	async function lockSwapWhileB1Retries(root, deploymentDir) {
-		await waitFor(journalSettled(deploymentDir), 'the activation journal');
+		await waitFor(journalSettled(deploymentDir), { timeout: 20000, interval: 5, message: 'no activation journal' });
+		await sleep(150);
 		await fs.chmod(deploymentDir, 0o500);
 		await fs.chmod(root, 0o700);
+	}
+
+	// A retry is only provable by the line the helper logs when one happened; an elapsed-time assertion is
+	// satisfied by a slow runner that never retried at all.
+	async function countingRetries(body) {
+		const retried = [];
+		const originalWarn = harperLogger.warn;
+		harperLogger.warn = (...args) => {
+			if (String(args[0]).includes('only on attempt')) retried.push(String(args[0]));
+		};
+		try {
+			return await body(retried);
+		} finally {
+			harperLogger.warn = originalWarn;
+		}
 	}
 
 	transientRenameTest('retries a transient failure moving the live tree aside', async () => {
@@ -593,24 +602,23 @@ describe('activation transaction', () => {
 		app.dirPath = live;
 
 		await fs.chmod(root, 0o500);
-		const release = (async () => {
-			await waitFor(journalSettled(deployment), 'the activation journal');
-			await sleep(150);
-			await fs.chmod(root, 0o700);
-		})();
-		let elapsed;
-		try {
-			const startedAt = Date.now();
-			await activateCandidateApplication(app, 'd1');
-			elapsed = Date.now() - startedAt;
-		} finally {
-			await release.catch(() => {});
-			await fs.chmod(root, 0o700).catch(() => {});
-		}
+		const retried = await countingRetries(async (retries) => {
+			const release = (async () => {
+				await waitFor(journalSettled(deployment), { timeout: 20000, interval: 5, message: 'no activation journal' });
+				await sleep(150);
+				await fs.chmod(root, 0o700);
+			})();
+			try {
+				await activateCandidateApplication(app, 'd1');
+			} finally {
+				await release.catch(() => {});
+				await fs.chmod(root, 0o700).catch(() => {});
+			}
+			return retries;
+		});
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the holder released and the deploy landed');
-		// Measured across the activation alone, so it cannot be satisfied by waiting on the release timer.
-		assert.ok(elapsed >= 150, `B1 retried rather than winning a race with the lock (took ${elapsed}ms)`);
+		assert.strictEqual(retried.length, 1, `exactly the move-aside retried; saw ${JSON.stringify(retried)}`);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -626,24 +634,24 @@ describe('activation transaction', () => {
 		app.dirPath = live;
 
 		await fs.chmod(root, 0o500);
-		const release = (async () => {
-			await waitFor(journalSettled(deployment), 'the activation journal');
-			await sleep(150);
-			await fs.chmod(root, 0o700);
-		})();
-		let elapsed;
-		try {
-			const startedAt = Date.now();
-			await activateCandidateApplication(app, 'd1');
-			elapsed = Date.now() - startedAt;
-		} finally {
-			await release.catch(() => {});
-			await fs.chmod(root, 0o700).catch(() => {});
-		}
+		const retried = await countingRetries(async (retries) => {
+			const release = (async () => {
+				await waitFor(journalSettled(deployment), { timeout: 20000, interval: 5, message: 'no activation journal' });
+				await sleep(150);
+				await fs.chmod(root, 0o700);
+			})();
+			try {
+				await activateCandidateApplication(app, 'd1');
+			} finally {
+				await release.catch(() => {});
+				await fs.chmod(root, 0o700).catch(() => {});
+			}
+			return retries;
+		});
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
 		assert.strictEqual(app.isNewComponent, true);
-		assert.ok(elapsed >= 150, `B2 retried rather than winning a race with the lock (took ${elapsed}ms)`);
+		assert.strictEqual(retried.length, 1, `exactly the swap retried; saw ${JSON.stringify(retried)}`);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -663,23 +671,25 @@ describe('activation transaction', () => {
 			app.dirPath = live;
 
 			await fs.chmod(root, 0o500);
-			const release = (async () => {
-				await lockSwapWhileB1Retries(root, deployment);
-				await sleep(400);
-				await fs.chmod(deployment, 0o700);
-			})();
-			let elapsed;
-			try {
-				const startedAt = Date.now();
-				await activateCandidateApplication(app, 'd1');
-				elapsed = Date.now() - startedAt;
-			} finally {
-				await release.catch(() => {});
-				await fs.chmod(deployment, 0o700).catch(() => {});
-				await fs.chmod(root, 0o700).catch(() => {});
-			}
+			const retried = await countingRetries(async (retries) => {
+				const release = (async () => {
+					await lockSwapWhileB1Retries(root, deployment);
+					await sleep(400);
+					await fs.chmod(deployment, 0o700);
+				})();
+				try {
+					await activateCandidateApplication(app, 'd1');
+				} finally {
+					await release.catch(() => {});
+					await fs.chmod(deployment, 0o700).catch(() => {});
+					await fs.chmod(root, 0o700).catch(() => {});
+				}
+				return retries;
+			});
 
-			assert.ok(elapsed >= 400, `the swap waited out the lock rather than winning a race (took ${elapsed}ms)`);
+			// Both stages retried: the move-aside against the locked root, then the swap against the locked
+			// deployment directory — the only path that runs the put-back cycle to a successful attempt.
+			assert.strictEqual(retried.length, 2, `move-aside and swap both retried; saw ${JSON.stringify(retried)}`);
 			assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the candidate is live');
 			assert.strictEqual(
 				existsSync(path.join(root, ASIDE_STAGING_DIR, 'web')),
@@ -734,20 +744,19 @@ describe('activation transaction', () => {
 			['LIVE\n'],
 			'a readable live path during the retry is always the previous release, never a partial tree'
 		);
-		// Each attempt still moves the tree aside for the rename itself, so a few misses are expected; the
-		// property under test is that the WAIT happens with the previous version in place.
+		// Each attempt still moves the tree aside for the rename itself, and the directory fsyncs around it
+		// land inside that window, so misses scale with disk latency. The threshold only has to separate
+		// this from retrying in place, which reads zero.
 		assert.ok(
-			readable.length > samples.length * 0.75,
+			readable.length > samples.length * 0.5,
 			`the previous version should be in place for most of the retry window; ${readable.length}/${samples.length} reads found it`
 		);
 		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n', 'and it is what is live once the deploy gives up');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	// The only coverage that runs on the platform this change is for. Opportunistic by construction: it
-	// holds a handle inside the candidate across the swap and releases it, so it passes whether or not
-	// Windows refuses the rename — what it proves is that the activation still completes with a handle
-	// open in the tree it is moving, which nothing else on the Windows gate exercises.
+	// Opportunistic: it passes whether or not Windows refuses a rename with a handle open inside the tree
+	// being moved. What it establishes is that the activation completes either way.
 	it('activates with a file handle open inside the candidate', async function () {
 		if (process.platform !== 'win32') return this.skip();
 		const root = await newRoot('win-handle');
