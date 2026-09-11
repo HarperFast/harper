@@ -7,6 +7,7 @@ const { waitFor } = require('../waitFor');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
 const { DERIVED_INDEX_ACCEPTED, DerivedIndexRuntime } = require('#src/resources/derivedIndexRuntime');
 const {
+	decodeFullTextCursorPayload,
 	encodeFullTextCursorPayload,
 	FullTextDerivedIndexBackend,
 } = require('#src/resources/FullTextDerivedIndexBackend');
@@ -173,6 +174,9 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		rootStore.on('committed', countCommit);
 
 		await Product.put('p1', { title: 'first product' });
+		const p1Cursor = [...Product.auditStore.getRange({ start: anchor })]
+			.filter((entry) => entry.tableId === Product.tableId && entry.recordId === 'p1')
+			.at(-1).txnLogKey;
 		await waitFor(() => lifecycle.engines.some((engine) => engine.publications === 1));
 		await new Promise((resolve) => setImmediate(resolve));
 		const engine = lifecycle.engines.at(-1);
@@ -191,7 +195,10 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			id: documentId,
 			fields: { title: 'first product' },
 		});
-		assert.match(stored.read(cursorKey).toString(), /\"local\"/);
+		const storedCursor = decodeFullTextCursorPayload(stored.read(cursorKey).toString());
+		assert.strictEqual(storedCursor.logs.local, p1Cursor);
+		assert(storedCursor.logs.local > anchor, 'the durable cursor advanced beyond the seeded anchor');
+		assert.strictEqual(stored.read(Buffer.from('segment')).toString(), '1');
 		stored.close();
 		await runtime.stop();
 		runtime = undefined;
