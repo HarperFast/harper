@@ -402,13 +402,38 @@ describe('DerivedIndexRuntime', () => {
 		second.register(registration(backend));
 
 		// An owner epoch on the second runtime means it actually took the lock, and waitFor's 2 s budget
-		// is well inside LOCK_RETRY_MILLISECONDS, so the handoff came from the release notification
-		// rather than the retry timer.
+		// is well inside the 5 s default retry cadence, so the handoff came from the release
+		// notification rather than the timer.
 		await waitFor(() => second.getStatus('shared')?.ownerEpoch !== undefined && store.rangeCalls.length >= 2, {
 			message: 'the waiting runner must acquire on the release notification, not the retry timer',
 		});
 		assert.deepStrictEqual(backend.cursor, cursor(20));
 		assert.strictEqual(backend.deliveries.length, 1, 'the waiting runner must exact-resume after acquiring the lock');
+		first.stop();
+		second.stop();
+	});
+
+	it('stops rotating ownership once every runner is idle', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			attempts++;
+			return tryLock(key, onUnlocked);
+		};
+		const backend = new FakeBackend('idle-rotation', cursor(10));
+		const records = new Map();
+		const first = runtimeFor(store, records).runtime;
+		const second = runtimeFor(store, records).runtime;
+		first.register(registration(backend));
+		second.register(registration(backend));
+
+		await waitFor(() => second.getStatus('idle-rotation')?.ownerEpoch !== undefined, {
+			message: 'the waiting runner must take the lock when the owner idles out',
+		});
+		const settled = attempts;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.strictEqual(attempts, settled, 'an idle release must not wake a dormant ex-owner back into acquiring');
 		first.stop();
 		second.stop();
 	});

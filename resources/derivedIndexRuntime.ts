@@ -791,14 +791,24 @@ class DerivedIndexRunner {
 	 * (measured on the pinned rocksdb-js 2.9.0), which is what lets the releasing runner consume the
 	 * notification it caused instead of re-acquiring the lock it just gave up. #2576 reverts to the
 	 * unlock callback and can drop the skip with it.
+	 *
+	 * Only an owner (which the shared rebuild request above is aimed at) and a runner parked on the
+	 * lock act on it. A dormant ex-owner must not: it would take the idling peer's release, find no
+	 * work, idle out and hand it back, rotating ownership — and a backend shutdown and a fresh owner
+	 * epoch with it — every grace period on a system with nothing to do.
 	 */
 	#notified() {
 		if (this.#skipNextNotify) {
 			this.#skipNextNotify = false;
 			return;
 		}
+		if (!this.#owned && !this.#waitingForLock) return;
 		this.#waitingForLock = false;
-		this.wake(true);
+		try {
+			this.wake(true);
+		} catch (error) {
+			this.#fail('readiness notification failed', error);
+		}
 	}
 
 	/**
@@ -809,8 +819,7 @@ class DerivedIndexRunner {
 	 * tolerates a dead listener's env — and by the retry timer below.
 	 */
 	#acquire() {
-		// A waiting runner is already on the retry timer, and a lock attempt that threw is backing off;
-		// commit wakes are frequent enough that either would otherwise become a native tryLock storm.
+		// Commit wakes are frequent; neither a parked nor a backing-off runner may re-probe on each one.
 		if (this.#waitingForLock || this.#lockBackoff) return;
 		if (this.#releasing) {
 			this.#releasing.then(() => this.wake(true));
@@ -822,7 +831,7 @@ class DerivedIndexRunner {
 		} catch (error) {
 			logger.error(`Derived index '${this.id}' could not attempt the runner lock; retrying`, error);
 			this.#lockBackoff = true;
-			// The configured backoff replaces an armed contention retry rather than inheriting its deadline.
+			// Replace an armed contention retry rather than inheriting its deadline.
 			clearTimeout(this.#lockRetryTimer);
 			this.#lockRetryTimer = undefined;
 			this.#armLockRetry(this.#options.rebuildBackoffMilliseconds);
@@ -1899,8 +1908,7 @@ class DerivedIndexRunner {
 			} catch (error) {
 				logger.error(`Failed to release derived index runner '${backend.id}'`, error);
 			}
-			// Arm the skip only when a notification is actually on its way: a flag left standing by an
-			// absent or throwing `notify` swallows a peer's release instead of this runner's own.
+			// A skip left standing by an absent or throwing `notify` swallows a peer's release instead.
 			if (this.#readinessBuffer.notify) {
 				this.#skipNextNotify = !this.#stopped;
 				try {
