@@ -2986,8 +2986,15 @@ export async function installApplication(application: Application, buildDirPath 
 		// If node_modules doesn't exist, we need to install dependencies
 	}
 
+	const allowInstallScripts = !!application.install?.allowInstallScripts;
+
 	// If custom install command is specified, run it
 	if (application.install?.command) {
+		if (application.install.allowInstallScripts === undefined) {
+			application.logger.warn(
+				`Application ${application.name} uses install_command without install_allow_scripts; package lifecycle scripts are disabled by default for npm and tools that honor npm_config_ignore_scripts, including npm run pre/post hooks. Set install_allow_scripts (or install.allowInstallScripts in root config) to true to opt in`
+			);
+		}
 		const [command, ...args] = application.install.command.split(' ');
 		const customOnLine = application.onInstallLine
 			? (stream: 'stdout' | 'stderr', line: string) => application.onInstallLine!(command, stream, line)
@@ -2999,7 +3006,9 @@ export async function installApplication(application: Application, buildDirPath 
 			buildDirPath,
 			application.install?.timeout,
 			customOnLine,
-			application.npmUserconfigPath
+			application.npmUserconfigPath,
+			undefined,
+			!allowInstallScripts
 		);
 		// if it succeeds, return
 		if (code === 0) {
@@ -3019,7 +3028,6 @@ export async function installApplication(application: Application, buildDirPath 
 		);
 	}
 
-	const allowInstallScripts = !!application.install?.allowInstallScripts;
 	const { packageManager } = packageJSON.devEngines || {};
 	if (dependencyFieldHasWork(packageJSON, 'devDependencies')) {
 		application.logger.warn(
@@ -3856,7 +3864,8 @@ export async function nonInteractiveSpawn(
 	timeoutMs: number = DEFAULT_COMMAND_TIMEOUT_MS,
 	onLine?: (stream: 'stdout' | 'stderr', line: string) => void,
 	npmUserconfigPath?: string,
-	gitCredentialEnv?: Record<string, string>
+	gitCredentialEnv?: Record<string, string>,
+	ignoreNpmScripts = false
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	const gitSSH = await materializeGitSSH();
 	try {
@@ -3869,7 +3878,8 @@ export async function nonInteractiveSpawn(
 			onLine,
 			npmUserconfigPath,
 			gitSSH?.command,
-			gitCredentialEnv
+			gitCredentialEnv,
+			ignoreNpmScripts
 		);
 	} finally {
 		await gitSSH?.cleanup();
@@ -3885,7 +3895,8 @@ function spawnWithEnv(
 	onLine: ((stream: 'stdout' | 'stderr', line: string) => void) | undefined,
 	npmUserconfigPath: string | undefined,
 	gitSSHCommand: string | undefined,
-	gitCredentialEnv: Record<string, string> | undefined
+	gitCredentialEnv: Record<string, string> | undefined,
+	ignoreNpmScripts: boolean
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
 		logger
@@ -3920,6 +3931,12 @@ function spawnWithEnv(
 				if (key.toLowerCase() === 'npm_config_userconfig') delete env[key];
 			}
 			env.npm_config_userconfig = npmUserconfigPath;
+		}
+		if (ignoreNpmScripts) {
+			for (const key of Object.keys(env)) {
+				if (key.toLowerCase() === 'npm_config_ignore_scripts') delete env[key];
+			}
+			env.npm_config_ignore_scripts = 'true';
 		}
 
 		if (process.platform === 'win32' && command === 'npm') {
