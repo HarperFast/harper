@@ -942,6 +942,9 @@ export class DatabaseTransaction implements Transaction {
 		}
 		this.writes = [];
 		this.writesByKey = undefined;
+		// The commit-fence latch belongs to the discarded batch. A reused transaction that once staged
+		// a locked write would otherwise re-scan every write of every later unlocked batch.
+		this.hasLeaseProtectedWrite = false;
 	}
 
 	/**

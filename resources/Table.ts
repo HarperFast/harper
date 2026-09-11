@@ -2845,13 +2845,22 @@ export function makeTable(options) {
 						const remaining = resolved.timeout - (performance.now() - clusterStart);
 						if (remaining <= 0) throw new ClientError('Record is locked and was not released in time', 423);
 						const round = await coordinator.acquire(id, resolved.lease, remaining);
-						if (!handle.joinClusterRound(round.tsR, resolved.lease, round.mintedMono, () => coordinator.release(id))) {
+						// Resolved through the getter rather than captured, so a transport swap between
+						// acquisition and release reaches the coordinator that now owns the delegation.
+						if (
+							!handle.joinClusterRound(round.tsR, resolved.lease, round.mintedMono, () =>
+								TableResource.lockCoordinator?.release(id)
+							)
+						) {
 							// The round completed inside its lease but the lease elapsed before the handle
 							// could take it. The coordinator still holds it, and only this call knows the
 							// hold was never handed out.
 							Promise.resolve(coordinator.release(id)).catch(noop);
 							throw new ClientError('Record lock was granted after its lease had elapsed', 423);
 						}
+						// A recall must be able to fence a write this handle staged and then unlocked, so
+						// the coordinator needs a way to revoke it — see LockCoordinator.registerAdmission.
+						coordinator.registerAdmission(id, () => handle.revokeLease());
 					} catch (error) {
 						handle.release();
 						throw error;
@@ -5731,8 +5740,16 @@ export function makeTable(options) {
 		static get lockCoordinator(): LockCoordinator | undefined {
 			const transport = getClusterLockTransport(databaseName);
 			if (!transport) {
-				lockCoordinator?.close();
-				lockCoordinator = undefined;
+				// Deliberately NOT closed. harper-pro unregisters without a standalone claim during a
+				// reconnect, and closing here would drop this node's record of the delegations it has
+				// issued as a home — so the next registration would start empty and could grant a key
+				// whose delegate is still admitting. The coordinator keeps ticking, its grants expire on
+				// their own deadlines, and `isClusterLockRequired` is what fails an acquire closed in the
+				// meantime. A genuine standalone claim clears the requirement and the coordinator with it.
+				if (!isClusterLockRequired(databaseName)) {
+					lockCoordinator?.close();
+					lockCoordinator = undefined;
+				}
 				return undefined;
 			}
 			if (lockCoordinator?.transport !== transport) {

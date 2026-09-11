@@ -143,7 +143,10 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.ok(decoded, 'the payload decodes');
 			assert.strictEqual(decoded.key, recordId);
 			assert.strictEqual(decoded.requester, NODE_NAME);
-			assert.ok(decoded.tsR > 0, 'the released delegation counter rides in the payload');
+			assert.ok(
+				Array.isArray(decoded.token) && decoded.token.length === 3,
+				'the whole fencing token rides in the payload'
+			);
 		});
 
 		it('does not shadow the holder’s own audit entry at the same timestamp', async function () {
@@ -289,7 +292,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(granted.granted, true, 'the peer holds a delegation from this node');
 			assert.strictEqual(coordinator.stats.granted, 1);
 
-			const wire = { type: 'lockRelease', key: recordId, requester: 'peer-sink', tsR: granted.token[2] };
+			const wire = { type: 'lockRelease', key: recordId, requester: 'peer-sink', token: granted.token };
 			events.send({
 				type: 'lockRelease',
 				table: 'SinkLockTest',
@@ -330,7 +333,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(granted.granted, true);
 			assert.strictEqual(coordinator.stats.granted, grantedBefore + 1);
 			// The receive path a sender drives: encode, decode as the table decoder would, route.
-			const wire = { type: 'lockRelease', key: recordId, requester: 'peer-1', tsR: granted.token[2] };
+			const wire = { type: 'lockRelease', key: recordId, requester: 'peer-1', token: granted.token };
 			const decoded = decodeLockControlPayload(wire.type, unpack(encodeLockControlPayload(wire)));
 			assert.deepStrictEqual(decoded, wire, 'the payload survives the round trip');
 			deliverLockControlEntry('test', 'ClusterLockTest', decoded, 'peer-1');
@@ -344,16 +347,22 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			const { decodeLockControlPayload, deliverLockControlEntry } = require('#src/resources/recordLockCoordinator');
 			useSoloTransport({ members: [NODE_NAME, 'peer-1'] });
 			// A key the decoder must refuse, because keyIdOf would throw encoding it.
-			assert.strictEqual(decodeLockControlPayload('lockRelease', [{ not: 'a key' }, 'peer-1', 1]), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', [{ not: 'a key' }, 'peer-1', 1, 1, 1]), undefined);
 			// The retired Ricart–Agrawala types decode to nothing rather than to something acted on.
-			assert.strictEqual(decodeLockControlPayload('lockRequest', [recordKeyForRetiredType, 'peer-1', 1]), undefined);
-			assert.strictEqual(decodeLockControlPayload('lockGrant', [recordKeyForRetiredType, 'peer-1', 1]), undefined);
+			assert.strictEqual(
+				decodeLockControlPayload('lockRequest', [recordKeyForRetiredType, 'peer-1', 1, 1, 1]),
+				undefined
+			);
+			assert.strictEqual(
+				decodeLockControlPayload('lockGrant', [recordKeyForRetiredType, 'peer-1', 1, 1, 1]),
+				undefined
+			);
 			// And anything that still gets through must not escape into the replicated apply loop.
 			assert.doesNotThrow(() =>
 				deliverLockControlEntry(
 					'test',
 					'ClusterLockTest',
-					{ type: 'lockRelease', key: { not: 'a key' }, requester: 'peer-1', tsR: 1 },
+					{ type: 'lockRelease', key: { not: 'a key' }, requester: 'peer-1', token: [1, 1, 1] },
 					'peer-1'
 				)
 			);

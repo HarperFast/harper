@@ -389,9 +389,9 @@ replicated log, because it is what orders a handoff behind the delegate's own da
 
 The entry is written in its own transaction, with no primary-store write, and — unlike the `reload`
 marker it is otherwise modeled on — **not** `LOCAL_ONLY`, because replicating it IS the send. Its
-payload is `[key, requesterName, counter]`, validated on exact tuple length: a future version that
-grows it must bump the type rather than widen this one, since a partially-understood release would
-clear a delegation on terms the sender did not intend.
+payload is `[key, requesterName, epochNumber, homeIncarnation, counter]`, validated on exact tuple
+length: a future version that grows it must bump the type rather than widen this one, since a
+partially-understood release would clear a delegation on terms the sender did not intend.
 
 **`recordId` is null and the key rides in the payload.** A control entry carrying the locked key as
 its record id answers `_writeUpdate`'s keyed dedup lookup at exactly the holder's stamp, and
@@ -411,21 +411,45 @@ a key its previous delegate still believes it holds. The eviction rule is delibe
 and that asymmetry is the safety argument: a delegate may drop a delegation early, a **home may never
 forget one before its expiry**.
 
-**A replaced transport cannot grant over live authority.** `close()` runs when a transport is
-re-registered — a component reload is enough — and it expires every delegation this coordinator held.
-That alone is not sufficient: a handle already handed out checks only its own lease, and the successor
-coordinator starts with an empty grant table. So `Table.lockCoordinator` passes the predecessor's
-`grantHorizonMono` to the successor as `grantableAfterMono`, and the successor refuses to grant as a
-home until that horizon passes. This is the "a home may never forget a grant before its expiry" rule
-applied across the swap rather than only within one coordinator's life.
+**A coordinator never grants over live authority it cannot see.** Two different mechanisms, because
+the two cases are different:
 
-**Recall revokes capability, not just admission.** A recalled delegation stops admitting immediately,
-then waits for live admissions to finish or for its own lease to elapse, and only then writes the
-release. The commit-time lease fence in `DatabaseTransaction` is what makes the second half real: a
-staged write whose handle expired is rejected immediately before the native commit submits. That fence
-now runs only when the transaction actually holds a lease-protected write
-(`hasLeaseProtectedWrite`), so a bulk transaction of plain writes in a core-only deployment pays
-nothing for it.
+- **In-process transport swap** (a component reload re-registering a transport). The successor
+  **adopts** the predecessor's delegations and grants in its constructor, before the predecessor is
+  closed. The transport object changed; this node's delegations and the handles they admitted did not.
+- **Cold start** (a process restart, where there is nothing to adopt). The coordinator refuses to
+  grant as a home for `DELEGATION_LEASE_MS + skew` from construction: a previous incarnation of this
+  node may have delegations still admitting, and it left no record. Once harper-pro#825 advances the
+  epoch number across a restart this wait is unnecessary — every delegate drops an old-epoch
+  delegation on next use — but core cannot assume that has happened.
+
+`Table.lockCoordinator` also does **not** close the coordinator when the transport merely goes away:
+harper-pro unregisters without a standalone claim during a reconnect, and closing there would discard
+this node's record of what it has granted. Only an explicit standalone claim clears it.
+
+**A delegation is authority within one epoch.** `#liveDelegation` compares the delegation's token
+epoch against the current one and drops it on a mismatch, because an epoch change may have re-homed
+the key to a node that knows nothing of this token. Bounding the window between a delegate noticing a
+new epoch and the new home granting is the design note's §4.4 retirement interval — harper-pro's to
+provide, not core's.
+
+**Recall revokes capability, not just admission.** Waiting for live admissions is not enough on its
+own: a caller that staged a write and then called `unlock()` leaves nothing for a drain to wait on,
+but its write is still uncommitted and would land after the successor was admitted. So a delegation
+retains a revoker for every handle it admitted (`registerAdmission`), and surrender, expiry and
+`close()` all call them — `handle.revokeLease()` expires the handle ahead of its lease, and the
+commit-time fence in `DatabaseTransaction` then rejects the staged write immediately before the native
+commit submits. That fence runs only when the transaction actually holds a lease-protected write
+(`hasLeaseProtectedWrite`, reset by `clearWrites()`), so a bulk transaction of plain writes in a
+core-only deployment pays nothing for it.
+
+**A delegation outlives any one lock, and that is the amortization.** `DELEGATION_LEASE_MS` is
+deliberately longer than the longest lock lease it will admit. A delegation sized to the caller's own
+lease has no room left for the next lock, so every repeat `lock()` would renew and pay a round trip —
+which is precisely the cost this design exists to remove. A delegate's deadline is also anchored at
+the moment it SENT the request, not at the moment the reply arrived, so a delayed reply cannot give it
+more time than the home is holding the key for; a reply that outlived its own delegation is discarded
+rather than installed.
 
 **`ts_R` is chosen before the write and lives only in the payload.** The writer takes the store's
 monotonic timestamp for the holder's stamp and lets the control entry commit at its own fresh time, so
@@ -434,8 +458,10 @@ an entry can never land behind a peer's replication cursor.
 **An entry's identity is bound to the node that wrote it.** `applyEntry` takes the author from the
 audit header, never from the payload, and ignores a release whose payload names anyone else. Without
 that, a peer could write a release naming another node and clear a delegation it does not hold. A
-release is also matched against the live grant's counter, so a delayed release from a previous
-delegation cannot clear its successor's.
+release also carries the **whole fencing token**, not just the counter, and is matched against the live
+grant on all three components: a home that restarts begins counting again, so a counter-only match
+would let a delayed release from a previous incarnation clear a live grant while its delegate is
+still admitting.
 
 **Bounded state.** Delegations are capped per database and per requester, and expiry work is bounded
 per tick, so a scan locking millions of distinct keys cannot make a home retain millions of grants and

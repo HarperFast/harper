@@ -2,6 +2,7 @@ const assert = require('assert');
 const {
 	LockCoordinator,
 	LOCK_LEASE_SKEW_MS,
+	DELEGATION_LEASE_MS,
 	compareTokens,
 	decodeLockControlPayload,
 	encodeLockControlPayload,
@@ -84,7 +85,10 @@ class FakeCluster {
 			nextTimestamp: () => ++this.tsCounter,
 			monotonic: () => node.mono + (Date.now() - this.startedAt),
 			skewMs: options.skewMs,
-			grantableAfterMono: options.grantableAfterMono,
+			// A cold coordinator quarantines granting by default, because a previous incarnation of this
+			// node may still have delegations out. A fake cluster has no previous incarnation, so the
+			// quarantine is off unless a test asks for the real default with `coldStart`.
+			grantableAfterMono: options.coldStart ? undefined : -Infinity,
 			autoTick: false,
 		});
 		this.nodes.set(name, node);
@@ -213,11 +217,15 @@ describe('record lock delegations', () => {
 			alpha.release(key);
 			assert.strictEqual(cluster.requests.length, 1);
 			for (let i = 0; i < 25; i++) {
+				// Advance between locks. Without this the whole loop runs inside one clock tick, and a
+				// delegation sized to the lock's own lease would pass — which is exactly the defect a
+				// same-instant loop hid: every repeat lock renewed and paid a round trip.
+				cluster.advance('alpha', 1_000);
 				await alpha.acquire(key, LEASE, WAIT);
 				alpha.release(key);
 			}
 			// This is the whole point of the design: releasing the application lock does not release the
-			// delegation, so 26 locks cost one round.
+			// delegation, so 26 locks spread over 25 seconds cost one round.
 			assert.strictEqual(cluster.requests.length, 1);
 		});
 
@@ -234,10 +242,10 @@ describe('record lock delegations', () => {
 			const alpha = cluster.node('alpha').coordinator;
 			await alpha.acquire(key, LEASE, WAIT);
 			alpha.release(key);
-			// Two thirds through the lease, a fresh full-lease admission no longer fits inside it. An
-			// admission that outlived its delegation is exactly what the home's skew margin assumes
-			// cannot happen.
-			cluster.advance('alpha', 20_000);
+			// Close enough to the delegation's end that a fresh full-lease admission no longer fits
+			// inside it. An admission that outlived its delegation is exactly what the home's skew margin
+			// assumes cannot happen.
+			cluster.advance('alpha', DELEGATION_LEASE_MS - LEASE + 1);
 			await alpha.acquire(key, LEASE, WAIT);
 			assert.strictEqual(cluster.requests.length, 2);
 		});
@@ -302,9 +310,9 @@ describe('record lock delegations', () => {
 			await alpha.acquire(key, LEASE, WAIT);
 			alpha.release(key);
 			// Alpha's clock runs past the delegation; beta's has not reached the grant's deadline yet.
-			cluster.advance('alpha', LEASE + 1);
+			cluster.advance('alpha', DELEGATION_LEASE_MS + 1);
 			assert.strictEqual(alpha.stats.delegations, 0, 'the delegate must stop admitting first');
-			cluster.advance('beta', LEASE + 1);
+			cluster.advance('beta', DELEGATION_LEASE_MS + 1);
 			assert.strictEqual(
 				cluster.node('beta').coordinator.stats.granted,
 				1,
@@ -318,7 +326,7 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
-			cluster.advance('beta', LEASE - 1);
+			cluster.advance('beta', DELEGATION_LEASE_MS - 1);
 			assert.strictEqual(cluster.node('beta').coordinator.stats.granted, 1);
 		});
 	});
@@ -439,9 +447,17 @@ describe('record lock delegations', () => {
 			assert.strictEqual(beta.stats.granted, 1);
 			// A release naming a counter that is not the live one — a delayed entry from a previous
 			// delegation, or one replayed from the log long after its producer is gone.
-			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', tsR: granted.token[2] - 1 }, 'alpha');
+			beta.applyEntry(
+				{
+					type: 'lockRelease',
+					key,
+					requester: 'alpha',
+					token: [granted.token[0], granted.token[1], granted.token[2] - 1],
+				},
+				'alpha'
+			);
 			assert.strictEqual(beta.stats.granted, 1);
-			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', tsR: granted.token[2] }, 'alpha');
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
 			assert.strictEqual(beta.stats.granted, 0);
 		});
 
@@ -450,7 +466,7 @@ describe('record lock delegations', () => {
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta').coordinator;
 			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
-			beta.applyEntry({ type: 'lockRelease', key, requester: 'gamma', tsR: granted.token[2] }, 'gamma');
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'gamma', token: granted.token }, 'gamma');
 			assert.strictEqual(beta.stats.granted, 1, 'a non-delegate must not be able to clear a grant');
 		});
 
@@ -460,7 +476,7 @@ describe('record lock delegations', () => {
 			const beta = cluster.node('beta').coordinator;
 			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
 			// The payload is peer-supplied; the author comes from the audit header. They must agree.
-			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', tsR: granted.token[2] }, 'gamma');
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'gamma');
 			assert.strictEqual(beta.stats.granted, 1);
 		});
 	});
@@ -548,6 +564,109 @@ describe('record lock delegations', () => {
 		});
 	});
 
+	describe('defects the pre-push review found, as regressions', () => {
+		it('rejects a grant reply that outlived the delegation it grants', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			// The home grants, then the reply is delayed past the whole delegation. Anchoring the
+			// delegate's deadline on the reply's ARRIVAL would hand it a full fresh lease while the home
+			// had already expired the grant and could hand the key to someone else.
+			alpha.coordinator.transport.requestDelegation = async (target, database, table, request) => {
+				const reply = await cluster.node(target).coordinator.onDelegationRequest(request);
+				cluster.advance('alpha', DELEGATION_LEASE_MS + 1);
+				return reply;
+			};
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 200), /not released in time/);
+			assert.strictEqual(alpha.coordinator.stats.delegations, 0, 'a dead reply must not install a delegation');
+		});
+
+		it('drops a delegation when the epoch changes under it', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key);
+			assert.strictEqual(alpha.stats.delegations, 1);
+			// An epoch change may have re-homed the key to a node that knows nothing of this token.
+			// Keeping it would let alpha admit alongside whoever the new home grants.
+			cluster.epochNumber = 2;
+			const requestsBefore = cluster.requests.length;
+			await alpha.acquire(key, LEASE, WAIT);
+			assert.ok(cluster.requests.length > requestsBefore, 'the stale-epoch delegation was reused');
+		});
+
+		it('refuses to grant from a cold start until a predecessor delegation could have expired', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { coldStart: true });
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const denied = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				epoch: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a cold home must not grant over an unseen predecessor');
+			assert.strictEqual(denied.reason, 'contended');
+			cluster.advance('beta', DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				epoch: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true);
+		});
+
+		it('revokes a handle whose write was staged and then unlocked', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			await alpha.acquire(key, LEASE, WAIT);
+			let revoked = false;
+			alpha.registerAdmission(key, () => {
+				revoked = true;
+			});
+			// unlock() drops the admission count to zero, but the caller's write is still staged and
+			// uncommitted. A drain that waits only on that count would let the successor in while this
+			// write could still land.
+			alpha.release(key);
+			await cluster.node('beta').coordinator.acquire(key, LEASE, 5_000);
+			assert.strictEqual(revoked, true, 'the handoff did not revoke the predecessor’s handle');
+		});
+
+		it('does not let a release from a previous home incarnation clear a live grant', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			// A home that restarts begins counting again, so the SAME counter can belong to two
+			// different delegations. Only the whole token identifies one.
+			const stale = [granted.token[0], granted.token[1] - 1, granted.token[2]];
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: stale }, 'alpha');
+			assert.strictEqual(beta.stats.granted, 1, 'a previous incarnation’s release cleared a live grant');
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
+			assert.strictEqual(beta.stats.granted, 0);
+		});
+
+		it('collects an expired grant rather than answering contended forever', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			await beta.coordinator.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			// Past the grant's deadline, with tick() deliberately NOT run — a table whose expiry budget
+			// is saturated is exactly the case where that happens.
+			beta.mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+			const reply = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'gamma',
+				epoch: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(reply.granted, true, 'an uncollected expired grant blocked every other node');
+		});
+	});
+
 	describe('bounded state', () => {
 		it('refuses a request once the per-requester cap is reached', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
@@ -573,7 +692,7 @@ describe('record lock delegations', () => {
 			const beta = cluster.node('beta').coordinator;
 			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
 			assert.strictEqual(beta.stats.granted, 1);
-			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', tsR: granted.token[2] }, 'alpha');
+			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
 			assert.strictEqual(beta.stats.granted, 0);
 			const again = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
 			assert.strictEqual(again.granted, true);
@@ -583,26 +702,26 @@ describe('record lock delegations', () => {
 	describe('the release control entry', () => {
 		it('round-trips through the private packr', () => {
 			for (const key of ['record-1', 42, 9007199254740993n, ['a', 1], [1, ['b']]]) {
-				const entry = { type: 'lockRelease', key, requester: 'alpha', tsR: 7 };
+				const entry = { type: 'lockRelease', key, requester: 'alpha', token: [1, 2, 7] };
 				const decoded = decodeLockControlPayload('lockRelease', encodeLockControlPayload(entry));
 				assert.deepStrictEqual(decoded, entry);
 			}
 		});
 
 		it('rejects a payload that is not the exact three-field tuple', () => {
-			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha']), undefined);
-			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 'extra']), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 1]), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 1, 1, 'extra']), undefined);
 			assert.strictEqual(decodeLockControlPayload('lockRelease', 'not a tuple'), undefined);
-			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', '', 1]), undefined);
-			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 'not a number']), undefined);
-			assert.strictEqual(decodeLockControlPayload('lockRelease', [{ bad: 'key' }, 'alpha', 1]), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', '', 1, 1, 1]), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 1, 'not a number']), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', [{ bad: 'key' }, 'alpha', 1, 1, 1]), undefined);
 		});
 
 		it('no longer decodes the retired Ricart–Agrawala types', () => {
 			// Nibbles 9 and 10 were retired rather than migrated; 9 is now eviction. A historical entry
 			// replayed from the log must decode to nothing rather than to something this version acts on.
-			assert.strictEqual(decodeLockControlPayload('lockRequest', ['k', 'alpha', 1]), undefined);
-			assert.strictEqual(decodeLockControlPayload('lockGrant', ['k', 'alpha', 1]), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRequest', ['k', 'alpha', 1, 1, 1]), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockGrant', ['k', 'alpha', 1, 1, 1]), undefined);
 		});
 
 		it('is dropped off the coordinating thread rather than applied', async () => {
@@ -611,7 +730,7 @@ describe('record lock delegations', () => {
 			const beta = cluster.node('beta');
 			const granted = await beta.coordinator.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
 			beta.owns = false;
-			beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', tsR: granted.token[2] }, 'alpha');
+			beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
 			assert.strictEqual(beta.coordinator.stats.granted, 1);
 			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
 		});
@@ -622,7 +741,7 @@ describe('record lock delegations', () => {
 			const alpha = cluster.node('alpha');
 			await alpha.coordinator.acquire(key, LEASE, WAIT);
 			alpha.coordinator.applyEntry(null, 'alpha');
-			alpha.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', tsR: 1 }, null);
+			alpha.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: [1, 1, 1] }, null);
 			// A malformed entry must not reach the replicated apply loop, which would drop the whole
 			// enclosing transaction and stall replication for the database.
 			assert.ok(true);
