@@ -107,6 +107,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#draining = false;
 	#scheduled = false;
 	#recovering = false;
+	#lossPendingEpoch?: bigint;
 	#failed = false;
 	#capacityDeferred = false;
 	#shutdown?: ShutdownRequest;
@@ -191,7 +192,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult {
 		if (this.#failed) return DERIVED_INDEX_FAILED;
-		if (this.#recovering) return DERIVED_INDEX_DEFERRED;
+		if (this.#recovering || this.#lossPendingEpoch === batch.ownerEpoch) return DERIVED_INDEX_DEFERRED;
 		if (!this.#engine || this.#activeEpoch !== batch.ownerEpoch || this.#shutdown) return DERIVED_INDEX_FAILED;
 		let through: DerivedIndexCursor | undefined;
 		try {
@@ -394,6 +395,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				}
 				throw error;
 			}
+			this.#lossPendingEpoch = ownerEpoch;
 			this.#notify('accepted-work-lost');
 		} catch (error) {
 			this.#fail(new FullTextDerivedIndexError('Full-text engine recovery failed', error));
@@ -486,6 +488,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#lastBarrierHorizon = 0;
 		this.#lastAcceptedCursor = undefined;
 		this.#capacityDeferred = false;
+		this.#lossPendingEpoch = undefined;
 		this.#failed = false;
 	}
 
@@ -520,14 +523,24 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (change === 'changed') this.#capacityDeferred = false;
 		const wake = this.#wake;
 		const activeEpoch = this.#activeEpoch;
-		if (!wake) return;
+		if (!wake) {
+			if (change === 'accepted-work-lost') this.#lossPendingEpoch = undefined;
+			return;
+		}
 		setImmediate(() => {
-			if (this.#wake !== wake || this.#activeEpoch !== activeEpoch) return;
-			if (change === 'accepted-work-lost' && this.#shutdown) return;
+			if (this.#activeEpoch !== activeEpoch) return;
+			if (this.#wake !== wake || (change === 'accepted-work-lost' && this.#shutdown)) {
+				if (change === 'accepted-work-lost' && this.#lossPendingEpoch === activeEpoch)
+					this.#lossPendingEpoch = undefined;
+				return;
+			}
 			try {
 				wake(change);
 			} catch (error) {
 				logger.error('Full-text derived index state notification failed', error);
+			} finally {
+				if (change === 'accepted-work-lost' && this.#lossPendingEpoch === activeEpoch)
+					this.#lossPendingEpoch = undefined;
 			}
 		});
 	}
