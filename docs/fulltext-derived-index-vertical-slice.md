@@ -368,6 +368,11 @@ the observed foreground-write regression are recorded with the result because th
 known; these are diagnostic gates, not customer SLOs, and no release claim may be made from a
 synthetic default.
 
+The foreground comparison also fails closed when an indexed arm's measurement window differs from
+the no-index window by more than 20 percent. Large-corpus runs raise `--minimum-duration-ms` until
+the control covers a comparable interval; a short control is not used to bless a longer indexed
+run.
+
 The subsequent backend-integration benchmark adds time at #2567's `waiting-durable` cap, empty
 runner drains, and a raised `maxAcceptedBatchesAhead` arm. The storage diagnostic calls Fulltext
 directly and therefore cannot measure or tune those `DerivedIndexRuntime` controls.
