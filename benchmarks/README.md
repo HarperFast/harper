@@ -2,15 +2,16 @@
 
 This directory contains single-node storage and throughput benchmarks for Harper.
 
-| Benchmark          | File             | What it measures                                                            |
-| ------------------ | ---------------- | --------------------------------------------------------------------------- |
-| YCSB               | `ycsb/`          | Standard CRUD workloads (A–F) across the REST interface                     |
-| HNSW search        | `hnsw-search.js` | In-memory vector index search latency and recall                            |
-| **Indexed-write**  | `indexed-write/` | Write throughput at 0 / 3 / 5 secondary indexes (**ST-2**)                  |
-| **TTL-churn**      | `ttl-churn/`     | Storage size stability under continuous insert-with-TTL (**ST-1**)          |
-| **Concurrent R+W** | `concurrent-rw/` | Read p99 under mixed concurrent writes on a highly-indexed table (**ST-5**) |
-| **SQL engine A/B** | `sql-engine/`    | New (Resource-API) vs legacy (AlaSQL) SQL engine latency, per query shape   |
-| **Compression**    | `compression/`   | RocksDB codec comparison: on-disk size and throughput per codec             |
+| Benchmark           | File               | What it measures                                                            |
+| ------------------- | ------------------ | --------------------------------------------------------------------------- |
+| YCSB                | `ycsb/`            | Standard CRUD workloads (A–F) across the REST interface                     |
+| HNSW search         | `hnsw-search.js`   | In-memory vector index search latency and recall                            |
+| **Indexed-write**   | `indexed-write/`   | Write throughput at 0 / 3 / 5 secondary indexes (**ST-2**)                  |
+| **TTL-churn**       | `ttl-churn/`       | Storage size stability under continuous insert-with-TTL (**ST-1**)          |
+| **Concurrent R+W**  | `concurrent-rw/`   | Read p99 under mixed concurrent writes on a highly-indexed table (**ST-5**) |
+| **SQL engine A/B**  | `sql-engine/`      | New (Resource-API) vs legacy (AlaSQL) SQL engine latency, per query shape   |
+| **Compression**     | `compression/`     | RocksDB codec comparison: on-disk size and throughput per codec             |
+| **Fulltext hosted** | `fulltext-hosted/` | Tantivy through Harper's RocksDB adapter vs native and no-index controls    |
 
 The three new benchmarks (ST-1, ST-2, ST-5) address gaps called out in §6.3 of the
 Harper Release Testing Strategy and §5 of the v5 Integration Test Plan.
@@ -37,6 +38,81 @@ On macOS/Windows, set up loopback addresses once (Linux has them by default):
 ```sh
 npx harper-integration-test-setup-loopback
 ```
+
+## Fulltext hosted storage (`fulltext-hosted/`)
+
+This diagnostic benchmark exercises the merged Fulltext host-storage runtime through
+`RocksDerivedIndexStorage` from
+[Shared derived-index runtime for native backends #2567](https://github.com/HarperFast/harper/pull/2567).
+It does not install or declare Fulltext as a Harper dependency. Build a local Fulltext checkout and
+pass its root explicitly:
+
+```sh
+cd /path/to/fulltext
+npm install
+npm run build
+
+cd /path/to/harper
+npm run build
+npm run benchmark:fulltext-hosted -- --fulltext-root /path/to/fulltext
+```
+
+The default run compares four arms in this order:
+
+- `no-index`: deterministic document encoding plus the foreground RocksDB workload;
+- `native`: Fulltext's Tantivy filesystem implementation as a control;
+- `wal-only`: Tantivy stored through Harper RocksDB without an explicit root flush; and
+- `root-flush`: the same hosted implementation with #2567's root-wide `flushSync()` barrier.
+
+`wal-only` measures the performance side of the proposed WAL-replay policy. This harness performs
+an orderly close and reopen; it does not simulate a crash, damage a WAL tail, or prove replay from a
+retained Harper transaction-log cursor. Those fault tests belong to the backend-integration unit.
+
+Every arm drives the same fixed `--minimum-duration-ms` window of scheduled writes against an
+unrelated Harper table while indexing. Scheduled time, not dispatch time, begins each latency
+sample, so an event-loop stall remains visible rather than being omitted. Indexed arms drive at
+least `--queries` searches at `--query-rate` under the same open-loop rule and continue searching
+until indexing finishes, then close and reopen the index and verify result parity. Harper-hosted
+`publish()` commits and reloads the Tantivy reader before it resolves; the native control performs
+those two operations explicitly.
+The hosted arms report callback counts, transferred bytes, largest stored value, callback latency,
+sync count per Tantivy publication, sync latency, root commit events, RocksDB database-wide
+compaction/stall counters, aggregate compaction/SST properties for the foreground table column
+families, post-run read latency, and Node event-loop delay. Each arm warms every foreground table
+before measurement so table construction and the first write do not distort the comparison. The
+native control uses the same per-process test root as Harper instead of the system temporary
+directory, keeping both paths on the same filesystem. The per-process root is removed when the
+benchmark exits.
+
+Useful sweeps:
+
+```sh
+npm run benchmark:fulltext-hosted -- \
+	--fulltext-root /path/to/fulltext \
+	--revision HARPER_GIT_SHA \
+	--fulltext-revision FULLTEXT_GIT_SHA \
+	--documents 100000 \
+	--batch-size 1000 \
+	--queries 500 \
+	--query-rate 500 \
+	--soak-reads 5000 \
+	--foreground-rate 500 \
+	--publication-ms 1000,5000,30000 \
+	--table-counts 1,16,128
+```
+
+The command writes progress to stderr and emits one machine-readable stdout line beginning with
+`FULLTEXT_HOSTED_RESULT`, including completed-arm measurements if a later arm aborts. The
+architecture gates require search p99 below 50 ms, event-loop-delay p99 below 20 ms, unrelated-table
+p99 within 20% of the matching no-index control, no individual explicit sync above 250 ms, no
+synchronous root commit notification from inside a host write callback, comparable foreground
+measurement windows, full indexing coverage, and enough samples to make the p99 comparisons
+meaningful. A failed gate or aborted arm exits nonzero. Raise `--minimum-duration-ms` if indexing
+outlasts the foreground window or to collect more foreground samples. These
+are diagnostic gates, not published customer SLOs. Pass `--revision` and `--fulltext-revision` when
+retaining results so release-to-release comparisons identify both inputs; they otherwise default
+to `GITHUB_SHA`/`working-tree` and `working-tree`. Benchmark results are meaningful only when the
+arms run on the same quiet host from the same optimized Harper and Fulltext revisions.
 
 ---
 
