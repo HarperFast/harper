@@ -5821,7 +5821,7 @@ export function makeTable(options) {
 											txnForContext(context).getReadTxn(),
 											false,
 											relatedTable,
-											false
+											{ allowFullScan: false }
 										) as any
 									).map((entry) => {
 										if (entry && entry.key !== undefined) return entry;
