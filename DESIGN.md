@@ -411,7 +411,8 @@ When `table()` is called with an attribute newly marked `indexed: true` (or with
 **In-flight state tracking (persisted to `attributesDbi`):**
 
 - `attribute.indexingPID = process.pid` — set at migration start; cleared on clean completion. On restart with a different PID, `indexingPID !== process.pid` triggers a re-migration.
-- `attribute.lastIndexedKey` — updated every 100 records as a resumable checkpoint. Cleared on clean completion; preserved on error so a retry starts from this key.
+- `attribute.lastIndexedKey` — a resumable checkpoint, written at most once per checkpoint period and never before the record floor (`setIndexingCheckpointPeriod`), and only once the index writes it covers have settled and flushed. Cleared on clean completion; preserved on error so a retry starts from this key.
+- `attribute.checkpointCertified` / `attribute.checkpointAlgorithm` — the key the checkpoint was stamped with, and the version of the algorithm that stamped it. A checkpoint resumes only when both match; anything else is rebuilt from scratch, because earlier releases could advance `lastIndexedKey` past a record whose index write failed. The algorithm stamp is also kept on a completed index, so a build made under a version that could skip a record stays distinguishable from one that could not.
 - `attribute.indexingFailed = true` — set if any record's `index.put` errors during the backfill. `table()` checks this flag: a fresh call in the same or a new process re-triggers the backfill from `lastIndexedKey`.
 - `dbi.isIndexing = true` — in-memory flag on the index dbi. Prevents `searchByIndex` from serving partial results (returns 503 "not indexed yet" instead). Cleared only when backfill completes cleanly.
 
@@ -421,8 +422,8 @@ When `signalSchemaChange('schema-change')` fires at the start of `runIndexing`, 
 **Error handling:**
 
 - Per-record sync errors: caught by the inner try-catch. Set `hadIndexingErrors = true`.
-- Per-record async rejections (`index.put` returning a rejected Promise): caught by the `when()` error handler. Set `hadIndexingErrors = true`.
-- The final `await lastResolution` is wrapped in its own try-catch because if the very last put in the loop was rejected, an unguarded `await lastResolution` would throw past the `hadIndexingErrors` check to the outer catch, silently bypassing the error path.
+- Per-record async rejections (`index.put` returning a rejected Promise): every index mutation the build issues — each value's put, the drops for removed indexes, and the LMDB `clearAsync` — is registered in a per-build set that absorbs its own rejection and sets `hadIndexingErrors = true`. A record fans out into one put per indexed value, so tracking only the last one left the earlier puts' failures visible only if they happened to settle in time.
+- A checkpoint drains that set before flushing and refuses to certify if any mutation it covers failed; completion drains it too, so "no errors" means every write settled rather than none had failed yet. The set also bounds how many writes stay in flight (`MAX_OUTSTANDING_INDEXING`).
 - On any error: `indexingFailed = true` is persisted; `indexingPID`, `isIndexing`, and `lastIndexedKey` are kept. This leaves the index in 503 "incomplete" state rather than silently serving partial results.
 
 **`Object.defineProperty(attribute, 'dbi', ...)` must use `configurable: true`:**
