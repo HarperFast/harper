@@ -271,6 +271,38 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('does not deliver a queued state change to a replacement listener', async () => {
+		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		first.applyError = new Error('write contention');
+		const reopened = new FakeEngine();
+		let committedPayload = encodeFullTextCursorPayload(cursor(10));
+		let swapListener;
+		Object.defineProperty(reopened, 'committedPayload', {
+			get() {
+				queueMicrotask(swapListener);
+				return committedPayload;
+			},
+			set(value) {
+				committedPayload = value;
+			},
+		});
+		const { backend } = makeBackend(lifecycle([first, reopened]));
+		const originalChanges = [];
+		const replacementChanges = [];
+		const unsubscribe = backend.onStateChange((change) => originalChanges.push(change));
+		swapListener = () => {
+			unsubscribe();
+			backend.onStateChange((change) => replacementChanges.push(change));
+		};
+		await backend.acquire(1n);
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		await waitFor(() => backend.getDurableCursor()?.logs.local === 10 && first.closes.length === 1);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepStrictEqual(originalChanges, []);
+		assert.deepStrictEqual(replacementChanges, []);
+		await backend.shutdown(1n);
+	});
+
 	it('joins a recovery reopen before shutdown releases quiescence', async () => {
 		let finishOpen;
 		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
