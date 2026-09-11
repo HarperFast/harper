@@ -144,6 +144,11 @@ export type DerivedIndexRunnerOptions = {
 	maxRebuildBackoffMilliseconds?: number;
 	maxRebuildAttempts?: number;
 	/**
+	 * Cadence on which a non-owner re-tries the runner lock when no wake reaches it: the fallback for
+	 * an owner that died without releasing, whose lock is released natively with nothing to notify.
+	 */
+	lockRetryMilliseconds?: number;
+	/**
 	 * Opt-in writer backpressure: while the index is further behind than this, user writes to its
 	 * tables fail with a retryable 503 on every worker. 0 (the default) means no policy.
 	 */
@@ -229,9 +234,6 @@ const READINESS_REASONS: DerivedIndexReadinessReason[] = [
 	'rebuild-requested',
 ];
 const CONDEMNED_MARKER = new Uint8Array([1]);
-// A non-owner re-tries the runner lock on this cadence when no wake reaches it: the fallback for an
-// owner that died without releasing (its lock is released natively, but nothing notifies).
-const LOCK_RETRY_MILLISECONDS = 5000;
 // One shared allocation per backend: five independently read Int32 words, then the owner-epoch
 // counter. Each word is self-consistent on its own; nothing needs to observe two of them atomically.
 const READINESS_WORDS = 6;
@@ -400,6 +402,7 @@ function resolveRunnerOptions(
 		flushAfterMutations: 4096,
 		flushAfterBytes: 8 * 1024 * 1024,
 		rebuildBackoffMilliseconds: 1000,
+		lockRetryMilliseconds: 5000,
 		maxRebuildBackoffMilliseconds: 300_000,
 		maxRebuildAttempts: 8,
 		maxLagMilliseconds: 0,
@@ -416,6 +419,7 @@ function resolveRunnerOptions(
 		flushAfterMutations: options.flushAfterMutations ?? base.flushAfterMutations,
 		flushAfterBytes: options.flushAfterBytes ?? base.flushAfterBytes,
 		rebuildBackoffMilliseconds: options.rebuildBackoffMilliseconds ?? base.rebuildBackoffMilliseconds,
+		lockRetryMilliseconds: options.lockRetryMilliseconds ?? base.lockRetryMilliseconds,
 		maxRebuildBackoffMilliseconds: options.maxRebuildBackoffMilliseconds ?? base.maxRebuildBackoffMilliseconds,
 		maxRebuildAttempts: options.maxRebuildAttempts ?? base.maxRebuildAttempts,
 		maxLagMilliseconds: Math.max(0, options.maxLagMilliseconds ?? base.maxLagMilliseconds),
@@ -476,6 +480,7 @@ class DerivedIndexRunner {
 	#lagBudget: number;
 	#scheduled = false;
 	#skipNextNotify = false;
+	#waitingForLock = false;
 	#lockBackoff = false;
 	#owned = false;
 	#stopped = false;
@@ -782,18 +787,17 @@ class DerivedIndexRunner {
 	}
 
 	/**
-	 * A peer's release, a rebuild request and the owner's own state changes all arrive through the
-	 * readiness buffer's `notify()`; the releasing runner skips the one it caused so an idle release
-	 * does not re-acquire itself. That skip rests on rocksdb-js delivering a `notify()` to every
-	 * registration for the key including the caller's own env (`EventEmitter::notify` iterates the
-	 * key's listeners with no self-exclusion), exactly once — measured on the pinned 2.9.0. Whoever
-	 * reverts this workaround (#2576) should re-check that premise rather than re-derive it.
+	 * `notify()` reaches every registration for the key including the caller's own, exactly once
+	 * (measured on the pinned rocksdb-js 2.9.0), which is what lets the releasing runner consume the
+	 * notification it caused instead of re-acquiring the lock it just gave up. #2576 reverts to the
+	 * unlock callback and can drop the skip with it.
 	 */
 	#notified() {
 		if (this.#skipNextNotify) {
 			this.#skipNextNotify = false;
 			return;
 		}
+		this.#waitingForLock = false;
 		this.wake(true);
 	}
 
@@ -802,11 +806,12 @@ class DerivedIndexRunner {
 	 * thread-safe function of the caller's env, and on Node 22 a callback left behind by a worker that
 	 * was terminated aborts the process when another thread unlocks (HarperFast/rocksdb-js, pending).
 	 * A successor is woken by the releasing owner's `notify()` on the readiness buffer — which
-	 * tolerates a dead listener's env — by commits, and by the retry timer below.
+	 * tolerates a dead listener's env — and by the retry timer below.
 	 */
 	#acquire() {
-		// A lock attempt that threw backs off; commit wakes must not turn that into a storm.
-		if (this.#lockBackoff) return;
+		// A waiting runner is already on the retry timer, and a lock attempt that threw is backing off;
+		// commit wakes are frequent enough that either would otherwise become a native tryLock storm.
+		if (this.#waitingForLock || this.#lockBackoff) return;
 		if (this.#releasing) {
 			this.#releasing.then(() => this.wake(true));
 			return;
@@ -817,11 +822,15 @@ class DerivedIndexRunner {
 		} catch (error) {
 			logger.error(`Derived index '${this.id}' could not attempt the runner lock; retrying`, error);
 			this.#lockBackoff = true;
+			// The configured backoff replaces an armed contention retry rather than inheriting its deadline.
+			clearTimeout(this.#lockRetryTimer);
+			this.#lockRetryTimer = undefined;
 			this.#armLockRetry(this.#options.rebuildBackoffMilliseconds);
 			return;
 		}
 		if (!acquired) {
-			this.#armLockRetry(LOCK_RETRY_MILLISECONDS);
+			this.#waitingForLock = true;
+			this.#armLockRetry(this.#options.lockRetryMilliseconds);
 			return;
 		}
 		if (this.#lockRetryTimer) {
@@ -836,6 +845,7 @@ class DerivedIndexRunner {
 		this.#lockRetryTimer = setTimeout(() => {
 			this.#lockRetryTimer = undefined;
 			this.#lockBackoff = false;
+			this.#waitingForLock = false;
 			this.wake(true);
 		}, delay);
 		this.#lockRetryTimer.unref?.();
@@ -1889,9 +1899,8 @@ class DerivedIndexRunner {
 			} catch (error) {
 				logger.error(`Failed to release derived index runner '${backend.id}'`, error);
 			}
-			// Wake the peers contending for the lock; this runner's own callback ignores this one. Only
-			// arm that skip when a notification is actually on its way: a flag left standing by an
-			// absent or throwing `notify` would swallow a peer's release instead of this runner's own.
+			// Arm the skip only when a notification is actually on its way: a flag left standing by an
+			// absent or throwing `notify` swallows a peer's release instead of this runner's own.
 			if (this.#readinessBuffer.notify) {
 				this.#skipNextNotify = !this.#stopped;
 				try {

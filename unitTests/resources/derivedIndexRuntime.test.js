@@ -413,6 +413,65 @@ describe('DerivedIndexRuntime', () => {
 		second.stop();
 	});
 
+	it('retries the lock on its own cadence when the owner died without notifying', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			attempts++;
+			return tryLock(key, onUnlocked);
+		};
+		// An owner on another worker holds the lock; it will die without releasing, so nothing notifies
+		// and no commit lands — the retry timer is the only wake left.
+		store.locks.add('derived-index:dead-owner:runner');
+		const backend = new FakeBackend('dead-owner', cursor(10));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			lockRetryMilliseconds: 100,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => attempts === 1, { message: 'the runner must attempt the contended lock once' });
+		// Commit wakes reach a waiting non-owner every turn; they must not each become a native tryLock.
+		for (let i = 0; i < 3; i++) {
+			store.rootStore.emit('committed');
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+		assert.strictEqual(attempts, 1, 'commit wakes must not re-probe the lock while the retry timer is armed');
+
+		store.locks.delete('derived-index:dead-owner:runner');
+		await waitFor(() => backend.deliveries.length === 1, { message: 'the retry timer must resume the index' });
+		assert.deepStrictEqual(backend.cursor, cursor(20));
+		runtime.stop();
+	});
+
+	it('backs off by the configured delay when a lock attempt throws while waiting', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			attempts++;
+			if (attempts === 2) throw new Error('lock unavailable');
+			return tryLock(key, onUnlocked);
+		};
+		store.locks.add('derived-index:throwing-lock:runner');
+		const backend = new FakeBackend('throwing-lock', cursor(10));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			lockRetryMilliseconds: 5000,
+			rebuildBackoffMilliseconds: 20,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => attempts === 1, { message: 'the runner must attempt the contended lock once' });
+		store.locks.delete('derived-index:throwing-lock:runner');
+		// A notification wakes the waiting runner and that attempt throws: the configured backoff has to
+		// replace the armed contention retry, or recovery waits out the whole 5 s cadence instead.
+		store.getUserSharedBuffer('derived-index:throwing-lock:readiness', new ArrayBuffer(1)).notify();
+
+		await waitFor(() => backend.deliveries.length === 1, { message: 'the backoff retry must resume the index' });
+		assert.deepStrictEqual(backend.cursor, cursor(20));
+		runtime.stop();
+	});
+
 	it('rejects a durable cursor assembled from different offered batch boundaries', async () => {
 		const initial = { format: 1, logs: { local: 10, remote: 11 } };
 		const store = new FakeLogStore(
