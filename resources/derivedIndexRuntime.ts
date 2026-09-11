@@ -784,7 +784,10 @@ class DerivedIndexRunner {
 	/**
 	 * A peer's release, a rebuild request and the owner's own state changes all arrive through the
 	 * readiness buffer's `notify()`; the releasing runner skips the one it caused so an idle release
-	 * does not re-acquire itself.
+	 * does not re-acquire itself. That skip rests on rocksdb-js delivering a `notify()` to every
+	 * registration for the key including the caller's own env (`EventEmitter::notify` iterates the
+	 * key's listeners with no self-exclusion), exactly once — measured on the pinned 2.9.0. Whoever
+	 * reverts this workaround (#2576) should re-check that premise rather than re-derive it.
 	 */
 	#notified() {
 		if (this.#skipNextNotify) {
@@ -1886,12 +1889,17 @@ class DerivedIndexRunner {
 			} catch (error) {
 				logger.error(`Failed to release derived index runner '${backend.id}'`, error);
 			}
-			// Wake the peers contending for the lock; this runner's own callback ignores this one.
-			this.#skipNextNotify = !this.#stopped;
-			try {
-				this.#readinessBuffer.notify?.();
-			} catch (error) {
-				logger.warn?.(`Derived index '${backend.id}' could not notify peers of its release`, error);
+			// Wake the peers contending for the lock; this runner's own callback ignores this one. Only
+			// arm that skip when a notification is actually on its way: a flag left standing by an
+			// absent or throwing `notify` would swallow a peer's release instead of this runner's own.
+			if (this.#readinessBuffer.notify) {
+				this.#skipNextNotify = !this.#stopped;
+				try {
+					this.#readinessBuffer.notify();
+				} catch (error) {
+					this.#skipNextNotify = false;
+					logger.warn?.(`Derived index '${backend.id}' could not notify peers of its release`, error);
+				}
 			}
 		};
 		const hold = (error: unknown) => {

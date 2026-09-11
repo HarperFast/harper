@@ -401,7 +401,12 @@ describe('DerivedIndexRuntime', () => {
 		first.register(registration(backend));
 		second.register(registration(backend));
 
-		await waitFor(() => backend.deliveries.length === 1 && store.rangeCalls.length >= 2);
+		// An owner epoch on the second runtime means it actually took the lock, and waitFor's 2 s budget
+		// is well inside LOCK_RETRY_MILLISECONDS, so the handoff came from the release notification
+		// rather than the retry timer.
+		await waitFor(() => second.getStatus('shared')?.ownerEpoch !== undefined && store.rangeCalls.length >= 2, {
+			message: 'the waiting runner must acquire on the release notification, not the retry timer',
+		});
 		assert.deepStrictEqual(backend.cursor, cursor(20));
 		assert.strictEqual(backend.deliveries.length, 1, 'the waiting runner must exact-resume after acquiring the lock');
 		first.stop();
@@ -457,15 +462,30 @@ describe('DerivedIndexRuntime', () => {
 	it('reacquires after the idle grace period when a later commit wakes it', async () => {
 		const entries = new Map([[10, []]]);
 		const store = new FakeLogStore(entries);
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			attempts++;
+			return tryLock(key, onUnlocked);
+		};
 		const backend = new FakeBackend('idle-wake', cursor(10));
 		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
 		runtime.register(registration(backend));
 
-		await waitFor(() => store.locks.size === 0);
+		// One acquisition, then the idle release. That release notifies, and the notification reaches
+		// this runner's own callback too: it must be ignored, or an idle release re-acquires
+		// immediately and never leaves the lock for a peer.
+		await waitFor(() => attempts === 1 && store.locks.size === 0, {
+			message: 'the runner must take the lock and release it after the idle grace period',
+		});
+		for (let i = 0; i < 4; i++) await new Promise(setImmediate);
+		assert.strictEqual(attempts, 1, 'the releasing runner must ignore the notification it caused');
+
 		entries.set(10, [audit({ timestamp: 20, recordId: 'a' })]);
 		store.rootStore.emit('committed');
 
 		await waitFor(() => backend.deliveries.length === 1);
+		assert.strictEqual(attempts, 2, 'the commit must drive a fresh acquisition');
 		assert.deepStrictEqual(backend.cursor, cursor(20));
 		runtime.stop();
 	});
