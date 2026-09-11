@@ -25,8 +25,10 @@ const {
 } = require('#src/components/Application');
 const {
 	withComponentPreparationLock,
+	componentPreparationLockPaths,
 	ComponentPreparationLockTimeoutError,
 } = require('#src/components/componentPreparationLock');
+const { waitFor } = require('../waitFor.js');
 const env = require('#src/utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
@@ -77,6 +79,19 @@ async function publishJournalAndMoveLiveAside(root, component, id) {
 	const asideDir = path.join(root, ASIDE_STAGING_DIR, component);
 	await fs.mkdir(asideDir, { recursive: true });
 	await fs.rename(path.join(root, component), path.join(asideDir, '.in-progress-1-1-aaa'));
+}
+
+/** Resolves once a second contender has published a ticket for the component's lock: the scan is parked on it. */
+async function waitForLockWaiter(root, component) {
+	const { lockRoot, lockName } = componentPreparationLockPaths(path.join(root, component));
+	await waitFor(
+		async () => {
+			const entries = await fs.readdir(lockRoot).catch(() => []);
+			return entries.filter((name) => name.startsWith(`${lockName}.ticket.`)).length >= 2;
+		},
+		5000,
+		5
+	);
 }
 
 async function stagedIds(root) {
@@ -298,9 +313,11 @@ describe('staged build retention', () => {
 
 		it('recovers a swap interrupted between the scan reading no journal and the end of the pass', async function () {
 			this.timeout(10000);
+			// Over the bound on purpose, so the only lock this pass takes is the reconcile's — the catalogued
+			// build is read unlocked first, and the deploy's journal lands while that lock is awaited.
+			env.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, 0);
 			const root = await newRoot('interleaved-journal');
 			await plant(root, 'web', 'd-a', { completedAt: 1_000 });
-			await plant(root, 'web', 'd-z', { complete: false }); // residue: the scan parks on this owner's lock
 			await fs.mkdir(path.join(root, 'web'), { recursive: true });
 			await fs.writeFile(path.join(root, 'web', 'index.js'), 'LIVE\n');
 
@@ -309,9 +326,7 @@ describe('staged build retention', () => {
 				path.join(root, 'web'),
 				async () => {
 					const recovery = recoverInterruptedActivations(root);
-					// The scan has read d-a's (absent) journal and is now blocked on this lock for d-z; the deploy
-					// publishes its journal, moves live aside, and dies before B2.
-					await sleep(50);
+					await waitForLockWaiter(root, 'web');
 					await publishJournalAndMoveLiveAside(root, 'web', 'd-a');
 					// Released by the lock callback returning; the scan then acquires it.
 					void recovery.then((result) => (failures = result));
@@ -338,7 +353,7 @@ describe('staged build retention', () => {
 				path.join(root, 'web'),
 				async () => {
 					const recovery = recoverInterruptedActivations(root);
-					await sleep(50);
+					await waitForLockWaiter(root, 'web');
 					await fs.writeFile(path.join(root, DEPLOY_STAGING_DIR, 'd-finishing', '.complete'), '');
 					void recovery.then((result) => (failures = result));
 				},
