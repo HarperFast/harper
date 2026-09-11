@@ -2849,18 +2849,18 @@ export function makeTable(options) {
 						// acquisition and release reaches the coordinator that now owns the delegation.
 						if (
 							!handle.joinClusterRound(round.tsR, resolved.lease, round.mintedMono, () =>
-								TableResource.lockCoordinator?.release(id)
+								TableResource.lockCoordinator?.release(id, round.token)
 							)
 						) {
 							// The round completed inside its lease but the lease elapsed before the handle
 							// could take it. The coordinator still holds it, and only this call knows the
 							// hold was never handed out.
-							Promise.resolve(coordinator.release(id)).catch(noop);
+							Promise.resolve(coordinator.release(id, round.token)).catch(noop);
 							throw new ClientError('Record lock was granted after its lease had elapsed', 423);
 						}
 						// A recall must be able to fence a write this handle staged and then unlocked, so
 						// the coordinator needs a way to revoke it — see LockCoordinator.registerAdmission.
-						coordinator.registerAdmission(id, () => handle.revokeLease());
+						coordinator.registerAdmission(id, round.token, () => handle.revokeLease());
 					} catch (error) {
 						handle.release();
 						throw error;

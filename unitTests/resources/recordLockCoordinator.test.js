@@ -85,10 +85,7 @@ class FakeCluster {
 			nextTimestamp: () => ++this.tsCounter,
 			monotonic: () => node.mono + (Date.now() - this.startedAt),
 			skewMs: options.skewMs,
-			// A cold coordinator quarantines granting by default, because a previous incarnation of this
-			// node may still have delegations out. A fake cluster has no previous incarnation, so the
-			// quarantine is off unless a test asks for the real default with `coldStart`.
-			grantableAfterMono: options.coldStart ? undefined : -Infinity,
+			grantableAfterMono: options.grantableAfterMono,
 			autoTick: false,
 		});
 		this.nodes.set(name, node);
@@ -596,8 +593,12 @@ describe('record lock delegations', () => {
 			assert.ok(cluster.requests.length > requestsBefore, 'the stale-epoch delegation was reused');
 		});
 
-		it('refuses to grant from a cold start until a predecessor delegation could have expired', async () => {
-			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { coldStart: true });
+		it('refuses to grant before an explicitly configured horizon', async () => {
+			// Core's grant quarantine is opt-in — the interval belongs to the epoch (see
+			// ClusterLockTransport.epoch) — so a deployment that wants a core-side bound sets it.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], {
+				grantableAfterMono: DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS,
+			});
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta');
 			const denied = await beta.coordinator.onDelegationRequest({
@@ -624,7 +625,9 @@ describe('record lock delegations', () => {
 			const alpha = cluster.node('alpha').coordinator;
 			await alpha.acquire(key, LEASE, WAIT);
 			let revoked = false;
-			alpha.registerAdmission(key, () => {
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, round.token);
+			alpha.registerAdmission(key, round.token, () => {
 				revoked = true;
 			});
 			// unlock() drops the admission count to zero, but the caller's write is still staged and
@@ -664,6 +667,41 @@ describe('record lock delegations', () => {
 				leaseMs: LEASE,
 			});
 			assert.strictEqual(reply.granted, true, 'an uncollected expired grant blocked every other node');
+		});
+	});
+
+	describe('defects the second review round found, as regressions', () => {
+		it('does not let a superseded handle decrement its successor’s admissions', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			// The delegation is replaced while the first handle is still open — an epoch change is the
+			// cheapest way to force that here.
+			cluster.epochNumber = 2;
+			const second = await alpha.acquire(key, LEASE, WAIT);
+			assert.ok(compareTokens(first.token, second.token) !== 0, 'the delegation was not actually replaced');
+			// The OLD handle unlocks late. Untokened, this would decrement the new delegation and let it
+			// be surrendered while its own caller is still inside.
+			alpha.release(key, first.token);
+			assert.strictEqual(alpha.stats.admitted, 1, 'the superseded handle decremented the successor');
+		});
+
+		it('hands back a delegation whose reply arrived after the caller stopped waiting', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			let resolveReply;
+			alpha.coordinator.transport.requestDelegation = (target, database, table, request) =>
+				new Promise((resolve) => {
+					resolveReply = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
+				});
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /not released in time/);
+			// The home grants only now, to a caller that has already given up. Nothing would ever claim
+			// or release it, so the home would deny every other node for the whole delegation.
+			await resolveReply();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.strictEqual(cluster.node('beta').coordinator.stats.granted, 0, 'the stranded grant was not returned');
 		});
 	});
 

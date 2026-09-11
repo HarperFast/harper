@@ -160,6 +160,19 @@ export interface ClusterLockTransport {
 	 * The agreed membership epoch for the database, or undefined while none is agreed — during a
 	 * membership change, on the minority side of a partition, or before the node has joined. Core
 	 * fails closed on undefined rather than guessing a ring.
+	 *
+	 * **Two obligations core cannot check, and relies on.** Both are the design note's §4.4 retirement
+	 * interval, and both exist because core cannot know what a previous incarnation of this process
+	 * did:
+	 *
+	 * 1. After a restart, do not name this node in an epoch until any delegation its previous
+	 *    incarnation issued as a home could have expired (`DELEGATION_LEASE_MS + skew`) — or advance
+	 *    the epoch number, which invalidates those delegations outright, since a delegate drops a
+	 *    delegation whose token belongs to a superseded epoch.
+	 * 2. After an epoch change that re-homes keys, leave enough time for the previous delegates to
+	 *    observe it before the new home starts granting.
+	 *
+	 * Without these a new home can grant a key whose previous delegate is still admitting.
 	 */
 	epoch(database: string): LockEpoch | undefined;
 	/**
@@ -336,6 +349,13 @@ export interface LockRound {
 	tsR: number;
 	/** The monotonic reading the admission's lease is measured from. */
 	mintedMono: number;
+	/**
+	 * The delegation this admission came from. The caller hands it back on release and on
+	 * registration, because a key's delegation can be replaced while a handle is still open: a handle
+	 * from a surrendered delegation that unlocked later would otherwise decrement the SUCCESSOR's
+	 * admission count and let it be surrendered while its own callers were still inside.
+	 */
+	token: FencingToken;
 }
 
 export interface LockCoordinatorOptions {
@@ -416,18 +436,19 @@ export class LockCoordinator {
 	/** Set when this coordinator's state was moved to a successor, so `close()` must not expire it. */
 	#handedOff = false;
 	/**
-	 * Monotonic reading before which this coordinator may not grant as a home. A coordinator that
-	 * started cold — a process restart, not an in-process transport swap, which `adopt` covers — has
-	 * no record of the delegations its predecessor incarnation issued, and they can still be admitting
-	 * on their holders. So it waits out the longest one it could have issued before it grants anything.
+	 * Monotonic reading before which this coordinator may not grant as a home. Off by default, because
+	 * the interval it would enforce belongs to the epoch rather than to core.
 	 *
-	 * The obvious complaint is that this is a long outage after a restart, and the answer is the epoch:
-	 * once harper-pro#825 advances the epoch number across a restart, every delegate drops its
-	 * old-epoch delegation on next use (`#liveDelegation`) and this wait is unnecessary. Core cannot
-	 * assume that has happened, so it holds the conservative bound until an adopted state or a fresh
-	 * epoch says otherwise. Epoch CHANGES are not quarantined here at all: the delegate-side epoch
-	 * check is what stops the old delegate, and bounding the window between a delegate noticing and a
-	 * new home granting is §4.4's retirement interval, which is harper-pro's to provide.
+	 * The hazard is real: a coordinator that started cold has no record of the delegations a previous
+	 * incarnation of this process issued, and those can still be admitting on their holders. But core
+	 * cannot know when that incarnation died, and enforcing the conservative bound here — a full
+	 * `DELEGATION_LEASE_MS + skew` — would make the first cluster lock after every restart wait
+	 * minutes. The epoch protocol can know: `transport.epoch()` must not name this node in an epoch
+	 * until any delegation a previous incarnation issued could have expired, which is the design
+	 * note's §4.4 retirement interval. That obligation is stated on `ClusterLockTransport.epoch`.
+	 *
+	 * Set it explicitly to hold a core-side bound anyway. Epoch CHANGES need nothing here: the
+	 * delegate-side epoch check in `#liveDelegation` is what stops the old delegate.
 	 */
 	#grantableAfterMono: number;
 	/** Keys this node holds a delegation for. */
@@ -463,7 +484,7 @@ export class LockCoordinator {
 		this.#monotonic = options.monotonic ?? (() => performance.now());
 		this.#skewMs = options.skewMs ?? LOCK_LEASE_SKEW_MS;
 		this.#autoTick = options.autoTick !== false;
-		this.#grantableAfterMono = options.grantableAfterMono ?? this.#monotonic() + DELEGATION_LEASE_MS + this.#skewMs;
+		this.#grantableAfterMono = options.grantableAfterMono ?? -Infinity;
 		options.adopt?.handOffTo(this);
 	}
 
@@ -573,10 +594,13 @@ export class LockCoordinator {
 	 * amortization, and the next `lock()` on this node costs nothing. Returns the durable release
 	 * write only when the delegation is actually being given up.
 	 */
-	release(key: any): Promise<void> | void {
+	release(key: any, token?: FencingToken): Promise<void> | void {
 		const keyId = this.#keyIdOf(key);
 		const delegation = this.#delegations.get(keyId);
 		if (!delegation) return undefined;
+		// A handle admitted by a delegation that has since been replaced must not decrement this one's
+		// count, or the successor can be surrendered while its own callers are still inside.
+		if (token && compareTokens(delegation.token, token) !== 0) return undefined;
 		if (delegation.admitted > 0) delegation.admitted--;
 		if (delegation.admitted === 0 && delegation.drained) {
 			// Waking the recall is enough: it surrenders once, on its own path. Surrendering here too
@@ -760,16 +784,16 @@ export class LockCoordinator {
 
 	#admit(delegation: Delegation): LockRound {
 		delegation.admitted++;
-		return { tsR: this.#nextTimestamp(), mintedMono: this.#monotonic() };
+		return { tsR: this.#nextTimestamp(), mintedMono: this.#monotonic(), token: delegation.token };
 	}
 
 	/**
 	 * Register how to revoke the handle an admission produced. `Table.lock()` calls this once the
 	 * handle has joined the round, so a recall can fence a write that was staged and then unlocked.
 	 */
-	registerAdmission(key: any, revoke: () => void): void {
+	registerAdmission(key: any, token: FencingToken, revoke: () => void): void {
 		const delegation = this.#delegations.get(this.#keyIdOf(key));
-		if (!delegation) {
+		if (!delegation || compareTokens(delegation.token, token) !== 0) {
 			// The delegation went away between admission and registration — the handle has no authority
 			// to keep, so revoke it now rather than leaving it unfenced.
 			revoke();
@@ -830,14 +854,29 @@ export class LockCoordinator {
 			// its own timeout and past the native lease — and a reply arriving after that lease has
 			// fired cannot be joined to the handle anyway.
 			const remaining = Math.max(1, deadlineMono - this.#monotonic());
-			return await Promise.race([
+			let raced = false;
+			const requested = Promise.resolve(
 				this.transport.requestDelegation(home, this.database, this.table, {
 					key,
 					requester: this.nodeId,
 					epoch: epoch.number,
 					leaseMs,
+				})
+			);
+			// A reply that arrives after we stopped waiting still granted us the key on the home, which
+			// would then hold it for the whole delegation while every other node is denied. Hand it back.
+			requested.then(
+				(reply) => {
+					if (raced && reply?.granted && reply.token) this.#releaseUnclaimedGrant(key, reply.token);
+				},
+				() => {}
+			);
+			return await Promise.race([
+				requested,
+				delay(remaining).then(() => {
+					raced = true;
+					return { granted: false, reason: 'contended', retryAfterMs: 0 } as DelegationReply;
 				}),
-				delay(remaining).then(() => ({ granted: false, reason: 'contended', retryAfterMs: 0 }) as DelegationReply),
 			]);
 		} catch (error) {
 			// An unreachable home blocks only the keys it homes, which is the availability property the
@@ -846,6 +885,21 @@ export class LockCoordinator {
 				`Could not reach ${home}, the home node for this key on ${this.database}.${this.table}: ${(error as Error)?.message ?? error}`
 			);
 		}
+	}
+
+	/**
+	 * Give back a delegation this node asked for but stopped waiting on. Without it the home holds the
+	 * key for a delegation nobody is using, and every other node is denied for its full duration.
+	 */
+	#releaseUnclaimedGrant(key: any, token: FencingToken): void {
+		const keyId = this.#keyIdOf(key);
+		const held = this.#delegations.get(keyId);
+		// Only if we did not end up installing it for ourselves after all.
+		if (held && compareTokens(held.token, token) === 0) return;
+		this.#writeControlSafely({ type: 'lockRelease', key, requester: this.nodeId, token });
+		const grant = this.#grants.get(keyId);
+		if (grant && grant.delegate === this.nodeId && compareTokens(grant.token, token) === 0)
+			this.#clearGrant(keyId, grant);
 	}
 
 	#grant(keyId: unknown, key: any, epoch: LockEpoch, leaseMs: number, requester: string): DelegationReply {
