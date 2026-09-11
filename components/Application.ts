@@ -1709,30 +1709,17 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 		throw error;
 	}
 	const dormant = new Map<string, DormantBuild[]>();
+	const catalogue = (owner: string, build: DormantBuild) => {
+		const builds = dormant.get(owner);
+		if (builds) builds.push(build);
+		else dormant.set(owner, [build]);
+	};
 
 	for (const deployment of deployments) {
 		if (!deployment.isDirectory()) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		const journalPath = join(deploymentDirPath, ACTIVATION_JOURNAL);
-		const fail = async (component: string, error: unknown) => {
-			const failure = error instanceof Error ? error : new Error(String(error));
-			if (!failures.has(component)) failures.set(component, failure);
-			logger.error(`Could not settle the interrupted activation of ${component}:`, errorForLog(failure));
-			// A DEFERRAL is not a verdict, and only verdicts go on disk. A held lock means a live deploy, which
-			// settles its own journal; a marker written here would outlive that deploy and have
-			// `unsettleableComponentsFromDisk` read it as an authoritative "cannot be settled", failing a
-			// healthy component closed on every worker. The failure is already recorded above, so this thread
-			// still defers — it just leaves nothing behind.
-			if (failure instanceof ComponentPreparationLockTimeoutError) return;
-			// Everything else IS a verdict, recorded so workers reach the same one. An unreadable journal is
-			// self-evident, but a well-formed journal this pass could not settle looks exactly like a deploy
-			// in flight, and a worker would otherwise load the component over state nobody reconciled.
-			// Best-effort: the alternative to a missing marker is today's behavior, not a worse one.
-			await writeFile(join(deploymentDirPath, UNSETTLED_MARKER), failure.message, { mode: 0o600 }).catch(
-				(markerError) =>
-					logger.warn(`Could not record the unsettled activation of ${component}: ${errorMessage(markerError)}`)
-			);
-		};
+		const fail = (component: string, error: unknown) => recordUnsettled(failures, component, error, deploymentDirPath);
 
 		let journal: ActivationJournal | undefined;
 		try {
@@ -1792,6 +1779,13 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					activationToFail = undefined;
 					return;
 				}
+				// Re-classified UNDER the lock: the unlocked read that routed this here can predate the `.complete`
+				// a deploy wrote before dying, and that is a retainable build, not residue.
+				const build = await dormantBuildAt(deploymentDirPath, owner!);
+				if (build) {
+					catalogue(owner!, build);
+					return;
+				}
 				// Cleanup, not settlement. There was no activation here — this is most often the residue a
 				// SUCCESSFUL settlement leaves when its own sweep failed — so a sweep that fails again cannot
 				// make anything unsettled, and recording it would refuse a live component on every worker
@@ -1830,9 +1824,7 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					continue;
 				}
 				if (build) {
-					const builds = dormant.get(owner);
-					if (builds) builds.push(build);
-					else dormant.set(owner, [build]);
+					catalogue(owner, build);
 					continue;
 				}
 			}
@@ -1905,29 +1897,105 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 
 	const maxCount = getStagingRetentionMaxCount();
 	for (const [owner, builds] of dormant) {
-		if (builds.length <= maxCount) continue;
-		try {
-			await withComponentPreparationLock(
-				join(componentsRootDirPath, owner),
-				// Only this owner's catalogued directories are re-read under the lock, never the whole staging
-				// root: sibling threads probe these locks for 250 ms.
-				() => pruneDormantBuilds(owner, builds, maxCount),
-				{
-					purpose: 'activation-recovery',
-					...RECOVERY_LOCK_WAIT,
-					isOwnerAlive: (lockOwner) => lockOwner.pid !== process.pid || isThreadRunning(lockOwner.threadId),
+		for (const [component, error] of await reconcileDormantBuilds(componentsRootDirPath, owner, builds, maxCount)) {
+			if (!failures.has(component)) failures.set(component, error);
+		}
+	}
+	return failures;
+}
+
+/**
+ * Record a settlement failure against a component. A lock TIMEOUT is a deferral, not a verdict, and only
+ * verdicts go on disk: a held lock means a live deploy, which settles its own journal, and a marker written
+ * here would outlive it and have `unsettleableComponentsFromDisk` fail a healthy component closed on every
+ * worker. Everything else is written so workers reach the same verdict — a well-formed journal this pass
+ * could not settle looks exactly like a deploy in flight otherwise. Marker write is best-effort.
+ */
+async function recordUnsettled(
+	failures: Map<string, Error>,
+	component: string,
+	error: unknown,
+	deploymentDirPath: string
+): Promise<void> {
+	const failure = error instanceof Error ? error : new Error(String(error));
+	if (!failures.has(component)) failures.set(component, failure);
+	logger.error(`Could not settle the interrupted activation of ${component}:`, errorForLog(failure));
+	if (failure instanceof ComponentPreparationLockTimeoutError) return;
+	await writeFile(join(deploymentDirPath, UNSETTLED_MARKER), failure.message, { mode: 0o600 }).catch((markerError) =>
+		logger.warn(`Could not record the unsettled activation of ${component}: ${errorMessage(markerError)}`)
+	);
+}
+
+/**
+ * Finish one owner's catalogued dormant builds after the scan. The catalog was read without the lock, so a
+ * deploy may have published a journal into one of these directories since — and if it then died mid-swap,
+ * only settlement brings the component back. So: settle any journal that appeared, then bound what is still
+ * dormant. The lock is taken only when there is something to do; a lock a live deploy holds is the same
+ * deferral the residue branch records.
+ */
+export async function reconcileDormantBuilds(
+	componentsRootDirPath: string,
+	owner: string,
+	builds: DormantBuild[],
+	maxCount: number
+): Promise<Map<string, Error>> {
+	const failures = new Map<string, Error>();
+	let journalAppeared = false;
+	for (const build of builds) {
+		// Anything but a clean ENOENT means "read it properly, under the lock".
+		journalAppeared = await presentOrAbsent(join(build.deploymentDirPath, ACTIVATION_JOURNAL)).then(
+			(stats) => stats !== undefined,
+			() => true
+		);
+		if (journalAppeared) break;
+	}
+	if (!journalAppeared && builds.length <= maxCount) return failures;
+	try {
+		await withComponentPreparationLock(
+			join(componentsRootDirPath, owner),
+			async () => {
+				const stillDormant: DormantBuild[] = [];
+				for (const build of builds) {
+					let journal: ActivationJournal | undefined;
+					try {
+						journal = await readActivationJournal(join(build.deploymentDirPath, ACTIVATION_JOURNAL));
+					} catch (error) {
+						await recordUnsettled(failures, owner, error, build.deploymentDirPath);
+						continue;
+					}
+					if (!journal) {
+						stillDormant.push(build);
+						continue;
+					}
+					// The lock held here is the SIDECAR owner's, as in the residue branch: a journal naming someone
+					// else is not settled under it, and both names are failed.
+					const splitNames = splitAttributionOwners(journal.component, owner);
+					if (splitNames) {
+						const split = splitAttributionError(build.deploymentDirPath, journal.component, splitNames[0]);
+						for (const name of splitNames) await recordUnsettled(failures, name, split, build.deploymentDirPath);
+						continue;
+					}
+					try {
+						await settleInterruptedActivation(componentsRootDirPath, build.deploymentDirPath, journal);
+					} catch (error) {
+						await recordUnsettled(failures, journal.component, error, build.deploymentDirPath);
+					}
 				}
-			);
-		} catch (error) {
-			// A held lock is a live deploy of this component: the same deferral the residue branch records.
-			// Anything else is hygiene that could not run, not a verdict.
-			const failure = error instanceof Error ? error : new Error(String(error));
-			if (failure instanceof ComponentPreparationLockTimeoutError) {
-				if (!failures.has(owner)) failures.set(owner, failure);
-				logger.info?.(`Deferred pruning the dormant staged builds of ${owner}: a deploy holds its lock`);
-			} else {
-				logger.warn(`Could not prune the dormant staged builds of ${owner}:`, errorForLog(failure));
+				if (stillDormant.length > maxCount) await pruneDormantBuilds(owner, stillDormant, maxCount);
+			},
+			{
+				purpose: 'activation-recovery',
+				...RECOVERY_LOCK_WAIT,
+				isOwnerAlive: (lockOwner) => lockOwner.pid !== process.pid || isThreadRunning(lockOwner.threadId),
 			}
+		);
+	} catch (error) {
+		const failure = error instanceof Error ? error : new Error(String(error));
+		if (failure instanceof ComponentPreparationLockTimeoutError) {
+			if (!failures.has(owner)) failures.set(owner, failure);
+			logger.info?.(`Deferred reconciling the dormant staged builds of ${owner}: a deploy holds its lock`);
+		} else {
+			logger.warn(`Could not reconcile the dormant staged builds of ${owner}:`, errorForLog(failure));
 		}
 	}
 	return failures;

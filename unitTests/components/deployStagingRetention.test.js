@@ -10,12 +10,16 @@ const { Readable } = require('node:stream');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
+const { setTimeout: sleep } = require('node:timers/promises');
+
 const {
 	dropComponentDirectory,
 	getStagingRetentionMaxCount,
 	prepareApplication,
 	pruneDormantBuilds,
+	reconcileDormantBuilds,
 	recoverInterruptedActivations,
+	ASIDE_STAGING_DIR,
 	DEPLOY_STAGING_DIR,
 	Application,
 } = require('#src/components/Application');
@@ -62,6 +66,17 @@ async function plant(root, component, id, state = {}) {
 	}
 	if (state.unsettled) await fs.writeFile(path.join(deploymentDir, '.unsettled'), 'stale verdict');
 	return deploymentDir;
+}
+
+/** What a deploy that died between B1 and B2 leaves: journal written, live tree moved aside, candidate still staged. */
+async function publishJournalAndMoveLiveAside(root, component, id) {
+	await fs.writeFile(
+		path.join(root, DEPLOY_STAGING_DIR, id, '.activation.json'),
+		JSON.stringify({ v: 1, component, candidateId: id })
+	);
+	const asideDir = path.join(root, ASIDE_STAGING_DIR, component);
+	await fs.mkdir(asideDir, { recursive: true });
+	await fs.rename(path.join(root, component), path.join(asideDir, '.in-progress-1-1-aaa'));
 }
 
 async function stagedIds(root) {
@@ -226,6 +241,115 @@ describe('staged build retention', () => {
 			assert.ok(failures.get('web') instanceof ComponentPreparationLockTimeoutError, 'deferred, not failed');
 			assert.deepStrictEqual(await stagedIds(root), ['d-1', 'd-2'], 'nothing was removed behind the lock');
 			assert.ok(!existsSync(path.join(root, DEPLOY_STAGING_DIR, 'd-1', '.unsettled')), 'and no verdict was written');
+			await fs.rm(root, { recursive: true, force: true });
+		});
+	});
+
+	describe('journals published after the unlocked scan', () => {
+		it('settles a journal that appeared on a catalogued build instead of leaving the component broken', async () => {
+			const root = await newRoot('late-journal');
+			const deploymentDirPath = await plant(root, 'web', 'd-late', { completedAt: 1_000 });
+			await fs.mkdir(path.join(root, 'web'), { recursive: true });
+			await fs.writeFile(path.join(root, 'web', 'index.js'), 'LIVE\n');
+			// Catalogued as dormant by the scan, then the deploy published its journal, moved live aside, and died.
+			const catalogued = [{ deploymentDirPath, deploymentId: 'd-late', completedAt: 1_000 }];
+			await publishJournalAndMoveLiveAside(root, 'web', 'd-late');
+
+			const failures = await reconcileDormantBuilds(root, 'web', catalogued, 5);
+
+			assert.strictEqual(failures.size, 0);
+			assert.strictEqual(
+				await fs.readFile(path.join(root, 'web', 'index.js'), 'utf8'),
+				'// d-late\n',
+				'rolled forward'
+			);
+			assert.deepStrictEqual(await stagedIds(root), [], 'and the settled deployment directory is gone');
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		it('defers the component when the journal that appeared belongs to a deploy still holding the lock', async function () {
+			this.timeout(10000);
+			const root = await newRoot('late-journal-held');
+			const deploymentDirPath = await plant(root, 'web', 'd-late', { completedAt: 1_000 });
+			await fs.writeFile(
+				path.join(deploymentDirPath, '.activation.json'),
+				JSON.stringify({ v: 1, component: 'web', candidateId: 'd-late' })
+			);
+
+			let failures;
+			await withComponentPreparationLock(
+				path.join(root, 'web'),
+				async () => {
+					failures = await reconcileDormantBuilds(
+						root,
+						'web',
+						[{ deploymentDirPath, deploymentId: 'd-late', completedAt: 1 }],
+						5
+					);
+				},
+				{ purpose: 'test-deploy' }
+			);
+
+			assert.ok(failures.get('web') instanceof ComponentPreparationLockTimeoutError);
+			assert.ok(!existsSync(path.join(deploymentDirPath, '.unsettled')), 'a deferral writes no verdict');
+			assert.deepStrictEqual(await stagedIds(root), ['d-late']);
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		it('recovers a swap interrupted between the scan reading no journal and the end of the pass', async function () {
+			this.timeout(10000);
+			const root = await newRoot('interleaved-journal');
+			await plant(root, 'web', 'd-a', { completedAt: 1_000 });
+			await plant(root, 'web', 'd-z', { complete: false }); // residue: the scan parks on this owner's lock
+			await fs.mkdir(path.join(root, 'web'), { recursive: true });
+			await fs.writeFile(path.join(root, 'web', 'index.js'), 'LIVE\n');
+
+			let failures;
+			await withComponentPreparationLock(
+				path.join(root, 'web'),
+				async () => {
+					const recovery = recoverInterruptedActivations(root);
+					// The scan has read d-a's (absent) journal and is now blocked on this lock for d-z; the deploy
+					// publishes its journal, moves live aside, and dies before B2.
+					await sleep(50);
+					await publishJournalAndMoveLiveAside(root, 'web', 'd-a');
+					// Released by the lock callback returning; the scan then acquires it.
+					void recovery.then((result) => (failures = result));
+				},
+				{ purpose: 'test-deploy' }
+			);
+			const deadline = Date.now() + 5000;
+			while (!failures && Date.now() < deadline) await sleep(10);
+
+			assert.ok(failures, 'recovery completed');
+			assert.strictEqual(failures.size, 0);
+			assert.strictEqual(await fs.readFile(path.join(root, 'web', 'index.js'), 'utf8'), '// d-a\n', 'rolled forward');
+			assert.deepStrictEqual(await stagedIds(root), []);
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		it('retains a build whose .complete landed while the scan waited for the lock', async function () {
+			this.timeout(10000);
+			const root = await newRoot('interleaved-complete');
+			await plant(root, 'web', 'd-finishing', { complete: false }); // looks like residue unlocked
+
+			let failures;
+			await withComponentPreparationLock(
+				path.join(root, 'web'),
+				async () => {
+					const recovery = recoverInterruptedActivations(root);
+					await sleep(50);
+					await fs.writeFile(path.join(root, DEPLOY_STAGING_DIR, 'd-finishing', '.complete'), '');
+					void recovery.then((result) => (failures = result));
+				},
+				{ purpose: 'test-deploy' }
+			);
+			const deadline = Date.now() + 5000;
+			while (!failures && Date.now() < deadline) await sleep(10);
+
+			assert.ok(failures, 'recovery completed');
+			assert.strictEqual(failures.size, 0, 'the lock was released within the probe budget, so nothing deferred');
+			assert.deepStrictEqual(await stagedIds(root), ['d-finishing'], 'reclassified under the lock and kept');
 			await fs.rm(root, { recursive: true, force: true });
 		});
 	});

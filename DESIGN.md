@@ -667,10 +667,13 @@ bound exists for.
 
 Removal is decided **only under the owner's preparation lock**: activation writes `.complete` moments
 before its journal while holding that lock, so an unlocked read of "complete, no journal" is a candidate, not
-a verdict. Boot recovery catalogues dormant builds unlocked and leaves them alone; only an owner over its
-bound takes the lock, once, and re-derives its catalogued directories under it — never the whole staging
-root, which sibling threads are probing — before choosing the kept set; a build created after the scan waits
-for the next pass. It used to take the lock per journal-less directory, which was one-shot because the directory was
+a verdict. Boot recovery catalogues dormant builds unlocked, then reconciles each owner once: if any
+catalogued directory has acquired a journal since the scan, or the owner is over its bound, it takes the lock
+and re-reads only that owner's catalogued directories — never the whole staging root, which sibling threads
+are probing — settling any journal that appeared (a deploy that published one and died mid-swap would
+otherwise leave the component unloadable until the next start) and bounding what is still dormant. The
+residue branch re-classifies under its lock too, since the `.complete` a deploy wrote before dying can land
+while the scan waits for the lock. A build created after the scan waits for the next pass. It used to take the lock per journal-less directory, which was one-shot because the directory was
 removed — doing that for retained builds on every pass made a healthy component lose the 250 ms probe to its
 sibling threads at boot and be deferred with nothing in progress. A lock a live deploy holds is still recorded as
 that same deferral: "do not delete" is not "safe to load". The deploy path prunes inside the settlement scan
