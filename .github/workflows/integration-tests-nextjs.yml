@@ -60,7 +60,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Network-bound phases below are capped at roughly 10x their healthy time. Keep
+    # clear of the sum of the step caps (8 + 12 + 10 + 10 + 15 = 55). Below that, an
+    # earlier phase can exhaust the job before a later step cap fires, and the stall
+    # arrives as a bare job cancellation naming no step.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -78,6 +82,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Install adapter dependencies
+        timeout-minutes: 8 # ~40s healthy
         run: npm ci
 
       - name: Checkout harper override
@@ -101,6 +106,7 @@ jobs:
         run: echo "HARPER_RUNTIME=$(command -v node)" >> "$GITHUB_ENV"
 
       - name: Build and install harper override
+        timeout-minutes: 12 # ~1m healthy: two npm installs, a full harper build, and a pack
         run: |
           cd "$GITHUB_WORKSPACE/harper-override"
           npm ci
@@ -120,6 +126,7 @@ jobs:
         run: npm run build
 
       - name: Install fixture dependencies
+        timeout-minutes: 10 # ~50s healthy, one install per fixture
         run: npm run install:fixtures
 
       - name: Install Playwright browsers
