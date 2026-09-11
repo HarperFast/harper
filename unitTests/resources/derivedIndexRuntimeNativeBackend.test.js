@@ -420,6 +420,45 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(store.locks.size, 0);
 	});
 
+	it('settles acquisition before starting an explicitly requested rebuild', async () => {
+		let resolveAcquisition;
+		const acquisition = new Promise((resolve) => (resolveAcquisition = resolve));
+		const store = new FakeLogStore(new Map([[10, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 10, recordId: 'a' })]]]),
+		});
+		const backend = new AcquiringBackend('acquire-before-rebuild', cursor(10), () => acquisition);
+		backend.resets = [];
+		backend.reset = async (epoch) => {
+			backend.resets.push(epoch);
+			backend.cursor = undefined;
+			backend.persistedCursor = undefined;
+		};
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 10, value: { title: 'a' } }]]));
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.acquisitions.length === 1);
+		assert.strictEqual(runtime.requestRebuild('acquire-before-rebuild'), true);
+		await sleep(5);
+		assert.strictEqual(backend.resets.length, 0);
+		resolveAcquisition(cursor(10));
+		await waitFor(() => backend.resets.length === 1);
+		await runtime.stop();
+	});
+
+	it('contains a failure while installing an asynchronously acquired cursor', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		store.rootStore.listLogs = () => {
+			throw new Error('log inventory unavailable');
+		};
+		const backend = new AcquiringBackend('acquire-install-failure', cursor(10));
+		const { runtime } = runtimeFor(store, new Map());
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getStatus('acquire-install-failure').state === 'needs-rebuild');
+		assert.strictEqual(rejections.length, 0);
+		await runtime.stop();
+	});
+
 	it('reopens a released backend from its committed cursor without rebuilding', async () => {
 		const store = new FakeLogStore(
 			new Map([
@@ -468,6 +507,24 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await waitFor(() => backend.deliveries.length === 1);
 		assert.strictEqual(backend.acquisitions.length, 2);
 		assert.strictEqual(runtime.getReadiness('acquire-retry').state, 'ready');
+		await runtime.stop();
+	});
+
+	it('publishes unavailable after persistent backend acquisition failures', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const backend = new AcquiringBackend('acquire-unavailable', cursor(10), () => {
+			throw new Error('generation cannot open');
+		});
+		const { runtime } = runtimeFor(store, new Map(), {
+			rebuildBackoffMilliseconds: 1,
+			maxAcquisitionAttempts: 2,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getReadiness('acquire-unavailable').state === 'unavailable');
+		assert.strictEqual(backend.acquisitions.length, 2);
+		await sleep(10);
+		assert.strictEqual(backend.acquisitions.length, 2, 'persistent acquisition failures stop retrying silently');
 		await runtime.stop();
 	});
 
