@@ -8,6 +8,7 @@ import {
 	type DerivedIndexBatch,
 	type DerivedIndexCursor,
 	type DerivedIndexDeliveryResult,
+	type DerivedIndexFlushReason,
 } from './derivedIndexRuntime.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 
@@ -18,11 +19,15 @@ const DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_CURSOR_PAYLOAD_BYTES = 64 * 1024;
 const DEFAULT_OPEN_ATTEMPTS = 3;
 const DEFAULT_OPEN_RETRY_MILLISECONDS = 10;
+const DEFAULT_CURSOR_ONLY_PUBLISH_AFTER_FLUSHES = 1;
+const MAX_CURSOR_ONLY_PUBLISH_AFTER_FLUSHES = 16;
+const MAX_CURSOR_ONLY_PUBLISH_DELAY_MILLISECONDS = 60_000;
 const RESERVED_LOG_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 
 export interface FullTextDerivedIndexEngine {
 	readonly committedPayload?: string;
 	apply(batch: Uint8Array): Promise<number>;
+	/** Success proves the cursor payload and every preceding mutation are durably ordered together. */
 	publish(payload: string): Promise<bigint>;
 	close(options?: { mode?: 'require-clean' | 'rollback' }): Promise<void>;
 }
@@ -46,6 +51,9 @@ export type FullTextDerivedIndexBackendOptions = {
 	maxCursorPayloadBytes?: number;
 	openAttempts?: number;
 	openRetryMilliseconds?: number;
+	cursorOnlyPublishAfterFlushes?: number;
+	maxCursorOnlyPublishDelayMilliseconds?: number;
+	now?: () => number;
 };
 
 type ApplyCommand = {
@@ -91,6 +99,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#maxCursorPayloadBytes: number;
 	#openAttempts: number;
 	#openRetryMilliseconds: number;
+	#cursorOnlyPublishAfterFlushes: number;
+	#maxCursorOnlyPublishDelayMilliseconds: number;
+	#now: () => number;
 	#host?: DerivedIndexBackendHost;
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
@@ -103,7 +114,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#lastAppliedSequence = 0;
 	#lastPublishedSequence = 0;
 	#lastBarrierHorizon = 0;
+	#lastMutationSequence = 0;
 	#lastAcceptedCursor?: DerivedIndexCursor;
+	#cursorOnlyAgeFlushes = 0;
+	#cursorOnlySince?: number;
 	#draining = false;
 	#scheduled = false;
 	#recovering = false;
@@ -139,6 +153,21 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			options.openRetryMilliseconds ?? DEFAULT_OPEN_RETRY_MILLISECONDS,
 			'openRetryMilliseconds'
 		);
+		this.#cursorOnlyPublishAfterFlushes = boundedPositiveInteger(
+			options.cursorOnlyPublishAfterFlushes ?? DEFAULT_CURSOR_ONLY_PUBLISH_AFTER_FLUSHES,
+			'cursorOnlyPublishAfterFlushes',
+			MAX_CURSOR_ONLY_PUBLISH_AFTER_FLUSHES
+		);
+		this.#maxCursorOnlyPublishDelayMilliseconds = boundedNonNegativeInteger(
+			options.maxCursorOnlyPublishDelayMilliseconds ?? 0,
+			'maxCursorOnlyPublishDelayMilliseconds',
+			MAX_CURSOR_ONLY_PUBLISH_DELAY_MILLISECONDS
+		);
+		if (this.#cursorOnlyPublishAfterFlushes > 1 && this.#maxCursorOnlyPublishDelayMilliseconds === 0)
+			throw new TypeError(
+				'maxCursorOnlyPublishDelayMilliseconds is required when cursor-only publication is coalesced'
+			);
+		this.#now = options.now ?? Date.now;
 	}
 
 	attach(host: DerivedIndexBackendHost): void {
@@ -175,8 +204,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			} catch (closeError) {
 				this.#engine = engine;
 				this.#activeEpoch = ownerEpoch;
-				this.#failed = true;
-				throw new FullTextDerivedIndexError('Full-text acquisition could not close its engine', closeError);
+				const failure = new FullTextDerivedIndexError('Full-text acquisition could not close its engine', closeError);
+				this.#markFailed(failure);
+				throw failure;
 			}
 			if (error === payloadError) {
 				logger.warn?.(`Full-text derived index '${this.id}' has an invalid committed cursor; rebuilding`, error);
@@ -200,12 +230,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			if (through && !cursorAtOrAfter(through, this.#lastAcceptedCursor ?? this.#durableCursor))
 				throw new FullTextDerivedIndexError('Full-text derived index cursor moved backward');
 		} catch (error) {
-			this.#fail(error);
+			this.#markFailed(error);
 			return DERIVED_INDEX_FAILED;
 		}
 		const bytes = Math.max(1, batch.bytes);
 		if (!Number.isSafeInteger(bytes) || bytes > this.#maxQueuedBytes) {
-			this.#fail(new FullTextDerivedIndexError('Full-text derived index batch exceeds its queue byte limit'));
+			this.#markFailed(new FullTextDerivedIndexError('Full-text derived index batch exceeds its queue byte limit'));
 			return DERIVED_INDEX_FAILED;
 		}
 		if (this.#retainedBatches >= this.#maxQueuedBatches || this.#retainedBytes + bytes > this.#maxQueuedBytes) {
@@ -213,6 +243,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			return DERIVED_INDEX_DEFERRED;
 		}
 		const sequence = ++this.#lastAcceptedSequence;
+		if (batch.records.length > 0) {
+			this.#lastMutationSequence = sequence;
+			this.#resetCursorOnlyFlushes();
+		} else if (this.#cursorOnlyPublishAfterFlushes > 1 && this.#cursorOnlySince === undefined) {
+			this.#cursorOnlySince = this.#now();
+		}
 		if (through) this.#lastAcceptedCursor = through;
 		this.#commands.push({ type: 'apply', epoch: batch.ownerEpoch, sequence, batch, bytes });
 		this.#retainedBatches++;
@@ -221,15 +257,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		return DERIVED_INDEX_ACCEPTED;
 	}
 
-	flush(): void {
+	flush(reason: DerivedIndexFlushReason = 'threshold'): void {
 		if (!this.#engine || this.#activeEpoch === undefined || this.#failed || this.#recovering) return;
-		this.#queueBarrier(this.#activeEpoch);
+		this.#queueBarrier(this.#activeEpoch, reason);
 	}
 
 	shutdown(ownerEpoch: bigint): Promise<void> {
 		if (this.#shutdown?.epoch === ownerEpoch) return this.#shutdown.promise;
 		if (this.#activeEpoch !== ownerEpoch) return Promise.resolve();
-		this.#queueBarrier(ownerEpoch);
+		this.#queueBarrier(ownerEpoch, 'shutdown');
 		let resolve: () => void;
 		let reject: (error: unknown) => void;
 		const promise = new Promise<void>((resolvePromise, rejectPromise) => {
@@ -247,9 +283,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			throw new FullTextDerivedIndexError('Full-text derived index backend is not quiescent at reset');
 		this.#shutdown = undefined;
 		this.#failed = false;
-		await this.#invalidateOldGeneration(ownerEpoch);
 		let replacement: FullTextDerivedIndexEngine | undefined;
 		try {
+			await this.#invalidateOldGeneration(ownerEpoch);
 			replacement = await this.#lifecycle.replace(ownerEpoch);
 			this.#assertSharedEpoch(ownerEpoch);
 			const cursor = decodeFullTextCursorPayload(replacement.committedPayload, this.#maxCursorPayloadBytes);
@@ -261,11 +297,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				} catch (closeError) {
 					this.#engine = replacement;
 					this.#activeEpoch = ownerEpoch;
-					this.#failed = true;
-					throw new FullTextDerivedIndexError('Replacement full-text generation could not close', closeError);
+					const failure = new FullTextDerivedIndexError('Replacement full-text generation could not close', closeError);
+					this.#markFailed(failure);
+					throw failure;
 				}
 			}
-			this.#fail(error);
+			this.#markFailed(error);
 			throw error;
 		}
 		this.#installEngine(replacement, ownerEpoch, undefined);
@@ -280,10 +317,19 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		};
 	}
 
-	#queueBarrier(epoch: bigint): void {
+	#queueBarrier(epoch: bigint, reason: DerivedIndexFlushReason): void {
 		const horizon = this.#lastAcceptedSequence;
 		if (horizon === 0 || horizon <= this.#lastBarrierHorizon) return;
+		const hasMutations = this.#lastMutationSequence > this.#lastBarrierHorizon;
+		if (reason === 'age' && !hasMutations && this.#cursorOnlyPublishAfterFlushes > 1) {
+			const ageFlushes = ++this.#cursorOnlyAgeFlushes;
+			const now = this.#now();
+			const delayed = now - (this.#cursorOnlySince ?? now);
+			if (ageFlushes < this.#cursorOnlyPublishAfterFlushes && delayed < this.#maxCursorOnlyPublishDelayMilliseconds)
+				return;
+		}
 		this.#lastBarrierHorizon = horizon;
+		this.#resetCursorOnlyFlushes();
 		this.#commands.push({
 			type: 'barrier',
 			epoch,
@@ -320,7 +366,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				}
 			}
 		} catch (error) {
-			this.#fail(error);
+			this.#failAndNotify(error);
 		} finally {
 			this.#draining = false;
 			if (this.#shutdown && !this.#shutdown.closing) void this.#closeForShutdown(this.#shutdown);
@@ -333,6 +379,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	async #apply(command: ApplyCommand): Promise<void> {
 		this.#assertCommandEpoch(command.epoch);
+		if (command.batch.records.length === 0) {
+			this.#lastAppliedSequence = command.sequence;
+			return;
+		}
 		let packed: Uint8Array;
 		try {
 			packed = this.#encodeMutationBatch(toFullTextMutationBatch(command.batch));
@@ -398,7 +448,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#lossPendingEpoch = ownerEpoch;
 			this.#notify('accepted-work-lost');
 		} catch (error) {
-			this.#fail(new FullTextDerivedIndexError('Full-text engine recovery failed', error));
+			this.#failAndNotify(new FullTextDerivedIndexError('Full-text engine recovery failed', error));
 		} finally {
 			this.#recovering = false;
 		}
@@ -419,10 +469,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			request.resolve();
 		} catch (error) {
 			this.#activeEpoch = request.epoch;
-			this.#failed = true;
 			if (this.#shutdown === request) this.#shutdown = undefined;
-			request.reject(new FullTextDerivedIndexError('Full-text engine shutdown did not prove quiescence', error));
-			this.#notify('failed');
+			const failure = new FullTextDerivedIndexError('Full-text engine shutdown did not prove quiescence', error);
+			this.#markFailed(failure);
+			request.reject(failure);
 		}
 	}
 
@@ -447,7 +497,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			} catch (closeError) {
 				this.#engine = engine;
 				this.#activeEpoch = ownerEpoch;
-				this.#failed = true;
 				throw new FullTextDerivedIndexError('Old full-text generation could not close before replacement', closeError);
 			}
 			this.#assertSharedEpoch(ownerEpoch);
@@ -486,7 +535,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#lastAppliedSequence = 0;
 		this.#lastPublishedSequence = 0;
 		this.#lastBarrierHorizon = 0;
+		this.#lastMutationSequence = 0;
 		this.#lastAcceptedCursor = undefined;
+		this.#resetCursorOnlyFlushes();
 		this.#capacityDeferred = false;
 		this.#lossPendingEpoch = undefined;
 		this.#failed = false;
@@ -497,13 +548,24 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#retainedBatches = 0;
 		this.#retainedBytes = 0;
 		this.#lastBarrierHorizon = this.#lastPublishedSequence;
+		this.#resetCursorOnlyFlushes();
 	}
 
-	#fail(error: unknown): void {
+	#markFailed(error: unknown): boolean {
+		if (this.#failed) return false;
 		this.#failed = true;
 		this.#discardCommands();
 		logger.error('Full-text derived index backend failed', error);
-		this.#notify('failed');
+		return true;
+	}
+
+	#failAndNotify(error: unknown): void {
+		if (this.#markFailed(error)) this.#notify('failed');
+	}
+
+	#resetCursorOnlyFlushes(): void {
+		this.#cursorOnlyAgeFlushes = 0;
+		this.#cursorOnlySince = undefined;
 	}
 
 	#assertAttached(): void {
@@ -668,6 +730,18 @@ function positiveInteger(value: number, name: string): number {
 function nonNegativeInteger(value: number, name: string): number {
 	if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative safe integer`);
 	return value;
+}
+
+function boundedPositiveInteger(value: number, name: string, maximum: number): number {
+	const integer = positiveInteger(value, name);
+	if (integer > maximum) throw new TypeError(`${name} must not exceed ${maximum}`);
+	return integer;
+}
+
+function boundedNonNegativeInteger(value: number, name: string, maximum: number): number {
+	const integer = nonNegativeInteger(value, name);
+	if (integer > maximum) throw new TypeError(`${name} must not exceed ${maximum}`);
+	return integer;
 }
 
 function delay(milliseconds: number): Promise<void> {

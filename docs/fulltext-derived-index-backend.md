@@ -73,6 +73,7 @@ The backend accepts these structural collaborators rather than importing the unp
 interface FullTextDerivedIndexEngine {
 	readonly committedPayload?: string;
 	apply(batch: Uint8Array): Promise<number>;
+	// Success proves the payload and every preceding mutation are durably ordered together.
 	publish(payload: string): Promise<bigint>;
 	close(options?: { mode?: 'require-clean' | 'rollback' }): Promise<void>;
 }
@@ -116,14 +117,22 @@ Each accepted apply receives a local sequence. A barrier captures, at request ti
   and
 - the current owner epoch.
 
-The drain encodes and applies commands in FIFO order. It never derives a cursor from a sequence or
-merges cursor vectors. A barrier publishes only the captured cursor, or a cursorless payload when a
-rebuild generation has not yet received its final `through`. Replayed documents remain idempotent by
-canonical document id.
+The drain applies commands in FIFO order. A cursor-only command advances ordering without encoding
+or crossing into the native apply path; emptiness is based on source records rather than encoded
+upserts and deletes because an unindexable source record becomes a delete. The backend never derives
+a cursor from a sequence or merges cursor vectors. A barrier publishes only the captured cursor, or
+a cursorless payload when a rebuild generation has not yet received its final `through`. Replayed
+documents remain idempotent by canonical document id.
 
-`flush()` queues or coalesces a barrier and returns `void`. Async apply/publication results are
-reported through `onStateChange`; a transient barrier rejection must not enter the runtime's
-`flush()` rejection path, which treats it as a permanent backend failure.
+`flush(reason)` queues or coalesces a barrier and returns `void`. By default every request queues the
+latest eligible horizon. An optional cursor-only policy can publish on every Nth `age` request, with
+a hard elapsed-time cap checked on those existing requests. It adds no timer. A real mutation,
+`threshold`, or `shutdown` request forces the barrier. The count defaults to one, is capped at 16,
+and the elapsed bound is capped at 60 seconds; schema activation must validate the resulting
+wall-clock replay window against the same resolved flush age and effective lag budget used by the
+runtime registration. The barrier horizon is claimed only when the command is actually queued.
+Async apply/publication results are reported through `onStateChange`; a transient barrier rejection
+must not enter the runtime's `flush()` rejection path, which treats it as a permanent backend failure.
 
 The commit payload is versioned JSON with either one complete `DerivedIndexCursor` or `null` for a
 cursorless generation. Parsing enforces a byte limit, the payload version, cursor format, a plain
@@ -147,6 +156,11 @@ payload, caches the recovered cursor, and only then emits `accepted-work-lost`. 
 from that cursor. Failure to close sufficiently to prove quiescence makes `shutdown()` reject and
 keeps the runner lock held. A closed and quiescent but corrupt generation emits `failed`; its later
 shutdown may resolve so the runtime can enter rebuild.
+
+Failures already returned by `deliver()` or rejected by `reset()`/`shutdown()` mark the backend
+failed without also scheduling a state callback. Drain and recovery failures have no synchronous
+channel and emit one `failed` callback. This keeps one physical fault from spending two runtime
+rebuild attempts.
 
 State notifications always run in a later macrotask. The backend never re-enters the runtime from an
 engine callback or synchronous host-storage callback, and it does not wake a runner whose shutdown
@@ -193,11 +207,13 @@ rocksdb-js primitive and per-publication polling are not assumed.
   asynchronous cursor-install failures are contained, transient failures recover, and persistent
   failures become observable `unavailable` state at the configured cap.
 - Backend tests prove bounded asynchronous encoding, FIFO barrier horizons, repeated `through`
-  values, exact barrier snapshots, monotone cursors, deferred wake-up, and fail-closed behavior.
+  values, exact barrier snapshots, monotone cursors, cursor-only native bypass and bounded
+  publication coalescing, deferred wake-up, and fail-closed behavior.
 - Cursor tests cover decimal RocksDB audit positions, malformed and oversized payloads, restart
   recovery, and publication/readback ordering.
-- Failure tests cover recoverable apply and ambiguous publish failures, reopen-before-notify,
-  unreopenable generations, late opens after revocation, and retry after quiescence failure.
+- Failure tests cover one-channel reporting for synchronous failures, recoverable apply and ambiguous
+  publish failures, reopen-before-notify, unreopenable generations, late opens after revocation, and
+  retry after quiescence failure.
 - Shutdown/reset tests prove clean close, tombstone-before-replacement, cursor clearing, reopen on a
   later owner epoch, replacement of an unopenable old generation, and an open cursorless replacement.
 - A RocksDB integration test pairs real `RocksDerivedIndexStorage` with a deterministic fake engine,

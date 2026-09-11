@@ -16,6 +16,10 @@ const {
 	READINESS_BYTES,
 	readDerivedIndexReadiness,
 } = require('#src/resources/derivedIndexRuntime');
+const {
+	encodeFullTextCursorPayload,
+	FullTextDerivedIndexBackend,
+} = require('#src/resources/FullTextDerivedIndexBackend');
 
 // A shared fake of the RocksDB transaction-log store: `entriesByCursor` maps a resume timestamp to
 // the entries physically after it, `logEntries` is the retained log used by the rebuild boundary
@@ -1355,6 +1359,64 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const shared = runtime.getReadiness('flush-reject');
 		assert.strictEqual(shared.state, 'needs-rebuild');
 		assert.strictEqual(shared.reason, 'backend-failed', 'the backend message never reaches the shared record');
+		await runtime.stop();
+	});
+
+	it('spends one rebuild attempt when the full-text backend rejects a delivery synchronously', async () => {
+		const records = new Map([['1:a', { version: 20, value: { title: 'oversized' }, size: 32 }]]);
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 20, recordId: 'a' })]]]),
+		});
+		class Engine {
+			constructor(committedPayload) {
+				this.committedPayload = committedPayload;
+			}
+
+			async apply(bytes) {
+				const batch = JSON.parse(Buffer.from(bytes).toString());
+				return batch.upserts.length + batch.deletes.length;
+			}
+
+			async publish(payload) {
+				this.committedPayload = payload;
+				return 1n;
+			}
+
+			async close() {}
+		}
+		const opened = [
+			new Engine(encodeFullTextCursorPayload(cursor(10))),
+			new Engine(encodeFullTextCursorPayload(cursor(10))),
+		];
+		let finishReplacement;
+		let replacements = 0;
+		const backend = new FullTextDerivedIndexBackend({
+			id: 'single-fulltext-failure',
+			lifecycle: {
+				async open() {
+					return opened.shift();
+				},
+				replace() {
+					replacements++;
+					return new Promise((resolve) => (finishReplacement = () => resolve(new Engine())));
+				},
+			},
+			encodeMutationBatch: (batch) => Buffer.from(JSON.stringify(batch)),
+			maxQueuedBytes: 1,
+			openAttempts: 1,
+		});
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 1000 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5, rebuildBackoffMilliseconds: 1000 }));
+
+		await waitFor(() => replacements === 1);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(runtime.getStatus(backend.id).state, 'rebuilding');
+		assert.strictEqual(runtime.getMetrics(backend.id).rebuildAttempts, 1);
+		assert.strictEqual(readDerivedIndexReadiness(store, backend.id).rebuildAttempts, 1);
+
+		records.clear();
+		finishReplacement();
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 5000 });
 		await runtime.stop();
 	});
 

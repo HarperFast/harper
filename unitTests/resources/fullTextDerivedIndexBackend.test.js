@@ -79,6 +79,9 @@ function makeBackend(lifecycleValue, options = {}) {
 		maxQueuedBytes: options.maxQueuedBytes,
 		openAttempts: options.openAttempts ?? 1,
 		openRetryMilliseconds: 0,
+		cursorOnlyPublishAfterFlushes: options.cursorOnlyPublishAfterFlushes,
+		maxCursorOnlyPublishDelayMilliseconds: options.maxCursorOnlyPublishDelayMilliseconds,
+		now: options.now,
 	});
 	backend.attach({
 		isOwnerEpoch: (candidate) => candidate === epoch,
@@ -102,6 +105,30 @@ function batch(ownerEpoch, records, through, bytes = 32) {
 }
 
 describe('FullTextDerivedIndexBackend', () => {
+	it('rejects unsafe cursor-only publication settings', () => {
+		const engineLifecycle = lifecycle([]);
+		assert.throws(
+			() => makeBackend(engineLifecycle, { cursorOnlyPublishAfterFlushes: 2 }),
+			/maxCursorOnlyPublishDelayMilliseconds is required/
+		);
+		assert.throws(
+			() =>
+				makeBackend(engineLifecycle, {
+					cursorOnlyPublishAfterFlushes: 17,
+					maxCursorOnlyPublishDelayMilliseconds: 1000,
+				}),
+			/must not exceed 16/
+		);
+		assert.throws(
+			() =>
+				makeBackend(engineLifecycle, {
+					cursorOnlyPublishAfterFlushes: 2,
+					maxCursorOnlyPublishDelayMilliseconds: 60_001,
+				}),
+			/must not exceed 60000/
+		);
+	});
+
 	it('encodes deterministic bounded cursor payloads and rejects unsafe persisted values', () => {
 		const payload = encodeFullTextCursorPayload({ format: 1, logs: { z: 20, a: 10 } });
 		assert.strictEqual(payload, '{"format":1,"cursor":{"format":1,"logs":{"a":10,"z":20}}}');
@@ -168,6 +195,110 @@ describe('FullTextDerivedIndexBackend', () => {
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.deepStrictEqual(changes, []);
 		await backend.shutdown(1n);
+	});
+
+	it('advances a cursor-only barrier without encoding or calling the native apply path', async () => {
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		let encoded = 0;
+		const { backend } = makeBackend(lifecycle([engine]), { onEncode: () => encoded++ });
+		await backend.acquire(1n);
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush('age');
+		await waitFor(() => engine.publications.length === 1);
+		assert.strictEqual(encoded, 0);
+		assert.strictEqual(engine.applied.length, 0);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
+		await backend.shutdown(1n);
+	});
+
+	it('coalesces cursor-only age flushes by count with an elapsed-time cap', async () => {
+		let now = 100;
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const { backend } = makeBackend(lifecycle([engine]), {
+			cursorOnlyPublishAfterFlushes: 3,
+			maxCursorOnlyPublishDelayMilliseconds: 1000,
+			now: () => now,
+		});
+		await backend.acquire(1n);
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush('age');
+		backend.flush('age');
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(engine.publications.length, 0);
+		backend.flush('age');
+		await waitFor(() => engine.publications.length === 1);
+
+		backend.deliver(batch(1n, [], cursor(30)));
+		backend.flush('age');
+		now += 1000;
+		backend.flush('age');
+		await waitFor(() => engine.publications.length === 2);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(30).logs);
+		await backend.shutdown(1n);
+	});
+
+	it('forces coalesced cursor progress for real mutations and shutdown', async () => {
+		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const firstBackend = makeBackend(lifecycle([first]), {
+			cursorOnlyPublishAfterFlushes: 3,
+			maxCursorOnlyPublishDelayMilliseconds: 1000,
+		}).backend;
+		await firstBackend.acquire(1n);
+		firstBackend.deliver(batch(1n, [], cursor(20)));
+		firstBackend.flush('age');
+		firstBackend.deliver(
+			batch(1n, [mutation('real', { kind: 'record', version: 1, projection: { title: 'real' } })], cursor(30))
+		);
+		firstBackend.flush('age');
+		await waitFor(() => first.publications.length === 1);
+		assert.strictEqual(first.applied.length, 1);
+		assert.deepStrictEqual({ ...firstBackend.getDurableCursor().logs }, cursor(30).logs);
+		await firstBackend.shutdown(1n);
+
+		const second = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const secondBackend = makeBackend(lifecycle([second]), {
+			cursorOnlyPublishAfterFlushes: 3,
+			maxCursorOnlyPublishDelayMilliseconds: 1000,
+		}).backend;
+		await secondBackend.acquire(1n);
+		secondBackend.deliver(batch(1n, [], cursor(20)));
+		secondBackend.flush('age');
+		await secondBackend.shutdown(1n);
+		assert.strictEqual(second.publications.length, 1);
+		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(second.publications[0]).logs }, cursor(20).logs);
+	});
+
+	it('does not notify failures already returned or rejected to the runtime', async () => {
+		const invalidDeliveryEngine = new FakeEngine(encodeFullTextCursorPayload(cursor(20)));
+		const invalidDelivery = makeBackend(lifecycle([invalidDeliveryEngine])).backend;
+		const deliveryChanges = [];
+		invalidDelivery.onStateChange((change) => deliveryChanges.push(change));
+		await invalidDelivery.acquire(1n);
+		assert.strictEqual(invalidDelivery.deliver(batch(1n, [], cursor(10))), DERIVED_INDEX_FAILED);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepStrictEqual(deliveryChanges, []);
+		await invalidDelivery.shutdown(1n);
+
+		const resetEngine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		resetEngine.publishAction = async () => {
+			throw new Error('tombstone failed');
+		};
+		const resetting = makeBackend(lifecycle([resetEngine], [new FakeEngine()])).backend;
+		const resetChanges = [];
+		resetting.onStateChange((change) => resetChanges.push(change));
+		await assert.rejects(resetting.reset(1n), /tombstone/);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepStrictEqual(resetChanges, []);
+
+		const shutdownEngine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		shutdownEngine.closeError = new Error('busy');
+		const shuttingDown = makeBackend(lifecycle([shutdownEngine])).backend;
+		const shutdownChanges = [];
+		shuttingDown.onStateChange((change) => shutdownChanges.push(change));
+		await shuttingDown.acquire(1n);
+		await assert.rejects(shuttingDown.shutdown(1n), /did not prove quiescence/);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepStrictEqual(shutdownChanges, []);
 	});
 
 	it('does not re-arm a same-epoch engine after a failed shutdown', async () => {
@@ -423,6 +554,8 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.acquire(1n);
 		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
 		await waitFor(() => changes.includes('failed'));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepStrictEqual(changes, ['failed']);
 		assert.strictEqual(backend.deliver(batch(1n, [], cursor(20))), DERIVED_INDEX_FAILED);
 		await backend.shutdown(1n);
 	});
