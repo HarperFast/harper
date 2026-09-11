@@ -977,13 +977,17 @@ class DerivedIndexRunner {
 				}
 			},
 			(error) => {
-				if (this.#acquiring !== acquiring) return;
-				this.#acquiring = undefined;
-				if (this.#owned && !this.#stopped && this.#rebuildRequested && this.#canRebuild()) {
-					this.#startRebuild();
-					return;
+				try {
+					if (this.#acquiring !== acquiring) return;
+					this.#acquiring = undefined;
+					if (this.#owned && !this.#stopped && this.#rebuildRequested && this.#canRebuild()) {
+						this.#startRebuild();
+						return;
+					}
+					this.#acquisitionFailed(generation, error);
+				} catch (handlerError) {
+					this.#fail('failed to handle backend acquisition rejection', handlerError);
 				}
-				this.#acquisitionFailed(generation, error);
 			}
 		);
 	}
@@ -1574,6 +1578,7 @@ class DerivedIndexRunner {
 
 	#settleReady() {
 		this.#rebuildAttempts = 0;
+		this.#acquisitionFailures = 0;
 		if (this.#condemned) this.#clearCondemnation();
 		if (Atomics.load(this.#shared().words, READINESS_STATE) !== READINESS_STATES.indexOf('ready'))
 			this.#publishReadiness('ready');
