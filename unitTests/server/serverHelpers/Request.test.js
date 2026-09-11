@@ -2,15 +2,18 @@
 
 const assert = require('node:assert');
 const sinon = require('sinon');
+const { EventEmitter } = require('node:events');
 
 describe('Request class', function () {
 	let Request;
+	let ResponseHeaders;
 
 	before(function () {
 		// Clear the module from cache to ensure fresh load
 		const modulePath = require.resolve('../../../server/serverHelpers/Request.ts');
 		delete require.cache[modulePath];
 		Request = require('#src/server/serverHelpers/Request').Request;
+		ResponseHeaders = require('#src/server/serverHelpers/Headers').Headers;
 	});
 
 	afterEach(function () {
@@ -574,11 +577,11 @@ describe('Request class', function () {
 				assert.strictEqual(resolved.headers.get('content-type'), 'application/json');
 			});
 
-			it('is idempotent — second writeHead call is a no-op', async function () {
+			it('throws ERR_HTTP_HEADERS_SENT on a second writeHead call, as Node does', async function () {
 				const request = makeRequest();
 				const responsePromise = request.withNodeAdapter((req, res) => {
 					res.writeHead(200, { 'x-first': 'yes' });
-					res.writeHead(500, { 'x-first': 'overwritten' });
+					assert.throws(() => res.writeHead(500, { 'x-first': 'overwritten' }), { code: 'ERR_HTTP_HEADERS_SENT' });
 					res.end();
 				});
 
@@ -848,6 +851,203 @@ describe('Request class', function () {
 			});
 		});
 
+		describe('nodeResponse — ServerResponse contract', function () {
+			it('reports finished with writableEnded, before writableFinished', async function () {
+				const request = makeRequest();
+				let capturedRes;
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					capturedRes = res;
+					assert.strictEqual(res.finished, false);
+					res.end('body');
+					assert.strictEqual(res.finished, true);
+					assert.strictEqual(res.writableFinished, false);
+				});
+
+				const { body } = await responsePromise;
+				if (!body.writableFinished) await new Promise((resolve) => body.once('finish', resolve));
+				assert.strictEqual(capturedRes.writableFinished, true);
+			});
+
+			it('marks headersSent and _header once headers are committed', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					assert.strictEqual(res.headersSent, false);
+					assert.strictEqual(res._header, null);
+					res.setHeader('X-A', '1');
+					res.writeHead(404, 'Gone Missing');
+					assert.strictEqual(res.headersSent, true);
+					assert.strictEqual(res.statusMessage, 'Gone Missing');
+					assert.strictEqual(res._header, 'HTTP/1.1 404 Gone Missing\r\nX-A: 1\r\n\r\n');
+					res.end();
+				});
+
+				const { status } = await responsePromise;
+				assert.strictEqual(status, 404);
+			});
+
+			it('getHeaders() and getHeaderNames() use lowercase names, as Node does', function () {
+				const request = makeRequest();
+				request.withNodeAdapter((req, res) => {
+					res.setHeader('Content-Type', 'text/html');
+					res.setHeader('Set-Cookie', ['a=1', 'b=2']);
+					const headers = res.getHeaders();
+					assert.strictEqual(Object.getPrototypeOf(headers), null);
+					assert.deepStrictEqual(headers, {
+						'__proto__': null,
+						'content-type': 'text/html',
+						'set-cookie': ['a=1', 'b=2'],
+					});
+					assert.deepStrictEqual(res.getHeaderNames(), ['content-type', 'set-cookie']);
+					res.end();
+				});
+			});
+
+			it('appendHeader sets a new header and grows an existing one into an array', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.appendHeader('X-Multi', 'one');
+					res.appendHeader('X-Multi', ['two', 'three']);
+					res.end();
+				});
+
+				const { headers } = await responsePromise;
+				assert.deepStrictEqual(headers.get('x-multi'), ['one', 'two', 'three']);
+			});
+
+			it('setHeaders() applies Harper Headers and groups Map set-cookie entries', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.setHeaders(new ResponseHeaders({ 'X-A': '1' }));
+					res.setHeaders(
+						new Map([
+							['Set-Cookie', ['a=1', 'b=2']],
+							['set-cookie', 'c=3'],
+						])
+					);
+					assert.deepStrictEqual(res.getHeader('set-cookie'), ['a=1', 'b=2', 'c=3']);
+					res.setHeaders(new Map([['set-cookie', 'd=4']]));
+					res.end();
+				});
+
+				const { headers } = await responsePromise;
+				assert.strictEqual(headers.get('x-a'), '1');
+				assert.deepStrictEqual(headers.get('set-cookie'), ['d=4']);
+			});
+
+			it('removeHeader is case-insensitive', function () {
+				const request = makeRequest();
+				request.withNodeAdapter((req, res) => {
+					res.setHeader('Content-Length', '10');
+					res.removeHeader('content-length');
+					assert.strictEqual(res.hasHeader('Content-Length'), false);
+					res.end();
+				});
+			});
+
+			it('setTimeout configures the Node response and delivers its timeout to this response only', async function () {
+				const nodeResponse = Object.assign(new EventEmitter(), {
+					timeouts: [],
+					setTimeout(msecs) {
+						this.timeouts.push(msecs);
+					},
+				});
+				const request = new Request({ ...mockNodeRequest }, nodeResponse);
+				let fired = 0;
+				let timeoutArgument;
+				const timeoutSocket = {};
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.setTimeout(250, (socket) => {
+						fired++;
+						timeoutArgument = socket;
+					});
+					nodeResponse.emit('timeout', timeoutSocket);
+					res.end();
+				});
+
+				assert.deepStrictEqual(nodeResponse.timeouts, [250]);
+				assert.strictEqual(fired, 1);
+				assert.strictEqual(timeoutArgument, timeoutSocket);
+				const { body } = await responsePromise;
+				for await (const chunk of body) void chunk;
+				if (!body.closed) await new Promise((resolve) => body.once('close', resolve));
+				assert.strictEqual(nodeResponse.listenerCount('timeout'), 0);
+			});
+
+			it('delivers the Node response timeout without an explicit setTimeout call', async function () {
+				const nodeResponse = new EventEmitter();
+				const request = new Request({ ...mockNodeRequest }, nodeResponse);
+				const timeoutSocket = {};
+				let timeoutArgument;
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.on('timeout', (socket) => (timeoutArgument = socket));
+					nodeResponse.emit('timeout', timeoutSocket);
+					res.end();
+				});
+
+				const { body } = await responsePromise;
+				assert.strictEqual(timeoutArgument, timeoutSocket);
+				for await (const chunk of body) void chunk;
+				if (!body.closed) await new Promise((resolve) => body.once('close', resolve));
+				assert.strictEqual(nodeResponse.listenerCount('timeout'), 0);
+			});
+
+			it('informational responses call back even when the transport has no Node response', function () {
+				const request = new Request({ ...mockNodeRequest }, {});
+				let calledBack = 0;
+				request.withNodeAdapter((req, res) => {
+					res.writeContinue(() => calledBack++);
+					res.writeProcessing(() => calledBack++);
+					res.writeEarlyHints({ link: '</style.css>; rel=preload' }, () => calledBack++);
+					res.end();
+				});
+				assert.strictEqual(calledBack, 3);
+			});
+
+			it('refuses trailers instead of dropping them', function () {
+				const request = makeRequest();
+				request.withNodeAdapter((req, res) => {
+					assert.throws(() => res.addTrailers({ Digest: 'x' }), /addTrailers\(\) is not supported/);
+					res.end();
+				});
+			});
+		});
+
+		describe('synchronous handler failure', function () {
+			it('rejects the response promise instead of throwing when the handler throws before headers', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter(() => {
+					throw new Error('sync failure');
+				});
+
+				await assert.rejects(() => responsePromise, /sync failure/);
+				request._abort();
+			});
+
+			it('errors the body when the handler throws after a partial write', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.write('partial');
+					throw new Error('sync failure');
+				});
+
+				const { body } = await responsePromise;
+				await assert.rejects(async () => {
+					for await (const chunk of body) void chunk;
+				}, /sync failure/);
+			});
+
+			it('keeps the completed response when the handler throws after ending it', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.end('done');
+					throw new Error('after end');
+				});
+
+				const { status } = await responsePromise;
+				assert.strictEqual(status, 200);
+			});
+		});
+
 		describe('async handler', function () {
 			it('rejects the response promise when async handler throws before writing headers', async function () {
 				const request = makeRequest();
@@ -857,6 +1057,20 @@ describe('Request class', function () {
 				});
 
 				await assert.rejects(() => responsePromise, /async handler failed/);
+			});
+
+			it('errors the body when an async handler rejects after headers were sent without ending', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter(async (req, res) => {
+					res.write('partial');
+					throw new Error('handler failed mid-stream');
+				});
+
+				const { body } = await responsePromise;
+				const chunks = [];
+				await assert.rejects(async () => {
+					for await (const chunk of body) chunks.push(chunk);
+				}, /handler failed mid-stream/);
 			});
 
 			it('does not double-reject after headers are flushed when async handler throws', async function () {
