@@ -4,6 +4,7 @@ const { setTimeout: delay } = require('timers/promises');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
+const { registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // Exercises the RocksDB batched-eviction path in Table.ts's cleanup scan: when more than
@@ -83,25 +84,35 @@ describe('Batched eviction (RocksDB)', () => {
 	it('physically evicts >EVICTION_BATCH_SIZE records across multiple batches and cleans indices', async function () {
 		const N = 250; // > EVICTION_BATCH_SIZE (100) so the scan must commit multiple batches
 		const ids = Array.from({ length: N }, (_, i) => i);
-		EvictTable.setTTLExpiration(HOLD); // keep records resident through warming
-		for (const id of ids) await EvictTable.get(id);
+		const unregister = registerDerivedIndexTables(EvictTable.auditStore, [EvictTable.tableId]);
+		try {
+			EvictTable.setTTLExpiration(HOLD); // keep records resident through warming
+			for (const id of ids) await EvictTable.get(id);
 
-		// Sanity: records and their index entries are resident before eviction.
-		assert.equal(await waitForResident(EvictTable, ids), N, 'records should be resident after warming');
-		assert.equal(
-			EvictTable.indices['name'].getValuesCount('group 7'),
-			N / 10,
-			'index should be populated before eviction'
-		);
+			// Sanity: records and their index entries are resident before eviction.
+			assert.equal(await waitForResident(EvictTable, ids), N, 'records should be resident after warming');
+			assert.equal(
+				EvictTable.indices['name'].getValuesCount('group 7'),
+				N / 10,
+				'index should be populated before eviction'
+			);
 
-		// No resource get() here — the only thing that can remove these records is the batched scan.
-		const resident = await evictAndWait(EvictTable, ids);
-		assert.equal(resident, 0, 'cleanup scan should physically evict every expired record');
-		assert.equal(
-			EvictTable.indices['name'].getValuesCount('group 7'),
-			0,
-			'index entries must be removed with the records'
-		);
+			// No resource get() here — the only thing that can remove these records is the batched scan.
+			const resident = await evictAndWait(EvictTable, ids);
+			assert.equal(resident, 0, 'cleanup scan should physically evict every expired record');
+			assert.equal(
+				EvictTable.indices['name'].getValuesCount('group 7'),
+				0,
+				'index entries must be removed with the records'
+			);
+			const idSet = new Set(ids);
+			const markers = [...EvictTable.auditStore.getRange({ start: 1 })].filter(
+				(record) => record.type === 'evict' && idSet.has(record.recordId)
+			);
+			assert.equal(markers.length, N, 'every committed batched removal must have one marker');
+		} finally {
+			unregister();
+		}
 	});
 
 	it('recovers from an optimistic commit conflict (ERR_BUSY) and still evicts', async function () {

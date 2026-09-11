@@ -4,7 +4,16 @@ import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
 import { join, extname, basename } from 'path';
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	readdirSync,
+	realpathSync,
+	unlinkSync,
+} from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import {
 	getBaseSchemaPath,
@@ -41,13 +50,14 @@ import { databasePaths, deleteRootBlobPathsForDB } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
+import { planeFilePathFor, planeStalePathFor } from './indexes/hnswPlaneBinding.ts';
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import { replayLogs } from './replayLogs.ts';
+import { attachDerivedIndexes } from './indexes/hnswDerivedIndex.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
-import { when } from '../utility/when.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 import {
@@ -1333,6 +1343,8 @@ function initStores(
 			table.schemaVersion = 1;
 			if (!destination) databaseEventsEmitter.emit('updateTable', table);
 		}
+		void table.derivedIndexRuntime?.close();
+		table.derivedIndexRuntime = attachDerivedIndexes(table);
 		if (Array.isArray(primaryAttribute.relationships)) {
 			relationshipsToHydrate.push({ table, databaseName, tableName, definitions: primaryAttribute.relationships });
 		} else if (primaryAttribute.relationships !== undefined) {
@@ -2272,6 +2284,9 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
 		if (CustomIndex) {
 			indexStore.customIndex = new CustomIndex(indexStore, attribute.indexed);
+			// derived state whose maintaining option is now off must not linger to be adopted
+			// stale on a later re-enable
+			indexStore.customIndex.cleanupDisabledPlane?.();
 		} else {
 			logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
 		}
@@ -2443,6 +2458,18 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
+	if (
+		attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) &&
+		audit !== true &&
+		// An explicit false must fail here even for an already-audited Table. Nothing clears the
+		// static, so the runtime would stay attached while the descriptor persists audit: false,
+		// and the next process start would fail catalog load on the derived-index attach.
+		(audit === false || Table?.audit !== true)
+	) {
+		throw new ClientError(
+			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using nativePlane because its transaction log is the derived-index recovery source`
+		);
+	}
 	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
 
@@ -2905,12 +2932,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							const uncertifiedCheckpoint =
 								attributeDescriptor?.lastIndexedKey !== undefined &&
 								(attributeDescriptor.checkpointCertified === undefined ||
+									attributeDescriptor.checkpointAlgorithm !== CHECKPOINT_ALGORITHM ||
 									compareKeys(attributeDescriptor.checkpointCertified, attributeDescriptor.lastIndexedKey) !== 0);
 							attribute.lastIndexedKey =
 								indexOptionsChanged || uncertifiedCheckpoint
 									? undefined
 									: (attributeDescriptor?.lastIndexedKey ?? undefined);
-							if (attribute.lastIndexedKey !== undefined) attribute.checkpointCertified = attribute.lastIndexedKey;
+							if (attribute.lastIndexedKey !== undefined) {
+								attribute.checkpointCertified = attribute.lastIndexedKey;
+								attribute.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
+							}
 							// Explicit reindex is the upgrade path from a legacy (un-versioned) custom-index
 							// object store to the versioned, VT-cacheable format. A full rebuild from scratch
 							// (lastIndexedKey === undefined) clears the store and rewrites every node, so the
@@ -2970,8 +3001,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						// workers / a reload would treat the still-partial index as ready and return incomplete results.
 						attribute.indexingPID = attributeDescriptor.indexingPID;
 						attribute.lastIndexedKey = attributeDescriptor.lastIndexedKey;
-						if (attributeDescriptor.checkpointCertified !== undefined)
+						if (attributeDescriptor.checkpointCertified !== undefined) {
 							attribute.checkpointCertified = attributeDescriptor.checkpointCertified;
+							attribute.checkpointAlgorithm = attributeDescriptor.checkpointAlgorithm;
+						}
 						// Carry the in-progress restart generation too, so persisting this metadata-only
 						// change doesn't drop it and break the crash-recovery trigger for the running backfill.
 						attribute.restartNumber = attributeDescriptor.restartNumber;
@@ -2979,6 +3012,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						attribute.indexingBuildId = attributeDescriptor.indexingBuildId;
 						if (attributeDescriptor.indexingFailed) attribute.indexingFailed = attributeDescriptor.indexingFailed;
 					}
+					// The declared attribute never carries the stamp, so any rewrite of a descriptor that has
+					// one would drop it and make a completed index look like a pre-stamp build.
+					if (attribute.checkpointAlgorithm === undefined && attributeDescriptor?.checkpointAlgorithm !== undefined)
+						attribute.checkpointAlgorithm = attributeDescriptor.checkpointAlgorithm;
 					attributesDbi.put(dbiKey, attribute);
 				}
 				// If a migration is in progress (indexingPID set), any newly opened dbi must also
@@ -3052,6 +3089,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
+	void Table.derivedIndexRuntime?.close();
+	Table.derivedIndexRuntime = attachDerivedIndexes(Table);
 
 	Table.origin = origin;
 	// scope-private: replication and other global subscribers must not learn of a branch class
@@ -3175,6 +3214,10 @@ export function canonicalizeIndexOptions(value: any): any {
 	}
 	return value;
 }
+// Bumped when a change alters which keys a checkpoint may certify. A descriptor stamped by any other
+// version resumes as uncertified (full rebuild) rather than being trusted, and a completed index keeps
+// the stamp of the build that wrote it.
+export const CHECKPOINT_ALGORITHM = 2;
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
 const INDEXING_YIELD_INTERVAL = 100;
@@ -3281,9 +3324,44 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
 		let lastResolution;
+		// The checkpoint and completion barriers have to cover every mutation still in flight: any of them
+		// may reject after those barriers read hadIndexingErrors.
+		const pendingMutations = new Set();
+		let settleWaiter;
+		const track = (result, onRejected) => {
+			if (!result?.then) return result;
+			const tracked = result.then(
+				() => {
+					pendingMutations.delete(tracked);
+					settleWaiter?.();
+					return false;
+				},
+				(error) => {
+					pendingMutations.delete(tracked);
+					settleWaiter?.();
+					onRejected(error);
+					return true;
+				}
+			);
+			pendingMutations.add(tracked);
+			return result;
+		};
+		// The tracked promises absorb their own rejections, so one failure never abandons its siblings.
+		const drainMutations = async () => {
+			if (!pendingMutations.size) return false;
+			return (await Promise.all([...pendingMutations])).some(Boolean);
+		};
+		// Waiting on a chosen entry would stall behind a slow one the others have already overtaken.
+		const nextSettlement = () =>
+			new Promise((resolve) => {
+				settleWaiter = () => {
+					settleWaiter = undefined;
+					resolve(undefined);
+				};
+			});
 		for (const index of indicesToRemove) {
-			lastResolution = index.drop();
-			if (lastResolution?.then) lastResolution.then(undefined, (error) => onIndexPutRejected(index.name, error));
+			index.customIndex?.resetDerivedStorage?.();
+			track(index.drop(), (error) => onIndexPutRejected(index.name, error));
 		}
 		let interrupted;
 		let indexed = 0;
@@ -3293,26 +3371,33 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			const start = resumeStartKey(attributes);
 			if (start === undefined) {
 				for (const attribute of attributes) {
+					// if we are starting from the beginning, clear out any previous index entries since we are rewriting
+					attribute.dbi.customIndex?.resetDerivedStorage?.();
 					if (attribute.dbi.clearAsync) {
-						// LMDB, note that we don't need to wait for this to complete, just gets enqueued in front of the other writes
-						attribute.dbi.clearAsync();
+						// LMDB enqueues this ahead of the index writes, so the scan need not wait for it — but the
+						// barriers must, or a rejected clear certifies a checkpoint over stale entries.
+						track(attribute.dbi.clearAsync(), (error) => onIndexPutRejected(attribute.name, error));
 					} else {
 						await attribute.dbi.clear();
 					}
 				}
 			}
-			let outstanding = 0;
 			// A resumed scan starts at the checkpoint, so it must only name a key whose every predecessor is
 			// durably indexed: persisted once the writes it covers have settled and flushed, frozen after any
 			// record fails so the retry re-covers it, and stamped with its own key (see the trigger in table()).
 			const persistCheckpoint = async (key) => {
 				if (hadIndexingErrors) return;
 				try {
+					// Everything still in flight was issued for a key at or before this one: the scan has not
+					// moved past it yet. So a failure among them is a failure this checkpoint would cover.
+					const failed = await drainMutations();
+					if (failed) return;
 					await flushIndexStores(Table.primaryStore.rootStore);
 					const puts = [];
 					for (const attribute of attributes) {
 						attribute.lastIndexedKey = key;
 						attribute.checkpointCertified = key;
+						attribute.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
 						puts.push(Table.dbisDB.put(attribute.key, attribute));
 					}
 					await Promise.all(puts);
@@ -3332,9 +3417,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 				const atInterval = ++indexed % INDEXING_YIELD_INTERVAL === 0;
 				// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
 				//if (Table.schemaVersion !== schemaVersion) return; // break out if there are any schema changes and let someone else pick it up
-				outstanding++;
-				// Custom indexes (e.g. HNSW) index synchronously and never raise `outstanding`, so the
-				// outstanding-based yield below never fires for them. Track that this row did synchronous
+				// Custom indexes (e.g. HNSW) index synchronously and leave pendingMutations empty, so the
+				// backpressure yield below never fires for them. Track that this row did synchronous
 				// indexing work so we can still yield the event loop after it.
 				let didSynchronousIndexing = false;
 				// every index operation needs to be guarded by the version still be the same. If it has already changed before
@@ -3358,8 +3442,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 							const values = getIndexedValues(value, index.indexNulls);
 							if (values) {
 								for (let i = 0, l = values.length; i < l; i++) {
-									lastResolution = index.put(values[i], key);
-									if (lastResolution?.then) lastResolution.then(undefined, onPutRejected);
+									track(index.put(values[i], key), onPutRejected);
 								}
 							}
 						} catch (error) {
@@ -3377,20 +3460,11 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 						}
 					}
 				}
-				when(
-					lastResolution,
-					() => outstanding--,
-					() => outstanding--
-				);
 				if (workerData && workerData.restartNumber !== manageThreads.restartNumber) {
 					interrupted = true;
 				}
 				if (interrupted) {
-					try {
-						await lastResolution;
-					} catch {
-						// already counted and logged by the rejection handler above
-					}
+					await drainMutations();
 					await checkpointing;
 					await persistCheckpoint(key);
 					return;
@@ -3399,29 +3473,17 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					nextCheckpointAt = performance.now() + indexingCheckpointPeriodMs;
 					nextCheckpointRecord = indexed + indexingCheckpointMinRecords;
 					await checkpointing;
-					checkpointing = when(
-						lastResolution,
-						() => persistCheckpoint(key),
-						() => {}
-					);
+					checkpointing = persistCheckpoint(key);
 				}
-				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
-				if (atInterval || didSynchronousIndexing || outstanding > MIN_OUTSTANDING_INDEXING) await yieldEventTurn();
+				// Checked once per record, so a record's own fan-out can overshoot before the bound applies.
+				while (pendingMutations.size > MAX_OUTSTANDING_INDEXING) await nextSettlement();
+				if (atInterval || didSynchronousIndexing || pendingMutations.size > MIN_OUTSTANDING_INDEXING)
+					await yieldEventTurn();
 			}
 		}
 		await checkpointing;
-		// Await the last pending put. If it rejects, that is also an indexing error (already counted by
-		// onIndexPutRejected); catching it here keeps it from escaping to the outer catch.
-		try {
-			await lastResolution;
-		} catch (error) {
-			hadIndexingErrors = true;
-			logger.error(error);
-		}
-		// Yield one more event turn so any queued when() error callbacks (which fire as
-		// microtasks when their tracked promise settles) have a chance to set hadIndexingErrors
-		// before we decide whether to mark indexing as complete.
-		await new Promise((resolve) => setImmediate(resolve));
+		// A mutation that rejects after completion is declared has no build left to park.
+		await drainMutations();
 		// the tail since the last checkpoint is not durable until flushed; announcing the index complete
 		// before that would outlive a crash that loses it
 		if (!hadIndexingErrors) {
@@ -3461,6 +3523,9 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			for (const attribute of attributes) {
 				delete attribute.lastIndexedKey;
 				delete attribute.checkpointCertified;
+				// Survives completion, unlike the checkpoint fields: without it an index built here is
+				// indistinguishable from one a release that could skip a failed record declared complete.
+				attribute.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
 				delete attribute.indexingPID;
 				delete attribute.indexingFailed;
 				delete attribute.restartNumber;
@@ -3545,6 +3610,24 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 					ignoreAlreadyDropped(error);
 				} finally {
 					columnStore.close();
+				}
+				// derived HNSW plane files live next to the store; the normal drop path removes
+				// them through the custom index, but this recovery path drops raw column stores,
+				// and a same-name recreate must never open a stale plane over a fresh CF
+				try {
+					unlinkSync(planeFilePathFor(rootStore.path, columnName));
+				} catch (error: any) {
+					// a stale plane left behind (e.g. Windows EBUSY while still mapped) would be
+					// opened over a fresh same-name CF, resolving another graph's node ids
+					// against it — tombstone it so no attach ever adopts it
+					if (error?.code !== 'ENOENT') {
+						logger.warn(`could not delete the HNSW plane file for ${columnName}; tombstoning it as stale`, error);
+						try {
+							closeSync(openSync(planeStalePathFor(planeFilePathFor(rootStore.path, columnName)), 'w'));
+						} catch (tombstoneError) {
+							logger.warn(`could not tombstone the stale HNSW plane file for ${columnName}`, tombstoneError);
+						}
+					}
 				}
 			}
 		}

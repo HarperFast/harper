@@ -53,6 +53,7 @@ import {
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
 import {
+	DerivedIndexLagError,
 	handleHDBError,
 	ClientError,
 	ServerError,
@@ -80,7 +81,15 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericT
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, auditRetention, removeAuditEntry, raiseAuditFloor, boundedAuditPruneEnd } from './auditStore.ts';
+import {
+	HAS_BLOBS,
+	LOCAL_ONLY,
+	auditRetention,
+	removeAuditEntry,
+	raiseAuditFloor,
+	boundedAuditPruneEnd,
+} from './auditStore.ts';
+import { derivedIndexWriteRejection, hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -746,6 +755,29 @@ export function makeTable(options) {
 		}
 		return { txnLogKey: version, nodeId };
 	}
+	// Canonical-source applies (sourceApply), replay and replication notifications are never shed;
+	// dropping one would advance the source cursor past a write that never landed.
+	function assertDerivedIndexAdmission(options: any, transaction: any) {
+		if (options?.isNotification || transaction?.sourceApply || transaction?.isReplay) return;
+		const reason = derivedIndexWriteRejection(auditStore, tableId);
+		if (reason) throw new DerivedIndexLagError(reason);
+	}
+	function stageDerivedIndexEviction(transaction: RocksTransaction, id: Id, version: number) {
+		if (!hasDerivedIndexRegistration(auditStore, tableId)) return;
+		const nodeId = getThisNodeId(auditStore) ?? 0;
+		auditStore.put(
+			null,
+			{
+				type: 'evict',
+				tableId,
+				recordId: id,
+				version,
+				nodeId,
+				extendedType: LOCAL_ONLY,
+			},
+			{ transaction, nodeId }
+		);
+	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -780,6 +812,7 @@ export function makeTable(options) {
 		static tableName = tableName;
 		static tableId = tableId;
 		static indices = indices;
+		static derivedIndexRuntime: { close(): Promise<void> } | undefined;
 		static audit = audit;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
@@ -1621,6 +1654,12 @@ export function makeTable(options) {
 
 		static async dropTable() {
 			TableResource.assertSchemaMutable('drop a table');
+			// Release post-commit derived-index delivery before any destructive work: the runner's
+			// backend must have quiesced before its stores and native file are destroyed, and a
+			// same-name recreate must not race an owner still applying to the old generation.
+			const derivedIndexRuntime = TableResource.derivedIndexRuntime;
+			TableResource.derivedIndexRuntime = undefined;
+			await derivedIndexRuntime?.close();
 			const rootStore = primaryStore.rootStore;
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
@@ -1757,6 +1796,7 @@ export function makeTable(options) {
 							const index = indices[attribute.name];
 							if (index)
 								try {
+									index.customIndex?.resetDerivedStorage?.();
 									index.dropSync();
 								} catch (error) {
 									ignoreAlreadyDropped(error);
@@ -1777,7 +1817,10 @@ export function makeTable(options) {
 					const drops = [];
 					for (const attribute of attributes) {
 						const index = indices[attribute.name];
-						if (index) drops.push(index.drop().catch(ignoreAlreadyDropped));
+						if (index) {
+							index.customIndex?.resetDerivedStorage?.();
+							drops.push(index.drop().catch(ignoreAlreadyDropped));
+						}
 					}
 					drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
 					await Promise.all(drops);
@@ -2255,6 +2298,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
+			assertDerivedIndexAdmission(options, transaction);
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -2314,6 +2358,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
+			assertDerivedIndexAdmission(options, transaction);
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -2430,9 +2475,8 @@ export function makeTable(options) {
 					// if there is a resolution in-progress, abandon the eviction
 					if (primaryStore.hasLock(id, entry.version)) return;
 				}
-				// evictions never go in the audit log, so we can not record a deletion entry for the eviction
-				// as there is no corresponding audit entry and it would never get cleaned up. So we must simply
-				// removed the entry entirely, but first cleanup indices
+				// Eviction is not a canonical delete. Indexed caching tables add a local-only control entry so
+				// their derived indexes can remove the resident projection without exposing a delete event.
 				let lmdbCompletion: MaybePromise<unknown>;
 				if (primaryStore.ifVersion) {
 					// lmdb: the index cleanup and the record removal are both version-guarded optimistic writes.
@@ -2445,6 +2489,7 @@ export function makeTable(options) {
 					lmdbCompletion = Promise.all([indexCleanup, removal]);
 				} else {
 					updateIndices(id, existingRecord, null, options);
+					stageDerivedIndexEviction(transaction as RocksTransaction, id, existingVersion);
 					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
 				}
 				committed = true;
@@ -2873,6 +2918,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			const transaction = txnForContext(context);
 			const replaying = transaction.isReplay === true;
+			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
 				// A source/replication-applied put must carry the record; these applies skip record
@@ -3743,6 +3789,7 @@ export function makeTable(options) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			const transaction = txnForContext(context);
+			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 
@@ -4960,7 +5007,7 @@ export function makeTable(options) {
 									await rest();
 									if (!isActive()) return;
 								}
-								if (auditRecord.tableId !== tableId) continue;
+								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.txnLogKey);
@@ -4997,7 +5044,7 @@ export function makeTable(options) {
 								if (!isActive()) return;
 							}
 							try {
-								if (auditRecord.tableId !== tableId) continue;
+								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									// Bound entries INSPECTED for THIS scope, independent of `count` (entries
@@ -6138,7 +6185,7 @@ export function makeTable(options) {
 				end: endTime,
 			})) {
 				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId) continue;
+				if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 				yield {
 					id: auditRecord.recordId,
 					// Compatibility-facing LMDB history has always reported/grouped by record version.
@@ -6168,7 +6215,11 @@ export function makeTable(options) {
 				let highestPreviousVersion = 0;
 				const start = nextVersion - auditWindow;
 				for (const auditRecord of auditStore.getRange({ start, end: nextVersion + 0.001 })) {
-					if (auditRecord.tableId === tableId && compareKeys(auditRecord.recordId, id) === 0) {
+					if (
+						auditRecord.tableId === tableId &&
+						auditRecord.type !== 'evict' &&
+						compareKeys(auditRecord.recordId, id) === 0
+					) {
 						history.splice(insertionPoint, 0, {
 							id: auditRecord.recordId,
 							localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
@@ -6204,6 +6255,7 @@ export function makeTable(options) {
 			const promises = [primaryStore.clear()];
 			for (const key in indices) {
 				const index = indices[key];
+				index.customIndex?.resetDerivedStorage?.();
 				promises.push(index.clearAsync ? index.clearAsync() : index.clear());
 			}
 			return Promise.all(promises);
@@ -6211,6 +6263,7 @@ export function makeTable(options) {
 		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
 		static cleanup() {
 			disposed = true;
+			void TableResource.derivedIndexRuntime?.close();
 			clearTimeout(cleanupTimer);
 			settlePendingCleanup();
 			clearInterval(recordExpirationInterval);
@@ -7263,6 +7316,7 @@ export function makeTable(options) {
 					if (entry.value == null) continue; // already removed
 					if (hasSourceGet && primaryStore.hasLock(item.key, entry.version)) continue; // resolution in progress
 					updateIndices(item.key, entry.value, null, options);
+					stageDerivedIndexEviction(transaction, item.key, entry.version);
 				}
 				removeEntry(primaryStore, entry, options);
 				staged++;

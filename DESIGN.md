@@ -411,7 +411,8 @@ When `table()` is called with an attribute newly marked `indexed: true` (or with
 **In-flight state tracking (persisted to `attributesDbi`):**
 
 - `attribute.indexingPID = process.pid` — set at migration start; cleared on clean completion. On restart with a different PID, `indexingPID !== process.pid` triggers a re-migration.
-- `attribute.lastIndexedKey` — updated every 100 records as a resumable checkpoint. Cleared on clean completion; preserved on error so a retry starts from this key.
+- `attribute.lastIndexedKey` — a resumable checkpoint, written at most once per checkpoint period and never before the record floor (`setIndexingCheckpointPeriod`), and only once the index writes it covers have settled and flushed. Cleared on clean completion; preserved on error so a retry starts from this key.
+- `attribute.checkpointCertified` / `attribute.checkpointAlgorithm` — the key the checkpoint was stamped with, and the version of the algorithm that stamped it. A checkpoint resumes only when both match; anything else is rebuilt from scratch, because earlier releases could advance `lastIndexedKey` past a record whose index write failed. The algorithm stamp is also kept on a completed index, so a build made under a version that could skip a record stays distinguishable from one that could not.
 - `attribute.indexingFailed = true` — set if any record's `index.put` errors during the backfill. `table()` checks this flag: a fresh call in the same or a new process re-triggers the backfill from `lastIndexedKey`.
 - `dbi.isIndexing = true` — in-memory flag on the index dbi. Prevents `searchByIndex` from serving partial results (returns 503 "not indexed yet" instead). Cleared only when backfill completes cleanly.
 
@@ -421,8 +422,8 @@ When `signalSchemaChange('schema-change')` fires at the start of `runIndexing`, 
 **Error handling:**
 
 - Per-record sync errors: caught by the inner try-catch. Set `hadIndexingErrors = true`.
-- Per-record async rejections (`index.put` returning a rejected Promise): caught by the `when()` error handler. Set `hadIndexingErrors = true`.
-- The final `await lastResolution` is wrapped in its own try-catch because if the very last put in the loop was rejected, an unguarded `await lastResolution` would throw past the `hadIndexingErrors` check to the outer catch, silently bypassing the error path.
+- Per-record async rejections (`index.put` returning a rejected Promise): every index mutation the build issues — each value's put, the drops for removed indexes, and the LMDB `clearAsync` — is registered in a per-build set that absorbs its own rejection and sets `hadIndexingErrors = true`. A record fans out into one put per indexed value, so tracking only the last one left the earlier puts' failures visible only if they happened to settle in time.
+- A checkpoint drains that set before flushing and refuses to certify if any mutation it covers failed; completion drains it too, so "no errors" means every write settled rather than none had failed yet. The set also bounds how many writes stay in flight (`MAX_OUTSTANDING_INDEXING`).
 - On any error: `indexingFailed = true` is persisted; `indexingPID`, `isIndexing`, and `lastIndexedKey` are kept. This leaves the index in 503 "incomplete" state rather than silently serving partial results.
 
 **`Object.defineProperty(attribute, 'dbi', ...)` must use `configurable: true`:**
@@ -1948,3 +1949,383 @@ Consequences to preserve:
   a branch reloads only itself, and the relationships that reload queues are hydrated through the
   application's own branch set (`branch.relatedBranches`, stamped by `prepareBranches`), never the
   global map.
+
+## `chooseOperation` authorizes the invoked operation against the authenticated principal (`server/serverHelpers/serverUtilities.ts`)
+
+`verifyPerms` takes a request-shaped object and reads _both_ halves of the permission question off it: the principal from `hdb_user`, and the tables from `schema`/`database`/`table`/`records`. `chooseOperation` used to hand it `json.search_operation` — a caller-supplied field — which made both halves body-controlled. Fixing one half and not the other is not a fix: with an empty `search_operation` the table map is empty, and `hasPermissions` iterating nothing authorizes everything. Regression cover: `integrationTests/security/choose-operation-authz.test.ts`.
+
+Four rules hold this together, and all four are load-bearing:
+
+**The principal comes from authentication.** Authentication sets only the _top-level_ `hdb_user`, and `validateRequestBodyProperties` inspects only top-level keys, so a nested `hdb_user` must be overwritten, never backfilled `if (!...)`. All four callers of `chooseOperation` (`serverHandlers`, `serverUtilities.operation`, `registeredOperations` worker forwarding, MCP) set the top-level principal before dispatch, which is why this belongs here rather than only at the HTTP boundary.
+
+**`search_operation` is the permission subject only for the operations that consume it.** `dataLayer/export.ts` is its sole consumer (`export_local`, `export_to_s3`); for any other operation the substitution checks the nested tables while the handler runs against the top-level ones, so it is gated on the operation name. It must also be an object naming one of export's supported operations (`search_by_value`/`search_by_hash`/`search_by_conditions`/`sql`) — a primitive, `{}`, or an unsupported operation is a request-time 400, not a wrapped 500 or an asynchronously-failed job.
+
+**One check cannot authorize both the outer export and its nested query.** The outer op's own `verifyPerms` returns before any table check — `export_local`/`export_to_s3` are `requires_su`, and a role that lists the operation in `operations` is granted at gate 2 (an explicit listing of an SU-only operation is a deliberate grant). The job worker then runs `search_operation` through `searchByValue`/`searchByHash`/`searchByConditions`, none of which check permissions. So the outer invocation is authorized first, and then the nested search is authorized additively against its _real_ search handler (`getOperationFunction(search_operation)`) and the authenticated principal — otherwise a role granted `export_local` could export a table it holds no grant on. A nested `sql` search takes the SQL branch instead, but the same two-part shape holds: the outer export op runs through `verifyPerms` (so its `requires_su` gate, the `operations` allowlist, and the export token scope all apply, exactly as on the non-SQL path — SQL must not be a way around the requires_su gate), the statement must be a `SELECT` because export is read-only, and `checkASTPermissions` then covers the statement's tables. A direct `sql` call has no outer job op, so there the `operations` allowlist alone is the operation-invocation check.
+
+**`parsed_sql_object` is dispatch state, never client input.** The export worker re-reads it off the same caller-supplied nested object (`evaluateSQL`), and it carries `permissions_checked`, so a body-supplied one runs an AST no check ever saw. It is deleted from the nested object at dispatch, and stripped from the top-level object before this dispatch's own parse is assigned. Only the direct-SQL path consumes the top-level `parsed_sql_object`; a job re-parses off `search_operation`, so setting it for a job would be inert. The bypass/`apiOperation` decision is carried on async-context state (`getOperationAuthorizationState`), not on the request body, and `processAST` honors the denial `checkASTPermissions` computes — a `PermissionResponseObject` has no `length`, so the guard tests the object itself rather than `.length` (which always refused nothing).
+
+The SQL and job paths are additive rather than exclusive: `verifyPermsAST` validates only the statement's tables and attributes, never the `operations` allowlist or `requires_su`, and a table-free statement gives it nothing to validate — so the allowlist check and the AST check both run for a SQL-carrying request, and the nested-search check runs alongside the outer export check for a job.
+
+## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
+
+A derived index (the native HNSW plane, a future Tantivy full-text index) is a materialized view
+that lives outside the record transaction: its apply is native, costs 0.2–1.4 ms per mutation, and
+its durability barrier is an `msync` or a segment publish, none of which belong on the commit path.
+The runtime is the one Harper-side implementation of the delivery protocol in harper#2489: **the
+transaction log is the durable fact, a commit only wakes a runner, and every backend resumes from an
+exact cursor into that log.** There is deliberately no second delivery fact — no transactional
+dirty-key outbox, no `aftercommit` staging — because a second durable write per indexed mutation, a
+cleanup protocol for it, and a new column family for every audited table would still not let an
+engine-specific native file commit atomically with RocksDB, so the cursor protocol would be needed
+anyway.
+
+### Invariants
+
+1. Only committed entries are delivered; the runtime never reads uncommitted log entries.
+2. One worker runs a given backend at a time (a process-wide `tryLock` per backend). The owner
+   merges every physical log into one serial stream and keeps a cursor per log.
+3. A cursor is `{ format: 1, logs: { <log name>: <completed transaction timestamp> } }`. It advances
+   only at `endTxn` and only after the backend's durability barrier covers the whole transaction.
+4. Live delivery and restart use the same cursor validation, iterator and dispatch code. A lost wake
+   or a full backend queue delays indexing; it cannot skip durable log work.
+5. Resume proves every saved log position with `exactStart`. A missing, incomplete or duplicate
+   boundary condemns the generation; approximate resume is not permitted.
+6. The runtime resolves the current primary entry once per changed record and projects only the
+   registered attributes. Backends never see the log entry's body: a conflict retry can re-resolve a
+   record after its log payload was staged, so the entry is identity and version evidence, not state.
+7. No exception from log iteration, primary reads, projection, backend calls or unlock callbacks
+   escapes the scheduled drain or interferes with subscriptions and replication.
+8. Registration adds nothing to the commit path except a local-only eviction marker for registered
+   caching tables (below). No `aftercommit` listener, no retained `AuditRecord`s, no awaited work.
+
+### Ownership and wake-up
+
+Each worker holds one `DerivedIndexRuntime` per RocksDB root store, with the same schema-derived
+registrations on every worker; the drain is lock-elected, registration is not. The runtime listens
+to the root store's `committed` event and coalesces wakes through `setImmediate`. The winner keeps a
+reusable aggregate iterator (`RocksTransactionLogStore.getRange` with `startByLog`, `exactStart`,
+`resumeAfterExactStart`, `includeLogName`) and drains for bounded count, bytes and wall time per
+turn. Ownership is sticky: the lock is not one record writers take, so holding it across turns
+delays no commit, and it is released only after an idle grace period once durable progress equals
+offered progress. A failed `tryLock(key, onUnlocked)` confers nothing when `onUnlocked` fires; the
+callback schedules a fresh attempt.
+
+Transaction timestamps are unique per physical log but **not monotone in physical order**
+(`TransactionLogStore::writeBatch` only advances `latestTimestamp` when the batch's is greater), so
+the runtime never compares timestamps to decide progress or retention. Resume is exact-start: find
+the transaction, iterate after it. Repeat detection is a per-log set of completed timestamps
+retained since the durable cursor. A log the cursor does not name is read from its beginning only
+if it still retains it — `fileCount === 0 || oldestSequenceNumber === 1`; rocksdb-js reports
+`oldestSequenceNumber: 0` for a log that has never written a file — otherwise the generation is
+condemned.
+
+### Offered versus durable progress
+
+A native backend accepts several batches before its next barrier, so the owner tracks **offered**
+progress (cursor vectors of accepted batches, in memory, under the lock) separately from the
+backend's **durable** cursor. Every acquisition mints an owner epoch from a process-wide atomic
+counter and stamps it on each batch; a new epoch — including after a worker restart — resets offered
+progress to the durable cursor before opening its iterator, because replaying work that survived
+in a native queue is safe and trusting a dead worker's non-durable position is not. A reported
+durable cursor must equal one offered vector exactly; validating logs independently would let a
+backend assemble a cursor from different batch boundaries and hide work. Accepted-not-durable
+progress is capped (`maxAcceptedBatchesAhead`, 64); at the cap the owner keeps the lock, stops
+reading (`waiting-durable`) and resumes on a backend state-change wake, not on commit wakes.
+
+### Authoritative record resolution and the eviction marker
+
+The log decides what must be revisited; the primary store decides what is in the index now. A
+present entry yields its current version and projection; a missing, deleted, evicted or
+invalidated entry yields `absent`, which is sound only because every removal now has a durable
+fact: `delete`, `invalidate`, `relocate`, or the local-only `evict` marker that `Table.evict()` and
+`createEvictionBatcher().stageInto()` stage into the same RocksDB transaction as the row removal for
+tables with a registered derived index (`hasDerivedIndexRegistration`). The marker is `LOCAL_ONLY`,
+a no-op in boot replay, filtered from customer history and subscriptions, and rejected by
+replication. `message`, `publish` and structure entries advance progress without becoming
+documents; a `reload` marker (replica base copy) condemns the generation because its rows have no
+per-record entries. A projection that throws a 4xx `ClientError` yields
+`{ kind: 'unindexable', reason: '<class> (<status>)' }` — the backend removes any entry and counts
+it; the message never reaches shared memory or the backend because validation messages quote
+record values. Any other projection or primary-read failure is fail-closed.
+
+### Backend contract
+
+```ts
+interface DerivedIndexBackend {
+	readonly id: string;
+	attach(host: { isOwnerEpoch(epoch: bigint): boolean; getReadiness(): DerivedIndexReadiness }): void;
+	getDurableCursor(): DerivedIndexCursor | undefined;
+	deliver(batch: DerivedIndexBatch): DERIVED_INDEX_ACCEPTED | DERIVED_INDEX_DEFERRED | DERIVED_INDEX_FAILED;
+	flush(reason: 'age' | 'threshold' | 'shutdown'): void | Promise<void>; // barrier request
+	shutdown(ownerEpoch: bigint): void | Promise<void>; // quiescence: nothing further applies or publishes for the epoch
+	onStateChange(wake: (change?: 'changed' | 'accepted-work-lost' | 'failed') => void): () => void;
+	reset?(ownerEpoch: bigint): void | Promise<void>; // destroy state and cursor; first durable action invalidates the cursor
+}
+type DerivedIndexBatch = {
+	ownerEpoch: bigint;
+	transactions: { logName; timestamp; mutations }[];
+	records: DerivedIndexMutation[]; // last-write-wins per (tableId, writeKeyId(recordId)); non-enumerable
+	through?: DerivedIndexCursor; // absent on a rebuild scan chunk and while a transaction is still open
+	bytes: number; // estimate; non-enumerable
+	rebuild?: true;
+};
+```
+
+There is one contract and every hook is required. What an ownership handoff has to fence is work
+that survives a method return — a queued apply, a barrier that completes later, a cursor that
+trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
+handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
+bounded by the runner's turn budget (the runtime cannot bound work it does not perform): the
+expected shape is enqueue, return `accepted`, apply in the backend's own time slices, advance the
+durable cursor at its barrier, return `deferred` when its queue is full. `accepted` means the backend
+owns the batch, not that the cursor may advance. `deferred` holds the batch until a state-change
+wake. `accepted-work-lost` makes the owner rebuild its iterator from the durable cursor; `failed` or
+`DERIVED_INDEX_FAILED` condemns the generation. `reset` is optional — without it `needs-rebuild` is
+terminal — and a backend that implements it owns its crash safety: it must invalidate the cursor
+before anything destructive, because shared readiness is process memory and is no evidence after a
+restart. The runtime also writes a condemnation marker to the root store
+(`Symbol.for('derived-index:<id>:condemned')`) before any reset and clears it at the first durable
+`ready`, so a restart between condemning a cursor and destroying it still rebuilds; a marker that
+cannot be written issues no reset. The cursor's atomic durability mechanism is the backend's
+(Tantivy publishes it with segment state; HNSW writes it after the plane barrier), which is why the
+cursor is backend-owned and validation is Harper's.
+
+### Bounded delivery
+
+A drain turn **collects** identities from the iterator — `(tableId, recordId, logVersion)` per
+eligible entry, no primary read — under `maxTransactionsPerTurn`, `maxBytesPerTurn`,
+`maxMillisecondsPerTurn` and `maxChunkRecords` distinct keys, then **resolves** each key once after
+its last collected occurrence, under `maxChunkBytes` and the same wall budget, carrying the
+remainder to the next turn. Resolving after the last occurrence, not on first encounter, is what
+keeps a writer committing between two occurrences of a key from having its later state certified by
+the cursor while the earlier state stayed indexed. An oversized transaction is delivered across
+chunks with `through` withheld until the chunk that contains its `endTxn`; nothing marks such a
+chunk because a backend can do nothing with the distinction, and query-visible atomicity of one
+transaction across chunks is not promised. `bytes` is an estimate from stored record sizes (or the
+log entry size), never a serialization; `maxChunkRecords` is the hard bound. All bounds are settable
+per registration.
+
+### Durability cadence
+
+`maxAcceptedBatchesAhead` is a ceiling; the runtime, which already tracks accepted-not-durable work,
+is the scheduler. It requests `flush('age')` when the first accepted batch since the last request is
+`maxFlushAgeMilliseconds` old (1 s), `flush('threshold')` at `flushAfterMutations` (4096) or
+`flushAfterBytes` (8 MiB), and `flush('shutdown')` at release. The backend runs the barrier
+asynchronously, coalesces requests that arrive mid-barrier, and publishes `through` atomically with
+what the barrier made durable. Reaching the end of the log requests no extra barrier — arrivals
+spaced just beyond drain completion would otherwise pay one per write; the age timer is idle
+completion.
+
+### Rebuild
+
+When the backend has `reset` and the runtime was built with `scanRecords`, `needs-rebuild` is a
+phase, not an end state: publish `rebuilding`; `shutdown(previousEpoch)`; mint a new epoch and
+republish; `reset(newEpoch)` (afterwards `getDurableCursor()` must be `undefined`); capture the
+**committed tail** of every log; scan every registered table (tombstones and symbol keys skipped),
+project, deliver bounded chunks with `through` absent; deliver a final chunk with `through` = tail;
+install the tail as offered progress and replay through the ordinary drain; publish `ready` at the
+first durable advance past the tail or the first idle pass with durable == offered.
+
+The tail is safe because a committed read is a contiguous physical prefix: rocksdb-js keeps the
+physically-written-but-uncommitted start offsets in a sorted set and `commitFinished()` advances
+`lastCommittedPosition` to the earliest of them (`TransactionLogStore::commitFinished`,
+`uncommittedTransactionPositions.front()`), so a transaction that wrote at offset 200 and committed
+before one pending at 100 stays invisible until 100 commits. Everything committed before the
+capture is in the scan; everything after it is replayed; a reload marker is therefore met exactly
+once, with no capture-time bookkeeping. A log that cannot be read to its tail fails the attempt
+closed — corruption inside the committed prefix cannot be replayed from any anchor. Attempts retry
+with backoff (`rebuildBackoffMilliseconds` 1 s doubling to 5 min) up to `maxRebuildAttempts` (8),
+then publish `unavailable` and release; the attempt count travels in shared memory so a peer
+honours an exhausted budget. `requestRebuild()` from any worker sets a request word the owner
+consumes at its next wake.
+
+### Handoff fencing
+
+Release drops ownership, calls `flush('shutdown')` then `shutdown(epoch)`, and unlocks only when
+that settles; a rejected `shutdown` **keeps the lock** and publishes `unavailable`, because a backend
+that cannot prove its queue quiescent must not hand the index to another owner. `stop()` and the
+unregister function return one cached promise that resolves after every backend settled and rejects
+if any shutdown failed, so a caller cannot close storage while a backend is still draining into it.
+`isOwnerEpoch(epoch)` is an `Atomics.load` of the shared counter; a backend checks it before each
+apply, after each await and in barrier completions, and drops work for a superseded epoch. The
+runner tracks a generation that changes on every acquisition, discard, reset and release and
+ignores continuations from an earlier one.
+
+### Shared readiness
+
+`indexStore.isIndexing` is per worker, so the owner publishes into one `getUserSharedBuffer`
+allocation per backend (`derived-index:<id>:readiness`, `READINESS_BYTES`): `Int32` words for state
+(`unknown | ready | rebuilding | needs-rebuild | unavailable`), a `DerivedIndexReadinessReason` code,
+attempt count, rebuild request and lag-exceeded flag, then the `BigInt64` owner-epoch counter. Each
+word is read with a plain `Atomics.load`; nothing needs two of them atomically, so there is no
+sequence lock — the owner stores reason and attempts before state. The shared reason is a code,
+never a message. `readDerivedIndexReadiness(logStore, id)` reads it on any worker without a runtime;
+a query path uses it to choose between a 503 and an answer. `Atomics` over rocksdb-js's external
+`ArrayBuffer` wrappers is the same dependency primary-key allocation (`Table.ts`), blob holds
+(`blob.ts`) and HNSW node ids already carry; wakes use the binding's `notify()`, never
+`Atomics.wait`. A successor publishes `ready` on acquisition one `setImmediate` before its lazy
+`exactStart` validation can condemn the inherited cursor; readers see the previous, self-consistent
+generation for that turn.
+
+### Lag policy
+
+Opt-in per registration (`maxLagMilliseconds`; 0 = none; raised to two flush ages since catch-up is
+only proven at a barrier). The owner takes the longest of: cursor distance behind what it has read,
+time parked on backpressure or the ceiling, time since the oldest commit it may not have read
+(bounded by how far its newest read trails the clock), and the age of the oldest accepted work not
+yet durable. Past the budget it sets the shared flag; every worker's `derivedIndexWriteRejection`
+(`resources/derivedIndexRegistry.ts`, one `WeakMap` miss for tables without a derived index) then
+fails local user writes to the index's tables with `DerivedIndexLagError` — 503,
+`DERIVED_INDEX_LAGGING`, `retryable: true` — at the staging layer (`_writeUpdate`, `_writeDelete`,
+`_writeInvalidate`, `_writeRelocate`), never canonical-source applies (`transaction.sourceApply`),
+crash-recovery replay or replication notifications, since a rejected canonical write would advance
+the source cursor past a write that never landed. The flag is owned by the lock holder: it clears
+with hysteresis once the owner has proven catch-up (a durable advance and the end of the log both
+reached since acquiring, lag below half the budget), and on every transition out of "behind and
+still reading" — entering a rebuild (no cursor to guard; readers act on `rebuilding`), `unavailable`,
+a `needs-rebuild` the runtime cannot leave, a condemnation marker it could not write (its retry
+needs a commit wake, and commits were what was being shed), and a held lock. An ordinary handoff
+preserves it. The policy sheds writes; it does not pin retention — rocksdb-js has no protected
+position registration — so a budget belongs well inside the effective retention window, and it must
+be enabled only once every worker runs a runtime with the admission check.
+
+### Failure flow
+
+```mermaid
+flowchart TD
+    A[load backend cursor] --> B{all saved logs and boundaries exact?}
+    B -->|no| X{backend has reset and runtime has scanRecords?}
+    B -->|yes| C[open aggregate iterator after anchors]
+    C --> D[bounded drain: collect, resolve, deliver]
+    D -->|accepted| E[record offered cursor vector]
+    D -->|deferred| F[park until backend wake]
+    D -->|failed or threw| X
+    E -->|backend barrier| G[durable cursor equals one offered vector]
+    E -->|accepted batches at cap| W[waiting-durable]
+    G --> T[publish ready]
+    X -->|no| Z[terminal: release lock, index unavailable]
+    X -->|yes| Y[publish rebuilding, shutdown old epoch, reset, scan, tail, replay]
+    Y -->|ready after final barrier| T
+    Y -->|failure| K{attempts below cap?}
+    K -->|yes, after backoff| Y
+    K -->|no| U[publish unavailable, release lock]
+```
+
+## Native HNSW plane: a file-primary mmap graph on the derived-index runtime (`resources/indexes/HierarchicalNavigableSmallWorld.ts`, `resources/indexes/hnswDerivedIndex.ts`, `resources/indexes/hnswPlaneBinding.ts`)
+
+`@indexed(type: "HNSW", nativePlane: true)` replaces the RocksDB graph with a memory-mapped
+fixed-slot file owned by the native package `@harperfast/hnsw` (Rust, napi-rs, exact-pinned optional
+dependency; crate at HarperFast/hnsw). The file **is the index**: graph nodes, adjacency, the entry
+point, the id allocator and the freelist exist only there. RocksDB keeps the primary records, the
+`pk ↔ nodeId` mappings and the one durable replay cursor. Ordinary HNSW indexes are untouched.
+
+Why the whole search loop is native and not just the distance kernel: at 5M nodes / ef 512, ~85% of
+a warm JS visit is object bookkeeping (candidate heap, visited `Set`, property access, GC), the int8
+cosine is 10%, and a warm RocksDB `Get` per visit (~1–2 µs) is 20–40× the SIMD distance it feeds. A
+native loop over direct-addressed slots (`base + id × slot_size`, ~100–200 ns) with one NAPI crossing
+per query is the only shape that reaches the ceiling; measured 7.2 ms → 0.75 ms p50 at 1M × 768-d,
+recall@10 0.997 → 0.999.
+
+### File format
+
+One file per index, `<index store path>/<store name>.hnsw`, created sparse at `nativePlaneMaxNodes`
+slots (16M default; a structural, create-time header field — exhausting it makes the index
+unavailable until the value is raised and the index rebuilt). Header page: magic + format version
+(mismatch → rebuild, by contract), dims, quantization mode, `slot_size`/`layer0_cap`/`upper_cap`
+(derived from M/optimizeRouting at creation), entry point, atomic `id_high_water`, tag-guarded
+freelist head, a transaction watermark advanced only after an `msync` barrier, and a clean-shutdown
+flag. Layer-0 slot: seqlock word, flags + level, `scale`/`invMag`, degree, int8 vector padded to a
+4-byte boundary, `u32` neighbour ids — 1,344 B at 768-d with cap 128. Upper layers (~6% of nodes)
+live in a fixed-entry region in the same file (format v2), per-entry seqlocked. Per-edge cached
+distances are dropped: recomputing costs ~50 ns natively, storing costs 8 B and ~40% of a node.
+
+Degree cap is **128** for int8 (Kris, 2026-08-31, after measurement): cap 64 saved only 23.5% of
+the slot (the 768 B vector dominates) and lost 2.2 pts recall at 1M. It is a header field, so
+revising it is a rebuild, not a format change; a binary-code v2 slot reopens the question.
+
+### Concurrency
+
+Per-slot lock word: bit 31 locked, low bits the owner's pid; unlocked values are generations that
+readers validate seqlock-style. A lock unchanged for 20 ms whose owner pid is dead is taken over and
+the slot sanitized (marked invalid — a dead writer's payload is half-written; invisible until
+rewritten, never spliced-but-valid). Elapsed time alone never robs a live writer. There is no
+cross-slot atomicity: an insert writes its slot plus ~M neighbours' back-edges independently, and a
+traversal may see a half-linked state — a missing edge or a just-deleted neighbour is skipped. That
+relaxed adherence is safe _here_ because the read path loads the record and rescores exactly, which
+rejects a wrong candidate; it is not a general storage pattern. Fields a reader acts on are read
+through aligned `read_volatile`; the stored vector is an ordinary load so the int8 kernel keeps
+autovectorizing, and a torn vector only perturbs a distance the generation check discards.
+
+### Durability
+
+`msync` on a cadence, not per commit; the header watermark advances after a completed barrier. The
+graph therefore has bounded-lag durability with deterministic catch-up, while the source of truth
+(records, mappings, cursor) stays transactional. Backup treats the file as node-local derived state:
+include it after a barrier, or rebuild on restore. A file whose format or checksum does not validate
+is rebuilt from records. macOS `msync` is a weaker barrier than Linux (an `F_FULLFSYNC` pass is a
+known follow-up); Windows is supported through the prebuild; performance is a Linux target.
+
+### Search
+
+One crossing per query: `plane.search(query, k, ef, filter?)` runs on the module's thread pool with
+an epoch-stamped visited array and a fixed-capacity heap, asymmetric int8 distance with SIMD
+(AVX2/VNNI, NEON) and a scalar fallback. Filtering has two paths: a bitset over node ids for
+allow-lists and companion-condition candidate sets (zero callbacks), and a pipelined
+`ThreadsafeFunction` batch path for arbitrary JS predicates that keeps expanding in distance order
+while verdicts are in flight, bounded by the same `filterExpansion` visit budget as the JS path.
+Traversal never blocks on the event loop. A plane-backed `customIndex.search()` returns a
+promise-backed, async-only iterable (`resources/search.ts` wraps it); a synchronous consumer throws.
+Auto-ef reads the node count from `id_high_water` minus the freelist, which fixes the lifetime
+high-water inflation of the RocksDB graph (harper#2182). Every vector reaching the plane — a
+committed projection or a query target — passes one invariant (`assertPlaneVector`): array-like of
+positive length, every component a finite f32, a magnitude representable in f32, and the plane's
+`dims` once known. What fails it is the client's 400, never a plane failure; a query the plane
+cannot accept must not be read as corruption and cost a rebuild.
+
+### Delivery: a backend on the shared runtime
+
+Maintenance is off the record transaction. The commit path (`prepareCommitted`) only validates a
+changed projection; the derived-index runtime (§ above) reads the committed log and delivers batches
+to `HnswDerivedIndexBackend`:
+
+- `deliver()` enqueues and returns `accepted` (or `deferred` at 64 MiB queued); an applier drains
+  in 5 ms `setImmediate` slices. Each `records` entry (last-write-wins per key) becomes one
+  `applyDerivedValue(pk, vector | undefined, version)`: the stored mapping's signature short-circuits
+  an unchanged vector, an older observation is discarded, otherwise the old node is removed and the
+  new vector inserted with the mapping written **pending**, hidden from search.
+- `flush()` runs when the queue is empty: `plane.flushAsync()`, then pending mappings are published,
+  then the batch's `through` vector is written as the cursor under `Symbol.for('derived-index-cursor')`.
+  Application pauses while a barrier is in flight so the barrier publishes exactly the mappings it
+  covers. That order is the crash contract: a crash before the barrier leaves pending mappings that
+  replay re-derives; after it, a cursor that replays idempotently; never a published mapping to a
+  node the file did not durably get, and never a cursor over uncovered state.
+- `reset(epoch)` removes the cursor first, then the file (invalidated in-band and via a `.stale`
+  sidecar so no peer adopts a stale inode or an undeletable Windows file), then the mappings.
+- A vector the plane cannot hold at apply time (a dimensionality mismatch only the plane-holding
+  worker can see) is skipped and counted, never a rebuild.
+
+Readiness is the runtime's shared record on every worker, not `indexStore.isIndexing`: a search on
+a non-`ready` index is a 503 (`unavailable` after the rebuild budget); a `ready` index with no file
+and no surviving node mapping answers no results; one whose file is gone while mappings survive
+asks its owner for a rebuild. A search failure detaches this process from the plane and requests a
+rebuild — only the owner's `reset` destroys state, so a failure observed after a peer has already
+replaced the file cannot take out the replacement. Writer backpressure is the runtime's lag policy
+(`maxLagMilliseconds`, 30 s default on a `nativePlane` attribute), required because accepting
+unique-key load above native insert throughput and then rebuilding at that same throughput cannot
+converge.
+
+### What `nativePlane: true` requires, and what it does not promise
+
+| requirement                                                                                                                                                                                     | enforcement                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Explicit `audit: true` on the table — the transaction log is the recovery source, and a vector-index option must not silently widen the audit-readable surface by inheriting the global setting | `ClientError` from `table()` and `attachDerivedIndexes()`; enabling logs once that the audit API retains full record history for the retention window |
+| RocksDB; `M=16`, `efConstruction=200`, `mL=1/ln(16)`, `optimizeRouting=0.5`, int8 cosine (the package's standalone `insert` fixes this geometry)                                                | `ClientError` at index construction — never a silent rebuild under native defaults                                                                    |
+| `@harperfast/hnsw` loads on the platform                                                                                                                                                        | absence is 503, not degraded: there is no JS graph to fall back to                                                                                    |
+| The log retains entries back to the cursor                                                                                                                                                      | a cursor the log cannot resolve rebuilds from records; 503 for the rebuild's duration                                                                 |
+
+Not promised: a single total order across concurrent CRDT/source-resolution arrivals (both delivery
+and replay re-read the authoritative record, so the index converges on what the primary store
+resolved; divergence is bounded by candidate selection, which the exact rescore filters), byte-identical
+graphs across nodes or rebuilds, or in-place format upgrades. Rebuild rate falls with graph size
+(≈4,700 inserts/s at 100k, 1,242/s at 1M measured), so a 16M rebuild is hours of 503; a native batch
+insert is the phase-3 follow-up.
