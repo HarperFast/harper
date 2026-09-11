@@ -658,8 +658,7 @@ describe('activation transaction', () => {
 	transientRenameTest(
 		'completes the swap after putting the previous version back and taking it away again',
 		async () => {
-			// The redeploy case the other tests miss: nothing else drives the put-back cycle to a successful
-			// attempt.
+			// A redeploy, so the swap's backoff runs the full put-back cycle rather than sleeping in place.
 			const root = await newRoot('b2-cycle');
 			const live = path.join(root, 'web');
 			await writeTree(live, 'LIVE\n');
