@@ -90,7 +90,7 @@ test('fails closed when a gated measurement has too few samples', () => {
 			foregroundSampleCount: 0,
 			foregroundWindowMilliseconds: 10_000,
 			baselineForegroundP99Milliseconds: 1,
-			indexingElapsedMilliseconds: 9_000,
+			indexingElapsedMilliseconds: 11_000,
 			maxSyncMilliseconds: 0,
 			syncSampleCount: 0,
 		}),
@@ -99,6 +99,7 @@ test('fails closed when a gated measurement has too few samples', () => {
 			failures: [
 				'concurrent search has 0 samples; at least 100 are required',
 				'event-loop delay has 0 samples; at least 500 are required',
+				'indexing took 11000ms and outlasted the 10000ms foreground window',
 				'foreground writes have 0 samples; at least 1000 are required',
 				'host storage reported no sync callbacks',
 			],
