@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789111305041,
+  "lastUpdate": 1789117917605,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -17015,6 +17015,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 2190,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d6f4efaed71388082fbd27c6593294b7892fa679",
+          "message": "Merge pull request #2560 from HarperFast/fix/shrinkwrap-single-instance-guard\n\nKeep shrinkwrap guard compatible with hoisted dependencies",
+          "timestamp": "2026-09-10T10:57:38Z",
+          "url": "https://github.com/HarperFast/harper/commit/d6f4efaed71388082fbd27c6593294b7892fa679"
+        },
+        "date": 1789117915555,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 22950,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 18897,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 15861,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 35365056,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 3318,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 614535,
             "unit": "ops"
           }
         ]
