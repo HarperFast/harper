@@ -68,11 +68,13 @@ The default run compares four arms in this order:
 an orderly close and reopen; it does not simulate a crash, damage a WAL tail, or prove replay from a
 retained Harper transaction-log cursor. Those fault tests belong to the backend-integration unit.
 
-Every arm drives scheduled writes against an unrelated Harper table while indexing. Scheduled time,
-not dispatch time, begins each latency sample, so an event-loop stall remains visible rather than
-being omitted. Indexed arms drive at least `--queries` searches at `--query-rate` under the same
-open-loop rule and continue searching until indexing finishes, then close and reopen the index and
-verify result parity.
+Every arm drives the same fixed `--minimum-duration-ms` window of scheduled writes against an
+unrelated Harper table while indexing. Scheduled time, not dispatch time, begins each latency
+sample, so an event-loop stall remains visible rather than being omitted. Indexed arms drive at
+least `--queries` searches at `--query-rate` under the same open-loop rule and continue searching
+until indexing finishes, then close and reopen the index and verify result parity. Harper-hosted
+`publish()` commits and reloads the Tantivy reader before it resolves; the native control performs
+those two operations explicitly.
 The hosted arms report callback counts, transferred bytes, largest stored value, callback latency,
 sync count per Tantivy publication, sync latency, root commit events, RocksDB database-wide
 compaction/stall counters, aggregate compaction/SST properties for the foreground table column
@@ -89,27 +91,27 @@ npm run benchmark:fulltext-hosted -- \
 	--fulltext-root /path/to/fulltext \
 	--revision HARPER_GIT_SHA \
 	--fulltext-revision FULLTEXT_GIT_SHA \
-  --documents 100000 \
+	--documents 100000 \
 	--batch-size 1000 \
 	--queries 500 \
 	--query-rate 500 \
 	--soak-reads 5000 \
 	--foreground-rate 500 \
-  --publication-ms 1000,5000,30000 \
-  --table-counts 1,16,128
+	--publication-ms 1000,5000,30000 \
+	--table-counts 1,16,128
 ```
 
 The command writes progress to stderr and emits one machine-readable stdout line beginning with
-`FULLTEXT_HOSTED_RESULT`. It exits nonzero when an architecture gate fails: search p99 below 50 ms,
-event-loop-delay p99 below 20 ms, unrelated-table p99 within 20% of the matching no-index control,
-no individual explicit sync above 250 ms, no synchronous root commit notification from inside a
-host write callback, foreground measurement windows within 20% of each other, and enough samples
-to make the p99 comparisons meaningful. Raise `--minimum-duration-ms` when an indexed arm outlasts
-the control window. These are
-diagnostic gates, not published customer SLOs. Pass `--revision` and `--fulltext-revision` when retaining results so release-to-release
-comparisons identify both inputs; they otherwise default to `GITHUB_SHA`/`working-tree` and
-`working-tree`. Benchmark results are meaningful only when the arms run on the same quiet host from
-the same optimized Harper and Fulltext revisions.
+`FULLTEXT_HOSTED_RESULT`, including completed-arm measurements if a later arm aborts. The
+architecture gates require search p99 below 50 ms, event-loop-delay p99 below 20 ms, unrelated-table
+p99 within 20% of the matching no-index control, no individual explicit sync above 250 ms, no
+synchronous root commit notification from inside a host write callback, comparable foreground
+measurement windows, and enough samples to make the p99 comparisons meaningful. A failed gate or
+aborted arm exits nonzero. Raise `--minimum-duration-ms` to collect more foreground samples. These
+are diagnostic gates, not published customer SLOs. Pass `--revision` and `--fulltext-revision` when
+retaining results so release-to-release comparisons identify both inputs; they otherwise default
+to `GITHUB_SHA`/`working-tree` and `working-tree`. Benchmark results are meaningful only when the
+arms run on the same quiet host from the same optimized Harper and Fulltext revisions.
 
 ---
 
