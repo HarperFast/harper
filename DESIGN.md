@@ -2013,10 +2013,11 @@ waiters the same way. **Temporarily** the lock is taken without one: the pinned 
 that callback as a thread-safe function of the caller's env, and on Node 22 one left behind by a
 worker that was `terminate()`d aborts the process when another thread unlocks (Harper's thread
 manager terminates workers on restart). Until the pin includes the fix (HarperFast/rocksdb-js#849),
-successors are woken by the releasing owner's `notify()` on the readiness buffer, by commit wakes,
-and by a 5 s retry timer for an owner that died without releasing; the releasing runner ignores the
-one notification it caused. This is a workaround with a tracked revert — the callback path is simpler
-and picks up a dead owner immediately.
+successors are woken by the releasing owner's `notify()` on the readiness buffer and, for an owner
+that died without releasing, by a retry timer (`lockRetryMilliseconds`, 5 s by default); the
+releasing runner ignores the one notification it caused, and a runner already parked on that timer
+does not re-probe the lock on commit wakes. This is a workaround with a tracked revert — the callback
+path is simpler and picks up a dead owner immediately.
 
 Transaction timestamps are unique per physical log but **not monotone in physical order**
 (`TransactionLogStore::writeBatch` only advances `latestTimestamp` when the batch's is greater), so
