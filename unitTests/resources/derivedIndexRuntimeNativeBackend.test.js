@@ -277,6 +277,36 @@ class SyncBackend {
 	}
 }
 
+class AcquiringBackend extends SyncBackend {
+	constructor(id, cursor, acquire) {
+		super(id, cursor);
+		this.persistedCursor = cursor;
+		this.acquireImpl = acquire;
+		this.acquisitions = [];
+		this.shutdowns = [];
+	}
+
+	acquire(ownerEpoch) {
+		this.acquisitions.push(ownerEpoch);
+		const acquired = this.acquireImpl?.(ownerEpoch, this) ?? this.persistedCursor;
+		return Promise.resolve(acquired).then((cursor) => {
+			this.cursor = cursor;
+			return cursor;
+		});
+	}
+
+	deliver(batch) {
+		const result = super.deliver(batch);
+		if (result === DERIVED_INDEX_ACCEPTED) this.persistedCursor = this.cursor;
+		return result;
+	}
+
+	shutdown(ownerEpoch) {
+		this.shutdowns.push(ownerEpoch);
+		this.cursor = undefined;
+	}
+}
+
 const cursor = (timestamp) => ({ format: 1, logs: { local: timestamp } });
 const audit = ({ timestamp, recordId, tableId = 1, version = timestamp, type = 'put', endTxn = true, size = 32 }) => ({
 	logName: 'local',
@@ -361,10 +391,62 @@ describe('DerivedIndexRuntime for native backends', () => {
 			]
 		);
 		assert.strictEqual(batch.records[0].state, batch.transactions[0].mutations[0].state);
+		assert.strictEqual(typeof batch.records[0].recordKey, 'string');
 		assert.strictEqual(batch.records[0].state, batch.transactions[2].mutations[0].state);
 		assert.strictEqual(batch.transactions[0].mutations[0].logVersion, 100);
 		assert.strictEqual(getReads(), 2);
 		assert.deepStrictEqual(Object.keys(batch), ['ownerEpoch', 'transactions', 'through']);
+		await runtime.stop();
+	});
+
+	it('does not read or release work until an asynchronous backend acquisition settles', async () => {
+		let resolveAcquisition;
+		const acquisition = new Promise((resolve) => (resolveAcquisition = resolve));
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		const records = new Map([['1:a', { version: 20, value: { title: 'a' } }]]);
+		const backend = new AcquiringBackend('async-acquire', cursor(10), () => acquisition);
+		const { runtime } = runtimeFor(store, records);
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.acquisitions.length === 1);
+		assert.strictEqual(store.rangeCalls.length, 0);
+		const stopped = runtime.stop();
+		await sleep(5);
+		assert.strictEqual(backend.shutdowns.length, 0, 'shutdown waits for acquisition to settle');
+		resolveAcquisition(cursor(10));
+		await stopped;
+		assert.strictEqual(store.rangeCalls.length, 0, 'a stopped runner never begins log replay');
+		assert.strictEqual(backend.shutdowns.length, 1);
+		assert.strictEqual(store.locks.size, 0);
+	});
+
+	it('reopens a released backend from its committed cursor without rebuilding', async () => {
+		const store = new FakeLogStore(
+			new Map([
+				[10, [audit({ timestamp: 20, recordId: 'a' })]],
+				[20, []],
+			])
+		);
+		const records = new Map([
+			['1:a', { version: 20, value: { title: 'a' } }],
+			['1:b', { version: 30, value: { title: 'b' } }],
+		]);
+		const backend = new AcquiringBackend('idle-reopen', cursor(10));
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 5 });
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.shutdowns.length === 1);
+		assert.strictEqual(backend.persistedCursor.logs.local, 20);
+		store.entriesByCursor.set(20, [audit({ timestamp: 30, recordId: 'b' })]);
+		store.entriesByCursor.set(30, []);
+		store.rootStore.emit('committed');
+
+		await waitFor(() => backend.deliveries.some((batch) => batch.records.some((record) => record.recordId === 'b')));
+		assert.strictEqual(backend.acquisitions.length, 2);
+		assert.strictEqual(
+			backend.deliveries.filter((batch) => batch.records.some((record) => record.recordId === 'a')).length,
+			1
+		);
 		await runtime.stop();
 	});
 
