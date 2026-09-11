@@ -567,10 +567,10 @@ export function encodeFullTextCursorPayload(
 }
 
 export function decodeFullTextCursorPayload(
-	payload: string | undefined,
+	payload: string | null | undefined,
 	maxBytes = DEFAULT_MAX_CURSOR_PAYLOAD_BYTES
 ): DerivedIndexCursor | undefined {
-	if (payload === undefined) return;
+	if (payload == null) return;
 	if (typeof payload !== 'string' || Buffer.byteLength(payload) > maxBytes)
 		throw new FullTextDerivedIndexError('Full-text cursor payload is invalid or too large');
 	let decoded: unknown;
@@ -600,7 +600,9 @@ export function decodeFullTextCursorPayload(
 function fullTextFields(projection: unknown): Record<string, string | string[]> {
 	const fields: Record<string, string | string[]> = Object.create(null);
 	if (!plainObject(projection)) return fields;
-	for (const [name, value] of Object.entries(projection)) {
+	for (const name in projection) {
+		if (!Object.hasOwn(projection, name)) continue;
+		const value = projection[name];
 		if (typeof value === 'string') fields[name] = value;
 		else if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) fields[name] = value;
 	}
@@ -617,7 +619,9 @@ function normalizedCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
 	if (!plainObject(cursor) || cursor.format !== 1 || !plainObject(cursor.logs))
 		throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid cursor');
 	const logs: Record<string, number> = Object.create(null);
-	for (const [name, timestamp] of Object.entries(cursor.logs)) {
+	for (const name in cursor.logs) {
+		if (!Object.hasOwn(cursor.logs, name)) continue;
+		const timestamp = cursor.logs[name];
 		if (!name || RESERVED_LOG_NAMES.has(name) || !Number.isFinite(timestamp) || timestamp <= 0)
 			throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid log position');
 		logs[name] = timestamp;
@@ -628,8 +632,11 @@ function normalizedCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
 
 function cursorAtOrAfter(cursor: DerivedIndexCursor, previous: DerivedIndexCursor | undefined): boolean {
 	if (!previous) return true;
-	const names = Object.keys(previous.logs);
-	return names.every((name) => Object.hasOwn(cursor.logs, name) && cursor.logs[name] >= previous.logs[name]);
+	for (const name in previous.logs) {
+		if (!Object.hasOwn(previous.logs, name)) continue;
+		if (!Object.hasOwn(cursor.logs, name) || cursor.logs[name] < previous.logs[name]) return false;
+	}
+	return true;
 }
 
 function plainObject(value: unknown): value is Record<string, any> {
