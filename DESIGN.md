@@ -417,11 +417,14 @@ the two cases are different:
 - **In-process transport swap** (a component reload re-registering a transport). The successor
   **adopts** the predecessor's delegations and grants in its constructor, before the predecessor is
   closed. The transport object changed; this node's delegations and the handles they admitted did not.
-- **Cold start** (a process restart, where there is nothing to adopt). The coordinator refuses to
-  grant as a home for `DELEGATION_LEASE_MS + skew` from construction: a previous incarnation of this
-  node may have delegations still admitting, and it left no record. Once harper-pro#825 advances the
-  epoch number across a restart this wait is unnecessary — every delegate drops an old-epoch
-  delegation on next use — but core cannot assume that has happened.
+- **Cold start** (a process restart, where there is nothing to adopt). The hazard is the same — a
+  previous incarnation may have delegations still admitting, and it left no record — but core does
+  not enforce it, because core cannot know when that incarnation died and the conservative bound
+  would make the first cluster lock after every restart wait minutes. The obligation is stated on
+  `ClusterLockTransport.epoch` instead: **do not name this node in an epoch until a previous
+  incarnation's delegations could have expired, or advance the epoch number, which invalidates them
+  outright.** That is the design note's §4.4 retirement interval, and it is harper-pro#825's to
+  provide. `grantableAfterMono` holds a core-side bound for a deployment that wants one anyway.
 
 `Table.lockCoordinator` also does **not** close the coordinator when the transport merely goes away:
 harper-pro unregisters without a standalone claim during a reconnect, and closing there would discard
@@ -437,7 +440,10 @@ provide, not core's.
 own: a caller that staged a write and then called `unlock()` leaves nothing for a drain to wait on,
 but its write is still uncommitted and would land after the successor was admitted. So a delegation
 retains a revoker for every handle it admitted (`registerAdmission`), and surrender, expiry and
-`close()` all call them — `handle.revokeLease()` expires the handle ahead of its lease, and the
+`close()` all call them. The admission carries its delegation's **token**, and `release()` and
+`registerAdmission()` both take it back: a key's delegation can be replaced while a handle is still
+open, and an untokened release from a superseded handle would decrement the successor's admission
+count and let it be surrendered while its own callers were still inside — `handle.revokeLease()` expires the handle ahead of its lease, and the
 commit-time fence in `DatabaseTransaction` then rejects the staged write immediately before the native
 commit submits. That fence runs only when the transaction actually holds a lease-protected write
 (`hasLeaseProtectedWrite`, reset by `clearWrites()`), so a bulk transaction of plain writes in a
