@@ -519,9 +519,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#notify(change: DerivedIndexBackendStateChange): void {
 		if (change === 'changed') this.#capacityDeferred = false;
 		const wake = this.#wake;
+		const activeEpoch = this.#activeEpoch;
 		if (!wake) return;
 		setImmediate(() => {
-			if (this.#wake !== wake) return;
+			if (this.#wake !== wake || this.#activeEpoch !== activeEpoch) return;
+			if (change === 'accepted-work-lost' && this.#shutdown) return;
 			try {
 				wake(change);
 			} catch (error) {
