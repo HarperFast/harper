@@ -42,10 +42,14 @@ let RocksDerivedIndexStorage;
 	for (const tableCount of options.tableCounts) {
 		for (const publicationMilliseconds of options.publicationMilliseconds) {
 			let baselineForegroundP99;
+			let baselineWorkloadMilliseconds;
 			for (const arm of options.arms) {
 				const result = await runArm(arm, tableCount, publicationMilliseconds);
-				if (arm === 'no-index') baselineForegroundP99 = result.foreground.p99Milliseconds;
-				if (baselineForegroundP99 === undefined) {
+				if (arm === 'no-index') {
+					baselineForegroundP99 = result.foreground.p99Milliseconds;
+					baselineWorkloadMilliseconds = result.workloadMilliseconds;
+				}
+				if (baselineForegroundP99 === undefined || baselineWorkloadMilliseconds === undefined) {
 					throw new Error('the no-index arm must run before indexed arms');
 				}
 				result.gates = evaluateGates({
@@ -55,7 +59,9 @@ let RocksDerivedIndexStorage;
 					eventLoopSampleCount: result.eventLoop.count,
 					foregroundP99Milliseconds: result.foreground.p99Milliseconds,
 					foregroundSampleCount: result.foreground.count,
+					foregroundWindowMilliseconds: result.workloadMilliseconds,
 					baselineForegroundP99Milliseconds: baselineForegroundP99,
+					baselineForegroundWindowMilliseconds: baselineWorkloadMilliseconds,
 					maxSyncMilliseconds: result.storage?.sync.maxMilliseconds,
 					syncSampleCount: result.storage?.sync.count,
 					synchronousCommittedEvents: result.storage?.synchronousCommittedEvents,
@@ -113,6 +119,8 @@ let RocksDerivedIndexStorage;
 		const searchReady = Promise.withResolvers();
 		const control = { stop: false, indexing: true, searchReady };
 		let indexContext;
+		let foreground;
+		let searches;
 		const started = performance.now();
 		try {
 			indexContext = await openIndex(arm, rootStore, database, () => committedEvents);
@@ -120,8 +128,8 @@ let RocksDerivedIndexStorage;
 			if (indexContext?.storageMeasurements) resetStorageMeasurements(indexContext.storageMeasurements);
 			eventLoop.enable();
 			const workloadStarted = performance.now();
-			const foreground = driveForeground(tables, control, workloadStarted, foregroundLatencies);
-			const searches = driveSearch(indexContext?.index, control, searchLatencies);
+			foreground = driveForeground(tables, control, workloadStarted, foregroundLatencies);
+			searches = driveSearch(indexContext?.index, control, searchLatencies);
 			foreground.catch(() => undefined);
 			searches.catch(() => undefined);
 			const indexing = await indexDocuments(indexContext, publicationMilliseconds, control);
@@ -172,6 +180,8 @@ let RocksDerivedIndexStorage;
 			};
 		} finally {
 			control.stop = true;
+			control.searchReady.resolve();
+			await Promise.allSettled([foreground, searches].filter(Boolean));
 			eventLoop.disable();
 			rootStore.off('committed', onCommitted);
 			await indexContext?.close().catch(() => undefined);
@@ -367,7 +377,7 @@ let RocksDerivedIndexStorage;
 		const pending = new PendingRequests();
 		await control.searchReady.promise;
 		let next = performance.now();
-		while (!control.stop && !pending.failed && sequence < options.queryCount) {
+		while (!control.stop && !pending.failed && (control.indexing || sequence < options.queryCount)) {
 			const wait = next - performance.now();
 			if (wait > 0) await delay(wait);
 			if (control.stop || pending.failed) break;
@@ -394,48 +404,51 @@ let RocksDerivedIndexStorage;
 		let reopened;
 		let reopenedStorage;
 		let reopenMeasurements;
-		const started = performance.now();
-		if (context.arm === 'native') {
-			reopened = await fulltextNative.openNativeFullTextIndex(context.config);
-		} else {
-			context.rawStorage.close();
-			reopenedStorage = new RocksDerivedIndexStorage(context.rootStore, context.storeName);
-			reopenMeasurements = emptyStorageMeasurements();
-			const storage = measuredStorage(reopenedStorage, context.arm, reopenMeasurements, context.committedEvents);
-			reopened = await fulltextHarper.openHarperFullTextIndex({
-				...context.config,
-				storage,
-				storeIdentity: [BigInt(process.pid), BigInt(Date.now()), ++nextStoreIdentity],
-			});
-			assert.strictEqual(reopened.committedPayload, context.lastPayload);
-		}
-		const reopenMilliseconds = performance.now() - started;
-		const searchStarted = performance.now();
-		const result = await reopened.search({ text: 'waterproof trail shoes', limit: 10, exactTotal: true });
-		const searchMilliseconds = performance.now() - searchStarted;
-		assert.deepStrictEqual(
-			result.hits.map((hit) => hit.id),
-			expected.hits.map((hit) => hit.id)
-		);
 		try {
-			await reopened.close();
+			const started = performance.now();
+			if (context.arm === 'native') {
+				reopened = await fulltextNative.openNativeFullTextIndex(context.config);
+			} else {
+				context.rawStorage.close();
+				reopenedStorage = new RocksDerivedIndexStorage(context.rootStore, context.storeName);
+				reopenMeasurements = emptyStorageMeasurements();
+				const storage = measuredStorage(reopenedStorage, context.arm, reopenMeasurements, context.committedEvents);
+				reopened = await fulltextHarper.openHarperFullTextIndex({
+					...context.config,
+					storage,
+					storeIdentity: [BigInt(process.pid), BigInt(Date.now()), ++nextStoreIdentity],
+				});
+				assert.strictEqual(reopened.committedPayload, context.lastPayload);
+			}
+			const reopenMilliseconds = performance.now() - started;
+			const searchStarted = performance.now();
+			const result = await reopened.search({ text: 'waterproof trail shoes', limit: 10, exactTotal: true });
+			const searchMilliseconds = performance.now() - searchStarted;
+			assert.deepStrictEqual(
+				result.hits.map((hit) => hit.id),
+				expected.hits.map((hit) => hit.id)
+			);
+			return {
+				reopenMilliseconds,
+				searchMilliseconds,
+				total: result.total,
+				storage: reopenMeasurements ? storageSummary(reopenMeasurements, 0) : undefined,
+			};
 		} finally {
 			try {
-				try {
-					reopenedStorage?.close();
-				} finally {
-					if (context.arm === 'native') await rm(context.config.path, { recursive: true, force: true });
-				}
+				if (reopened) await reopened.close();
 			} finally {
-				context.disposed = true;
+				try {
+					try {
+						reopenedStorage?.close();
+					} finally {
+						if (context.arm === 'native') await rm(context.config.path, { recursive: true, force: true });
+					}
+				} finally {
+					context.disposed = true;
+				}
 			}
 		}
-		return {
-			reopenMilliseconds,
-			searchMilliseconds,
-			total: result.total,
-			storage: reopenMeasurements ? storageSummary(reopenMeasurements, 0) : undefined,
-		};
 	}
 
 	function measuredStorage(rawStorage, arm, measurements, committedEvents) {
@@ -552,7 +565,7 @@ let RocksDerivedIndexStorage;
 				'query-rate': { type: 'string', default: '500' },
 				'soak-reads': { type: 'string', default: '1000' },
 				'foreground-rate': { type: 'string', default: '100' },
-				'minimum-duration-ms': { type: 'string', default: '10000' },
+				'minimum-duration-ms': { type: 'string', default: '12000' },
 				'publication-ms': { type: 'string', default: '1000' },
 				'table-counts': { type: 'string', default: '1' },
 				'arms': { type: 'string', default: 'no-index,native,wal-only,root-flush' },

@@ -24,7 +24,9 @@ test('reports every failed architecture gate', () => {
 			eventLoopSampleCount: 500,
 			foregroundP99Milliseconds: 13,
 			foregroundSampleCount: 1_000,
+			foregroundWindowMilliseconds: 10_000,
 			baselineForegroundP99Milliseconds: 10,
+			baselineForegroundWindowMilliseconds: 10_000,
 			maxSyncMilliseconds: 251,
 			syncSampleCount: 1,
 			synchronousCommittedEvents: 1,
@@ -51,7 +53,9 @@ test('accepts values strictly inside every gate', () => {
 			eventLoopSampleCount: 500,
 			foregroundP99Milliseconds: 12,
 			foregroundSampleCount: 1_000,
+			foregroundWindowMilliseconds: 10_000,
 			baselineForegroundP99Milliseconds: 10,
+			baselineForegroundWindowMilliseconds: 10_000,
 			maxSyncMilliseconds: 250,
 			syncSampleCount: 1,
 			synchronousCommittedEvents: 0,
@@ -69,7 +73,9 @@ test('fails closed when a gated measurement has too few samples', () => {
 			eventLoopSampleCount: 0,
 			foregroundP99Milliseconds: 1,
 			foregroundSampleCount: 0,
+			foregroundWindowMilliseconds: 10_000,
 			baselineForegroundP99Milliseconds: 1,
+			baselineForegroundWindowMilliseconds: 10_000,
 			maxSyncMilliseconds: 0,
 			syncSampleCount: 0,
 		}),
@@ -81,6 +87,29 @@ test('fails closed when a gated measurement has too few samples', () => {
 				'foreground writes have 0 samples; at least 1000 are required',
 				'host storage reported no sync callbacks',
 			],
+		}
+	);
+});
+
+test('fails closed when foreground comparison windows materially differ', () => {
+	assert.deepStrictEqual(
+		evaluateGates({
+			searchP99Milliseconds: 1,
+			searchSampleCount: 100,
+			eventLoopP99Milliseconds: 1,
+			eventLoopSampleCount: 500,
+			foregroundP99Milliseconds: 1,
+			foregroundSampleCount: 1_000,
+			foregroundWindowMilliseconds: 12_001,
+			baselineForegroundP99Milliseconds: 1,
+			baselineForegroundWindowMilliseconds: 10_000,
+			maxSyncMilliseconds: 1,
+			syncSampleCount: 1,
+			synchronousCommittedEvents: 0,
+		}),
+		{
+			passed: false,
+			failures: ['foreground comparison windows differ by more than 20%: 12001ms vs 10000ms baseline'],
 		}
 	);
 });

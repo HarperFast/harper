@@ -70,8 +70,9 @@ retained Harper transaction-log cursor. Those fault tests belong to the backend-
 
 Every arm drives scheduled writes against an unrelated Harper table while indexing. Scheduled time,
 not dispatch time, begins each latency sample, so an event-loop stall remains visible rather than
-being omitted. Indexed arms drive searches at `--query-rate` under the same open-loop rule, close and
-reopen the index, and verify result parity.
+being omitted. Indexed arms drive at least `--queries` searches at `--query-rate` under the same
+open-loop rule and continue searching until indexing finishes, then close and reopen the index and
+verify result parity.
 The hosted arms report callback counts, transferred bytes, largest stored value, callback latency,
 sync count per Tantivy publication, sync latency, root commit events, RocksDB database-wide
 compaction/stall counters, aggregate compaction/SST properties for the foreground table column
@@ -102,7 +103,9 @@ The command writes progress to stderr and emits one machine-readable stdout line
 `FULLTEXT_HOSTED_RESULT`. It exits nonzero when an architecture gate fails: search p99 below 50 ms,
 event-loop-delay p99 below 20 ms, unrelated-table p99 within 20% of the matching no-index control,
 no individual explicit sync above 250 ms, no synchronous root commit notification from inside a
-host write callback, and enough samples to make the p99 comparisons meaningful. These are
+host write callback, foreground measurement windows within 20% of each other, and enough samples
+to make the p99 comparisons meaningful. Raise `--minimum-duration-ms` when an indexed arm outlasts
+the control window. These are
 diagnostic gates, not published customer SLOs. Pass `--revision` and `--fulltext-revision` when retaining results so release-to-release
 comparisons identify both inputs; they otherwise default to `GITHUB_SHA`/`working-tree` and
 `working-tree`. Benchmark results are meaningful only when the arms run on the same quiet host from
