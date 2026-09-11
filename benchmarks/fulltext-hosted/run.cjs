@@ -1,6 +1,6 @@
 const assert = require('node:assert');
 const { access, mkdtemp, rm } = require('node:fs/promises');
-const { availableParallelism, tmpdir } = require('node:os');
+const { availableParallelism } = require('node:os');
 const { join, resolve } = require('node:path');
 const { monitorEventLoopDelay, performance } = require('node:perf_hooks');
 const { pathToFileURL } = require('node:url');
@@ -21,6 +21,7 @@ let RocksDerivedIndexStorage;
 	await verifyFulltextRoot(options.fulltextRoot);
 	require('../../unitTests/testUtils');
 	const { setupTestDBPath } = require('../../unitTests/testUtils');
+	const { removePerPidRoot } = require('../../unitTests/perPidRoot');
 	({ closeDatabase, table } = require('#src/resources/databases'));
 	({ RocksDerivedIndexStorage } = require('#src/resources/RocksDerivedIndexStorage'));
 	const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -30,7 +31,8 @@ let RocksDerivedIndexStorage;
 	assert(runtime.storageBackends.includes('harper'));
 	let nextStoreIdentity = 0n;
 
-	setupTestDBPath();
+	const testRoot = setupTestDBPath();
+	process.once('exit', removePerPidRoot);
 	setMainIsWorker(true);
 
 	const results = [];
@@ -46,10 +48,15 @@ let RocksDerivedIndexStorage;
 				}
 				result.gates = evaluateGates({
 					searchP99Milliseconds: result.search?.duringIndexing.p99Milliseconds,
+					searchSampleCount: result.search?.duringIndexing.count,
 					eventLoopP99Milliseconds: result.eventLoop.p99Milliseconds,
+					eventLoopSampleCount: result.eventLoop.count,
 					foregroundP99Milliseconds: result.foreground.p99Milliseconds,
+					foregroundSampleCount: result.foreground.count,
 					baselineForegroundP99Milliseconds: baselineForegroundP99,
-					maxSyncMilliseconds: result.storage?.sync.maxMilliseconds ?? 0,
+					maxSyncMilliseconds: result.storage?.sync.maxMilliseconds,
+					syncSampleCount: result.storage?.sync.count,
+					synchronousCommittedEvents: result.storage?.synchronousCommittedEvents,
 				});
 				failed ||= !result.gates.passed;
 				results.push(result);
@@ -94,39 +101,50 @@ let RocksDerivedIndexStorage;
 			})
 		);
 		const rootStore = tables[0].primaryStore.rootStore;
-		const statsBefore = rocksStats(rootStore);
+		const statsBefore = rocksStats(rootStore, tables);
 		let committedEvents = 0;
 		const onCommitted = () => committedEvents++;
 		rootStore.on('committed', onCommitted);
 		const eventLoop = monitorEventLoopDelay({ resolution: 10 });
 		const foregroundLatencies = [];
-		const searchLatencies = [];
-		const control = { stop: false, searchReady: false };
+		const searchLatencies = { duringIndexing: [], afterIndexing: [] };
+		const searchReady = Promise.withResolvers();
+		const control = { stop: false, indexing: true, searchReady };
 		let indexContext;
 		const started = performance.now();
 		try {
 			indexContext = await openIndex(arm, rootStore, database, () => committedEvents);
-			await warmForeground(tables[0]);
+			await warmForeground(tables);
+			if (indexContext?.storageMeasurements) resetStorageMeasurements(indexContext.storageMeasurements);
 			eventLoop.enable();
 			const workloadStarted = performance.now();
-			const foreground = driveForeground(tables[0], control, workloadStarted, foregroundLatencies);
+			const foreground = driveForeground(tables, control, workloadStarted, foregroundLatencies);
 			const searches = driveSearch(indexContext?.index, control, searchLatencies);
+			foreground.catch(() => undefined);
+			searches.catch(() => undefined);
 			const indexing = await indexDocuments(indexContext, publicationMilliseconds, control);
+			control.indexing = false;
 			await searches;
 			const remaining = options.minimumDurationMs - (performance.now() - workloadStarted);
 			if (remaining > 0) await delay(remaining);
 			control.stop = true;
 			const foregroundCount = await foreground;
-			const soakRead = await measureSoakReads(tables[0], foregroundCount);
-			const reopen = await closeAndReopen(indexContext);
-			const statsAfter = rocksStats(rootStore);
-			const elapsedMilliseconds = performance.now() - started;
 			const eventLoopSummary = {
+				count: eventLoop.count,
 				p50Milliseconds: eventLoop.percentile(50) / 1e6,
 				p95Milliseconds: eventLoop.percentile(95) / 1e6,
 				p99Milliseconds: eventLoop.percentile(99) / 1e6,
 				maxMilliseconds: eventLoop.max / 1e6,
 			};
+			eventLoop.disable();
+			const storage = indexContext?.storageMeasurements
+				? storageSummary(indexContext.storageMeasurements, indexing.publications)
+				: undefined;
+			if (storage) assert.ok(storage.maxValueBytes <= 256 * 1024, 'stored value exceeded the 256 KiB chunk bound');
+			const statsAfter = rocksStats(rootStore, tables);
+			const soakRead = await measureSoakReads(tables, foregroundCount);
+			const reopen = await closeAndReopen(indexContext);
+			const elapsedMilliseconds = performance.now() - started;
 			return {
 				arm,
 				tableCount,
@@ -137,14 +155,13 @@ let RocksDerivedIndexStorage;
 				soakRead,
 				search: indexContext
 					? {
-							duringIndexing: summarizeLatencies(searchLatencies),
+							duringIndexing: summarizeLatencies(searchLatencies.duringIndexing),
+							afterIndexing: summarizeLatencies(searchLatencies.afterIndexing),
 							reopen,
 						}
 					: undefined,
 				eventLoop: eventLoopSummary,
-				storage: indexContext?.storageMeasurements
-					? storageSummary(indexContext.storageMeasurements, indexing.publications)
-					: undefined,
+				storage,
 				committedEvents,
 				rocks: { before: statsBefore, after: statsAfter },
 				gates: undefined,
@@ -177,7 +194,7 @@ let RocksDerivedIndexStorage;
 			},
 		};
 		if (arm === 'native') {
-			const path = await mkdtemp(join(tmpdir(), 'harper-fulltext-native-control-'));
+			const path = await mkdtemp(join(testRoot, 'fulltext-native-control-'));
 			const index = await fulltextNative.openNativeFullTextIndex({ ...common, path });
 			return {
 				arm,
@@ -248,7 +265,11 @@ let RocksDerivedIndexStorage;
 				const applyStarted = performance.now();
 				assert.strictEqual(await context.index.apply(packed), end - start);
 				applyMilliseconds += performance.now() - applyStarted;
-				if (end === options.documents || performance.now() - sincePublication >= publicationMilliseconds) {
+				if (
+					start === 0 ||
+					end === options.documents ||
+					performance.now() - sincePublication >= publicationMilliseconds
+				) {
 					const publishStarted = performance.now();
 					if (context.arm === 'native') {
 						await context.index.commit();
@@ -260,7 +281,7 @@ let RocksDerivedIndexStorage;
 					publishMilliseconds += performance.now() - publishStarted;
 					publications++;
 					sincePublication = performance.now();
-					control.searchReady = true;
+					control.searchReady.resolve();
 				}
 			}
 			await nextTurn();
@@ -276,7 +297,7 @@ let RocksDerivedIndexStorage;
 		};
 	}
 
-	async function driveForeground(Table, control, started, latencies) {
+	async function driveForeground(tables, control, started, latencies) {
 		const interval = 1_000 / options.foregroundRate;
 		let next = started;
 		let sequence = 0;
@@ -287,6 +308,7 @@ let RocksDerivedIndexStorage;
 			const scheduled = next;
 			next += interval;
 			const id = sequence++;
+			const Table = tables[id % tables.length];
 			const request = Promise.resolve()
 				.then(() => Table.put(`noise-${id}`, { value: `foreground-${id}` }))
 				.then(() => {
@@ -303,16 +325,19 @@ let RocksDerivedIndexStorage;
 		return sequence;
 	}
 
-	async function warmForeground(Table) {
-		for (let sequence = 0; sequence < 32; sequence++) {
-			await Table.put(`warm-${sequence}`, { value: `warm-${sequence}` });
+	async function warmForeground(tables) {
+		for (const Table of tables) {
+			for (let sequence = 0; sequence < 32; sequence++) {
+				await Table.put(`warm-${sequence}`, { value: `warm-${sequence}` });
+			}
 		}
 	}
 
-	async function measureSoakReads(Table, foregroundCount) {
+	async function measureSoakReads(tables, foregroundCount) {
 		const latencies = [];
 		for (let sequence = 0; sequence < options.soakReads; sequence++) {
 			const id = sequence % foregroundCount;
+			const Table = tables[id % tables.length];
 			const started = performance.now();
 			assert(await Table.get(`noise-${id}`));
 			latencies.push(performance.now() - started);
@@ -324,15 +349,13 @@ let RocksDerivedIndexStorage;
 		if (!index) return;
 		const queries = ['waterproof trail shoes', 'wireless headphones', 'cotton blue shirt', 'outdoor product'];
 		let sequence = 0;
+		await control.searchReady.promise;
 		while (!control.stop && sequence < options.queryCount) {
-			if (!control.searchReady) {
-				await nextTurn();
-				continue;
-			}
+			const query = queries[sequence % queries.length];
 			const started = performance.now();
-			const result = await index.search({ text: queries[sequence % queries.length], limit: 10 });
-			assert(result.hits.length > 0);
-			latencies.push(performance.now() - started);
+			const result = await index.search({ text: query, limit: 10 });
+			assert(result.hits.length > 0, `full-text query returned no hits: ${query}`);
+			latencies[control.indexing ? 'duringIndexing' : 'afterIndexing'].push(performance.now() - started);
 			sequence++;
 		}
 	}
@@ -344,18 +367,15 @@ let RocksDerivedIndexStorage;
 		await context.index.close();
 		let reopened;
 		let reopenedStorage;
+		let reopenMeasurements;
 		const started = performance.now();
 		if (context.arm === 'native') {
 			reopened = await fulltextNative.openNativeFullTextIndex(context.config);
 		} else {
 			context.rawStorage.close();
 			reopenedStorage = new RocksDerivedIndexStorage(context.rootStore, context.storeName);
-			const storage = measuredStorage(
-				reopenedStorage,
-				context.arm,
-				context.storageMeasurements,
-				context.committedEvents
-			);
+			reopenMeasurements = emptyStorageMeasurements();
+			const storage = measuredStorage(reopenedStorage, context.arm, reopenMeasurements, context.committedEvents);
 			reopened = await fulltextHarper.openHarperFullTextIndex({
 				...context.config,
 				storage,
@@ -375,7 +395,12 @@ let RocksDerivedIndexStorage;
 		reopenedStorage?.close();
 		if (context.arm === 'native') await rm(context.config.path, { recursive: true, force: true });
 		context.disposed = true;
-		return { reopenMilliseconds, searchMilliseconds, total: result.total };
+		return {
+			reopenMilliseconds,
+			searchMilliseconds,
+			total: result.total,
+			storage: reopenMeasurements ? storageSummary(reopenMeasurements, 0) : undefined,
+		};
 	}
 
 	function measuredStorage(rawStorage, arm, measurements, committedEvents) {
@@ -443,19 +468,30 @@ let RocksDerivedIndexStorage;
 		};
 	}
 
-	function rocksStats(rootStore) {
-		const names = [
-			'rocksdb.num-files-at-level0',
+	function resetStorageMeasurements(measurements) {
+		Object.assign(measurements, emptyStorageMeasurements());
+	}
+
+	function rocksStats(rootStore, tables) {
+		const databaseStats = rootStore.getStats();
+		const databaseCounters = ['rocksdb.stall.micros', 'rocksdb.compact.read.bytes', 'rocksdb.compact.write.bytes'];
+		const columnFamilyProperties = [
 			'rocksdb.estimate-pending-compaction-bytes',
 			'rocksdb.live-sst-files-size',
 			'rocksdb.total-sst-files-size',
-			'rocksdb.stall.micros',
-			'rocksdb.compact.read.bytes',
-			'rocksdb.compact.write.bytes',
 		];
-		return Object.fromEntries(
-			names.map((name) => [name, rootStore.getStat(name) ?? rootStore.getDBIntProperty(name) ?? 0])
-		);
+		return {
+			database: Object.fromEntries(databaseCounters.map((name) => [name, databaseStats[name] ?? null])),
+			foregroundColumnFamilies: Object.fromEntries(
+				columnFamilyProperties.map((name) => {
+					const values = tables.map((Table) => Table.primaryStore.getDBIntProperty(name));
+					return [
+						name,
+						values.some((value) => value === undefined) ? null : values.reduce((sum, value) => sum + value, 0),
+					];
+				})
+			),
+		};
 	}
 
 	function product(id) {
@@ -475,15 +511,15 @@ let RocksDerivedIndexStorage;
 				'fulltext-root': { type: 'string' },
 				'revision': { type: 'string', default: process.env.GITHUB_SHA ?? 'working-tree' },
 				'fulltext-revision': { type: 'string', default: 'working-tree' },
-				'documents': { type: 'string', default: '5000' },
-				'batch-size': { type: 'string', default: '500' },
-				'queries': { type: 'string', default: '100' },
+				'documents': { type: 'string', default: '100000' },
+				'batch-size': { type: 'string', default: '1000' },
+				'queries': { type: 'string', default: '500' },
 				'soak-reads': { type: 'string', default: '1000' },
 				'foreground-rate': { type: 'string', default: '100' },
-				'minimum-duration-ms': { type: 'string', default: '3000' },
+				'minimum-duration-ms': { type: 'string', default: '10000' },
 				'publication-ms': { type: 'string', default: '1000' },
 				'table-counts': { type: 'string', default: '1' },
-				'arms': { type: 'string', default: 'no-index,native,wal-replay,root-flush' },
+				'arms': { type: 'string', default: 'no-index,native,wal-only,root-flush' },
 				'help': { type: 'boolean', default: false },
 			},
 		});
@@ -491,7 +527,7 @@ let RocksDerivedIndexStorage;
 			console.log(
 				'node benchmarks/fulltext-hosted/run.cjs --fulltext-root /path/to/fulltext ' +
 					'[--revision harper-sha] [--fulltext-revision fulltext-sha] ' +
-					'[--documents 5000] [--batch-size 500] [--queries 100] [--foreground-rate 100] ' +
+					'[--documents 100000] [--batch-size 1000] [--queries 500] [--foreground-rate 100] ' +
 					'[--soak-reads 1000] [--publication-ms 1000,5000,30000] [--table-counts 1,16,128]'
 			);
 			process.exit(0);
@@ -499,9 +535,9 @@ let RocksDerivedIndexStorage;
 		const fulltextRoot = values['fulltext-root'] ?? process.env.HARPER_FULLTEXT_ROOT;
 		if (!fulltextRoot) throw new Error('--fulltext-root or HARPER_FULLTEXT_ROOT is required');
 		const arms = values.arms.split(',');
-		const allowed = new Set(['no-index', 'native', 'wal-replay', 'root-flush']);
+		const allowed = new Set(['no-index', 'native', 'wal-only', 'root-flush']);
 		if (arms.length === 0 || arms.some((arm) => !allowed.has(arm)) || arms[0] !== 'no-index') {
-			throw new Error('arms must start with no-index and contain only no-index,native,wal-replay,root-flush');
+			throw new Error('arms must start with no-index and contain only no-index,native,wal-only,root-flush');
 		}
 		return {
 			fulltextRoot: resolve(fulltextRoot),

@@ -49,10 +49,10 @@ The first Harper unit is a performance and integration harness built directly on
 `RocksDerivedIndexStorage` and the merged Fulltext hosted runtime. Before adding Harper's backend
 state machine, it measures callback round trips, storage service time, root-wide flush latency and
 blast radius, event-loop delay, foreground RocksDB latency, index throughput, and search p99 against
-native and no-index controls. It also compares root-flushed publication with WAL-only publication,
-proves publish/reload/search/close/reopen against the same RocksDB column family, and proves LMDB
-rejection. This is the earliest point at which the callback or barrier architecture can fail, so it
-runs before owner handoff, replay, and rebuild code is written.
+native and no-index controls. It also compares root-flushed publication with WAL-only publication
+and proves publish/reload/search/close/reopen against the same RocksDB column family. This is the
+earliest point at which the callback or barrier architecture can fail, so it runs before owner
+handoff, replay, rebuild, and explicit LMDB rejection tests are written.
 
 If that gate passes, the next Harper unit wires one hard-coded, owner-worker-only product-title index
 through the real `DerivedIndexRuntime`. It proves committed Harper write, projection, bounded
@@ -121,8 +121,9 @@ immediate one-mutation WAL write; a file flush publishes at most one tail value 
 atomic metadata such as `meta.json` is one bounded value followed by `sync()`. It does not buffer a
 whole Tantivy publication into one native-memory mutation array, so the per-I/O callback cost is a
 real property of the merged hosted runtime. The maximum ordinary stored value is therefore 256 KiB,
-not the full segment size. Transport limits must admit one encoded chunk plus protocol overhead,
-and the harness forces a merge large enough to span many chunks.
+not the full segment size. Transport limits must admit one encoded chunk plus protocol overhead. The
+harness rejects a value larger than 256 KiB in its observed workload; a forced multi-chunk merge
+remains a focused Fulltext test in the verification unit.
 
 Buffering an entire publication would reduce callback count but retain potentially multi-gigabyte
 segments until commit at catalog scale. That is not a safe in-place optimization of this bounded
@@ -292,14 +293,12 @@ dependency, copied `.node` binary, or undeclared dynamic import is not committed
 
 The existing native benchmark is not evidence for the Harper path. Add a host-directory benchmark
 that reports storage round trips, bytes, root-wide flush count and latency, apply throughput, commit
-latency, warm and cold search p50/p95/p99, Node event-loop delay, time at #2567's
-`waiting-durable` cap, and independently generated foreground RocksDB operation p99 while indexing
-and search run. Record database-level `rocksdb.num-files-at-level0`,
-`rocksdb.estimate-pending-compaction-bytes`, SST bytes, compaction bytes, stall time, and a post-run
-soak read. Sweep both publication interval and unrelated table count; include one raised
-`maxAcceptedBatchesAhead` arm so callback cost is distinguishable from runtime pacing. Run
-no-index, native, and Harper-callback controls at identical offered load on one machine, including
-deliberate JavaScript contention, so coordinated omission does not hide stalls.
+latency, concurrent and reopened search p50/p95/p99, Node event-loop delay, and independently
+generated foreground RocksDB operation p99 while indexing and search run. Record database-wide
+compaction/stall counters, aggregate compaction/SST properties for the foreground column families,
+and a post-run soak read. Sweep both publication interval and dirty unrelated table count. Run
+no-index, native, and Harper-callback controls at identical offered load on one machine, measuring
+from scheduled dispatch time so coordinated omission does not hide stalls.
 
 The only existing explicit durability barrier is
 `RocksDerivedIndexStorage.sync()` -> `rootStore.flushSync({ allowWriteStall: true })`, which flushes
@@ -307,14 +306,22 @@ every column family and blocks the storage-serving worker. Engineering has decli
 rocksdb-js WAL-sync primitive, so this cost is neither hidden nor mislabeled as column-family local.
 The harness evaluates two policies instead of assuming the root flush is necessary:
 
-- `root-flush`: every coalesced Tantivy publication ends with `sync()`. This gives the strongest
-  machine-loss boundary but may create database-wide stalls and compaction debt.
+- `root-flush`: every synchronous `HostStorage.sync()` requested while Tantivy builds and publishes
+  a generation invokes Harper's root-wide flush. One Tantivy publication can request many such
+  barriers, so this gives the strongest machine-loss boundary at potentially unacceptable
+  database-wide stall and compaction cost. The storage harness measures the callbacks exactly as
+  Fulltext issues them; it does not claim that Harper can coalesce synchronous directory barriers.
 - `wal-replay`: publication writes the Tantivy segments, metadata, and cursor to the same ordered
   RocksDB WAL but does not explicitly flush. Recovery may lose a suffix and reopen at an older
   self-consistent cursor; #2567 then exact-seeks retained source logs and replays forward. This is
   viable only if fault injection proves that no recovered cursor can name missing segment state and
   the observed recovery interval stays inside transaction-log retention. A retention miss remains
   fail-closed and rebuilds; it never silently skips source work.
+
+The storage benchmark names the second arm `wal-only`: it measures the proposed policy without an
+explicit flush, then performs only an orderly reopen. The `wal-replay` name is reserved for the
+backend-integration fault test that actually loses a recoverable suffix and replays from the
+retained Harper cursor.
 
 This is not the same as inheriting one shared WAL durability setting. Harper opens primary table
 column families with native WAL disabled and recovers them through rocksdb-js transaction logs;
@@ -337,9 +344,8 @@ notification after `transactionSync()` returns, so it does not re-enter the sync
 storage callback; it can still wake every derived-index runner in the database. The harness records
 callback write wall time, derived storage transactions, synchronous notifications as an invariant
 check, and total root notifications alongside the matching no-index control. The backend integration
-unit adds runner wake/drain and idle-release measurements. It also creates bounded write-intent
-contention to expose
-`transactionSync`'s at-most-three `retryOnBusy` attempts. No runtime special case is added before
+unit adds runner wake/drain and idle-release measurements plus bounded write-intent contention to
+expose `transactionSync`'s at-most-three `retryOnBusy` attempts. No runtime special case is added before
 measurement; unacceptable listener-path cost or wake amplification fails the architecture gate or
 justifies a separately reviewed generic quiet-internal-write primitive. A future primitive must
 preserve database transaction semantics while ensuring a derived-CF write is not observable as a
@@ -348,12 +354,17 @@ new source commit.
 The first slice has no hard throughput promise, but it fails the callback architecture gate
 if the representative catalog workload cannot keep search p99 below 50 ms, owner-worker event-loop
 delay p99 below 20 ms, or unrelated-table foreground operation p99 within 20 percent of the
-no-index control. More than one empty derived-index drain per publication window per registered
-runner also fails the current wake path. Any single `sync()` over 250 ms fails the root-flush arm
-even when percentile gates pass. Exact corpus size, document size, offered write rate, and
+no-index control. A synchronous root `committed` notification inside a host write callback, an
+undersampled percentile, or any single `sync()` over 250 ms also fails. The backend integration
+unit fails the current wake path on more than one empty derived-index drain per publication window
+per registered runner. Exact corpus size, document size, offered write rate, and
 the observed foreground-write regression are recorded with the result because they are not yet
 known; these are diagnostic gates, not customer SLOs, and no release claim may be made from a
 synthetic default.
+
+The subsequent backend-integration benchmark adds time at #2567's `waiting-durable` cap, empty
+runner drains, and a raised `maxAcceptedBatchesAhead` arm. The storage diagnostic calls Fulltext
+directly and therefore cannot measure or tune those `DerivedIndexRuntime` controls.
 
 `allowWriteStall: false` is not a deferrable barrier alternative in the current rocksdb-js API: a
 synchronous flush waits until it can proceed without causing a stall and still blocks the event
@@ -362,9 +373,10 @@ cannot be cancelled. The harness records this limitation rather than treating th
 backpressure.
 
 Every host request remains bounded except an already-running synchronous RocksDB call. Fulltext
-transport admission preserves foreground operation and byte headroom. Harper coalesces commits
-through the derived-index runtime's existing mutation, byte, and flush-age thresholds; it does not
-flush once per record. Epoch revocation prevents a new barrier from starting, including after an
+transport admission preserves foreground operation and byte headroom. Harper coalesces backend
+publication requests through the derived-index runtime's existing mutation, byte, and flush-age
+thresholds; it does not publish once per record. That outer cadence cannot coalesce the synchronous
+directory barriers Fulltext issues inside one publication. Epoch revocation prevents a new barrier from starting, including after an
 earlier asynchronous stage resumes. A `flushSync()` already in progress cannot be cancelled; the
 narrow proof waits for it, and production worker-deadline handling remains an explicit prerequisite.
 
@@ -439,7 +451,7 @@ narrow proof waits for it, and production worker-deadline handling remains an ex
 | Coarser storage boundary  | Build a Tantivy publication in filesystem or memory scratch, then pack changed segments and metadata into a few large RocksDB values. This reduces JavaScript callbacks from per-I/O to per-publication, but filesystem scratch violates the approved RocksDB-only Harper runtime, an in-memory directory is not credible for a 100-million-document catalog, and packing large immutable segments adds duplicate resident/disk space plus RocksDB compaction amplification. It requires a different Fulltext directory and is a separately designed fallback, not a harness arm for the existing hosted runtime. |
 | Different FFI boundary    | Lease a native RocksDB column-family handle to Fulltext so sustained I/O bypasses JavaScript. This could remove callback overhead without a second RocksDB linkage, but engineering has declined the required new rocksdb-js surface. It remains the fallback only if that decision changes after the callback benchmark fails.                                                                                                                                                                                                                                                                                   |
 | Different owner placement | Run the derived-index owner in a dedicated non-serving Harper worker. Harper job workers already open the database graph, so primary-record IPC is not inherently required. It still needs explicit lifecycle routing and an owner-search/non-owner-reader path, while the process-wide RocksDB flush/write stall remains. The narrow proof measures the existing elected-worker model first.                                                                                                                                                                                                                     |
-| Durability policy         | Compare coalesced root-wide flushes with WAL-only publication followed by exact replay from the recovered cursor. The harness selects between them using recovered-prefix safety, transaction-log retention/rebuild exposure, p99 latency, and compaction debt; the design does not assume the stronger barrier is free or necessary.                                                                                                                                                                                                                                                                             |
+| Durability policy         | Compare direct root-wide handling of every Fulltext sync callback with WAL-only publication followed by exact replay from the recovered cursor. The harness selects between them using recovered-prefix safety, transaction-log retention/rebuild exposure, p99 latency, and compaction debt; the design does not assume the stronger barrier is free or necessary.                                                                                                                                                                                                                                               |
 | Inherit root durability   | Rejected as a distinct policy because Harper's primary table column families disable native WAL and recover from separate transaction-log files, while the derived column family enables RocksDB WAL. There is no single shared setting to inherit; the two explicit policies expose the actual tradeoff.                                                                                                                                                                                                                                                                                                         |
 | No cursor durability      | Commit searchable Tantivy state without a restart cursor and replay from a conservative retained anchor after every restart. This does not remove directory writes or metadata publication and differs from `wal-replay` by only the small payload; no-index and WAL-replay already establish the useful cost floor. It also makes every restart retention-dependent, so it is retained as a fault-model control rather than a candidate policy.                                                                                                                                                                  |
 | Reader topology           | Start with one owner-worker runtime. Read-only non-owner handles require refresh and generation-retirement coordination and are deferred rather than implied by a shared storage identity.                                                                                                                                                                                                                                                                                                                                                                                                                        |
