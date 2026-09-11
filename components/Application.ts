@@ -1940,16 +1940,19 @@ export async function reconcileDormantBuilds(
 	maxCount: number
 ): Promise<Map<string, Error>> {
 	const failures = new Map<string, Error>();
-	let journalAppeared = false;
+	let journaled: DormantBuild | undefined;
 	for (const build of builds) {
 		// Anything but a clean ENOENT means "read it properly, under the lock".
-		journalAppeared = await presentOrAbsent(join(build.deploymentDirPath, ACTIVATION_JOURNAL)).then(
+		const appeared = await presentOrAbsent(join(build.deploymentDirPath, ACTIVATION_JOURNAL)).then(
 			(stats) => stats !== undefined,
 			() => true
 		);
-		if (journalAppeared) break;
+		if (appeared) {
+			journaled = build;
+			break;
+		}
 	}
-	if (!journalAppeared && builds.length <= maxCount) return failures;
+	if (!journaled && builds.length <= maxCount) return failures;
 	try {
 		await withComponentPreparationLock(
 			join(componentsRootDirPath, owner),
@@ -1990,12 +1993,19 @@ export async function reconcileDormantBuilds(
 			}
 		);
 	} catch (error) {
+		// With a journal in view this is an activation that could not be settled — recorded exactly as the
+		// scan records one it saw directly (a timeout defers, anything else is a verdict). Without one it is
+		// hygiene that could not run, unless a live deploy holds the lock, which defers as everywhere else.
+		if (journaled) {
+			await recordUnsettled(failures, owner, error, journaled.deploymentDirPath);
+			return failures;
+		}
 		const failure = error instanceof Error ? error : new Error(String(error));
 		if (failure instanceof ComponentPreparationLockTimeoutError) {
 			if (!failures.has(owner)) failures.set(owner, failure);
-			logger.info?.(`Deferred reconciling the dormant staged builds of ${owner}: a deploy holds its lock`);
+			logger.info?.(`Deferred pruning the dormant staged builds of ${owner}: a deploy holds its lock`);
 		} else {
-			logger.warn(`Could not reconcile the dormant staged builds of ${owner}:`, errorForLog(failure));
+			logger.warn(`Could not prune the dormant staged builds of ${owner}:`, errorForLog(failure));
 		}
 	}
 	return failures;
