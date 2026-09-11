@@ -59,11 +59,24 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 		unregisterClusterLockTransport('test', true);
 	});
 
-	/** Register a transport whose participant set is only this node, so a round completes at once. */
+	/**
+	 * Register a transport whose epoch names only this node, so every key homes here and a delegation
+	 * is granted locally with no message at all. `members` widens that when a test needs a peer.
+	 */
 	function useSoloTransport(overrides = {}) {
 		registerClusterLockTransport('test', {
-			participants: () => overrides.participants ?? [{ nodeId: getThisNodeName(), capable: true }],
+			epoch: () =>
+				overrides.epochless
+					? undefined
+					: {
+							number: overrides.epochNumber ?? 1,
+							members: overrides.members ?? [getThisNodeName()],
+							ringVersion: 1,
+							homeIncarnation: overrides.homeIncarnation ?? 1,
+						},
 			ownsCoordination: () => overrides.owns ?? true,
+			requestDelegation: overrides.requestDelegation ?? (() => Promise.reject(new Error('no peer transport'))),
+			recallDelegation: overrides.recallDelegation ?? (() => Promise.resolve()),
 			...overrides.extra,
 		});
 	}
@@ -85,37 +98,52 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 	}
 
 	describe('control entries', () => {
-		it('writes a replicating request with no record id, and a release on unlock', async function () {
+		it('writes nothing for a lock/unlock cycle, because the delegation is retained', async function () {
 			if (isLMDB) return this.skip();
 			useSoloTransport();
 			const before = controlEntries().length;
 			const recordId = id();
 			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });
-			const afterLock = controlEntries().slice(before);
-			assert.strictEqual(afterLock.length, 1, 'one control entry per acquisition');
+			await record.unlock();
+			await delay(50);
+			// This is the amortization at the table level: releasing the application lock does not
+			// release the delegation, so a node locking the same record repeatedly writes no entries.
+			assert.strictEqual(controlEntries().length, before, 'a retained delegation must write nothing');
+			for (let i = 0; i < 5; i++) {
+				const again = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });
+				await again.unlock();
+			}
+			await delay(50);
+			assert.strictEqual(controlEntries().length, before);
+		});
 
-			const request = afterLock[0];
-			assert.strictEqual(request.type, 'lockRequest');
-			assert.strictEqual(request.recordId, null, 'the locked key rides in the payload, not the record id');
-			assert.strictEqual(request.extendedType & LOCAL_ONLY, 0, 'control entries must replicate');
-			const decoded = decodeLockControlPayload(request.type, request.value);
+		it('writes a replicating release with no record id when the delegation is surrendered', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const before = controlEntries().length;
+			const recordId = id();
+			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });
+			await record.unlock();
+			// A peer asking for the same key is what makes this node give the delegation up.
+			const coordinator = ClusterLockTest.lockCoordinator;
+			const reply = await coordinator.onDelegationRequest({
+				key: recordId,
+				requester: 'peer-asking',
+				epoch: 1,
+				leaseMs: 5000,
+			});
+			assert.strictEqual(reply.granted, false, 'the key was still delegated here');
+			await waitFor(() => controlEntries().some((entry) => entry.type === 'lockRelease'));
+
+			const release = controlEntries().slice(before).at(-1);
+			assert.strictEqual(release.type, 'lockRelease');
+			assert.strictEqual(release.recordId, null, 'the locked key rides in the payload, not the record id');
+			assert.strictEqual(release.extendedType & LOCAL_ONLY, 0, 'control entries must replicate');
+			const decoded = decodeLockControlPayload(release.type, release.value);
 			assert.ok(decoded, 'the payload decodes');
 			assert.strictEqual(decoded.key, recordId);
 			assert.strictEqual(decoded.requester, NODE_NAME);
-			// ts_R is minted before the write and lives in the payload; the entry takes a fresh commit
-			// time so it can never land behind a peer's replication cursor.
-			assert.ok(decoded.tsR > 0 && decoded.tsR <= request.version, 'ts_R was minted before the entry committed');
-			assert.strictEqual(decoded.leaseMs, 5000);
-
-			await record.unlock();
-			// unlock() is synchronous by contract; the durable release is best-effort and lands after.
-			await waitFor(() => controlEntries().some((entry) => entry.type === 'lockRelease'));
-			const afterUnlock = controlEntries().slice(before);
-			assert.deepStrictEqual(
-				afterUnlock.map((entry) => entry.type),
-				['lockRequest', 'lockRelease']
-			);
-			assert.strictEqual(decodeLockControlPayload('lockRelease', afterUnlock[1].value).tsR, decoded.tsR);
+			assert.ok(decoded.tsR > 0, 'the released delegation counter rides in the payload');
 		});
 
 		it('does not shadow the holder’s own audit entry at the same timestamp', async function () {
@@ -128,14 +156,22 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			record.n = 7;
 			await record.save();
 			await record.unlock();
+			// Make the node give the delegation up, so there is a control entry to check at all.
+			await ClusterLockTest.lockCoordinator.onDelegationRequest({
+				key: recordId,
+				requester: 'peer-asking',
+				epoch: 1,
+				leaseMs: 5000,
+			});
+			await waitFor(() => controlEntries().slice(before).length > 0);
 
-			const request = controlEntries().slice(before)[0];
+			const release = controlEntries().slice(before)[0];
 			// This is the lookup _writeUpdate's keyed dedup performs. A control entry carrying the locked
 			// key would answer it, and the holder's write would be discarded as an already-applied
 			// duplicate.
-			const atRequestTime = ClusterLockTest.auditStore.get(request.version, ClusterLockTest.tableId, recordId, 0);
+			const atReleaseTime = ClusterLockTest.auditStore.get(release.version, ClusterLockTest.tableId, recordId, 0);
 			assert.ok(
-				!atRequestTime || !isLockControlType(atRequestTime.type),
+				!atReleaseTime || !isLockControlType(atReleaseTime.type),
 				'the record’s audit identity space contains no control entry'
 			);
 			assert.strictEqual((await ClusterLockTest.get(recordId)).n, 7, 'and the holder’s write survived');
@@ -161,14 +197,11 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 	});
 
 	describe('fail-closed', () => {
-		it('rejects with a retryable 503 when a peer cannot participate, and gives the key back', async function () {
+		it('rejects with a retryable 503 when no membership epoch is agreed, and gives the key back', async function () {
 			if (isLMDB) return this.skip();
-			useSoloTransport({
-				participants: [
-					{ nodeId: getThisNodeName(), capable: true },
-					{ nodeId: 'legacy-peer', capable: false },
-				],
-			});
+			// No agreed epoch means no agreed ring. Guessing one from whoever looks reachable is exactly
+			// the asymmetric-partition failure a single arbiter per key exists to remove.
+			useSoloTransport({ epochless: true });
 			const recordId = id();
 			await assert.rejects(
 				() => ClusterLockTest.lock(recordId, { hold: true, lease: 5000 }),
@@ -234,12 +267,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			const { encodeLockControlPayload } = require('#src/resources/recordLockCoordinator');
 			const { unpack } = require('msgpackr');
 			const peerId = getIdOfRemoteNode('peer-sink', ClusterLockTest.auditStore);
-			useSoloTransport({
-				participants: [
-					{ nodeId: NODE_NAME, capable: true },
-					{ nodeId: 'peer-sink', capable: true },
-				],
-			});
+			useSoloTransport({ members: [NODE_NAME, 'peer-sink'] });
 			// A source is how replication attaches, so this is the path applyLockControlEvent sits on:
 			// the sink decodes the payload, resolves the author from the audit nodeId, and routes.
 			const events = new IterableEventQueue();
@@ -249,27 +277,29 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 					intermediateSource: true,
 				}
 			);
-			const recordId = id();
-			const wire = {
-				type: 'lockRequest',
+			// Home a key here and delegate it to the peer, so the peer's release has a visible effect.
+			const recordId = `sink-${id()}`;
+			const coordinator = SinkLockTest.lockCoordinator;
+			const granted = await coordinator.onDelegationRequest({
 				key: recordId,
 				requester: 'peer-sink',
-				tsR: Date.now(),
+				epoch: 1,
 				leaseMs: 5000,
-				waitMs: 5000,
-			};
+			});
+			assert.strictEqual(granted.granted, true, 'the peer holds a delegation from this node');
+			assert.strictEqual(coordinator.stats.granted, 1);
+
+			const wire = { type: 'lockRelease', key: recordId, requester: 'peer-sink', tsR: granted.token[2] };
 			events.send({
-				type: 'lockRequest',
+				type: 'lockRelease',
 				table: 'SinkLockTest',
 				id: null,
 				value: unpack(encodeLockControlPayload(wire)),
 				nodeId: peerId,
-				timestamp: wire.tsR,
+				timestamp: Date.now(),
 			});
-			// The grant this node owes the peer is the observable effect of the entry being routed.
-			await waitFor(() =>
-				controlEntries(SinkLockTest).some((entry) => entry.type === 'lockGrant' && entry.value[1] === 'peer-sink')
-			);
+			// Clearing the grant is the observable effect of the entry being routed to the coordinator.
+			await waitFor(() => coordinator.stats.granted === 0);
 			assert.ok(!(await SinkLockTest.get(recordId)), 'and no record was written for it');
 		});
 
@@ -281,59 +311,49 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				deliverLockControlEntry,
 			} = require('#src/resources/recordLockCoordinator');
 			const { unpack } = require('msgpackr');
-			useSoloTransport({
-				participants: [
-					{ nodeId: NODE_NAME, capable: true },
-					{ nodeId: 'peer-1', capable: true },
-				],
-			});
-			const recordId = id();
-			// The receive path a sender drives: encode, decode as the table decoder would, route.
-			const wire = {
-				type: 'lockRequest',
+			useSoloTransport({ members: [NODE_NAME, 'peer-1'] });
+			const { homeFor } = require('#src/resources/recordLockCoordinator');
+			// The home check is mutual, so this test needs a key that actually homes here.
+			let recordId = id();
+			while (homeFor(recordId, [NODE_NAME, 'peer-1']) !== NODE_NAME) recordId = id();
+			const coordinator = ClusterLockTest.lockCoordinator;
+			assert.ok(coordinator, 'the coordinator resolved through the registry');
+			// Delegations granted by earlier tests on this table are deliberately retained, so this
+			// assertion is on the delta rather than the total.
+			const grantedBefore = coordinator.stats.granted;
+			const granted = await coordinator.onDelegationRequest({
 				key: recordId,
 				requester: 'peer-1',
-				tsR: Date.now(),
+				epoch: 1,
 				leaseMs: 5000,
-				waitMs: 5000,
-			};
+			});
+			assert.strictEqual(granted.granted, true);
+			assert.strictEqual(coordinator.stats.granted, grantedBefore + 1);
+			// The receive path a sender drives: encode, decode as the table decoder would, route.
+			const wire = { type: 'lockRelease', key: recordId, requester: 'peer-1', tsR: granted.token[2] };
 			const decoded = decodeLockControlPayload(wire.type, unpack(encodeLockControlPayload(wire)));
 			assert.deepStrictEqual(decoded, wire, 'the payload survives the round trip');
 			deliverLockControlEntry('test', 'ClusterLockTest', decoded, 'peer-1');
 			assert.ok(!(await ClusterLockTest.get(recordId)), 'no record was created');
-			const coordinator = ClusterLockTest.lockCoordinator;
-			assert.ok(coordinator, 'the coordinator resolved through the registry');
-			// Granted, not deferred: this node holds nothing on that key.
-			assert.strictEqual(coordinator.stats.deferred, 0);
+			assert.strictEqual(coordinator.stats.granted, grantedBefore, 'the release cleared the grant');
 		});
 
 		it('contains a malformed control entry instead of failing the apply loop', function () {
 			if (isLMDB) return this.skip();
+			const recordKeyForRetiredType = 'retired-nibble-key';
 			const { decodeLockControlPayload, deliverLockControlEntry } = require('#src/resources/recordLockCoordinator');
-			useSoloTransport({
-				participants: [
-					{ nodeId: NODE_NAME, capable: true },
-					{ nodeId: 'peer-1', capable: true },
-				],
-			});
+			useSoloTransport({ members: [NODE_NAME, 'peer-1'] });
 			// A key the decoder must refuse, because keyIdOf would throw encoding it.
-			assert.strictEqual(
-				decodeLockControlPayload('lockRequest', [{ not: 'a key' }, 'peer-1', Date.now(), 5000, 5000]),
-				undefined
-			);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', [{ not: 'a key' }, 'peer-1', 1]), undefined);
+			// The retired Ricart–Agrawala types decode to nothing rather than to something acted on.
+			assert.strictEqual(decodeLockControlPayload('lockRequest', [recordKeyForRetiredType, 'peer-1', 1]), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockGrant', [recordKeyForRetiredType, 'peer-1', 1]), undefined);
 			// And anything that still gets through must not escape into the replicated apply loop.
 			assert.doesNotThrow(() =>
 				deliverLockControlEntry(
 					'test',
 					'ClusterLockTest',
-					{
-						type: 'lockRequest',
-						key: { not: 'a key' },
-						requester: 'peer-1',
-						tsR: Date.now(),
-						leaseMs: 5000,
-						waitMs: 5000,
-					},
+					{ type: 'lockRelease', key: { not: 'a key' }, requester: 'peer-1', tsR: 1 },
 					'peer-1'
 				)
 			);
@@ -361,6 +381,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			const recordId = id();
 			await ClusterLockTest.put({ id: recordId, n: 0 });
 			const before = controlEntries().length;
+			const delegationsBefore = ClusterLockTest.lockCoordinator.stats.delegations;
 			await transaction(async () => {
 				const both = await Promise.all([
 					ClusterLockTest.lock(recordId, { lease: 5000, timeout: 2000 }),
@@ -368,12 +389,13 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				]);
 				assert.ok(both[0] && both[1], 'both callers get the lock');
 			});
+			// One delegation, not one per caller — and with this node its own home, no entry at all.
+			// Delegations from earlier tests are deliberately retained, so count the delta.
+			assert.strictEqual(controlEntries().slice(before).length, 0, 'no control entry per caller');
 			assert.strictEqual(
-				controlEntries()
-					.slice(before)
-					.filter((entry) => entry.type === 'lockRequest').length,
+				ClusterLockTest.lockCoordinator.stats.delegations - delegationsBefore,
 				1,
-				'one cluster round, not one per caller'
+				'one delegation, not one per caller'
 			);
 		});
 

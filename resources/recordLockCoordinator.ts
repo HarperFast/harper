@@ -2,76 +2,141 @@ import { performance } from 'node:perf_hooks';
 import { Packr } from 'msgpackr';
 import harperLogger from '../utility/logging/harper_logger.ts';
 import { ClientError, LockUnavailableError } from '../utility/errors/hdbError.ts';
-import { MAX_LOCK_LEASE_MS, MAX_LOCK_TIMEOUT_MS, MIN_LOCK_LEASE_MS } from './recordLock.ts';
+import { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS } from './recordLock.ts';
 
 /**
- * Cluster-wide record locks (harper#483, Phase 1): Ricart-Agrawala over replicated control entries.
+ * Cluster-wide record locks (harper#483, Phase 1): amortized per-record ownership.
+ * Design note: `docs/record-lock-ownership.md`.
  *
  * `Table.lock()` acquires the node's rocksdb-js key lock first, which bounds this process to one
- * outstanding request per key; only then does it run the round here. A requester writes
- * `LOCK_REQUEST` and waits for a `LOCK_GRANT` from every participant. A participant defers while it
- * holds the key, or while its own pending request is earlier by `(tsR, nodeId)`; deferred grants are
- * written in that order when it releases or withdraws.
+ * outstanding acquisition per key; only then does it run the cluster step here. That step has three
+ * levels at three very different rates:
+ *
+ * - **The membership epoch** — `(number, members[], ringVersion)`, agreed and made durable by
+ *   harper-pro and handed to core through `transport.epoch()`. Core never computes it and never
+ *   proceeds without it. It changes at the membership-change rate, never per lock.
+ * - **The home node** — within an epoch, a key's arbiter is a rendezvous hash over `members[]`
+ *   (§4.5). One arbiter per key is trivially exclusive, which is what removes the entire grant state
+ *   machine this file used to hold: no deferral queues, no `(tsR, nodeId)` tiebreak, no synthesized
+ *   grants, no split votes, no revocation protocol between peers.
+ * - **The delegation** — the exclusive right to admit critical sections on one key for a bounded
+ *   time. While one is live, `lock()`/`unlock()` are pure Phase 0: the local key lock and **zero
+ *   cluster messages**. Releasing the application lock does not release the delegation, so a node
+ *   writing the same record repeatedly pays one round and then nothing.
  *
  * Two properties carry the safety argument, and both are enforced rather than assumed:
  *
- * - A holder's lease runs from `tsR` with no margin while every participant bounds the same hold at
- *   its own observation plus `max(leaseMs, waitMs) + LOCK_LEASE_SKEW_MS`, so the holder's writes are
- *   rejected before any participant grants the key onward. Expiry is measured on each node's own
- *   monotonic clock; no remote timestamp is ever compared against a local one.
- * - A round that completes after `tsR + leaseMs` yields no hold at all (423). Without that, a
- *   requester acquiring late and a participant that had already synthesized its grant would both
- *   consider the key held.
+ * - **One delegate per key per home.** A home never has two live delegations for a key, and a
+ *   successor delegation is issued only after the predecessor's has been recalled-and-drained or has
+ *   provably expired on the home's own clock plus skew. Every expiry decision on both sides is made
+ *   on that side's monotonic clock; no remote timestamp is ever compared against a local one.
+ * - **A delegation bounds every handle it admitted.** An admission may not outlive its delegation, so
+ *   recall revokes capability rather than merely closing the door (§6): the commit-time lease fence
+ *   in `DatabaseTransaction` rejects a staged write whose handle has expired, and a recall expires
+ *   those handles before the release is acknowledged.
  *
  * `nodeId` here is the globally stable node NAME. It is deliberately not the audit entry's `nodeId`:
  * `nodeIdMapping.ts` hands out per-node short ids (0 is always local), so the same node has different
- * ids on different nodes and a `(ts, nodeId)` total order built on them would order the same pair of
- * requests differently on two nodes — and both would grant.
+ * ids on different nodes and any ordering built on them would order the same pair differently on two
+ * nodes.
+ *
+ * What this file does NOT yet implement, deliberately: the successor-freshness fence of §7 — the
+ * inherited `(origin → position)` dependency set on the release entry, and the recovery barrier.
+ * That is harper#2542. Until it lands, a delegation handoff carries exclusion but not the
+ * clean-handoff freshness §2 states, which is why the feature stays gated off (`replication.recordLocks`)
+ * and why no core build registers a transport.
  */
 
-/** Margin every participant adds to a hold it did not take, so the holder always expires first. */
+/** Margin a home adds to a delegation it issued, so the delegate always stops admitting first. */
 export const LOCK_LEASE_SKEW_MS = 5_000;
 const TICK_INTERVAL_MS = 100;
 const OFF_OWNER_WARN_INTERVAL_MS = 60_000;
-/** Bounds the state one contended key, and one database, can accumulate from replicated entries. */
-const MAX_PEER_REQUESTS_PER_KEY = 64;
-const MAX_KEYS_IN_FLIGHT = 10_000;
+/** Bounds what one database can accumulate. A home may never forget a delegation before its expiry. */
+const MAX_DELEGATIONS_PER_DATABASE = 10_000;
+/** Bounds what a single peer can make a home retain, so one node cannot exhaust the table. */
+const MAX_DELEGATIONS_PER_REQUESTER = 2_000;
+/** Bounds expiry work per tick, so a burst of expiries cannot stall the event loop. */
+const MAX_EXPIRIES_PER_TICK = 256;
 const MAX_NODE_NAME_LENGTH = 255;
-/** A node whose identity resolved to one of these is not distinctive enough to order requests by. */
+/** A node whose identity resolved to one of these is not distinctive enough to be a ring member. */
 const NON_DISTINCTIVE_NODE_NAMES = new Set(['127.0.0.1', '::1', 'localhost', '0.0.0.0']);
 
-export type LockControlType = 'lockRequest' | 'lockGrant' | 'lockRelease';
+/**
+ * The only control entry left. `lockRequest`/`lockGrant` belonged to the Ricart–Agrawala rule the
+ * design note replaces; they never shipped enabled, so their nibbles were retired rather than
+ * migrated (`auditStore.ts`). Delegation request/grant/recall are unicast over the transport, not
+ * entries — only the release stays on the replicated log, because it is what orders a handoff behind
+ * the delegate's own data writes.
+ */
+export type LockControlType = 'lockRelease';
 
-export interface LockParticipant {
-	/** The node's globally stable name. NOT the per-node audit short id. */
-	nodeId: string;
-	/** False when the node does not implement record locks; any false member fails the round closed. */
-	capable: boolean;
-	/** When the node went DOWN in the cluster truth, or null/undefined while it is up. */
-	downSince?: number | null;
+/** The agreed membership a key's home is derived from. Supplied by harper-pro; core never computes it. */
+export interface LockEpoch {
+	/** Monotonic per database. Part of the fencing token, so it must never go backwards. */
+	number: number;
+	/** The agreed member set. Order is irrelevant — the ring hashes each name independently. */
+	members: string[];
+	/** Bumped when `members` changes within an epoch, so a stale ring is detectable without a deep compare. */
+	ringVersion: number;
 	/**
-	 * Whether the DOWN verdict is cluster-agreed AND this node is known to have stopped acquiring.
-	 * Dropping a peer from the grant set on a LOCAL view alone breaks the exclusion argument: under an
-	 * asymmetric partition (A↔C down, both up and reachable from B) A and C each drop the other, both
-	 * ask only B, and B — holding no round of its own — grants both. Two holders on one key. So core
-	 * excludes nobody unless the transport asserts this, and a requester blocks on a peer it cannot
-	 * reach until its own timeout instead.
+	 * This node's durably persisted, monotonic incarnation counter as a home (§5.1). A random value
+	 * makes a stale reply identifiable but not ORDERABLE: a home that restarts and re-issues counter 1
+	 * after having issued counter 50 would let a delayed generation-50 write defeat its successor.
 	 */
-	agreedDown?: boolean;
+	homeIncarnation: number;
+}
+
+/**
+ * A delegation's fencing token, ordered lexicographically as
+ * `(epochNumber, homeIncarnation, counter)`. Comparable across homes only within an epoch, which is
+ * all that is needed: a key has exactly one home per epoch.
+ */
+export type FencingToken = readonly [epochNumber: number, homeIncarnation: number, counter: number];
+
+export function compareTokens(a: FencingToken, b: FencingToken): number {
+	return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 }
 
 export interface LockControlEntry {
 	type: LockControlType;
 	/** The locked record's id. Control entries carry it here, never as the audit entry's recordId. */
 	key: any;
-	/** Node that opened the round; with `tsR` this is the entry's identity. */
+	/** Node that held the delegation being released. */
 	requester: string;
+	/** The released delegation's counter, for idempotent application of a replayed entry. */
 	tsR: number;
-	/** `lockGrant` only: the node issuing the grant. */
-	grantor?: string;
-	/** `lockRequest` only. */
+}
+
+/**
+ * What a home replies to a delegation request. One shape rather than a discriminated union: the
+ * repo compiles with `strict: false`, where TypeScript does not narrow a union on a boolean literal,
+ * so a union here would type-check the denial fields as absent on every branch and then not enforce
+ * it. `granted` says which half is populated.
+ */
+export interface DelegationReply {
+	granted: boolean;
+	/** Granted only. */
+	token?: FencingToken;
+	/** Granted only. How long the delegate may admit for, as a DURATION — never a remote clock reading. */
 	leaseMs?: number;
-	waitMs?: number;
+	/** Denied only. `contended` is retryable within the caller's own wait budget; `epoch` means refresh. */
+	reason?: 'contended' | 'epoch' | 'capacity' | 'not-home';
+	/** Denied with `epoch`, so a stale requester can re-derive the ring without another round trip. */
+	epoch?: number;
+	retryAfterMs?: number;
+}
+
+export interface DelegationRequest {
+	key: any;
+	/** The asking node. Established by the transport, never read from an untrusted payload. */
+	requester: string;
+	epoch: number;
+	leaseMs: number;
+}
+
+export interface DelegationRecall {
+	key: any;
+	token: FencingToken;
 }
 
 /**
@@ -80,16 +145,26 @@ export interface LockControlEntry {
  */
 export interface ClusterLockTransport {
 	/**
-	 * The COMPLETE desired peer set for the database, each with its capability — never a pre-filtered
-	 * intersection, which could not distinguish "not a participant" from "peer cannot participate".
+	 * The agreed membership epoch for the database, or undefined while none is agreed — during a
+	 * membership change, on the minority side of a partition, or before the node has joined. Core
+	 * fails closed on undefined rather than guessing a ring.
 	 */
-	participants(database: string): LockParticipant[];
+	epoch(database: string): LockEpoch | undefined;
 	/**
 	 * Whether this worker thread owns lock coordination for the process. Coordinator state is
 	 * per-thread while the key lock it arbitrates is process-wide, so a second thread running its own
-	 * rounds would arbitrate against a different view. Core fails closed off the owner thread.
+	 * delegations would arbitrate against a different view. Core fails closed off the owner thread.
 	 */
 	ownsCoordination(): boolean;
+	/** Ask `node` (the key's home) for a delegation. Unicast; rejects if the node is unreachable. */
+	requestDelegation(
+		node: string,
+		database: string,
+		table: string,
+		request: DelegationRequest
+	): Promise<DelegationReply>;
+	/** Home → delegate. Resolves once the delegate has drained and stopped admitting. */
+	recallDelegation(node: string, database: string, table: string, recall: DelegationRecall): Promise<void>;
 	/** Emit a control entry. Optional: core writes it to the table's transaction log when omitted. */
 	writeControl?(table: string, entry: LockControlEntry): Promise<void> | void;
 	/**
@@ -97,6 +172,10 @@ export interface ClusterLockTransport {
 	 * node the entry was written by, established by the transport, not read from the payload.
 	 */
 	onControlEntry?(database: string, table: string, entry: LockControlEntry, author: string): void;
+	/** Assigned at registration. Inbound delegation request from a peer, for a key this node homes. */
+	onDelegationRequest?(database: string, table: string, request: DelegationRequest): Promise<DelegationReply>;
+	/** Assigned at registration. Inbound recall from a key's home. */
+	onDelegationRecall?(database: string, table: string, recall: DelegationRecall): Promise<void>;
 }
 
 // A private structure dictionary, so a control payload can never contribute to — or depend on — the
@@ -109,25 +188,7 @@ let controlStructures: unknown[] = [];
 let controlPackr = new Packr({ structures: controlStructures });
 
 export function encodeLockControlPayload(entry: LockControlEntry): Uint8Array {
-	const packed =
-		entry.type === 'lockRequest'
-			? controlPackr.pack([entry.key, entry.requester, entry.tsR, entry.leaseMs, entry.waitMs])
-			: entry.type === 'lockGrant'
-				? controlPackr.pack([entry.key, entry.requester, entry.tsR, entry.grantor])
-				: controlPackr.pack([entry.key, entry.requester, entry.tsR]);
-	// A record key is an ordered-binary value, never a plain object, so nothing here can mint a
-	// structure. If that ever stops holding, the receiver's decoder has no way to resolve the id.
-	if (controlStructures.length > 0) {
-		// Replace the packer, don't just truncate its array: msgpackr keeps its own shape-to-id state,
-		// and a reused id with an empty dictionary would ship a payload referencing a structure no
-		// receiver can resolve — silently dropped everywhere instead of throwing here. Recovering at
-		// all matters because a dirty dictionary would otherwise make every later grant write throw
-		// into a latched warning, and this node would stop granting to the whole cluster.
-		controlStructures = [];
-		controlPackr = new Packr({ structures: controlStructures });
-		throw new ClientError('Record lock control payload minted a structure');
-	}
-	return packed;
+	return controlPackr.pack([entry.key, entry.requester, entry.tsR]);
 }
 
 function isNodeName(value: unknown): value is string {
@@ -139,126 +200,109 @@ function isDuration(value: unknown, min: number, max: number): value is number {
 }
 
 /**
- * A record id shape ordered-binary can encode. Anything else — a plain object, a Date — throws out
- * of `keyIdOf`, and that throw would reach the replicated apply loop.
+ * A key that survives a pack/unpack round trip unchanged. Rejecting the rest here keeps a malformed
+ * peer payload from reaching the delegation table at all.
  */
 function isEncodableKey(value: unknown): boolean {
-	if (Array.isArray(value)) return value.every((element) => isEncodableKey(element));
-	if (value instanceof Uint8Array) return true;
 	const type = typeof value;
-	return value === null || type === 'string' || type === 'number' || type === 'bigint' || type === 'boolean';
+	if (type === 'string' || type === 'bigint') return true;
+	if (type === 'number') return Number.isFinite(value as number);
+	return Array.isArray(value) && (value as unknown[]).every(isEncodableKey);
 }
 
 /**
- * Decode a replicated control payload, returning undefined for anything that is not exactly the
- * shape this protocol writes. Peer input reaches the state machine through here, so every field is
- * checked before it can create a map entry, a timer bound, or a grant.
+ * Decode a received control payload, or undefined when it is not one this version understands. The
+ * tuple length is validated exactly: a future version that grows the payload must bump the type
+ * rather than widen this one, since a partially-understood release would clear a delegation on terms
+ * the sender did not intend.
  */
 export function decodeLockControlPayload(type: unknown, value: unknown): LockControlEntry | undefined {
-	if (!Array.isArray(value)) return undefined;
-	const [key, requester, tsR] = value;
+	if (type !== 'lockRelease') return undefined;
+	let tuple: unknown;
+	try {
+		tuple = value instanceof Uint8Array ? controlPackr.unpack(value) : value;
+	} catch {
+		return undefined;
+	}
+	if (!Array.isArray(tuple) || tuple.length !== 3) return undefined;
+	const [key, requester, tsR] = tuple as [unknown, unknown, unknown];
 	if (!isEncodableKey(key) || !isNodeName(requester)) return undefined;
-	if (typeof tsR !== 'number' || !Number.isFinite(tsR) || tsR <= 0) return undefined;
-	if (type === 'lockRequest') {
-		if (value.length !== 5) return undefined;
-		const [, , , leaseMs, waitMs] = value;
-		if (!isDuration(leaseMs, MIN_LOCK_LEASE_MS, MAX_LOCK_LEASE_MS)) return undefined;
-		if (!isDuration(waitMs, 1, MAX_LOCK_TIMEOUT_MS)) return undefined;
-		return { type, key, requester, tsR, leaseMs, waitMs };
+	if (typeof tsR !== 'number' || !Number.isFinite(tsR)) return undefined;
+	return { type: 'lockRelease', key, requester, tsR };
+}
+
+/**
+ * Rendezvous (highest-random-weight) hash: a key's home is the member with the greatest score for
+ * that key. Chosen over a modulo of a key hash because a membership change moves only the keys homed
+ * on the departing member, rather than re-homing the whole space — which matters because every
+ * re-homed key pays the §7.2 recovery path on its next lock.
+ *
+ * The hash is FNV-1a over the member name and the key's stable id. It does not need to be
+ * cryptographic: it is not a defense against anything, only a deterministic agreement between nodes
+ * that already agree on `members`.
+ */
+function scoreFor(member: string, keyId: string): number {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < member.length; i++) {
+		hash ^= member.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193);
 	}
-	if (type === 'lockGrant') {
-		if (value.length !== 4) return undefined;
-		const grantor = value[3];
-		if (!isNodeName(grantor)) return undefined;
-		return { type, key, requester, tsR, grantor };
+	// A separator that cannot appear in either operand, so ("ab","c") and ("a","bc") cannot collide.
+	hash ^= 0xff;
+	hash = Math.imul(hash, 0x01000193);
+	for (let i = 0; i < keyId.length; i++) {
+		hash ^= keyId.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193);
 	}
-	if (type === 'lockRelease') {
-		if (value.length !== 3) return undefined;
-		return { type, key, requester, tsR };
+	return hash >>> 0;
+}
+
+export function homeFor(keyId: string, members: string[]): string | undefined {
+	let best: string | undefined;
+	let bestScore = -1;
+	for (const member of members) {
+		const score = scoreFor(member, keyId);
+		// Ties break on the name so every node picks the same home from the same member set.
+		if (score > bestScore || (score === bestScore && best !== undefined && member > best)) {
+			bestScore = score;
+			best = member;
+		}
 	}
-	return undefined;
+	return best;
 }
 
-/** Total order across the cluster: earlier timestamp wins, node name breaks the tie. */
-function isEarlier(tsA: number, nodeA: string, tsB: number, nodeB: string): boolean {
-	if (tsA !== tsB) return tsA < tsB;
-	return nodeA < nodeB;
-}
-
-function identityOf(requester: string, tsR: number): string {
-	// A separator no node name can contain, written as an escape: a literal NUL in the source makes
-	// git treat this file as binary and hides it from every text tool.
-	return `${requester}\u0000${tsR}`;
-}
-
-interface OwnRound {
-	tsR: number;
-	/** `monotonic()` at the instant `tsR` was minted; every lease bound is measured from it. */
-	mintedMono: number;
-	leaseMs: number;
-	waitMs: number;
-	/** Participants whose grant is still outstanding. */
-	pending: Set<string>;
-	acquired: boolean;
-	/** The LOCK_REQUEST write has landed, so a withdraw on the wire can correlate to it. */
-	requestSettled: boolean;
-	/** The round ended before its request settled; the withdraw is owed once it does. */
-	withdrawOwed: boolean;
-	/** The acquire() promise has been settled. */
-	resolved: boolean;
-	/** The round is over: released, withdrawn or abandoned. */
-	done: boolean;
-	/** Monotonic bound: the wait deadline before acquisition, the hold deadline after. */
-	deadlineMono: number;
-	resolve: (round: LockRound) => void;
-	reject: (error: Error) => void;
-}
-
-/** What a completed round hands back: the identity to stamp with, and the clock to measure from. */
-export interface LockRound {
-	tsR: number;
-	mintedMono: number;
-}
-
-interface PeerRound {
-	requester: string;
-	tsR: number;
-	/** Monotonic instant after which this peer can neither hold nor newly acquire the key. */
-	expiresMono: number;
-	released: boolean;
-}
-
-class KeyState {
+/** A delegation this node holds: the right to admit critical sections on one key. */
+interface Delegation {
 	key: any;
-	own: OwnRound | undefined;
-	peers = new Map<string, PeerRound>();
-	/** Identities we owe a grant to, kept in `(tsR, nodeId)` order. */
-	deferredOrder: string[] = [];
-	/** Peer rounds not yet released. Maintained so the overflow sweep stays a flat scan. */
-	livePeers = 0;
-	constructor(key: any) {
-		this.key = key;
-	}
-	get idle(): boolean {
-		return !this.own && this.peers.size === 0 && this.deferredOrder.length === 0;
-	}
-	/** Nothing here can still act; what remains is kept only so a replay cannot resurrect it. */
-	get releasedOnly(): boolean {
-		return !this.own && this.livePeers === 0 && this.deferredOrder.length === 0;
-	}
-	addPeer(identity: string, peer: PeerRound) {
-		this.peers.set(identity, peer);
-		this.livePeers++;
-	}
-	releasePeer(peer: PeerRound) {
-		if (peer.released) return;
-		peer.released = true;
-		this.livePeers--;
-	}
-	deletePeer(identity: string, peer: PeerRound) {
-		this.peers.delete(identity);
-		if (!peer.released) this.livePeers--;
-	}
+	token: FencingToken;
+	/** Monotonic deadline on THIS node. A delegate stops admitting here. */
+	expiresMono: number;
+	/** Set by a recall. No new admission may start, but live ones are drained first. */
+	recalled: boolean;
+	/** Live admissions. A delegation is not releasable until this reaches zero or they expire. */
+	admitted: number;
+	/** Resolvers waiting for the drain to finish, so recall can reply once rather than poll. */
+	drained?: (() => void)[];
+}
+
+/** A delegation this node issued as a key's home. */
+interface HomeGrant {
+	key: any;
+	delegate: string;
+	token: FencingToken;
+	/**
+	 * Monotonic deadline on THIS node, set to the delegate's lease PLUS skew. The home always outwaits
+	 * the delegate, so it can never re-grant a key the previous delegate still believes it holds.
+	 */
+	expiresMono: number;
+	recalling?: Promise<void>;
+}
+
+export interface LockRound {
+	/** The identity to stamp the holder's writes with. */
+	tsR: number;
+	/** The monotonic reading the admission's lease is measured from. */
+	mintedMono: number;
 }
 
 export interface LockCoordinatorOptions {
@@ -274,13 +318,21 @@ export interface LockCoordinatorOptions {
 	writeControl: (entry: LockControlEntry) => Promise<void> | void;
 	/** Stable map key for a record id; core passes `writeKeyId`. */
 	keyIdOf: (key: any) => unknown;
-	/** Mints `ts_R`; core passes the primary store's monotonic timestamp. */
+	/** Mints the holder's stamp; core passes the primary store's monotonic timestamp. */
 	nextTimestamp: () => number;
-	/** Wall clock. Used only where both operands are cluster-wide timestamps. */
-	now?: () => number;
 	/** Monotonic clock. Every expiry decision is made on this. */
 	monotonic?: () => number;
 	skewMs?: number;
+	/**
+	 * The coordinator this one replaces, when a transport is re-registered (a component reload is
+	 * enough). Its live authority is MOVED here rather than discarded: the transport changed, but the
+	 * handles it admitted did not, and a successor that started with an empty grant table could hand
+	 * the same key to another node with no lease time elapsed. That is the "a home may never forget a
+	 * grant before its expiry" rule (§8) applied across the swap rather than only within one
+	 * coordinator's life. §11 of the design note calls for exactly this — carry live authority across,
+	 * or fence and settle every outstanding handle before granting; carrying it across costs nothing.
+	 */
+	adopt?: LockCoordinator;
 	/** False in tests, which drive `tick()` themselves. */
 	autoTick?: boolean;
 }
@@ -320,28 +372,33 @@ export class LockCoordinator {
 	#writeControl: (entry: LockControlEntry) => Promise<void> | void;
 	#keyIdOf: (key: any) => unknown;
 	#nextTimestamp: () => number;
-	#now: () => number;
 	#monotonic: () => number;
 	#skewMs: number;
 	#autoTick: boolean;
-	#states = new Map<unknown, KeyState>();
+	/** Set when this coordinator's state was moved to a successor, so `close()` must not expire it. */
+	#handedOff = false;
+	/** Keys this node holds a delegation for. */
+	#delegations = new Map<unknown, Delegation>();
+	/** Keys this node homes, and who holds each one. */
+	#grants = new Map<unknown, HomeGrant>();
+	/** Per-requester counts, so one peer cannot fill the home's table on its own. */
+	#grantsByRequester = new Map<string, number>();
+	#counter = 0;
+	/**
+	 * Closed coordinators must not keep admitting. `close()` sets this AND expires every delegation,
+	 * because a handle already handed out checks only its own lease — clearing the table alone would
+	 * let a successor coordinator (a re-registered transport) grant the same key with no lease time
+	 * elapsed.
+	 */
+	#closed = false;
 	// A latched warning would make a permanently misrouted deployment look like a quiet cluster.
 	#droppedOffOwner = 0;
 	#lastOffOwnerWarn = 0;
-	#knownParticipants: Set<string> | undefined;
-	#knownParticipantsAt = 0;
-	// Bumped only where liveness is REMOVED — a released round, a dropped one, a cleared own round, a
-	// shrinking deferred queue. Those are the only transitions that can make a key state released-only,
-	// so a futile reclamation scan can tell "nothing reclaimable has appeared" in O(1). Bumping on
-	// arrivals too would let a request on an existing key re-arm the scan for the next overflow, which
-	// is the amplification this exists to prevent.
-	#mutations = 0;
-	#lastFutileScan = -1;
 
 	constructor(options: LockCoordinatorOptions) {
 		if (!isNodeName(options.nodeId) || NON_DISTINCTIVE_NODE_NAMES.has(options.nodeId))
 			throw new LockUnavailableError(
-				`Cluster record locks need a distinctive node name to order requests by, but this node identifies as "${options.nodeId}". Set node.hostname to this node's name in system.hdb_nodes.`
+				`Cluster record locks need a distinctive node name to derive a key's home from, but this node identifies as "${options.nodeId}". Set node.hostname to this node's name in system.hdb_nodes.`
 			);
 		this.database = options.database;
 		this.table = options.table;
@@ -350,206 +407,419 @@ export class LockCoordinator {
 		this.#writeControl = options.writeControl;
 		this.#keyIdOf = options.keyIdOf;
 		this.#nextTimestamp = options.nextTimestamp;
-		this.#now = options.now ?? Date.now;
 		this.#monotonic = options.monotonic ?? (() => performance.now());
 		this.#skewMs = options.skewMs ?? LOCK_LEASE_SKEW_MS;
 		this.#autoTick = options.autoTick !== false;
-	}
-
-	/** Held holds, outstanding requests, owed grants and misrouted entries, for `cluster_status`. */
-	get stats(): { held: number; pending: number; deferred: number; droppedOffOwner: number } {
-		let held = 0;
-		let pending = 0;
-		let deferred = 0;
-		for (const state of this.#states.values()) {
-			if (state.own?.acquired) held++;
-			else if (state.own) pending++;
-			deferred += state.deferredOrder.length;
-		}
-		return { held, pending, deferred, droppedOffOwner: this.#droppedOffOwner };
+		options.adopt?.handOffTo(this);
 	}
 
 	/**
-	 * Run the cluster round for a key whose native lock this thread already holds. Resolves with
-	 * `ts_R`, which becomes the holder's stamp; rejects 423 on timeout (having written the withdraw)
-	 * or 503 when the guarantee cannot be established.
+	 * Move this coordinator's live authority to the coordinator replacing it. Called from the
+	 * successor's constructor, before `close()`, so nothing is dropped in between. Both coordinators
+	 * run in the same thread for the same node, so the delegations and grants are still this node's —
+	 * only the transport object underneath them changed.
 	 */
-	acquire(key: any, leaseMs: number, waitMs: number): Promise<LockRound> {
-		const keyId = this.#keyIdOf(key);
-		let grantSet: string[];
-		try {
-			if (!this.transport.ownsCoordination())
-				throw new LockUnavailableError(
-					'Cluster record lock coordination is not owned by this worker thread; retry so the request reaches the coordinating thread'
-				);
-			if (this.#states.size >= MAX_KEYS_IN_FLIGHT && !this.#states.has(keyId)) {
-				this.#evictReleasedOnlyKeys();
-				if (this.#states.size >= MAX_KEYS_IN_FLIGHT)
-					throw new LockUnavailableError(`Too many record lock rounds in flight on ${this.database}.${this.table}`);
-			}
-			grantSet = this.#grantSet();
-		} catch (error) {
-			return Promise.reject(error);
-		}
-		const state = this.#stateFor(keyId, key);
-		if (state.own && !state.own.done)
-			// The native key lock is process-wide, so a second concurrent round on one key means the
-			// caller reached here without holding it.
-			return Promise.reject(
-				new LockUnavailableError(`A cluster record lock round is already in flight for this key on ${this.table}`)
-			);
-		const tsR = this.#nextTimestamp();
-		const mintedMono = this.#monotonic();
-		let resolve!: (value: LockRound) => void;
-		let reject!: (error: Error) => void;
-		const acquisition = new Promise<LockRound>((res, rej) => {
-			resolve = res;
-			reject = rej;
-		});
-		const own: OwnRound = {
-			tsR,
-			mintedMono,
-			leaseMs,
-			waitMs,
-			pending: new Set(grantSet),
-			acquired: false,
-			requestSettled: false,
-			withdrawOwed: false,
-			resolved: false,
-			done: false,
-			deadlineMono: mintedMono + waitMs,
-			resolve,
-			reject,
+	handOffTo(successor: LockCoordinator): void {
+		if (this.#handedOff) return;
+		this.#handedOff = true;
+		for (const [keyId, delegation] of this.#delegations) successor.#delegations.set(keyId, delegation);
+		for (const [keyId, grant] of this.#grants) successor.#grants.set(keyId, grant);
+		for (const [requester, count] of this.#grantsByRequester) successor.#grantsByRequester.set(requester, count);
+		// The counter must not restart, or the successor would mint a token that compares equal to one
+		// the predecessor already issued for a different delegation.
+		successor.#counter = Math.max(successor.#counter, this.#counter);
+		this.#delegations.clear();
+		this.#grants.clear();
+		this.#grantsByRequester.clear();
+		if (successor.#delegations.size > 0 || successor.#grants.size > 0) successor.#startTicking();
+	}
+
+	/** For `cluster_status`: delegations held, delegations issued, live admissions, misrouted calls. */
+	get stats(): { delegations: number; granted: number; admitted: number; droppedOffOwner: number } {
+		let admitted = 0;
+		for (const delegation of this.#delegations.values()) admitted += delegation.admitted;
+		return {
+			delegations: this.#delegations.size,
+			granted: this.#grants.size,
+			admitted,
+			droppedOffOwner: this.#droppedOffOwner,
 		};
-		state.own = own;
-		this.#startTicking();
-		// Await the request before resolving on grants: a request that never became durable is one no
-		// peer will ever answer, and leaving it pending would burn the caller's whole timeout.
-		let written: Promise<void> | void;
-		try {
-			written = this.#writeControl({ type: 'lockRequest', key, requester: this.nodeId, tsR, leaseMs, waitMs });
-		} catch (error) {
-			this.#abandon(state, keyId, own, error as Error);
-			return acquisition;
-		}
-		Promise.resolve(written).then(
-			() => {
-				own.requestSettled = true;
-				// The wait deadline can fire while this write is still in flight. The withdraw could not
-				// be written then — peers would apply it before the request it withdraws and install a
-				// round nothing ever retracts — so it was deferred to here.
-				if (own.withdrawOwed) {
-					own.withdrawOwed = false;
-					this.#writeControlSafely({ type: 'lockRelease', key, requester: this.nodeId, tsR });
-					return;
-				}
-				if (own.done || own.resolved) return;
-				if (own.pending.size === 0) this.#complete(state, keyId, own);
-			},
-			(error) => this.#abandon(state, keyId, own, error)
-		);
-		return acquisition;
 	}
 
 	/**
-	 * Release this node's hold or outstanding request for a key. Returns the durable release write so
-	 * the caller can contain its failure; peers expire the hold on their own bound regardless.
+	 * Admit a critical section for a key whose native lock this thread already holds. Resolves with
+	 * the stamp and the monotonic reading the lease runs from; rejects 423 when no delegation could be
+	 * obtained in time, or 503 when the guarantee cannot be established at all.
+	 *
+	 * The amortization is the first branch: a live, un-recalled delegation with enough time left costs
+	 * zero cluster messages.
+	 */
+	async acquire(key: any, leaseMs: number, waitMs: number): Promise<LockRound> {
+		if (this.#closed) throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
+		if (!this.transport.ownsCoordination())
+			throw new LockUnavailableError(
+				'Cluster record lock coordination is not owned by this worker thread; retry so the request reaches the coordinating thread'
+			);
+		const keyId = this.#keyIdOf(key);
+		const deadlineMono = this.#monotonic() + waitMs;
+
+		for (;;) {
+			const delegation = this.#liveDelegation(keyId, leaseMs);
+			if (delegation) return this.#admit(delegation);
+
+			const epoch = this.transport.epoch(this.database);
+			// No agreed epoch means no agreed ring, and a ring guessed from whoever looks reachable is
+			// exactly the asymmetric-partition failure a single arbiter exists to remove.
+			if (!epoch)
+				throw new LockUnavailableError(
+					`No agreed membership epoch for ${this.database}; cluster record locks are unavailable until one is established`
+				);
+			const home = homeFor(String(keyId), epoch.members);
+			if (!home)
+				throw new LockUnavailableError(`Membership epoch for ${this.database} names no members to home a key on`);
+
+			const reply =
+				home === this.nodeId
+					? this.#grantLocally(keyId, key, epoch, leaseMs)
+					: await this.#requestRemotely(home, keyId, key, epoch, leaseMs);
+
+			// A reply that claims a grant without a usable token is a broken transport, not a delegation.
+			if (reply.granted && reply.token && isDuration(reply.leaseMs, MIN_LOCK_LEASE_MS, MAX_LOCK_LEASE_MS)) {
+				const installed = this.#installDelegation(keyId, key, reply.token, reply.leaseMs);
+				return this.#admit(installed);
+			}
+			if (reply.granted)
+				throw new LockUnavailableError(
+					`The home node for this key on ${this.database}.${this.table} returned a delegation with no usable token`
+				);
+			if (reply.reason === 'capacity')
+				throw new LockUnavailableError(`Too many record lock delegations in flight on ${this.database}`);
+			if (reply.reason === 'not-home')
+				// The home disagrees about the ring. Re-reading the epoch on the next pass is the fix;
+				// if it is genuinely stale on our side we will converge, and if not we run out of wait.
+				warnOnce('record lock home disagreed about the ring', { database: this.database, table: this.table });
+
+			const remaining = deadlineMono - this.#monotonic();
+			if (remaining <= 0) throw new ClientError('Record is locked and was not released in time', 423);
+			await delay(Math.min(reply.retryAfterMs ?? 25, remaining));
+			if (this.#closed) throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
+		}
+	}
+
+	/**
+	 * End this node's admission for a key. The delegation is deliberately KEPT: that is the
+	 * amortization, and the next `lock()` on this node costs nothing. Returns the durable release
+	 * write only when the delegation is actually being given up.
 	 */
 	release(key: any): Promise<void> | void {
 		const keyId = this.#keyIdOf(key);
-		const state = this.#states.get(keyId);
-		const own = state?.own;
-		if (!state || !own || own.done) return undefined;
-		return this.#finish(state, keyId, own);
+		const delegation = this.#delegations.get(keyId);
+		if (!delegation) return undefined;
+		if (delegation.admitted > 0) delegation.admitted--;
+		if (delegation.admitted === 0) {
+			const waiters = delegation.drained;
+			if (waiters) {
+				delegation.drained = undefined;
+				for (const resolve of waiters) resolve();
+			}
+			// A recalled delegation is given up as soon as it is idle; an ordinary one is retained.
+			if (delegation.recalled) return this.#surrender(keyId, delegation);
+		}
+		return undefined;
 	}
 
 	/**
-	 * Apply a control entry from a peer (or a replayed one). Idempotent by `(requester, tsR)`.
+	 * Apply a control entry from a peer (or a replayed one). Idempotent by `(requester, tsR)`: a
+	 * release that arrives twice, or is replayed from the log long after its producer is gone, must be
+	 * harmless.
 	 *
 	 * `author` is the node the entry was actually written by, taken from the audit header rather than
-	 * the payload. Without it a participant could write a grant naming any other node as the grantor
-	 * and complete a requester's round while the real holder was still holding.
+	 * the payload — without it a peer could write a release naming any other node and clear a
+	 * delegation it does not hold.
 	 */
 	applyEntry(entry: LockControlEntry, author: string): void {
 		// The only boundary peer input crosses into this state machine. A throw here would reach the
 		// replicated apply loop and drop the whole enclosing transaction, so one malformed entry could
-		// cost a table every control entry that follows it.
+		// stall replication for the database.
 		try {
 			this.#applyEntry(entry, author);
 		} catch (error) {
-			warnOnce('a cluster record lock control entry could not be applied', error);
+			warnOnce('failed to apply a record lock control entry', error);
 		}
 	}
 
 	#applyEntry(entry: LockControlEntry, author: string): void {
+		if (this.#closed) return;
+		if (entry.type !== 'lockRelease' || !isNodeName(author)) return;
+		if (entry.requester !== author) return;
 		if (!this.transport.ownsCoordination()) {
 			this.#droppedOffOwner++;
-			const now = this.#now();
+			const now = this.#monotonic();
 			if (now - this.#lastOffOwnerWarn > OFF_OWNER_WARN_INTERVAL_MS) {
 				this.#lastOffOwnerWarn = now;
-				harperLogger.warn?.(
-					`${this.#droppedOffOwner} cluster record lock control entries have been dropped on a worker that does not own lock coordination for ${this.database}; the transport must deliver them to the coordinating worker`
-				);
+				harperLogger.warn?.('record lock control entries are reaching a non-coordinating thread', {
+					database: this.database,
+					table: this.table,
+					dropped: this.#droppedOffOwner,
+				});
 			}
 			return;
 		}
-		const claimed = entry.type === 'lockGrant' ? entry.grantor : entry.requester;
-		if (claimed !== author) {
-			warnOnce('dropping a record lock control entry whose payload identity is not the node that wrote it');
-			return;
-		}
-		this.tick();
-		switch (entry.type) {
-			case 'lockRequest':
-				this.#applyRequest(entry);
-				return;
-			case 'lockGrant':
-				this.#applyGrant(entry);
-				return;
-			case 'lockRelease':
-				this.#applyRelease(entry);
-		}
+		const keyId = this.#keyIdOf(entry.key);
+		const grant = this.#grants.get(keyId);
+		// Only the delegate named in the live grant can clear it, and only for the counter it was
+		// issued. A delayed release from a previous delegation must not clear its successor's.
+		if (!grant || grant.delegate !== author || grant.token[2] !== entry.tsR) return;
+		this.#clearGrant(keyId, grant);
 	}
 
-	/** Advance every deadline. Driven by the shared interval in production, by tests directly. */
+	/**
+	 * Inbound delegation request from a peer, for a key this node homes. The home is the single
+	 * arbiter, so this is the whole of the exclusion argument: one live grant per key, and a successor
+	 * only after the predecessor is recalled-and-drained or provably expired here.
+	 */
+	async onDelegationRequest(request: DelegationRequest): Promise<DelegationReply> {
+		if (this.#closed || !this.transport.ownsCoordination()) return { granted: false, reason: 'not-home' };
+		if (!isNodeName(request.requester) || !isEncodableKey(request.key)) return { granted: false, reason: 'not-home' };
+		if (!isDuration(request.leaseMs, MIN_LOCK_LEASE_MS, MAX_LOCK_LEASE_MS))
+			return { granted: false, reason: 'not-home' };
+		const epoch = this.transport.epoch(this.database);
+		if (!epoch) return { granted: false, reason: 'epoch' };
+		if (epoch.number !== request.epoch) return { granted: false, reason: 'epoch', epoch: epoch.number };
+		// Both sides must agree we are the home, or two arbiters could issue for one key.
+		const keyId = this.#keyIdOf(request.key);
+		if (homeFor(String(keyId), epoch.members) !== this.nodeId) return { granted: false, reason: 'not-home' };
+		return this.#grant(keyId, request.key, epoch, request.leaseMs, request.requester);
+	}
+
+	/**
+	 * Inbound recall from a key's home. Revokes capability rather than closing the door: no new
+	 * admission may start, live ones are drained, and the release is written only once the delegation
+	 * can no longer admit or commit. A recall for a token we no longer hold is a no-op, not an error.
+	 */
+	async onDelegationRecall(recall: DelegationRecall): Promise<void> {
+		if (this.#closed) return;
+		const keyId = this.#keyIdOf(recall.key);
+		const delegation = this.#delegations.get(keyId);
+		if (!delegation || compareTokens(delegation.token, recall.token) !== 0) return;
+		delegation.recalled = true;
+		if (delegation.admitted > 0) {
+			await new Promise<void>((resolve) => {
+				(delegation.drained ||= []).push(resolve);
+				// A holder that never releases must not hold the recall open past its own lease: the
+				// delegation expires here on our clock, and the home outwaits that by skew anyway.
+				const remaining = Math.max(0, delegation.expiresMono - this.#monotonic());
+				setTimeout(resolve, remaining).unref?.();
+			});
+		}
+		await this.#surrender(keyId, delegation);
+	}
+
+	/** Expire delegations and grants whose deadlines have passed. Bounded work per call. */
 	tick(): void {
-		const mono = this.#monotonic();
-		for (const [keyId, state] of this.#states) {
-			for (const [identity, peer] of state.peers) {
-				if (peer.expiresMono > mono) continue;
-				state.deletePeer(identity, peer);
-				this.#mutations++;
-				this.#removeDeferred(state, identity);
-				// Synthesizing the missing grant is what lets a waiter proceed past a holder that crashed
-				// without writing its release — so it must mean exactly that, and nothing else. A peer that
-				// released cleanly is alive and will answer normally, and a peer with another round still
-				// live may be holding the key right now: treating either as a grant admits a second holder.
-				const own = state.own;
-				if (peer.released || own === undefined || own.done || own.acquired) continue;
-				if (this.#hasLiveRound(state, peer.requester)) continue;
-				if (own.pending.delete(peer.requester) && own.pending.size === 0) this.#complete(state, keyId, own);
+		const now = this.#monotonic();
+		let budget = MAX_EXPIRIES_PER_TICK;
+		for (const [keyId, delegation] of this.#delegations) {
+			if (budget-- <= 0) break;
+			if (delegation.expiresMono > now) continue;
+			// A delegate may drop early; the handles it admitted are fenced by their own lease, which
+			// never outlives the delegation that admitted them.
+			this.#delegations.delete(keyId);
+			const waiters = delegation.drained;
+			if (waiters) {
+				delegation.drained = undefined;
+				for (const resolve of waiters) resolve();
 			}
-			const own = state.own;
-			// The holder's own handle timer normally releases first; this is the backstop that keeps a
-			// deferred queue from being stranded if it did not.
-			if (own && !own.done && own.deadlineMono <= mono) this.#finish(state, keyId, own);
-			this.#gc(keyId, state);
 		}
-		if (this.#states.size === 0) tickingCoordinators.delete(this);
+		budget = MAX_EXPIRIES_PER_TICK;
+		for (const [keyId, grant] of this.#grants) {
+			if (budget-- <= 0) break;
+			// A home may NEVER forget a grant before its expiry — that asymmetry is the safety rule.
+			if (grant.expiresMono > now) continue;
+			this.#clearGrant(keyId, grant);
+		}
+		if (this.#delegations.size === 0 && this.#grants.size === 0) tickingCoordinators.delete(this);
 	}
 
-	/** Drop all state, e.g. when the table is dropped. Outstanding waiters are rejected. */
+	/**
+	 * Stop this coordinator and invalidate what it issued. Expiring every delegation is the part that
+	 * matters: `close()` runs when a transport is replaced (a component reload is enough), and a
+	 * successor coordinator must not be able to grant a key whose predecessor handles are still live.
+	 */
 	close(): void {
-		for (const state of this.#states.values()) {
-			const own = state.own;
-			if (own && !own.resolved) {
-				own.resolved = true;
-				own.done = true;
-				own.reject(new LockUnavailableError('Record lock coordination stopped'));
+		this.#closed = true;
+		// State that was handed to a successor is that coordinator's now; expiring it here would
+		// invalidate delegations the successor is correctly still honouring.
+		if (this.#handedOff) {
+			tickingCoordinators.delete(this);
+			return;
+		}
+		for (const delegation of this.#delegations.values()) {
+			delegation.recalled = true;
+			delegation.expiresMono = -Infinity;
+			const waiters = delegation.drained;
+			if (waiters) {
+				delegation.drained = undefined;
+				for (const resolve of waiters) resolve();
 			}
 		}
-		this.#states.clear();
+		this.#delegations.clear();
+		this.#grants.clear();
+		this.#grantsByRequester.clear();
 		tickingCoordinators.delete(this);
+	}
+
+	#liveDelegation(keyId: unknown, leaseMs: number): Delegation | undefined {
+		const delegation = this.#delegations.get(keyId);
+		if (!delegation || delegation.recalled) return undefined;
+		// The admission may not outlive the delegation that admitted it, so a delegation without room
+		// for the whole lease is renewed rather than stretched.
+		if (delegation.expiresMono - this.#monotonic() < leaseMs) return undefined;
+		return delegation;
+	}
+
+	#admit(delegation: Delegation): LockRound {
+		delegation.admitted++;
+		return { tsR: this.#nextTimestamp(), mintedMono: this.#monotonic() };
+	}
+
+	#installDelegation(keyId: unknown, key: any, token: FencingToken, leaseMs: number): Delegation {
+		const existing = this.#delegations.get(keyId);
+		// A reply that lost a race with a newer delegation for the same key must not move it backwards.
+		if (existing && compareTokens(existing.token, token) >= 0) return existing;
+		const delegation: Delegation = {
+			key,
+			token,
+			expiresMono: this.#monotonic() + leaseMs,
+			recalled: false,
+			admitted: existing?.admitted ?? 0,
+		};
+		this.#delegations.set(keyId, delegation);
+		this.#startTicking();
+		return delegation;
+	}
+
+	/** This node is the key's home: grant to itself through exactly the same table a peer would use. */
+	#grantLocally(keyId: unknown, key: any, epoch: LockEpoch, leaseMs: number): DelegationReply {
+		return this.#grant(keyId, key, epoch, leaseMs, this.nodeId);
+	}
+
+	async #requestRemotely(
+		home: string,
+		keyId: unknown,
+		key: any,
+		epoch: LockEpoch,
+		leaseMs: number
+	): Promise<DelegationReply> {
+		try {
+			return await this.transport.requestDelegation(home, this.database, this.table, {
+				key,
+				requester: this.nodeId,
+				epoch: epoch.number,
+				leaseMs,
+			});
+		} catch (error) {
+			// An unreachable home blocks only the keys it homes, which is the availability property the
+			// whole design exists for — it is not a reason to admit without one.
+			throw new LockUnavailableError(
+				`Could not reach ${home}, the home node for this key on ${this.database}.${this.table}: ${(error as Error)?.message ?? error}`
+			);
+		}
+	}
+
+	#grant(keyId: unknown, key: any, epoch: LockEpoch, leaseMs: number, requester: string): DelegationReply {
+		const existing = this.#grants.get(keyId);
+		if (existing) {
+			if (existing.delegate === requester) {
+				// Renewal for the node that already holds it: extend rather than recall itself.
+				existing.token = [epoch.number, epoch.homeIncarnation, ++this.#counter];
+				existing.expiresMono = this.#monotonic() + leaseMs + this.#skewMs;
+				return { granted: true, token: existing.token, leaseMs };
+			}
+			// Someone else holds it. Start the recall and make the caller come back — holding the request
+			// open across a drain would tie the home's reply to the previous delegate's liveness.
+			this.#beginRecall(keyId, existing);
+			return { granted: false, reason: 'contended', retryAfterMs: 25 };
+		}
+		if (this.#grants.size >= MAX_DELEGATIONS_PER_DATABASE) return { granted: false, reason: 'capacity' };
+		const perRequester = this.#grantsByRequester.get(requester) ?? 0;
+		if (perRequester >= MAX_DELEGATIONS_PER_REQUESTER) return { granted: false, reason: 'capacity' };
+		const token: FencingToken = [epoch.number, epoch.homeIncarnation, ++this.#counter];
+		this.#grants.set(keyId, {
+			key,
+			delegate: requester,
+			token,
+			// The home always outwaits the delegate by skew, so it cannot re-grant a key the previous
+			// delegate still believes it holds.
+			expiresMono: this.#monotonic() + leaseMs + this.#skewMs,
+		});
+		this.#grantsByRequester.set(requester, perRequester + 1);
+		this.#startTicking();
+		return { granted: true, token, leaseMs };
+	}
+
+	#beginRecall(keyId: unknown, grant: HomeGrant): void {
+		if (grant.recalling) return;
+		if (grant.delegate === this.nodeId) {
+			// We are both home and delegate. Recall ourselves through the same path a peer would take.
+			grant.recalling = this.onDelegationRecall({ key: grant.key, token: grant.token }).catch((error) => {
+				warnOnce('failed to recall a local record lock delegation', error);
+			});
+			return;
+		}
+		grant.recalling = Promise.resolve(
+			this.transport.recallDelegation(grant.delegate, this.database, this.table, {
+				key: grant.key,
+				token: grant.token,
+			})
+		)
+			.then(() => {
+				// The delegate confirmed it stopped admitting. Its release entry clears the grant; if that
+				// write is lost, the grant still expires on its own deadline.
+			})
+			.catch(() => {
+				// An unreachable delegate is not a reason to re-grant early: the grant's own deadline is
+				// what makes the successor safe, and it already includes the skew margin.
+				grant.recalling = undefined;
+			});
+	}
+
+	/** Give up a delegation: stop admitting, then write the release that lets the home re-grant. */
+	#surrender(keyId: unknown, delegation: Delegation): Promise<void> | void {
+		if (this.#delegations.get(keyId) === delegation) this.#delegations.delete(keyId);
+		const entry: LockControlEntry = {
+			type: 'lockRelease',
+			key: delegation.key,
+			requester: this.nodeId,
+			tsR: delegation.token[2],
+		};
+		// If we are our own home, clear directly — the entry still goes out so peers replaying the log
+		// see the same handoff, but the home half must not wait on our own replication.
+		const grant = this.#grants.get(keyId);
+		if (grant && grant.delegate === this.nodeId && grant.token[2] === entry.tsR) this.#clearGrant(keyId, grant);
+		return this.#writeControlSafely(entry);
+	}
+
+	#clearGrant(keyId: unknown, grant: HomeGrant): void {
+		if (this.#grants.get(keyId) !== grant) return;
+		this.#grants.delete(keyId);
+		const count = (this.#grantsByRequester.get(grant.delegate) ?? 1) - 1;
+		if (count > 0) this.#grantsByRequester.set(grant.delegate, count);
+		else this.#grantsByRequester.delete(grant.delegate);
+	}
+
+	#writeControlSafely(entry: LockControlEntry): Promise<void> | void {
+		let written: Promise<void> | void;
+		try {
+			written = this.#writeControl(entry);
+		} catch (error) {
+			warnOnce('failed to write a record lock release entry', error);
+			return undefined;
+		}
+		return Promise.resolve(written).catch((error) => {
+			// A lost release costs the key its remaining lease on the home; it never costs exclusion.
+			warnOnce('failed to write a record lock release entry', error);
+		});
 	}
 
 	#startTicking() {
@@ -557,301 +827,12 @@ export class LockCoordinator {
 		tickingCoordinators.add(this);
 		ensureTicking();
 	}
+}
 
-	/**
-	 * Drop keys whose only remaining state is released rounds. They are kept so a replayed request
-	 * cannot resurrect them, which must not cost a live key its slot — the same reason released rounds
-	 * do not consume the per-key contention budget.
-	 *
-	 * Reached from the overflow path, so two things keep it off the apply thread's budget: the per-key
-	 * test is O(1) (`livePeers` is maintained as rounds arrive and are released), and a scan that found
-	 * nothing is not repeated until some state has actually changed. A saturated table under a flood of
-	 * requests therefore scans once, not once per request, because a dropped request changes nothing.
-	 *
-	 * Throttling on a clock instead would be the wrong trade: it would skip a reclamation that had just
-	 * become possible and drop a one-shot request that had room waiting for it.
-	 */
-	#evictReleasedOnlyKeys() {
-		if (this.#mutations === this.#lastFutileScan) return;
-		let reclaimed = false;
-		for (const [keyId, state] of this.#states)
-			if (state.releasedOnly) {
-				this.#states.delete(keyId);
-				reclaimed = true;
-			}
-		if (!reclaimed) this.#lastFutileScan = this.#mutations;
-	}
-
-	#hasLiveRound(state: KeyState, requester: string): boolean {
-		for (const peer of state.peers.values()) if (peer.requester === requester && !peer.released) return true;
-		return false;
-	}
-
-	#stateFor(keyId: unknown, key: any): KeyState {
-		let state = this.#states.get(keyId);
-		if (!state) this.#states.set(keyId, (state = new KeyState(key)));
-		return state;
-	}
-
-	#gc(keyId: unknown, state: KeyState) {
-		if (state.idle) this.#states.delete(keyId);
-	}
-
-	// Membership for arriving entries is re-read at most once per tick window. The grant set an
-	// acquire depends on is never cached — that one is the safety decision and is taken fresh.
-	#isKnownParticipant(nodeId: string): boolean {
-		const now = this.#monotonic();
-		if (!this.#knownParticipants || now - this.#knownParticipantsAt >= TICK_INTERVAL_MS) {
-			const names = new Set<string>();
-			try {
-				const participants = this.transport.participants(this.database);
-				if (Array.isArray(participants))
-					for (const participant of participants) if (isNodeName(participant?.nodeId)) names.add(participant.nodeId);
-			} catch {
-				// An unavailable participant set means nothing is known to be a participant.
-			}
-			this.#knownParticipants = names;
-			this.#knownParticipantsAt = now;
-		}
-		return this.#knownParticipants.has(nodeId);
-	}
-
-	#grantSet(): string[] {
-		let participants: LockParticipant[];
-		try {
-			participants = this.transport.participants(this.database);
-		} catch (error) {
-			throw new LockUnavailableError(
-				`The record lock participant set for ${this.database} could not be determined: ${(error as Error)?.message}`
-			);
-		}
-		if (!Array.isArray(participants) || participants.length === 0)
-			throw new LockUnavailableError(`The record lock participant set for ${this.database} is unknown`);
-		const now = this.#now();
-		const downCutoff = MAX_LOCK_LEASE_MS + this.#skewMs;
-		const grantSet: string[] = [];
-		const seen = new Set<string>();
-		for (const participant of participants) {
-			if (!isNodeName(participant?.nodeId))
-				throw new LockUnavailableError(`The record lock participant set for ${this.database} names an invalid node`);
-			// A repeated name means two nodes share an identity, which breaks the total order the whole
-			// protocol rests on.
-			if (seen.has(participant.nodeId))
-				throw new LockUnavailableError(
-					`Two nodes replicating ${this.database} both identify as ${participant.nodeId}; record locks cannot order their requests`
-				);
-			seen.add(participant.nodeId);
-			if (participant.nodeId === this.nodeId) continue;
-			if (participant.capable !== true)
-				throw new LockUnavailableError(
-					`Node ${participant.nodeId} replicates ${this.database} but does not support record locks; use { scope: 'node' } to lock only on this node`
-				);
-			// Excluded only once every hold or request it could have had has certainly expired AND the
-			// cluster agrees it is down — see `agreedDown`, which is what makes the exclusion safe under
-			// an asymmetric partition rather than a way to manufacture a second holder.
-			const downSince = participant.downSince;
-			if (participant.agreedDown === true && typeof downSince === 'number' && now - downSince > downCutoff) continue;
-			grantSet.push(participant.nodeId);
-		}
-		return grantSet;
-	}
-
-	#writeControlSafely(entry: LockControlEntry): Promise<void> | void {
-		const failed = (error: unknown) =>
-			warnOnce(`a record lock ${entry.type} could not be written; peers will expire the hold`, error);
-		try {
-			const result = this.#writeControl(entry);
-			if (result && typeof result.then === 'function') return result.then(undefined, failed);
-			return result;
-		} catch (error) {
-			failed(error);
-		}
-	}
-
-	#complete(state: KeyState, keyId: unknown, own: OwnRound) {
-		// Measured on the monotonic clock, not `tsR + leaseMs - now()`: `tsR` never decreases, so a
-		// backward wall-clock step would report more lease left than the round was granted.
-		const remaining = own.leaseMs - (this.#monotonic() - own.mintedMono);
-		if (remaining <= 0) {
-			// The lease window closed while the round ran. Participants may already have synthesized this
-			// node's grant, so treating the key as held here is exactly the two-holder case.
-			this.#finish(state, keyId, own, new ClientError('Record lock was granted after its lease had elapsed', 423));
-			return;
-		}
-		own.acquired = true;
-		// From the mint origin: a pause between the two reads would otherwise push the deadline out by
-		// its own duration, past what peers bounded.
-		own.deadlineMono = own.mintedMono + own.leaseMs;
-		own.resolved = true;
-		own.resolve({ tsR: own.tsR, mintedMono: own.mintedMono });
-	}
-
-	/** End the round: write the withdraw/release, hand out the deferred grants, settle the caller. */
-	#finish(state: KeyState, keyId: unknown, own: OwnRound, rejection?: Error): Promise<void> | void {
-		own.done = true;
-		if (state.own === own) state.own = undefined;
-		this.#mutations++;
-		let write: Promise<void> | void;
-		if (own.requestSettled)
-			write = this.#writeControlSafely({
-				type: 'lockRelease',
-				key: state.key,
-				requester: this.nodeId,
-				tsR: own.tsR,
-			});
-		else own.withdrawOwed = true;
-		this.#flushDeferred(state);
-		if (!own.resolved) {
-			own.resolved = true;
-			own.reject(rejection ?? new ClientError('Record is locked and was not released in time', 423));
-		}
-		this.#gc(keyId, state);
-		return write;
-	}
-
-	/** Give up a round whose own request never became durable; there is nothing to withdraw on the wire. */
-	#abandon(state: KeyState, keyId: unknown, own: OwnRound, error: Error) {
-		own.done = true;
-		if (state.own === own) state.own = undefined;
-		this.#mutations++;
-		this.#flushDeferred(state);
-		if (!own.resolved) {
-			own.resolved = true;
-			own.reject(error);
-		}
-		this.#gc(keyId, state);
-	}
-
-	#applyRequest(entry: LockControlEntry) {
-		if (entry.requester === this.nodeId) return; // our own entry, echoed back
-		// Core cannot authenticate an entry's author — the transport owns trusted origin identity — but
-		// it can refuse to spend state on a request from a node that replicates nothing here.
-		if (!this.#isKnownParticipant(entry.requester)) {
-			// The message is deliberately constant: warnOnce latches per distinct string, so
-			// interpolating an unvalidated peer-supplied name would let a stream of forged requesters
-			// grow that set without bound.
-			warnOnce('ignoring a record lock control entry from a node that is not a participant for its database');
-			return;
-		}
-		const waitMs = entry.waitMs!;
-		const leaseMs = entry.leaseMs!;
-		// A replayed request this old cannot correspond to a live hold anywhere.
-		if (entry.tsR < this.#now() - (MAX_LOCK_LEASE_MS + waitMs + this.#skewMs)) return;
-		const keyId = this.#keyIdOf(entry.key);
-		if (!this.#states.has(keyId) && this.#states.size >= MAX_KEYS_IN_FLIGHT) {
-			this.#evictReleasedOnlyKeys();
-			if (this.#states.size >= MAX_KEYS_IN_FLIGHT) {
-				warnOnce(
-					`dropping a replicated record lock request: ${this.database}.${this.table} has too many live keys in flight`
-				);
-				return;
-			}
-		}
-		const state = this.#stateFor(keyId, entry.key);
-		const identity = identityOf(entry.requester, entry.tsR);
-		if (state.peers.has(identity)) return; // idempotent by identity, which is what makes replay harmless
-		if (state.peers.size >= MAX_PEER_REQUESTS_PER_KEY) {
-			// Released rounds linger only so a replayed request cannot resurrect them. They must not
-			// consume the contention budget: a hot key turns over more than this many rounds inside one
-			// bound, and counting them would make this node withhold grants from live requesters.
-			// Re-admitting a replayed round instead costs a spurious grant to a requester that is gone.
-			for (const [identity, peer] of state.peers) {
-				if (!peer.released) continue;
-				state.deletePeer(identity, peer);
-				this.#mutations++;
-				if (state.peers.size < MAX_PEER_REQUESTS_PER_KEY) break;
-			}
-		}
-		if (state.peers.size >= MAX_PEER_REQUESTS_PER_KEY) {
-			warnOnce(`dropping a replicated record lock request: too many live contenders on one key in ${this.table}`);
-			return;
-		}
-		const peer: PeerRound = {
-			requester: entry.requester,
-			tsR: entry.tsR,
-			// Local observation only: comparing this node's clock against the requester's would make the
-			// bound depend on clock offset rather than on the skew allowance.
-			expiresMono: this.#monotonic() + Math.max(leaseMs, waitMs) + this.#skewMs,
-			released: false,
-		};
-		state.addPeer(identity, peer);
-		this.#startTicking();
-		const own = state.own;
-		const defer =
-			own !== undefined && !own.done && (own.acquired || isEarlier(own.tsR, this.nodeId, entry.tsR, entry.requester));
-		if (defer) {
-			state.deferredOrder.push(identity);
-			this.#sortDeferred(state);
-			return;
-		}
-		this.#writeControlSafely({
-			type: 'lockGrant',
-			key: state.key,
-			requester: entry.requester,
-			tsR: entry.tsR,
-			grantor: this.nodeId,
-		});
-	}
-
-	#applyGrant(entry: LockControlEntry) {
-		if (entry.requester !== this.nodeId) return; // a grant addressed to another node
-		const keyId = this.#keyIdOf(entry.key);
-		const state = this.#states.get(keyId);
-		const own = state?.own;
-		if (!state || !own || own.done || own.acquired) return;
-		if (own.tsR !== entry.tsR) return; // a grant for a round that already ended
-		if (!own.pending.delete(entry.grantor!)) return; // unsolicited, duplicate, or from a non-participant
-		if (own.pending.size === 0) this.#complete(state, keyId, own);
-	}
-
-	#applyRelease(entry: LockControlEntry) {
-		if (entry.requester === this.nodeId) return; // our own entry, echoed back
-		const state = this.#states.get(this.#keyIdOf(entry.key));
-		if (!state) return;
-		const identity = identityOf(entry.requester, entry.tsR);
-		const peer = state.peers.get(identity);
-		if (!peer || peer.released) return;
-		state.releasePeer(peer);
-		this.#mutations++;
-		// A withdrawn request is owed nothing. The peer record itself stays until its bound, so a
-		// replayed request for the same identity cannot resurrect it.
-		this.#removeDeferred(state, identity);
-	}
-
-	#sortDeferred(state: KeyState) {
-		state.deferredOrder.sort((a, b) => {
-			const left = state.peers.get(a)!;
-			const right = state.peers.get(b)!;
-			if (left.tsR !== right.tsR) return left.tsR - right.tsR;
-			return left.requester < right.requester ? -1 : left.requester > right.requester ? 1 : 0;
-		});
-	}
-
-	#removeDeferred(state: KeyState, identity: string) {
-		const index = state.deferredOrder.indexOf(identity);
-		if (index >= 0) {
-			state.deferredOrder.splice(index, 1);
-			this.#mutations++;
-		}
-	}
-
-	#flushDeferred(state: KeyState) {
-		if (state.deferredOrder.length === 0) return;
-		const order = state.deferredOrder;
-		state.deferredOrder = [];
-		this.#mutations++;
-		for (const identity of order) {
-			const peer = state.peers.get(identity);
-			if (!peer || peer.released) continue;
-			this.#writeControlSafely({
-				type: 'lockGrant',
-				key: state.key,
-				requester: peer.requester,
-				tsR: peer.tsR,
-				grantor: this.nodeId,
-			});
-		}
-	}
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms).unref?.();
+	});
 }
 
 const clusterLockTransports = new Map<string, ClusterLockTransport>();
@@ -867,10 +848,21 @@ export function setLockCoordinatorResolver(resolve: (database: string, table: st
 }
 
 export function registerClusterLockTransport(database: string, transport: ClusterLockTransport): void {
-	if (typeof transport?.participants !== 'function' || typeof transport?.ownsCoordination !== 'function')
-		throw new ClientError('A cluster lock transport must provide participants() and ownsCoordination()');
+	if (
+		typeof transport?.epoch !== 'function' ||
+		typeof transport?.ownsCoordination !== 'function' ||
+		typeof transport?.requestDelegation !== 'function' ||
+		typeof transport?.recallDelegation !== 'function'
+	)
+		throw new ClientError(
+			'A cluster lock transport must provide epoch(), ownsCoordination(), requestDelegation() and recallDelegation()'
+		);
 	transport.onControlEntry = (db: string, table: string, entry: LockControlEntry, author: string) =>
 		deliverLockControlEntry(db, table, entry, author);
+	transport.onDelegationRequest = (db: string, table: string, request: DelegationRequest) =>
+		deliverDelegationRequest(db, table, request);
+	transport.onDelegationRecall = (db: string, table: string, recall: DelegationRecall) =>
+		deliverDelegationRecall(db, table, recall);
 	clusterRequiredDatabases.add(database);
 	clusterLockTransports.set(database, transport);
 }
@@ -899,11 +891,54 @@ export function hasClusterLockTransports(): boolean {
 	return clusterLockTransports.size > 0;
 }
 
+/**
+ * Resolve a coordinator for an inbound message. The resolver reaches `Table.lockCoordinator`, which
+ * throws when this node's name is unusable — that throw must not escape a receive boundary, or it
+ * reaches the replicated apply loop and drops the enclosing transaction.
+ */
+function coordinatorFor(database: string, table: string): LockCoordinator | undefined {
+	try {
+		return coordinatorResolver?.(database, table);
+	} catch (error) {
+		warnOnce('could not resolve a record lock coordinator for a received message', error);
+		return undefined;
+	}
+}
+
 export function deliverLockControlEntry(
 	database: string,
 	table: string,
 	entry: LockControlEntry,
 	author: string
 ): void {
-	coordinatorResolver?.(database, table)?.applyEntry(entry, author);
+	coordinatorFor(database, table)?.applyEntry(entry, author);
+}
+
+export async function deliverDelegationRequest(
+	database: string,
+	table: string,
+	request: DelegationRequest
+): Promise<DelegationReply> {
+	const coordinator = coordinatorFor(database, table);
+	if (!coordinator) return { granted: false, reason: 'not-home' };
+	try {
+		return await coordinator.onDelegationRequest(request);
+	} catch (error) {
+		warnOnce('failed to answer a record lock delegation request', error);
+		return { granted: false, reason: 'not-home' };
+	}
+}
+
+export async function deliverDelegationRecall(
+	database: string,
+	table: string,
+	recall: DelegationRecall
+): Promise<void> {
+	const coordinator = coordinatorFor(database, table);
+	if (!coordinator) return;
+	try {
+		await coordinator.onDelegationRecall(recall);
+	} catch (error) {
+		warnOnce('failed to apply a record lock delegation recall', error);
+	}
 }
