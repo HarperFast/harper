@@ -518,10 +518,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	#notify(change: DerivedIndexBackendStateChange): void {
 		if (change === 'changed') this.#capacityDeferred = false;
-		if (!this.#wake) return;
+		const wake = this.#wake;
+		if (!wake) return;
 		setImmediate(() => {
+			if (this.#wake !== wake) return;
 			try {
-				this.#wake?.(change);
+				wake(change);
 			} catch (error) {
 				logger.error('Full-text derived index state notification failed', error);
 			}
