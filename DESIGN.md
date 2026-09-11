@@ -1965,3 +1965,248 @@ Four rules hold this together, and all four are load-bearing:
 **`parsed_sql_object` is dispatch state, never client input.** The export worker re-reads it off the same caller-supplied nested object (`evaluateSQL`), and it carries `permissions_checked`, so a body-supplied one runs an AST no check ever saw. It is deleted from the nested object at dispatch, and stripped from the top-level object before this dispatch's own parse is assigned. Only the direct-SQL path consumes the top-level `parsed_sql_object`; a job re-parses off `search_operation`, so setting it for a job would be inert. The bypass/`apiOperation` decision is carried on async-context state (`getOperationAuthorizationState`), not on the request body, and `processAST` honors the denial `checkASTPermissions` computes — a `PermissionResponseObject` has no `length`, so the guard tests the object itself rather than `.length` (which always refused nothing).
 
 The SQL and job paths are additive rather than exclusive: `verifyPermsAST` validates only the statement's tables and attributes, never the `operations` allowlist or `requires_su`, and a table-free statement gives it nothing to validate — so the allowlist check and the AST check both run for a SQL-carrying request, and the nested-search check runs alongside the outer export check for a job.
+
+## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
+
+A derived index (the native HNSW plane, a future Tantivy full-text index) is a materialized view
+that lives outside the record transaction: its apply is native, costs 0.2–1.4 ms per mutation, and
+its durability barrier is an `msync` or a segment publish, none of which belong on the commit path.
+The runtime is the one Harper-side implementation of the delivery protocol in harper#2489: **the
+transaction log is the durable fact, a commit only wakes a runner, and every backend resumes from an
+exact cursor into that log.** There is deliberately no second delivery fact — no transactional
+dirty-key outbox, no `aftercommit` staging — because a second durable write per indexed mutation, a
+cleanup protocol for it, and a new column family for every audited table would still not let an
+engine-specific native file commit atomically with RocksDB, so the cursor protocol would be needed
+anyway.
+
+### Invariants
+
+1. Only committed entries are delivered; the runtime never reads uncommitted log entries.
+2. One worker runs a given backend at a time (a process-wide `tryLock` per backend). The owner
+   merges every physical log into one serial stream and keeps a cursor per log.
+3. A cursor is `{ format: 1, logs: { <log name>: <completed transaction timestamp> } }`. It advances
+   only at `endTxn` and only after the backend's durability barrier covers the whole transaction.
+4. Live delivery and restart use the same cursor validation, iterator and dispatch code. A lost wake
+   or a full backend queue delays indexing; it cannot skip durable log work.
+5. Resume proves every saved log position with `exactStart`. A missing, incomplete or duplicate
+   boundary condemns the generation; approximate resume is not permitted.
+6. The runtime resolves the current primary entry once per changed record and projects only the
+   registered attributes. Backends never see the log entry's body: a conflict retry can re-resolve a
+   record after its log payload was staged, so the entry is identity and version evidence, not state.
+7. No exception from log iteration, primary reads, projection, backend calls or unlock callbacks
+   escapes the scheduled drain or interferes with subscriptions and replication.
+8. Registration adds nothing to the commit path except a local-only eviction marker for registered
+   caching tables (below). No `aftercommit` listener, no retained `AuditRecord`s, no awaited work.
+
+### Ownership and wake-up
+
+Each worker holds one `DerivedIndexRuntime` per RocksDB root store, with the same schema-derived
+registrations on every worker; the drain is lock-elected, registration is not. The runtime listens
+to the root store's `committed` event and coalesces wakes through `setImmediate`. The winner keeps a
+reusable aggregate iterator (`RocksTransactionLogStore.getRange` with `startByLog`, `exactStart`,
+`resumeAfterExactStart`, `includeLogName`) and drains for bounded count, bytes and wall time per
+turn. Ownership is sticky: the lock is not one record writers take, so holding it across turns
+delays no commit, and it is released only after an idle grace period once durable progress equals
+offered progress. A failed `tryLock(key, onUnlocked)` confers nothing when `onUnlocked` fires; the
+callback schedules a fresh attempt.
+
+Transaction timestamps are unique per physical log but **not monotone in physical order**
+(`TransactionLogStore::writeBatch` only advances `latestTimestamp` when the batch's is greater), so
+the runtime never compares timestamps to decide progress or retention. Resume is exact-start: find
+the transaction, iterate after it. Repeat detection is a per-log set of completed timestamps
+retained since the durable cursor. A log the cursor does not name is read from its beginning only
+if it still retains it — `fileCount === 0 || oldestSequenceNumber === 1`; rocksdb-js reports
+`oldestSequenceNumber: 0` for a log that has never written a file — otherwise the generation is
+condemned.
+
+### Offered versus durable progress
+
+A native backend accepts several batches before its next barrier, so the owner tracks **offered**
+progress (cursor vectors of accepted batches, in memory, under the lock) separately from the
+backend's **durable** cursor. Every acquisition mints an owner epoch from a process-wide atomic
+counter and stamps it on each batch; a new epoch — including after a worker restart — resets offered
+progress to the durable cursor before opening its iterator, because replaying work that survived
+in a native queue is safe and trusting a dead worker's non-durable position is not. A reported
+durable cursor must equal one offered vector exactly; validating logs independently would let a
+backend assemble a cursor from different batch boundaries and hide work. Accepted-not-durable
+progress is capped (`maxAcceptedBatchesAhead`, 64); at the cap the owner keeps the lock, stops
+reading (`waiting-durable`) and resumes on a backend state-change wake, not on commit wakes.
+
+### Authoritative record resolution and the eviction marker
+
+The log decides what must be revisited; the primary store decides what is in the index now. A
+present entry yields its current version and projection; a missing, deleted, evicted or
+invalidated entry yields `absent`, which is sound only because every removal now has a durable
+fact: `delete`, `invalidate`, `relocate`, or the local-only `evict` marker that `Table.evict()` and
+`createEvictionBatcher().stageInto()` stage into the same RocksDB transaction as the row removal for
+tables with a registered derived index (`hasDerivedIndexRegistration`). The marker is `LOCAL_ONLY`,
+a no-op in boot replay, filtered from customer history and subscriptions, and rejected by
+replication. `message`, `publish` and structure entries advance progress without becoming
+documents; a `reload` marker (replica base copy) condemns the generation because its rows have no
+per-record entries. A projection that throws a 4xx `ClientError` yields
+`{ kind: 'unindexable', reason: '<class> (<status>)' }` — the backend removes any entry and counts
+it; the message never reaches shared memory or the backend because validation messages quote
+record values. Any other projection or primary-read failure is fail-closed.
+
+### Backend contract
+
+```ts
+interface DerivedIndexBackend {
+	readonly id: string;
+	attach(host: { isOwnerEpoch(epoch: bigint): boolean; getReadiness(): DerivedIndexReadiness }): void;
+	getDurableCursor(): DerivedIndexCursor | undefined;
+	deliver(batch: DerivedIndexBatch): DERIVED_INDEX_ACCEPTED | DERIVED_INDEX_DEFERRED | DERIVED_INDEX_FAILED;
+	flush(reason: 'age' | 'threshold' | 'shutdown'): void | Promise<void>; // barrier request
+	shutdown(ownerEpoch: bigint): void | Promise<void>; // quiescence: nothing further applies or publishes for the epoch
+	onStateChange(wake: (change?: 'changed' | 'accepted-work-lost' | 'failed') => void): () => void;
+	reset?(ownerEpoch: bigint): void | Promise<void>; // destroy state and cursor; first durable action invalidates the cursor
+}
+type DerivedIndexBatch = {
+	ownerEpoch: bigint;
+	transactions: { logName; timestamp; mutations }[];
+	records: DerivedIndexMutation[]; // last-write-wins per (tableId, writeKeyId(recordId)); non-enumerable
+	through?: DerivedIndexCursor; // absent on a rebuild scan chunk and while a transaction is still open
+	bytes: number; // estimate; non-enumerable
+	rebuild?: true;
+};
+```
+
+There is one contract and every hook is required. What an ownership handoff has to fence is work
+that survives a method return — a queued apply, a barrier that completes later, a cursor that
+trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
+handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
+bounded by the runner's turn budget (the runtime cannot bound work it does not perform): the
+expected shape is enqueue, return `accepted`, apply in the backend's own time slices, advance the
+durable cursor at its barrier, return `deferred` when its queue is full. `accepted` means the backend
+owns the batch, not that the cursor may advance. `deferred` holds the batch until a state-change
+wake. `accepted-work-lost` makes the owner rebuild its iterator from the durable cursor; `failed` or
+`DERIVED_INDEX_FAILED` condemns the generation. `reset` is optional — without it `needs-rebuild` is
+terminal — and a backend that implements it owns its crash safety: it must invalidate the cursor
+before anything destructive, because shared readiness is process memory and is no evidence after a
+restart. The runtime also writes a condemnation marker to the root store
+(`Symbol.for('derived-index:<id>:condemned')`) before any reset and clears it at the first durable
+`ready`, so a restart between condemning a cursor and destroying it still rebuilds; a marker that
+cannot be written issues no reset. The cursor's atomic durability mechanism is the backend's
+(Tantivy publishes it with segment state; HNSW writes it after the plane barrier), which is why the
+cursor is backend-owned and validation is Harper's.
+
+### Bounded delivery
+
+A drain turn **collects** identities from the iterator — `(tableId, recordId, logVersion)` per
+eligible entry, no primary read — under `maxTransactionsPerTurn`, `maxBytesPerTurn`,
+`maxMillisecondsPerTurn` and `maxChunkRecords` distinct keys, then **resolves** each key once after
+its last collected occurrence, under `maxChunkBytes` and the same wall budget, carrying the
+remainder to the next turn. Resolving after the last occurrence, not on first encounter, is what
+keeps a writer committing between two occurrences of a key from having its later state certified by
+the cursor while the earlier state stayed indexed. An oversized transaction is delivered across
+chunks with `through` withheld until the chunk that contains its `endTxn`; nothing marks such a
+chunk because a backend can do nothing with the distinction, and query-visible atomicity of one
+transaction across chunks is not promised. `bytes` is an estimate from stored record sizes (or the
+log entry size), never a serialization; `maxChunkRecords` is the hard bound. All bounds are settable
+per registration.
+
+### Durability cadence
+
+`maxAcceptedBatchesAhead` is a ceiling; the runtime, which already tracks accepted-not-durable work,
+is the scheduler. It requests `flush('age')` when the first accepted batch since the last request is
+`maxFlushAgeMilliseconds` old (1 s), `flush('threshold')` at `flushAfterMutations` (4096) or
+`flushAfterBytes` (8 MiB), and `flush('shutdown')` at release. The backend runs the barrier
+asynchronously, coalesces requests that arrive mid-barrier, and publishes `through` atomically with
+what the barrier made durable. Reaching the end of the log requests no extra barrier — arrivals
+spaced just beyond drain completion would otherwise pay one per write; the age timer is idle
+completion.
+
+### Rebuild
+
+When the backend has `reset` and the runtime was built with `scanRecords`, `needs-rebuild` is a
+phase, not an end state: publish `rebuilding`; `shutdown(previousEpoch)`; mint a new epoch and
+republish; `reset(newEpoch)` (afterwards `getDurableCursor()` must be `undefined`); capture the
+**committed tail** of every log; scan every registered table (tombstones and symbol keys skipped),
+project, deliver bounded chunks with `through` absent; deliver a final chunk with `through` = tail;
+install the tail as offered progress and replay through the ordinary drain; publish `ready` at the
+first durable advance past the tail or the first idle pass with durable == offered.
+
+The tail is safe because a committed read is a contiguous physical prefix: rocksdb-js keeps the
+physically-written-but-uncommitted start offsets in a sorted set and `commitFinished()` advances
+`lastCommittedPosition` to the earliest of them (`TransactionLogStore::commitFinished`,
+`uncommittedTransactionPositions.front()`), so a transaction that wrote at offset 200 and committed
+before one pending at 100 stays invisible until 100 commits. Everything committed before the
+capture is in the scan; everything after it is replayed; a reload marker is therefore met exactly
+once, with no capture-time bookkeeping. A log that cannot be read to its tail fails the attempt
+closed — corruption inside the committed prefix cannot be replayed from any anchor. Attempts retry
+with backoff (`rebuildBackoffMilliseconds` 1 s doubling to 5 min) up to `maxRebuildAttempts` (8),
+then publish `unavailable` and release; the attempt count travels in shared memory so a peer
+honours an exhausted budget. `requestRebuild()` from any worker sets a request word the owner
+consumes at its next wake.
+
+### Handoff fencing
+
+Release drops ownership, calls `flush('shutdown')` then `shutdown(epoch)`, and unlocks only when
+that settles; a rejected `shutdown` **keeps the lock** and publishes `unavailable`, because a backend
+that cannot prove its queue quiescent must not hand the index to another owner. `stop()` and the
+unregister function return one cached promise that resolves after every backend settled and rejects
+if any shutdown failed, so a caller cannot close storage while a backend is still draining into it.
+`isOwnerEpoch(epoch)` is an `Atomics.load` of the shared counter; a backend checks it before each
+apply, after each await and in barrier completions, and drops work for a superseded epoch. The
+runner tracks a generation that changes on every acquisition, discard, reset and release and
+ignores continuations from an earlier one.
+
+### Shared readiness
+
+`indexStore.isIndexing` is per worker, so the owner publishes into one `getUserSharedBuffer`
+allocation per backend (`derived-index:<id>:readiness`, `READINESS_BYTES`): `Int32` words for state
+(`unknown | ready | rebuilding | needs-rebuild | unavailable`), a `DerivedIndexReadinessReason` code,
+attempt count, rebuild request and lag-exceeded flag, then the `BigInt64` owner-epoch counter. Each
+word is read with a plain `Atomics.load`; nothing needs two of them atomically, so there is no
+sequence lock — the owner stores reason and attempts before state. The shared reason is a code,
+never a message. `readDerivedIndexReadiness(logStore, id)` reads it on any worker without a runtime;
+a query path uses it to choose between a 503 and an answer. `Atomics` over rocksdb-js's external
+`ArrayBuffer` wrappers is the same dependency primary-key allocation (`Table.ts`), blob holds
+(`blob.ts`) and HNSW node ids already carry; wakes use the binding's `notify()`, never
+`Atomics.wait`. A successor publishes `ready` on acquisition one `setImmediate` before its lazy
+`exactStart` validation can condemn the inherited cursor; readers see the previous, self-consistent
+generation for that turn.
+
+### Lag policy
+
+Opt-in per registration (`maxLagMilliseconds`; 0 = none; raised to two flush ages since catch-up is
+only proven at a barrier). The owner takes the longest of: cursor distance behind what it has read,
+time parked on backpressure or the ceiling, time since the oldest commit it may not have read
+(bounded by how far its newest read trails the clock), and the age of the oldest accepted work not
+yet durable. Past the budget it sets the shared flag; every worker's `derivedIndexWriteRejection`
+(`resources/derivedIndexRegistry.ts`, one `WeakMap` miss for tables without a derived index) then
+fails local user writes to the index's tables with `DerivedIndexLagError` — 503,
+`DERIVED_INDEX_LAGGING`, `retryable: true` — at the staging layer (`_writeUpdate`, `_writeDelete`,
+`_writeInvalidate`, `_writeRelocate`), never canonical-source applies (`transaction.sourceApply`),
+crash-recovery replay or replication notifications, since a rejected canonical write would advance
+the source cursor past a write that never landed. The flag is owned by the lock holder: it clears
+with hysteresis once the owner has proven catch-up (a durable advance and the end of the log both
+reached since acquiring, lag below half the budget), and on every transition out of "behind and
+still reading" — entering a rebuild (no cursor to guard; readers act on `rebuilding`), `unavailable`,
+a `needs-rebuild` the runtime cannot leave, a condemnation marker it could not write (its retry
+needs a commit wake, and commits were what was being shed), and a held lock. An ordinary handoff
+preserves it. The policy sheds writes; it does not pin retention — rocksdb-js has no protected
+position registration — so a budget belongs well inside the effective retention window, and it must
+be enabled only once every worker runs a runtime with the admission check.
+
+### Failure flow
+
+```mermaid
+flowchart TD
+    A[load backend cursor] --> B{all saved logs and boundaries exact?}
+    B -->|no| X{backend has reset and runtime has scanRecords?}
+    B -->|yes| C[open aggregate iterator after anchors]
+    C --> D[bounded drain: collect, resolve, deliver]
+    D -->|accepted| E[record offered cursor vector]
+    D -->|deferred| F[park until backend wake]
+    D -->|failed or threw| X
+    E -->|backend barrier| G[durable cursor equals one offered vector]
+    E -->|accepted batches at cap| W[waiting-durable]
+    G --> T[publish ready]
+    X -->|no| Z[terminal: release lock, index unavailable]
+    X -->|yes| Y[publish rebuilding, shutdown old epoch, reset, scan, tail, replay]
+    Y -->|ready after final barrier| T
+    Y -->|failure| K{attempts below cap?}
+    K -->|yes, after backoff| Y
+    K -->|no| U[publish unavailable, release lock]
+```
