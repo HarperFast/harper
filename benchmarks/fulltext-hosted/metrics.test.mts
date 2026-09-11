@@ -26,7 +26,7 @@ test('reports every failed architecture gate', () => {
 			foregroundSampleCount: 1_000,
 			foregroundWindowMilliseconds: 10_000,
 			baselineForegroundP99Milliseconds: 10,
-			indexingElapsedMilliseconds: 9_000,
+			indexingElapsedMilliseconds: 11_000,
 			maxSyncMilliseconds: 251,
 			syncSampleCount: 1,
 			synchronousCommittedEvents: 1,
@@ -36,6 +36,7 @@ test('reports every failed architecture gate', () => {
 			failures: [
 				'search p99 50.000ms is not below 50ms',
 				'event-loop p99 20.000ms is not below 20ms',
+				'indexing took 11000ms and outlasted the 10000ms foreground window',
 				'foreground p99 13.000ms exceeds the 20% regression limit 12.000ms',
 				'sync max 251.000ms exceeds 250ms',
 				'1 committed events re-entered host storage writes',
@@ -59,6 +60,20 @@ test('accepts values strictly inside every gate', () => {
 			maxSyncMilliseconds: 250,
 			syncSampleCount: 1,
 			synchronousCommittedEvents: 0,
+		}),
+		{ passed: true, failures: [] }
+	);
+});
+
+test('does not require search or indexing measurements for the no-index control', () => {
+	assert.deepStrictEqual(
+		evaluateGates({
+			eventLoopP99Milliseconds: 1,
+			eventLoopSampleCount: 500,
+			foregroundP99Milliseconds: 1,
+			foregroundSampleCount: 1_000,
+			foregroundWindowMilliseconds: 10_000,
+			baselineForegroundP99Milliseconds: 1,
 		}),
 		{ passed: true, failures: [] }
 	);
