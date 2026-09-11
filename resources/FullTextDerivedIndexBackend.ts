@@ -177,7 +177,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				this.#failed = true;
 				throw new FullTextDerivedIndexError('Full-text acquisition could not close its engine', closeError);
 			}
-			if (error === payloadError) return;
+			if (error === payloadError) {
+				logger.warn?.(`Full-text derived index '${this.id}' has an invalid committed cursor; rebuilding`, error);
+				return;
+			}
 			throw error;
 		}
 	}
@@ -423,6 +426,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	async #invalidateOldGeneration(ownerEpoch: bigint): Promise<void> {
 		let engine: FullTextDerivedIndexEngine | undefined;
+		let tombstonePublished = false;
 		try {
 			engine = await this.#open(ownerEpoch);
 		} catch {
@@ -432,6 +436,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		try {
 			this.#assertSharedEpoch(ownerEpoch);
 			await engine.publish(encodeFullTextCursorPayload(undefined, this.#maxCursorPayloadBytes));
+			tombstonePublished = true;
 			this.#assertSharedEpoch(ownerEpoch);
 			await engine.close({ mode: 'require-clean' });
 		} catch (error) {
@@ -444,7 +449,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				throw new FullTextDerivedIndexError('Old full-text generation could not close before replacement', closeError);
 			}
 			this.#assertSharedEpoch(ownerEpoch);
-			throw new FullTextDerivedIndexError('Old full-text generation could not publish its cursor tombstone', error);
+			throw new FullTextDerivedIndexError(
+				tombstonePublished
+					? 'Old full-text generation could not close after publishing its cursor tombstone'
+					: 'Old full-text generation could not publish its cursor tombstone',
+				error
+			);
 		}
 		this.#assertSharedEpoch(ownerEpoch);
 	}
@@ -637,5 +647,8 @@ function nonNegativeInteger(value: number, name: string): number {
 }
 
 function delay(milliseconds: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, milliseconds));
+	return new Promise((resolve) => {
+		const timer = setTimeout(resolve, milliseconds);
+		timer.unref?.();
+	});
 }

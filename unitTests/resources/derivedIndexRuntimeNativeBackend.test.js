@@ -560,6 +560,22 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('contains an asynchronous backend acquisition rejection', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const backend = new AcquiringBackend('async-acquire-unavailable', cursor(10), async () => {
+			throw new Error('generation cannot open asynchronously');
+		});
+		const { runtime } = runtimeFor(store, new Map(), {
+			rebuildBackoffMilliseconds: 1,
+			maxAcquisitionAttempts: 1,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getReadiness('async-acquire-unavailable').state === 'unavailable');
+		assert.strictEqual(backend.acquisitions.length, 1);
+		await runtime.stop();
+	});
+
 	it('skips internal non-record audit keys while advancing the transaction cursor', async () => {
 		const store = new FakeLogStore(
 			new Map([
