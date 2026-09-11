@@ -271,6 +271,64 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('defers deliveries until accepted work loss has been reported', async () => {
+		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		first.applyError = new Error('write contention');
+		const reopened = new FakeEngine();
+		let backend;
+		const changes = [];
+		const deliveriesDuringNotificationWindow = [];
+		Object.defineProperty(reopened, 'committedPayload', {
+			get() {
+				queueMicrotask(() => {
+					deliveriesDuringNotificationWindow.push({
+						result: backend.deliver(
+							batch(1n, [mutation('b', { kind: 'record', version: 1, projection: { title: 'b' } })], cursor(30))
+						),
+						changes: [...changes],
+					});
+				});
+				return encodeFullTextCursorPayload(cursor(10));
+			},
+		});
+		({ backend } = makeBackend(lifecycle([first, reopened])));
+		backend.onStateChange((change) => changes.push(change));
+		await backend.acquire(1n);
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		await waitFor(() => deliveriesDuringNotificationWindow.length > 0);
+		assert.deepStrictEqual(deliveriesDuringNotificationWindow, [{ result: DERIVED_INDEX_DEFERRED, changes: [] }]);
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		assert.strictEqual(
+			backend.deliver(
+				batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20))
+			),
+			DERIVED_INDEX_ACCEPTED
+		);
+		await backend.shutdown(1n);
+	});
+
+	it('releases the delivery fence when an accepted work loss listener throws', async () => {
+		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		first.applyError = new Error('write contention');
+		const reopened = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const { backend } = makeBackend(lifecycle([first, reopened]));
+		const changes = [];
+		backend.onStateChange((change) => {
+			changes.push(change);
+			if (change === 'accepted-work-lost') throw new Error('listener failed');
+		});
+		await backend.acquire(1n);
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		assert.strictEqual(
+			backend.deliver(
+				batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20))
+			),
+			DERIVED_INDEX_ACCEPTED
+		);
+		await backend.shutdown(1n);
+	});
+
 	it('does not deliver a queued state change to a replacement listener', async () => {
 		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		first.applyError = new Error('write contention');
