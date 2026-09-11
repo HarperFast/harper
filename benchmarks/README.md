@@ -61,17 +61,24 @@ The default run compares four arms in this order:
 
 - `no-index`: deterministic document encoding plus the foreground RocksDB workload;
 - `native`: Fulltext's Tantivy filesystem implementation as a control;
-- `wal-replay`: Tantivy stored through Harper RocksDB without an explicit root flush; and
+- `wal-only`: Tantivy stored through Harper RocksDB without an explicit root flush; and
 - `root-flush`: the same hosted implementation with #2567's root-wide `flushSync()` barrier.
+
+`wal-only` measures the performance side of the proposed WAL-replay policy. This harness performs
+an orderly close and reopen; it does not simulate a crash, damage a WAL tail, or prove replay from a
+retained Harper transaction-log cursor. Those fault tests belong to the backend-integration unit.
 
 Every arm drives scheduled writes against an unrelated Harper table while indexing. Scheduled time,
 not dispatch time, begins each latency sample, so an event-loop stall remains visible rather than
 being omitted. Indexed arms also run searches, close and reopen the index, and verify result parity.
 The hosted arms report callback counts, transferred bytes, largest stored value, callback latency,
-sync count per Tantivy publication, sync latency, root commit events, RocksDB
-L0/compaction/SST/stall statistics, post-run read latency, and Node event-loop delay. Each arm warms
-the foreground table before measurement so table construction and the first write do not distort
-the comparison.
+sync count per Tantivy publication, sync latency, root commit events, RocksDB database-wide
+compaction/stall counters, aggregate compaction/SST properties for the foreground table column
+families, post-run read latency, and Node event-loop delay. Each arm warms every foreground table
+before measurement so table construction and the first write do not distort the comparison. The
+native control uses the same per-process test root as Harper instead of the system temporary
+directory, keeping both paths on the same filesystem. The per-process root is removed when the
+benchmark exits.
 
 Useful sweeps:
 
@@ -92,8 +99,9 @@ npm run benchmark:fulltext-hosted -- \
 The command writes progress to stderr and emits one machine-readable stdout line beginning with
 `FULLTEXT_HOSTED_RESULT`. It exits nonzero when an architecture gate fails: search p99 below 50 ms,
 event-loop-delay p99 below 20 ms, unrelated-table p99 within 20% of the matching no-index control,
-and no individual explicit sync above 250 ms. These are diagnostic gates, not published customer
-SLOs. Pass `--revision` and `--fulltext-revision` when retaining results so release-to-release
+no individual explicit sync above 250 ms, no synchronous root commit notification from inside a
+host write callback, and enough samples to make the p99 comparisons meaningful. These are
+diagnostic gates, not published customer SLOs. Pass `--revision` and `--fulltext-revision` when retaining results so release-to-release
 comparisons identify both inputs; they otherwise default to `GITHUB_SHA`/`working-tree` and
 `working-tree`. Benchmark results are meaningful only when the arms run on the same quiet host from
 the same optimized Harper and Fulltext revisions.

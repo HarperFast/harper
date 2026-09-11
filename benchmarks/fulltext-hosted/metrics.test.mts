@@ -19,11 +19,15 @@ test('reports every failed architecture gate', () => {
 	assert.deepStrictEqual(
 		evaluateGates({
 			searchP99Milliseconds: 50,
+			searchSampleCount: 100,
 			eventLoopP99Milliseconds: 20,
+			eventLoopSampleCount: 500,
 			foregroundP99Milliseconds: 13,
+			foregroundSampleCount: 1_000,
 			baselineForegroundP99Milliseconds: 10,
 			maxSyncMilliseconds: 251,
-			emptyDrainsPerPublication: 2,
+			syncSampleCount: 1,
+			synchronousCommittedEvents: 1,
 		}),
 		{
 			passed: false,
@@ -32,7 +36,7 @@ test('reports every failed architecture gate', () => {
 				'event-loop p99 20.000ms is not below 20ms',
 				'foreground p99 13.000ms exceeds the 20% regression limit 12.000ms',
 				'sync max 251.000ms exceeds 250ms',
-				'empty drains per publication 2.000 exceeds 1',
+				'1 committed events re-entered host storage writes',
 			],
 		}
 	);
@@ -42,13 +46,42 @@ test('accepts values strictly inside every gate', () => {
 	assert.deepStrictEqual(
 		evaluateGates({
 			searchP99Milliseconds: 49.9,
+			searchSampleCount: 100,
 			eventLoopP99Milliseconds: 19.9,
+			eventLoopSampleCount: 500,
 			foregroundP99Milliseconds: 12,
+			foregroundSampleCount: 1_000,
 			baselineForegroundP99Milliseconds: 10,
 			maxSyncMilliseconds: 250,
-			emptyDrainsPerPublication: 1,
+			syncSampleCount: 1,
+			synchronousCommittedEvents: 0,
 		}),
 		{ passed: true, failures: [] }
+	);
+});
+
+test('fails closed when a gated measurement has too few samples', () => {
+	assert.deepStrictEqual(
+		evaluateGates({
+			searchP99Milliseconds: 1,
+			searchSampleCount: 0,
+			eventLoopP99Milliseconds: 1,
+			eventLoopSampleCount: 0,
+			foregroundP99Milliseconds: 1,
+			foregroundSampleCount: 0,
+			baselineForegroundP99Milliseconds: 1,
+			maxSyncMilliseconds: 0,
+			syncSampleCount: 0,
+		}),
+		{
+			passed: false,
+			failures: [
+				'concurrent search has 0 samples; at least 100 are required',
+				'event-loop delay has 0 samples; at least 500 are required',
+				'foreground writes have 0 samples; at least 1000 are required',
+				'host storage reported no sync callbacks',
+			],
+		}
 	);
 });
 
