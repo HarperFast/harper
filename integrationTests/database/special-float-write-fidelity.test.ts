@@ -168,6 +168,11 @@ suite(
 				.parse(binaryParser)
 				.timeout(20_000);
 			if (r.status >= 300) return { status: r.status, decoded: undefined };
+			strictEqual(
+				r.headers['content-type']?.split(';', 1)[0],
+				accept,
+				`Accept ${accept} must return the matching Content-Type, got ${r.headers['content-type']}`
+			);
 			const buf = r.body as unknown as Buffer;
 			let decoded: any;
 			if (readLabel === 'json') decoded = JSON.parse(buf.toString('utf8'));
@@ -262,26 +267,25 @@ suite(
 		// Dropping TypedDoc's Float declarations would turn it into a second copy of Doc's
 		// open-attribute path with every arm still green, so the difference is asserted.
 		test('TypedDoc reaches per-type validation and Doc does not', async () => {
-			const send = (table: TableName) =>
+			const send = (table: TableName, field: string) =>
 				request(restURL)
-					.put(`/${table}/arming-probe`)
+					.put(`/${table}/arming-probe-${field}`)
 					.set(authHeaders)
 					.set('Content-Type', 'application/json')
-					.send('{"id":"arming-probe","negZero":"not-a-number"}')
+					.send(JSON.stringify({ id: `arming-probe-${field}`, [field]: 'not-a-number' }))
 					.timeout(20_000);
 
-			const typed = await send('TypedDoc');
-			// Exactly 400: a 5xx from a broken fixture would satisfy a >= 400 check and leave the
-			// declared-Float branch unexercised, which is the false green this arm exists to stop.
-			strictEqual(
-				typed.status,
-				400,
-				`a declared Float must reject a non-numeric value with 400, got ${typed.status} — TypedDoc is not reaching per-type validation`
-			);
+			for (const field of [...Object.keys(FIELDS), 'negZero']) {
+				const typed = await send('TypedDoc', field);
+				strictEqual(
+					typed.status,
+					400,
+					`declared Float ${field} must reject a non-numeric value with 400, got ${typed.status}`
+				);
 
-			const open = await send('Doc');
-			console.log(`  [arming] non-numeric Float: TypedDoc -> ${typed.status}, Doc -> ${open.status}`);
-			ok(open.status < 300, `an undeclared attribute must accept any value, got ${open.status}`);
+				const open = await send('Doc', field);
+				ok(open.status < 300, `undeclared attribute ${field} must accept any value, got ${open.status}`);
+			}
 		});
 
 		// Characterization, not an endorsement: this pins the complete REST round trip, not storage alone.
