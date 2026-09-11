@@ -49,6 +49,13 @@ import { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS } from './recordLock.ts';
 
 /** Margin a home adds to a delegation it issued, so the delegate always stops admitting first. */
 export const LOCK_LEASE_SKEW_MS = 5_000;
+/**
+ * How long a delegation runs, independent of any one caller's lock lease. It MUST be longer than the
+ * longest lease it will admit, or the amortization does not exist: a delegation sized to the caller's
+ * lease has no room left for the next lock, so every repeat `lock()` renews and pays a round trip —
+ * exactly the cost this design is built to remove.
+ */
+export const DELEGATION_LEASE_MS = MAX_LOCK_LEASE_MS + 60_000;
 const TICK_INTERVAL_MS = 100;
 const OFF_OWNER_WARN_INTERVAL_MS = 60_000;
 /** Bounds what one database can accumulate. A home may never forget a delegation before its expiry. */
@@ -103,8 +110,13 @@ export interface LockControlEntry {
 	key: any;
 	/** Node that held the delegation being released. */
 	requester: string;
-	/** The released delegation's counter, for idempotent application of a replayed entry. */
-	tsR: number;
+	/**
+	 * The released delegation's whole fencing token. The counter alone is NOT enough to identify it: a
+	 * home that restarts, or whose coordinator is recreated, begins counting again, so a delayed
+	 * release from a previous incarnation would match a live grant's counter and clear it while its
+	 * delegate is still admitting.
+	 */
+	token: FencingToken;
 }
 
 /**
@@ -188,7 +200,8 @@ let controlStructures: unknown[] = [];
 let controlPackr = new Packr({ structures: controlStructures });
 
 export function encodeLockControlPayload(entry: LockControlEntry): Uint8Array {
-	return controlPackr.pack([entry.key, entry.requester, entry.tsR]);
+	const [epochNumber, homeIncarnation, counter] = entry.token;
+	return controlPackr.pack([entry.key, entry.requester, epochNumber, homeIncarnation, counter]);
 }
 
 function isNodeName(value: unknown): value is string {
@@ -224,11 +237,23 @@ export function decodeLockControlPayload(type: unknown, value: unknown): LockCon
 	} catch {
 		return undefined;
 	}
-	if (!Array.isArray(tuple) || tuple.length !== 3) return undefined;
-	const [key, requester, tsR] = tuple as [unknown, unknown, unknown];
+	if (!Array.isArray(tuple) || tuple.length !== 5) return undefined;
+	const [key, requester, epochNumber, homeIncarnation, counter] = tuple as [
+		unknown,
+		unknown,
+		unknown,
+		unknown,
+		unknown,
+	];
 	if (!isEncodableKey(key) || !isNodeName(requester)) return undefined;
-	if (typeof tsR !== 'number' || !Number.isFinite(tsR)) return undefined;
-	return { type: 'lockRelease', key, requester, tsR };
+	for (const part of [epochNumber, homeIncarnation, counter])
+		if (typeof part !== 'number' || !Number.isFinite(part)) return undefined;
+	return {
+		type: 'lockRelease',
+		key,
+		requester,
+		token: [epochNumber, homeIncarnation, counter] as FencingToken,
+	};
 }
 
 /**
@@ -281,6 +306,14 @@ interface Delegation {
 	recalled: boolean;
 	/** Live admissions. A delegation is not releasable until this reaches zero or they expire. */
 	admitted: number;
+	/**
+	 * Revocation callbacks for every handle this delegation admitted, live or already unlocked. A
+	 * drain that waits only on `admitted` is not enough: a caller that staged a write and then called
+	 * `unlock()` leaves nothing to wait on, but its write is still uncommitted and would land after
+	 * the successor was admitted. Surrender revokes all of these, so the commit-time fence rejects
+	 * them (§6 — recall revokes capability, not just admission).
+	 */
+	revokers: Set<() => void>;
 	/** Resolvers waiting for the drain to finish, so recall can reply once rather than poll. */
 	drained?: (() => void)[];
 }
@@ -333,6 +366,11 @@ export interface LockCoordinatorOptions {
 	 * or fence and settle every outstanding handle before granting; carrying it across costs nothing.
 	 */
 	adopt?: LockCoordinator;
+	/**
+	 * Overrides the cold-start grant quarantine. Pass `-Infinity` only where a previous incarnation
+	 * provably issued nothing — a fresh database, or a test. See `#grantableAfterMono`.
+	 */
+	grantableAfterMono?: number;
 	/** False in tests, which drive `tick()` themselves. */
 	autoTick?: boolean;
 }
@@ -377,6 +415,21 @@ export class LockCoordinator {
 	#autoTick: boolean;
 	/** Set when this coordinator's state was moved to a successor, so `close()` must not expire it. */
 	#handedOff = false;
+	/**
+	 * Monotonic reading before which this coordinator may not grant as a home. A coordinator that
+	 * started cold — a process restart, not an in-process transport swap, which `adopt` covers — has
+	 * no record of the delegations its predecessor incarnation issued, and they can still be admitting
+	 * on their holders. So it waits out the longest one it could have issued before it grants anything.
+	 *
+	 * The obvious complaint is that this is a long outage after a restart, and the answer is the epoch:
+	 * once harper-pro#825 advances the epoch number across a restart, every delegate drops its
+	 * old-epoch delegation on next use (`#liveDelegation`) and this wait is unnecessary. Core cannot
+	 * assume that has happened, so it holds the conservative bound until an adopted state or a fresh
+	 * epoch says otherwise. Epoch CHANGES are not quarantined here at all: the delegate-side epoch
+	 * check is what stops the old delegate, and bounding the window between a delegate noticing and a
+	 * new home granting is §4.4's retirement interval, which is harper-pro's to provide.
+	 */
+	#grantableAfterMono: number;
 	/** Keys this node holds a delegation for. */
 	#delegations = new Map<unknown, Delegation>();
 	/** Keys this node homes, and who holds each one. */
@@ -410,6 +463,7 @@ export class LockCoordinator {
 		this.#monotonic = options.monotonic ?? (() => performance.now());
 		this.#skewMs = options.skewMs ?? LOCK_LEASE_SKEW_MS;
 		this.#autoTick = options.autoTick !== false;
+		this.#grantableAfterMono = options.grantableAfterMono ?? this.#monotonic() + DELEGATION_LEASE_MS + this.#skewMs;
 		options.adopt?.handOffTo(this);
 	}
 
@@ -428,6 +482,8 @@ export class LockCoordinator {
 		// The counter must not restart, or the successor would mint a token that compares equal to one
 		// the predecessor already issued for a different delegation.
 		successor.#counter = Math.max(successor.#counter, this.#counter);
+		// The successor now holds the full record of what is outstanding, so it has no reason to wait.
+		successor.#grantableAfterMono = -Infinity;
 		this.#delegations.clear();
 		this.#grants.clear();
 		this.#grantsByRequester.clear();
@@ -464,9 +520,6 @@ export class LockCoordinator {
 		const deadlineMono = this.#monotonic() + waitMs;
 
 		for (;;) {
-			const delegation = this.#liveDelegation(keyId, leaseMs);
-			if (delegation) return this.#admit(delegation);
-
 			const epoch = this.transport.epoch(this.database);
 			// No agreed epoch means no agreed ring, and a ring guessed from whoever looks reachable is
 			// exactly the asymmetric-partition failure a single arbiter exists to remove.
@@ -474,21 +527,30 @@ export class LockCoordinator {
 				throw new LockUnavailableError(
 					`No agreed membership epoch for ${this.database}; cluster record locks are unavailable until one is established`
 				);
+			const delegation = this.#liveDelegation(keyId, leaseMs, epoch.number);
+			if (delegation) return this.#admit(delegation);
+
 			const home = homeFor(String(keyId), epoch.members);
 			if (!home)
 				throw new LockUnavailableError(`Membership epoch for ${this.database} names no members to home a key on`);
 
+			// Anchored before the send: the home starts its own clock when it grants, so measuring the
+			// delegation from the reply's arrival would hand a delayed reply more time than the home is
+			// holding the key for.
+			const requestedAtMono = this.#monotonic();
 			const reply =
 				home === this.nodeId
 					? this.#grantLocally(keyId, key, epoch, leaseMs)
-					: await this.#requestRemotely(home, keyId, key, epoch, leaseMs);
+					: await this.#requestRemotely(home, keyId, key, epoch, leaseMs, deadlineMono);
 
 			// A reply that claims a grant without a usable token is a broken transport, not a delegation.
-			if (reply.granted && reply.token && isDuration(reply.leaseMs, MIN_LOCK_LEASE_MS, MAX_LOCK_LEASE_MS)) {
-				const installed = this.#installDelegation(keyId, key, reply.token, reply.leaseMs);
-				return this.#admit(installed);
-			}
-			if (reply.granted)
+			if (reply.granted && reply.token && isDuration(reply.leaseMs, MIN_LOCK_LEASE_MS, DELEGATION_LEASE_MS)) {
+				const installed = this.#installDelegation(keyId, key, reply.token, reply.leaseMs, requestedAtMono);
+				// A reply that outlived its own delegation grants nothing; fall through and ask again
+				// rather than admitting on authority the home has already expired.
+				if (installed && !installed.recalled && installed.expiresMono - this.#monotonic() >= leaseMs)
+					return this.#admit(installed);
+			} else if (reply.granted)
 				throw new LockUnavailableError(
 					`The home node for this key on ${this.database}.${this.table} returned a delegation with no usable token`
 				);
@@ -516,14 +578,16 @@ export class LockCoordinator {
 		const delegation = this.#delegations.get(keyId);
 		if (!delegation) return undefined;
 		if (delegation.admitted > 0) delegation.admitted--;
-		if (delegation.admitted === 0) {
+		if (delegation.admitted === 0 && delegation.drained) {
+			// Waking the recall is enough: it surrenders once, on its own path. Surrendering here too
+			// would write a second release entry for the same handoff.
 			const waiters = delegation.drained;
-			if (waiters) {
-				delegation.drained = undefined;
-				for (const resolve of waiters) resolve();
-			}
-			// A recalled delegation is given up as soon as it is idle; an ordinary one is retained.
-			if (delegation.recalled) return this.#surrender(keyId, delegation);
+			delegation.drained = undefined;
+			for (const resolve of waiters) resolve();
+		} else if (delegation.admitted === 0 && delegation.recalled) {
+			// Recalled with nobody waiting on the drain — the recall already returned, so this is the
+			// path that gives the delegation up.
+			return this.#surrender(keyId, delegation);
 		}
 		return undefined;
 	}
@@ -565,11 +629,13 @@ export class LockCoordinator {
 			}
 			return;
 		}
+		if (!Array.isArray(entry.token) || entry.token.length !== 3) return;
 		const keyId = this.#keyIdOf(entry.key);
 		const grant = this.#grants.get(keyId);
-		// Only the delegate named in the live grant can clear it, and only for the counter it was
-		// issued. A delayed release from a previous delegation must not clear its successor's.
-		if (!grant || grant.delegate !== author || grant.token[2] !== entry.tsR) return;
+		// Only the delegate named in the live grant can clear it, and only for the exact token it was
+		// issued — epoch and incarnation included, since counters restart. A delayed release from a
+		// previous delegation must not clear its successor's.
+		if (!grant || grant.delegate !== author || compareTokens(grant.token, entry.token) !== 0) return;
 		this.#clearGrant(keyId, grant);
 	}
 
@@ -618,13 +684,18 @@ export class LockCoordinator {
 	/** Expire delegations and grants whose deadlines have passed. Bounded work per call. */
 	tick(): void {
 		const now = this.#monotonic();
+		// The budget counts EXPIRIES, not entries examined. Spending it on live entries would let a
+		// table with more than a budget's worth of continuously renewed grants starve every expired
+		// one behind them, and an uncollected expired grant answers `contended` to every other node.
 		let budget = MAX_EXPIRIES_PER_TICK;
 		for (const [keyId, delegation] of this.#delegations) {
-			if (budget-- <= 0) break;
+			if (budget <= 0) break;
 			if (delegation.expiresMono > now) continue;
+			budget--;
 			// A delegate may drop early; the handles it admitted are fenced by their own lease, which
 			// never outlives the delegation that admitted them.
 			this.#delegations.delete(keyId);
+			this.#revokeAll(delegation);
 			const waiters = delegation.drained;
 			if (waiters) {
 				delegation.drained = undefined;
@@ -633,9 +704,10 @@ export class LockCoordinator {
 		}
 		budget = MAX_EXPIRIES_PER_TICK;
 		for (const [keyId, grant] of this.#grants) {
-			if (budget-- <= 0) break;
+			if (budget <= 0) break;
 			// A home may NEVER forget a grant before its expiry — that asymmetry is the safety rule.
 			if (grant.expiresMono > now) continue;
+			budget--;
 			this.#clearGrant(keyId, grant);
 		}
 		if (this.#delegations.size === 0 && this.#grants.size === 0) tickingCoordinators.delete(this);
@@ -657,6 +729,7 @@ export class LockCoordinator {
 		for (const delegation of this.#delegations.values()) {
 			delegation.recalled = true;
 			delegation.expiresMono = -Infinity;
+			this.#revokeAll(delegation);
 			const waiters = delegation.drained;
 			if (waiters) {
 				delegation.drained = undefined;
@@ -669,9 +742,16 @@ export class LockCoordinator {
 		tickingCoordinators.delete(this);
 	}
 
-	#liveDelegation(keyId: unknown, leaseMs: number): Delegation | undefined {
+	#liveDelegation(keyId: unknown, leaseMs: number, epochNumber: number): Delegation | undefined {
 		const delegation = this.#delegations.get(keyId);
 		if (!delegation || delegation.recalled) return undefined;
+		// A delegation is authority within ONE epoch. After an epoch change the key may have been
+		// re-homed, and the new home knows nothing of this token — so keeping it would let this node
+		// admit alongside whoever the new home grants.
+		if (delegation.token[0] !== epochNumber) {
+			this.#delegations.delete(keyId);
+			return undefined;
+		}
 		// The admission may not outlive the delegation that admitted it, so a delegation without room
 		// for the whole lease is renewed rather than stretched.
 		if (delegation.expiresMono - this.#monotonic() < leaseMs) return undefined;
@@ -683,16 +763,49 @@ export class LockCoordinator {
 		return { tsR: this.#nextTimestamp(), mintedMono: this.#monotonic() };
 	}
 
-	#installDelegation(keyId: unknown, key: any, token: FencingToken, leaseMs: number): Delegation {
+	/**
+	 * Register how to revoke the handle an admission produced. `Table.lock()` calls this once the
+	 * handle has joined the round, so a recall can fence a write that was staged and then unlocked.
+	 */
+	registerAdmission(key: any, revoke: () => void): void {
+		const delegation = this.#delegations.get(this.#keyIdOf(key));
+		if (!delegation) {
+			// The delegation went away between admission and registration — the handle has no authority
+			// to keep, so revoke it now rather than leaving it unfenced.
+			revoke();
+			return;
+		}
+		delegation.revokers.add(revoke);
+	}
+
+	/**
+	 * Install a granted delegation, with its deadline anchored at the moment the request was SENT
+	 * rather than at the moment the reply arrived. The home started its own clock when it granted, so
+	 * anchoring on arrival would hand a delayed reply more time than the home is holding the key for —
+	 * and a reply delayed past the whole delegation must be discarded, not installed (§5.2).
+	 */
+	#installDelegation(
+		keyId: unknown,
+		key: any,
+		token: FencingToken,
+		leaseMs: number,
+		requestedAtMono: number
+	): Delegation | undefined {
+		const expiresMono = requestedAtMono + leaseMs;
+		if (expiresMono <= this.#monotonic()) return undefined;
 		const existing = this.#delegations.get(keyId);
 		// A reply that lost a race with a newer delegation for the same key must not move it backwards.
 		if (existing && compareTokens(existing.token, token) >= 0) return existing;
 		const delegation: Delegation = {
 			key,
 			token,
-			expiresMono: this.#monotonic() + leaseMs,
+			expiresMono,
 			recalled: false,
-			admitted: existing?.admitted ?? 0,
+			// A leaked admission from a previous delegation would make every recall wait out the full
+			// lease, so the count starts fresh: the handles of the previous delegation are fenced by
+			// that delegation's own deadline, not by this one's.
+			admitted: 0,
+			revokers: new Set(),
 		};
 		this.#delegations.set(keyId, delegation);
 		this.#startTicking();
@@ -709,15 +822,23 @@ export class LockCoordinator {
 		keyId: unknown,
 		key: any,
 		epoch: LockEpoch,
-		leaseMs: number
+		leaseMs: number,
+		deadlineMono: number
 	): Promise<DelegationReply> {
 		try {
-			return await this.transport.requestDelegation(home, this.database, this.table, {
-				key,
-				requester: this.nodeId,
-				epoch: epoch.number,
-				leaseMs,
-			});
+			// A half-open connection to the home would otherwise leave `lock()` pending forever, past
+			// its own timeout and past the native lease — and a reply arriving after that lease has
+			// fired cannot be joined to the handle anyway.
+			const remaining = Math.max(1, deadlineMono - this.#monotonic());
+			return await Promise.race([
+				this.transport.requestDelegation(home, this.database, this.table, {
+					key,
+					requester: this.nodeId,
+					epoch: epoch.number,
+					leaseMs,
+				}),
+				delay(remaining).then(() => ({ granted: false, reason: 'contended', retryAfterMs: 0 }) as DelegationReply),
+			]);
 		} catch (error) {
 			// An unreachable home blocks only the keys it homes, which is the availability property the
 			// whole design exists for — it is not a reason to admit without one.
@@ -728,18 +849,30 @@ export class LockCoordinator {
 	}
 
 	#grant(keyId: unknown, key: any, epoch: LockEpoch, leaseMs: number, requester: string): DelegationReply {
+		const now = this.#monotonic();
+		const quarantine = this.#grantableAfterMono - now;
+		if (quarantine > 0) return { granted: false, reason: 'contended', retryAfterMs: Math.min(quarantine, 250) };
 		const existing = this.#grants.get(keyId);
 		if (existing) {
-			if (existing.delegate === requester) {
+			// An expired grant is not a live one. Collecting it here rather than trusting `tick()` is
+			// what keeps a table whose expiry budget is saturated from answering `contended` forever.
+			if (existing.expiresMono <= now) this.#clearGrant(keyId, existing);
+			else if (existing.recalling)
+				// A recall is in flight. Renewing now — even for the node being recalled — would mint a
+				// token its own release no longer matches, and the contender would never get the key.
+				return { granted: false, reason: 'contended', retryAfterMs: 25 };
+			else if (existing.delegate === requester) {
 				// Renewal for the node that already holds it: extend rather than recall itself.
 				existing.token = [epoch.number, epoch.homeIncarnation, ++this.#counter];
-				existing.expiresMono = this.#monotonic() + leaseMs + this.#skewMs;
-				return { granted: true, token: existing.token, leaseMs };
+				existing.expiresMono = now + DELEGATION_LEASE_MS + this.#skewMs;
+				return { granted: true, token: existing.token, leaseMs: DELEGATION_LEASE_MS };
+			} else {
+				// Someone else holds it. Start the recall and make the caller come back — holding the
+				// request open across a drain would tie the home's reply to the previous delegate's
+				// liveness.
+				this.#beginRecall(keyId, existing);
+				return { granted: false, reason: 'contended', retryAfterMs: 25 };
 			}
-			// Someone else holds it. Start the recall and make the caller come back — holding the request
-			// open across a drain would tie the home's reply to the previous delegate's liveness.
-			this.#beginRecall(keyId, existing);
-			return { granted: false, reason: 'contended', retryAfterMs: 25 };
 		}
 		if (this.#grants.size >= MAX_DELEGATIONS_PER_DATABASE) return { granted: false, reason: 'capacity' };
 		const perRequester = this.#grantsByRequester.get(requester) ?? 0;
@@ -750,12 +883,14 @@ export class LockCoordinator {
 			delegate: requester,
 			token,
 			// The home always outwaits the delegate by skew, so it cannot re-grant a key the previous
-			// delegate still believes it holds.
-			expiresMono: this.#monotonic() + leaseMs + this.#skewMs,
+			// delegate still believes it holds. The delegation runs for its own fixed duration rather
+			// than the caller's lock lease — a delegation sized to one lock leaves no room for the next
+			// one, and every repeat lock would pay a round trip.
+			expiresMono: now + DELEGATION_LEASE_MS + this.#skewMs,
 		});
 		this.#grantsByRequester.set(requester, perRequester + 1);
 		this.#startTicking();
-		return { granted: true, token, leaseMs };
+		return { granted: true, token, leaseMs: DELEGATION_LEASE_MS };
 	}
 
 	#beginRecall(keyId: unknown, grant: HomeGrant): void {
@@ -775,7 +910,9 @@ export class LockCoordinator {
 		)
 			.then(() => {
 				// The delegate confirmed it stopped admitting. Its release entry clears the grant; if that
-				// write is lost, the grant still expires on its own deadline.
+				// write never lands the grant still expires on its own deadline — but the recall must be
+				// cleared either way, or a later contender's recall is skipped and it waits forever.
+				grant.recalling = undefined;
 			})
 			.catch(() => {
 				// An unreachable delegate is not a reason to re-grant early: the grant's own deadline is
@@ -787,17 +924,41 @@ export class LockCoordinator {
 	/** Give up a delegation: stop admitting, then write the release that lets the home re-grant. */
 	#surrender(keyId: unknown, delegation: Delegation): Promise<void> | void {
 		if (this.#delegations.get(keyId) === delegation) this.#delegations.delete(keyId);
+		// Capability, not just admission: anything this delegation admitted must be unable to commit
+		// before the home is told it may re-grant.
+		const revokers = delegation.revokers;
+		delegation.revokers = new Set();
+		for (const revoke of revokers) {
+			try {
+				revoke();
+			} catch (error) {
+				warnOnce('failed to revoke a record lock handle during a delegation handoff', error);
+			}
+		}
 		const entry: LockControlEntry = {
 			type: 'lockRelease',
 			key: delegation.key,
 			requester: this.nodeId,
-			tsR: delegation.token[2],
+			token: delegation.token,
 		};
 		// If we are our own home, clear directly — the entry still goes out so peers replaying the log
 		// see the same handoff, but the home half must not wait on our own replication.
 		const grant = this.#grants.get(keyId);
-		if (grant && grant.delegate === this.nodeId && grant.token[2] === entry.tsR) this.#clearGrant(keyId, grant);
+		if (grant && grant.delegate === this.nodeId && compareTokens(grant.token, entry.token) === 0)
+			this.#clearGrant(keyId, grant);
 		return this.#writeControlSafely(entry);
+	}
+
+	#revokeAll(delegation: Delegation): void {
+		const revokers = delegation.revokers;
+		delegation.revokers = new Set();
+		for (const revoke of revokers) {
+			try {
+				revoke();
+			} catch (error) {
+				warnOnce('failed to revoke a record lock handle', error);
+			}
+		}
 	}
 
 	#clearGrant(keyId: unknown, grant: HomeGrant): void {

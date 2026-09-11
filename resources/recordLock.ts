@@ -86,6 +86,8 @@ export interface RecordLockHandle {
 	 * have passed their own bound and the key may already belong to someone else.
 	 */
 	isLeaseExpired(): boolean;
+	/** Revoke authority ahead of the lease, so a staged-but-uncommitted write is fenced at commit. */
+	revokeLease(): void;
 	/**
 	 * Re-anchor a granted cluster round: the hold now runs from `tsR` (no margin, so this node
 	 * always expires before any participant does) and `onRelease` emits the durable LOCK_RELEASE.
@@ -229,7 +231,22 @@ class KeyLockHandle implements RecordLockHandle {
 		return true;
 	}
 
+	/**
+	 * Revoke this handle's authority immediately, ahead of its lease. A recall must stop a delegate
+	 * from COMMITTING, not merely from admitting: a caller that already staged a write and then called
+	 * `unlock()` has nothing outstanding for a drain to wait on, but its write is still in the
+	 * transaction and would land after the successor was admitted. Expiring the handle is what makes
+	 * the commit-time fence reject it (§6).
+	 */
+	revokeLease(): void {
+		if (this.released || this.expired) return;
+		this.#onLeaseExpire();
+	}
+
 	joinClusterRound(tsR: number, leaseMs: number, mintedMono: number, onRelease: () => void): boolean {
+		// A round that completed after the native lease already fired yields no usable hold: the key
+		// has gone back and another worker may hold it, so every write through this handle would 409.
+		if (this.isLeaseExpired()) return false;
 		const remaining = leaseMs - (performance.now() - mintedMono);
 		if (remaining <= 0) return false;
 		this.clusterTsR = tsR;
