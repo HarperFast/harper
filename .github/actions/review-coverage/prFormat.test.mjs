@@ -459,6 +459,20 @@ test('body parsing is bounded at GitHub description size', () => {
 	assert.match(result.problems.join('\n'), /exceeds 65536 characters/);
 });
 
+test('the enforcing workflow never runs from the PR checkout', () => {
+	// The whole basis for enforcing at all. Drop the `ref:` and the job checks out fork-PR head,
+	// then runs `uses: ./.github/actions/review-coverage` — attacker-supplied — under the base
+	// repo's token. Nothing else in the suite would notice.
+	const workflow = readFileSync(fileURLToPath(new URL('../../workflows/review-coverage.yml', import.meta.url)), 'utf8');
+	assert.match(workflow, /^on:\n\s+pull_request_target:/m);
+	assert.doesNotMatch(workflow, /^on:\n\s+pull_request:/m);
+	assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.base\.ref \}\}/);
+	assert.doesNotMatch(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\./);
+	assert.match(workflow, /permissions:\n\s+contents: read\n\s+pull-requests: read/);
+	assert.doesNotMatch(workflow, /\b(write|write-all)\b/);
+	assert.match(workflow, /mode: enforce/);
+});
+
 test('the report workflow keeps the existing check identity and gates PR-files collection', () => {
 	const workflow = readFileSync(fileURLToPath(new URL('../../workflows/review-coverage.yml', import.meta.url)), 'utf8');
 	assert.match(workflow, /jobs:\n\s+coverage:\n\s+runs-on:/);
