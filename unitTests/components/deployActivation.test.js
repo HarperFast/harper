@@ -543,19 +543,36 @@ describe('activation transaction', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	// The Windows sharing lock these three stand in for cannot be produced here, so they use the one
-	// portable way to make a rename fail and then stop failing: the write permission on its parent
-	// directory. POSIX only, and not as root, where permissions are not enforced.
+	// The Windows sharing lock these stand in for cannot be produced here, so they use the one portable
+	// way to make a rename fail and then stop failing: the write permission on its parent directory.
+	// POSIX only, and not as root, where permissions are not enforced.
 	const transientRenameTest = (title, body) =>
 		it(title, async function () {
 			if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
 			await body();
 		});
 
+	// `.complete` is the last thing written before the activation reaches its first rename, so holding the
+	// lock past it is what makes the block land on the rename under test rather than on the setup ahead of
+	// it — a fixed timer would let a loaded runner finish the setup late and never retry at all.
+	async function unlockAfterFirstAttempt(deploymentDir, unlock, holdMs = 100) {
+		while (!existsSync(path.join(deploymentDir, '.complete'))) await sleep(5);
+		await sleep(holdMs);
+		await unlock();
+	}
+
+	// The activation journal lands in the deployment directory after `.complete`, and its temp file is
+	// removed right after; both have to be done before that directory can be locked.
+	async function journalSettled(deploymentDir) {
+		const entries = await fs.readdir(deploymentDir).catch(() => []);
+		return entries.includes('.activation.json') && !entries.some((entry) => entry.includes('.partial-'));
+	}
+
 	transientRenameTest('retries a transient failure moving the live tree aside', async () => {
 		const root = await newRoot('b1-retry');
 		const live = path.join(root, 'web');
 		await writeTree(live, 'LIVE\n');
+		const deployment = path.dirname(candidateApplicationPath(live, 'd1'));
 		await writeTree(candidateApplicationPath(live, 'd1'), 'CANDIDATE\n');
 		// Pre-created, so a read-only root blocks B1's rename rather than the staging mkdir ahead of it.
 		await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
@@ -563,15 +580,17 @@ describe('activation transaction', () => {
 		app.dirPath = live;
 
 		await fs.chmod(root, 0o500);
-		const release = setTimeout(() => void fs.chmod(root, 0o700), 200);
+		const release = unlockAfterFirstAttempt(deployment, () => fs.chmod(root, 0o700));
+		const startedAt = Date.now();
 		try {
 			await activateCandidateApplication(app, 'd1');
 		} finally {
-			clearTimeout(release);
+			await release;
 			await fs.chmod(root, 0o700).catch(() => {});
 		}
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the holder released and the deploy landed');
+		assert.ok(Date.now() - startedAt >= 100, 'and it got there by retrying, not by winning a race with the lock');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -580,24 +599,69 @@ describe('activation transaction', () => {
 		// the one the Windows CI failure names.
 		const root = await newRoot('b2-retry');
 		const live = path.join(root, 'web');
+		const deployment = path.dirname(candidateApplicationPath(live, 'd1'));
 		await writeTree(candidateApplicationPath(live, 'd1'), 'CANDIDATE\n');
 		await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
 		const app = new Application({ name: 'web' });
 		app.dirPath = live;
 
 		await fs.chmod(root, 0o500);
-		const release = setTimeout(() => void fs.chmod(root, 0o700), 200);
+		const release = unlockAfterFirstAttempt(deployment, () => fs.chmod(root, 0o700));
+		const startedAt = Date.now();
 		try {
 			await activateCandidateApplication(app, 'd1');
 		} finally {
-			clearTimeout(release);
+			await release;
 			await fs.chmod(root, 0o700).catch(() => {});
 		}
 
 		assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n');
 		assert.strictEqual(app.isNewComponent, true);
+		assert.ok(Date.now() - startedAt >= 100, 'reached by retrying B2');
 		await fs.rm(root, { recursive: true, force: true });
 	});
+
+	transientRenameTest(
+		'completes the swap after putting the previous version back and taking it away again',
+		async () => {
+			// The redeploy case the other tests miss: nothing else drives the put-back cycle to a
+			// successful attempt.
+			const root = await newRoot('b2-cycle');
+			const live = path.join(root, 'web');
+			await writeTree(live, 'LIVE\n');
+			const candidate = candidateApplicationPath(live, 'd1');
+			await writeTree(candidate, 'CANDIDATE\n');
+			const deployment = path.dirname(candidate);
+			await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
+			const app = new Application({ name: 'web' });
+			app.dirPath = live;
+
+			// Lock the deployment directory — B2's source parent — only once the journal is written, so
+			// nothing ahead of the swap is blocked and every B2 attempt fails until the second unlock.
+			const release = (async () => {
+				while (!(await journalSettled(deployment))) await sleep(5);
+				await fs.chmod(deployment, 0o500);
+				await sleep(400);
+				await fs.chmod(deployment, 0o700);
+			})();
+			const startedAt = Date.now();
+			try {
+				await activateCandidateApplication(app, 'd1');
+			} finally {
+				await release;
+				await fs.chmod(deployment, 0o700).catch(() => {});
+			}
+
+			assert.ok(Date.now() - startedAt >= 400, 'the swap waited out the lock rather than winning a race');
+			assert.strictEqual(await readLive(root, 'web'), 'CANDIDATE\n', 'the candidate is live');
+			assert.strictEqual(
+				existsSync(path.join(root, ASIDE_STAGING_DIR, 'web')),
+				false,
+				'and the record the put-back cycle kept moving is still the one that gets retired and swept'
+			);
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	);
 
 	transientRenameTest('keeps the previous version in place while it retries the swap', async () => {
 		const root = await newRoot('swap-availability');
@@ -610,10 +674,9 @@ describe('activation transaction', () => {
 		const app = new Application({ name: 'web' });
 		app.dirPath = live;
 
-		// Two stages, so the rename that keeps failing is B2 and only B2. The root starts read-only, which
-		// parks B1 in its retry; the timer then locks the deployment directory — B2's source parent, and
-		// nothing else's — and unlocks the root, so B1's next attempt succeeds and every B2 attempt fails.
-		// Sampling starts with the lock, so it observes only the window B2 is retrying in.
+		// Two stages, so the rename that keeps failing is B2 and only B2: the root starts read-only, which
+		// parks B1 in its retry, and the timer then locks B2's source parent and unlocks the root. Sampling
+		// starts with the lock, so it observes only the window B2 is retrying in.
 		await fs.chmod(root, 0o500);
 		const samples = [];
 		let swapLocked = false;
