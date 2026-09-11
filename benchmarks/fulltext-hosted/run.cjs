@@ -39,43 +39,52 @@ let RocksDerivedIndexStorage;
 
 	const results = [];
 	let failed = false;
-	for (const tableCount of options.tableCounts) {
-		for (const publicationMilliseconds of options.publicationMilliseconds) {
-			let baselineForegroundP99;
-			let baselineWorkloadMilliseconds;
-			for (const arm of options.arms) {
-				const result = await runArm(arm, tableCount, publicationMilliseconds);
-				if (arm === 'no-index') {
-					baselineForegroundP99 = result.foreground.p99Milliseconds;
-					baselineWorkloadMilliseconds = result.workloadMilliseconds;
+	let runError;
+	let activeCase;
+	try {
+		for (const tableCount of options.tableCounts) {
+			for (const publicationMilliseconds of options.publicationMilliseconds) {
+				let baselineForegroundP99;
+				let baselineForegroundWindowMilliseconds;
+				for (const arm of options.arms) {
+					activeCase = { arm, tableCount, publicationMilliseconds };
+					const result = await runArm(arm, tableCount, publicationMilliseconds);
+					if (arm === 'no-index') {
+						baselineForegroundP99 = result.foreground.p99Milliseconds;
+						baselineForegroundWindowMilliseconds = result.foregroundWindowMilliseconds;
+					}
+					if (baselineForegroundP99 === undefined || baselineForegroundWindowMilliseconds === undefined) {
+						throw new Error('the no-index arm must run before indexed arms');
+					}
+					result.gates = evaluateGates({
+						searchP99Milliseconds: result.search?.duringIndexing.p99Milliseconds,
+						searchSampleCount: result.search?.duringIndexing.count,
+						eventLoopP99Milliseconds: result.eventLoop.p99Milliseconds,
+						eventLoopSampleCount: result.eventLoop.count,
+						foregroundP99Milliseconds: result.foreground.p99Milliseconds,
+						foregroundSampleCount: result.foreground.count,
+						foregroundWindowMilliseconds: result.foregroundWindowMilliseconds,
+						baselineForegroundP99Milliseconds: baselineForegroundP99,
+						baselineForegroundWindowMilliseconds,
+						maxSyncMilliseconds: result.storage?.sync.maxMilliseconds,
+						syncSampleCount: result.storage?.sync.count,
+						synchronousCommittedEvents: result.storage?.synchronousCommittedEvents,
+					});
+					failed ||= !result.gates.passed;
+					results.push(result);
+					console.error(
+						`${arm} tables=${tableCount} publish_ms=${publicationMilliseconds} ` +
+							`foreground_p99=${result.foreground.p99Milliseconds.toFixed(2)} ` +
+							`search_p99=${result.search?.duringIndexing.p99Milliseconds.toFixed(2) ?? 'n/a'} ` +
+							`gate=${result.gates.passed ? 'pass' : 'fail'}`
+					);
 				}
-				if (baselineForegroundP99 === undefined || baselineWorkloadMilliseconds === undefined) {
-					throw new Error('the no-index arm must run before indexed arms');
-				}
-				result.gates = evaluateGates({
-					searchP99Milliseconds: result.search?.duringIndexing.p99Milliseconds,
-					searchSampleCount: result.search?.duringIndexing.count,
-					eventLoopP99Milliseconds: result.eventLoop.p99Milliseconds,
-					eventLoopSampleCount: result.eventLoop.count,
-					foregroundP99Milliseconds: result.foreground.p99Milliseconds,
-					foregroundSampleCount: result.foreground.count,
-					foregroundWindowMilliseconds: result.workloadMilliseconds,
-					baselineForegroundP99Milliseconds: baselineForegroundP99,
-					baselineForegroundWindowMilliseconds: baselineWorkloadMilliseconds,
-					maxSyncMilliseconds: result.storage?.sync.maxMilliseconds,
-					syncSampleCount: result.storage?.sync.count,
-					synchronousCommittedEvents: result.storage?.synchronousCommittedEvents,
-				});
-				failed ||= !result.gates.passed;
-				results.push(result);
-				console.error(
-					`${arm} tables=${tableCount} publish_ms=${publicationMilliseconds} ` +
-						`foreground_p99=${result.foreground.p99Milliseconds.toFixed(2)} ` +
-						`search_p99=${result.search?.duringIndexing.p99Milliseconds.toFixed(2) ?? 'n/a'} ` +
-						`gate=${result.gates.passed ? 'pass' : 'fail'}`
-				);
 			}
 		}
+	} catch (error) {
+		failed = true;
+		runError = error;
+		console.error(error);
 	}
 
 	const output = {
@@ -95,6 +104,7 @@ let RocksDerivedIndexStorage;
 		},
 		options,
 		results,
+		failure: runError ? { ...activeCase, error: errorSummary(runError) } : undefined,
 	};
 	console.log(`FULLTEXT_HOSTED_RESULT ${JSON.stringify(output, bigintReplacer)}`);
 	if (failed) process.exitCode = 1;
@@ -139,6 +149,7 @@ let RocksDerivedIndexStorage;
 			if (remaining > 0) await delay(remaining);
 			control.stop = true;
 			const foregroundCount = await foreground;
+			const foregroundWindowMilliseconds = options.minimumDurationMs;
 			const workloadMilliseconds = performance.now() - workloadStarted;
 			const eventLoopSummary = {
 				count: eventLoop.count,
@@ -160,6 +171,7 @@ let RocksDerivedIndexStorage;
 				arm,
 				tableCount,
 				publicationMilliseconds,
+				foregroundWindowMilliseconds,
 				workloadMilliseconds,
 				totalMilliseconds,
 				indexing,
@@ -168,7 +180,10 @@ let RocksDerivedIndexStorage;
 				search: indexContext
 					? {
 							duringIndexing: summarizeLatencies(searchLatencies.duringIndexing),
-							afterIndexing: summarizeLatencies(searchLatencies.afterIndexing),
+							afterIndexing:
+								searchLatencies.afterIndexing.length > 0
+									? summarizeLatencies(searchLatencies.afterIndexing)
+									: undefined,
 							reopen,
 						}
 					: undefined,
@@ -325,10 +340,11 @@ let RocksDerivedIndexStorage;
 
 	async function driveForeground(tables, control, started, latencies) {
 		const interval = 1_000 / options.foregroundRate;
+		const deadline = started + options.minimumDurationMs;
 		let next = started;
 		let sequence = 0;
 		const pending = new PendingRequests();
-		while (!control.stop && !pending.failed) {
+		while (!control.stop && !pending.failed && next < deadline) {
 			const wait = next - performance.now();
 			if (wait > 0) await delay(wait);
 			if (control.stop || pending.failed) break;
@@ -577,8 +593,9 @@ let RocksDerivedIndexStorage;
 				'node benchmarks/fulltext-hosted/run.cjs --fulltext-root /path/to/fulltext ' +
 					'[--revision harper-sha] [--fulltext-revision fulltext-sha] ' +
 					'[--documents 100000] [--batch-size 1000] [--queries 500] [--query-rate 500] ' +
-					'[--foreground-rate 100] ' +
-					'[--soak-reads 1000] [--publication-ms 1000,5000,30000] [--table-counts 1,16,128]'
+					'[--foreground-rate 100] [--minimum-duration-ms 12000] ' +
+					'[--soak-reads 1000] [--publication-ms 1000,5000,30000] [--table-counts 1,16,128]' +
+					' [--arms no-index,native,wal-only,root-flush]'
 			);
 			process.exit(0);
 		}
@@ -618,6 +635,14 @@ let RocksDerivedIndexStorage;
 
 	function bigintReplacer(_key, value) {
 		return typeof value === 'bigint' ? value.toString() : value;
+	}
+
+	function errorSummary(error) {
+		if (!(error instanceof Error)) return { message: String(error) };
+		const summary = { name: error.name, message: error.message };
+		if ('code' in error && error.code !== undefined) summary.code = String(error.code);
+		if (error instanceof AggregateError) summary.errors = error.errors.map(errorSummary);
+		return summary;
 	}
 })().catch((error) => {
 	console.error(error);

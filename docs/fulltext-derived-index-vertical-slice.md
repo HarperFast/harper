@@ -368,10 +368,12 @@ the observed foreground-write regression are recorded with the result because th
 known; these are diagnostic gates, not customer SLOs, and no release claim may be made from a
 synthetic default.
 
-The foreground comparison also fails closed when an indexed arm's measurement window differs from
-the no-index window by more than 20 percent. Large-corpus runs raise `--minimum-duration-ms` until
-the control covers a comparable interval; a short control is not used to bless a longer indexed
-run.
+Every arm receives the same fixed `--minimum-duration-ms` foreground arrival window, independent of
+how long its indexing work takes. The comparison also fails closed if the recorded windows differ
+by more than 20 percent. Large-corpus runs can raise the window to collect more samples, but a short
+control is never extrapolated across a longer indexed foreground workload. The harness preserves
+completed-arm measurements and identifies an aborted arm in its machine-readable result so a late
+failure cannot erase earlier controls.
 
 The subsequent backend-integration benchmark adds time at #2567's `waiting-durable` cap, empty
 runner drains, and a raised `maxAcceptedBatchesAhead` arm. The storage diagnostic calls Fulltext
