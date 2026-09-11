@@ -129,6 +129,7 @@ let RocksDerivedIndexStorage;
 			if (remaining > 0) await delay(remaining);
 			control.stop = true;
 			const foregroundCount = await foreground;
+			const workloadMilliseconds = performance.now() - workloadStarted;
 			const eventLoopSummary = {
 				count: eventLoop.count,
 				p50Milliseconds: eventLoop.percentile(50) / 1e6,
@@ -144,12 +145,13 @@ let RocksDerivedIndexStorage;
 			const statsAfter = rocksStats(rootStore, tables);
 			const soakRead = await measureSoakReads(tables, foregroundCount);
 			const reopen = await closeAndReopen(indexContext);
-			const elapsedMilliseconds = performance.now() - started;
+			const totalMilliseconds = performance.now() - started;
 			return {
 				arm,
 				tableCount,
 				publicationMilliseconds,
-				elapsedMilliseconds,
+				workloadMilliseconds,
+				totalMilliseconds,
 				indexing,
 				foreground: summarizeLatencies(foregroundLatencies),
 				soakRead,
@@ -348,16 +350,31 @@ let RocksDerivedIndexStorage;
 	async function driveSearch(index, control, latencies) {
 		if (!index) return;
 		const queries = ['waterproof trail shoes', 'wireless headphones', 'cotton blue shirt', 'outdoor product'];
+		const interval = 1_000 / options.queryRate;
 		let sequence = 0;
+		const pending = new Set();
 		await control.searchReady.promise;
+		let next = performance.now();
 		while (!control.stop && sequence < options.queryCount) {
+			const wait = next - performance.now();
+			if (wait > 0) await delay(wait);
+			const scheduled = next;
+			next += interval;
 			const query = queries[sequence % queries.length];
-			const started = performance.now();
-			const result = await index.search({ text: query, limit: 10 });
-			assert(result.hits.length > 0, `full-text query returned no hits: ${query}`);
-			latencies[control.indexing ? 'duringIndexing' : 'afterIndexing'].push(performance.now() - started);
+			const bucket = control.indexing ? latencies.duringIndexing : latencies.afterIndexing;
+			const request = index.search({ text: query, limit: 10 }).then((result) => {
+				assert(result.hits.length > 0, `full-text query returned no hits: ${query}`);
+				bucket.push(performance.now() - scheduled);
+			});
+			pending.add(request);
+			request.then(
+				() => pending.delete(request),
+				() => pending.delete(request)
+			);
+			if (pending.size >= 256) await Promise.race(pending);
 			sequence++;
 		}
+		await Promise.all(pending);
 	}
 
 	async function closeAndReopen(context) {
@@ -514,6 +531,7 @@ let RocksDerivedIndexStorage;
 				'documents': { type: 'string', default: '100000' },
 				'batch-size': { type: 'string', default: '1000' },
 				'queries': { type: 'string', default: '500' },
+				'query-rate': { type: 'string', default: '500' },
 				'soak-reads': { type: 'string', default: '1000' },
 				'foreground-rate': { type: 'string', default: '100' },
 				'minimum-duration-ms': { type: 'string', default: '10000' },
@@ -527,7 +545,8 @@ let RocksDerivedIndexStorage;
 			console.log(
 				'node benchmarks/fulltext-hosted/run.cjs --fulltext-root /path/to/fulltext ' +
 					'[--revision harper-sha] [--fulltext-revision fulltext-sha] ' +
-					'[--documents 100000] [--batch-size 1000] [--queries 500] [--foreground-rate 100] ' +
+					'[--documents 100000] [--batch-size 1000] [--queries 500] [--query-rate 500] ' +
+					'[--foreground-rate 100] ' +
 					'[--soak-reads 1000] [--publication-ms 1000,5000,30000] [--table-counts 1,16,128]'
 			);
 			process.exit(0);
@@ -546,6 +565,7 @@ let RocksDerivedIndexStorage;
 			documents: positiveInteger(values.documents, 'documents'),
 			batchSize: positiveInteger(values['batch-size'], 'batch-size'),
 			queryCount: positiveInteger(values.queries, 'queries'),
+			queryRate: positiveInteger(values['query-rate'], 'query-rate'),
 			soakReads: positiveInteger(values['soak-reads'], 'soak-reads'),
 			foregroundRate: positiveInteger(values['foreground-rate'], 'foreground-rate'),
 			minimumDurationMs: positiveInteger(values['minimum-duration-ms'], 'minimum-duration-ms'),
