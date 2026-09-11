@@ -8,11 +8,15 @@ export interface LatencySummary {
 
 export interface GateInput {
 	searchP99Milliseconds?: number;
+	searchSampleCount?: number;
 	eventLoopP99Milliseconds: number;
+	eventLoopSampleCount: number;
 	foregroundP99Milliseconds: number;
+	foregroundSampleCount: number;
 	baselineForegroundP99Milliseconds: number;
-	maxSyncMilliseconds: number;
-	emptyDrainsPerPublication?: number;
+	maxSyncMilliseconds?: number;
+	syncSampleCount?: number;
+	synchronousCommittedEvents?: number;
 }
 
 export interface GateResult {
@@ -33,24 +37,36 @@ export function summarizeLatencies(values: number[]): LatencySummary {
 
 export function evaluateGates(input: GateInput): GateResult {
 	const failures: string[] = [];
-	if (input.searchP99Milliseconds !== undefined && input.searchP99Milliseconds >= 50) {
-		failures.push(`search p99 ${input.searchP99Milliseconds.toFixed(3)}ms is not below 50ms`);
+	if (input.searchP99Milliseconds !== undefined) {
+		if ((input.searchSampleCount ?? 0) < 100) {
+			failures.push(`concurrent search has ${input.searchSampleCount ?? 0} samples; at least 100 are required`);
+		} else if (input.searchP99Milliseconds >= 50) {
+			failures.push(`search p99 ${input.searchP99Milliseconds.toFixed(3)}ms is not below 50ms`);
+		}
 	}
-	if (input.eventLoopP99Milliseconds >= 20) {
+	if (input.eventLoopSampleCount < 500) {
+		failures.push(`event-loop delay has ${input.eventLoopSampleCount} samples; at least 500 are required`);
+	} else if (input.eventLoopP99Milliseconds >= 20) {
 		failures.push(`event-loop p99 ${input.eventLoopP99Milliseconds.toFixed(3)}ms is not below 20ms`);
 	}
-	const foregroundLimit = input.baselineForegroundP99Milliseconds * 1.2;
-	if (input.foregroundP99Milliseconds > foregroundLimit) {
+	if (input.foregroundSampleCount < 1_000) {
+		failures.push(`foreground writes have ${input.foregroundSampleCount} samples; at least 1000 are required`);
+	} else if (input.foregroundP99Milliseconds > input.baselineForegroundP99Milliseconds * 1.2) {
+		const foregroundLimit = input.baselineForegroundP99Milliseconds * 1.2;
 		failures.push(
 			`foreground p99 ${input.foregroundP99Milliseconds.toFixed(3)}ms exceeds the ` +
 				`20% regression limit ${foregroundLimit.toFixed(3)}ms`
 		);
 	}
-	if (input.maxSyncMilliseconds > 250) {
-		failures.push(`sync max ${input.maxSyncMilliseconds.toFixed(3)}ms exceeds 250ms`);
+	if (input.maxSyncMilliseconds !== undefined) {
+		if ((input.syncSampleCount ?? 0) === 0) {
+			failures.push('host storage reported no sync callbacks');
+		} else if (input.maxSyncMilliseconds > 250) {
+			failures.push(`sync max ${input.maxSyncMilliseconds.toFixed(3)}ms exceeds 250ms`);
+		}
 	}
-	if (input.emptyDrainsPerPublication !== undefined && input.emptyDrainsPerPublication > 1) {
-		failures.push(`empty drains per publication ${input.emptyDrainsPerPublication.toFixed(3)} exceeds 1`);
+	if ((input.synchronousCommittedEvents ?? 0) !== 0) {
+		failures.push(`${input.synchronousCommittedEvents} committed events re-entered host storage writes`);
 	}
 	return { passed: failures.length === 0, failures };
 }
