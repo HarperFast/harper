@@ -572,6 +572,20 @@ load validation against _that_ tree, and only then activates it. Activation is o
 transaction over two effects: the live tree moves into `.deploy-aside`, then the candidate is renamed
 into the live path.
 
+**Both renames wait out a holder, and the wait happens with the previous version in place.** Windows
+refuses a rename outright (`EPERM`) while anything holds a handle in the source tree, and a scanner
+reading a dependency tree npm has just written is exactly that — the failure `deploy_component` hit on
+the Windows nightly, on the swap itself. `renameThroughTransientHolder` retries every rename in the
+activation transaction and its recovery for five seconds with capped exponential backoff. The swap's
+backoff is not a plain sleep: it renames the aside back to the live path, waits there, and displaces it
+again for the next attempt. Retrying where the rename stands would leave the live path absent for the
+whole budget, and `EntryHandler` reports that to its consumers — `unlinkDir`, and the static handler
+drops the component's routes — so the fix for a failed deploy would have been multi-second
+unavailability on the platform that needs it. The retry set is `EPERM`/`EACCES`/`EBUSY` only: a
+destination that exists is structural state nothing here clears between attempts, and
+`settleInterruptedActivation` already fails that case closed rather than guessing which tree is
+current.
+
 The ordering is the design. Two things used to be wrong in a way each other hid:
 
 - **The live tree was moved aside first**, so the component was broken for the whole extract +
