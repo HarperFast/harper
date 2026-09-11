@@ -41,6 +41,8 @@ import {
 	isReleasedTransaction,
 	TRANSACTION_STATE,
 	writeKeyId,
+	closeWriteInstance,
+	type WriteGeneration,
 } from './DatabaseTransaction.ts';
 import {
 	acquireRecordKey,
@@ -77,7 +79,15 @@ import {
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
-import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
+import {
+	Addition,
+	assignTrackedAccessors,
+	updateAndFreeze,
+	hasChanges,
+	GenericTrackedObject,
+	ASSERT_TRACKED_WRITABLE,
+	GET_TRACKED_WRITE_GENERATION,
+} from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
@@ -779,7 +789,17 @@ export function makeTable(options) {
 		#savingOperation?: any; // operation for the record is currently being saved
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
+		#writeGeneration?: WriteGeneration;
 		declare getProperty: (name: string) => any;
+		[ASSERT_TRACKED_WRITABLE](generation = this.#writeGeneration): void {
+			if (!generation) return;
+			if (generation.internalWrites > 0) return;
+			if (generation !== this.#writeGeneration || generation.closed)
+				throw new ClientError('Can not modify an update instance after it has been saved; call update() again', 409);
+		}
+		[GET_TRACKED_WRITE_GENERATION](): WriteGeneration {
+			return (this.#writeGeneration ??= { closed: false, internalWrites: 0 });
+		}
 
 		/**
 		 * Shared guard: if this instance is lock-writable but the handle is gone (expired or
@@ -787,7 +807,9 @@ export function makeTable(options) {
 		 * in addition to the save() path. Every lock-writable instance carries its own handle in
 		 * #lockHandle (scoped and hold alike), so we never need to search the registry here.
 		 */
-		#assertLiveHandle(id: Id): void {
+		#assertLiveHandle(id: Id, allowClosed = false): void {
+			if (!allowClosed && this.#writeGeneration?.closed && writeKeyId(id) === writeKeyId(this.getId()))
+				this[ASSERT_TRACKED_WRITABLE]();
 			if (!this.#lockWritable) return;
 			const handle = this.#lockHandle!;
 			// Off-key writes through the same resource instance are ordinary; only guard the
@@ -2090,6 +2112,11 @@ export function makeTable(options) {
 			} else {
 				id = requestTargetToId(target);
 			}
+			if (this.#writeGeneration?.closed) {
+				this.#changes = undefined;
+				this.#writeGeneration = undefined;
+			}
+			this.#assertLiveHandle(id, true);
 
 			const context = this.getContext();
 			const envTxn = txnForContext(context);
@@ -2138,15 +2165,21 @@ export function makeTable(options) {
 					});
 				}
 			}
-			return when(this._writeUpdate(id, this.#changes, fullUpdate), () => this);
+			return when(this._writeUpdate(id, (this.#changes ??= Object.create(null)), fullUpdate), () => this);
 		}
 
 		/**
 		 * Save any changes into this instance to the current transaction
 		 */
 		save() {
-			this.#assertLiveHandle(this.getId()); // a write through a released or expired lock never lands
 			const operation = this.#savingOperation;
+			if (
+				!this.#lockWritable &&
+				this.#writeGeneration?.closed &&
+				(!operation || operation.writeGeneration === this.#writeGeneration)
+			)
+				return;
+			this.#assertLiveHandle(operation?.key ?? this.getId()); // a write through a released or expired lock never lands
 			if ((!operation || operation.dropped) && this.#lockWritable && this.#lockHandle?.hold) {
 				// A held lock's record stages its update here rather than at lock() time: it is often
 				// written after the acquiring transaction has already completed, which would have
@@ -2206,7 +2239,13 @@ export function makeTable(options) {
 				// resolve before that native commit actually settles. Chain on innerCommit (as the
 				// lock-writable hold branch above already does) so callers awaiting save() see the
 				// write durably land, not just the outer (possibly premature) resolution.
-				const result = this.#saveOperation(operation);
+				let result;
+				try {
+					result = this.#saveOperation(operation);
+				} catch (error) {
+					if (!operation.saved) this.#savingOperation = operation;
+					throw error;
+				}
 				const innerCommit = operation.innerCommit;
 				return innerCommit ? when(innerCommit, () => result) : result;
 			}
@@ -2231,13 +2270,26 @@ export function makeTable(options) {
 				// merge and index diff would be relative to a record that may never land.
 				operation.priorWrite = undefined;
 				operation.deferSave = false;
-				return when(transaction.addWrite(operation), () => operation.promise ?? operation.result);
+				const result = when(transaction.addWrite(operation), () => operation.promise ?? operation.result);
+				this.#closeWriteChain(operation);
+				return result;
 			}
 			const owner = holder ?? transaction;
-			if (owner.save) return owner.save(operation) || operation.promise || operation.result;
+			if (owner.save) {
+				const result = owner.save(operation) || operation.promise || operation.result;
+				this.#closeWriteChain(operation);
+				return result;
+			}
+		}
+		#closeWriteChain(operation: any) {
+			const owner = operation.stagedIn;
+			for (let write = operation; write && !write.instanceClosed; write = write.priorWrite) {
+				if (write === operation || owner?.ownedWrites?.has(write)) closeWriteInstance(write);
+			}
 		}
 
 		addTo(property: any, value: any) {
+			this[ASSERT_TRACKED_WRITABLE]();
 			if (typeof value === 'number' || typeof value === 'bigint') {
 				if (this.#savingOperation?.fullUpdate)
 					(this as any).set(property, (+this.getProperty(property) || 0) + (value as any));
@@ -2575,6 +2627,7 @@ export function makeTable(options) {
 			}
 			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : this.getId();
 			checkValidId(id);
+			this.#assertLiveHandle(id);
 			const resolved = resolveLockOptions(options);
 			const context = this.getContext();
 			const link = txnForContext(context);
@@ -2948,12 +3001,18 @@ export function makeTable(options) {
 				}
 			};
 
+			const receiverId = this.getId();
+			const closesReceiver =
+				!this.isCollection &&
+				!isSearchTarget(receiverId) &&
+				(id === receiverId || writeKeyId(id) === writeKeyId(receiverId));
 			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry,
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
+				chainsStagedState: true,
 				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
 				reloadCommitBase: options?.isCopyApply !== true,
 				deferSave: true,
@@ -2964,6 +3023,7 @@ export function makeTable(options) {
 				// Only attach the hold handle when it covers exactly this key; off-key writes
 				// are ordinary and must not carry an unrelated hold's handle.
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
 				validate: (txnTime, committedBy = transaction) => {
 					if (!recordUpdate) recordUpdate = this.#changes;
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {

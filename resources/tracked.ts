@@ -3,7 +3,15 @@ import * as crdtOperations from './crdt.ts';
 import { Blob } from './blob.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 
+export const ASSERT_TRACKED_WRITABLE = Symbol('assert-tracked-writable');
+export const GET_TRACKED_WRITE_GENERATION = Symbol('get-tracked-write-generation');
+
+function assertWritable(target, generation?) {
+	target[ASSERT_TRACKED_WRITABLE]?.(generation);
+}
+
 function getChanges(target) {
+	assertWritable(target);
 	let changes = target.getChanges();
 	if (!changes) {
 		changes = Object.create(null);
@@ -45,6 +53,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					return attribute.resolve(this, this.getContext?.());
 				},
 				set(related) {
+					assertWritable(this);
 					// Unlike the struct-prototype accessor (which tolerates a stored collision so a record can
 					// still load), this is a user assignment to a resolved attribute, and a read-only resolver
 					// (a scalar @computed has no attribute.set) has nowhere to put it (harper#2359).
@@ -188,7 +197,7 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					}
 					const sourceValue = this.getRecord()?.[name];
 					if (sourceValue && typeof sourceValue === 'object') {
-						const updatedValue = trackObject(sourceValue, attribute);
+						const updatedValue = trackObject(sourceValue, attribute, this);
 						if (updatedValue) {
 							if (!changes) {
 								this._setChanges((changes = Object.create(null)));
@@ -288,7 +297,7 @@ function getProxiedProperty(target, name, receiver) {
 		}
 		const sourceValue = receiver.getRecord?.()?.[name];
 		if (sourceValue && typeof sourceValue === 'object') {
-			const updatedValue = trackObject(sourceValue);
+			const updatedValue = trackObject(sourceValue, undefined, receiver);
 			if (updatedValue) {
 				if (!changes) {
 					changes = Object.create(null);
@@ -303,6 +312,7 @@ function getProxiedProperty(target, name, receiver) {
 }
 function setProxiedProperty(target: any, name: string | symbol, value, receiver) {
 	if (typeof name === 'string') {
+		assertWritable(receiver);
 		let changes = receiver.getChanges?.();
 		if (!changes) {
 			changes = {};
@@ -315,7 +325,7 @@ function setProxiedProperty(target: any, name: string | symbol, value, receiver)
 	return true;
 }
 
-function trackObject(sourceObject: any, typeDef?: any) {
+function trackObject(sourceObject: any, typeDef?: any, writableOwner?: any) {
 	// lazily instantiate in case of recursive structures
 	let TrackedObject;
 	switch (sourceObject.constructor) {
@@ -326,18 +336,41 @@ function trackObject(sourceObject: any, typeDef?: any) {
 					typeDef.TrackedObject = TrackedObject = class extends GenericTrackedObject {};
 					assignTrackedAccessors(TrackedObject, typeDef);
 				}
-				return new TrackedObject(sourceObject);
+				return new TrackedObject(sourceObject, writableOwner);
 			} else {
-				return new GenericTrackedObject(sourceObject);
+				return new GenericTrackedObject(sourceObject, writableOwner);
 			}
 		case Array:
-			const trackedArray = new TrackedArray(sourceObject.length, sourceObject);
+			const trackedArray = new TrackedArray(sourceObject.length, sourceObject, writableOwner);
 			for (let i = 0, l = sourceObject.length; i < l; i++) {
 				let element = sourceObject[i];
-				if (element && typeof element === 'object') element = trackObject(element, typeDef?.elements);
+				if (element && typeof element === 'object') element = trackObject(element, typeDef?.elements, trackedArray);
 				trackedArray[i] = element;
 			}
-			return trackedArray;
+			if (!writableOwner) return trackedArray;
+			return new Proxy(trackedArray, {
+				set(target, name, value) {
+					if (typeof name === 'string') {
+						assertWritable(target);
+						target[HAS_ARRAY_CHANGES] = true;
+					}
+					return Reflect.set(target, name, value, target);
+				},
+				defineProperty(target, name, descriptor) {
+					if (typeof name === 'string') {
+						assertWritable(target);
+						target[HAS_ARRAY_CHANGES] = true;
+					}
+					return Reflect.defineProperty(target, name, descriptor);
+				},
+				deleteProperty(target, name) {
+					if (typeof name === 'string') {
+						assertWritable(target);
+						target[HAS_ARRAY_CHANGES] = true;
+					}
+					return Reflect.deleteProperty(target, name);
+				},
+			});
 		// any other objects (like Date) are left unchanged
 		default:
 			return sourceObject;
@@ -346,10 +379,20 @@ function trackObject(sourceObject: any, typeDef?: any) {
 export class GenericTrackedObject<T extends object = any> {
 	#record: T;
 	#changes: Partial<T>;
-	constructor(sourceObject?: GenericTrackedObject<T> | T) {
+	#writableOwner: any;
+	#writableGeneration: any;
+	constructor(sourceObject?: GenericTrackedObject<T> | T, writableOwner?: any) {
 		if ((sourceObject as GenericTrackedObject<T>)?.getRecord)
 			throw new Error('Can not track an already tracked object, check for circular references');
 		this.#record = sourceObject as any;
+		this.#writableOwner = writableOwner;
+		this.#writableGeneration = writableOwner?.[GET_TRACKED_WRITE_GENERATION]?.();
+	}
+	[ASSERT_TRACKED_WRITABLE]() {
+		this.#writableOwner?.[ASSERT_TRACKED_WRITABLE]?.(this.#writableGeneration);
+	}
+	[GET_TRACKED_WRITE_GENERATION]() {
+		return this.#writableGeneration;
 	}
 	getRecord(): T {
 		return this.#record;
@@ -404,18 +447,13 @@ export function updateAndFreeze(target, changes = target.getChanges?.()) {
 	let mergedUpdatedObject: any;
 	if (!target) return changes;
 	if (target.getRecord && target.constructor === Array && !Object.isFrozen(target)) {
-		// a tracked array, by default we can freeze the tracked array itself
-		mergedUpdatedObject = target;
+		if (!hasChanges(target)) return (target as any).getRecord();
+		// Materialize a plain array so the stored value retains neither the mutation proxy nor its owner.
+		mergedUpdatedObject = new Array(target.length);
 		for (let i = 0, l = target.length; i < l; i++) {
 			let value = target[i];
 			if (value && typeof value === 'object') {
-				const newValue = updateAndFreeze(value);
-				if (newValue !== value && mergedUpdatedObject === target) {
-					// if we need to make any changes to the user's array, we make a copy so we don't modify
-					// an array that the user may be using with transient properties
-					mergedUpdatedObject = target.slice(0);
-				}
-				value = newValue;
+				value = updateAndFreeze(value);
 			}
 			mergedUpdatedObject[i] = value;
 		}
@@ -493,15 +531,28 @@ export function hasChanges(target) {
 }
 
 const HAS_ARRAY_CHANGES = Symbol.for('has-array-changes');
+const TRACKED_ARRAY_RECORD = Symbol('tracked-array-record');
+const TRACKED_WRITABLE_OWNER = Symbol('tracked-writable-owner');
+const TRACKED_WRITABLE_GENERATION = Symbol('tracked-writable-generation');
 class TrackedArray extends Array {
-	#record: any;
+	[TRACKED_ARRAY_RECORD]: any;
+	[TRACKED_WRITABLE_OWNER]: any;
+	[TRACKED_WRITABLE_GENERATION]: any;
 	[HAS_ARRAY_CHANGES]: boolean;
-	constructor(length, record) {
+	constructor(length, record, writableOwner) {
 		super(length);
-		this.#record = record;
+		this[TRACKED_ARRAY_RECORD] = record;
+		this[TRACKED_WRITABLE_OWNER] = writableOwner;
+		this[TRACKED_WRITABLE_GENERATION] = writableOwner?.[GET_TRACKED_WRITE_GENERATION]?.();
+	}
+	[ASSERT_TRACKED_WRITABLE]() {
+		this[TRACKED_WRITABLE_OWNER]?.[ASSERT_TRACKED_WRITABLE]?.(this[TRACKED_WRITABLE_GENERATION]);
+	}
+	[GET_TRACKED_WRITE_GENERATION]() {
+		return this[TRACKED_WRITABLE_GENERATION];
 	}
 	getRecord() {
-		return this.#record;
+		return this[TRACKED_ARRAY_RECORD];
 	}
 	splice(...args) {
 		this[HAS_ARRAY_CHANGES] = true;

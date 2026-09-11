@@ -380,6 +380,11 @@ type ReadTransaction = (LMDBTransaction | RocksTransaction) & {
 	isCommitted?: boolean;
 };
 
+export type WriteGeneration = {
+	closed: boolean;
+	internalWrites: number;
+};
+
 export type TransactionWrite = {
 	key: Id;
 	store: any; // using any here because of circular dependency and complex RootDatabaseKind
@@ -455,7 +460,26 @@ export type TransactionWrite = {
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
+	writeGeneration?: WriteGeneration;
+	instanceClosed?: boolean;
 };
+
+export function closeWriteInstance(operation: TransactionWrite | null | undefined): void {
+	if (operation && !operation.instanceClosed) {
+		operation.instanceClosed = true;
+		if (operation.writeGeneration) operation.writeGeneration.closed = true;
+	}
+}
+
+export function validateWrite(operation: TransactionWrite, txnTime: number, transaction: DatabaseTransaction): any {
+	const generation = operation.writeGeneration;
+	if (generation) generation.internalWrites++;
+	try {
+		return operation.validate?.(txnTime, transaction);
+	} finally {
+		if (generation) generation.internalWrites--;
+	}
+}
 
 export function getAppliedWriteVersion(recordVersion: number | undefined, txnLogKey: number): number {
 	return recordVersion == null ? txnLogKey : Math.min(recordVersion, txnLogKey);
@@ -505,6 +529,7 @@ export class DatabaseTransaction implements Transaction {
 		this.#scopeOwned = options?.scopeOwned === true;
 	}
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
+	ownedWrites?: WeakSet<TransactionWrite>;
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
 	completions: Promise<void>[] = []; // the set of outstanding async operations to complete
@@ -804,6 +829,7 @@ export class DatabaseTransaction implements Transaction {
 	detachWrite(operation: TransactionWrite): void {
 		const index = this.writes.indexOf(operation);
 		if (index > -1) this.writes[index] = null;
+		this.ownedWrites?.delete(operation);
 		if (operation.key === undefined) return;
 		const writesForStore = this.writesByKey?.get(operation.store);
 		if (!writesForStore) return;
@@ -811,7 +837,7 @@ export class DatabaseTransaction implements Transaction {
 		// Membership, not `stagedIn`, which every commit handler clears and so cannot tell a takeover from a
 		// write done in place; a prior already taken over must not become this transaction's basis again.
 		let prior = operation.priorWrite;
-		while (prior && !this.writes.includes(prior)) prior = prior.priorWrite;
+		while (prior && !this.ownedWrites?.has(prior)) prior = prior.priorWrite;
 		const tail = writesForStore.get(keyId);
 		if (tail === operation) {
 			if (prior) writesForStore.set(keyId, prior);
@@ -901,7 +927,10 @@ export class DatabaseTransaction implements Transaction {
 		// fire after a commit or abort, and routing it back here would revive a write this transaction
 		// already rolled back — whose blobs abort() has reclaimed. Cleared here, save() resolves the
 		// context's current transaction as it did before `stagedIn` existed.
-		for (const write of this.writes) if (write?.stagedIn === this) write.stagedIn = undefined;
+		for (const write of this.writes) {
+			if (write?.stagedIn === this) write.stagedIn = undefined;
+			if (write) this.ownedWrites?.delete(write);
+		}
 		this.writes = [];
 		this.writesByKey = undefined;
 	}
@@ -1039,6 +1068,7 @@ export class DatabaseTransaction implements Transaction {
 		this.writeTick = monitorTick;
 		this.linkWrite(operation);
 		this.writes.push(operation);
+		(this.ownedWrites ??= new WeakSet()).add(operation);
 		operation.stagedIn = this;
 		// Hold this write back while any earlier same-key write has not run — out of staging order both
 		// diff against the pre-transaction record (harper#2211, DESIGN.md). The whole chain, not just the
@@ -1075,6 +1105,7 @@ export class DatabaseTransaction implements Transaction {
 			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
 			const failedIdx = this.writes.indexOf(operation);
 			if (failedIdx > -1) this.writes[failedIdx] = null;
+			this.ownedWrites?.delete(operation);
 			throw lockNotHeldError(lockHandle);
 		}
 		// Lock-write timestamp rules.
@@ -1137,6 +1168,16 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
+		if (!operation.saved && operation.pendingPriorWrite) {
+			const pendingWrites = [];
+			for (let pending = operation.pendingPriorWrite; pending;) {
+				if (!pending.saved && this.ownedWrites?.has(pending)) pendingWrites.push(pending);
+				pending = pending.pendingPriorWrite !== undefined ? pending.pendingPriorWrite : pending.priorWrite;
+			}
+			for (let index = pendingWrites.length - 1; index >= 0; index--)
+				this.save(pendingWrites[index], transaction, false, options);
+			operation.pendingPriorWrite = null;
+		}
 		// `txnTime` is this transaction's timestamp — the key its entries take in the per-origin log.
 		// A write applied from elsewhere carries the origin's record version too, and that is what the
 		// record is stored at; the two coincide for every locally-originated write. Gated on the apply
@@ -1156,12 +1197,15 @@ export class DatabaseTransaction implements Transaction {
 			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
 		}
 		if (!operation.saved) {
-			operation.saved = true;
 			// immediately execute in this transaction
-			if ((operation.validate?.(writeVersion, this) as any) === false) {
+			const validated = validateWrite(operation, writeVersion, this);
+			if ((validated as any) === false) {
+				operation.saved = true;
 				operation.commit = () => {}; // noop if we try again
+				closeWriteInstance(operation);
 				return;
 			}
+			operation.saved = true;
 			let result: Promise<void> = operation.before?.() as Promise<void>;
 			if (result?.then) this.stageCompletion(result);
 			result = operation.beforeIntermediate?.() as Promise<void>;
@@ -1169,7 +1213,12 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 		if (operation.trackRecordVersion) operation.recordVersionApplied = false;
-		const completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		let completion: Promise<void>;
+		try {
+			completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		} finally {
+			closeWriteInstance(operation);
+		}
 		if (operation.trackRecordVersion)
 			operation.appliedRecordVersion = operation.recordVersionApplied ? writeVersion : undefined;
 		if (typeof completion?.then === 'function') this.stageCompletion(completion);
