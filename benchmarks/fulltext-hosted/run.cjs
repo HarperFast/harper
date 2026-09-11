@@ -45,15 +45,13 @@ let RocksDerivedIndexStorage;
 		for (const tableCount of options.tableCounts) {
 			for (const publicationMilliseconds of options.publicationMilliseconds) {
 				let baselineForegroundP99;
-				let baselineForegroundWindowMilliseconds;
 				for (const arm of options.arms) {
 					activeCase = { arm, tableCount, publicationMilliseconds };
 					const result = await runArm(arm, tableCount, publicationMilliseconds);
 					if (arm === 'no-index') {
 						baselineForegroundP99 = result.foreground.p99Milliseconds;
-						baselineForegroundWindowMilliseconds = result.foregroundWindowMilliseconds;
 					}
-					if (baselineForegroundP99 === undefined || baselineForegroundWindowMilliseconds === undefined) {
+					if (baselineForegroundP99 === undefined) {
 						throw new Error('the no-index arm must run before indexed arms');
 					}
 					result.gates = evaluateGates({
@@ -65,7 +63,7 @@ let RocksDerivedIndexStorage;
 						foregroundSampleCount: result.foreground.count,
 						foregroundWindowMilliseconds: result.foregroundWindowMilliseconds,
 						baselineForegroundP99Milliseconds: baselineForegroundP99,
-						baselineForegroundWindowMilliseconds,
+						indexingElapsedMilliseconds: result.search ? result.indexing.elapsedMilliseconds : undefined,
 						maxSyncMilliseconds: result.storage?.sync.maxMilliseconds,
 						syncSampleCount: result.storage?.sync.count,
 						synchronousCommittedEvents: result.storage?.synchronousCommittedEvents,
@@ -142,13 +140,13 @@ let RocksDerivedIndexStorage;
 			searches = driveSearch(indexContext?.index, control, searchLatencies);
 			foreground.catch(() => undefined);
 			searches.catch(() => undefined);
+			const indexingStarted = performance.now();
 			const indexing = await indexDocuments(indexContext, publicationMilliseconds, control);
+			indexing.elapsedMilliseconds = performance.now() - indexingStarted;
 			control.indexing = false;
 			await searches;
-			const remaining = options.minimumDurationMs - (performance.now() - workloadStarted);
-			if (remaining > 0) await delay(remaining);
-			control.stop = true;
 			const foregroundCount = await foreground;
+			control.stop = true;
 			const foregroundWindowMilliseconds = options.minimumDurationMs;
 			const workloadMilliseconds = performance.now() - workloadStarted;
 			const eventLoopSummary = {
@@ -444,6 +442,7 @@ let RocksDerivedIndexStorage;
 				result.hits.map((hit) => hit.id),
 				expected.hits.map((hit) => hit.id)
 			);
+			assert.strictEqual(result.total, expected.total);
 			return {
 				reopenMilliseconds,
 				searchMilliseconds,
@@ -601,9 +600,14 @@ let RocksDerivedIndexStorage;
 		}
 		const fulltextRoot = values['fulltext-root'] ?? process.env.HARPER_FULLTEXT_ROOT;
 		if (!fulltextRoot) throw new Error('--fulltext-root or HARPER_FULLTEXT_ROOT is required');
-		const arms = values.arms.split(',');
+		const arms = values.arms.split(',').map((arm) => arm.trim());
 		const allowed = new Set(['no-index', 'native', 'wal-only', 'root-flush']);
-		if (arms.length === 0 || arms.some((arm) => !allowed.has(arm)) || arms[0] !== 'no-index') {
+		if (
+			arms.length === 0 ||
+			arms.some((arm) => !allowed.has(arm)) ||
+			new Set(arms).size !== arms.length ||
+			arms[0] !== 'no-index'
+		) {
 			throw new Error('arms must start with no-index and contain only no-index,native,wal-only,root-flush');
 		}
 		return {
