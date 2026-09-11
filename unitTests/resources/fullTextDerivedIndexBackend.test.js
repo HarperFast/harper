@@ -317,6 +317,8 @@ describe('FullTextDerivedIndexBackend', () => {
 					}),
 			])
 		);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
 		await backend.acquire(1n);
 		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
 		await waitFor(() => first.closes.length === 1 && finishOpen);
@@ -326,7 +328,9 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(settled, false);
 		finishOpen();
 		await shuttingDown;
+		await new Promise((resolve) => setImmediate(resolve));
 		assert.strictEqual(reopened.closes.length, 1);
+		assert.strictEqual(changes.includes('accepted-work-lost'), false);
 		assert.strictEqual(backend.getDurableCursor(), undefined);
 	});
 
