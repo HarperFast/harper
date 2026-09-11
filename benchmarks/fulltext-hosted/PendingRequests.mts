@@ -1,4 +1,5 @@
 export class PendingRequests {
+	#completion = Promise.withResolvers<void>();
 	#failures: unknown[] = [];
 	#pending = new Set<Promise<void>>();
 
@@ -19,12 +20,18 @@ export class PendingRequests {
 					this.#failures.push(error);
 				}
 			)
-			.finally(() => this.#pending.delete(tracked));
+			.finally(() => {
+				this.#pending.delete(tracked);
+				const completion = this.#completion;
+				this.#completion = Promise.withResolvers<void>();
+				completion.resolve();
+			});
 		this.#pending.add(tracked);
 	}
 
 	async waitForOne(): Promise<void> {
-		await Promise.race(this.#pending);
+		if (this.#pending.size === 0) return;
+		await this.#completion.promise;
 	}
 
 	async drain(workload: string): Promise<void> {

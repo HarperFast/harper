@@ -13,6 +13,23 @@ test('drains successful requests', async () => {
 	assert.strictEqual(requests.size, 0);
 });
 
+test('waiting with no pending requests returns immediately', async () => {
+	const requests = new PendingRequests();
+
+	await requests.waitForOne();
+});
+
+test('waiting observes the next request completion', async () => {
+	const completion = Promise.withResolvers<void>();
+	const requests = new PendingRequests();
+	requests.add(completion.promise);
+	const waiting = requests.waitForOne();
+
+	completion.resolve();
+	await waiting;
+	assert.strictEqual(requests.size, 0);
+});
+
 test('retains write failures after settled requests leave the pending set', async () => {
 	const failure = new Error('request failed');
 	const requests = new PendingRequests();
