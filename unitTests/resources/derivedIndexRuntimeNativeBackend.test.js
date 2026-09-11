@@ -445,6 +445,31 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('settles acquisition before starting a rebuild requested by backend recovery', async () => {
+		let resolveAcquisition;
+		const acquisition = new Promise((resolve) => (resolveAcquisition = resolve));
+		const store = new FakeLogStore(new Map([[10, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 10, recordId: 'a' })]]]),
+		});
+		const backend = new AcquiringBackend('failed-during-acquire', cursor(10), () => acquisition);
+		backend.resets = [];
+		backend.reset = async (epoch) => {
+			backend.resets.push(epoch);
+			backend.cursor = undefined;
+			backend.persistedCursor = undefined;
+		};
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 10, value: { title: 'a' } }]]));
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.acquisitions.length === 1);
+		backend.stateChange('accepted-work-lost');
+		await sleep(5);
+		assert.strictEqual(backend.resets.length, 0);
+		resolveAcquisition(cursor(10));
+		await waitFor(() => backend.resets.length === 1);
+		await runtime.stop();
+	});
+
 	it('contains a failure while installing an asynchronously acquired cursor', async () => {
 		const store = new FakeLogStore(new Map([[10, []]]));
 		store.rootStore.listLogs = () => {
@@ -501,9 +526,16 @@ describe('DerivedIndexRuntime for native backends', () => {
 			if (target.acquisitions.length === 1) throw new Error('writer still closing');
 			return target.persistedCursor;
 		});
-		const { runtime } = runtimeFor(store, records, { rebuildBackoffMilliseconds: 1 });
+		const { runtime } = runtimeFor(store, records, { rebuildBackoffMilliseconds: 100 });
 		runtime.register(registration(backend));
 
+		await waitFor(() => backend.acquisitions.length === 1 && store.locks.size === 0);
+		assert.deepStrictEqual(runtime.getReadiness('acquire-retry'), {
+			state: 'unknown',
+			reason: 'acquisition-failed',
+			ownerEpoch: 1n,
+			rebuildAttempts: 0,
+		});
 		await waitFor(() => backend.deliveries.length === 1);
 		assert.strictEqual(backend.acquisitions.length, 2);
 		assert.strictEqual(runtime.getReadiness('acquire-retry').state, 'ready');
@@ -531,7 +563,13 @@ describe('DerivedIndexRuntime for native backends', () => {
 	it('skips internal non-record audit keys while advancing the transaction cursor', async () => {
 		const store = new FakeLogStore(
 			new Map([
-				[10, [audit({ timestamp: 20, recordId: Symbol.for('internal') })]],
+				[
+					10,
+					[
+						{ ...audit({ timestamp: 20, recordId: Symbol.for('internal'), endTxn: false }) },
+						audit({ timestamp: 20, recordId: null }),
+					],
+				],
 				[20, []],
 			])
 		);
@@ -1774,6 +1812,27 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const lookups = store.bufferLookups;
 		await runtime.stop();
 		assert.strictEqual(store.bufferLookups, lookups, 'shared-memory views are fetched once per runner');
+	});
+
+	it('skips internal non-record keys during a rebuild scan', async () => {
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'kept' })]]]),
+		});
+		const backend = new AsyncBackend('internal-scan-keys', { applyDelay: 1 });
+		const { runtime } = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 60_000,
+			scanRecords: function* () {
+				yield { recordId: Symbol.for('internal'), version: 1, value: { title: 'internal' } };
+				yield { recordId: null, version: 1, value: { title: 'null' } };
+				yield { recordId: 'kept', version: 2, value: { title: 'kept' } };
+			},
+		});
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
+
+		await waitFor(() => runtime.getReadiness('internal-scan-keys').state === 'ready', { timeout: 5000 });
+		assert.deepStrictEqual([...backend.applied.keys()], ['kept']);
+		assert.strictEqual(runtime.getMetrics('internal-scan-keys').rebuiltRecords, 1);
+		await runtime.stop();
 	});
 
 	it('does not trip the lag policy for a caught-up owner that idles past the budget', async () => {

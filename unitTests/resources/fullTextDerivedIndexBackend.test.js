@@ -157,6 +157,28 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('does not wake the runtime when an ordinary drain released no deferred capacity', async () => {
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const { backend } = makeBackend(lifecycle([engine]));
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		await backend.acquire(1n);
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		await waitFor(() => engine.applied.length === 1);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepStrictEqual(changes, []);
+		await backend.shutdown(1n);
+	});
+
+	it('does not re-arm a same-epoch engine after a failed shutdown', async () => {
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		engine.closeError = new Error('writer still active');
+		const { backend } = makeBackend(lifecycle([engine]));
+		await backend.acquire(1n);
+		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
+		await assert.rejects(backend.acquire(1n), /not quiescent/);
+	});
+
 	it('publishes FIFO barrier horizons even when consecutive batches repeat a cursor', async () => {
 		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		const { backend } = makeBackend(lifecycle([engine]));

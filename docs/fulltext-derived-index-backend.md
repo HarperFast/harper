@@ -59,6 +59,9 @@ attempt cap, the runtime publishes `unavailable` rather than silently retrying o
 rebuilding an index it could not inspect. A successfully opened generation with a missing or invalid
 commit payload returns no cursor and enters rebuild. A never-settling
 acquisition intentionally prevents shutdown and lock release because quiescence cannot be proved.
+While a transient acquisition failure is waiting for retry, shared readiness is `unknown` with an
+`acquisition-failed` reason rather than retaining a stale `ready` state. The attempt cap is local to
+each runner; whichever contender reaches it first publishes the shared terminal state.
 `reset(newEpoch)` already runs inside a separately minted epoch and returns with the replacement
 generation open, so the runtime does not call `acquire()` again during that rebuild attempt.
 
@@ -93,7 +96,9 @@ attributes at the projection boundary so Harper can count them as unindexable.
 The shared runtime carries the canonical `writeKeyId()` string it already computes into each
 mutation, avoiding a second ordered-binary encode during a catalog rebuild. Record ids base64url
 encode that string's bytes and use `<decimal table id>.<key>`; `.` is outside the base64url alphabet,
-so adjacent table ids cannot collide.
+so adjacent table ids cannot collide. Audit and scan entries whose canonical key is not a string are
+Harper-internal entries, not records; replay and rebuild both skip them while still advancing past
+their transaction boundaries.
 
 ## Ordered command state machine
 

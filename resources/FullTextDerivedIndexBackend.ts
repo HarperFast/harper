@@ -108,6 +108,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#scheduled = false;
 	#recovering = false;
 	#failed = false;
+	#capacityDeferred = false;
 	#shutdown?: ShutdownRequest;
 
 	constructor(options: FullTextDerivedIndexBackendOptions) {
@@ -147,7 +148,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	async acquire(ownerEpoch: bigint): Promise<DerivedIndexCursor | undefined> {
 		this.#assertAttached();
-		if (this.#engine && this.#activeEpoch === ownerEpoch && !this.#shutdown) return this.#durableCursor;
+		if (this.#engine && this.#activeEpoch === ownerEpoch && !this.#shutdown && !this.#failed)
+			return this.#durableCursor;
 		if (this.#engine || this.#draining || this.#recovering)
 			throw new FullTextDerivedIndexError('Full-text derived index backend is not quiescent at acquisition');
 		this.#shutdown = undefined;
@@ -202,8 +204,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#fail(new FullTextDerivedIndexError('Full-text derived index batch exceeds its queue byte limit'));
 			return DERIVED_INDEX_FAILED;
 		}
-		if (this.#retainedBatches >= this.#maxQueuedBatches || this.#retainedBytes + bytes > this.#maxQueuedBytes)
+		if (this.#retainedBatches >= this.#maxQueuedBatches || this.#retainedBytes + bytes > this.#maxQueuedBytes) {
+			this.#capacityDeferred = true;
 			return DERIVED_INDEX_DEFERRED;
+		}
 		const sequence = ++this.#lastAcceptedSequence;
 		if (through) this.#lastAcceptedCursor = through;
 		this.#commands.push({ type: 'apply', epoch: batch.ownerEpoch, sequence, batch, bytes });
@@ -317,7 +321,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#draining = false;
 			if (this.#shutdown && !this.#shutdown.closing) void this.#closeForShutdown(this.#shutdown);
 			else {
-				this.#notify('changed');
+				if (this.#capacityDeferred) this.#notify('changed');
 				if (this.#commands.length > 0) this.#scheduleDrain();
 			}
 		}
@@ -471,6 +475,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#lastPublishedSequence = 0;
 		this.#lastBarrierHorizon = 0;
 		this.#lastAcceptedCursor = undefined;
+		this.#capacityDeferred = false;
 		this.#failed = false;
 	}
 
@@ -502,6 +507,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	#notify(change: DerivedIndexBackendStateChange): void {
+		if (change === 'changed') this.#capacityDeferred = false;
 		if (!this.#wake) return;
 		setImmediate(() => {
 			try {
