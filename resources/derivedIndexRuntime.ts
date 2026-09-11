@@ -28,6 +28,7 @@ export type DerivedIndexState =
 export type DerivedIndexMutation = {
 	tableId: number;
 	recordId: Id;
+	recordKey: string;
 	logVersion: number;
 	state: DerivedIndexState;
 };
@@ -79,7 +80,8 @@ export type DerivedIndexReadinessReason =
 	| 'shutdown-failed'
 	| 'rebuild-failed'
 	| 'rebuild-exhausted'
-	| 'rebuild-requested';
+	| 'rebuild-requested'
+	| 'acquisition-failed';
 
 export type DerivedIndexReadiness = {
 	state: DerivedIndexReadinessState;
@@ -106,6 +108,8 @@ export interface DerivedIndexBackend {
 	readonly id: string;
 	/** Receives the epoch fence and readiness reader before any delivery. */
 	attach(host: DerivedIndexBackendHost): void;
+	/** Open owner-only state before the runtime reads its durable cursor. Omit for synchronously ready backends. */
+	acquire?(ownerEpoch: bigint): DerivedIndexCursor | undefined | Promise<DerivedIndexCursor | undefined>;
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult;
 	/** Request a durability barrier; the backend completes it and wakes through `onStateChange`. */
@@ -143,6 +147,7 @@ export type DerivedIndexRunnerOptions = {
 	rebuildBackoffMilliseconds?: number;
 	maxRebuildBackoffMilliseconds?: number;
 	maxRebuildAttempts?: number;
+	maxAcquisitionAttempts?: number;
 	/**
 	 * Opt-in writer backpressure: while the index is further behind than this, user writes to its
 	 * tables fail with a retryable 503 on every worker. 0 (the default) means no policy.
@@ -163,7 +168,10 @@ export type DerivedIndexRegistration = {
  */
 export type DerivedIndexRecord = { version: number; value: unknown; size?: number } | undefined;
 
-/** A scan record whose `value` is null or undefined is a tombstone, and one whose `recordId` is a symbol is a Harper-internal store entry; neither is indexed. */
+/**
+ * A scan record whose `value` is null or undefined is a tombstone. A record whose canonical
+ * `writeKeyId()` is not a string is a Harper-internal store entry. Neither is indexed.
+ */
 export type DerivedIndexScanRecord = { recordId: Id; version: number; value: unknown; size?: number };
 
 export type DerivedIndexRuntimeOptions = DerivedIndexRunnerOptions & {
@@ -227,6 +235,7 @@ const READINESS_REASONS: DerivedIndexReadinessReason[] = [
 	'rebuild-failed',
 	'rebuild-exhausted',
 	'rebuild-requested',
+	'acquisition-failed',
 ];
 const CONDEMNED_MARKER = new Uint8Array([1]);
 // One shared allocation per backend: five independently read Int32 words, then the owner-epoch
@@ -399,6 +408,7 @@ function resolveRunnerOptions(
 		rebuildBackoffMilliseconds: 1000,
 		maxRebuildBackoffMilliseconds: 300_000,
 		maxRebuildAttempts: 8,
+		maxAcquisitionAttempts: 8,
 		maxLagMilliseconds: 0,
 	};
 	if (!options) return base;
@@ -415,6 +425,7 @@ function resolveRunnerOptions(
 		rebuildBackoffMilliseconds: options.rebuildBackoffMilliseconds ?? base.rebuildBackoffMilliseconds,
 		maxRebuildBackoffMilliseconds: options.maxRebuildBackoffMilliseconds ?? base.maxRebuildBackoffMilliseconds,
 		maxRebuildAttempts: options.maxRebuildAttempts ?? base.maxRebuildAttempts,
+		maxAcquisitionAttempts: options.maxAcquisitionAttempts ?? base.maxAcquisitionAttempts,
 		maxLagMilliseconds: Math.max(0, options.maxLagMilliseconds ?? base.maxLagMilliseconds),
 	};
 }
@@ -494,6 +505,7 @@ class DerivedIndexRunner {
 	#rebuildRequested = false;
 	#boundaryPending = false;
 	#rebuildAttempts = 0;
+	#acquisitionFailures = 0;
 	#rebuiltRecords = 0;
 	#unindexableRecords = 0;
 	#allUnindexableWarned = false;
@@ -505,6 +517,7 @@ class DerivedIndexRunner {
 	#readinessBuffer: SharedReadinessBuffer;
 	#sharedViews: SharedViews;
 	#resetting?: Promise<void>;
+	#acquiring?: { epoch: bigint; promise: Promise<DerivedIndexCursor | undefined> };
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
 
 	get id() {
@@ -579,6 +592,7 @@ class DerivedIndexRunner {
 
 	wake(fromBackend = false) {
 		if (this.#stopped || this.#rebuilding) return;
+		if (this.#acquiring) return;
 		if (!fromBackend && this.#lagBudget > 0) this.#unreadSince ??= this.#options.now();
 		if (this.status.state === 'unavailable') {
 			if (
@@ -754,6 +768,10 @@ class DerivedIndexRunner {
 		if (this.status.state === 'unavailable') {
 			this.status = { state: 'needs-rebuild', reason: this.status.reason, ownerEpoch: this.#ownerEpoch };
 		}
+		if (this.#acquiring) {
+			this.#rebuildRequested = true;
+			return true;
+		}
 		if (this.#owned) {
 			this.#startRebuild();
 			return true;
@@ -861,11 +879,95 @@ class DerivedIndexRunner {
 				this.#needsRebuild('condemned before a restart; the durable cursor is not trusted', 'condemned');
 				return;
 			}
-			this.#resetFromDurableCursor();
-			if (this.#owned && !this.#rebuilding) this.#drain();
+			this.#acquireBackend(this.#generation);
 		} catch (error) {
 			this.#fail('failed to initialize the runner', error);
 		}
+	}
+
+	#acquireBackend(generation: number) {
+		const backend = this.#registration.backend;
+		if (!backend.acquire) {
+			this.#acquisitionFailures = 0;
+			this.#resumeFromDurableCursor(backend.getDurableCursor());
+			if (this.#live(generation)) this.#drain();
+			return;
+		}
+		let result: DerivedIndexCursor | undefined | Promise<DerivedIndexCursor | undefined>;
+		try {
+			result = backend.acquire(this.#ownerEpoch!);
+		} catch (error) {
+			this.#acquisitionFailed(generation, error);
+			return;
+		}
+		if (!result || typeof (result as Promise<DerivedIndexCursor | undefined>).then !== 'function') {
+			this.#acquisitionFailures = 0;
+			this.#resumeFromDurableCursor(result as DerivedIndexCursor | undefined);
+			if (this.#live(generation)) this.#drain();
+			return;
+		}
+		const acquiring = {
+			epoch: this.#ownerEpoch!,
+			promise: Promise.resolve(result),
+		};
+		this.#acquiring = acquiring;
+		acquiring.promise.then(
+			(cursor) => {
+				try {
+					if (this.#acquiring !== acquiring) return;
+					this.#acquiring = undefined;
+					this.#acquisitionFailures = 0;
+					if (this.#owned && !this.#stopped && this.#rebuildRequested && this.#canRebuild()) {
+						this.#startRebuild();
+						return;
+					}
+					if (!this.#live(generation)) return;
+					this.#resumeFromDurableCursor(cursor);
+					if (this.#live(generation)) this.#drain();
+				} catch (error) {
+					this.#fail('failed to initialize the runner after backend acquisition', error);
+				}
+			},
+			(error) => {
+				try {
+					if (this.#acquiring !== acquiring) return;
+					this.#acquiring = undefined;
+					if (this.#owned && !this.#stopped && this.#rebuildRequested && this.#canRebuild()) {
+						this.#startRebuild();
+						return;
+					}
+					this.#acquisitionFailed(generation, error);
+				} catch (handlerError) {
+					this.#fail('failed to handle backend acquisition rejection', handlerError);
+				}
+			}
+		);
+	}
+
+	#acquisitionFailed(generation: number, error: unknown) {
+		if (!this.#live(generation)) return;
+		this.#acquisitionFailures++;
+		if (this.#acquisitionFailures >= this.#options.maxAcquisitionAttempts) {
+			const reason = `backend acquisition failed ${this.#acquisitionFailures} times`;
+			logger.error(`Derived index '${this.id}' is unavailable: ${reason}`, error);
+			this.status = { state: 'unavailable', reason, ownerEpoch: this.#ownerEpoch };
+			this.#publishReadiness('unavailable', 'acquisition-failed');
+			this.#admitWrites();
+		} else {
+			logger.warn?.(`Derived index '${this.id}' could not acquire its backend; retrying`, error);
+			this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
+			this.#publishReadiness('unknown', 'acquisition-failed');
+		}
+		this.#release();
+		if (this.status.state === 'unavailable') return;
+		this.#releasing?.then(() => {
+			if (this.#stopped || this.#lockRetryTimer) return;
+			this.#lockRetryTimer = setTimeout(() => {
+				this.#lockRetryTimer = undefined;
+				this.wake(true);
+			}, this.#options.rebuildBackoffMilliseconds);
+			this.#lockRetryTimer.unref?.();
+		});
 	}
 
 	#mintEpoch(): bigint {
@@ -873,7 +975,11 @@ class DerivedIndexRunner {
 	}
 
 	#resetFromDurableCursor() {
-		const durable = this.#registration.backend.getDurableCursor();
+		this.#acquisitionFailures = 0;
+		this.#resumeFromDurableCursor(this.#registration.backend.getDurableCursor());
+	}
+
+	#resumeFromDurableCursor(durable: DerivedIndexCursor | undefined) {
 		if (!isValidCursor(durable)) {
 			this.#needsRebuild(
 				durable ? 'backend returned an invalid durable cursor' : 'backend has no durable cursor',
@@ -940,7 +1046,7 @@ class DerivedIndexRunner {
 	}
 
 	#drain() {
-		if (!this.#owned || this.#stopped || this.#rebuilding) return;
+		if (!this.#owned || this.#stopped || this.#rebuilding || this.#acquiring) return;
 		if (this.#canRebuild() && this.#takeSharedRebuildRequest()) {
 			if (this.#rebuildTimer) {
 				clearTimeout(this.#rebuildTimer);
@@ -1139,15 +1245,17 @@ class DerivedIndexRunner {
 					// is met exactly once: here, before the rebuild it demands.
 					throw new RunnerError('reload', `table ${entry.tableId} requires a derived-index rebuild`);
 				} else if (ELIGIBLE_ACTIONS.has(entry.type)) {
-					let byRecord = current.keys.get(entry.tableId);
-					if (!byRecord) current.keys.set(entry.tableId, (byRecord = new Map()));
 					const key = writeKeyId(entry.recordId);
-					const known = byRecord.get(key);
-					if (known) known.logVersion = entry.version;
-					else {
-						byRecord.set(key, { recordId: entry.recordId, logVersion: entry.version, sizeHint: entry.size });
-						current.keyCount++;
-						keyCount++;
+					if (typeof key === 'string') {
+						let byRecord = current.keys.get(entry.tableId);
+						if (!byRecord) current.keys.set(entry.tableId, (byRecord = new Map()));
+						const known = byRecord.get(key);
+						if (known) known.logVersion = entry.version;
+						else {
+							byRecord.set(key, { recordId: entry.recordId, logVersion: entry.version, sizeHint: entry.size });
+							current.keyCount++;
+							keyCount++;
+						}
 					}
 				}
 			}
@@ -1201,6 +1309,7 @@ class DerivedIndexRunner {
 					mutations.push({
 						tableId,
 						recordId: collectedKey.recordId,
+						recordKey: record.recordKey,
 						logVersion: collectedKey.logVersion,
 						state: record.state,
 					});
@@ -1259,7 +1368,13 @@ class DerivedIndexRunner {
 		const state: DerivedIndexState = current
 			? this.#project(chunk, tableId, current.value, current.version, current.size ?? collectedKey.sizeHint)
 			: { kind: 'absent' };
-		record = { tableId, recordId: collectedKey.recordId, logVersion: collectedKey.logVersion, state };
+		record = {
+			tableId,
+			recordId: collectedKey.recordId,
+			recordKey: derivedIndexRecordKey(key),
+			logVersion: collectedKey.logVersion,
+			state,
+		};
 		byRecord.set(key, record);
 		chunk.batch.records.push(record);
 		return record;
@@ -1415,6 +1530,7 @@ class DerivedIndexRunner {
 
 	#settleReady() {
 		this.#rebuildAttempts = 0;
+		this.#acquisitionFailures = 0;
 		if (this.#condemned) this.#clearCondemnation();
 		if (Atomics.load(this.#shared().words, READINESS_STATE) !== READINESS_STATES.indexOf('ready'))
 			this.#publishReadiness('ready');
@@ -1495,6 +1611,10 @@ class DerivedIndexRunner {
 		}
 		if (this.status.state === 'needs-rebuild') return;
 		if (change === 'accepted-work-lost' && this.#owned) {
+			if (this.#acquiring) {
+				this.#needsRebuild('backend reported lost work during acquisition', 'backend-failed');
+				return;
+			}
 			this.#discardProgress();
 			try {
 				this.#resetFromDurableCursor();
@@ -1523,7 +1643,7 @@ class DerivedIndexRunner {
 		if (this.status.state !== 'needs-rebuild')
 			logger.error(`Derived index '${this.#registration.backend.id}' needs rebuild: ${reason}`, error);
 		this.status = { state: 'needs-rebuild', reason, ownerEpoch: this.#ownerEpoch };
-		this.#discardProgress();
+		this.#discardProgress(!this.#acquiring);
 		if (!this.#owned) return;
 		if (!this.#writeCondemnation()) {
 			this.#deferForCondemnation(code);
@@ -1561,8 +1681,8 @@ class DerivedIndexRunner {
 		if (this.#lagBudget > 0) Atomics.store(this.#shared().words, READINESS_LAG_EXCEEDED, 0);
 	}
 
-	#discardProgress() {
-		this.#generation++;
+	#discardProgress(invalidateGeneration = true) {
+		if (invalidateGeneration) this.#generation++;
 		this.#stalledSince = undefined;
 		this.#lastCaughtUpAt = undefined;
 		this.#unreadSince = this.#options.now();
@@ -1606,6 +1726,10 @@ class DerivedIndexRunner {
 
 	#startRebuild() {
 		if (!this.#owned || this.#rebuilding || this.#stopped) return;
+		if (this.#acquiring) {
+			this.#rebuildRequested = true;
+			return;
+		}
 		this.#rebuildRequested = false;
 		this.#takeSharedRebuildRequest();
 		this.#rebuilding = true;
@@ -1709,14 +1833,16 @@ class DerivedIndexRunner {
 	}
 
 	#addScanRecord(chunk: Chunk, tableId: number, record: DerivedIndexScanRecord): DerivedIndexMutation | undefined {
-		if (record.value == null || typeof record.recordId === 'symbol') return;
+		if (record.value == null) return;
 		const key = writeKeyId(record.recordId);
+		if (typeof key !== 'string') return;
 		let byRecord = chunk.resolved.get(tableId);
 		if (!byRecord) chunk.resolved.set(tableId, (byRecord = new Map()));
 		if (byRecord.has(key)) return;
 		const mutation: DerivedIndexMutation = {
 			tableId,
 			recordId: record.recordId,
+			recordKey: derivedIndexRecordKey(key),
 			logVersion: record.version,
 			state: this.#project(chunk, tableId, record.value, record.version, record.size),
 		};
@@ -1872,15 +1998,30 @@ class DerivedIndexRunner {
 			this.#publishReadiness('unavailable', 'shutdown-failed');
 			this.#admitWrites();
 		};
-		let flushed: void | Promise<void>;
-		try {
-			flushed = backend.flush('shutdown');
-		} catch (error) {
-			logger.warn?.(`Derived index '${backend.id}' shutdown flush request threw`, error);
+		const flushAndQuiesce = () => {
+			let flushed: void | Promise<void>;
+			try {
+				flushed = backend.flush('shutdown');
+			} catch (error) {
+				logger.warn?.(`Derived index '${backend.id}' shutdown flush request threw`, error);
+			}
+			return Promise.allSettled([flushed]).then(() => (epoch === undefined ? undefined : this.#quiesce(epoch)));
+		};
+		const pending: Promise<unknown>[] = [];
+		if (this.#resetting) pending.push(this.#resetting);
+		if (this.#acquiring) {
+			logger.warn?.(`Derived index '${backend.id}' is holding its runner lock until backend acquisition settles`);
+			pending.push(this.#acquiring.promise);
 		}
-		const settling = Promise.allSettled([this.#resetting, flushed]).then(() => undefined);
-		this.#releasing = settling.then(() => (epoch === undefined ? undefined : this.#quiesce(epoch))).then(unlock, hold);
+		this.#releasing = (
+			pending.length === 0 ? flushAndQuiesce() : Promise.allSettled(pending).then(flushAndQuiesce)
+		).then(unlock, hold);
 	}
+}
+
+function derivedIndexRecordKey(key: unknown): string {
+	if (typeof key !== 'string') throw new Error('derived index record id has no canonical stored key');
+	return key;
 }
 
 function lastOpen(collected: CollectedTransaction[]): CollectedTransaction | undefined {
