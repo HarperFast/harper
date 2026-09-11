@@ -2007,8 +2007,16 @@ reusable aggregate iterator (`RocksTransactionLogStore.getRange` with `startByLo
 `resumeAfterExactStart`, `includeLogName`) and drains for bounded count, bytes and wall time per
 turn. Ownership is sticky: the lock is not one record writers take, so holding it across turns
 delays no commit, and it is released only after an idle grace period once durable progress equals
-offered progress. A failed `tryLock(key, onUnlocked)` confers nothing when `onUnlocked` fires; the
-callback schedules a fresh attempt.
+offered progress. The intended wake for a waiting runner is the lock's own unlock callback
+(`tryLock(key, onUnlocked)`): one primitive, and a holder that dies releases natively and wakes the
+waiters the same way. **Temporarily** the lock is taken without one: the pinned rocksdb-js queues
+that callback as a thread-safe function of the caller's env, and on Node 22 one left behind by a
+worker that was `terminate()`d aborts the process when another thread unlocks (Harper's thread
+manager terminates workers on restart). Until the pin includes the fix (HarperFast/rocksdb-js#849),
+successors are woken by the releasing owner's `notify()` on the readiness buffer, by commit wakes,
+and by a 5 s retry timer for an owner that died without releasing; the releasing runner ignores the
+one notification it caused. This is a workaround with a tracked revert — the callback path is simpler
+and picks up a dead owner immediately.
 
 Transaction timestamps are unique per physical log but **not monotone in physical order**
 (`TransactionLogStore::writeBatch` only advances `latestTimestamp` when the batch's is greater), so

@@ -48,13 +48,24 @@ class FakeLogStore {
 		this.waiters.delete(key);
 	}
 
-	getUserSharedBuffer(key, defaultBuffer) {
-		let buffer = this.sharedBuffers.get(key);
-		if (!buffer) {
-			buffer = new SharedArrayBuffer(defaultBuffer.byteLength);
-			this.sharedBuffers.set(key, buffer);
+	getUserSharedBuffer(key, defaultBuffer, options) {
+		let memory = this.sharedBuffers.get(key);
+		if (!memory) {
+			memory = { buffer: new SharedArrayBuffer(defaultBuffer.byteLength), callbacks: new Set() };
+			this.sharedBuffers.set(key, memory);
 		}
-		return buffer;
+		// Like the native binding: every lookup gets its own wrapper over one allocation, and notify()
+		// reaches every registered callback, including those of other runtimes sharing this store.
+		const wrapper = structuredClone(memory.buffer);
+		const { callback } = options ?? {};
+		if (callback) memory.callbacks.add(callback);
+		wrapper.notify = () => {
+			for (const listener of memory.callbacks) setImmediate(listener);
+		};
+		wrapper.cancel = () => {
+			if (callback) memory.callbacks.delete(callback);
+		};
+		return wrapper;
 	}
 }
 
@@ -395,27 +406,6 @@ describe('DerivedIndexRuntime', () => {
 		assert.strictEqual(backend.deliveries.length, 1, 'the waiting runner must exact-resume after acquiring the lock');
 		first.stop();
 		second.stop();
-	});
-
-	it('does not lose a synchronous lock-release notification', async () => {
-		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
-		let attempts = 0;
-		store.tryLock = (key, onUnlocked) => {
-			attempts++;
-			if (attempts === 1) {
-				onUnlocked();
-				return false;
-			}
-			store.locks.add(key);
-			return true;
-		};
-		const backend = new FakeBackend('synchronous-unlock', cursor(10));
-		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
-		runtime.register(registration(backend));
-
-		await waitFor(() => backend.deliveries.length === 1);
-		assert.strictEqual(attempts, 2);
-		runtime.stop();
 	});
 
 	it('rejects a durable cursor assembled from different offered batch boundaries', async () => {
