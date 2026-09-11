@@ -573,6 +573,28 @@ load validation against _that_ tree, and only then activates it. Activation is o
 transaction over two effects: the live tree moves into `.deploy-aside`, then the candidate is renamed
 into the live path.
 
+**Both renames wait out a holder, and the wait happens with the previous version in place.** Windows
+refuses a rename outright (`EPERM`) while anything holds a handle in the source tree, which is what
+`deploy_component` hit on the Windows nightly, on the swap itself. The holder was never identified —
+every Harper-held handle on the candidate is closed before the swap, so it is something outside the
+process, but that is inference, not evidence. `renameThroughTransientHolder` retries every rename in
+the activation transaction and its recovery with capped exponential backoff against a five-second
+deadline. The deadline is per top-level rename, not per activation: a redeploy held up the whole way
+spends up to five seconds each on the move-aside, the swap, and the compensating restore. A rename
+performed from inside a backoff shares its caller's deadline rather than opening a fourth.
+
+The swap's backoff is not a plain sleep: it renames the aside back to the live path, waits there, and
+displaces it again for the next attempt, so the component is missing for one rename rather than for the
+budget. Note what that does and does not buy. Watchers are NOT the beneficiary — `Scope` pauses every
+`EntryHandler` for the duration of a deploy, so an absent tree is never reported as `unlinkDir`, and
+the post-deploy resume diffs against the finished tree. What the put-back protects is everything that
+reads the live path directly: a component reading its own files, a lazily imported module, a concurrent
+scan of the components root, and any thread whose pause the best-effort deploy broadcast did not reach.
+
+The retry set is `EPERM`/`EACCES`/`EBUSY` only: a destination that exists is structural state nothing
+here clears between attempts, and `settleInterruptedActivation` already fails that case closed rather
+than guessing which tree is current.
+
 The ordering is the design. Two things used to be wrong in a way each other hid:
 
 - **The live tree was moved aside first**, so the component was broken for the whole extract +

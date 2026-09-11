@@ -1073,6 +1073,62 @@ async function syncRenameParents(fromPath: string, toPath: string): Promise<void
 	for (const parent of parents) await syncDirectory(parent);
 }
 
+// Deliberately NOT `EEXIST`/`ENOTEMPTY`/`ENOTDIR`/`EISDIR`: those say the destination exists, which
+// nothing here clears between attempts, so waiting on them would only delay reporting a tree something
+// recreated — the case `settleInterruptedActivation` fails closed rather than guessing.
+// `rollbackExtractedDirectory` does retry them, because its placeholder logic repairs the destination.
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_RETRY_BUDGET_MS = 5000;
+const RENAME_RETRY_INITIAL_DELAY_MS = 10;
+const RENAME_RETRY_MAX_DELAY_MS = 500;
+
+/**
+ * Rename, waiting out a holder that has not let go yet — on Windows a rename is refused outright while
+ * anything still has a handle in the source tree.
+ *
+ * `onBackoff` replaces the sleep between attempts; `deadline` lets a rename it performs share this
+ * call's budget instead of opening its own.
+ */
+async function renameThroughTransientHolder(
+	fromPath: string,
+	toPath: string,
+	options: { onBackoff?: (delayMs: number, deadline: number) => Promise<void>; deadline?: number } = {}
+): Promise<void> {
+	const deadline = options.deadline ?? performance.now() + RENAME_RETRY_BUDGET_MS;
+	let delayMs = RENAME_RETRY_INITIAL_DELAY_MS;
+	for (let attempts = 1; ; attempts++) {
+		try {
+			await rename(fromPath, toPath);
+			if (attempts > 1) {
+				logger.warn(`Renamed ${fromPath} to ${toPath} only on attempt ${attempts}; something was holding it`);
+			}
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code ?? '';
+			if (!TRANSIENT_RENAME_CODES.has(code)) throw error;
+			if (performance.now() >= deadline) {
+				// Which side was still there separates a holder on the source from a destination something
+				// recreated, and neither survives on the rethrown error. A failed probe reports its own code:
+				// an `EPERM` reading the destination is itself evidence, and calling it absent would send the
+				// next investigation the wrong way.
+				const state = async (path: string) =>
+					lstat(path).then(
+						() => 'present',
+						(probeError) => (probeError as NodeJS.ErrnoException)?.code ?? 'unreadable'
+					);
+				logger.warn(
+					`Could not rename ${fromPath} to ${toPath}: ${code} after ${attempts} attempts ` +
+						`(source ${await state(fromPath)}, destination ${await state(toPath)})`
+				);
+				throw error;
+			}
+			if (options.onBackoff) await options.onBackoff(delayMs, deadline);
+			else await delay(delayMs);
+			delayMs = Math.min(delayMs * 2, RENAME_RETRY_MAX_DELAY_MS);
+		}
+	}
+}
+
 /**
  * Write a control file so its final name NEVER exists with partial contents. Opening the final path with
  * `wx` publishes the directory entry before anything is written, so a crash in between leaves a zero-byte
@@ -1816,7 +1872,7 @@ async function settleInterruptedActivation(
 	const asideRecords = await inProgressAsideRecords(asideStagingDir);
 
 	const rollForward = async () => {
-		if (!liveExists) await rename(candidateDirPath, liveDirPath);
+		if (!liveExists) await renameThroughTransientHolder(candidateDirPath, liveDirPath);
 		// Unconditional, not only when THIS pass performed the rename: a crash after normal activation
 		// renamed the candidate but before it repaired the links leaves live present with stale targets, and
 		// gating the repair on the rename would skip exactly that case. Idempotent when there is nothing to
@@ -1831,7 +1887,7 @@ async function settleInterruptedActivation(
 	};
 	const rollBack = async (restoreFrom?: string) => {
 		if (restoreFrom) {
-			await rename(restoreFrom, liveDirPath);
+			await renameThroughTransientHolder(restoreFrom, liveDirPath);
 			await syncRenameParents(restoreFrom, liveDirPath);
 		}
 		for (const record of asideRecords) {
@@ -2109,9 +2165,13 @@ export async function activateCandidateApplication(application: Application, dep
 	// B1 — the live tree moves aside. It stays the rollback source until B4 retires it.
 	let asidePath: string | undefined;
 	let priorAbsentRecordPath: string | undefined;
+	// The swap below moves the previous tree back and forth around every wait, so a chosen aside path no
+	// longer implies the tree is at it — and compensation needs to know which.
+	let liveIsDisplaced = false;
 	if (liveExists) {
 		asidePath = join(asideStagingDir, `${IN_PROGRESS_ASIDE_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}`);
-		await rename(liveDirPath, asidePath);
+		await renameThroughTransientHolder(liveDirPath, asidePath);
+		liveIsDisplaced = true;
 	} else {
 		priorAbsentRecordPath = join(
 			asideStagingDir,
@@ -2120,8 +2180,10 @@ export async function activateCandidateApplication(application: Application, dep
 		await writeFile(priorAbsentRecordPath, '', { flag: 'wx', mode: 0o600 });
 	}
 	const restoreLive = async () => {
-		if (asidePath) await rename(asidePath, liveDirPath);
-		else if (priorAbsentRecordPath) await rm(priorAbsentRecordPath, { force: true });
+		if (liveIsDisplaced) {
+			await renameThroughTransientHolder(asidePath!, liveDirPath);
+			liveIsDisplaced = false;
+		} else if (priorAbsentRecordPath) await rm(priorAbsentRecordPath, { force: true });
 		await syncRenameParents(asidePath ?? priorAbsentRecordPath!, liveDirPath);
 	};
 
@@ -2140,7 +2202,22 @@ export async function activateCandidateApplication(application: Application, dep
 	// because the live path now holds the candidate and renaming the aside back over it cannot succeed. A
 	// compensating step there fails its own rollback and reports a failure for a deploy that is live.
 	try {
-		await rename(candidateDirPath, liveDirPath);
+		await renameThroughTransientHolder(candidateDirPath, liveDirPath, {
+			// The previous version occupies the live path through the wait rather than the component being
+			// absent for the whole budget: a read of a component file, and any concurrent scan of the
+			// components root, still finds the last committed tree. (Watchers are already paused for the
+			// deploy, so they are not what this protects.) A first-ever deploy has nothing to put back.
+			onBackoff: async (delayMs, deadline) => {
+				if (!liveIsDisplaced) return delay(delayMs);
+				await renameThroughTransientHolder(asidePath!, liveDirPath, { deadline });
+				liveIsDisplaced = false;
+				await syncRenameParents(asidePath!, liveDirPath);
+				await delay(delayMs);
+				await renameThroughTransientHolder(liveDirPath, asidePath!, { deadline });
+				liveIsDisplaced = true;
+				await syncRenameParents(liveDirPath, asidePath!);
+			},
+		});
 	} catch (error) {
 		await compensate(error, 'move the candidate into place', restoreLive, application);
 		throw error;
