@@ -125,6 +125,11 @@ not the full segment size. Transport limits must admit one encoded chunk plus pr
 harness rejects a value larger than 256 KiB in its observed workload; a forced multi-chunk merge
 remains a focused Fulltext test in the verification unit.
 
+Fulltext does not send a third `wal-sync` write policy across the JavaScript boundary. Its host store
+maps native `WAL_SYNC` to an atomic `wal` write followed by a separate synchronous `sync()` request.
+`RocksDerivedIndexStorage` therefore continues to accept only `wal` writes and implements the
+durability half through its existing `sync()` method.
+
 Buffering an entire publication would reduce callback count but retain potentially multi-gigabyte
 segments until commit at catalog scale. That is not a safe in-place optimization of this bounded
 directory; it is a different storage design covered in the alternatives.
@@ -298,7 +303,8 @@ generated foreground RocksDB operation p99 while indexing and search run. Record
 compaction/stall counters, aggregate compaction/SST properties for the foreground column families,
 and a post-run soak read. Sweep both publication interval and dirty unrelated table count. Run
 no-index, native, and Harper-callback controls at identical offered load on one machine, measuring
-from scheduled dispatch time so coordinated omission does not hide stalls.
+foreground and search latency from scheduled dispatch time so coordinated omission does not hide
+stalls.
 
 The only existing explicit durability barrier is
 `RocksDerivedIndexStorage.sync()` -> `rootStore.flushSync({ allowWriteStall: true })`, which flushes

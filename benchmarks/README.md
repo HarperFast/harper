@@ -70,7 +70,8 @@ retained Harper transaction-log cursor. Those fault tests belong to the backend-
 
 Every arm drives scheduled writes against an unrelated Harper table while indexing. Scheduled time,
 not dispatch time, begins each latency sample, so an event-loop stall remains visible rather than
-being omitted. Indexed arms also run searches, close and reopen the index, and verify result parity.
+being omitted. Indexed arms drive searches at `--query-rate` under the same open-loop rule, close and
+reopen the index, and verify result parity.
 The hosted arms report callback counts, transferred bytes, largest stored value, callback latency,
 sync count per Tantivy publication, sync latency, root commit events, RocksDB database-wide
 compaction/stall counters, aggregate compaction/SST properties for the foreground table column
@@ -90,6 +91,7 @@ npm run benchmark:fulltext-hosted -- \
   --documents 100000 \
 	--batch-size 1000 \
 	--queries 500 \
+	--query-rate 500 \
 	--soak-reads 5000 \
 	--foreground-rate 500 \
   --publication-ms 1000,5000,30000 \
