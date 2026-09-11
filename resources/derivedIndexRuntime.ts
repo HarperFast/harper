@@ -80,7 +80,8 @@ export type DerivedIndexReadinessReason =
 	| 'shutdown-failed'
 	| 'rebuild-failed'
 	| 'rebuild-exhausted'
-	| 'rebuild-requested';
+	| 'rebuild-requested'
+	| 'acquisition-failed';
 
 export type DerivedIndexReadiness = {
 	state: DerivedIndexReadinessState;
@@ -146,6 +147,7 @@ export type DerivedIndexRunnerOptions = {
 	rebuildBackoffMilliseconds?: number;
 	maxRebuildBackoffMilliseconds?: number;
 	maxRebuildAttempts?: number;
+	maxAcquisitionAttempts?: number;
 	/**
 	 * Opt-in writer backpressure: while the index is further behind than this, user writes to its
 	 * tables fail with a retryable 503 on every worker. 0 (the default) means no policy.
@@ -230,6 +232,7 @@ const READINESS_REASONS: DerivedIndexReadinessReason[] = [
 	'rebuild-failed',
 	'rebuild-exhausted',
 	'rebuild-requested',
+	'acquisition-failed',
 ];
 const CONDEMNED_MARKER = new Uint8Array([1]);
 // One shared allocation per backend: five independently read Int32 words, then the owner-epoch
@@ -402,6 +405,7 @@ function resolveRunnerOptions(
 		rebuildBackoffMilliseconds: 1000,
 		maxRebuildBackoffMilliseconds: 300_000,
 		maxRebuildAttempts: 8,
+		maxAcquisitionAttempts: 8,
 		maxLagMilliseconds: 0,
 	};
 	if (!options) return base;
@@ -418,6 +422,7 @@ function resolveRunnerOptions(
 		rebuildBackoffMilliseconds: options.rebuildBackoffMilliseconds ?? base.rebuildBackoffMilliseconds,
 		maxRebuildBackoffMilliseconds: options.maxRebuildBackoffMilliseconds ?? base.maxRebuildBackoffMilliseconds,
 		maxRebuildAttempts: options.maxRebuildAttempts ?? base.maxRebuildAttempts,
+		maxAcquisitionAttempts: options.maxAcquisitionAttempts ?? base.maxAcquisitionAttempts,
 		maxLagMilliseconds: Math.max(0, options.maxLagMilliseconds ?? base.maxLagMilliseconds),
 	};
 }
@@ -497,6 +502,7 @@ class DerivedIndexRunner {
 	#rebuildRequested = false;
 	#boundaryPending = false;
 	#rebuildAttempts = 0;
+	#acquisitionFailures = 0;
 	#rebuiltRecords = 0;
 	#unindexableRecords = 0;
 	#allUnindexableWarned = false;
@@ -759,6 +765,10 @@ class DerivedIndexRunner {
 		if (this.status.state === 'unavailable') {
 			this.status = { state: 'needs-rebuild', reason: this.status.reason, ownerEpoch: this.#ownerEpoch };
 		}
+		if (this.#acquiring) {
+			this.#rebuildRequested = true;
+			return true;
+		}
 		if (this.#owned) {
 			this.#startRebuild();
 			return true;
@@ -875,6 +885,7 @@ class DerivedIndexRunner {
 	#acquireBackend(generation: number) {
 		const backend = this.#registration.backend;
 		if (!backend.acquire) {
+			this.#acquisitionFailures = 0;
 			this.#resumeFromDurableCursor(backend.getDurableCursor());
 			if (this.#live(generation)) this.#drain();
 			return;
@@ -887,6 +898,7 @@ class DerivedIndexRunner {
 			return;
 		}
 		if (!result || typeof (result as Promise<DerivedIndexCursor | undefined>).then !== 'function') {
+			this.#acquisitionFailures = 0;
 			this.#resumeFromDurableCursor(result as DerivedIndexCursor | undefined);
 			if (this.#live(generation)) this.#drain();
 			return;
@@ -898,10 +910,19 @@ class DerivedIndexRunner {
 		this.#acquiring = acquiring;
 		acquiring.promise.then(
 			(cursor) => {
-				if (this.#acquiring === acquiring) this.#acquiring = undefined;
-				if (!this.#live(generation)) return;
-				this.#resumeFromDurableCursor(cursor);
-				if (this.#live(generation)) this.#drain();
+				try {
+					if (this.#acquiring === acquiring) this.#acquiring = undefined;
+					if (!this.#live(generation)) return;
+					this.#acquisitionFailures = 0;
+					if (this.#rebuildRequested && this.#canRebuild()) {
+						this.#startRebuild();
+						return;
+					}
+					this.#resumeFromDurableCursor(cursor);
+					if (this.#live(generation)) this.#drain();
+				} catch (error) {
+					this.#fail('failed to initialize the runner after backend acquisition', error);
+				}
 			},
 			(error) => {
 				if (this.#acquiring === acquiring) this.#acquiring = undefined;
@@ -912,9 +933,19 @@ class DerivedIndexRunner {
 
 	#acquisitionFailed(generation: number, error: unknown) {
 		if (!this.#live(generation)) return;
-		logger.warn?.(`Derived index '${this.id}' could not acquire its backend; retrying`, error);
-		this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
+		this.#acquisitionFailures++;
+		if (this.#acquisitionFailures >= this.#options.maxAcquisitionAttempts) {
+			const reason = `backend acquisition failed ${this.#acquisitionFailures} times`;
+			logger.error(`Derived index '${this.id}' is unavailable: ${reason}`, error);
+			this.status = { state: 'unavailable', reason, ownerEpoch: this.#ownerEpoch };
+			this.#publishReadiness('unavailable', 'acquisition-failed');
+			this.#admitWrites();
+		} else {
+			logger.warn?.(`Derived index '${this.id}' could not acquire its backend; retrying`, error);
+			this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
+		}
 		this.#release();
+		if (this.status.state === 'unavailable') return;
 		this.#releasing?.then(() => {
 			if (this.#stopped || this.#lockRetryTimer) return;
 			this.#lockRetryTimer = setTimeout(() => {
@@ -930,6 +961,7 @@ class DerivedIndexRunner {
 	}
 
 	#resetFromDurableCursor() {
+		this.#acquisitionFailures = 0;
 		this.#resumeFromDurableCursor(this.#registration.backend.getDurableCursor());
 	}
 
