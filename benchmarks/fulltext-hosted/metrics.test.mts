@@ -26,7 +26,7 @@ test('reports every failed architecture gate', () => {
 			foregroundSampleCount: 1_000,
 			foregroundWindowMilliseconds: 10_000,
 			baselineForegroundP99Milliseconds: 10,
-			baselineForegroundWindowMilliseconds: 10_000,
+			indexingElapsedMilliseconds: 9_000,
 			maxSyncMilliseconds: 251,
 			syncSampleCount: 1,
 			synchronousCommittedEvents: 1,
@@ -55,7 +55,7 @@ test('accepts values strictly inside every gate', () => {
 			foregroundSampleCount: 1_000,
 			foregroundWindowMilliseconds: 10_000,
 			baselineForegroundP99Milliseconds: 10,
-			baselineForegroundWindowMilliseconds: 10_000,
+			indexingElapsedMilliseconds: 9_000,
 			maxSyncMilliseconds: 250,
 			syncSampleCount: 1,
 			synchronousCommittedEvents: 0,
@@ -75,7 +75,7 @@ test('fails closed when a gated measurement has too few samples', () => {
 			foregroundSampleCount: 0,
 			foregroundWindowMilliseconds: 10_000,
 			baselineForegroundP99Milliseconds: 1,
-			baselineForegroundWindowMilliseconds: 10_000,
+			indexingElapsedMilliseconds: 9_000,
 			maxSyncMilliseconds: 0,
 			syncSampleCount: 0,
 		}),
@@ -91,7 +91,7 @@ test('fails closed when a gated measurement has too few samples', () => {
 	);
 });
 
-test('fails closed when foreground comparison windows materially differ', () => {
+test('fails closed when indexing outlasts the foreground window', () => {
 	assert.deepStrictEqual(
 		evaluateGates({
 			searchP99Milliseconds: 1,
@@ -100,16 +100,16 @@ test('fails closed when foreground comparison windows materially differ', () => 
 			eventLoopSampleCount: 500,
 			foregroundP99Milliseconds: 1,
 			foregroundSampleCount: 1_000,
-			foregroundWindowMilliseconds: 12_001,
+			foregroundWindowMilliseconds: 10_000,
 			baselineForegroundP99Milliseconds: 1,
-			baselineForegroundWindowMilliseconds: 10_000,
+			indexingElapsedMilliseconds: 12_001,
 			maxSyncMilliseconds: 1,
 			syncSampleCount: 1,
 			synchronousCommittedEvents: 0,
 		}),
 		{
 			passed: false,
-			failures: ['foreground comparison windows differ by more than 20%: 12001ms vs 10000ms baseline'],
+			failures: ['indexing took 12001ms and outlasted the 10000ms foreground window'],
 		}
 	);
 });

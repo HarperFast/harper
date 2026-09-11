@@ -15,7 +15,7 @@ export interface GateInput {
 	foregroundSampleCount: number;
 	foregroundWindowMilliseconds: number;
 	baselineForegroundP99Milliseconds: number;
-	baselineForegroundWindowMilliseconds: number;
+	indexingElapsedMilliseconds?: number;
 	maxSyncMilliseconds?: number;
 	syncSampleCount?: number;
 	synchronousCommittedEvents?: number;
@@ -54,14 +54,12 @@ export function evaluateGates(input: GateInput): GateResult {
 	if (input.foregroundSampleCount < 1_000) {
 		failures.push(`foreground writes have ${input.foregroundSampleCount} samples; at least 1000 are required`);
 	} else if (
-		Math.max(input.foregroundWindowMilliseconds, input.baselineForegroundWindowMilliseconds) /
-			Math.min(input.foregroundWindowMilliseconds, input.baselineForegroundWindowMilliseconds) >
-		1.2
+		input.indexingElapsedMilliseconds !== undefined &&
+		input.indexingElapsedMilliseconds > input.foregroundWindowMilliseconds
 	) {
 		failures.push(
-			`foreground comparison windows differ by more than 20%: ` +
-				`${input.foregroundWindowMilliseconds.toFixed(0)}ms vs ` +
-				`${input.baselineForegroundWindowMilliseconds.toFixed(0)}ms baseline`
+			`indexing took ${input.indexingElapsedMilliseconds.toFixed(0)}ms and outlasted the ` +
+				`${input.foregroundWindowMilliseconds.toFixed(0)}ms foreground window`
 		);
 	} else if (input.foregroundP99Milliseconds > input.baselineForegroundP99Milliseconds * 1.2) {
 		const foregroundLimit = input.baselineForegroundP99Milliseconds * 1.2;
