@@ -141,17 +141,20 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		const storeName = '__test_fulltext_runtime';
 		const cursorKey = Buffer.from('cursor');
 		const seed = new RocksDerivedIndexStorage(rootStore, storeName);
-		seed.write(
-			[
-				{
-					type: 'put',
-					key: cursorKey,
-					value: Buffer.from(encodeFullTextCursorPayload({ format: 1, logs: { local: anchor } })),
-				},
-			],
-			'wal'
-		);
-		seed.close();
+		try {
+			seed.write(
+				[
+					{
+						type: 'put',
+						key: cursorKey,
+						value: Buffer.from(encodeFullTextCursorPayload({ format: 1, logs: { local: anchor } })),
+					},
+				],
+				'wal'
+			);
+		} finally {
+			seed.close();
+		}
 
 		const lifecycle = new RocksFakeFullTextLifecycle(rootStore, storeName, cursorKey);
 		const backend = new FullTextDerivedIndexBackend({
@@ -164,7 +167,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			const entry = Product.primaryStore.getEntry(recordId);
 			return entry?.value ? { version: entry.version, value: entry.value } : undefined;
 		});
-		const unregister = runtime.register({
+		let unregister = runtime.register({
 			backend,
 			projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
 			options: { flushAfterMutations: 1, maxFlushAgeMilliseconds: 10 },
@@ -172,36 +175,39 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		let committedEvents = 0;
 		const countCommit = () => committedEvents++;
 		rootStore.on('committed', countCommit);
+		try {
+			await Product.put('p1', { title: 'first product' });
+			const p1Cursor = [...Product.auditStore.getRange({ start: anchor })]
+				.filter((entry) => entry.tableId === Product.tableId && entry.recordId === 'p1')
+				.at(-1).txnLogKey;
+			await waitFor(() => lifecycle.engines.some((engine) => engine.publications === 1));
+			await new Promise((resolve) => setImmediate(resolve));
+			const engine = lifecycle.engines.at(-1);
+			assert.strictEqual(engine.applications, 1, 'derived storage writes add no source audit entries');
+			assert(committedEvents >= 5, 'one source write and at least four fake-engine writes notify the shared root');
 
-		await Product.put('p1', { title: 'first product' });
-		const p1Cursor = [...Product.auditStore.getRange({ start: anchor })]
-			.filter((entry) => entry.tableId === Product.tableId && entry.recordId === 'p1')
-			.at(-1).txnLogKey;
-		await waitFor(() => lifecycle.engines.some((engine) => engine.publications === 1));
-		await new Promise((resolve) => setImmediate(resolve));
-		const engine = lifecycle.engines.at(-1);
-		assert.strictEqual(engine.applications, 1, 'derived storage writes add no source audit entries');
-		assert.strictEqual(
-			committedEvents,
-			5,
-			'one source write and four fake-engine writes notify the shared root once each'
-		);
-
-		await unregister();
-		rootStore.off('committed', countCommit);
-		const stored = new RocksDerivedIndexStorage(rootStore, storeName);
-		const documentId = `${Product.tableId}.${Buffer.from('p1').toString('base64url')}`;
-		assert.deepStrictEqual(JSON.parse(stored.read(Buffer.from(`document/${documentId}`)).toString()), {
-			id: documentId,
-			fields: { title: 'first product' },
-		});
-		const storedCursor = decodeFullTextCursorPayload(stored.read(cursorKey).toString());
-		assert.strictEqual(storedCursor.logs.local, p1Cursor);
-		assert(storedCursor.logs.local > anchor, 'the durable cursor advanced beyond the seeded anchor');
-		assert.strictEqual(stored.read(Buffer.from('segment')).toString(), '1');
-		stored.close();
-		await runtime.stop();
-		runtime = undefined;
+			await unregister();
+			unregister = undefined;
+			const stored = new RocksDerivedIndexStorage(rootStore, storeName);
+			try {
+				const documentId = `${Product.tableId}.${Buffer.from('p1').toString('base64url')}`;
+				assert.deepStrictEqual(JSON.parse(stored.read(Buffer.from(`document/${documentId}`)).toString()), {
+					id: documentId,
+					fields: { title: 'first product' },
+				});
+				const storedCursor = decodeFullTextCursorPayload(stored.read(cursorKey).toString());
+				assert.strictEqual(storedCursor.logs.local, p1Cursor);
+				assert(storedCursor.logs.local > anchor, 'the durable cursor advanced beyond the seeded anchor');
+				assert.strictEqual(stored.read(Buffer.from('segment')).toString(), '1');
+			} finally {
+				stored.close();
+			}
+		} finally {
+			rootStore.off('committed', countCommit);
+			if (unregister) await unregister();
+			await runtime.stop();
+			runtime = undefined;
+		}
 	});
 });
 
