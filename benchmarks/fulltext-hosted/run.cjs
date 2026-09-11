@@ -9,6 +9,7 @@ const { setImmediate: nextTurn, setTimeout: delay } = require('node:timers/promi
 const harperPackage = require('../../package.json');
 
 let evaluateGates;
+let PendingRequests;
 let parsePositiveIntegerList;
 let summarizeLatencies;
 let closeDatabase;
@@ -17,6 +18,7 @@ let RocksDerivedIndexStorage;
 
 (async () => {
 	({ evaluateGates, parsePositiveIntegerList, summarizeLatencies } = await import('./metrics.mts'));
+	({ PendingRequests } = await import('./PendingRequests.mts'));
 	const options = parseOptions();
 	await verifyFulltextRoot(options.fulltextRoot);
 	require('../../unitTests/testUtils');
@@ -206,9 +208,15 @@ let RocksDerivedIndexStorage;
 				disposed: false,
 				async close() {
 					if (this.disposed) return;
-					await this.index.close({ mode: 'rollback' });
-					await rm(path, { recursive: true, force: true });
-					this.disposed = true;
+					try {
+						await this.index.close({ mode: 'rollback' });
+					} finally {
+						try {
+							await rm(path, { recursive: true, force: true });
+						} finally {
+							this.disposed = true;
+						}
+					}
 				},
 			};
 		}
@@ -244,9 +252,15 @@ let RocksDerivedIndexStorage;
 			disposed: false,
 			async close() {
 				if (this.disposed) return;
-				await this.index.close({ mode: 'rollback' });
-				this.rawStorage.close();
-				this.disposed = true;
+				try {
+					await this.index.close({ mode: 'rollback' });
+				} finally {
+					try {
+						this.rawStorage.close();
+					} finally {
+						this.disposed = true;
+					}
+				}
 			},
 		};
 	}
@@ -303,10 +317,11 @@ let RocksDerivedIndexStorage;
 		const interval = 1_000 / options.foregroundRate;
 		let next = started;
 		let sequence = 0;
-		const pending = new Set();
-		while (!control.stop) {
+		const pending = new PendingRequests();
+		while (!control.stop && !pending.failed) {
 			const wait = next - performance.now();
 			if (wait > 0) await delay(wait);
+			if (control.stop || pending.failed) break;
 			const scheduled = next;
 			next += interval;
 			const id = sequence++;
@@ -317,14 +332,10 @@ let RocksDerivedIndexStorage;
 					latencies.push(performance.now() - scheduled);
 				});
 			pending.add(request);
-			request.then(
-				() => pending.delete(request),
-				() => pending.delete(request)
-			);
-			if (pending.size >= 256) await Promise.race(pending);
+			if (pending.size >= 256) await pending.waitForOne();
 		}
-		await Promise.all(pending);
-		return sequence;
+		await pending.drain('foreground writes');
+		return latencies.length;
 	}
 
 	async function warmForeground(tables) {
@@ -336,6 +347,7 @@ let RocksDerivedIndexStorage;
 	}
 
 	async function measureSoakReads(tables, foregroundCount) {
+		assert(foregroundCount > 0, 'foreground workload completed no writes');
 		const latencies = [];
 		for (let sequence = 0; sequence < options.soakReads; sequence++) {
 			const id = sequence % foregroundCount;
@@ -352,12 +364,13 @@ let RocksDerivedIndexStorage;
 		const queries = ['waterproof trail shoes', 'wireless headphones', 'cotton blue shirt', 'outdoor product'];
 		const interval = 1_000 / options.queryRate;
 		let sequence = 0;
-		const pending = new Set();
+		const pending = new PendingRequests();
 		await control.searchReady.promise;
 		let next = performance.now();
-		while (!control.stop && sequence < options.queryCount) {
+		while (!control.stop && !pending.failed && sequence < options.queryCount) {
 			const wait = next - performance.now();
 			if (wait > 0) await delay(wait);
+			if (control.stop || pending.failed) break;
 			const scheduled = next;
 			next += interval;
 			const query = queries[sequence % queries.length];
@@ -367,14 +380,10 @@ let RocksDerivedIndexStorage;
 				bucket.push(performance.now() - scheduled);
 			});
 			pending.add(request);
-			request.then(
-				() => pending.delete(request),
-				() => pending.delete(request)
-			);
-			if (pending.size >= 256) await Promise.race(pending);
+			if (pending.size >= 256) await pending.waitForOne();
 			sequence++;
 		}
-		await Promise.all(pending);
+		await pending.drain('concurrent full-text searches');
 	}
 
 	async function closeAndReopen(context) {
@@ -408,10 +417,19 @@ let RocksDerivedIndexStorage;
 			result.hits.map((hit) => hit.id),
 			expected.hits.map((hit) => hit.id)
 		);
-		await reopened.close();
-		reopenedStorage?.close();
-		if (context.arm === 'native') await rm(context.config.path, { recursive: true, force: true });
-		context.disposed = true;
+		try {
+			await reopened.close();
+		} finally {
+			try {
+				try {
+					reopenedStorage?.close();
+				} finally {
+					if (context.arm === 'native') await rm(context.config.path, { recursive: true, force: true });
+				}
+			} finally {
+				context.disposed = true;
+			}
+		}
 		return {
 			reopenMilliseconds,
 			searchMilliseconds,
