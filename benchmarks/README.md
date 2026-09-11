@@ -106,8 +106,9 @@ The command writes progress to stderr and emits one machine-readable stdout line
 architecture gates require search p99 below 50 ms, event-loop-delay p99 below 20 ms, unrelated-table
 p99 within 20% of the matching no-index control, no individual explicit sync above 250 ms, no
 synchronous root commit notification from inside a host write callback, comparable foreground
-measurement windows, and enough samples to make the p99 comparisons meaningful. A failed gate or
-aborted arm exits nonzero. Raise `--minimum-duration-ms` to collect more foreground samples. These
+measurement windows, full indexing coverage, and enough samples to make the p99 comparisons
+meaningful. A failed gate or aborted arm exits nonzero. Raise `--minimum-duration-ms` if indexing
+outlasts the foreground window or to collect more foreground samples. These
 are diagnostic gates, not published customer SLOs. Pass `--revision` and `--fulltext-revision` when
 retaining results so release-to-release comparisons identify both inputs; they otherwise default
 to `GITHUB_SHA`/`working-tree` and `working-tree`. Benchmark results are meaningful only when the
