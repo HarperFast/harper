@@ -54,8 +54,10 @@ released.
 records, choose a generation, or advance progress. Fulltext uses it only to open the generation and
 validate its committed payload. It retries transient open failures within a bounded policy before
 rejecting. A rejection is treated as transient: the runtime releases ownership and retries after
-its existing rebuild backoff without condemning the generation. A successfully opened generation
-with a missing or invalid commit payload returns no cursor and enters rebuild. A never-settling
+its existing rebuild backoff without condemning the generation. After the configured acquisition
+attempt cap, the runtime publishes `unavailable` rather than silently retrying or destructively
+rebuilding an index it could not inspect. A successfully opened generation with a missing or invalid
+commit payload returns no cursor and enters rebuild. A never-settling
 acquisition intentionally prevents shutdown and lock release because quiescence cannot be proved.
 `reset(newEpoch)` already runs inside a separately minted epoch and returns with the replacement
 generation open, so the runtime does not call `acquire()` again during that rebuild attempt.
@@ -182,7 +184,9 @@ rocksdb-js primitive and per-publication polling are not assumed.
 
 - Runtime tests prove commits cannot drain during asynchronous acquisition, stop settles acquisition
   before shutdown and unlock, existing synchronous backends retain their path, and idle release can
-  close and reopen without rebuilding.
+  close and reopen without rebuilding. They also prove explicit rebuild waits for acquisition,
+  asynchronous cursor-install failures are contained, transient failures recover, and persistent
+  failures become observable `unavailable` state at the configured cap.
 - Backend tests prove bounded asynchronous encoding, FIFO barrier horizons, repeated `through`
   values, exact barrier snapshots, monotone cursors, deferred wake-up, and fail-closed behavior.
 - Cursor tests cover decimal RocksDB audit positions, malformed and oversized payloads, restart
