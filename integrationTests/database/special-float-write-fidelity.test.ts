@@ -284,8 +284,7 @@ suite(
 			ok(open.status < 300, `an undeclared attribute must accept any value, got ${open.status}`);
 		});
 
-		// Characterization, not an endorsement: if Harper starts preserving -0 this arm goes red and
-		// the fix is to invert it, not to restore the coercion.
+		// Characterization, not an endorsement: this pins the complete REST round trip, not storage alone.
 		test('a genuine IEEE-754 -0 on the wire does not survive the round trip', async () => {
 			for (const table of TABLES) {
 				const bodyFor = {
