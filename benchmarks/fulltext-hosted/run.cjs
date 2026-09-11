@@ -434,7 +434,11 @@ let RocksDerivedIndexStorage;
 		if (!context) return undefined;
 		const expected = await context.index.search({ text: 'waterproof trail shoes', limit: 10, exactTotal: true });
 		assert(expected.hits.length > 0);
-		assert.strictEqual(expected.total, Math.ceil(options.documents / productVariants.length));
+		assert.strictEqual(
+			expected.total,
+			Math.ceil(options.documents / productVariants.length),
+			'full-text index total does not match the generated corpus'
+		);
 		await context.index.close();
 		let reopened;
 		let reopenedStorage;

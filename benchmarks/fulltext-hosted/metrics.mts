@@ -51,25 +51,23 @@ export function evaluateGates(input: GateInput): GateResult {
 	} else if (input.eventLoopP99Milliseconds >= 20) {
 		failures.push(`event-loop p99 ${input.eventLoopP99Milliseconds.toFixed(3)}ms is not below 20ms`);
 	}
+	if (
+		input.indexingElapsedMilliseconds !== undefined &&
+		input.indexingElapsedMilliseconds > input.foregroundWindowMilliseconds
+	) {
+		failures.push(
+			`indexing took ${input.indexingElapsedMilliseconds.toFixed(0)}ms and outlasted the ` +
+				`${input.foregroundWindowMilliseconds.toFixed(0)}ms foreground window`
+		);
+	}
 	if (input.foregroundSampleCount < 1_000) {
 		failures.push(`foreground writes have ${input.foregroundSampleCount} samples; at least 1000 are required`);
-	} else {
-		if (
-			input.indexingElapsedMilliseconds !== undefined &&
-			input.indexingElapsedMilliseconds > input.foregroundWindowMilliseconds
-		) {
-			failures.push(
-				`indexing took ${input.indexingElapsedMilliseconds.toFixed(0)}ms and outlasted the ` +
-					`${input.foregroundWindowMilliseconds.toFixed(0)}ms foreground window`
-			);
-		}
-		if (input.foregroundP99Milliseconds > input.baselineForegroundP99Milliseconds * 1.2) {
-			const foregroundLimit = input.baselineForegroundP99Milliseconds * 1.2;
-			failures.push(
-				`foreground p99 ${input.foregroundP99Milliseconds.toFixed(3)}ms exceeds the ` +
-					`20% regression limit ${foregroundLimit.toFixed(3)}ms`
-			);
-		}
+	} else if (input.foregroundP99Milliseconds > input.baselineForegroundP99Milliseconds * 1.2) {
+		const foregroundLimit = input.baselineForegroundP99Milliseconds * 1.2;
+		failures.push(
+			`foreground p99 ${input.foregroundP99Milliseconds.toFixed(3)}ms exceeds the ` +
+				`20% regression limit ${foregroundLimit.toFixed(3)}ms`
+		);
 	}
 	if (input.maxSyncMilliseconds !== undefined) {
 		if ((input.syncSampleCount ?? 0) === 0) {
