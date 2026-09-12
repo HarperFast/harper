@@ -4,7 +4,11 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { transaction } = require('#src/resources/transaction');
-const { getOutstandingCommits, trackOutstandingCommit } = require('#src/resources/DatabaseTransaction');
+const {
+	getOutstandingCommits,
+	trackOutstandingCommit,
+	setMaxOutstandingTxnDuration,
+} = require('#src/resources/DatabaseTransaction');
 const { waitFor } = require('../waitFor');
 // Outstanding-commit tracking lives on the base DatabaseTransaction (RocksDB path). LMDB writes route
 // through the separate LMDBTransaction overrides (resources/LMDBTransaction.ts), which keep their own
@@ -42,7 +46,7 @@ function trackedAcross(submit) {
 	const before = getOutstandingCommits().count;
 	const result = submit();
 	const outstanding = getOutstandingCommits();
-	return { result, delta: outstanding.count - before, outstanding };
+	return { result, before, delta: outstanding.count - before, outstanding };
 }
 
 describe('Outstanding commit tracking', () => {
@@ -69,11 +73,14 @@ describe('Outstanding commit tracking', () => {
 	it('tracks a commit while it is in flight', async function () {
 		if (isLMDB) return;
 		// put() returns before the native commit settles, so the commit is outstanding right now.
-		const { result: write, delta, outstanding } = trackedAcross(() => TrackA.put(1, { name: 'in-flight' }));
+		const { result: write, before, delta, outstanding } = trackedAcross(() => TrackA.put(1, { name: 'in-flight' }));
 		await write;
 		assert.equal(delta, 1, 'an in-flight commit should be tracked');
-		assert.equal(typeof outstanding.oldestAgeMs, 'number', 'a tracked commit should report an age');
-		assert.ok(outstanding.oldestAgeMs >= 0, 'a tracked commit should report a non-negative age');
+		// The oldest age is only this commit's when nothing foreign was already linked.
+		if (before === 0) {
+			assert.equal(typeof outstanding.oldestAgeMs, 'number', 'a tracked commit should report an age');
+			assert.ok(outstanding.oldestAgeMs >= 0, 'a tracked commit should report a non-negative age');
+		}
 	});
 
 	// The defect this guards: tracking used to occupy a single shared slot, claimed by whichever
@@ -271,6 +278,8 @@ describe('Outstanding commit tracking', () => {
 		let releaseForeign;
 		const foreign = new Promise((resolve) => (releaseForeign = resolve));
 		const FOREIGN_COMMITS = 140;
+		// checkOverloaded() sheds on the oldest node's age whoever owns it, and the threshold is config-derived.
+		const restoreDuration = setMaxOutstandingTxnDuration(60000);
 		try {
 			const { delta } = trackedAcross(() => {
 				for (let index = 0; index < FOREIGN_COMMITS; index++) trackOutstandingCommit(foreign);
@@ -292,6 +301,7 @@ describe('Outstanding commit tracking', () => {
 		} finally {
 			// Left linked, they would age past the overload threshold and 503 every later write on this thread.
 			releaseForeign();
+			setMaxOutstandingTxnDuration(restoreDuration);
 		}
 		await assertAllUntracked('own links and the released foreign commits should all be untracked');
 		assert.equal((await TrackA.get(5))?.name, 'chain-a-3');
