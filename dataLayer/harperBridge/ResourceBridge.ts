@@ -25,6 +25,7 @@ import type {
 import { collapseData } from '../../resources/tracked.ts';
 import { errorToString } from '../../utility/logging/harper_logger.ts';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { boundedAuditPruneEnd, raiseAuditFloor } from '../../resources/auditStore.ts';
 import { BridgeMethods } from './BridgeMethods.ts';
 import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
 import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
@@ -520,8 +521,26 @@ export class ResourceBridge extends BridgeMethods {
 			deleteObj.timestamp instanceof Date
 				? deleteObj.timestamp.getTime()
 				: typeof deleteObj.timestamp === 'string'
-					? Number.parseInt(deleteObj.timestamp)
+					? // Number, not Number.parseInt: parseInt takes a numeric PREFIX ('9999999999999oops' is a
+						// year-2286 bound to it, '1e3' is 1) where Number rejects both as NaN. Empty/whitespace is
+						// explicit because Number('') and Number('   ') are 0.
+						deleteObj.timestamp.trim() === ''
+						? Number.NaN
+						: Number(deleteObj.timestamp)
 					: deleteObj.timestamp;
+		// Audit keys are raw float64: NaN and negatives sort above every real timestamp (a range ending
+		// there spans the whole log), and Infinity records the unknown sentinel raiseAuditFloor never lifts.
+		// Reject anything but a finite non-negative number here, as the 400 it is rather than a server
+		// fault. `Number.isFinite` never coerces, so it is the type check too.
+		if (!Number.isFinite(before) || before < 0 || Object.is(before, -0))
+			throw handleHDBError(
+				new Error(),
+				`'timestamp' must be a non-negative epoch time or Date, received: ${String(deleteObj.timestamp)}`,
+				400,
+				undefined,
+				undefined,
+				true
+			);
 		const databaseName = deleteObj.database || deleteObj.schema || DEFAULT_DATABASE;
 		const table = getTable(deleteObj);
 		// A nonexistent table must not fall through to the no-table branch below — on RocksDB that
@@ -544,7 +563,14 @@ export class ResourceBridge extends BridgeMethods {
 			if (tables) {
 				for (const table of Object.values(tables)) {
 					if (table.primaryStore instanceof RocksDatabase) {
-						const deleted = table.primaryStore.purgeLogs({ before, includeEntryCounts: true });
+						// Clamp before recording: an operator-supplied bound has no ceiling of its own, and a
+						// floor above everything reachable never comes down (`raiseAuditFloor` only raises and
+						// `establishAuditFloor` skips a store that has a record), so a far-future bound would
+						// retire the floor for every table in this database. The purge takes the same clamped
+						// bound, so it cannot remove an entry the floor does not cover.
+						const pruneEnd = boundedAuditPruneEnd(table.auditStore, before);
+						raiseAuditFloor(table.auditStore, pruneEnd);
+						const deleted = table.primaryStore.purgeLogs({ before: pruneEnd, includeEntryCounts: true });
 						totalResults.log_files_deleted += deleted.length;
 						totalResults.entries_deleted += deleted.reduce((acc, file) => acc + file.entries, 0);
 						break;

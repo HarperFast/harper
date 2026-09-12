@@ -38,7 +38,13 @@ import { workerData } from 'worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
-import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
+import {
+	establishAuditFloor,
+	openAuditStore,
+	readAuditEntry,
+	createAuditEntry,
+	type AuditRecord,
+} from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { databasePaths, deleteRootBlobPathsForDB } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
@@ -1043,6 +1049,9 @@ function initStores(
 					}) as any;
 				}
 				auditStore.isLegacy = true;
+				// A legacy standalone audit root skips openAuditStore, so give it a floor here or it
+				// reports its retention horizon as permanently unknown.
+				establishAuditFloor(auditStore);
 			}
 		} else {
 			auditStore = openAuditStore(rootStore);

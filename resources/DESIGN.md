@@ -88,6 +88,7 @@ One giant `makeTable()` factory that returns a `TableResource extends Resource` 
 | Where does versioning / conflict resolution happen?                            | `Table.ts → _writeUpdate` (`#section: write-path-internals`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | How does `search()` choose an index?                                           | `Table.ts → search` (`#section: search-query`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | How are subscriptions replayed?                                                | `Table.ts → subscribe` (`#section: pub-sub`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Can a saved audit cursor still catch up, or has its history been pruned?       | `auditStore.ts → getAuditFloor` — internal; there is deliberately no public accessor (harper#2458). **No resume path consumes it yet** — harper#2448 is to have `Table.subscribe` read it inside the resume, so the check and the replay cannot drift apart; until then a `startTime` below the floor is still silently truncated. Returns the database-scoped floor: a cursor below it must resync, and `Infinity` means the floor is unknown (fails closed). `cursor >= floor` means only that no prune that ran _with a floor recorded_ removed history _after_ the cursor (nothing is promised below the FLOOR — that history is what a prune takes; `[floor, cursor)` is below the cursor but still covered). Two things it cannot see: history a legacy prune removed _before_ the floor existed, which a clock rollback can leave the stamped starting floor below; and a `restore_backup`/checkpoint rollback, since it is not a generation check (harper#2451). See "Audit retention floor" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | How is the response body shaped (select clause)?                               | `Table.ts → transformEntryForSelect` (`#section: search-query`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Where is record-level TTL evaluated?                                           | `Table.ts → setTTLExpiration` (`#section: lifecycle-admin`); `Updatable.getExpiresAt` (`#section: setup-and-factory`). Stored expiry metadata is resolved in the `_writeUpdate` commit closure: `options.expiresAt ?? context.expiresAt ?? (record @expiresAt field, if finite &amp; ≥ 0) ?? table default`. This metadata drives read-hiding + the cleanup sweep. The `@expiresAt` attribute is authoritative for **direct** put/patch only; cache/source fills persist via `recordUpdater` and derive expiry from `sourceContext.expiresAt` (source freshness / table default), not the field.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Why does `search()` hide a row that's past its TTL but not yet swept?          | `Table.ts → transformEntryForSelect` unconditionally treats `entry.expiresAt < Date.now()` as gone (lazy eviction on read) — correct for a SELECT, but a mutation locating rows to overwrite needs the opposite: pass `target.includeExpired = true` (read by the SQL engine's `runUpdate`/`runDelete` via `SqlEngineContext.includeExpiredRows`) to treat such a row as a live match, matching the leniency a direct by-id `put`/`patch` already has (they skip this check entirely, since `Resource.patch`'s static options don't request `ensureLoaded`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -153,6 +154,98 @@ Consequences worth knowing:
 **Async false-mode read gates preserve the streaming contract.** `Table.search` returns an `ExtendedIterable` carrying the internal `SEARCH_AUTHORIZATION` promise. Static `Resource.search` and `query` await that verdict before returning a response; on success the wrapper initializes the real search before the transaction settles so its normal read snapshot stays reserved until iteration completes. The marker follows supported iterable transforms and retains `selectApplied`/`getColumns`, so async or mapped delegation cannot turn a denial into a truncated successful response.
 
 **False-mode collection write gates stay per dispatch.** Built-in array PUT, query DELETE, and publish perform one request-scoped `allowUpdate`, `allowDelete`, or `allowCreate` verdict respectively. After query DELETE authorizes, it scans with a private cloned target whose permission check is disabled; the caller target stays untouched, and concurrent reads using it still run `allowRead`. Static publish overload routing marks the fresh per-dispatch resource receiver in `staticResourceDispatch.ts`, so copied targets and delayed delegation retain the `(target, message)` signature without putting reusable state on caller objects.
+
+---
+
+## Audit retention floor
+
+`Table.subscribe`'s `startTime` replay just begins wherever the audit log now begins, so a consumer
+resuming below the retention horizon is silently handed a short replay. The floor is the primitive
+that makes that detectable (harper#2447). It is internal, with deliberately no public accessor, and **nothing
+consumes it yet**: harper#2448 is to put the check inside `Table.subscribe` itself — the same shape as
+replication's `shouldForceBaseCopyForRetention`, and the only one where the floor cannot move between
+being read and being acted on. Until then the short replay above is unchanged.
+
+**The invariant: every path that prunes audit history raises the floor BEFORE removing anything.**
+There are five, and the ordering is the whole guarantee — a floor written after the removal is lost
+if the process dies in between, and the surviving lower floor then certifies a cursor whose history
+is gone. Over-reporting (a floor covering more than the prune actually removed) costs a consumer one
+unnecessary resync; under-reporting loses its data with no signal. So `raiseAuditFloor` is called
+first and a throw from it is what stops the prune.
+
+| Prune path                                                                   | Engine                                                                      |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `scheduleAuditCleanup` retention loop (`auditStore.ts`)                      | LMDB                                                                        |
+| `scheduleAuditCleanup` → `purgeLogs`                                         | RocksDB                                                                     |
+| `purgeAgedLogs` (boot/recovery, called from `replayLogs.ts`)                 | RocksDB                                                                     |
+| `Table.deleteHistory`                                                        | LMDB (`RocksTransactionLogStore.remove()` is a no-op, so it must NOT raise) |
+| `delete_transaction_logs_before` whole-database branch (`ResourceBridge.ts`) | RocksDB                                                                     |
+
+Seven things that are easy to get wrong here:
+
+- **The floor cannot be derived from the surviving log.** For four of the five paths the oldest
+  surviving entry would do, because they prune a database-wide time prefix. `Table.deleteHistory`
+  does not: it removes one table's entries out of a database-scoped log, so a sibling's entry
+  survives _below_ the newest entry it removed. Measured, LMDB: highest removed `…147.797`, oldest
+  surviving `…143.309` — a log-derived floor would have certified a cursor at `…145`.
+- **The record's presence is the trust marker.** `Symbol.for('audit-floor')` is a different key from
+  `last-removed`, which is still live and still maintained by the LMDB retention loop (#2338 hardened
+  its write path and added tests for the retry-carry — do not remove it). They coexist because they
+  answer different questions: `last-removed` records where the LMDB loop got to, after the fact,
+  while the floor is written ahead of every one of the five prune paths and its commit is verified.
+  A value found under `last-removed` therefore cannot be told apart from one carrying those
+  guarantees, which is why the floor needs its own key rather than reusing it.
+- **A store with no floor record is a store whose retention history we cannot account for.** That
+  includes the empty audit store an LMDB→RocksDB migration leaves behind, since `bin/copyDb.ts`
+  deliberately does not migrate it, and the audit-DBI-less result of a table-scoped backup taken
+  without `include_audit` — so `openAuditStore` stamps `max(Date.now(), newest retained key)` as a
+  one-time resync epoch. There is no permissive-baseline case: creating the audit DBI proves the
+  DBI was absent, not that the database is new.
+- **That epoch is a guess, and it is recorded as one.** Its bound is surviving state, which cannot see
+  history a selective prune already removed: a legacy `deleteHistory` takes one table's entries out of
+  the shared log, so a table that held the newest entries can leave the newest _survivor_ older than
+  entries that are gone, and a clock rolled back between the two stamps a floor below them (#2458).
+  Refusing to stamp is worse — `AUDIT_FLOOR_UNKNOWN` is absorbing (`raiseAuditFloor` cannot lift it,
+  `establishAuditFloor` skips any existing record), so it would make every upgraded deployment fail
+  closed forever. So `establishAuditFloor` writes the epoch under `Symbol.for('audit-floor-bootstrap')`
+  first, then stamps the floor from what that record holds.
+
+  **The record's presence is the signal; comparing it against the floor is not.** A store carrying one
+  has an unverified pre-tracking window for as long as the record exists, however far the floor has
+  since moved — a prune raising the floor above the epoch certifies only what that prune removed, and
+  says nothing about history removed before tracking began, which may sit _above_ the epoch, since that
+  is precisely what the guess could not see. Worked example: a v4-era `deleteHistory` removes tableA up
+  to t=1000 while sibling tableB's newest survivor is 900; a rolled-back clock stamps bootstrap=900 and
+  floor=900; a later retention pass raises the floor to 950. A repair keyed on `floor > bootstrap` would
+  read 950 > 900, call it earned, and leave a consumer at cursor 970 certified over tableA's missing
+  950–1000. So the mark is retired by a database generation (#2451), never by a floor that climbed past
+  it; what the recorded _value_ is for is telling that repair how far the guess reached.
+
+  Two properties it does depend on. **Ordering:** the record is written first, so a crash between the
+  two writes leaves a record with no floor, which the next open retries because the early return tests
+  the _floor_. **Undecodable bytes are overwritten** rather than kept — unlike the floor, where a
+  present record may be a deliberate `AUDIT_FLOOR_UNKNOWN` and rewriting it would lower a floor.
+  Keeping torn bytes pinned the store to unknown _forever_: the resolver skipped the write because a
+  record existed, the read back failed identically on every later open, and no retry could succeed.
+
+- **`getHistory` is not in the floor's time domain.** The floor is an audit-log key, which is what
+  `subscribe`'s events carry as `localTime`; `getHistory` reports each entry's origin `version` under
+  that same name, and a backdated or replicated write makes the two differ. A cursor saved from
+  `getHistory` cannot be compared against the floor.
+- **On RocksDB the floor tracks the configured retention horizon, not retained reality.** Whole-log-file
+  purge granularity means the branch cannot know which entries a purge will drop, and the floor is
+  written first, so each pass advances it to `Date.now() - auditRetention/(1+priority²)` whether a
+  file was dropped or not. Entries below that horizon are often still on disk, and a cursor among
+  them is told to resync — conservative in the safe direction only. LMDB can see a single eligible
+  entry, so it raises off the first one it finds instead.
+- **Untrustworthy metadata resolves to `Infinity`, not to a number.** A wrong-length record, or eight
+  bytes decoding to NaN/negative, must not become a floor: `cursor < NaN` is false, so a consumer
+  spelling the check that way would read corrupt metadata as safe.
+- **A restore is outside what the floor can see.** `restore_backup` reinstalls the backup's floor
+  along with everything else, so a cursor from after the backup point reads as safe against it. The
+  audit floor is one of three carriers of resumable state a restore rolls back (record versions and
+  per-node `Symbol.for('seq')` records are the others), so this wants a database-level generation
+  rather than a fix in this one field — harper#2451.
 
 ---
 

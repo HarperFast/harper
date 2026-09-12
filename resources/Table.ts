@@ -91,7 +91,14 @@ import {
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, LOCAL_ONLY, auditRetention, removeAuditEntry } from './auditStore.ts';
+import {
+	HAS_BLOBS,
+	LOCAL_ONLY,
+	auditRetention,
+	removeAuditEntry,
+	raiseAuditFloor,
+	boundedAuditPruneEnd,
+} from './auditStore.ts';
 import { derivedIndexWriteRejection, hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
@@ -6188,10 +6195,24 @@ export function makeTable(options) {
 			}
 			const drainRemovals = () => Promise.all(inFlightRemovals);
 			let entriesDeleted = 0;
+			// LMDB only: RocksTransactionLogStore.remove() is a no-op, so a RocksDB deleteHistory removes
+			// nothing and must not claim it did.
+			// A bound above everything reachable must not be recorded as the floor: the floor only rises
+			// and a store with a record is never re-stamped, so it would never come down, for every table in
+			// this database. `boundedAuditPruneEnd` clamps the cutoff to just above the newest key in the
+			// log, and the scan below uses that same value as its range end, so the prune cannot remove an
+			// entry the floor does not cover.
+			let pruneEnd = endTime;
+			if (!isRocksDB) {
+				pruneEnd = boundedAuditPruneEnd(auditStore, endTime);
+				raiseAuditFloor(auditStore, pruneEnd);
+			}
 			try {
 				for (const auditRecord of auditStore.getRange({
-					start: 1, // must not be zero; see getHistory below for why
-					end: endTime,
+					// must not be zero: 0 encodes to all zero bytes and so overlaps the symbol keys, as in
+					// getHistory below
+					start: 1,
+					end: pruneEnd,
 				})) {
 					await rest(); // yield to other async operations
 					if (auditRecord.tableId !== tableId) continue;
@@ -6218,7 +6239,7 @@ export function makeTable(options) {
 							isRocksDB && version != null
 								? resolveAuditHead(key, version, entry.nodeId, entry.additionalAuditRefs).txnLogKey
 								: localTime;
-						if (value === null && version != null && auditTime < endTime) {
+						if (value === null && version != null && auditTime < pruneEnd) {
 							const backpressure = queueRemoval(
 								() => primaryStore.remove(key, version),
 								'Error removing deleted record during deleteHistory'
