@@ -121,7 +121,11 @@ suite(
 
 		test('is reachable through its own application-named UDS mirror, which publishes its route', async () => {
 			const socketsDir = join(ctx.harper.dataRootDir, 'sockets');
-			const names = await readdir(socketsDir);
+			const names = await waitFor(
+				() => readdir(socketsDir),
+				(entries) => entries.some((name) => name.startsWith('app-isolated%2Dapp-') && name.endsWith(':9927.sock')),
+				'application mirror was not created'
+			);
 			// the HTTPS mirror, not the one MQTT's per-thread listener publishes under the same application name
 			const mirror = names.find((name) => name.startsWith('app-isolated%2Dapp-') && name.endsWith(':9927.sock'));
 			ok(mirror, `no application mirror among ${names.join(', ')}`);

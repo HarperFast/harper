@@ -2486,6 +2486,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	}
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
+	let refreshedLiveAttributes = false;
 	let deferredPrimaryRow: any;
 	let unpublishedPrimaryStore: any;
 	let published = false;
@@ -2494,6 +2495,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const indicesToRemove = [];
 	try {
 		if (Table) {
+			refreshedLiveAttributes = true;
 			primaryKey = Table.primaryKey;
 			if (Table.primaryStore.rootStore.status === 'closed') {
 				throw new Error(`Can not use a closed data store from ${tableName} class`);
@@ -3074,10 +3076,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	} finally {
 		releaseLock();
 	}
-	if (hasChanges || refreshRelationshipAttributes) {
-		Table.schemaVersion++;
-		Table.updatedAttributes();
-	}
+	if (hasChanges || refreshRelationshipAttributes) Table.schemaVersion++;
+	if (hasChanges || refreshRelationshipAttributes || refreshedLiveAttributes) Table.updatedAttributes();
 	logger.trace(`${tableName} table loading, running index`);
 	const branchPath = target.branch?.path;
 	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {

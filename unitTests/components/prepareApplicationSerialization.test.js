@@ -164,16 +164,27 @@ describe('prepareApplication serialization', () => {
 		});
 		firstApplication.dirPath = componentDirPath;
 		secondApplication.dirPath = componentDirPath;
+		let firstBeforePrepare = false;
+		let secondBeforePrepare = false;
 
 		try {
-			const firstPreparation = prepareApplication(firstApplication);
+			const firstPreparation = prepareApplication(firstApplication, {
+				beforePrepare: async () => {
+					firstBeforePrepare = true;
+				},
+			});
 			await waitFor(() =>
 				access(firstStartedPath).then(
 					() => true,
 					() => false
 				)
 			);
-			const secondPreparation = prepareApplication(secondApplication);
+			assert.strictEqual(firstBeforePrepare, true);
+			const secondPreparation = prepareApplication(secondApplication, {
+				beforePrepare: async () => {
+					secondBeforePrepare = true;
+				},
+			});
 
 			// Tolerates the live path not existing yet, which is the new invariant: the first deploy's
 			// candidate is still installing, so nothing has been published to the component path at all.
@@ -189,9 +200,11 @@ describe('prepareApplication serialization', () => {
 				/second extraction started before the first install completed/
 			);
 			await assert.rejects(access(secondStartedPath));
+			assert.strictEqual(secondBeforePrepare, false, 'preparation hooks share the component lock');
 
 			await writeFile(releaseFirstPath, 'release');
 			await Promise.all([firstPreparation, secondPreparation]);
+			assert.strictEqual(secondBeforePrepare, true);
 			assert.equal(JSON.parse(await readFile(join(componentDirPath, 'package.json'), 'utf8')).version, '2.0.0');
 			assert.equal(await readFile(secondStartedPath, 'utf8'), 'started');
 		} finally {

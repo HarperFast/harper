@@ -3455,6 +3455,7 @@ export function shouldPackLocalDirectory(packageIdentifier: string | undefined, 
  * @returns A promise that resolves when all preparation steps complete.
  */
 export type PrepareApplicationOptions = {
+	beforePrepare?: () => Promise<void>;
 	/**
 	 * Runs against the built candidate while the live version is still serving, and BEFORE the swap. A
 	 * throw here means the candidate never goes live — which is the whole difference from the previous
@@ -3471,6 +3472,7 @@ export async function prepareApplication(application: Application, options: Prep
 		await withComponentPreparationLock(
 			application.dirPath,
 			async () => {
+				await options.beforePrepare?.();
 				const asideStagingDir = extractionStagingDirectory(application.dirPath);
 				let recoveryPending = true;
 				try {

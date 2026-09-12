@@ -193,9 +193,10 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 		.catch(async (error) => {
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
 			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);
+			const withdrewLease = isolatedSlots.get(application) === slot;
+			if (withdrewLease) isolatedSlots.delete(application);
 			await slot.shutdown();
-			if (isolatedSlots.get(application) === slot) {
-				isolatedSlots.delete(application);
+			if (withdrewLease && !isolatedSlots.has(application)) {
 				const { cleanupApplicationSockets } = await import('../http.ts');
 				cleanupApplicationSockets(application);
 			}

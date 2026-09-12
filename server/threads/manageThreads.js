@@ -719,7 +719,7 @@ async function restartWorkers(
 		// replacement — an unavoidable brief gap, but only for worker-owned listeners, since the main
 		// thread keeps serving the HTTP ports throughout. This ordering is also what lets
 		// listenOnPorts() treat a dedicated listener's EADDRINUSE as an external conflict.
-		const canPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
+		const platformCanPreStartReplacement = process.platform !== 'win32' && process.platform !== 'darwin' && !isBun;
 		const restarting = workers.slice(0);
 		for (let index = 0; index < restarting.length; index++) {
 			const worker = restarting[index];
@@ -729,6 +729,7 @@ async function restartWorkers(
 			if (application !== '*' && worker.application !== application) continue; // and by isolated application
 			if (worker.application && freshlyStarted.has(worker.application)) continue;
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
+			const canPreStartReplacement = platformCanPreStartReplacement && !worker.application;
 			if (overlapping && startReplacementThreads && canPreStartReplacement) {
 				// Overlapping restart: start the replacement and wait until it is accepting connections
 				// *before* shutting down the worker it replaces. The replacement joins the (SO_REUSEPORT)
