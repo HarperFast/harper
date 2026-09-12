@@ -133,8 +133,9 @@ describe('Outstanding commit tracking', () => {
 	// incremented in the first place. Hold the second (chained) link's native commit open through a
 	// narrow test seam (patching Transaction.prototype.commit, scoped to TrackB's store, the same
 	// idiom lingeringWriteCommit.test.js uses) and measure the count delta across the synchronous
-	// block that submits it: commit() links the tracking node right after the native commit returns,
-	// with no await between, so a microtask queued from inside the seam observes exactly that link.
+	// block that submits it. trackOutstandingCommit subscribes to the commit promise (`.then(untrack,
+	// untrack)`) right after linking its node, in that same block, so the returned promise's own `then`
+	// is where the count can be read with no await — and so no foreign link or unlink — in between.
 	it('tracks the second (chained) commit while it is pending, not just the first', async function () {
 		if (isLMDB) return;
 		this.timeout(20000);
@@ -149,20 +150,22 @@ describe('Outstanding commit tracking', () => {
 		// Settles only once TrackB's (patched) commit has been invoked AND its tracking node linked, so
 		// the assertions below cannot run early against TrackA's own transient node.
 		const secondCommitStarted = new Promise((resolve) => (signalSecondCommitStarted = resolve));
-		let secondCommitDelta;
-		let outstandingDuringHold;
+		let before;
+		const deltasAtSubscription = [];
+		let outstandingAtTracking;
 		Transaction.prototype.commit = function (...args) {
 			if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
-			const before = getOutstandingCommits().count;
+			before = getOutstandingCommits().count;
 			const realCommit = originalCommit.apply(this, args);
-			// Runs after the caller's synchronous block has linked this commit's node and before any other
-			// commit's completion can be delivered (each arrives in its own macrotask).
-			queueMicrotask(() => {
-				outstandingDuringHold = getOutstandingCommits();
-				secondCommitDelta = outstandingDuringHold.count - before;
-				signalSecondCommitStarted();
-			});
-			return held.then(() => realCommit);
+			const heldCommit = held.then(() => realCommit);
+			heldCommit.then = function (...thenArgs) {
+				const outstanding = getOutstandingCommits();
+				deltasAtSubscription.push(outstanding.count - before);
+				if (outstanding.count - before === 1) outstandingAtTracking ??= outstanding;
+				return Promise.prototype.then.apply(this, thenArgs);
+			};
+			signalSecondCommitStarted();
+			return heldCommit;
 		};
 		let done;
 		try {
@@ -200,12 +203,19 @@ describe('Outstanding commit tracking', () => {
 				clearTimeout(timeoutHandle);
 			}
 			assert.ok(chained, 'the two databases should have produced a chained transaction');
-			assert.equal(secondCommitDelta, 1, 'the chained second-database commit should be tracked while pending');
 			assert.equal(
-				typeof outstandingDuringHold.oldestAgeMs,
-				'number',
-				'the pending chained commit should report an age'
+				Math.max(...deltasAtSubscription),
+				1,
+				`the chained second-database commit should be tracked, once, while pending (deltas seen at each subscription: ${deltasAtSubscription})`
 			);
+			// The oldest age is only this commit's when nothing foreign was already linked.
+			if (before === 0) {
+				assert.equal(
+					typeof outstandingAtTracking.oldestAgeMs,
+					'number',
+					'the pending chained commit should report an age'
+				);
+			}
 		} finally {
 			// Always restore the prototype and release the held commit, even if an assertion above threw —
 			// otherwise `done`'s chained commit stays pending forever and poisons every later test's count.
