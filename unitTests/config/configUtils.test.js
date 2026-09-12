@@ -156,11 +156,19 @@ describe('Test configUtils module', () => {
 		const ATOMIC_TEST_DIR = path.join(DIRNAME, 'yaml');
 		const ATOMIC_TEST_PATH = path.join(ATOMIC_TEST_DIR, 'atomic-write-test.yaml');
 
+		let originalPlatform;
+		const setPlatform = (value) => Object.defineProperty(process, 'platform', { value, configurable: true });
+
 		before(() => {
 			fs.ensureDirSync(ATOMIC_TEST_DIR);
 		});
 
+		beforeEach(() => {
+			originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+		});
+
 		afterEach(() => {
+			Object.defineProperty(process, 'platform', originalPlatform);
 			try {
 				fs.unlinkSync(ATOMIC_TEST_PATH);
 			} catch {}
@@ -211,13 +219,26 @@ describe('Test configUtils module', () => {
 			expect(stragglers).to.be.empty;
 		});
 
-		it('generates a unique temp path even when pid and timestamp are identical', () => {
-			// Worker threads share process.pid, and worker arrivals cluster within the
-			// same millisecond — a pid+timestamp scheme would collide. Pin Date.now()
-			// so this test fails if uniqueness ever stops depending on randomness.
+		// A partial write leaves the temp file behind, and its name carries fresh randomness on every
+		// call, so nothing else would ever collect it.
+		it('removes the temp file when the write itself fails part-way', () => {
+			const realWriteFileSync = fs.writeFileSync;
+			const writeStub = sandbox.stub(fs, 'writeFileSync').callsFake((target) => {
+				realWriteFileSync(target, '');
+				throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+			});
+			try {
+				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content')).to.throw(/ENOSPC/);
+				const tempPath = writeStub.firstCall.args[0];
+				expect(fs.existsSync(tempPath)).to.be.false;
+			} finally {
+				writeStub.restore();
+			}
+		});
+
+		it('generates a unique temp path for each write', () => {
 			const writeStub = sandbox.stub(fs, 'writeFileSync');
 			const renameStub = sandbox.stub(fs, 'renameSync');
-			const dateStub = sandbox.stub(Date, 'now').returns(1234567890);
 			try {
 				const tempPaths = new Set();
 				for (let i = 0; i < 100; i++) {
@@ -228,13 +249,10 @@ describe('Test configUtils module', () => {
 			} finally {
 				writeStub.restore();
 				renameStub.restore();
-				dateStub.restore();
 			}
 		});
 
-		it('retries the rename on a transient Windows EPERM/EACCES and succeeds once the holder releases the file', () => {
-			// Simulates a sibling worker's RootConfigWatcher (or AV) briefly holding the
-			// destination open for read: renameSync fails a couple of times, then succeeds.
+		it('retries transient Windows rename errors and succeeds once the holder releases the file', () => {
 			const renameStub = sandbox.stub(fs, 'renameSync');
 			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
 			const eaccesError = Object.assign(new Error('EACCES: permission denied, rename'), { code: 'EACCES' });
@@ -242,30 +260,86 @@ describe('Test configUtils module', () => {
 			renameStub.onCall(1).throws(eaccesError);
 			renameStub.onCall(2).returns(undefined);
 			try {
-				atomicWriteFile(ATOMIC_TEST_PATH, 'content');
+				atomicWriteFile(ATOMIC_TEST_PATH, 'content', {
+					retryBudgetMs: 60_000,
+					initialDelayMs: 0,
+				});
 				expect(renameStub.callCount).to.equal(3);
 			} finally {
 				renameStub.restore();
 			}
 		});
 
-		it('gives up after exhausting retries on a persistent EPERM, cleans up the temp file, and rethrows', () => {
+		it('preserves the explicit retry-count limit', () => {
 			const renameStub = sandbox.stub(fs, 'renameSync');
 			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
 			renameStub.throws(epermError);
 			try {
-				// Use the default retry count (unspecified maxRetries) so this exercises the real
-				// production budget, but override the delay to ~0 so the backoff doesn't burn real
-				// wall-clock time (default backoff would take ~3.6s for a persistent failure).
-				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content', { initialDelayMs: 0, maxDelayMs: 0 })).to.throw(
-					epermError
-				);
-				// 1 initial attempt + 12 retries (the production default maxRetries)
-				expect(renameStub.callCount).to.equal(13);
+				expect(() =>
+					atomicWriteFile(ATOMIC_TEST_PATH, 'content', {
+						retryBudgetMs: 60_000,
+						maxRetries: 2,
+						initialDelayMs: 0,
+					})
+				).to.throw(epermError);
+				expect(renameStub.callCount).to.equal(3);
+			} finally {
+				renameStub.restore();
+			}
+		});
+
+		it('rejects invalid retry options', () => {
+			expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content', { initialDelayMs: Number.NaN })).to.throw(
+				RangeError,
+				'rename retry options must be non-negative numbers'
+			);
+			expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content', { retryBudgetMs: Infinity })).to.throw(
+				RangeError,
+				'rename retry options must be non-negative numbers'
+			);
+		});
+
+		it('gives up after the retry budget expires on a persistent EPERM, cleans up the temp file, and rethrows', () => {
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+			renameStub.throws(epermError);
+			try {
+				const startedAt = performance.now();
+				expect(() =>
+					atomicWriteFile(ATOMIC_TEST_PATH, 'content', {
+						retryBudgetMs: 50,
+					})
+				).to.throw(epermError);
+				const elapsedMs = performance.now() - startedAt;
+				expect(renameStub.callCount).to.be.at.least(2);
+				expect(elapsedMs).to.be.at.least(50);
+				expect(elapsedMs).to.be.below(1_000);
 				const stragglers = fs
 					.readdirSync(ATOMIC_TEST_DIR)
 					.filter((e) => e.startsWith('atomic-write-test.yaml.') && e.endsWith('.tmp'));
 				expect(stragglers).to.be.empty;
+			} finally {
+				renameStub.restore();
+			}
+		});
+
+		// Every case above overrides `retryBudgetMs`, so the shipped default's own loop never runs:
+		// widening it to effectively unbounded leaves them all green, and the value that actually
+		// governs `set_configuration` on Windows would ship unwatched. The bound is spelled out
+		// rather than read back from the module, or the assertion would move with the regression.
+		it('gives up on the shipped default budget, not on an unbounded one', function () {
+			this.timeout(30_000);
+			// The window the 12-attempt schedule it replaced spanned: 10+20+40+80+160+320+500*6.
+			const expectedBudgetMs = 3_630;
+			const renameStub = sandbox.stub(fs, 'renameSync');
+			const epermError = Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+			renameStub.throws(epermError);
+			try {
+				const startedAt = performance.now();
+				expect(() => atomicWriteFile(ATOMIC_TEST_PATH, 'content')).to.throw(epermError);
+				const elapsedMs = performance.now() - startedAt;
+				expect(elapsedMs, 'the default budget was shortened').to.be.at.least(expectedBudgetMs * 0.8);
+				expect(elapsedMs, 'the default budget was widened').to.be.below(expectedBudgetMs * 2);
 			} finally {
 				renameStub.restore();
 			}
@@ -282,6 +356,22 @@ describe('Test configUtils module', () => {
 				renameStub.restore();
 			}
 		});
+
+		for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+			it(`retries ${code}, whatever the platform reports`, () => {
+				setPlatform('linux');
+				const renameStub = sandbox.stub(fs, 'renameSync');
+				const error = Object.assign(new Error(`${code}: rename`), { code });
+				renameStub.onFirstCall().throws(error);
+				renameStub.onSecondCall().returns(undefined);
+				try {
+					atomicWriteFile(ATOMIC_TEST_PATH, 'content', { initialDelayMs: 0 });
+					expect(renameStub.callCount).to.equal(2);
+				} finally {
+					renameStub.restore();
+				}
+			});
+		}
 	});
 
 	describe('Test ensureConfigKeysPresent function', () => {

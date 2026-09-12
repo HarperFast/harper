@@ -14,6 +14,7 @@ const { EntryHandler } = require('#src/components/EntryHandler');
 const { restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 const { writeFile } = require('node:fs/promises');
 const { waitFor } = require('../waitFor.js');
+const { useShortReadRetryBudget, restoreReadRetryBudget } = require('../shortReadRetryBudget');
 const { ApplicationScope } = require('#src/components/ApplicationScope');
 const { deployLifecycle, _resetForTests: resetDeployLifecycle } = require('#src/components/deployLifecycle');
 
@@ -31,6 +32,7 @@ describe('Scope', () => {
 	});
 
 	afterEach(async () => {
+		restoreReadRetryBudget();
 		resetRestartNeeded();
 		// Yield to the event loop so any in-flight chokidar watcher teardown
 		// (from scope.close() in the test body) and any pending readFile
@@ -250,6 +252,31 @@ describe('Scope', () => {
 
 		await scope.close();
 	});
+
+	it('should call requestRestart when a truthy-default scope receives its source config', async () => {
+		// A config file still empty when the read ladder is spent settles `Scope.ready` on the
+		// defaults, so componentLoader runs handleApplication with no config of this scope's own.
+		// The operator's config landing afterwards reaches nothing on its own: componentLoader is
+		// long past its await, and the arrival is a `ready`, not the `change` the files/urlPath
+		// listener watches.
+		useShortReadRetryBudget();
+		writeFileSync(this.configFilePath, '');
+		const scopeName = 'static';
+
+		const scope = new Scope(this.appName, scopeName, this.directory, this.configFilePath, this.resources, this.server);
+
+		await scope.ready;
+
+		assert.equal(restartNeeded(), false, 'requestRestart should not be called yet');
+
+		await writeFile(this.configFilePath, stringify({ [scopeName]: { files: 'alternate/**' } }));
+
+		await waitFor(() => restartNeeded());
+
+		assert.equal(restartNeeded(), true, 'requestRestart should be called when the config arrives');
+
+		await scope.close();
+	}).timeout(10000);
 
 	it('should NOT call requestRestart on block removal when the plugin handles remove itself', async () => {
 		writeFileSync(this.configFilePath, stringify({ [this.pluginName]: { enabled: true } }));
