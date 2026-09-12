@@ -15,15 +15,17 @@ import {
 const ISOLATED = resolve(import.meta.dirname, 'fixtures/isolated-app');
 const SHARED = resolve(import.meta.dirname, 'fixtures/shared-sibling');
 const ISOLATED_TWO = resolve(import.meta.dirname, 'fixtures/isolated-app-two');
+const ISOLATED_TWO_NAME = 'iso-two';
 const POOL = 2;
 const CONFIG = {
 	config: {
-		'threads': { count: POOL },
+		'threads': { count: POOL, maxIsolated: 2 },
 		// a secure port (the harness adds one when tls is configured) and UDS mirrors: the only surface a
 		// dedicated worker binds
 		'tls': { unixDomainSockets: true },
+		'stale-isolated': { isolated: true },
 		'isolated-app': { isolated: true, host: 'iso.qa.test' },
-		'isolated-app-two': { isolated: true },
+		[ISOLATED_TWO_NAME]: { isolated: true },
 	},
 };
 
@@ -69,9 +71,13 @@ suite(
 				join(process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR || tmpdir(), 'harper-integration-test-')
 			);
 			ctx.harper = { dataRootDir } as any;
-			for (const fixture of [ISOLATED, SHARED, ISOLATED_TWO]) {
+			for (const fixture of [ISOLATED, SHARED]) {
 				await cp(fixture, join(dataRootDir, 'components', basename(fixture)), { recursive: true, dereference: true });
 			}
+			await cp(ISOLATED_TWO, join(dataRootDir, 'components', ISOLATED_TWO_NAME), {
+				recursive: true,
+				dereference: true,
+			});
 			await startHarper(ctx, CONFIG);
 		});
 		after(async () => {
@@ -82,8 +88,25 @@ suite(
 		test('gets exactly one dedicated http worker, numbered past the pool', async () => {
 			const list = await threads(ctx);
 			strictEqual(dedicated(list).length, 1, JSON.stringify(list));
-			strictEqual(dedicated(list, 'isolated-app-two').length, 1, 'and so does its isolated sibling');
+			strictEqual(dedicated(list, ISOLATED_TWO_NAME).length, 1, 'and so does its isolated sibling');
 			strictEqual(pool(list).length, POOL, 'the pool is untouched by the extra worker');
+		});
+
+		test('rejects another isolated deployment when the dedicated-worker budget is full', async () => {
+			const response = await fetch(ctx.harper.operationsAPIURL, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					operation: 'deploy_component',
+					project: 'third-isolated',
+					package: 'unused-because-admission-runs-first',
+					isolated: true,
+					restart: false,
+				}),
+			});
+			const body = await response.text();
+			strictEqual(response.status, 409, body);
+			ok(body.includes('already runs 2 isolated application(s)'), body);
 		});
 
 		test('the shared port serves the shared application but never the isolated one', async () => {
@@ -150,7 +173,7 @@ suite(
 		test('dropping the isolated application stops its worker and restarts nothing else', async () => {
 			const beforeList = await threads(ctx);
 			const poolBefore = pool(beforeList);
-			const siblingBefore = dedicated(beforeList, 'isolated-app-two')[0].threadId;
+			const siblingBefore = dedicated(beforeList, ISOLATED_TWO_NAME)[0].threadId;
 
 			await sendOperation(ctx.harper, { operation: 'drop_component', project: 'isolated-app', restart: true });
 
@@ -162,7 +185,7 @@ suite(
 			);
 			deepStrictEqual(pool(afterList), poolBefore, 'the pool was not restarted');
 			strictEqual(
-				dedicated(afterList, 'isolated-app-two')[0]?.threadId,
+				dedicated(afterList, ISOLATED_TWO_NAME)[0]?.threadId,
 				siblingBefore,
 				'nor was the other isolated application'
 			);

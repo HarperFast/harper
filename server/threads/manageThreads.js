@@ -64,10 +64,12 @@ let threadTerminationTimeout = process.env.DEV_MODE === 'true' || process.env.DE
 const RESTART_TYPE = 'restart';
 const RESTART_PROGRESS_HEARTBEAT_MS = 15000;
 const REQUEST_THREAD_INFO = 'request_thread_info';
+const REQUEST_RUNNING_ISOLATED_APPLICATIONS = 'request-running-isolated-applications';
 const RESOURCE_REPORT = 'resource_report';
 const OS_THREAD_ID = 'os-thread-id';
 const STUCK_WORKER_REPORT = 'stuck-worker-report';
 const THREAD_INFO = 'thread_info';
+const RUNNING_ISOLATED_APPLICATIONS = 'running-isolated-applications';
 const ADDED_PORT = 'added-port';
 const ACKNOWLEDGEMENT = 'ack';
 const REMOVE_PORT = 'remove-port';
@@ -85,6 +87,7 @@ const AWAIT_PROCESS_GROUP_TERMINATION = 'await-process-group-termination';
 const PROCESS_GROUP_TERMINATION_CONFIRMED = 'process-group-termination-confirmed';
 const THREAD_INFO_REQUEST_TIMEOUT_MS = 1000;
 let getThreadInfo;
+let getRunningIsolatedApplications;
 let awaitProcessGroupTermination;
 // Worker-side backstop that force-exits if the graceful shutdown sequence doesn't finish in time.
 let selfExitTimer;
@@ -152,6 +155,7 @@ module.exports = {
 	setMonitorListener,
 	onMessageFromWorkers,
 	setIsolatedWorkerReconciler,
+	setRunningIsolatedApplicationsGetter,
 	isApplicationPrimaryWorker,
 	applicationWorkerIndex,
 	runsApplicationCodeSingletons,
@@ -425,6 +429,14 @@ if (!parentPort) {
 	onMessageByType(REQUEST_THREAD_INFO, (message, worker) => {
 		if (worker) sendThreadInfo(worker);
 	});
+	onMessageByType(REQUEST_RUNNING_ISOLATED_APPLICATIONS, (message, worker) => {
+		if (worker)
+			worker.postMessage({
+				type: RUNNING_ISOLATED_APPLICATIONS,
+				requestId: message.requestId,
+				applications: runningIsolatedApplicationsGetter(),
+			});
+	});
 	onMessageByType(RESOURCE_REPORT, (message, worker) => {
 		if (worker) recordResourceReport(worker, message);
 	});
@@ -459,11 +471,12 @@ listenersByType.set(hdbTerms.ITC_EVENT_TYPES.MIDDLEWARE_CHAINS_RESPONSE, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_REGISTERED, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_REQUEST, null);
 listenersByType.set(hdbTerms.ITC_EVENT_TYPES.OPERATION_EXECUTE_RESPONSE, null);
-// getThreadInfo/awaitProcessGroupTermination register their own one-shot parentPort listener per
+// These request/response functions register their own one-shot parentPort listener per
 // call rather than going through onMessageByType, so without this, every reply would also reach
 // addPort's permanent dispatcher as an "unregistered" type: notifyMessageListeners would warn and
 // queue each one in messagesQueuedByType forever, and a lock-wait polls every 50ms.
 listenersByType.set(THREAD_INFO, null);
+listenersByType.set(RUNNING_ISOLATED_APPLICATIONS, null);
 listenersByType.set(PROCESS_GROUP_TERMINATION_CONFIRMED, null);
 
 function startWorker(path, options = {}) {
@@ -973,9 +986,13 @@ function decodeRestartScope(message) {
 }
 
 let isolatedWorkerReconciler = null;
+let runningIsolatedApplicationsGetter = () => [];
 /** Registered by socketRouter: starts and stops dedicated workers to match the root config's isolated applications. */
 function setIsolatedWorkerReconciler(reconcile) {
 	isolatedWorkerReconciler = reconcile;
+}
+function setRunningIsolatedApplicationsGetter(getter) {
+	runningIsolatedApplicationsGetter = getter;
 }
 
 const messageListeners = [];
@@ -1354,6 +1371,38 @@ if (parentPort && workerData?.addPorts) {
 				}, timeoutMs);
 			}
 		});
+	let nextRunningIsolatedApplicationsRequestId = 0;
+	getRunningIsolatedApplications = (timeoutMs) =>
+		new Promise((resolve, reject) => {
+			const requestId = ++nextRunningIsolatedApplicationsRequestId;
+			let timeout;
+			parentPort.on('message', receiveApplications);
+			try {
+				parentPort.postMessage({ type: REQUEST_RUNNING_ISOLATED_APPLICATIONS, requestId });
+			} catch (error) {
+				cleanup();
+				reject(error);
+				return;
+			}
+			function receiveApplications(message) {
+				if (message.type === RUNNING_ISOLATED_APPLICATIONS && message.requestId === requestId) {
+					cleanup();
+					resolve(message.applications);
+				}
+			}
+			function cleanup() {
+				if (timeout) clearTimeout(timeout);
+				parentPort.off('message', receiveApplications);
+			}
+			if (timeoutMs != null) {
+				timeout = setTimeout(() => {
+					cleanup();
+					const error = new Error(`Timed out waiting for isolated application topology after ${timeoutMs}ms`);
+					error.code = 'ERR_ISOLATED_APPLICATIONS_TIMEOUT';
+					reject(error);
+				}, timeoutMs);
+			}
+		});
 	let awaitTerminationRequestId = 0;
 	awaitProcessGroupTermination = (ownerThreadId, signal) =>
 		new Promise((resolve) => {
@@ -1378,10 +1427,12 @@ if (parentPort && workerData?.addPorts) {
 		});
 } else {
 	getThreadInfo = getChildWorkerInfo;
+	getRunningIsolatedApplications = () => runningIsolatedApplicationsGetter();
 	awaitProcessGroupTermination = (ownerThreadId) =>
 		pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
 }
 module.exports.getThreadInfo = getThreadInfo;
+module.exports.getRunningIsolatedApplications = getRunningIsolatedApplications;
 
 // Listeners notified when a connected thread's port closes (worker exit/restart), so
 // modules holding per-thread state (e.g. registeredOperations' registry and in-flight

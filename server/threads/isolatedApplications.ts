@@ -43,6 +43,17 @@ export function maxIsolatedApplications(): number {
 	return Number.isInteger(configured) && configured >= 0 ? configured : DEFAULT_MAX_ISOLATED_APPLICATIONS;
 }
 
+/** Why `appName` cannot claim a place in the dedicated-worker budget, if the budget is full. */
+export function isolatedApplicationCapacityRefusal(
+	appName: string,
+	runningApplications: Iterable<string>,
+	max = maxIsolatedApplications()
+): string | undefined {
+	const running = new Set(runningApplications);
+	if (running.has(appName) || running.size < max) return undefined;
+	return `the instance already runs ${max} isolated application(s) (threads.maxIsolated)`;
+}
+
 /**
  * Whether the calling thread is the one that loads the application `appName` (an application: a
  * directory under componentsRoot, or a root-config entry with `package`). A dedicated worker loads

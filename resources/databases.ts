@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
-import { join, extname, basename } from 'path';
+import { join, extname, basename } from 'node:path';
 import {
 	closeSync,
 	existsSync,

@@ -48,6 +48,7 @@ const {
 const { ProgressEmitter } = require('../server/serverHelpers/progressEmitter.ts');
 
 const DROP_COMPONENT_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
 
 function componentDropLockOptions(project) {
 	return {
@@ -606,16 +607,20 @@ async function deployComponent(req) {
 	if (nowIsolated) {
 		const {
 			isolatedApplicationRefusal,
-			maxIsolatedApplications,
+			isolatedApplicationCapacityRefusal,
 		} = require('../server/threads/isolatedApplications.ts');
-		const { runningIsolatedApplications } = require('../server/threads/socketRouter.ts');
-		// counted like the reconcile counts: applications that actually hold a dedicated worker
-		const others = runningIsolatedApplications().filter((name) => name !== req.project).length;
+		let runningApplications;
+		try {
+			runningApplications = await manageThreads.getRunningIsolatedApplications(ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS);
+		} catch (error) {
+			throw handleHDBError(
+				error,
+				`Cannot deploy '${req.project}' as an isolated application: the main thread's worker topology is unavailable: ${error.message}`,
+				HTTP_STATUS_CODES.CONFLICT
+			);
+		}
 		const refusal =
-			isolatedApplicationRefusal(req.project) ??
-			(!wasIsolated && others >= maxIsolatedApplications()
-				? `the instance already runs ${maxIsolatedApplications()} isolated application(s) (threads.maxIsolated)`
-				: undefined);
+			isolatedApplicationRefusal(req.project) ?? isolatedApplicationCapacityRefusal(req.project, runningApplications);
 		if (refusal) {
 			throw handleHDBError(
 				new Error(),
@@ -885,10 +890,13 @@ async function deployComponent(req) {
 			// An existing component's watched files are handled by Scope/EntryHandler. Package
 			// metadata is deliberately outside most plugin globs, so compare it across the atomic
 			// swap as well: a dependency or module-entry change also invalidates loaded code.
-			if (application.isNewComponent || application.packageMetadataChanged) {
-				const { requestRestart } = require('./requestRestart.ts');
-				requestRestart();
-			}
+			const { requestRestartAfterDeploy } = require('./requestRestart.ts');
+			requestRestartAfterDeploy(
+				application.isNewComponent,
+				application.packageMetadataChanged,
+				wasIsolated,
+				nowIsolated
+			);
 			response.message = `Successfully deployed: ${application.name}`;
 		}
 

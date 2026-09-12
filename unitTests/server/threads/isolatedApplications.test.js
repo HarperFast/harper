@@ -62,6 +62,14 @@ describe('isolated applications (harper#642 tier 2)', () => {
 		it('defaults the admission budget when none is configured', () => {
 			assert.strictEqual(iso().maxIsolatedApplications(), iso().DEFAULT_MAX_ISOLATED_APPLICATIONS);
 		});
+
+		it('counts actual dedicated applications when enforcing the admission budget', () => {
+			assert.strictEqual(iso().isolatedApplicationCapacityRefusal('iso-one', ['iso-one', 'iso-two'], 2), undefined);
+			assert.match(
+				iso().isolatedApplicationCapacityRefusal('configured-but-not-running', ['iso-one', 'iso-two'], 2),
+				/threads\.maxIsolated/
+			);
+		});
 	});
 
 	describe('socket naming', () => {

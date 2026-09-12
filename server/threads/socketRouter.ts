@@ -4,13 +4,14 @@ import {
 	setMainIsWorker,
 	threadsHaveStarted,
 	setIsolatedWorkerReconciler,
+	setRunningIsolatedApplicationsGetter,
 	workersForApplication,
 	stopWorker,
 } from './manageThreads.js';
 import {
 	isolatedApplicationNames,
-	maxIsolatedApplications,
 	isolatedApplicationRefusal,
+	isolatedApplicationCapacityRefusal,
 } from './isolatedApplications.ts';
 import { getConfigPath } from '../../config/configUtils.ts';
 import { lifecycle as componentLifecycle } from '../../components/status/index.ts';
@@ -21,8 +22,8 @@ import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
-import { isMainThread } from 'worker_threads';
-import { join, basename } from 'path';
+import { isMainThread } from 'node:worker_threads';
+import { join, basename } from 'node:path';
 
 const workers = [];
 const HTTP_WORKER_STARTUP_DIAGNOSTIC_MS = 60000;
@@ -96,8 +97,8 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			if (process.platform === 'win32') threadCount = 1;
 		}
 		poolSize = threadCount;
-		nextIsolatedIndex = threadCount; // past the pool: worker 0 and the last pool worker carry node-wide duties
-		const isolated = admittedIsolatedApplications([]);
+		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
+		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()]);
 		const heapShareCount = threadCount + isolated.length;
 		for (let i = 0; i < threadCount; i++) {
 			workerSlots.push(startHTTPWorker(i, threadCount, undefined, heapShareCount));
@@ -106,6 +107,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		// (worker 0's startup log, the last worker's cleanup) ever lands on it.
 		const dedicatedStarts = [];
 		for (const application of isolated) {
+			if (isolatedSlots.has(application)) continue;
 			const slot = startHTTPWorker(nextIsolatedIndex++, threadCount, application, heapShareCount);
 			isolatedSlots.set(application, slot);
 			workerSlots.push(slot);
@@ -140,16 +142,11 @@ const isolatedSlots = new Map<string, IsolatedSlot>();
  * at all. Everything refused is refused loudly and loaded nowhere -- never downgraded to the pool.
  */
 function admittedIsolatedApplications(running: string[]): string[] {
-	const names = isolatedApplicationNames();
-	const max = maxIsolatedApplications();
+	const names = presentIsolatedApplicationNames();
 	const admitted = running.filter((name) => names.includes(name));
 	for (const name of names) {
 		if (admitted.includes(name)) continue;
-		const refusal =
-			isolatedApplicationRefusal(name) ??
-			(admitted.length >= max
-				? `the instance already runs ${max} isolated application(s) (threads.maxIsolated)`
-				: undefined);
+		const refusal = isolatedApplicationRefusal(name) ?? isolatedApplicationCapacityRefusal(name, admitted);
 		if (refusal) {
 			if (!refusedIsolated.has(name)) {
 				refusedIsolated.add(name);
@@ -165,6 +162,17 @@ function admittedIsolatedApplications(running: string[]): string[] {
 		admitted.push(name);
 	}
 	return admitted;
+}
+
+function presentIsolatedApplicationNames(): string[] {
+	const componentsRoot = getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT) as string;
+	const installedRoot = join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'components');
+	return isolatedApplicationNames().filter(
+		(application) =>
+			existsSync(join(componentsRoot, application)) ||
+			existsSync(join(installedRoot, application)) ||
+			(process.env.RUN_HDB_APP && basename(process.env.RUN_HDB_APP) === application)
+	);
 }
 
 /**
@@ -183,19 +191,14 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 		),
 	])
 		.then(() => true)
-		.catch((error) => {
+		.catch(async (error) => {
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
 			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);
-			isolatedSlots.delete(application);
-			void slot.shutdown();
+			await slot.shutdown();
+			if (isolatedSlots.get(application) === slot) isolatedSlots.delete(application);
 			return false;
 		})
 		.finally(() => slot.finishStartup());
-}
-
-/** The isolated applications that currently hold a dedicated worker. */
-export function runningIsolatedApplications(): string[] {
-	return [...isolatedSlots.keys()];
 }
 
 /**
@@ -212,17 +215,7 @@ export function reconcileIsolatedWorkers(): Promise<string[]> {
 
 async function reconcileIsolatedWorkersNow(): Promise<string[]> {
 	if (!isMainThread || poolSize === 0) return [];
-	// An isolated entry whose component directory is gone has nothing to run: its worker stops even if
-	// the config entry outlives the drop (an environment-supplied entry, say).
-	const componentsRoot = getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT) as string;
-	// a directory application lives under componentsRoot, a root-config `package:` one under
-	// <rootPath>/components (see the root pass in componentLoader)
-	const installedRoot = join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'components');
-	const present = (application: string) =>
-		existsSync(join(componentsRoot, application)) ||
-		existsSync(join(installedRoot, application)) ||
-		(process.env.RUN_HDB_APP && basename(process.env.RUN_HDB_APP) === application);
-	const wanted = new Set(admittedIsolatedApplications([...isolatedSlots.keys()]).filter(present));
+	const wanted = new Set(admittedIsolatedApplications([...isolatedSlots.keys()]));
 	const stopping = [];
 	for (const [application, slot] of isolatedSlots) {
 		if (wanted.has(application)) continue;
@@ -233,9 +226,10 @@ async function reconcileIsolatedWorkersNow(): Promise<string[]> {
 	await Promise.all(stopping);
 	const starting = [];
 	const started: string[] = [];
+	const heapShareCount = poolSize + wanted.size;
 	for (const application of wanted) {
 		if (isolatedSlots.has(application)) continue;
-		const slot = startHTTPWorker(nextIsolatedIndex++, poolSize, application, poolSize + isolatedSlots.size + 1);
+		const slot = startHTTPWorker(nextIsolatedIndex++, poolSize, application, heapShareCount);
 		isolatedSlots.set(application, slot);
 		starting.push(
 			watchDedicatedStart(application, slot).then((ready) => {
@@ -246,7 +240,10 @@ async function reconcileIsolatedWorkersNow(): Promise<string[]> {
 	await Promise.all(starting);
 	return started;
 }
-if (isMainThread) setIsolatedWorkerReconciler(reconcileIsolatedWorkers);
+if (isMainThread) {
+	setIsolatedWorkerReconciler(reconcileIsolatedWorkers);
+	setRunningIsolatedApplicationsGetter(() => [...isolatedSlots.keys()]);
+}
 
 function startHTTPWorker(index, threadCount = 1, application?: string, heapShareCount?: number) {
 	const { promise: ready, resolve: resolveReady, reject: rejectReady } = Promise.withResolvers<void>();
@@ -256,6 +253,7 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 	// A Worker's threadId reads back as -1 once it has exited, which is exactly when the diagnostics
 	// below run, so each attempt records its id while the worker is still alive.
 	let lastThreadId = -1;
+	let isolatedSlot: IsolatedSlot | undefined;
 	const finishStartup = () => {
 		waitingForInitialReady = false;
 		finishCurrentStartup();
@@ -322,9 +320,10 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 			}
 		},
 		onRestartExhausted() {
-			// a dead dedicated worker leaves its slot, so the next reconcile (a deploy of the fix) starts a new one
-			if (application) isolatedSlots.delete(application);
-			failStartup(new Error(`HTTP worker slot ${index} exhausted restarts before ready (thread ${lastThreadId})`));
+			const error = new Error(`HTTP worker slot ${index} exhausted restarts (thread ${lastThreadId})`);
+			if (waitingForInitialReady) failStartup(error);
+			else if (application && isolatedSlot && isolatedSlots.get(application) === isolatedSlot)
+				isolatedSlots.delete(application);
 		},
 	};
 	startWorker(join(__dirname, './threadServer.js'), workerOptions);
@@ -336,7 +335,8 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 		failStartup(new Error(`Dedicated worker for '${application}' was stopped before it became ready`));
 		await Promise.all(workersForApplication(application).map((worker) => stopWorker(worker)));
 	};
-	return { ready, finishStartup, shutdown, application };
+	isolatedSlot = { ready, finishStartup, shutdown, application };
+	return isolatedSlot;
 }
 
 // basically, the amount of additional idleness to expect based on previous idleness (some work will continue, some
