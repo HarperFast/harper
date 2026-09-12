@@ -196,7 +196,9 @@ async function restartService(req: any) {
 	if (typeof requestedScope === 'string' && requestedScope !== '*' && req.scopeFallback === undefined) {
 		envMgr.initSync(true);
 		const { isIsolatedApplication } = await import('../server/threads/isolatedApplications.ts');
-		if (!isIsolatedApplication(requestedScope)) {
+		const configured = isIsolatedApplication(requestedScope);
+		const runningApplications = configured ? [] : await getRunningIsolatedApplications(5000);
+		if (!configured && !runningApplications.includes(requestedScope)) {
 			throw handleHDBError(
 				new Error(),
 				`Unknown isolated application restart scope: ${requestedScope}`,

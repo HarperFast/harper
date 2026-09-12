@@ -1372,7 +1372,7 @@ async function dropComponent(req) {
 	// Read before the config entry goes: an isolated application's drop restarts only its own worker.
 	const { isIsolatedApplication } = require('../server/threads/isolatedApplications.ts');
 	env.initSync(true);
-	const restartScope = isIsolatedApplication(project) ? project : undefined;
+	const restartScope = !file && isIsolatedApplication(project) ? project : undefined;
 
 	let response;
 	await withComponentPreparationLock(

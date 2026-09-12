@@ -114,14 +114,14 @@ export function isolatedApplicationRefusal(appName: string): string | undefined 
 
 /**
  * The filesystem name of an isolated worker's UDS mirror for `port`: every UTF-8 byte outside
- * `[A-Za-z0-9._-]` becomes a fixed-width `%XX`, which is injective (two application names never share
+ * `[A-Za-z0-9._]` becomes a fixed-width `%XX`, which is injective (two application names never share
  * a socket), and the `app-` prefix keeps it apart from the pool's `<workerIndex>-<port>` names.
  */
 export function applicationSocketName(appName: string, port: number | string): string {
 	let encoded = '';
 	for (const byte of Buffer.from(appName, 'utf8')) {
 		const c = String.fromCharCode(byte);
-		encoded += byte < 0x80 && /[A-Za-z0-9._-]/.test(c) ? c : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+		encoded += byte < 0x80 && /[A-Za-z0-9._]/.test(c) ? c : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
 	}
 	return `app-${encoded}-${port}`;
 }

@@ -75,7 +75,9 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			// does not bind ports in this mode, so on platforms without SO_REUSEPORT (macOS/Windows)
 			// worker 0's exclusive HTTP bind would silently swallow an external EADDRINUSE — the
 			// external-conflict detection in listenOnPorts() assumes the main thread binds first.
-			workerSlots.push(startHTTPWorker(0, 1));
+			const slot = startHTTPWorker(0, 1);
+			workerSlots.push(slot);
+			poolSlots.push(slot);
 		} else {
 			const { loadRootComponents } = require('../loadRootComponents.js');
 			if (threadCount === 0) {
@@ -98,7 +100,9 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()]);
 		const heapShareCount = threadCount + isolated.length;
 		for (let i = 0; i < threadCount; i++) {
-			workerSlots.push(startHTTPWorker(i, threadCount, undefined, heapShareCount));
+			const slot = startHTTPWorker(i, threadCount, undefined, heapShareCount);
+			workerSlots.push(slot);
+			poolSlots.push(slot);
 		}
 		// One dedicated worker per isolated application, numbered past the pool so no pool-only duty
 		// (worker 0's startup log, the last worker's cleanup) ever lands on it.
@@ -124,9 +128,11 @@ type IsolatedSlot = {
 	ready: Promise<void>;
 	finishStartup: () => void;
 	shutdown: () => Promise<void>;
+	setHeapShareCount: (count: number) => void;
 	application?: string;
 };
 const isolatedSlots = new Map<string, IsolatedSlot>();
+const poolSlots: IsolatedSlot[] = [];
 
 /**
  * The isolated applications that get a dedicated worker. Ones already running keep their place; new
@@ -176,7 +182,11 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
 			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);
 			await slot.shutdown();
-			if (isolatedSlots.get(application) === slot) isolatedSlots.delete(application);
+			if (isolatedSlots.get(application) === slot) {
+				isolatedSlots.delete(application);
+				const { cleanupApplicationSockets } = await import('../http.ts');
+				cleanupApplicationSockets(application);
+			}
 			return false;
 		})
 		.finally(() => slot.finishStartup());
@@ -211,6 +221,8 @@ async function reconcileIsolatedWorkersNow(): Promise<string[]> {
 	}
 	const started: string[] = [];
 	const heapShareCount = poolSize + wanted.size;
+	for (const slot of poolSlots) slot.setHeapShareCount(heapShareCount);
+	for (const slot of isolatedSlots.values()) slot.setHeapShareCount(heapShareCount);
 	for (const application of wanted) {
 		if (isolatedSlots.has(application)) continue;
 		const slot = startHTTPWorker(nextIsolatedIndex++, poolSize, application, heapShareCount);
@@ -315,7 +327,10 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 		failStartup(new Error(`Dedicated worker for '${application}' was stopped before it became ready`));
 		await Promise.all(workersForApplication(application).map((worker) => stopWorker(worker)));
 	};
-	isolatedSlot = { ready, finishStartup, shutdown, application };
+	const setHeapShareCount = (count: number) => {
+		workerOptions.heapShareCount = count;
+	};
+	isolatedSlot = { ready, finishStartup, shutdown, setHeapShareCount, application };
 	return isolatedSlot;
 }
 

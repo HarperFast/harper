@@ -109,6 +109,10 @@ describe('isolated applications (harper#642 tier 2)', () => {
 			// a pool socket is `<index>-<port>`; an application literally named like one still cannot alias it
 			assert.notStrictEqual(iso().applicationSocketName('1', 9926), '1-9926');
 			assert.strictEqual(iso().applicationSocketName('my app', 9926), 'app-my%20app-9926');
+			assert.ok(
+				!iso().applicationSocketName('foo-bar', 9927).startsWith(iso().applicationSocketName('foo', '')),
+				'application cleanup prefixes cannot match a longer name'
+			);
 			// fixed-width per UTF-8 byte: variable-width code-point hex would let these two collide
 			assert.notStrictEqual(iso().applicationSocketName('\u01D83', 9926), iso().applicationSocketName('\u1D83', 9926));
 			assert.notStrictEqual(iso().applicationSocketName('\u00E9A', 9926), iso().applicationSocketName('\u0E9A', 9926));

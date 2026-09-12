@@ -97,7 +97,7 @@ suite(
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					operation: 'deploy_component',
-					project: 'third-isolated',
+					project: 'third',
 					package: 'unused-because-admission-runs-first',
 					isolated: true,
 					restart: false,
@@ -123,7 +123,7 @@ suite(
 			const socketsDir = join(ctx.harper.dataRootDir, 'sockets');
 			const names = await readdir(socketsDir);
 			// the HTTPS mirror, not the one MQTT's per-thread listener publishes under the same application name
-			const mirror = names.find((name) => name.startsWith('app-isolated-app-') && name.endsWith(':9927.sock'));
+			const mirror = names.find((name) => name.startsWith('app-isolated%2Dapp-') && name.endsWith(':9927.sock'));
 			ok(mirror, `no application mirror among ${names.join(', ')}`);
 			const yaml = await readFile(join(socketsDir, mirror.replace(/\.sock$/, '.yaml')), 'utf8');
 			ok(yaml.includes('application: "isolated-app"'), yaml);
