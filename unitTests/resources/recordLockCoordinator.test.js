@@ -39,7 +39,6 @@ const WAIT = 30_000;
 class FakeCluster {
 	constructor(nodeNames, options = {}) {
 		this.tsCounter = 0;
-		this.startedAt = Date.now();
 		this.skewMs = options.skewMs ?? LOCK_LEASE_SKEW_MS;
 		this.epochNumber = options.epochNumber ?? 1;
 		this.members = [...nodeNames];
@@ -59,6 +58,13 @@ class FakeCluster {
 			 * This node's OWN monotonic offset, advanced independently of every other node's. Real
 			 * elapsed time is added on read so a retry loop inside the coordinator actually terminates;
 			 * the offset is what lets a test move one node's clock without moving another's.
+			 *
+			 * The real component is `performance.now()` and NOT a delta from cluster construction,
+			 * because `KeyLockHandle.joinClusterRound` measures a round's remaining lease as
+			 * `leaseMs - (performance.now() - mintedMono)`. On a construction-based origin the two
+			 * clocks disagree by however long the process has been up, so a test driving a real handle
+			 * passed only while that was under one lease — in a full-suite run every round looked
+			 * already expired and `joinClusterRound` silently returned false.
 			 */
 			mono: 0,
 			/** Bumped to simulate a restart of this node in its role as a home. */
@@ -88,7 +94,7 @@ class FakeCluster {
 			writeControl: this.writeControlFor(name),
 			keyIdOf: (key) => String(key),
 			nextTimestamp: () => ++this.tsCounter,
-			monotonic: () => node.mono + (Date.now() - this.startedAt),
+			monotonic: () => node.mono + performance.now(),
 			skewMs: options.skewMs,
 			grantableAfterMono: options.grantableAfterMono,
 			autoTick: false,
@@ -518,7 +524,7 @@ describe('record lock delegations', () => {
 				writeControl: cluster.writeControlFor(name),
 				keyIdOf: (key) => String(key),
 				nextTimestamp: () => ++cluster.tsCounter,
-				monotonic: () => node.mono + (Date.now() - cluster.startedAt),
+				monotonic: () => node.mono + performance.now(),
 				adopt: predecessor,
 				autoTick: false,
 			});
@@ -545,8 +551,13 @@ describe('record lock delegations', () => {
 
 			// And the recall for it reaches the handle that grant admitted.
 			const { handle } = realHandle();
-			handle.joinClusterRound(round.tsR, LEASE, round.mintedMono, () =>
-				swapped.successor.release(key, round.admissionId)
+			// Asserted, not called for effect: a round the handle refuses leaves `onRelease` unset, so
+			// the drain never completes and the assertion below would fail for the wrong reason.
+			assert.strictEqual(
+				handle.joinClusterRound(round.tsR, LEASE, round.mintedMono, () =>
+					swapped.successor.release(key, round.admissionId)
+				),
+				true
 			);
 			swapped.successor.registerAdmission(round.admissionId, () => handle.revokeLease());
 			handle.release();
@@ -650,8 +661,11 @@ describe('record lock delegations', () => {
 		it('refuses to grant before an explicitly configured horizon', async () => {
 			// Core's grant quarantine is opt-in — the interval belongs to the epoch (see
 			// ClusterLockTransport.epoch) — so a deployment that wants a core-side bound sets it.
+			// Relative to the same clock the coordinator reads, not an absolute constant: the fake
+			// monotonic is `performance.now()`-based, so a fixed horizon silently falls into the past
+			// once the process has been up longer than it.
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], {
-				grantableAfterMono: DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS,
+				grantableAfterMono: performance.now() + DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS,
 			});
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta');
