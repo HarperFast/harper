@@ -1938,6 +1938,21 @@ describe('DerivedIndexRuntime rebuild against an audited RocksDB table', () => {
 		assert(!(wrapper instanceof SharedArrayBuffer));
 		assert.strictEqual(readDerivedIndexReadiness(Product.auditStore, 'rocks-rebuild').state, 'ready');
 		assert.strictEqual(new Int32Array(wrapper)[0], 1, 'the wrapper sees the published state word');
+		// The runner's release skips the notification it caused, which is only correct if notify()
+		// reaches the caller's own registration exactly once. Measure that against the binding, not the
+		// unit-test fake: zero self-deliveries strand the skip and swallow a peer's next release wake,
+		// more than one re-wakes the releasing runner into re-acquiring the lock it just gave up.
+		let selfDeliveries = 0;
+		const notifier = Product.auditStore.getUserSharedBuffer(
+			'derived-index:rocks-rebuild:self-notify',
+			new ArrayBuffer(READINESS_BYTES),
+			{ callback: () => selfDeliveries++ }
+		);
+		notifier.notify();
+		await waitFor(() => selfDeliveries > 0, { timeout: 5000 });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.strictEqual(selfDeliveries, 1, "notify() reaches the caller's own registration exactly once");
+		notifier.cancel();
 		// A real worker thread, through the binding alone, reads the owner's publication.
 		const { Worker } = require('node:worker_threads');
 		const worker = new Worker(

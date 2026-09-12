@@ -140,6 +140,28 @@ describe('same-key explicit save ordering', () => {
 		assert.equal(committed.count, 1);
 	});
 
+	it('does not rebind an explicitly saved empty generation to its successor', async () => {
+		await SaveOrder.put('empty-generation', { count: 0 });
+		const context = {};
+		await transaction(context, async () => {
+			const update = await SaveOrder.update('empty-generation', undefined, context);
+			await update.save();
+			update.update();
+			update.addTo('count', 1);
+			await update.save();
+		});
+		assert.equal((await SaveOrder.get('empty-generation')).count, 1);
+	});
+
+	it('keeps an untouched update of a missing record as a no-op', async () => {
+		const context = {};
+		await transaction(context, async () => {
+			const update = await SaveOrder.update('missing-empty-generation', undefined, context);
+			await update.save();
+		});
+		assert.equal(await SaveOrder.get('missing-empty-generation'), undefined);
+	});
+
 	it('closes a receiver for an equivalent numeric key spelling', async () => {
 		await SaveOrder.put(1, { status: 'queued' });
 		const context = {};

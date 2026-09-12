@@ -2165,7 +2165,9 @@ export function makeTable(options) {
 					});
 				}
 			}
-			return when(this._writeUpdate(id, (this.#changes ??= Object.create(null)), fullUpdate), () => this);
+			// Keep absent changes distinguishable from an explicit empty patch: framework-created
+			// post/publish updates do not necessarily mutate or save the instance.
+			return when(this._writeUpdate(id, this.#changes, fullUpdate), () => this);
 		}
 
 		/**
@@ -2251,6 +2253,9 @@ export function makeTable(options) {
 			}
 		}
 		#saveOperation(operation: any) {
+			// LMDB validates staged writes at transaction commit, so bind a lazy update to the
+			// generation selected by save() before another update can replace its changes.
+			operation.captureChanges?.();
 			const transaction = txnForContext(this.getContext());
 			const holder = operation.stagedIn;
 			// never-drop-on-conflict lives on the transaction and would not travel with the write, so an
@@ -2982,6 +2987,16 @@ export function makeTable(options) {
 				}
 				return;
 			}
+			let captureChanges;
+			if (recordUpdate === undefined) {
+				let captured = false;
+				captureChanges = () => {
+					if (!captured) {
+						captured = true;
+						recordUpdate = this.#changes;
+					}
+				};
+			}
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 			const writeToSource = () => {
 				if (!(this.constructor as any).source || (context as any)?.source) return;
@@ -3024,8 +3039,9 @@ export function makeTable(options) {
 				// are ordinary and must not carry an unrelated hold's handle.
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
+				captureChanges,
 				validate: (txnTime, committedBy = transaction) => {
-					if (!recordUpdate) recordUpdate = this.#changes;
+					write.captureChanges?.();
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();

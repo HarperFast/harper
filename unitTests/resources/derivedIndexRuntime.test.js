@@ -48,13 +48,24 @@ class FakeLogStore {
 		this.waiters.delete(key);
 	}
 
-	getUserSharedBuffer(key, defaultBuffer) {
-		let buffer = this.sharedBuffers.get(key);
-		if (!buffer) {
-			buffer = new SharedArrayBuffer(defaultBuffer.byteLength);
-			this.sharedBuffers.set(key, buffer);
+	getUserSharedBuffer(key, defaultBuffer, options) {
+		let memory = this.sharedBuffers.get(key);
+		if (!memory) {
+			memory = { buffer: new SharedArrayBuffer(defaultBuffer.byteLength), callbacks: new Set() };
+			this.sharedBuffers.set(key, memory);
 		}
-		return buffer;
+		// Like the native binding: every lookup gets its own wrapper over one allocation, and notify()
+		// reaches every registered callback, including those of other runtimes sharing this store.
+		const wrapper = structuredClone(memory.buffer);
+		const { callback } = options ?? {};
+		if (callback) memory.callbacks.add(callback);
+		wrapper.notify = () => {
+			for (const listener of memory.callbacks) setImmediate(listener);
+		};
+		wrapper.cancel = () => {
+			if (callback) memory.callbacks.delete(callback);
+		};
+		return wrapper;
 	}
 }
 
@@ -390,31 +401,99 @@ describe('DerivedIndexRuntime', () => {
 		first.register(registration(backend));
 		second.register(registration(backend));
 
-		await waitFor(() => backend.deliveries.length === 1 && store.rangeCalls.length >= 2);
+		// An owner epoch on the second runtime means it actually took the lock, and waitFor's 2 s budget
+		// is well inside the 5 s default retry cadence, so the handoff came from the release
+		// notification rather than the timer.
+		await waitFor(() => second.getStatus('shared')?.ownerEpoch !== undefined && store.rangeCalls.length >= 2, {
+			message: 'the waiting runner must acquire on the release notification, not the retry timer',
+		});
 		assert.deepStrictEqual(backend.cursor, cursor(20));
 		assert.strictEqual(backend.deliveries.length, 1, 'the waiting runner must exact-resume after acquiring the lock');
 		first.stop();
 		second.stop();
 	});
 
-	it('does not lose a synchronous lock-release notification', async () => {
-		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+	it('stops rotating ownership once every runner is idle', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
 		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
 		store.tryLock = (key, onUnlocked) => {
 			attempts++;
-			if (attempts === 1) {
-				onUnlocked();
-				return false;
-			}
-			store.locks.add(key);
-			return true;
+			return tryLock(key, onUnlocked);
 		};
-		const backend = new FakeBackend('synchronous-unlock', cursor(10));
-		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		const backend = new FakeBackend('idle-rotation', cursor(10));
+		const records = new Map();
+		const first = runtimeFor(store, records).runtime;
+		const second = runtimeFor(store, records).runtime;
+		first.register(registration(backend));
+		second.register(registration(backend));
+
+		await waitFor(() => second.getStatus('idle-rotation')?.ownerEpoch !== undefined, {
+			message: 'the waiting runner must take the lock when the owner idles out',
+		});
+		const settled = attempts;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.strictEqual(attempts, settled, 'an idle release must not wake a dormant ex-owner back into acquiring');
+		first.stop();
+		second.stop();
+	});
+
+	it('retries the lock on its own cadence when the owner died without notifying', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			attempts++;
+			return tryLock(key, onUnlocked);
+		};
+		// An owner on another worker holds the lock; it will die without releasing, so nothing notifies
+		// and no commit lands — the retry timer is the only wake left.
+		store.locks.add('derived-index:dead-owner:runner');
+		const backend = new FakeBackend('dead-owner', cursor(10));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			lockRetryMilliseconds: 100,
+		});
 		runtime.register(registration(backend));
 
-		await waitFor(() => backend.deliveries.length === 1);
-		assert.strictEqual(attempts, 2);
+		await waitFor(() => attempts === 1, { message: 'the runner must attempt the contended lock once' });
+		// Commit wakes reach a waiting non-owner every turn; they must not each become a native tryLock.
+		for (let i = 0; i < 3; i++) {
+			store.rootStore.emit('committed');
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+		assert.strictEqual(attempts, 1, 'commit wakes must not re-probe the lock while the retry timer is armed');
+
+		store.locks.delete('derived-index:dead-owner:runner');
+		await waitFor(() => backend.deliveries.length === 1, { message: 'the retry timer must resume the index' });
+		assert.deepStrictEqual(backend.cursor, cursor(20));
+		runtime.stop();
+	});
+
+	it('backs off by the configured delay when a lock attempt throws while waiting', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]));
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			attempts++;
+			if (attempts === 2) throw new Error('lock unavailable');
+			return tryLock(key, onUnlocked);
+		};
+		store.locks.add('derived-index:throwing-lock:runner');
+		const backend = new FakeBackend('throwing-lock', cursor(10));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]), {
+			lockRetryMilliseconds: 5000,
+			rebuildBackoffMilliseconds: 20,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => attempts === 1, { message: 'the runner must attempt the contended lock once' });
+		store.locks.delete('derived-index:throwing-lock:runner');
+		// A notification wakes the waiting runner and that attempt throws: the configured backoff has to
+		// replace the armed contention retry, or recovery waits out the whole 5 s cadence instead.
+		store.getUserSharedBuffer('derived-index:throwing-lock:readiness', new ArrayBuffer(1)).notify();
+
+		await waitFor(() => backend.deliveries.length === 1, { message: 'the backoff retry must resume the index' });
+		assert.deepStrictEqual(backend.cursor, cursor(20));
 		runtime.stop();
 	});
 
@@ -467,15 +546,30 @@ describe('DerivedIndexRuntime', () => {
 	it('reacquires after the idle grace period when a later commit wakes it', async () => {
 		const entries = new Map([[10, []]]);
 		const store = new FakeLogStore(entries);
+		let attempts = 0;
+		const tryLock = store.tryLock.bind(store);
+		store.tryLock = (key, onUnlocked) => {
+			attempts++;
+			return tryLock(key, onUnlocked);
+		};
 		const backend = new FakeBackend('idle-wake', cursor(10));
 		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
 		runtime.register(registration(backend));
 
-		await waitFor(() => store.locks.size === 0);
+		// One acquisition, then the idle release. That release notifies, and the notification reaches
+		// this runner's own callback too: it must be ignored, or an idle release re-acquires
+		// immediately and never leaves the lock for a peer.
+		await waitFor(() => attempts === 1 && store.locks.size === 0, {
+			message: 'the runner must take the lock and release it after the idle grace period',
+		});
+		for (let i = 0; i < 4; i++) await new Promise(setImmediate);
+		assert.strictEqual(attempts, 1, 'the releasing runner must ignore the notification it caused');
+
 		entries.set(10, [audit({ timestamp: 20, recordId: 'a' })]);
 		store.rootStore.emit('committed');
 
 		await waitFor(() => backend.deliveries.length === 1);
+		assert.strictEqual(attempts, 2, 'the commit must drive a fresh acquisition');
 		assert.deepStrictEqual(backend.cursor, cursor(20));
 		runtime.stop();
 	});
