@@ -1800,6 +1800,8 @@ interface TableDefinition {
 	// default Cache-Control for anonymous REST reads; null = schema explicitly has none (clears a
 	// prior value on reload), undefined = caller is not schema-defining (leave the current value)
 	cacheControl?: string | null;
+	/** Internal: this declaration came from the application owned by the current dedicated worker. */
+	isolatedApplicationOwner?: boolean;
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
@@ -2336,13 +2338,18 @@ const GLOBAL_TARGET: TableTarget = {
 /**
  * The factory a branched application declares tables through: each declaration goes to the branch
  * of the database it names, or to `table()` itself for a database the application did not branch.
- * An unbranched application gets `table` by identity -- no wrapper, no per-call routing.
+ * An unbranched, shared application gets `table` by identity. An isolated application still gets a
+ * wrapper so its own declarations can claim their single-threaded maintenance work.
  */
-export function scopedTableFactory(branches?: Map<string, BranchDatabase>): typeof table {
-	if (!branches?.size) return table;
+export function scopedTableFactory(
+	branches?: Map<string, BranchDatabase>,
+	isolatedApplicationOwner = false
+): typeof table {
+	if (!branches?.size && !isolatedApplicationOwner) return table;
 	return function scopedTable<TableResourceType>(tableDefinition: TableDefinition): TableResourceType {
+		if (isolatedApplicationOwner) tableDefinition = { ...tableDefinition, isolatedApplicationOwner: true };
 		// `||`, not `??`: `table()` resolves every falsy name to the default database
-		const branch = branches.get(tableDefinition.database || DEFAULT_DATABASE_NAME);
+		const branch = branches?.get(tableDefinition.database || DEFAULT_DATABASE_NAME);
 		return branch ? declareTable(branchTarget(branch), tableDefinition) : table(tableDefinition);
 	};
 }
@@ -2420,6 +2427,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		properties,
 		hidden,
 		cacheControl,
+		isolatedApplicationOwner,
 	} = tableDefinition;
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	// Reject reserved names here too, not only at the operations API: a database
@@ -3092,13 +3100,19 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
-	if (expiration || eviction || scanInterval)
+	if (
+		expiration ||
+		eviction ||
+		scanInterval ||
+		(isolatedApplicationOwner && attributes.some((attribute) => attribute.expiresAt))
+	)
 		Table.setTTLExpiration({
 			expiration,
 			eviction,
 			scanInterval,
-			fromSchema: true, // the load path: every thread that opens the table sees it
-		} as any);
+			fromSchema: true,
+			isolatedApplicationOwner,
+		});
 	logger.trace(`${tableName} table loaded`);
 
 	return Table as TableResourceType;

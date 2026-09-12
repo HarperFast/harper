@@ -542,8 +542,9 @@ export function makeTable(options) {
 		isBranch,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
-	// set when application code (not the schema at load) configured the TTL: the application's own worker
-	// then owns the scan even for a shared store, since no other thread has that configuration
+	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
+	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
+	// dedicated workers open unrelated shared tables too, whose scan remains owned by the pool.
 	let ttlConfiguredByApplication = false;
 	let ttlFromLoad = false; // true only around the creation-time call below
 	evictionMs ??= 0;
@@ -1559,11 +1560,25 @@ export function makeTable(options) {
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
 		 * eviction/scanInterval; object form replaces all three.
 		 */
-		static setTTLExpiration(opts: number | { expiration?: number; eviction?: number; scanInterval?: number }) {
+		static setTTLExpiration(
+			opts:
+				| number
+				| {
+						expiration?: number;
+						eviction?: number;
+						scanInterval?: number;
+						fromSchema?: boolean;
+						isolatedApplicationOwner?: boolean;
+				  }
+		) {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
-			if (!ttlFromLoad && !(typeof opts === 'object' && (opts as any).fromSchema) && !ttlConfiguredByApplication) {
+			const declaredHere = typeof opts === 'object' && opts.fromSchema;
+			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
+			let becameApplicationOwner = false;
+			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlConfiguredByApplication) {
 				ttlConfiguredByApplication = true;
+				becameApplicationOwner = true;
 				// the scan owner may have changed with this: re-evaluate even if the interval did not
 				lastCleanupInterval = undefined;
 			}
@@ -1580,6 +1595,10 @@ export function makeTable(options) {
 			cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
 			expirationScanScheduled = true;
 			scheduleCleanup();
+			// @expiresAt has its own interval rather than the cleanup timer above. A shared-store table
+			// hydrated in this worker did not arm it during construction, so the owning schema declaration does.
+			if (becameApplicationOwner && expiresAtProperty && !ownsStoreExpiration(primaryStore.path))
+				runRecordExpirationEviction();
 		}
 
 		static getResidencyRecord(id: Id) {
@@ -7611,7 +7630,7 @@ export function makeTable(options) {
 	}
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
-		if (ownsStoreExpiration(primaryStore.path)) {
+		if (ownsStoreExpiration(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
 			recordExpirationInterval = setInterval(async () => {
 				// go through each database and table and then search for expired entries

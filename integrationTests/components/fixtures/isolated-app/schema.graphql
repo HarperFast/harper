@@ -1,0 +1,4 @@
+type IsolatedTtl @table(expiration: 0.5, scanInterval: 0.1) @export {
+	id: ID @primaryKey
+	value: String
+}

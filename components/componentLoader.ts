@@ -34,7 +34,11 @@ import { trackScopeClose } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
 import { assertBranchedDatabases } from './Application.ts';
 import { prepareBranches } from '../resources/branchDatabase.ts';
-import { isIsolatedApplication, shouldLoadApplicationHere } from '../server/threads/isolatedApplications.ts';
+import {
+	isIsolatedApplication,
+	shouldLoadApplicationHere,
+	thisThreadOwnsApplication,
+} from '../server/threads/isolatedApplications.ts';
 import { toScopeMount, nestScopeMount, type ScopeMount } from './scopeMount.ts';
 import { scopedImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
@@ -966,7 +970,10 @@ export async function loadComponent(
 				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure module loader
 				const ensureTable = (options: any) => {
 					options.origin = origin;
-					return scopedTableFactory(applicationScope.branches)(options);
+					return scopedTableFactory(
+						applicationScope.branches,
+						thisThreadOwnsApplication(applicationScope.name)
+					)(options);
 				};
 				// call the main start hook
 				const network =

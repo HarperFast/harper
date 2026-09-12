@@ -66,6 +66,12 @@ describe('isolated applications (harper#642 tier 2)', () => {
 			);
 		});
 
+		it('identifies only a named application owned by a dedicated worker', () => {
+			assert.strictEqual(iso().thisThreadOwnsApplication('iso-one', 'iso-one'), true);
+			assert.strictEqual(iso().thisThreadOwnsApplication('iso-two', 'iso-one'), false);
+			assert.strictEqual(iso().thisThreadOwnsApplication(undefined, undefined), false);
+		});
+
 		it('publishes the application and its host as the route', () => {
 			assert.deepStrictEqual(iso().isolatedApplicationRoute('iso-one', CONFIG), {
 				application: 'iso-one',

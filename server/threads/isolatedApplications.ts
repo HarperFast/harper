@@ -25,6 +25,13 @@ export function thisThreadsIsolatedApplication(): string | undefined {
 	return (workerData as any)?.isolatedApplication;
 }
 
+export function thisThreadOwnsApplication(
+	appName: string | undefined,
+	owner: string | undefined = thisThreadsIsolatedApplication()
+): boolean {
+	return owner !== undefined && appName === owner;
+}
+
 export function isIsolatedApplication(
 	appName: string,
 	config: Record<string, any> | undefined = getConfigObj()

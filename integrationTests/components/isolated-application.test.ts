@@ -129,28 +129,42 @@ suite(
 			ok(yaml.includes('application: "isolated-app"'), yaml);
 			ok(yaml.includes('- "iso.qa.test"'), yaml);
 
-			const body = await new Promise<string>((resolve, reject) => {
-				const req = request(
-					{
-						socketPath: join(socketsDir, mirror),
-						path: '/Isolated/probe',
-						headers: {
-							host: 'iso.qa.test',
-							// the mirror carries the secure port's chain, authentication included
-							authorization: `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+			const requestMirror = (path: string, method = 'GET', body?: string) =>
+				new Promise<{ status: number; body: string }>((resolve, reject) => {
+					const req = request(
+						{
+							socketPath: join(socketsDir, mirror),
+							path,
+							method,
+							headers: {
+								host: 'iso.qa.test',
+								...(body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : {}),
+								// the mirror carries the secure port's chain, authentication included
+								authorization: `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+							},
 						},
-					},
-					(res) => {
-						strictEqual(res.statusCode, 200);
-						let data = '';
-						res.on('data', (chunk) => (data += chunk));
-						res.on('end', () => resolve(data));
-					}
-				);
-				req.on('error', reject);
-				req.end();
-			});
-			strictEqual(JSON.parse(body).application, 'isolated-app');
+						(res) => {
+							let data = '';
+							res.on('data', (chunk) => (data += chunk));
+							res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
+						}
+					);
+					req.on('error', reject);
+					if (body) req.write(body);
+					req.end();
+				});
+			const probe = await requestMirror('/Isolated/probe');
+			strictEqual(probe.status, 200, probe.body);
+			strictEqual(JSON.parse(probe.body).application, 'isolated-app');
+
+			const put = await requestMirror('/IsolatedTtl/ttl-probe', 'PUT', JSON.stringify({ value: 'expires' }));
+			ok(put.status >= 200 && put.status < 300, put.body);
+			await waitFor(
+				async () => JSON.parse((await requestMirror('/Isolated/probe')).body).rawTtlRecords,
+				(count) => count === 0,
+				'isolated schema TTL did not physically evict its record',
+				5000
+			);
 		});
 
 		test('dropping a shared application restarts the pool and leaves the dedicated worker alone', async () => {
