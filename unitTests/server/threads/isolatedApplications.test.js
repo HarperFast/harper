@@ -159,6 +159,24 @@ describe('isolated applications (harper#642 tier 2)', () => {
 			);
 		});
 
+		it('clears the restart-required flag only when the pool is in scope', async () => {
+			const { requestRestart, restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
+			const restartPool = (scope) => threads().restartWorkers('http', Infinity, false, null, scope);
+			try {
+				requestRestart();
+				await restartPool('iso-one');
+				assert.strictEqual(restartNeeded(), true, 'one dedicated worker leaves the pool on the old code');
+				await restartPool(undefined);
+				assert.strictEqual(restartNeeded(), false, 'the pool restart makes the pending component live');
+
+				requestRestart();
+				await restartPool('*');
+				assert.strictEqual(restartNeeded(), false, 'so does restarting everything');
+			} finally {
+				resetRestartNeeded();
+			}
+		});
+
 		it('rejects a malformed scope before selecting workers', async () => {
 			await assert.rejects(
 				() => restart().restartService({ service: 'http', scope: null }),

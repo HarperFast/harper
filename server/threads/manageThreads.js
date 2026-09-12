@@ -668,7 +668,11 @@ async function restartWorkers(
 		const freshlyStarted = new Set(); // dedicated workers the reconcile just started: already on the new code
 		// problematic cyclic dependency, bind late
 		const { resetRestartNeeded } = require('../../components/requestRestart.ts');
-		resetRestartNeeded();
+		// The flag stands for pool-loaded code that a deploy left un-live, so only a restart that
+		// replaces the pool can clear it. A restart scoped to one application's dedicated worker leaves
+		// every pool worker on the old code, and clearing it there would report restartRequired: false
+		// while the pending component is still not loaded anywhere.
+		if (application === undefined || application === '*') resetRestartNeeded();
 		// This is here to prevent circular dependencies
 		if (startReplacementThreads) {
 			const { loadRootComponents } = require('../loadRootComponents.js');
