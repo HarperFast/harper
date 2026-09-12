@@ -138,7 +138,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert.strictEqual(await Redeclared.get(1), null);
 	});
 
-	it('arms one @expiresAt interval initially and when a live table gains the attribute', () => {
+	it('arms one @expiresAt interval initially and when a live table gains the attribute', async () => {
 		const originalSetInterval = global.setInterval;
 		let expirationIntervals = 0;
 		global.setInterval = (callback, delay, ...args) => {
@@ -167,10 +167,9 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 				attributes: [{ name: 'id', isPrimaryKey: true }],
 			});
 			const before = expirationIntervals;
-			table({
+			const AddedAfterTtl = table({
 				table: 'ExpiresAtAddedAfterTtl',
 				database: 'test',
-				expiration: 60,
 				isolatedApplicationOwner: true,
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
@@ -178,6 +177,14 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 				],
 			});
 			assert.strictEqual(expirationIntervals, before + 1);
+			assert.strictEqual(AddedAfterTtl.expirationMS, 60_000, 'ownership-only redeclaration preserves loaded TTL');
+			const beforeDefaultExpiry = Date.now();
+			await AddedAfterTtl.put(1, { id: 1 });
+			const storedDefaultExpiry = await storedExpiresAt(AddedAfterTtl, 1);
+			assert(
+				storedDefaultExpiry >= beforeDefaultExpiry + 60_000 && storedDefaultExpiry <= Date.now() + 60_000,
+				`unexpected retained default expiry ${storedDefaultExpiry}`
+			);
 
 			table({
 				table: 'ExpiresAtAddedToSharedTable',

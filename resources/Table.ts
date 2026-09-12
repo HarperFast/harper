@@ -1558,7 +1558,8 @@ export function makeTable(options) {
 		 * This also informs the scheduling for record eviction.
 		 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
-		 * eviction/scanInterval; object form replaces all three.
+		 * eviction/scanInterval; object form replaces all three. An internal schema ownership-only call with
+		 * none of those values preserves the settings already loaded from the catalog.
 		 */
 		static setTTLExpiration(
 			opts:
@@ -1575,6 +1576,8 @@ export function makeTable(options) {
 				throw new Error('Invalid expiration value type');
 			const declaredHere = typeof opts === 'object' && opts.fromSchema;
 			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
+			const preserveLoadedConfiguration =
+				declaredHere && opts.expiration === undefined && opts.eviction === undefined && opts.scanInterval === undefined;
 			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlConfiguredByApplication) {
 				ttlConfiguredByApplication = true;
 				// the scan owner may have changed with this: re-evaluate even if the interval did not
@@ -1582,17 +1585,21 @@ export function makeTable(options) {
 			}
 			if (typeof opts === 'number') {
 				expirationMs = opts * 1000;
-			} else {
+			} else if (!preserveLoadedConfiguration) {
 				// `??` so an explicit 0 is treated as the user's chosen value, not as "missing"
 				expirationMs = (opts.expiration ?? 0) * 1000;
 				evictionMs = (opts.eviction ?? 0) * 1000;
 				cleanupInterval = (opts.scanInterval ?? 0) * 1000;
 			}
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
-			// default to one quarter of the total expiration+eviction window
-			cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
-			expirationScanScheduled = true;
-			scheduleCleanup();
+			if (!preserveLoadedConfiguration) {
+				// default to one quarter of the total expiration+eviction window
+				cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
+				expirationScanScheduled = true;
+			}
+			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
+			// create the default daily cleanup timer for a table that has only an @expiresAt field.
+			if (!preserveLoadedConfiguration || expirationScanScheduled) scheduleCleanup();
 			// @expiresAt has its own interval rather than the cleanup timer above. Arm it whenever a live
 			// declaration introduces the attribute, including after this application already claimed TTL.
 			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
