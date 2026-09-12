@@ -863,6 +863,35 @@ describe('record lock delegations', () => {
 			assert.strictEqual(alpha.stats.admitted, 1, 'the superseded handle decremented the successor');
 		});
 
+		it('does not hand back a grant while it still holds a delegation for the key', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			const home = cluster.node('beta').coordinator;
+			// R1 stalls on the wire. R2 goes through, alpha installs that token and is inside the key.
+			let deliverFirst;
+			const realRequest = alpha.coordinator.transport.requestDelegation;
+			// In place for the whole first acquisition, not just its first send: the retry loop would
+			// otherwise reach the home on its own and the acquisition would never time out.
+			alpha.coordinator.transport.requestDelegation = (target, database, table, request) =>
+				new Promise((resolve) => {
+					deliverFirst = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
+				});
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /not released in time/);
+			alpha.coordinator.transport.requestDelegation = realRequest;
+			await alpha.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(alpha.coordinator.stats.delegations, 1);
+
+			// R1 lands at the home NOW. The home sees the same requester and renews IN PLACE, minting a
+			// token alpha never receives. R1's cleanup must not release it: the home's grant is what
+			// backs the delegation alpha is using, whatever token the home currently records it under.
+			await deliverFirst();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.strictEqual(home.stats.granted, 1, 'a live delegation lost the grant backing it');
+			const denied = await home.onDelegationRequest({ key, requester: 'gamma', epoch: 1, leaseMs: LEASE });
+			assert.strictEqual(denied.granted, false, 'the home handed the key onward while alpha was inside it');
+		});
+
 		it('hands back a delegation whose reply arrived after the caller stopped waiting', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');

@@ -258,7 +258,13 @@ clock at receipt overlaps the next delegate.
 - Every message carries `(epoch, homeIncarnation, delegationCounter, requestId)` and is bound to the
   authenticated replication origin. A reply that does not match the requester's current epoch and its
   outstanding request is discarded; a validly authenticated but retired member can neither renew an
-  obsolete epoch nor clear a current delegation.
+  obsolete epoch nor clear a current delegation. **The `requestId` half is not implemented** — the
+  wire carries no request identity, correlation is the transport's per-call promise, and the home
+  therefore cannot tell a duplicate or delayed request from a genuine renewal. Core closes the
+  resulting two-holder path by refusing to hand back a grant while any delegation for the key is held;
+  the residue, and the protocol fix, are harper#2582. The epoch half **is** implemented: the epoch is
+  re-read after the round and a grant minted under a superseded one is handed back rather than
+  installed.
 - **Every local handle is bounded by `min(requested lease, delegation deadline, epoch-lease
 deadline)`** — including re-entrant acquisition and the `{hold: true}` upgrade. The branch's
   `upgradeToHold` already clamps to the granted round's deadline rather than extending it
