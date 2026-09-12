@@ -1575,10 +1575,8 @@ export function makeTable(options) {
 				throw new Error('Invalid expiration value type');
 			const declaredHere = typeof opts === 'object' && opts.fromSchema;
 			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
-			let becameApplicationOwner = false;
 			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlConfiguredByApplication) {
 				ttlConfiguredByApplication = true;
-				becameApplicationOwner = true;
 				// the scan owner may have changed with this: re-evaluate even if the interval did not
 				lastCleanupInterval = undefined;
 			}
@@ -1595,10 +1593,9 @@ export function makeTable(options) {
 			cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
 			expirationScanScheduled = true;
 			scheduleCleanup();
-			// @expiresAt has its own interval rather than the cleanup timer above. A shared-store table
-			// hydrated in this worker did not arm it during construction, so the owning schema declaration does.
-			if (becameApplicationOwner && expiresAtProperty && !ownsStoreExpiration(primaryStore.path))
-				runRecordExpirationEviction();
+			// @expiresAt has its own interval rather than the cleanup timer above. Arm it whenever a live
+			// declaration introduces the attribute, including after this application already claimed TTL.
+			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 		}
 
 		static getResidencyRecord(id: Id) {
@@ -6375,7 +6372,7 @@ export function makeTable(options) {
 				ttlFromLoad = false;
 			}
 		}
-		if (expiresAtProperty) runRecordExpirationEviction();
+		if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 	} catch (error) {
 		TableResource.cleanup();
 		throw error;

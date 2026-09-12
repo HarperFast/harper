@@ -539,8 +539,9 @@ async function listenOnPortsBun() {
 				delete serveOptions.port;
 			}
 			if (isNaN(serveOptions.port)) continue;
-			// a dedicated worker binds no public port (see listenOnPorts); its UDS mirror below is its only surface
-			if (!(thisThreadsIsolatedApplication() && !String(port).includes('/'))) {
+			// Keep ownership independent of address syntax: adding a Bun UDS route later must not widen
+			// a dedicated worker's ingress beyond its application-addressed mirror below.
+			if (!thisThreadsIsolatedApplication()) {
 				const bunServer = Bun.serve(serveOptions);
 				SERVERS[port] = bunServer;
 				harperLogger.trace('Bun listening on port ' + port, threadId);

@@ -28,6 +28,7 @@ envMgr.initSync();
 
 const RESTART_RESPONSE = `Restarting Harper. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
 const INVALID_SERVICE_ERR = 'Invalid service';
+const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
 
 let calledFromCli;
 
@@ -221,7 +222,9 @@ async function restartService(req: any) {
 		envMgr.initSync(true);
 		const { isIsolatedApplication } = await import('../server/threads/isolatedApplications.ts');
 		const configured = isIsolatedApplication(requestedScope);
-		const runningApplications = configured ? [] : await getRunningIsolatedApplications(5000);
+		const runningApplications = configured
+			? []
+			: await getRunningIsolatedApplications(ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS);
 		if (!configured && !runningApplications.includes(requestedScope)) {
 			throw handleHDBError(
 				new Error(),
@@ -319,7 +322,7 @@ async function restartService(req: any) {
 			} else {
 				let scope = requestedScope;
 				if (req.scopeFallback !== undefined && typeof scope === 'string' && scope !== '*') {
-					const runningApplications = await getRunningIsolatedApplications();
+					const runningApplications = await getRunningIsolatedApplications(ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS);
 					if (!runningApplications.includes(scope)) scope = fallbackScope;
 				}
 				await restartWorkers('http', undefined, true, null, scope);

@@ -137,4 +137,49 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert.strictEqual(await storedExpiresAt(Redeclared, 1), expiresAt);
 		assert.strictEqual(await Redeclared.get(1), null);
 	});
+
+	it('arms one @expiresAt interval initially and when a live isolated table already owns TTL', () => {
+		const originalSetInterval = global.setInterval;
+		let expirationIntervals = 0;
+		global.setInterval = (callback, delay, ...args) => {
+			if (delay === 60_000) expirationIntervals++;
+			return originalSetInterval(callback, delay, ...args);
+		};
+		try {
+			const beforeInitialDeclaration = expirationIntervals;
+			table({
+				table: 'ExpiresAtInitialInterval',
+				database: 'test',
+				expiration: 60,
+				isolatedApplicationOwner: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'expiresAt', expiresAt: true, indexed: true },
+				],
+			});
+			assert.strictEqual(expirationIntervals, beforeInitialDeclaration + 1);
+
+			table({
+				table: 'ExpiresAtAddedAfterTtl',
+				database: 'test',
+				expiration: 60,
+				isolatedApplicationOwner: true,
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const before = expirationIntervals;
+			table({
+				table: 'ExpiresAtAddedAfterTtl',
+				database: 'test',
+				expiration: 60,
+				isolatedApplicationOwner: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'expiresAt', expiresAt: true, indexed: true },
+				],
+			});
+			assert.strictEqual(expirationIntervals, before + 1);
+		} finally {
+			global.setInterval = originalSetInterval;
+		}
+	});
 });
