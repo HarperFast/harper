@@ -109,7 +109,7 @@ describe('deploy candidate builds', () => {
 		// chmod cannot make a file unreadable to root, so as root this would assert nothing at all.
 		if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
 		this.timeout(20000);
-		const { markCandidateComplete } = require('#src/components/Application');
+		const { syncCandidateTree } = require('#src/components/Application');
 		const componentsRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'candidate-filelink-'));
 		const dirPath = await makeLiveComponent(componentsRoot, 'web', 'LIVE v1\n');
 		// A `file:` candidate is a symlink into a developer's own tree, which can hold a file the Harper uid
@@ -127,10 +127,10 @@ describe('deploy candidate builds', () => {
 		await fs.mkdir(deploymentDir, { recursive: true });
 		await fs.symlink(source, path.join(deploymentDir, 'web'), 'dir');
 
-		await markCandidateComplete(dirPath, 'dep-link', 'web');
-
-		assert.ok(
-			existsSync(path.join(deploymentDir, '.complete')),
+		// The durability step specifically, not the marker: `.complete` is gated on certification now, and a
+		// test seam that could write it without one would be a seam production could use too.
+		await assert.doesNotReject(
+			() => syncCandidateTree(dirPath, 'dep-link'),
 			'the deploy is not failed by a file it never wrote and cannot read'
 		);
 		await fs.chmod(unreadable, 0o600);
