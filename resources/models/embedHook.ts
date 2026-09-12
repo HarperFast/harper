@@ -15,6 +15,17 @@ function getLogger(): { error?: (...args: any[]) => void } {
 	}
 }
 
+// Lazy for the same reason as getLogger (hdbError imports the logger); only needed on failure.
+// Returning undefined fails closed: an unverifiable error stays behind the sanitized message.
+function getServerErrorClass(): (new (...args: any[]) => Error) | undefined {
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		return require('#src/utility/errors/hdbError').ServerError;
+	} catch {
+		return undefined;
+	}
+}
+
 export type EmbedConfig = {
 	source: string;
 	model: string;
@@ -118,19 +129,37 @@ export function buildEmbedBefore(
 				try {
 					vector = await embedder(record);
 				} catch (err) {
-					// Backend errors can carry URLs / key tails; log raw, rethrow sanitized. Include
-					// only safe identifiers (error class name, upstream HTTP status) so the failure is
-					// diagnosable without hunting through server logs (#1593). upstreamStatus is the
-					// provider's status — NOT ServerError's statusCode, which is Harper's own response
-					// status and would misleadingly read 500 here.
+					// Embedder errors can carry URLs / key tails; log raw, rethrow sanitized (#1593).
+					// One exception (#1594): errors from our own backend classes' HTTP paths —
+					// `ServerError` subclasses carrying `upstreamStatus` — have deliberately
+					// sanitized, length-capped messages (no request content), so surfacing them
+					// verbatim makes the failure actionable without grepping server logs. A bare
+					// `upstreamStatus` on a non-ServerError is NOT proof of sanitization; custom
+					// embedder errors stay behind safe identifiers only (class name, status).
+					// upstreamStatus is the provider's status — NOT ServerError's statusCode,
+					// which is Harper's own response status and would misleadingly read 500 here.
 					getLogger().error?.(`Embedder for attribute "${attr.name}" failed:`, err);
 					const status = (err as any)?.upstreamStatus;
 					const errName = (err as any)?.name;
+					const model = attr.embed?.model;
+					const modelPart = model ? ` (model "${model}")` : '';
+					const ServerErrorClass = getServerErrorClass();
+					if (
+						typeof status === 'number' &&
+						ServerErrorClass !== undefined &&
+						err instanceof ServerErrorClass &&
+						typeof (err as any).message === 'string'
+					) {
+						throw new Error(
+							`Failed to compute embedding for attribute "${attr.name}"${modelPart} ` +
+								`[${errName}] (backend HTTP ${status}): ${(err as any).message}`
+						);
+					}
 					const detail =
 						(errName && errName !== 'Error' ? ` [${errName}]` : '') +
 						(typeof status === 'number' ? ` (backend HTTP ${status})` : '');
 					throw new Error(
-						`Failed to compute embedding for attribute "${attr.name}"${detail} — see server log for details`
+						`Failed to compute embedding for attribute "${attr.name}"${modelPart}${detail} — see server log for details`
 					);
 				}
 				record[attr.name] = normalizeVector(vector);
