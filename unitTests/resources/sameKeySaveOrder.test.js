@@ -275,6 +275,72 @@ describe('same-key explicit save ordering', () => {
 		assert.equal(committed.metadata, 'saved later');
 	});
 
+	it('rejects a non-object root through the legacy full-update path', async () => {
+		let error;
+		try {
+			await transaction((context) => SaveOrder.put('legacy-string-root', 'just a string', context));
+		} catch (caught) {
+			error = caught;
+		}
+		assert.match(String(error), /A record must be an object, but received "just a string"\./);
+		assert.equal(await SaveOrder.get('legacy-string-root'), undefined);
+	});
+
+	it('rejects a falsy root without committing the staged changes of a reused instance', async () => {
+		await SaveOrder.put('falsy-root', { status: 'queued', metadata: 'keep' });
+		let error;
+		try {
+			await transaction(async (context) => {
+				const record = await SaveOrder.update('falsy-root', { status: 'pending' }, context);
+				await record.put(0);
+			});
+		} catch (caught) {
+			error = caught;
+		}
+		assert.match(String(error), /A record must be an object, but received 0\./);
+		const committed = await SaveOrder.get('falsy-root');
+		assert.equal(committed.metadata, 'keep');
+	});
+
+	// Swallowing the rejection must not launder the write: it is revalidated at commit, so the
+	// transaction aborts rather than committing the staged patch over the record.
+	it('aborts the transaction when a rejected root is caught by the caller', async () => {
+		await SaveOrder.put('caught-root', { status: 'queued', metadata: 'keep' });
+		await assert.rejects(
+			transaction(async (context) => {
+				const record = await SaveOrder.update('caught-root', { status: 'pending' }, context);
+				try {
+					await record.put(0);
+				} catch {
+					// caller swallows the rejection and carries on
+				}
+			}),
+			/A record must be an object, but received 0\./
+		);
+		const committed = await SaveOrder.get('caught-root');
+		assert.equal(committed.status, 'queued');
+		assert.equal(committed.metadata, 'keep');
+	});
+
+	it('rejects a false root while leaving the patch-cancelling sentinel intact', async () => {
+		await SaveOrder.put('false-root', { status: 'queued', metadata: 'keep' });
+		let error;
+		try {
+			await transaction(async (context) => {
+				const record = await SaveOrder.update('false-root', { status: 'pending' }, context);
+				await record.put(false);
+			});
+		} catch (caught) {
+			error = caught;
+		}
+		assert.match(String(error), /A record must be an object, but received false\./);
+		assert.equal((await SaveOrder.get('false-root')).metadata, 'keep');
+		await transaction(async (context) => {
+			const record = await SaveOrder.update('false-root', { status: 'cancelled' }, context);
+			await record.patch(false);
+		});
+	});
+
 	it('closes an update when its transaction commits it', async () => {
 		await SaveOrder.put('commit-close', { status: 'queued' });
 		let update;

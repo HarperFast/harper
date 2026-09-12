@@ -2122,7 +2122,8 @@ export function makeTable(options) {
 			const envTxn = txnForContext(context);
 			if (!envTxn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
-			if (updates === false) {
+			// `false` is the patch-cancel sentinel, not a record root — but only incrementally.
+			if (updates === false && !fullUpdate) {
 				// TODO: Remove from transaction
 				return this;
 			}
@@ -2167,7 +2168,9 @@ export function makeTable(options) {
 			}
 			// Keep absent changes distinguishable from an explicit empty patch: framework-created
 			// post/publish updates do not necessarily mutate or save the instance.
-			return when(this._writeUpdate(id, this.#changes, fullUpdate), () => this);
+			// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
+			const recordRoot = updates === undefined ? this.#changes : updates;
+			return when(this._writeUpdate(id, recordRoot, fullUpdate), () => this);
 		}
 
 		/**
