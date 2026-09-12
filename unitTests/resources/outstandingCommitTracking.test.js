@@ -28,7 +28,8 @@ async function settleOutstandingCommits(expectedCount, message, timeout = SETTLE
 	let outstanding;
 	try {
 		await waitFor(() => (outstanding = getOutstandingCommits()).count === expectedCount, { timeout, interval: 5 });
-	} catch {
+	} catch (error) {
+		if (!(error instanceof assert.AssertionError)) throw error;
 		assert.fail(`${message}: still ${JSON.stringify(outstanding)} after ${timeout}ms`);
 	}
 	return outstanding;
@@ -124,12 +125,12 @@ describe('Outstanding commit tracking', () => {
 	// `this.next.commit()`'s tracking were silently omitted, since the untouched slot was never
 	// incremented in the first place. Hold the second (chained) link's native commit open through a
 	// narrow test seam (patching Transaction.prototype.commit, scoped to TrackB's store, the same
-	// idiom lingeringWriteCommit.test.js uses) so we can observe the count while ONLY that link is
-	// outstanding: TrackA's own commit has already settled and untracked itself by the time
-	// `this.next.commit()` even runs, so a nonzero count here can only come from the second link.
+	// idiom lingeringWriteCommit.test.js uses) and measure the count delta across the synchronous
+	// block that submits it: commit() links the tracking node right after the native commit returns,
+	// with no await between, so a microtask queued from inside the seam observes exactly that link.
 	it('tracks the second (chained) commit while it is pending, not just the first', async function () {
 		if (isLMDB) return;
-		this.timeout(15000);
+		this.timeout(20000);
 		let chained = false;
 		const context = {};
 		const { Transaction } = require('@harperfast/rocksdb-js');
@@ -138,17 +139,22 @@ describe('Outstanding commit tracking', () => {
 		let releaseHold;
 		const held = new Promise((resolve) => (releaseHold = resolve));
 		let signalSecondCommitStarted;
-		// TrackA's own native commit is also tracked (briefly — it settles and untracks itself before
-		// `this.next.commit()` even runs, since `untrack` is attached ahead of the resolve handler that
-		// calls it). Without this signal, the poll loop below could observe THAT transient count>0 and
-		// stop before TrackB's commit is even submitted, letting the assertions pass without ever
-		// actually exercising the re-entrant path this test exists to cover. Only start asserting once
-		// TrackB's (patched) commit has definitely been invoked.
+		// Settles only once TrackB's (patched) commit has been invoked AND its tracking node linked, so
+		// the assertions below cannot run early against TrackA's own transient node.
 		const secondCommitStarted = new Promise((resolve) => (signalSecondCommitStarted = resolve));
+		let secondCommitDelta;
+		let outstandingDuringHold;
 		Transaction.prototype.commit = function (...args) {
 			if (this.store?.db !== targetDb) return originalCommit.apply(this, args);
+			const before = getOutstandingCommits().count;
 			const realCommit = originalCommit.apply(this, args);
-			signalSecondCommitStarted();
+			// Runs after the caller's synchronous block has linked this commit's node and before any other
+			// commit's completion can be delivered (each arrives in its own macrotask).
+			queueMicrotask(() => {
+				outstandingDuringHold = getOutstandingCommits();
+				secondCommitDelta = outstandingDuringHold.count - before;
+				signalSecondCommitStarted();
+			});
 			return held.then(() => realCommit);
 		};
 		let done;
@@ -167,7 +173,7 @@ describe('Outstanding commit tracking', () => {
 			// never invoked, `secondCommitStarted` would otherwise never settle. Mocha's own test timeout
 			// doesn't cancel this still-running async function, so an unbounded await here would hang
 			// forever with `Transaction.prototype.commit` left monkeypatched, breaking every later test
-			// that touches RocksDB. This timeout is comfortably inside the 15s test timeout, so `finally`
+			// that touches RocksDB. This timeout plus the 5s settle deadline fit inside the 20s test timeout, so `finally`
 			// below still gets to run and restore everything before mocha's own timeout would fire.
 			let timeoutHandle;
 			try {
@@ -187,13 +193,12 @@ describe('Outstanding commit tracking', () => {
 				clearTimeout(timeoutHandle);
 			}
 			assert.ok(chained, 'the two databases should have produced a chained transaction');
-			// TrackA's node is unlinked before `this.next.commit()` runs (see the comment above), so once
-			// any foreign commits drain, count===1 can only be TrackB's held commit.
-			const outstanding = await settleOutstandingCommits(
-				1,
-				'the chained second-database commit should be tracked while pending'
+			assert.equal(secondCommitDelta, 1, 'the chained second-database commit should be tracked while pending');
+			assert.equal(
+				typeof outstandingDuringHold.oldestAgeMs,
+				'number',
+				'the pending chained commit should report an age'
 			);
-			assert.equal(typeof outstanding.oldestAgeMs, 'number', 'the pending chained commit should report an age');
 		} finally {
 			// Always restore the prototype and release the held commit, even if an assertion above threw —
 			// otherwise `done`'s chained commit stays pending forever and poisons every later test's count.
@@ -259,11 +264,8 @@ describe('Outstanding commit tracking', () => {
 		await assertAllUntracked('both attempts on a shared promise should be untracked');
 	});
 
-	// The CI flake this file used to have: the analytics aggregation tick landed inside the chained
-	// test's ~40ms window and the bare thread-global read returned 130–145 in-flight foreign commits
-	// with a young oldestAgeMs. Reproduce that state deterministically — foreign nodes tracked for
-	// the whole duration of this test's own chained write and released only afterwards — and show
-	// the assertions above stay exact under it rather than counting the bystanders.
+	// The analytics burst, made deterministic: foreign nodes stay tracked across this test's own chained
+	// write and are released only afterwards.
 	it('keeps its assertions exact while foreign commits are in flight on the thread', async function () {
 		if (isLMDB) return;
 		let releaseForeign;
@@ -283,16 +285,12 @@ describe('Outstanding commit tracking', () => {
 				chained = !!context.transaction?.next;
 			});
 			assert.ok(chained, 'the two databases should have produced a chained transaction');
-			// What the old assertion read at this point: the bystanders, not this test's own (already
-			// untracked) links. The chained links are proven untracked only once the foreign burst
-			// settles, below.
 			assert.ok(getOutstandingCommits().count >= FOREIGN_COMMITS, 'the foreign commits are still in flight');
 			const { result: underLoad, delta: ownDelta } = trackedAcross(() => TrackA.put(6, { name: 'under-load' }));
 			assert.equal(ownDelta, 1, 'a synchronous-window delta ignores the in-flight bystanders');
 			await underLoad;
 		} finally {
-			// Never leave the foreign nodes linked: they would age past the overload threshold and 503
-			// every later write on this thread.
+			// Left linked, they would age past the overload threshold and 503 every later write on this thread.
 			releaseForeign();
 		}
 		await assertAllUntracked('own links and the released foreign commits should all be untracked');
@@ -300,17 +298,21 @@ describe('Outstanding commit tracking', () => {
 		assert.equal((await TrackB.get(5))?.name, 'chain-b-3');
 	});
 
-	// Proves the settle helper is still a leak detector: waiting for the count is what lets it tolerate
-	// bystanders, so it must not also wait its way past a node that never unlinks.
+	// Waiting for the count is what lets the settle helper tolerate bystanders; it must not also wait
+	// its way past a node that never unlinks.
 	it('the settle assertion rejects a node that never unlinks, reporting its count and age', async function () {
 		if (isLMDB) return;
 		let releaseStuck;
 		const stuck = new Promise((resolve) => (releaseStuck = resolve));
+		const timeout = 200;
 		try {
 			trackOutstandingCommit(stuck);
-			await assert.rejects(settleOutstandingCommits(0, 'stuck node', 200), (error) =>
-				/stuck node: still \{"count":[1-9]\d*,"oldestAgeMs":\d{3,}/.test(error.message)
-			);
+			await assert.rejects(settleOutstandingCommits(0, 'stuck node', timeout), (error) => {
+				const reported = JSON.parse(/stuck node: still (\{.*\}) after/.exec(error.message)[1]);
+				assert.ok(reported.count >= 1, `should report the stuck node, got ${error.message}`);
+				assert.ok(reported.oldestAgeMs >= timeout - 10, `should report its age at the deadline, got ${error.message}`);
+				return true;
+			});
 		} finally {
 			releaseStuck();
 		}
