@@ -159,20 +159,28 @@ describe('isolated applications (harper#642 tier 2)', () => {
 			);
 		});
 
-		it('clears the restart-required flag only when the pool is in scope', async () => {
+		it('clears the restart-required flag only from a restart that covers every worker', async () => {
 			const { requestRestart, restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
-			const restartPool = (scope) => threads().restartWorkers('http', Infinity, false, null, scope);
+			const restartScoped = (scope) => threads().restartWorkers('http', Infinity, false, null, scope);
+			// already marked shut down, so the restart loop skips it: this stands in for the live topology
+			// the gate reads, not for a worker to replace
+			const dedicated = { name: 'http', application: 'iso-one', wasShutdown: true };
 			try {
 				requestRestart();
-				await restartPool('iso-one');
-				assert.strictEqual(restartNeeded(), true, 'one dedicated worker leaves the pool on the old code');
-				await restartPool(undefined);
-				assert.strictEqual(restartNeeded(), false, 'the pool restart makes the pending component live');
+				await restartScoped('iso-one');
+				assert.strictEqual(restartNeeded(), true, 'one dedicated worker leaves the whole pool on the old code');
+				await restartScoped(undefined);
+				assert.strictEqual(restartNeeded(), false, 'with no dedicated worker running, the pool IS every worker');
 
+				threads().workers.push(dedicated);
 				requestRestart();
-				await restartPool('*');
-				assert.strictEqual(restartNeeded(), false, 'so does restarting everything');
+				await restartScoped(undefined);
+				assert.strictEqual(restartNeeded(), true, 'a running dedicated worker keeps its old modules through it');
+				await restartScoped('*');
+				assert.strictEqual(restartNeeded(), false, 'only restarting every worker covers that');
 			} finally {
+				const at = threads().workers.indexOf(dedicated);
+				if (at > -1) threads().workers.splice(at, 1);
 				resetRestartNeeded();
 			}
 		});

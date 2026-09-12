@@ -668,15 +668,16 @@ async function restartWorkers(
 		const freshlyStarted = new Set(); // dedicated workers the reconcile just started: already on the new code
 		// problematic cyclic dependency, bind late
 		const { resetRestartNeeded } = require('../../components/requestRestart.ts');
-		// One process-wide bit cannot say which application is pending, so it is cleared only by a restart
-		// that replaces the pool: that is the one scope guaranteed to load everything the bit could stand
-		// for. Clearing it on a restart scoped to a single dedicated worker would report
-		// restartRequired: false while every pool worker is still on the old code — a silent 404 with no
-		// signal. The cost is the opposite error in one case: a deploy of an already-isolated application
-		// without a restart sets the bit, and a later app-scoped restart of that same application brings
-		// it live without clearing it, so restartRequired stays true until some pool restart happens. A
-		// needless pool restart is recoverable and self-clearing; an un-live component with no signal is not.
-		if (application === undefined || application === '*') resetRestartNeeded();
+		// One process-wide bit cannot say WHICH application is pending, so it may only be cleared by a
+		// restart that demonstrably covers every worker the bit could stand for. A restart scoped to one
+		// application leaves the whole pool on its old code; a pool restart replaces every pool worker and
+		// reconciles dedicated slots, but leaves an already-running dedicated worker on its old modules.
+		// Clearing from either would report restartRequired: false while a deployed component is still
+		// loaded nowhere. So: all workers always, the pool only while no dedicated worker is running --
+		// which is every node that uses no isolated application, i.e. the historic behavior unchanged.
+		const coversEveryWorker =
+			application === '*' || (application === undefined && !workers.some((worker) => worker.application));
+		if (coversEveryWorker) resetRestartNeeded();
 		// This is here to prevent circular dependencies
 		if (startReplacementThreads) {
 			const { loadRootComponents } = require('../loadRootComponents.js');
