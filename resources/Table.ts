@@ -7640,7 +7640,9 @@ export function makeTable(options) {
 			recordExpirationInterval = setInterval(async () => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
-				if (disposed || runningRecordExpiration) return;
+				// updatedAttributes() clears expiresAtProperty when a live redeclaration drops the directive,
+				// and there is nothing left for this interval to scan by
+				if (disposed || runningRecordExpiration || !expiresAtProperty) return;
 				runningRecordExpiration = true;
 				try {
 					const expiresAtName = expiresAtProperty.name;
