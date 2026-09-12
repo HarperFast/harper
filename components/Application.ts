@@ -1033,6 +1033,119 @@ const CANDIDATE_COMPONENT_FILE = '.component';
 // to a deploy in flight, so without a record they would treat an unsettled component as healthy and load it.
 const UNSETTLED_MARKER = '.unsettled';
 const ACTIVATION_JOURNAL_VERSION = 1;
+const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
+
+/** `deployment_stagingRetention_maxCount`; 0 keeps none. Only a number or numeric string counts, so `true`/`[]`/blank cannot become "keep nothing". */
+export function getStagingRetentionMaxCount(): number {
+	const configured = getConfigValue(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT);
+	if (typeof configured !== 'number' && typeof configured !== 'string') return DEFAULT_STAGING_RETENTION_MAX_COUNT;
+	if (typeof configured === 'string' && configured.trim() === '') return DEFAULT_STAGING_RETENTION_MAX_COUNT;
+	const parsed = Number(configured);
+	return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_STAGING_RETENTION_MAX_COUNT;
+}
+
+type DormantBuild = {
+	deploymentDirPath: string;
+	deploymentId: string;
+	completedAt: number;
+};
+
+async function presentOrAbsent(path: string): Promise<import('node:fs').Stats | undefined> {
+	return lstat(path).catch((error: NodeJS.ErrnoException) => {
+		if (error?.code === 'ENOENT') return undefined;
+		throw error;
+	});
+}
+
+/**
+ * A dormant build: complete, tree present, no journal. Activation writes `.complete` moments before its
+ * journal under the owner's preparation lock, so only a read under that lock is a verdict. A stale
+ * `.unsettled` makes it residue instead, since only removing the directory clears that marker for workers.
+ * Only ENOENT is absence; any other read error propagates so the caller preserves the entry.
+ */
+async function dormantBuildAt(deploymentDirPath: string, owner: string): Promise<DormantBuild | undefined> {
+	const complete = await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER));
+	if (!complete) return undefined;
+	if (await presentOrAbsent(join(deploymentDirPath, UNSETTLED_MARKER))) return undefined;
+	const tree = await presentOrAbsent(join(deploymentDirPath, owner));
+	if (!tree || !(tree.isDirectory() || tree.isSymbolicLink())) return undefined;
+	return { deploymentDirPath, deploymentId: basename(deploymentDirPath), completedAt: complete.mtimeMs };
+}
+
+/**
+ * Remove the oldest dormant builds beyond `maxCount`. The caller must hold the component's preparation lock;
+ * every catalogued build is re-derived under it before the kept set is chosen, so a catalog read unlocked
+ * cannot hold or miss a slot. Never throws: a failure must neither fail a component closed nor replace a
+ * deploy's own error.
+ */
+export async function pruneDormantBuilds(
+	componentName: string,
+	builds: DormantBuild[],
+	maxCount: number
+): Promise<void> {
+	const current: DormantBuild[] = [];
+	for (const build of builds) {
+		try {
+			const fresh = await dormantBuildAt(build.deploymentDirPath, componentName);
+			if (fresh && !(await presentOrAbsent(join(build.deploymentDirPath, ACTIVATION_JOURNAL)))) current.push(fresh);
+		} catch (error) {
+			logger.warn(
+				`Leaving deploy staging ${build.deploymentDirPath} out of retention; it could not be read:`,
+				errorForLog(error)
+			);
+		}
+	}
+	const evictions = current
+		.sort(
+			(left, right) =>
+				right.completedAt - left.completedAt ||
+				(left.deploymentId < right.deploymentId ? -1 : left.deploymentId > right.deploymentId ? 1 : 0)
+		)
+		.slice(Math.max(0, maxCount));
+	for (const build of evictions) {
+		try {
+			await rm(build.deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+			logger.debug?.(
+				`Pruned dormant staged build ${build.deploymentId} of ${componentName} beyond deployment_stagingRetention_maxCount=${maxCount}`
+			);
+		} catch (error) {
+			logger.warn(
+				`Could not prune dormant staged build ${build.deploymentDirPath} of ${componentName}; it remains beyond ` +
+					`deployment_stagingRetention_maxCount=${maxCount}:`,
+				errorForLog(error)
+			);
+		}
+	}
+}
+
+/** Every dormant build a component owns; an unreadable directory is left out and logged. */
+async function dormantBuildsOf(componentsRootDirPath: string, componentName: string): Promise<DormantBuild[]> {
+	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
+	let deployments;
+	try {
+		deployments = await readdir(stagingRoot, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+		throw error;
+	}
+	const builds: DormantBuild[] = [];
+	for (const deployment of deployments) {
+		if (!deployment.isDirectory()) continue;
+		const deploymentDirPath = join(stagingRoot, deployment.name);
+		try {
+			if ((await candidateComponentName(deploymentDirPath)) !== componentName) continue;
+			if (await presentOrAbsent(join(deploymentDirPath, ACTIVATION_JOURNAL))) continue;
+			const build = await dormantBuildAt(deploymentDirPath, componentName);
+			if (build) builds.push(build);
+		} catch (error) {
+			logger.warn(
+				`Leaving deploy staging ${deploymentDirPath} out of retention; it could not be read:`,
+				errorForLog(error)
+			);
+		}
+	}
+	return builds;
+}
 
 /**
  * Best-effort fsync of a directory. Best-effort by necessity — Node cannot fsync a directory on Windows —
@@ -1471,7 +1584,8 @@ async function inProgressAsideRecords(asideStagingDir: string): Promise<string[]
 }
 
 /**
- * Settle journaled activations for ONE component, assuming the caller already holds its preparation lock.
+ * Settle journaled activations for ONE component, and bound its dormant staged builds, assuming the caller
+ * already holds its preparation lock.
  *
  * Exists because the journal-first rule has to hold at every entry point, not just startup. A deploy runs
  * `recoverOrCleanupStaleExtractionPaths` first. After an activation whose retirement failed, the aside
@@ -1479,10 +1593,7 @@ async function inProgressAsideRecords(asideStagingDir: string): Promise<string[]
  * pass refuses to restore against a surviving journal, but refusing is a stalled component; settling first
  * is what lets the deploy proceed.
  */
-async function settleJournaledActivationsForComponent(
-	componentsRootDirPath: string,
-	componentName: string
-): Promise<void> {
+async function settleStagingForComponent(componentsRootDirPath: string, componentName: string): Promise<void> {
 	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
 	let deployments;
 	try {
@@ -1491,6 +1602,7 @@ async function settleJournaledActivationsForComponent(
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
 		throw error;
 	}
+	const dormant: DormantBuild[] = [];
 	for (const deployment of deployments) {
 		if (!deployment.isDirectory()) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
@@ -1520,13 +1632,27 @@ async function settleJournaledActivationsForComponent(
 		// A journal-less directory is what a SUCCESSFUL settlement leaves when its best-effort sweep fails, so
 		// this must not fail closed. An unattributable *activation* still does: `readActivationJournal` throws
 		// on a journal that exists but cannot be read.
-		if (!journal) continue;
+		if (!journal) {
+			if (ownerUnreadable) continue;
+			try {
+				const build = await dormantBuildAt(deploymentDirPath, componentName);
+				if (build) dormant.push(build);
+			} catch (error) {
+				logger.warn(
+					`Leaving staged ${componentName} build ${deploymentDirPath} out of retention; it could not be read:`,
+					errorForLog(error)
+				);
+			}
+			continue;
+		}
 		// The journal decides, not the sidecar. Skipping on an unreadable sidecar alone would leave this
 		// component's own unsettled activation in place while a new deploy proceeded over it, and an
 		// activation interrupted before B1 has no rollback record for the restore gate to catch.
 		if (journal.component !== componentName) continue;
 		await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal);
 	}
+	const maxCount = getStagingRetentionMaxCount();
+	if (dormant.length > maxCount) await pruneDormantBuilds(componentName, dormant, maxCount);
 }
 
 /**
@@ -1638,30 +1764,18 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return failures;
 		throw error;
 	}
+	const dormant = new Map<string, DormantBuild[]>();
+	const catalogue = (owner: string, build: DormantBuild) => {
+		const builds = dormant.get(owner);
+		if (builds) builds.push(build);
+		else dormant.set(owner, [build]);
+	};
 
 	for (const deployment of deployments) {
 		if (!deployment.isDirectory()) continue;
 		const deploymentDirPath = join(stagingRoot, deployment.name);
 		const journalPath = join(deploymentDirPath, ACTIVATION_JOURNAL);
-		const fail = async (component: string, error: unknown) => {
-			const failure = error instanceof Error ? error : new Error(String(error));
-			if (!failures.has(component)) failures.set(component, failure);
-			logger.error(`Could not settle the interrupted activation of ${component}:`, errorForLog(failure));
-			// A DEFERRAL is not a verdict, and only verdicts go on disk. A held lock means a live deploy, which
-			// settles its own journal; a marker written here would outlive that deploy and have
-			// `unsettleableComponentsFromDisk` read it as an authoritative "cannot be settled", failing a
-			// healthy component closed on every worker. The failure is already recorded above, so this thread
-			// still defers — it just leaves nothing behind.
-			if (failure instanceof ComponentPreparationLockTimeoutError) return;
-			// Everything else IS a verdict, recorded so workers reach the same one. An unreadable journal is
-			// self-evident, but a well-formed journal this pass could not settle looks exactly like a deploy
-			// in flight, and a worker would otherwise load the component over state nobody reconciled.
-			// Best-effort: the alternative to a missing marker is today's behavior, not a worse one.
-			await writeFile(join(deploymentDirPath, UNSETTLED_MARKER), failure.message, { mode: 0o600 }).catch(
-				(markerError) =>
-					logger.warn(`Could not record the unsettled activation of ${component}: ${errorMessage(markerError)}`)
-			);
-		};
+		const fail = (component: string, error: unknown) => recordUnsettled(failures, component, error, deploymentDirPath);
 
 		let journal: ActivationJournal | undefined;
 		try {
@@ -1721,6 +1835,13 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					activationToFail = undefined;
 					return;
 				}
+				// Re-classified UNDER the lock: the unlocked read that routed this here can predate the `.complete`
+				// a deploy wrote before dying, and that is a retainable build, not residue.
+				const build = await dormantBuildAt(deploymentDirPath, owner!);
+				if (build) {
+					catalogue(owner!, build);
+					return;
+				}
 				// Cleanup, not settlement. There was no activation here — this is most often the residue a
 				// SUCCESSFUL settlement leaves when its own sweep failed — so a sweep that fails again cannot
 				// make anything unsettled, and recording it would refuse a live component on every worker
@@ -1744,6 +1865,24 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 						`ownership cannot be read: ${errorMessage(error)}`
 				);
 				continue;
+			}
+			// Catalogued WITHOUT the lock and left alone: a retained build is never removed here, so a per-directory
+			// lock would recur on every pass and contend with sibling threads for a component nothing is deploying.
+			if (owner) {
+				let build: DormantBuild | undefined;
+				try {
+					build = await dormantBuildAt(deploymentDirPath, owner);
+				} catch (error) {
+					logger.warn(
+						`Leaving deploy staging ${deploymentDirPath} in place; it could not be read:`,
+						errorForLog(error)
+					);
+					continue;
+				}
+				if (build) {
+					catalogue(owner, build);
+					continue;
+				}
 			}
 			// Scoped to THIS deployment, like the journaled branch below: a lock timeout or an EIO here used to
 			// abort the entire scan, leaving every later deployment unsettled and unmarked.
@@ -1809,6 +1948,120 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 		} catch (error) {
 			// The journal named its component, so attribution is exact however the settle failed.
 			await fail(journal.component, error);
+		}
+	}
+
+	const maxCount = getStagingRetentionMaxCount();
+	for (const [owner, builds] of dormant) {
+		for (const [component, error] of await reconcileDormantBuilds(componentsRootDirPath, owner, builds, maxCount)) {
+			if (!failures.has(component)) failures.set(component, error);
+		}
+	}
+	return failures;
+}
+
+/**
+ * Record a settlement failure against a component. A lock TIMEOUT is a deferral, not a verdict, and only
+ * verdicts go on disk: a held lock means a live deploy, which settles its own journal, and a marker written
+ * here would outlive it and have `unsettleableComponentsFromDisk` fail a healthy component closed on every
+ * worker. Everything else is written so workers reach the same verdict — a well-formed journal this pass
+ * could not settle looks exactly like a deploy in flight otherwise. Marker write is best-effort.
+ */
+async function recordUnsettled(
+	failures: Map<string, Error>,
+	component: string,
+	error: unknown,
+	deploymentDirPath: string
+): Promise<void> {
+	const failure = error instanceof Error ? error : new Error(String(error));
+	if (!failures.has(component)) failures.set(component, failure);
+	logger.error(`Could not settle the interrupted activation of ${component}:`, errorForLog(failure));
+	if (failure instanceof ComponentPreparationLockTimeoutError) return;
+	await writeFile(join(deploymentDirPath, UNSETTLED_MARKER), failure.message, { mode: 0o600 }).catch((markerError) =>
+		logger.warn(`Could not record the unsettled activation of ${component}: ${errorMessage(markerError)}`)
+	);
+}
+
+/**
+ * Finish one owner's catalogued dormant builds after the scan. The catalog was read without the lock, so a
+ * deploy may have published a journal into one of these directories since — and if it then died mid-swap,
+ * only settlement brings the component back. So: settle any journal that appeared, then bound what is still
+ * dormant. The lock is taken only when there is something to do; a lock a live deploy holds is the same
+ * deferral the residue branch records.
+ */
+export async function reconcileDormantBuilds(
+	componentsRootDirPath: string,
+	owner: string,
+	builds: DormantBuild[],
+	maxCount: number
+): Promise<Map<string, Error>> {
+	const failures = new Map<string, Error>();
+	let journaled: DormantBuild | undefined;
+	for (const build of builds) {
+		// Anything but a clean ENOENT means "read it properly, under the lock".
+		const appeared = await presentOrAbsent(join(build.deploymentDirPath, ACTIVATION_JOURNAL)).then(
+			(stats) => stats !== undefined,
+			() => true
+		);
+		if (appeared) {
+			journaled = build;
+			break;
+		}
+	}
+	if (!journaled && builds.length <= maxCount) return failures;
+	try {
+		await withComponentPreparationLock(
+			join(componentsRootDirPath, owner),
+			async () => {
+				const stillDormant: DormantBuild[] = [];
+				for (const build of builds) {
+					let journal: ActivationJournal | undefined;
+					try {
+						journal = await readActivationJournal(join(build.deploymentDirPath, ACTIVATION_JOURNAL));
+					} catch (error) {
+						await recordUnsettled(failures, owner, error, build.deploymentDirPath);
+						continue;
+					}
+					if (!journal) {
+						stillDormant.push(build);
+						continue;
+					}
+					// The lock held here is the SIDECAR owner's, as in the residue branch: a journal naming someone
+					// else is not settled under it, and both names are failed.
+					const splitNames = splitAttributionOwners(journal.component, owner);
+					if (splitNames) {
+						const split = splitAttributionError(build.deploymentDirPath, journal.component, splitNames[0]);
+						for (const name of splitNames) await recordUnsettled(failures, name, split, build.deploymentDirPath);
+						continue;
+					}
+					try {
+						await settleInterruptedActivation(componentsRootDirPath, build.deploymentDirPath, journal);
+					} catch (error) {
+						await recordUnsettled(failures, journal.component, error, build.deploymentDirPath);
+					}
+				}
+				if (stillDormant.length > maxCount) await pruneDormantBuilds(owner, stillDormant, maxCount);
+			},
+			{
+				purpose: 'activation-recovery',
+				...RECOVERY_LOCK_WAIT,
+				isOwnerAlive: (lockOwner) => lockOwner.pid !== process.pid || isThreadRunning(lockOwner.threadId),
+			}
+		);
+	} catch (error) {
+		// With a journal in view this is an activation that could not be settled — recorded exactly as the
+		// scan records one it saw directly (a timeout defers, anything else is a verdict). Without one it is
+		// hygiene that could not run, unless a live deploy holds the lock, which defers as everywhere else.
+		if (journaled) {
+			await recordUnsettled(failures, owner, error, journaled.deploymentDirPath);
+			return failures;
+		}
+		const failure = error instanceof Error ? error : new Error(String(error));
+		if (failure instanceof ComponentPreparationLockTimeoutError) {
+			if (!failures.has(owner)) failures.set(owner, failure);
+			logger.info?.(`Deferred pruning the dormant staged builds of ${owner}: a deploy holds its lock`);
+		} else {
+			logger.warn(`Could not prune the dormant staged builds of ${owner}:`, errorForLog(failure));
 		}
 	}
 	return failures;
@@ -2670,6 +2923,15 @@ export async function dropComponentDirectory(
 		asideStagingDir,
 		new Set([droppedPath])
 	);
+	// A dropped component has no next deploy to bound its dormant builds.
+	try {
+		await pruneDormantBuilds(componentName, await dormantBuildsOf(dirname(componentDirPath), componentName), 0);
+	} catch (error) {
+		componentLogger.warn(
+			`Dropped ${componentName} but could not reclaim its dormant staged builds:`,
+			errorForLog(error)
+		);
+	}
 }
 
 async function cleanupExtractionPaths(
@@ -3470,7 +3732,7 @@ export async function prepareApplication(application: Application, options: Prep
 				}
 				// BEFORE the legacy pass. That pass refuses to restore while a journal survives, so skipping
 				// this would not lose data — it would just stall the deploy behind its own unsettled state.
-				await settleJournaledActivationsForComponent(dirname(application.dirPath), application.name);
+				await settleStagingForComponent(dirname(application.dirPath), application.name);
 				if (recoveryPending) {
 					await ensureExtractionStagingDirectory(asideStagingDir);
 					await recoverOrCleanupStaleExtractionPaths(application, asideStagingDir);

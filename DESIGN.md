@@ -688,6 +688,36 @@ briefly absent (in-memory resources are unaffected, but a component that opens i
 request can still see a gap); validation does not run on the main-thread deploy path; and config
 publication is not yet an effect of this transaction, as above.
 
+### Retention of dormant staged builds
+
+A journal-less deployment directory holding `.complete` and the owner's tree is a **dormant build**: built
+and validated, activated by nobody. Recovery used to remove every owned journal-less directory; it now keeps
+dormant builds and bounds them per component to `deployment_stagingRetention_maxCount` (default 5, 0 keeps
+none), newest by `.complete` mtime, ties broken by deployment id so concurrent passes pick the same victims.
+Everything else journal-less — a partial tree, a directory whose tree already moved live, a stale
+`.unsettled` — is still residue and still removed. Nothing here produces a dormant build yet beyond the crash
+window between `.complete` and the journal; #2315 step 6 (deploy from an existing aside) is the producer this
+bound exists for.
+
+Removal is decided **only under the owner's preparation lock**: activation writes `.complete` moments
+before its journal while holding that lock, so an unlocked read of "complete, no journal" is a candidate, not
+a verdict. Boot recovery catalogues dormant builds unlocked, then reconciles each owner once: if any
+catalogued directory has acquired a journal since the scan, or the owner is over its bound, it takes the lock
+and re-reads only that owner's catalogued directories — never the whole staging root, which sibling threads
+are probing — settling any journal that appeared (a deploy that published one and died mid-swap would
+otherwise leave the component unloadable until the next start) and bounding what is still dormant. The
+residue branch re-classifies under its lock too, since the `.complete` a deploy wrote before dying can land
+while the scan waits for the lock. A build created after the scan waits for the next pass. It used to take the lock per journal-less directory, which was one-shot because the directory was
+removed — doing that for retained builds on every pass made a healthy component lose the 250 ms probe to its
+sibling threads at boot and be deferred with nothing in progress. A lock a live deploy holds is still recorded as
+that same deferral: "do not delete" is not "safe to load". The deploy path prunes inside the settlement scan
+it already runs under the lock, before building, so a deploy pays one traversal of the staging root.
+`dropComponentDirectory` reclaims the dropped component's dormant builds, since no later deploy of that
+name will. Only ENOENT is absence; any other read error keeps the entry and moves on. Pruning is disk
+hygiene: it never fails a component closed and never replaces a deploy's own error, so the bound is
+best-effort under filesystem failure and is not a storage quota — journaled, unsettled and unowned
+directories are preserved by design and can still fill a volume.
+
 ## Component preparation is serialized across worker threads
 
 `prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" below). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
