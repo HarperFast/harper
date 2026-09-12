@@ -58,10 +58,6 @@ export function maxIsolatedApplications(): number {
 	return Number.isInteger(configured) && configured >= 0 ? configured : DEFAULT_MAX_ISOLATED_APPLICATIONS;
 }
 
-export function isolatedWorkerHeapShareCount(poolSize: number, max = maxIsolatedApplications()): number {
-	return poolSize + max;
-}
-
 /** Why `appName` cannot claim a place in the dedicated-worker budget, if the budget is full. */
 export function isolatedApplicationCapacityRefusal(
 	appName: string,

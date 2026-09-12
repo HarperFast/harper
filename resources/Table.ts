@@ -96,7 +96,6 @@ import {
 	ownsStoreMaintenance,
 	ownsStoreExpiration,
 	runsApplicationCodeSingletons,
-	isDedicatedWorker,
 } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, LOCAL_ONLY, auditRetention, removeAuditEntry } from './auditStore.ts';
 import { derivedIndexWriteRejection, hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
@@ -7469,7 +7468,7 @@ export function makeTable(options) {
 		// Periodically evict expired records and deleted records searching for records who expiresAt timestamp is before now
 		if (cleanupInterval === lastCleanupInterval && !runImmediately) return;
 		lastCleanupInterval = cleanupInterval;
-		if (ownsStoreMaintenance(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
+		if (ownsStoreMaintenance(primaryStore.path)) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
 			if (!cleanupInterval) {

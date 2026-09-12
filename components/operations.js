@@ -604,6 +604,7 @@ async function deployComponent(req) {
 	// then report any node-local inability to run it through component lifecycle status.
 	const nowIsolated = req.isolated ?? wasIsolated;
 	const isReplicatedExecution = typeof req._deploymentId === 'string';
+	if (!isReplicatedExecution && req.package) req.isolated = nowIsolated;
 	if (nowIsolated && !isReplicatedExecution) {
 		const {
 			isolatedApplicationRefusal,
@@ -620,7 +621,10 @@ async function deployComponent(req) {
 				HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
 			);
 		}
-		runningApplications = new Set([...runningApplications, ...presentIsolatedApplicationNames()]);
+		runningApplications = new Set([
+			...runningApplications,
+			...presentIsolatedApplicationNames().filter((application) => !isolatedApplicationRefusal(application)),
+		]);
 		const refusal =
 			isolatedApplicationRefusal(req.project) ?? isolatedApplicationCapacityRefusal(req.project, runningApplications);
 		if (refusal) {
@@ -872,6 +876,7 @@ async function deployComponent(req) {
 				operation: 'restart_service',
 				service: 'http',
 				scope: manageThreads.encodeRestartScope(restartScope),
+				scopeFallback: restartScope === undefined ? undefined : manageThreads.encodeRestartScope(undefined),
 				replicated: true,
 			});
 			emit('phase', { phase: 'restart', status: 'done' });
@@ -1366,6 +1371,7 @@ async function dropComponent(req) {
 	const pathToComponent = path.join(componentsRoot, projectPath);
 	// Read before the config entry goes: an isolated application's drop restarts only its own worker.
 	const { isIsolatedApplication } = require('../server/threads/isolatedApplications.ts');
+	env.initSync(true);
 	const restartScope = isIsolatedApplication(project) ? project : undefined;
 
 	let response;

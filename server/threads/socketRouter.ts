@@ -10,7 +10,6 @@ import {
 } from './manageThreads.js';
 import {
 	presentIsolatedApplicationNames,
-	isolatedWorkerHeapShareCount,
 	isolatedApplicationRefusal,
 	isolatedApplicationCapacityRefusal,
 } from './isolatedApplications.ts';
@@ -97,7 +96,7 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		poolSize = threadCount;
 		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
 		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()]);
-		const heapShareCount = isolatedWorkerHeapShareCount(threadCount);
+		const heapShareCount = threadCount + isolated.length;
 		for (let i = 0; i < threadCount; i++) {
 			workerSlots.push(startHTTPWorker(i, threadCount, undefined, heapShareCount));
 		}
@@ -203,11 +202,15 @@ async function reconcileIsolatedWorkersNow(): Promise<string[]> {
 		if (wanted.has(application)) continue;
 		isolatedSlots.delete(application);
 		// awaited: a caller that goes on to remove the application's storage must see its worker gone
-		stopping.push(slot.shutdown());
+		stopping.push(slot.shutdown().then(() => application));
 	}
-	await Promise.all(stopping);
+	const stoppedApplications = await Promise.all(stopping);
+	if (stoppedApplications.length > 0) {
+		const { cleanupApplicationSockets } = await import('../http.ts');
+		for (const application of stoppedApplications) cleanupApplicationSockets(application);
+	}
 	const started: string[] = [];
-	const heapShareCount = isolatedWorkerHeapShareCount(poolSize);
+	const heapShareCount = poolSize + wanted.size;
 	for (const application of wanted) {
 		if (isolatedSlots.has(application)) continue;
 		const slot = startHTTPWorker(nextIsolatedIndex++, poolSize, application, heapShareCount);

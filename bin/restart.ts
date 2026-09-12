@@ -11,6 +11,7 @@ import {
 	restartWorkers,
 	isThreadRunning,
 	decodeRestartScope,
+	getRunningIsolatedApplications,
 	onMessageByType,
 	shutdownWorkersNow,
 } from '../server/threads/manageThreads.js';
@@ -39,7 +40,12 @@ if (isMainThread) {
 			// `scope` stays in its wire form ('' pool, a name, absent = all) until restartService decodes it once
 			if (message.removeBranchesFor)
 				await restartThenRemoveBranches(message.workerType, message.removeBranchesFor, message.scope);
-			else if (message.workerType) await restartService({ service: message.workerType, scope: message.scope });
+			else if (message.workerType)
+				await restartService({
+					service: message.workerType,
+					scope: message.scope,
+					scopeFallback: message.scopeFallback,
+				});
 			else restart({ operation: 'restart' });
 		} finally {
 			port.postMessage({ type: 'restart-complete' });
@@ -186,6 +192,21 @@ async function restartService(req: any) {
 	if (hdbTerms.HDB_PROCESS_SERVICES[service] === undefined) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
+	const requestedScope = decodeRestartScope(req);
+	if (typeof requestedScope === 'string' && requestedScope !== '*' && req.scopeFallback === undefined) {
+		envMgr.initSync(true);
+		const { isIsolatedApplication } = await import('../server/threads/isolatedApplications.ts');
+		if (!isIsolatedApplication(requestedScope)) {
+			throw handleHDBError(
+				new Error(),
+				`Unknown isolated application restart scope: ${requestedScope}`,
+				HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+	}
 	processMan.expectedRestartOfChildren();
 	if (!isMainThread) {
 		if (req.replicated) {
@@ -195,6 +216,7 @@ async function restartService(req: any) {
 			type: hdbTerms.ITC_EVENT_TYPES.RESTART,
 			workerType: service,
 			scope: req.scope, // wire form, forwarded as received
+			scopeFallback: req.scopeFallback,
 		});
 		parentPort.ref(); // don't let the parent thread exit until we're done
 		await new Promise<void>((resolve) => {
@@ -269,8 +291,12 @@ async function restartService(req: any) {
 			if (calledFromCli) {
 				await processMan.restart(hdbTerms.PROCESS_DESCRIPTORS.HDB);
 			} else {
-				// scoped to one isolated application's worker when asked; otherwise every http worker
-				await restartWorkers('http', undefined, true, null, decodeRestartScope(req));
+				let scope = requestedScope;
+				if (req.scopeFallback !== undefined && typeof scope === 'string' && scope !== '*') {
+					const runningApplications = await getRunningIsolatedApplications();
+					if (!runningApplications.includes(scope)) scope = decodeRestartScope({ scope: req.scopeFallback });
+				}
+				await restartWorkers('http', undefined, true, null, scope);
 			}
 			break;
 		default:

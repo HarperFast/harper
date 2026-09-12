@@ -283,6 +283,19 @@ export function cleanupSocketsDirectory() {
 	} catch {}
 }
 
+export function cleanupApplicationSockets(application: string) {
+	const socketsDir = join(env.getHdbBasePath(), 'sockets');
+	const prefix = applicationSocketName(application, '');
+	try {
+		for (const file of readdirSync(socketsDir)) {
+			if (!file.startsWith(prefix) || (!file.endsWith('.sock') && !file.endsWith('.yaml'))) continue;
+			try {
+				unlinkSync(join(socketsDir, file));
+			} catch {}
+		}
+	} catch {}
+}
+
 // Entries in `universalHeaders` that were pushed by `applySecurityHeaders`, so a config
 // hot-reload can remove exactly the entries it owns without clobbering entries pushed by
 // other components.

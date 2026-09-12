@@ -82,7 +82,6 @@ describe('isolated applications (harper#642 tier 2)', () => {
 
 		it('defaults the admission budget when none is configured', () => {
 			assert.strictEqual(iso().maxIsolatedApplications(), iso().DEFAULT_MAX_ISOLATED_APPLICATIONS);
-			assert.strictEqual(iso().isolatedWorkerHeapShareCount(2, 8), 10);
 		});
 
 		it('refuses Windows where per-application UDS mirrors are unavailable', () => {
