@@ -665,14 +665,25 @@ Added — **core's half is done on this branch**:
   `requestDelegation(...)` and `recallDelegation(...)`, plus the inbound handlers core exposes so a
   transport can route a peer's request or recall to the right coordinator.
 
-Added — **still owed by harper-pro**:
+Added — **harper-pro's delegation server, on harper-pro#822**:
+
+- The wire: `record_lock_delegate` and `record_lock_recall` as registered operations over the
+  replication connections that already exist, in `replication/recordLockRpc.ts`. A request prefers
+  the live outbound subscription session — whose inbound end already lands on the home's coordinating
+  worker — and falls back to `sendOperationToNode`. The requester's identity is the authenticated
+  node principal of the connection, never a payload field, so a `super_user` human cannot mint or
+  clear a delegation. An operation accepted on a non-owner thread relays through main to the owner
+  worker under a bound, and a relay that times out answers `not-home`, never a grant.
+- The `ClusterLockTransport` implementation, capability level 2 and the enablement gate, in
+  `replication/recordLockTransport.ts` and `replication/protocolCapabilities.ts`.
+
+Still owed by harper-pro — **the one thing that blocks enablement**:
 
 - The epoch protocol (§4) and its durable per-database record, behind `transport.epoch(database)`
-  (harper-pro#825). It is also what finally lets harper-pro assert `agreedDown`, the gap #822 records
-  as a core follow-up.
-- The delegation server itself — unicast request/grant/recall over the existing replication
-  connections (`sendOperationToNode`, harper-pro `replication/replicator.ts`, is the existing
-  precedent for a node-addressed request).
+  (harper-pro#825). #822 carries a **static** epoch as scaffolding: it is derived, not agreed, so two
+  nodes that disagree about membership derive different rings and can both grant one key. That is why
+  the transport ships gated off. #825 is also what finally lets harper-pro assert `agreedDown`, the
+  gap #822 records as a core follow-up.
 
 ### Protocol version and mixed deployments
 
@@ -738,7 +749,7 @@ as the new protocol.
 harper#2498 stays a draft and does not ship Ricart–Agrawala as the arbitration rule. The substrate in
 §11 lands (reusable under every option considered, and already reviewed); the arbitration **is
 replaced on the branch**. harper-pro#822 keeps its capability, participant-set, ownership and switch
-work and replaces its transport implementation. Neither is enabled by default at any point, and with
+work, and its transport implementation is replaced — the delegation wire is in place there. Neither is enabled by default at any point, and with
 harper#2542 and harper-pro#825 outstanding the branch cannot be enabled even deliberately: core fails
 closed without an agreed epoch, and no core build supplies one.
 
@@ -766,14 +777,24 @@ epoch protocol, §4), harper#2541 (home ring, delegations, drain and caps, §§5
 inherited substrate defects in §11) and harper#2542 (successor freshness, §7).
 
 **Status.** harper#2541's core half is implemented on this branch: the Ricart–Agrawala state machine
-is gone, and the home ring, the delegation table, recall-and-drain, ordered fencing tokens, the
-aggregate caps and the transport-swap grant fence are in place, with all three inherited defects
-fixed. What is not here, and is what keeps the feature unusable rather than merely disabled:
+is gone, and the home ring, the delegation table, recall with §6 steps 1, 2 and 4, ordered fencing
+tokens, the caps and the transport-swap grant fence are in place, with all three inherited defects
+fixed. **§6 step 3 — settlement — is not implemented**: a recall revokes capability and then writes
+the release without waiting for a native commit already submitted to complete. That is exactly
+limitation (2)'s third route in §10, which the contract already states, so the gap is disclosed
+rather than hidden — but §6 must not be read as fully implemented. Closing it means hanging the
+release hook off logical-transaction settlement rather than off the last admission unlocking. What is not here, and is what keeps the feature unusable rather than merely disabled:
 harper-pro#825's durable epoch — core fails closed without one and no core build supplies one — and
 harper#2542's freshness fence, without which a handoff carries exclusion but not the clean-handoff
 freshness §2 states. **The measurement gate (harper-pro#824) still has not run**, and the decision to
 implement ahead of it was the human's, recorded here so the sequence is not mistaken for the one this
 note recommends.
+
+One behavior surfaced by implementing §6 is still an open decision, tracked as harper#2580: a
+`{hold: true}` write that was staged and then unlocked is **revoked** rather than waited for when a
+successor takes the key, so the request fails at commit. That is safe and it is what §6 specifies,
+but it is surprising, and the alternative — draining on the transaction rather than the handle —
+costs bounded-time handoff. If revoke stands, harper#2547 must say so.
 
 **The documentation obligation is harper#2547, and it is not optional.** §10's rule that the two
 limitations may not be softened is the condition on which exclusion-only was chosen over harper#2540;

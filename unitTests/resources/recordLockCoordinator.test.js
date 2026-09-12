@@ -7,8 +7,18 @@ const {
 	decodeLockControlPayload,
 	encodeLockControlPayload,
 	homeFor,
+	ringKeyFor,
 } = require('#src/resources/recordLockCoordinator');
-const { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS } = require('#src/resources/recordLock');
+const { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS, makeKeyLockHandle } = require('#src/resources/recordLock');
+
+/** A real lock handle over a fake store, so revocation is tested through production code. */
+function realHandle(lease = LEASE) {
+	const unlocked = [];
+	let mono = 1;
+	const store = { unlock: (key) => unlocked.push(key), getMonotonicTimestamp: () => mono++ };
+	const handle = makeKeyLockHandle(store, ['k'], 'k', lease, true);
+	return { handle, unlocked };
+}
 
 // Cluster record locks (harper#483 Phase 1): amortized per-record ownership, driven by a set of
 // coordinators over an in-process transport with controllable delay, denial, replay and node death.
@@ -75,12 +85,7 @@ class FakeCluster {
 				requestDelegation: (target, database, table, request) => this.#deliverRequest(name, target, request),
 				recallDelegation: (target, database, table, recall) => this.#deliverRecall(name, target, recall),
 			},
-			writeControl: (entry) => {
-				if (!node.alive) return Promise.resolve();
-				node.written.push(entry);
-				this.#broadcastRelease(name, entry);
-				return Promise.resolve();
-			},
+			writeControl: this.writeControlFor(name),
 			keyIdOf: (key) => String(key),
 			nextTimestamp: () => ++this.tsCounter,
 			monotonic: () => node.mono + (Date.now() - this.startedAt),
@@ -94,6 +99,22 @@ class FakeCluster {
 
 	node(name) {
 		return this.nodes.get(name);
+	}
+
+	/**
+	 * Writing to the local transaction log IS the send, so a release both lands in this node's `written`
+	 * and reaches every peer's apply loop. Shared with `replace()`: a successor coordinator that cannot
+	 * write a release would leave every home holding its grant, which is a harness artifact and not
+	 * anything the coordinator does.
+	 */
+	writeControlFor(name) {
+		return (entry) => {
+			const node = this.node(name);
+			if (!node?.alive) return Promise.resolve();
+			node.written.push(entry);
+			this.#broadcastRelease(name, entry);
+			return Promise.resolve();
+		};
 	}
 
 	/** Advance ONE node's clock. Nothing else moves. */
@@ -114,7 +135,11 @@ class FakeCluster {
 		this.requests.push({ from, to, key: request.key });
 		const target = this.node(to);
 		if (!target || !target.alive) throw new Error(`${to} is unreachable`);
-		return target.coordinator.onDelegationRequest(request);
+		const reply = await target.coordinator.onDelegationRequest(request);
+		// Lets a test act while the requester is still awaiting this reply — the window a component
+		// reload lands in.
+		await this.beforeReply?.(from, to, request);
+		return reply;
 	}
 
 	async #deliverRecall(from, to, recall) {
@@ -136,7 +161,9 @@ class FakeCluster {
 
 	/** The node that homes this key under the current membership. */
 	homeOf(key) {
-		return homeFor(String(key), this.members);
+		// The coordinator hashes database ‖ table ‖ key (§4.5); the harness must scope it identically
+		// or every keyHomedOn() would pick a different node than the coordinator does.
+		return homeFor(ringKeyFor('test', 'LockTest', key), this.members);
 	}
 
 	/** A key homed on the given node, found by search so tests never hardcode a hash result. */
@@ -210,16 +237,16 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const alpha = cluster.node('alpha').coordinator;
-			await alpha.acquire(key, LEASE, WAIT);
-			alpha.release(key);
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, round.admissionId);
 			assert.strictEqual(cluster.requests.length, 1);
 			for (let i = 0; i < 25; i++) {
 				// Advance between locks. Without this the whole loop runs inside one clock tick, and a
 				// delegation sized to the lock's own lease would pass — which is exactly the defect a
 				// same-instant loop hid: every repeat lock renewed and paid a round trip.
 				cluster.advance('alpha', 1_000);
-				await alpha.acquire(key, LEASE, WAIT);
-				alpha.release(key);
+				const repeat = await alpha.acquire(key, LEASE, WAIT);
+				alpha.release(key, repeat.admissionId);
 			}
 			// This is the whole point of the design: releasing the application lock does not release the
 			// delegation, so 26 locks spread over 25 seconds cost one round.
@@ -237,8 +264,8 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const alpha = cluster.node('alpha').coordinator;
-			await alpha.acquire(key, LEASE, WAIT);
-			alpha.release(key);
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, round.admissionId);
 			// Close enough to the delegation's end that a fresh full-lease admission no longer fits
 			// inside it. An admission that outlived its delegation is exactly what the home's skew margin
 			// assumes cannot happen.
@@ -264,9 +291,9 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('gamma');
 			const alpha = cluster.node('alpha').coordinator;
-			await alpha.acquire(key, LEASE, WAIT);
+			const alphaRound = await alpha.acquire(key, LEASE, WAIT);
 			// Alpha finishes its critical section. The recall arrives, alpha is idle, so it surrenders.
-			alpha.release(key);
+			alpha.release(key, alphaRound.admissionId);
 			const beta = cluster.node('beta').coordinator;
 			const round = await beta.acquire(key, LEASE, WAIT);
 			assert.ok(round.tsR > 0);
@@ -277,7 +304,7 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('gamma');
 			const alpha = cluster.node('alpha').coordinator;
-			await alpha.acquire(key, LEASE, WAIT);
+			const round = await alpha.acquire(key, LEASE, WAIT);
 			// Alpha is INSIDE its critical section — it has not released. Beta's acquisition must not
 			// resolve while that is true, whatever the home does about the recall.
 			let betaAdmitted = false;
@@ -293,7 +320,7 @@ describe('record lock delegations', () => {
 				cluster.recalls.some((r) => r.to === 'alpha'),
 				'the home did not recall the holder'
 			);
-			alpha.release(key);
+			alpha.release(key, round.admissionId);
 			await betaAcquire;
 			assert.strictEqual(betaAdmitted, true);
 		});
@@ -304,8 +331,8 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], { skewMs: 5_000 });
 			const key = cluster.keyHomedOn('beta');
 			const alpha = cluster.node('alpha').coordinator;
-			await alpha.acquire(key, LEASE, WAIT);
-			alpha.release(key);
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, round.admissionId);
 			// Alpha's clock runs past the delegation; beta's has not reached the grant's deadline yet.
 			cluster.advance('alpha', DELEGATION_LEASE_MS + 1);
 			assert.strictEqual(alpha.stats.delegations, 0, 'the delegate must stop admitting first');
@@ -488,7 +515,7 @@ describe('record lock delegations', () => {
 				table: 'LockTest',
 				nodeId: name,
 				transport: predecessor.transport,
-				writeControl: () => Promise.resolve(),
+				writeControl: cluster.writeControlFor(name),
 				keyIdOf: (key) => String(key),
 				nextTimestamp: () => ++cluster.tsCounter,
 				monotonic: () => node.mono + (Date.now() - cluster.startedAt),
@@ -499,6 +526,33 @@ describe('record lock delegations', () => {
 			node.coordinator = successor;
 			return { predecessor, successor };
 		}
+
+		it('installs a grant that arrived after the swap on the successor, not the coordinator it left', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			// The reload lands while the home's reply is still in flight. The grant is authority for the
+			// NODE; installed on the coordinator that asked, it would admit a caller that no recall could
+			// ever reach, alongside whoever the home grants next.
+			let swapped;
+			cluster.beforeReply = () => {
+				cluster.beforeReply = undefined;
+				swapped = replace(cluster, 'alpha');
+			};
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(swapped.predecessor.stats.delegations, 0, 'the delegation landed on a closed coordinator');
+			assert.strictEqual(swapped.successor.stats.delegations, 1, 'the successor did not receive the late grant');
+
+			// And the recall for it reaches the handle that grant admitted.
+			const { handle } = realHandle();
+			handle.joinClusterRound(round.tsR, LEASE, round.mintedMono, () =>
+				swapped.successor.release(key, round.admissionId)
+			);
+			swapped.successor.registerAdmission(round.admissionId, () => handle.revokeLease());
+			handle.release();
+			await cluster.node('gamma').coordinator.acquire(key, LEASE, 5_000);
+			assert.strictEqual(handle.isLeaseExpired(), true, 'no recall could reach the late grant’s handle');
+		});
 
 		it('cannot grant a key whose predecessor delegation is still live', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
@@ -517,8 +571,8 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const alpha = cluster.node('alpha').coordinator;
-			await alpha.acquire(key, LEASE, WAIT);
-			alpha.release(key);
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, round.admissionId);
 			// Alpha is the delegate, not the home. Swapping ITS transport must not cost it the
 			// delegation — the amortization would be lost on every component reload.
 			const { successor } = replace(cluster, 'alpha');
@@ -582,8 +636,8 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const alpha = cluster.node('alpha').coordinator;
-			await alpha.acquire(key, LEASE, WAIT);
-			alpha.release(key);
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, round.admissionId);
 			assert.strictEqual(alpha.stats.delegations, 1);
 			// An epoch change may have re-homed the key to a node that knows nothing of this token.
 			// Keeping it would let alpha admit alongside whoever the new home grants.
@@ -619,23 +673,62 @@ describe('record lock delegations', () => {
 			assert.strictEqual(granted.granted, true);
 		});
 
-		it('revokes a handle whose write was staged and then unlocked', async () => {
+		it('revokes a REAL handle whose write was staged and then unlocked', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('gamma');
 			const alpha = cluster.node('alpha').coordinator;
-			await alpha.acquire(key, LEASE, WAIT);
-			let revoked = false;
 			const round = await alpha.acquire(key, LEASE, WAIT);
-			alpha.release(key, round.token);
-			alpha.registerAdmission(key, round.token, () => {
-				revoked = true;
-			});
-			// unlock() drops the admission count to zero, but the caller's write is still staged and
-			// uncommitted. A drain that waits only on that count would let the successor in while this
-			// write could still land.
-			alpha.release(key);
+			// A real handle wired exactly as Table.ts wires one, not a stub: the production `revokeLease`
+			// is what has to fence the staged write, and an earlier version of this test passed a bare
+			// callback — so it asserted that the coordinator CALLS a revoker while the real one was a
+			// no-op in exactly this state.
+			const { handle } = realHandle();
+			assert.strictEqual(
+				handle.joinClusterRound(round.tsR, LEASE, round.mintedMono, () => alpha.release(key, round.admissionId)),
+				true
+			);
+			alpha.registerAdmission(round.admissionId, () => handle.revokeLease());
+
+			// The caller staged a write and then unlocked; its transaction has not committed.
+			handle.release();
+			assert.strictEqual(handle.isLeaseExpired(), false, 'a clean unlock alone must not fence the write');
+
 			await cluster.node('beta').coordinator.acquire(key, LEASE, 5_000);
-			assert.strictEqual(revoked, true, 'the handoff did not revoke the predecessor’s handle');
+			// This is the §6 property: the successor is admitted only once the predecessor's staged write
+			// can no longer commit. `isLeaseExpired()` is exactly what the pre-submit commit fence reads.
+			assert.strictEqual(handle.isLeaseExpired(), true, 'the handoff did not fence the predecessor’s staged write');
+		});
+
+		it('keeps an unlocked-but-staged write revocable across a renewal', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			// Move to just inside the renewal threshold, so the handle admitted next is still live when
+			// the renewal happens. A renewal can only occur in the delegation's last lease-length, which
+			// is exactly the window where a handle admitted moments earlier is still able to commit.
+			await alpha.acquire(key, LEASE, WAIT);
+			cluster.advance('alpha', DELEGATION_LEASE_MS - LEASE - 1_000);
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(cluster.requests.length, 1, 'the second lock should still be on the first delegation');
+
+			const { handle } = realHandle();
+			assert.strictEqual(
+				handle.joinClusterRound(round.tsR, LEASE, round.mintedMono, () => alpha.release(key, round.admissionId)),
+				true
+			);
+			alpha.registerAdmission(round.admissionId, () => handle.revokeLease());
+			handle.release();
+
+			// Past the threshold: the next lock renews. The handle above has not reached its own lease.
+			cluster.advance('alpha', 2_000);
+			const renewed = await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(cluster.requests.length, 2, 'the lock after the threshold should have renewed');
+			alpha.release(key, renewed.admissionId);
+
+			// A renewal installed a fresh delegation object once, dropping the predecessor's revokers on
+			// the floor; the next recall then surrendered while that handle could still commit.
+			await cluster.node('gamma').coordinator.acquire(key, LEASE, 5_000);
+			assert.strictEqual(handle.isLeaseExpired(), true, 'a renewed delegation lost track of a live handle');
 		});
 
 		it('does not let a release from a previous home incarnation clear a live grant', async () => {
@@ -680,10 +773,10 @@ describe('record lock delegations', () => {
 			// cheapest way to force that here.
 			cluster.epochNumber = 2;
 			const second = await alpha.acquire(key, LEASE, WAIT);
-			assert.ok(compareTokens(first.token, second.token) !== 0, 'the delegation was not actually replaced');
+			assert.notStrictEqual(first.admissionId, second.admissionId, 'a second admission was not created');
 			// The OLD handle unlocks late. Untokened, this would decrement the new delegation and let it
 			// be surrendered while its own caller is still inside.
-			alpha.release(key, first.token);
+			alpha.release(key, first.admissionId);
 			assert.strictEqual(alpha.stats.admitted, 1, 'the superseded handle decremented the successor');
 		});
 
