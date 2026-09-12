@@ -177,7 +177,8 @@ function reportIsolatedRefusal(name: string, refusal: string) {
 /**
  * Wait for a dedicated worker to become ready, with the pool replacement path's backstop. A worker that
  * fails, or stays alive without ever reporting ready, is recorded as a failed component, stopped, and
- * its slot freed so the next reconcile retries. Resolves whether it became ready.
+ * only then has its slot freed, so the next reconcile retries against a worker that has exited.
+ * Resolves whether it became ready.
  */
 function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<boolean> {
 	return Promise.race([
@@ -193,13 +194,15 @@ function watchDedicatedStart(application: string, slot: IsolatedSlot): Promise<b
 		.catch(async (error) => {
 			harperLogger.error(`Dedicated worker for isolated application '${application}' failed to start`, error);
 			componentLifecycle.failed(application, error, `Component '${application}' failed to load`);
-			const withdrewLease = isolatedSlots.get(application) === slot;
-			if (withdrewLease) isolatedSlots.delete(application);
+			// The slot IS the lease: holding it until the failed worker has actually exited is what stops a
+			// reconcile from starting a replacement over its still-bound UDS mirror and still-open stores,
+			// and what makes a concurrent drop's `await slot.shutdown()` cover this worker too.
 			await slot.shutdown();
-			if (withdrewLease && !isolatedSlots.has(application)) {
-				const { cleanupApplicationSockets } = await import('../http.ts');
-				cleanupApplicationSockets(application);
-			}
+			if (isolatedSlots.get(application) !== slot) return false; // a drop already withdrew this lease
+			isolatedSlots.delete(application);
+			const { cleanupApplicationSockets } = await import('../http.ts');
+			// A reconcile may have installed a replacement while that import resolved. Never unlink its mirror.
+			if (!isolatedSlots.has(application)) cleanupApplicationSockets(application);
 			return false;
 		})
 		.finally(() => slot.finishStartup());
