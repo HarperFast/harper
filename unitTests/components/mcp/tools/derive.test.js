@@ -14,9 +14,9 @@ const {
 
 const PRODUCT_ATTRS = [
 	{ name: 'id', type: 'ID', isPrimaryKey: true },
-	{ name: 'name', type: 'String' },
+	{ name: 'name', type: 'String', nullable: false },
 	{ name: 'price', type: 'Float', nullable: true },
-	{ name: 'count', type: 'Int' },
+	{ name: 'count', type: 'Int', nullable: false },
 	{ name: 'created', type: 'Date', assignCreatedTime: true },
 	{ name: 'updated', type: 'Date', assignUpdatedTime: true },
 ];
@@ -92,6 +92,24 @@ describe('mcp/tools/schemas/derive', () => {
 			const schema = deriveCreateSchema(PRODUCT_ATTRS, perms);
 			assert.ok('name' in schema.properties);
 			assert.equal(schema.properties.count, undefined);
+		});
+
+		it('requires only fields explicitly declared non-nullable', () => {
+			const schema = deriveCreateSchema([
+				{ name: 'required', type: 'String', nullable: false },
+				{ name: 'unspecified', type: 'String' },
+				{ name: 'nullable', type: 'String', nullable: true },
+			]);
+			assert.deepEqual(schema.required, ['required']);
+		});
+
+		it('keeps embedded definitions writable while omitting relationships', () => {
+			const profile = { name: 'profile', type: 'Profile', definition: { type: 'Profile' } };
+			Object.defineProperty(profile, 'properties', { value: [{ name: 'name', type: 'String' }] });
+			const schema = deriveCreateSchema([profile, { name: 'owner', type: 'Owner', relationship: { from: 'ownerId' } }]);
+			assert.equal(schema.properties.profile.type, 'object');
+			assert.equal(schema.properties.profile.properties.name.type, 'string');
+			assert.equal(schema.properties.owner, undefined);
 		});
 	});
 
@@ -197,5 +215,82 @@ describe('mcp/tools/schemas/derive', () => {
 			// Nullable adds 'null' to the type list.
 			assert.deepEqual(schema.properties.nul.type, ['string', 'null']);
 		});
+	});
+});
+
+// #1941/#1942 follow-ups found in review of the shared-emitter refactor.
+describe('mcp/derive — hidden attributes and unrecognized types', () => {
+	const hiddenPk = [{ name: 'id', type: 'Int', isPrimaryKey: true, hidden: true }];
+
+	it('keeps the primary key typed on every verb even when it is @hidden', () => {
+		// The `id` argument addresses the record; it is not one of the record's fields, so @hidden must
+		// not strip it. Suppressing it produced a REQUIRED tool argument with no type at all, and the
+		// four derive sites disagreed with each other.
+		const get = deriveGetSchema(hiddenPk, undefined).properties.id;
+		const update = deriveUpdateSchema(hiddenPk, undefined).properties.id;
+		const del = deriveDeleteSchema(hiddenPk, undefined).properties.id;
+		for (const [verb, schema] of [
+			['get', get],
+			['update', update],
+			['delete', del],
+		]) {
+			assert.equal(schema.type, 'integer', `${verb} keeps the declared PK type`);
+		}
+		assert.equal(get.type, update.type, 'all verbs agree on the id type');
+		assert.equal(get.type, del.type);
+	});
+
+	it('still suppresses a hidden non-key attribute from the same schemas', () => {
+		// Guards the fix above from over-reaching: only the PK is exempt.
+		const attrs = [
+			{ name: 'id', type: 'String', isPrimaryKey: true },
+			{ name: 'secret', type: 'String', hidden: true },
+		];
+		assert.equal(deriveCreateSchema(attrs, undefined).properties.secret, undefined);
+		assert.equal(deriveGetOutputSchema(attrs, undefined).properties.secret, undefined);
+	});
+
+	it('does not warn for Harper primitives that carry no DATA_TYPES entry (Blob, Any)', () => {
+		// `Blob` and `Any` are in graphql.ts's PRIMITIVE_TYPES but absent from DATA_TYPES, so a naive
+		// lookup reported them as typos on every process start.
+		const loggerModule = require('#src/utility/logging/harper_logger');
+		const logger = loggerModule.default || loggerModule;
+		const warnings = [];
+		const original = logger.warn;
+		logger.warn = (m) => warnings.push(String(m));
+		try {
+			deriveGetOutputSchema(
+				[
+					{ name: 'id', type: 'String', isPrimaryKey: true },
+					{ name: 'payload', type: 'Blob' },
+					{ name: 'anything', type: 'Any' },
+				],
+				undefined
+			);
+		} finally {
+			logger.warn = original;
+		}
+		assert.deepEqual(warnings, [], `Blob/Any must not warn: ${JSON.stringify(warnings)}`);
+	});
+
+	it('does not warn for a declared relationship target type', () => {
+		const loggerModule = require('#src/utility/logging/harper_logger');
+		const logger = loggerModule.default || loggerModule;
+		const warnings = [];
+		const original = logger.warn;
+		logger.warn = (message) => warnings.push(String(message));
+		try {
+			const schema = deriveGetOutputSchema(
+				[
+					{ name: 'id', type: 'String', isPrimaryKey: true },
+					{ name: 'author', type: 'Author', relationship: { from: 'authorId' } },
+				],
+				undefined
+			);
+			assert.equal(schema.properties.author.type, undefined);
+		} finally {
+			logger.warn = original;
+		}
+		assert.deepEqual(warnings, []);
 	});
 });

@@ -1,9 +1,54 @@
 import { packageJson } from '../utility/packageUtils.js';
+import harperLogger from '../utility/logging/harper_logger.ts';
 import { Resources, routePatternToTemplate } from './Resources.ts';
 import { Resource } from './Resource.ts';
-import { DATA_TYPES } from './jsonSchemaTypes.ts';
+import {
+	DATA_TYPES,
+	type AttributeLike,
+	type JsonSchemaFragment,
+	attributeToSchema,
+	projectPropertiesToAttributes,
+	resolveAttributes,
+	resolveDeclaredType,
+} from './jsonSchemaTypes.ts';
 
 const OPENAPI_VERSION = '3.0.3';
+const warnedInvalidResourceSchemas = new WeakSet<object>();
+
+function warnInvalidResourceSchema(resource: unknown, path: string, error: unknown): void {
+	if ((typeof resource === 'object' && resource !== null) || typeof resource === 'function') {
+		if (warnedInvalidResourceSchemas.has(resource)) return;
+		warnedInvalidResourceSchemas.add(resource);
+	}
+	harperLogger.warn(`OpenAPI skipped invalid schema for resource "${path}": ${(error as Error).message}`);
+}
+
+/**
+ * Emit an attribute as an OpenAPI 3.0.3 property schema. Shares its traversal with the MCP deriver so
+ * the two can't describe the same nested fragment differently; the primitive mapping stays
+ * OpenAPI-specific (`format` carries the Harper type name, which MCP has no equivalent for).
+ * Returns `undefined` for a `@hidden` attribute — callers skip it.
+ */
+function attributeToOpenApiSchema(attr: AttributeLike): JsonSchemaFragment | undefined {
+	return attributeToSchema(attr, {
+		dialect: 'openapi-3.0.3',
+		mapPrimitive: (type, mapped) => openApiPrimitive(type, mapped.name || attr.name),
+	});
+}
+
+/** Shared by the nested emitter and the top-level attribute loop so both warn on an unknown type. */
+function openApiPrimitive(type: string | undefined, attributeName: string | undefined): JsonSchemaFragment {
+	if (type === 'Any') return { format: type };
+	if (type === undefined) return {};
+	const resolved = resolveDeclaredType(type, `OpenAPI property "${attributeName || '<unnamed>'}"`);
+	if (!resolved) return {};
+	// 3.0.x has no `'null'` type — nullability is the `nullable` keyword, so a bare `type: 'null'`
+	// becomes an untyped nullable schema rather than a type the dialect can't express.
+	if (resolved === 'null') return { nullable: true, enum: [null] };
+	// Preserve the Harper type name as `format` for the types where it adds information, matching the
+	// top-level `Type()` emitter.
+	return Object.hasOwn(DATA_TYPES, type) ? (new Type(resolved, type) as JsonSchemaFragment) : { type: resolved };
+}
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
 const DESCRIPTION_200 = 'successful operation';
@@ -21,9 +66,9 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 				url: serverHttpURL,
 			},
 		],
-		paths: {},
+		paths: Object.create(null),
 		components: {
-			schemas: {},
+			schemas: Object.create(null),
 			securitySchemes: {
 				basicAuth: {
 					type: 'http',
@@ -96,7 +141,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		}
 	};
 
-	for (const [, resource] of resources) {
+	resourceLoop: for (const [, resource] of resources) {
 		// skip invalid and error resources
 		if (!resource.path || resource.Resource.isError) continue;
 		// @hidden type-level: drop the Resource from the OpenAPI document entirely.
@@ -109,63 +154,58 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 
 		const { path } = resource;
 		const strippedPath = path.split('/').pop(); // strip any namespace from path
-		let { attributes, sealed } = resource.Resource;
+		let { sealed } = resource.Resource;
+		let attributes;
 		const { prototype, primaryKey = 'id' } = resource.Resource;
 		// Class-level description from @table docstring or programmatic `static description`.
 		// Used as both the schema-level `description` (in components.schemas) and as a prefix
 		// on each path-level operation description.
 		const tableDoc: string | undefined = resource.Resource.description;
-		if (!attributes && resources.allTypes.has(resource.path)) {
-			const possibleType = resources.allTypes.get(resource.path);
-			sealed = possibleType.sealed;
-			attributes = possibleType.attributes ?? possibleType.properties;
+		// A programmatic Resource may declare `static properties` (Record) without an `attributes`
+		// Array; project it so per-property schemas are emitted instead of a skeletal object.
+		try {
+			attributes = resolveAttributes(resource.Resource);
+			if (!attributes.length && resources.allTypes.has(resource.path)) {
+				const possibleType = resources.allTypes.get(resource.path);
+				sealed = possibleType.sealed;
+				attributes = resolveAttributes(possibleType);
+			}
+		} catch (error) {
+			warnInvalidResourceSchema(resource.Resource, resource.path, error);
+			continue;
 		}
 		if (!primaryKey) continue;
-		const props = {};
+		const props = Object.create(null);
 		const queryParamsArray = [];
 		const resourceRequired: string[] = [];
 
 		if (attributes) {
 			for (const attr of attributes) {
-				const { type, name, elements, relationship, definition, nullable, description, hidden } = attr;
-				// @hidden field-level: suppress the attribute from props, query params, and required.
+				const { type, name, elements, relationship, definition, nullable, hidden } = attr;
 				if (hidden) continue;
 				const def = definition ?? elements?.definition;
-				if (def) {
-					includeDefinitionInSchema(def);
-				}
-
-				if (nullable === false) {
-					resourceRequired.push(name);
-				}
+				if (def) includeDefinitionInSchema(def);
+				if (nullable === false || attr.requiredOnSchema) resourceRequired.push(name);
 				if (relationship) {
-					if (type === 'array') {
-						props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + elements.type } };
-					} else {
-						props[name] = { $ref: SCHEMA_COMP_REF + type };
-					}
+					props[name] =
+						type === 'array'
+							? { type: 'array', items: { $ref: SCHEMA_COMP_REF + elements.type } }
+							: { $ref: SCHEMA_COMP_REF + type };
+				} else if (def) {
+					props[name] =
+						type === 'array'
+							? { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } }
+							: { $ref: SCHEMA_COMP_REF + def.type };
 				} else {
-					if (def) {
-						if (type === 'array') {
-							props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } };
-						} else {
-							props[name] = { $ref: SCHEMA_COMP_REF + def.type };
-						}
-					} else if (type === 'array') {
-						if (elements.type === 'Any') {
-							props[name] = { type: 'array', items: { format: elements.type } };
-						} else {
-							props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
-						}
-					} else if (type === 'Any') {
-						props[name] = { format: type };
-					} else {
-						props[name] = new Type(DATA_TYPES[type], type);
+					try {
+						props[name] = attributeToOpenApiSchema(attr) ?? {};
+					} catch (error) {
+						warnInvalidResourceSchema(resource.Resource, resource.path, error);
+						continue resourceLoop;
 					}
 				}
-				// Attach per-property description so it surfaces in Swagger UI / Redoc.
-				if (description && props[name] && typeof props[name] === 'object' && !('$ref' in props[name])) {
-					(props[name] as { description?: string }).description = description;
+				if (type === 'array' && attr.description && (relationship || def)) {
+					props[name].description = attr.description;
 				}
 				queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}
@@ -538,14 +578,17 @@ function ResourceSchema(properties, additionalProperties?: boolean, required?: s
 	this.type = 'object';
 	this.properties = properties;
 	this.additionalProperties = additionalProperties;
-	this.required = required;
+	// Omit an empty list rather than emitting `required: []`. JSON Schema draft-04, which OpenAPI
+	// 3.0.3 inherits, requires at least one element, so `[]` fails strict validators — and a schema
+	// whose attributes are all nullable produces exactly that.
+	if (required?.length) this.required = required;
 	if (description) this.description = description;
 }
 
-function Type(type, format) {
+function Type(type, format?) {
 	this.type = type;
 	if (type === 'string' || type === 'number' || type === 'integer') {
-		if (format !== 'String') {
+		if (format !== undefined && format !== 'String') {
 			this.format = format;
 		}
 	}
@@ -573,21 +616,13 @@ function Parameter(name, i, type) {
  */
 function fragmentToOpenApiSchema(fragment: any): any {
 	if (!fragment || typeof fragment !== 'object') return { type: 'object' };
-	const schema: any = {};
-	if (fragment.type != null) schema.type = fragment.type;
-	if (fragment.format) schema.format = fragment.format;
-	if (fragment.description) schema.description = fragment.description;
-	if (fragment.enum) schema.enum = fragment.enum;
-	if (fragment.nullable) schema.nullable = true;
-	if (fragment.const !== undefined) schema.const = fragment.const;
-	if (fragment.items) schema.items = fragmentToOpenApiSchema(fragment.items);
-	if (fragment.properties) {
-		schema.properties = {};
-		for (const [key, sub] of Object.entries(fragment.properties)) schema.properties[key] = fragmentToOpenApiSchema(sub);
-		if (fragment.required) schema.required = fragment.required;
-		if (fragment.additionalProperties !== undefined) schema.additionalProperties = fragment.additionalProperties;
+	try {
+		const [attribute] = projectPropertiesToAttributes({ value: fragment });
+		return attributeToOpenApiSchema(attribute) ?? {};
+	} catch (error) {
+		warnInvalidResourceSchema(fragment, 'request contract', error);
+		return {};
 	}
-	return schema;
 }
 
 /** Build OpenAPI query `Parameter`s from a contract verb's query fragment (`{ type:'object', properties }`). */
