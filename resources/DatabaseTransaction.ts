@@ -620,6 +620,15 @@ export class DatabaseTransaction implements Transaction {
 	declare commitChainHead?: DatabaseTransaction;
 	// O(1) lookup in recordLockFor; only lock() handles are registered here (no gate handles).
 	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
+	/**
+	 * Whether any staged write was made through a record lock handle. The commit-time lease fence
+	 * below is skipped entirely when this is false, which is every transaction in a core-only
+	 * deployment: without it a bulk transaction of 100,000 plain writes pays 100,000 property checks
+	 * before submission, on a path that is supposed to be untouched when no lock is involved. It
+	 * latches rather than tracking a count, because a write whose handle was released or expired after
+	 * staging is exactly what the fence exists to catch.
+	 */
+	declare hasLeaseProtectedWrite?: boolean;
 	// Tracks in-flight acquireRecordKey calls so concurrent lock() calls for the same key in one
 	// link (e.g. Promise.all([T.lock(id), T.lock(id)])) can coalesce rather than self-block.
 	declare pendingLocks?: Map<any, Map<unknown, Promise<RecordLockHandle>>>;
@@ -866,9 +875,9 @@ export class DatabaseTransaction implements Transaction {
 		if (!storeMap) return undefined;
 		const h = storeMap.get(keyId);
 		if (!h) return undefined;
-		if (!h.released) return h;
-		// Prune released handles so they don't accumulate; an expired handle checking re-entrancy
-		// would otherwise be seen as the holder and incorrectly granted access.
+		if (!h.isExpired()) return h;
+		// Prune released/expired handles so they don't accumulate; a handle past its deadline checking
+		// re-entrancy would otherwise be seen as the holder and incorrectly granted access.
 		storeMap.delete(keyId);
 		return undefined;
 	}
@@ -933,6 +942,10 @@ export class DatabaseTransaction implements Transaction {
 		}
 		this.writes = [];
 		this.writesByKey = undefined;
+		// The commit-fence latch belongs to the discarded batch. A reused transaction that once staged
+		// a locked write would otherwise re-scan every write of every later unlocked batch. Assigned
+		// only when it was set, so an ordinary transaction never gains the property at all.
+		if (this.hasLeaseProtectedWrite) this.hasLeaseProtectedWrite = false;
 	}
 
 	/**
@@ -1100,7 +1113,17 @@ export class DatabaseTransaction implements Transaction {
 		const lockHandle = operation.lockHandle;
 		// Guard: a write staged through an expired or released lock handle must not land.
 		// The handle's lease timer already unlocked the native key; another holder may have taken it.
-		if (lockHandle && (lockHandle.expired || lockHandle.released)) {
+		// isExpired() re-evaluates the deadline here rather than trusting the timer to have run: a
+		// holder whose event loop stalled past its lease would otherwise commit in the window between
+		// the deadline and its own timer callback, after peers had already granted the key onward.
+		//
+		// A RE-save is judged by the lease alone. `released` belongs to the first stage — a caller that
+		// unlocked and then saved is writing through a handle it gave back — but an operation already
+		// staged was staged while the lock was held, and an `unlock()` inside the lease leaves it valid
+		// (the same rule the pre-submit fence applies below). Without the distinction,
+		// `lock(); save(); unlock(); commit()` succeeded normally and threw 409 only when a conflict
+		// retry or an open read iterator forced the replay to re-save it.
+		if (operation.saved ? lockHandle?.isLeaseExpired() : lockHandle?.isExpired()) {
 			// Remove the operation from the staged set so subsequent writes on this context do not
 			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
 			const failedIdx = this.writes.indexOf(operation);
@@ -1110,6 +1133,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		// Lock-write timestamp rules.
 		if (lockHandle) {
+			this.hasLeaseProtectedWrite = true;
 			if (this.open === TRANSACTION_STATE.CLOSED || this.saveCommits) {
 				// CLOSED path (second+ write per ImmediateTransaction cycle) OR the first write in
 				// an ImmediateTransaction (open=OPEN until commit sets it CLOSED, but saveCommits
@@ -1377,6 +1401,28 @@ export class DatabaseTransaction implements Transaction {
 						if (this.writes.length > 0) {
 							// Commit retries can construct fresh ranges on this live handle after read ownership ends.
 							readTransactionOwners.delete(transaction);
+							// Re-fence before submitting: the loop above skips operations already marked saved, so
+							// save()'s own check cannot see a holder that stalled between staging and commit. The
+							// retry/replay path re-saves every operation and is fenced there instead. Lease expiry
+							// only: an unlock() inside the lease leaves the staged write valid, an elapsed lease
+							// does not, whether or not the caller also unlocked.
+							for (let i = 0; this.hasLeaseProtectedWrite && i < this.writes.length; i++) {
+								const lapsed = this.writes[i].lockHandle;
+								if (!lapsed?.isLeaseExpired()) continue;
+								try {
+									transaction.abort();
+								} catch {}
+								// Every other terminal exit from commit() runs the logical cleanup too. Throwing
+								// straight out would strand the OTHER locks this transaction holds, its staged
+								// blobs, and the context's back-reference to a CLOSED transaction — and
+								// transaction()'s onComplete has no rejection path to run it later.
+								try {
+									this.abort();
+								} catch (error) {
+									harperLogger.debug?.('cleaning up a transaction whose record lock lapsed', error);
+								}
+								throw lockNotHeldError(lapsed);
+							}
 							// The transaction was created with coordinatedRetry:true (see
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed

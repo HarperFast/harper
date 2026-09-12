@@ -295,9 +295,9 @@ Consequences that shape the code:
   hooks by the same trust model as any in-process `Table.update(id)` + set/save sequence.
 
 Not in Phase 0, by design: replication of lock transitions, distributed grant, lease renewal,
-subscription events for lock/unlock, and lock() on LMDB. Phase 1 direction: replicate lock request/
-grant/release as control transaction-log entries with Ricart–Agrawala-style (timestamp, nodeId)
-tiebreaking; once every node participates in the grant protocol, lock() becomes a cluster-wide verb.
+subscription events for lock/unlock, and lock() on LMDB. Phase 1 adds the distributed grant — see
+"Phase 1: cluster-wide `lock()` over replicated control entries" below. Lease renewal, subscription
+events for lock/unlock, and lock() on LMDB remain out of scope.
 
 **Acquisition timestamp and mixed transactions.** In an `ImmediateTransaction` context (no explicit
 `transaction()` scope) every save — hold or scoped — is stamped by `handle.nextHolderVersion()` so
@@ -331,6 +331,186 @@ JS thread:
 - _Abort during the `acquireRecordKey` await window._ The async gap between `tryLock` failing and the
   `onUnlocked` callback is short in practice, and injecting an abort during that window requires two
   concurrent threads.
+
+### Phase 1: cluster-wide `lock()` over amortized per-record ownership (`recordLockCoordinator`)
+
+> **Phase 1 contract: exclusion-only.** A cluster `lock()` guarantees exclusive _admission_ of a
+> critical section, and successor freshness after a clean handoff while the key's home still holds
+> that handoff's dependency set. It adds no fencing generation and does not confirm locked writes to a
+> quorum, so **it changes nothing about how two conflicting writes resolve** and it does not promise
+> freshness once that dependency set is gone. Neither limitation is crash-only and both are reachable
+> on a clean handoff.
+>
+> **§10 of [`docs/record-lock-ownership.md`](docs/record-lock-ownership.md) is the normative
+> wording**: the routes into each limitation, why there is no caller-side mitigation, and the rule
+> that none of it may be softened in the API docs. Read it before writing anything user-facing about
+> `lock()`.
+>
+> One consequence bears on the code here rather than on the API: **the Phase 0 contract's relationship
+> with ordinary writes is unchanged by Phase 1** — plain writes are still never gated and still
+> resolve by last-write-wins, with no field added to them — which is the main thing the fenced arm
+> would have given up. The fenced and quorum-confirmed alternatives are deferred, with their costs, to
+> harper#2540.
+
+Phase 1 keeps every Phase 0 mechanism and adds a cluster step on top of it. Nothing in core registers
+a `ClusterLockTransport`, so in a core-only build the machinery is inert and `lock()` behaves exactly
+as it did in Phase 0 — the whole feature is gated on harper-pro registering a transport.
+
+**Three levels at three very different rates.** This is the shape the design note argues for, and the
+reason the arbitration rule is one node rather than a quorum:
+
+| level            | rate                  | who owns it | what it costs                         |
+| ---------------- | --------------------- | ----------- | ------------------------------------- |
+| membership epoch | membership changes    | harper-pro  | durable agreement, never per lock     |
+| home node        | derived, free         | core        | a hash over the epoch's `members[]`   |
+| delegation       | per key, bounded time | core        | 1 RTT cold, **zero** while it is live |
+
+`transport.epoch(database)` hands core `(number, members[], ringVersion, homeIncarnation)`. Core
+never computes topology and never proceeds without an agreed epoch: no epoch means no agreed ring,
+and a ring guessed from whoever looks reachable is exactly the asymmetric-partition failure a single
+arbiter exists to remove. A key's **home** is the rendezvous-hash winner over `members[]` — chosen
+over a modulo because a membership change then re-homes only the departing member's keys, and every
+re-homed key pays the recovery path on its next lock.
+
+A node that wants to lock `K` asks `K`'s home for a **delegation**: the exclusive right to admit
+critical sections on `K` for a bounded time. While one is live, `lock()`/`unlock()` are pure Phase 0
+— the local rocksdb key lock, no cluster message. **Releasing the application lock does not release
+the delegation**, which is the whole amortization: a node writing the same record repeatedly pays one
+round and then nothing, and the delegate is in practice the last writer. When another node wants the
+key, its home recalls the delegation; the delegate stops admitting, drains what is in flight, and
+writes the release.
+
+**One control entry, not three.** `LOCK_RELEASE = 12` is the only lock action nibble in
+`auditStore.ts`. `LOCK_REQUEST = 9` and `LOCK_GRANT = 10` belonged to the Ricart–Agrawala rule the
+design note replaces; that rule never shipped enabled, so those nibbles were **retired rather than
+migrated** — and 9 has since been taken by eviction, which is why a migration was never an option.
+Delegation request/grant/recall are unicast over the transport. Only the release stays on the
+replicated log, because it is what orders a handoff behind the delegate's own data writes.
+
+The entry is written in its own transaction, with no primary-store write, and — unlike the `reload`
+marker it is otherwise modeled on — **not** `LOCAL_ONLY`, because replicating it IS the send. Its
+payload is `[key, requesterName, epochNumber, homeIncarnation, counter]`, validated on exact tuple
+length: a future version that grows it must bump the type rather than widen this one, since a
+partially-understood release would clear a delegation on terms the sender did not intend.
+
+**`recordId` is null and the key rides in the payload.** A control entry carrying the locked key as
+its record id answers `_writeUpdate`'s keyed dedup lookup at exactly the holder's stamp, and
+`RocksTransactionLogStore.getSync` returns it ahead of the record's own audit entry — silently
+dropping the holder's first write. That is why the key is in the payload.
+
+**Fencing tokens are ordered, not merely unique.** A delegation carries
+`(epochNumber, homeIncarnation, counter)`, compared lexicographically. `homeIncarnation` is durably
+persisted and monotonic, supplied by harper-pro. A random incarnation would make a stale reply
+identifiable but not _orderable_: a home that restarts and re-issues counter 1 after having issued
+counter 50 would let a delayed generation-50 reply defeat its successor.
+
+**The home always outwaits its delegate.** A grant's deadline on the home is the delegate's lease plus
+`LOCK_LEASE_SKEW_MS`, and both sides measure on their own monotonic clock — no remote timestamp is
+ever compared against a local one. So the delegate stops admitting first, and the home cannot re-grant
+a key its previous delegate still believes it holds. The eviction rule is deliberately **asymmetric**,
+and that asymmetry is the safety argument: a delegate may drop a delegation early, a **home may never
+forget one before its expiry**.
+
+**A coordinator never grants over live authority it cannot see.** Two different mechanisms, because
+the two cases are different:
+
+- **In-process transport swap** (a component reload re-registering a transport). The successor
+  **adopts** the predecessor's delegations and grants in its constructor, before the predecessor is
+  closed. The transport object changed; this node's delegations and the handles they admitted did not.
+- **Cold start** (a process restart, where there is nothing to adopt). The hazard is the same — a
+  previous incarnation may have delegations still admitting, and it left no record — but core does
+  not enforce it, because core cannot know when that incarnation died and the conservative bound
+  would make the first cluster lock after every restart wait minutes. The obligation is stated on
+  `ClusterLockTransport.epoch` instead: **do not name this node in an epoch until a previous
+  incarnation's delegations could have expired, or advance the epoch number, which invalidates them
+  outright.** That is the design note's §4.4 retirement interval, and it is harper-pro#825's to
+  provide. `grantableAfterMono` holds a core-side bound for a deployment that wants one anyway.
+
+`Table.lockCoordinator` also does **not** close the coordinator when the transport merely goes away:
+harper-pro unregisters without a standalone claim during a reconnect, and closing there would discard
+this node's record of what it has granted. Only an explicit standalone claim clears it.
+
+**A delegation is authority within one epoch.** `#liveDelegation` compares the delegation's token
+epoch against the current one and drops it on a mismatch, because an epoch change may have re-homed
+the key to a node that knows nothing of this token. Bounding the window between a delegate noticing a
+new epoch and the new home granting is the design note's §4.4 retirement interval — harper-pro's to
+provide, not core's.
+
+**Recall revokes capability, not just admission.** Waiting for live admissions is not enough on its
+own: a caller that staged a write and then called `unlock()` leaves nothing for a drain to wait on,
+but its write is still uncommitted and would land after the successor was admitted. So a delegation
+retains a revoker for every handle it admitted (`registerAdmission`), and surrender, expiry and
+`close()` all call them. The admission carries its delegation's **token**, and `release()` and
+`registerAdmission()` both take it back: a key's delegation can be replaced while a handle is still
+open, and an untokened release from a superseded handle would decrement the successor's admission
+count and let it be surrendered while its own callers were still inside — `handle.revokeLease()` expires the handle ahead of its lease, and the
+commit-time fence in `DatabaseTransaction` then rejects the staged write immediately before the native
+commit submits. That fence runs only when the transaction actually holds a lease-protected write
+(`hasLeaseProtectedWrite`, reset by `clearWrites()`), so a bulk transaction of plain writes in a
+core-only deployment pays nothing for it.
+
+**A delegation outlives any one lock, and that is the amortization.** `DELEGATION_LEASE_MS` is
+deliberately longer than the longest lock lease it will admit. A delegation sized to the caller's own
+lease has no room left for the next lock, so every repeat `lock()` would renew and pay a round trip —
+which is precisely the cost this design exists to remove. A delegate's deadline is also anchored at
+the moment it SENT the request, not at the moment the reply arrived, so a delayed reply cannot give it
+more time than the home is holding the key for; a reply that outlived its own delegation is discarded
+rather than installed.
+
+**`ts_R` is chosen before the write and lives only in the payload.** The writer takes the store's
+monotonic timestamp for the holder's stamp and lets the control entry commit at its own fresh time, so
+an entry can never land behind a peer's replication cursor.
+
+**An entry's identity is bound to the node that wrote it.** `applyEntry` takes the author from the
+audit header, never from the payload, and ignores a release whose payload names anyone else. Without
+that, a peer could write a release naming another node and clear a delegation it does not hold. A
+release also carries the **whole fencing token**, not just the counter, and is matched against the live
+grant on all three components: a home that restarts begins counting again, so a counter-only match
+would let a delayed release from a previous incarnation clear a live grant while its delegate is
+still admitting.
+
+**Bounded state.** Delegations are capped per database and per requester, and expiry work is bounded
+per tick, so a scan locking millions of distinct keys cannot make a home retain millions of grants and
+a single peer cannot exhaust the table on its own.
+
+**Membership is fail-closed.** No agreed epoch, no member set, an unreachable home, a closed
+coordinator, or a call on a thread that does not own coordination all reject with a retryable 503
+rather than downgrading to a node-local lock — which would hand two nodes one key. An unreachable node
+blocks only the keys it homes, which is the availability property the whole redesign exists for.
+
+**`{ scope: 'node' }`** opts out of the cluster step and keeps exact Phase 0 semantics, which by
+design permits simultaneous holders on different nodes. An **explicit** `{ scope: 'cluster' }` with no
+transport rejects 503 rather than silently returning the weaker lock, and a transaction that already
+holds a key node-scoped cannot take a cluster lock on it (409) — including through the concurrent-lock
+coalescing path, where a follower would otherwise inherit the leader's weaker handle.
+
+**Routing and exclusion from record surfaces.** The replicated-event consumer in `Table.ts` dispatches
+the release entry to the table's `LockCoordinator` before it resolves a resource, so it never reaches
+`_writeUpdate`, and `stageWrite` keeps it off the per-key write chain. Every surface that reports
+audit entries as record activity filters it through `isLockControlType`: the subscriber listener
+(ahead of the `rawEvents` branch, which otherwise forwards every type verbatim), the
+`subscribe({ startTime })` replay, the `previousCount` backfill, and `getHistory()`.
+`getHistoryOfRecord()` excludes it already by matching on record id.
+
+**Rolling upgrade.** Unlike the reload marker this entry is modeled on, the lock nibble is not
+`LOCAL_ONLY`, so a peer that does not understand it must not be sent it. harper-pro gates the send
+path on a **versioned** `recordLocks` capability: the versions are mutually exclusive and a node
+advertises exactly one, because a cluster running both arbitration rules would have two independent
+arbiters for one key.
+
+**Audit-log surface.** The release entry appears in `read_audit_log` with a null record id and type
+`lockRelease`. That is deliberate — it is protocol traffic on the table's own log — and it is what
+makes control-entry volume per lock a thing the measurement gate (harper-pro#824) has to report.
+
+**Dual-clock (harper#2412 / rocksdb-js#811).** Phase 1 keeps Phase 0's stamping — the pinned
+acquisition clock, the handle's version floor, and the mixed-transaction rules — unchanged. Nothing in
+the delegation path assigns a record version.
+
+**Not implemented here, deliberately.** The successor-freshness fence of the design note's §7 — the
+inherited `(origin → position)` dependency set on the release entry and the recovery barrier — is
+harper#2542, and harper-pro's durable epoch is harper-pro#825. Until both land, a handoff carries
+exclusion but not the clean-handoff freshness the note's §2 states, which is another reason nothing is
+enabled by default.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 

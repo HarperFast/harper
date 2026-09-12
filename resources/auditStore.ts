@@ -470,13 +470,27 @@ const STRUCTURES = 7;
 // and subscribers should re-read it. Used after a copyApply base copy, whose per-row snapshot writes
 // carry no audit entry (harper-pro#489). The entry type lives in the low nibble of the action byte
 // (decoded via `action & 0xf`); 1–7 are the record actions above, 8 is reload, 9 is eviction, leaving 10–15 free for
-// future actions. Markers are always written LOCAL_ONLY so an unknown type never reaches a peer.
+// future actions. Reload markers are always written LOCAL_ONLY so an unknown type never reaches a
+// peer; the lock control entries below deliberately are not, and rely on the capability gate instead.
 const RELOAD = 8;
 const EVICT = 9;
 export const ACTION_32_BIT = 14;
 export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
 export const REMOTE_SEQUENCE_UPDATE = 11;
+/**
+ * Cluster record-lock coordination (harper#483 Phase 1). This replicates — unlike the reload marker
+ * it is NOT `LOCAL_ONLY` — and carries a control payload rather than a record, so it is written with
+ * `recordId: null`: an entry sharing a real record's `(version, tableId, recordId, nodeId)` would be
+ * returned by `RocksTransactionLogStore.getSync` ahead of that record's own audit entry and make
+ * `_writeUpdate`'s keyed dedup drop the holder's write.
+ *
+ * Only the release entry exists. Nibbles 9 and 10 briefly held `lockRequest`/`lockGrant` for the
+ * Ricart–Agrawala arbitration rule that `docs/record-lock-ownership.md` replaces; that rule never
+ * shipped enabled, so they were retired rather than migrated — and 9 has since been taken by
+ * eviction. 10 and 13 are spare; 14/15 are the width flags.
+ */
+export const LOCK_RELEASE = 12;
 export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
 export const HAS_ORIGINATING_OPERATION = 2048;
@@ -514,6 +528,8 @@ const EVENT_TYPES = {
 	[EVICT]: 'evict',
 	remoteSequenceUpdate: REMOTE_SEQUENCE_UPDATE,
 	[REMOTE_SEQUENCE_UPDATE]: 'remoteSequenceUpdate',
+	lockRelease: LOCK_RELEASE | HAS_RECORD,
+	[LOCK_RELEASE]: 'lockRelease',
 };
 /**
  * The LMDB audit entry states the presence of its leading 8-byte previousVersion field with that
@@ -557,6 +573,17 @@ function isDecodableAction(action: number) {
 		HAS_ADDITIONAL_AUDIT_REFS |
 		LOCAL_ONLY;
 	return (action & 0xf) !== 0 && !(action & ~knownActionFlags);
+}
+
+/**
+ * Cluster lock coordination entries. They ride the replicated audit stream but describe no record,
+ * so every consumer that surfaces audit entries as record activity — subscriber fan-out, the
+ * `startTime` replay, the `previousCount` backfill, the replicated-event sink — must exclude them.
+ * An equality chain rather than a Set: this runs once per audit entry on the replay and fan-out
+ * paths, where the common answer is false on the first comparison.
+ */
+export function isLockControlType(type: unknown): boolean {
+	return type === 'lockRelease';
 }
 const ORIGINATING_OPERATIONS = {
 	insert: 1,

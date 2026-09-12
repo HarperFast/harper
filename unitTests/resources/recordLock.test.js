@@ -152,6 +152,26 @@ describe('Record locks (harper#483)', () => {
 			const handle = await LockTest.lock(recordId, { hold: true, timeout: 500 }); // the key was released
 			await handle.unlock();
 		});
+		it('a staged write survives unlock() even when a replay re-saves it', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 1 });
+			await transaction(async (context) => {
+				const record = await LockTest.lock(recordId);
+				record.set('n', 7);
+				await record.save();
+				await record.unlock();
+				// An open read iterator at commit forces the write replay, which re-saves every staged
+				// operation. A re-save must be judged by the LEASE alone: the write was staged while the
+				// lock was held, so `unlock()` inside the lease leaves it valid. Judging it by
+				// `isExpired()` — which counts a deliberate release — made this same caller code succeed
+				// normally and throw 409 only when an iterator happened to be open.
+				const iterator = LockTest.search({ conditions: [] }, context)[Symbol.asyncIterator]?.();
+				if (iterator) await iterator.next();
+			});
+			assert.strictEqual((await LockTest.get(recordId)).n, 7, 'the replay dropped a write staged under a lock');
+		});
+
 		it('releases on abort and the write is rolled back', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
