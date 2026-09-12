@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789204070851,
+  "lastUpdate": 1789204074543,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -20451,6 +20451,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 1868.1,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b701ada487c3d998f105ca5e5875732b28862ef8",
+          "message": "Merge pull request #2574 from HarperFast/kris/derived-runtime-lock-wait\n\nTemporarily take the derived-index runner lock without an unlock callback (rocksdb-js#848 workaround)",
+          "timestamp": "2026-09-12T03:49:14Z",
+          "url": "https://github.com/HarperFast/harper/commit/b701ada487c3d998f105ca5e5875732b28862ef8"
+        },
+        "date": 1789204073335,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 6087.56,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 6087.56,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 403.2,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1696.6,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 2436.6,
             "unit": "ms"
           }
         ]
