@@ -10,10 +10,10 @@ import { ClientError } from '../utility/errors/hdbError.ts';
  * the record's version and bytes are unchanged.
  *
  * Phase 1 layers cluster-wide exclusion on top without changing that: once the native key is held,
- * `Table.lock()` runs a Ricart-Agrawala round over replicated control entries (see
- * `recordLockCoordinator.ts`) and calls `joinClusterRound()` on the handle. A node-scoped lock
- * (`{ scope: 'node' }`), or any lock on a database with no transport registered, skips that round
- * entirely and behaves exactly as it did in Phase 0.
+ * `Table.lock()` obtains a delegation for the key from its home node (see `recordLockCoordinator.ts`)
+ * and calls `joinClusterRound()` on the handle. A live delegation serves repeat locks with no cluster
+ * message at all. A node-scoped lock (`{ scope: 'node' }`), or any lock on a database with no
+ * transport registered, skips the cluster step entirely and behaves exactly as it did in Phase 0.
  */
 
 export const DEFAULT_LOCK_LEASE_MS = 30_000;
@@ -239,7 +239,18 @@ class KeyLockHandle implements RecordLockHandle {
 	 * the commit-time fence reject it (§6).
 	 */
 	revokeLease(): void {
-		if (this.released || this.expired) return;
+		if (this.expired) return;
+		// `expired` is what the commit-time fence reads, and it must be set even when the caller has
+		// ALREADY unlocked: a write staged before `unlock()` is still in its transaction, and that is
+		// precisely the handoff §6 exists to fence. Gating this on `released` made the revocation a
+		// no-op in the one state it was written for.
+		this.expired = true;
+		if (this.released) {
+			// The native key is already back and `onRelease` already fired; only the fence flag and the
+			// lease timer are left to settle.
+			clearTimeout(this.#timer);
+			return;
+		}
 		this.#onLeaseExpire();
 	}
 

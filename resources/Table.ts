@@ -958,7 +958,10 @@ export function makeTable(options) {
 					}
 					// The audit header's nodeId is the origin, translated on receive and preserved across
 					// relays. The payload's own names are peer-supplied and prove nothing.
-					const author = getNodeNameForId(auditStore, event.nodeId);
+					// Rebuild the id map on a miss rather than waiting out the negative-cache window: a
+					// dropped release leaves the key's home holding its grant until the delegation's own
+					// deadline, and control entries are far too rare to drive the store.
+					const author = getNodeNameForId(auditStore, event.nodeId, true);
 					if (!author) {
 						logger.warn?.('discarding a record lock control entry whose origin node could not be resolved');
 						return;
@@ -2849,18 +2852,22 @@ export function makeTable(options) {
 						// acquisition and release reaches the coordinator that now owns the delegation.
 						if (
 							!handle.joinClusterRound(round.tsR, resolved.lease, round.mintedMono, () =>
-								TableResource.lockCoordinator?.release(id, round.token)
+								TableResource.lockCoordinator?.release(id, round.admissionId)
 							)
 						) {
 							// The round completed inside its lease but the lease elapsed before the handle
 							// could take it. The coordinator still holds it, and only this call knows the
 							// hold was never handed out.
-							Promise.resolve(coordinator.release(id, round.token)).catch(noop);
+							// The getter, not the captured coordinator: after a transport swap the captured one no
+							// longer owns this admission, so releasing through it would be a silent no-op.
+							Promise.resolve(TableResource.lockCoordinator?.release(id, round.admissionId)).catch(noop);
 							throw new ClientError('Record lock was granted after its lease had elapsed', 423);
 						}
 						// A recall must be able to fence a write this handle staged and then unlocked, so
 						// the coordinator needs a way to revoke it — see LockCoordinator.registerAdmission.
-						coordinator.registerAdmission(id, round.token, () => handle.revokeLease());
+						// The getter again: a swap during the acquisition moved this admission to the
+						// successor, and registering on the predecessor would revoke a handle that is fine.
+						TableResource.lockCoordinator?.registerAdmission(round.admissionId, () => handle.revokeLease());
 					} catch (error) {
 						handle.release();
 						throw error;

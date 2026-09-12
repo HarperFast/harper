@@ -57,10 +57,15 @@ export const LOCK_LEASE_SKEW_MS = 5_000;
  */
 export const DELEGATION_LEASE_MS = MAX_LOCK_LEASE_MS + 60_000;
 const TICK_INTERVAL_MS = 100;
-const OFF_OWNER_WARN_INTERVAL_MS = 60_000;
-/** Bounds what one database can accumulate. A home may never forget a delegation before its expiry. */
-const MAX_DELEGATIONS_PER_DATABASE = 10_000;
-/** Bounds what a single peer can make a home retain, so one node cannot exhaust the table. */
+const WARN_INTERVAL_MS = 60_000;
+/**
+ * Bounds the grants ONE TABLE's coordinator can accumulate — a home may never forget a delegation
+ * before its expiry, so the only bound available is a refusal to issue more. There is one coordinator
+ * per table, so the process-wide exposure is this times the number of tables under lock pressure; a
+ * true process-level bound is harper#2581 and is sized with the enablement measurements.
+ */
+const MAX_DELEGATIONS_PER_TABLE = 10_000;
+/** Bounds what a single peer can make one table's home retain, so one node cannot exhaust it. */
 const MAX_DELEGATIONS_PER_REQUESTER = 2_000;
 /** Bounds expiry work per tick, so a burst of expiries cannot stall the event loop. */
 const MAX_EXPIRIES_PER_TICK = 256;
@@ -251,6 +256,16 @@ export function decodeLockControlPayload(type: unknown, value: unknown): LockCon
 		return undefined;
 	}
 	if (!Array.isArray(tuple) || tuple.length !== 5) return undefined;
+	try {
+		return decodeTuple(tuple);
+	} catch {
+		// isEncodableKey recurses; a deeply nested array in a peer or replayed payload would otherwise
+		// raise a RangeError into the replicated apply loop instead of being dropped as malformed.
+		return undefined;
+	}
+}
+
+function decodeTuple(tuple: unknown[]): LockControlEntry | undefined {
 	const [key, requester, epochNumber, homeIncarnation, counter] = tuple as [
 		unknown,
 		unknown,
@@ -295,6 +310,15 @@ function scoreFor(member: string, keyId: string): number {
 	return hash >>> 0;
 }
 
+/**
+ * The string the ring hashes for a key. §4.5 scopes it by database and table: hashing the record id
+ * alone would home id `42` in every table of every database on the same node, concentrating unrelated
+ * hot keys on one arbiter. The separator cannot appear in a name or a stringified key id.
+ */
+export function ringKeyFor(database: string, table: string, keyId: unknown): string {
+	return `${database}\u0000${table}\u0000${String(keyId)}`;
+}
+
 export function homeFor(keyId: string, members: string[]): string | undefined {
 	let best: string | undefined;
 	let bestScore = -1;
@@ -317,18 +341,34 @@ interface Delegation {
 	expiresMono: number;
 	/** Set by a recall. No new admission may start, but live ones are drained first. */
 	recalled: boolean;
-	/** Live admissions. A delegation is not releasable until this reaches zero or they expire. */
-	admitted: number;
 	/**
-	 * Revocation callbacks for every handle this delegation admitted, live or already unlocked. A
-	 * drain that waits only on `admitted` is not enough: a caller that staged a write and then called
-	 * `unlock()` leaves nothing to wait on, but its write is still uncommitted and would land after
-	 * the successor was admitted. Surrender revokes all of these, so the commit-time fence rejects
-	 * them (§6 — recall revokes capability, not just admission).
+	 * Every admission this delegation is still answerable for, by id. An entry stays here after its
+	 * caller unlocks: §6 revokes CAPABILITY, not admission. A caller that staged a write and then
+	 * called `unlock()` has nothing left to wait on, but its write is still uncommitted and would land
+	 * after the successor was admitted — so surrender has to fence it, which means keeping its revoker
+	 * until its own lease runs out or authority is lost.
+	 *
+	 * Addressed by id through `#admissions` rather than owned by the delegation OBJECT, so a handle
+	 * survives a renewal with its delegation and is revoked with it when authority is actually lost.
 	 */
-	revokers: Set<() => void>;
+	admissions: Map<number, Admission>;
+	/**
+	 * How many of those admissions have not unlocked yet. A drain waits for THIS to reach zero — an
+	 * unlocked-but-staged write is revoked rather than waited for (harper#2580).
+	 */
+	holding: number;
 	/** Resolvers waiting for the drain to finish, so recall can reply once rather than poll. */
 	drained?: (() => void)[];
+}
+
+/** One `lock()` admitted under a delegation. */
+interface Admission {
+	/** Fences the handle's write capability. A no-op until `registerAdmission` supplies the real one. */
+	revoke: () => void;
+	/** Monotonic deadline of the handle's OWN lease, after which it fences itself and can be dropped. */
+	expiresMono: number;
+	/** False once the caller unlocked: it no longer blocks a drain, but is still revocable. */
+	holding: boolean;
 }
 
 /** A delegation this node issued as a key's home. */
@@ -350,12 +390,12 @@ export interface LockRound {
 	/** The monotonic reading the admission's lease is measured from. */
 	mintedMono: number;
 	/**
-	 * The delegation this admission came from. The caller hands it back on release and on
-	 * registration, because a key's delegation can be replaced while a handle is still open: a handle
-	 * from a surrendered delegation that unlocked later would otherwise decrement the SUCCESSOR's
-	 * admission count and let it be surrendered while its own callers were still inside.
+	 * Identifies THIS admission for the life of the handle it produced. The caller hands it back on
+	 * registration and on release. An id rather than the delegation's token, because the token changes
+	 * on renewal while the admission does not: addressing by token made a renewed delegation lose
+	 * track of handles it was still responsible for.
 	 */
-	token: FencingToken;
+	admissionId: number;
 }
 
 export interface LockCoordinatorOptions {
@@ -415,10 +455,21 @@ function ensureTicking() {
 	tickTimer.unref?.();
 }
 
-const warnedMessages = new Set<string>();
+/** Stands in until `registerAdmission` supplies the handle's real revoker. */
+function noRevoke() {}
+
+/**
+ * Rate-limit rather than latch. These messages report a transport, writer or revoker that failed, and
+ * a latch for the life of the process would show an operator the first occurrence and then hide a
+ * fault that persists for days. One per message per window is enough to keep a hot loop from flooding
+ * the log while still showing that the condition is ongoing.
+ */
+const warnedMessages = new Map<string, number>();
 function warnOnce(message: string, detail?: unknown) {
-	if (warnedMessages.has(message)) return;
-	warnedMessages.add(message);
+	const now = performance.now();
+	const last = warnedMessages.get(message);
+	if (last !== undefined && now - last < WARN_INTERVAL_MS) return;
+	warnedMessages.set(message, now);
 	harperLogger.warn?.(message, detail);
 }
 
@@ -433,6 +484,8 @@ export class LockCoordinator {
 	#monotonic: () => number;
 	#skewMs: number;
 	#autoTick: boolean;
+	/** Whoever this coordinator's authority was handed to, for replies that land after the swap. */
+	#successor: LockCoordinator | undefined;
 	/** Set when this coordinator's state was moved to a successor, so `close()` must not expire it. */
 	#handedOff = false;
 	/**
@@ -453,6 +506,12 @@ export class LockCoordinator {
 	#grantableAfterMono: number;
 	/** Keys this node holds a delegation for. */
 	#delegations = new Map<unknown, Delegation>();
+	/**
+	 * Every live admission, by id, and the delegation answerable for it. Coordinator-level rather than
+	 * per-delegation so a release can find its admission after the delegation was renewed or replaced.
+	 */
+	#admissions = new Map<number, Delegation>();
+	#nextAdmissionId = 1;
 	/** Keys this node homes, and who holds each one. */
 	#grants = new Map<unknown, HomeGrant>();
 	/** Per-requester counts, so one peer cannot fill the home's table on its own. */
@@ -497,24 +556,34 @@ export class LockCoordinator {
 	handOffTo(successor: LockCoordinator): void {
 		if (this.#handedOff) return;
 		this.#handedOff = true;
+		// Kept so an acquisition still awaiting a home's reply can install it on whoever holds this
+		// node's authority when the reply lands, rather than on a coordinator nothing consults.
+		this.#successor = successor;
 		for (const [keyId, delegation] of this.#delegations) successor.#delegations.set(keyId, delegation);
 		for (const [keyId, grant] of this.#grants) successor.#grants.set(keyId, grant);
 		for (const [requester, count] of this.#grantsByRequester) successor.#grantsByRequester.set(requester, count);
-		// The counter must not restart, or the successor would mint a token that compares equal to one
-		// the predecessor already issued for a different delegation.
+		// The admission index moves with the delegations it points into. Without it a handle admitted
+		// on the predecessor could never be released through the successor — `release` addresses the
+		// admission, so the entry would sit on the delegation forever and no recall could drain it.
+		for (const [admissionId, delegation] of this.#admissions) successor.#admissions.set(admissionId, delegation);
+		// Neither counter may restart. A repeated token would compare equal to one the predecessor
+		// already issued for a different delegation; a repeated admission id would address the wrong
+		// admission in the map just carried over.
 		successor.#counter = Math.max(successor.#counter, this.#counter);
+		successor.#nextAdmissionId = Math.max(successor.#nextAdmissionId, this.#nextAdmissionId);
 		// The successor now holds the full record of what is outstanding, so it has no reason to wait.
 		successor.#grantableAfterMono = -Infinity;
 		this.#delegations.clear();
 		this.#grants.clear();
 		this.#grantsByRequester.clear();
+		this.#admissions.clear();
 		if (successor.#delegations.size > 0 || successor.#grants.size > 0) successor.#startTicking();
 	}
 
 	/** For `cluster_status`: delegations held, delegations issued, live admissions, misrouted calls. */
 	get stats(): { delegations: number; granted: number; admitted: number; droppedOffOwner: number } {
 		let admitted = 0;
-		for (const delegation of this.#delegations.values()) admitted += delegation.admitted;
+		for (const delegation of this.#delegations.values()) admitted += delegation.holding;
 		return {
 			delegations: this.#delegations.size,
 			granted: this.#grants.size,
@@ -549,9 +618,9 @@ export class LockCoordinator {
 					`No agreed membership epoch for ${this.database}; cluster record locks are unavailable until one is established`
 				);
 			const delegation = this.#liveDelegation(keyId, leaseMs, epoch.number);
-			if (delegation) return this.#admit(delegation);
+			if (delegation) return this.#admit(delegation, leaseMs);
 
-			const home = homeFor(String(keyId), epoch.members);
+			const home = homeFor(this.#ringKey(keyId), epoch.members);
 			if (!home)
 				throw new LockUnavailableError(`Membership epoch for ${this.database} names no members to home a key on`);
 
@@ -564,13 +633,20 @@ export class LockCoordinator {
 					? this.#grantLocally(keyId, key, epoch, leaseMs)
 					: await this.#requestRemotely(home, keyId, key, epoch, leaseMs, deadlineMono);
 
+			// A transport swap can land while a request is in flight. The grant is authority for this
+			// NODE, and the successor is this node now — installing it here would leave a delegation
+			// nothing consults, admitting a caller that no recall can reach.
+			const authority = this.#authority();
+			if (authority.#closed)
+				throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
+
 			// A reply that claims a grant without a usable token is a broken transport, not a delegation.
 			if (reply.granted && reply.token && isDuration(reply.leaseMs, MIN_LOCK_LEASE_MS, DELEGATION_LEASE_MS)) {
-				const installed = this.#installDelegation(keyId, key, reply.token, reply.leaseMs, requestedAtMono);
+				const installed = authority.#installDelegation(keyId, key, reply.token, reply.leaseMs, requestedAtMono);
 				// A reply that outlived its own delegation grants nothing; fall through and ask again
 				// rather than admitting on authority the home has already expired.
-				if (installed && !installed.recalled && installed.expiresMono - this.#monotonic() >= leaseMs)
-					return this.#admit(installed);
+				if (installed && !installed.recalled && installed.expiresMono - authority.#monotonic() >= leaseMs)
+					return authority.#admit(installed, leaseMs);
 			} else if (reply.granted)
 				throw new LockUnavailableError(
 					`The home node for this key on ${this.database}.${this.table} returned a delegation with no usable token`
@@ -594,25 +670,32 @@ export class LockCoordinator {
 	 * amortization, and the next `lock()` on this node costs nothing. Returns the durable release
 	 * write only when the delegation is actually being given up.
 	 */
-	release(key: any, token?: FencingToken): Promise<void> | void {
+	release(key: any, admissionId: number): Promise<void> | void {
 		const keyId = this.#keyIdOf(key);
-		const delegation = this.#delegations.get(keyId);
+		// Addressed by admission, not by key: after a renewal or a replacement the delegation at this
+		// key may not be the one that admitted this handle, and releasing by key alone would either
+		// surrender a successor while its own callers were still inside, or — as it did — leave this
+		// admission on a delegation nobody can ever drain.
+		const delegation = this.#admissions.get(admissionId);
 		if (!delegation) return undefined;
-		// A handle admitted by a delegation that has since been replaced must not decrement this one's
-		// count, or the successor can be surrendered while its own callers are still inside.
-		if (token && compareTokens(delegation.token, token) !== 0) return undefined;
-		if (delegation.admitted > 0) delegation.admitted--;
-		if (delegation.admitted === 0 && delegation.drained) {
+		const admission = delegation.admissions.get(admissionId);
+		if (!admission?.holding) return undefined;
+		// The entry stays. Unlocking ends this caller's claim on the DRAIN; the write it staged can
+		// still commit, so the revoker has to remain reachable until the handle's own lease runs out.
+		admission.holding = false;
+		delegation.holding--;
+		if (delegation.holding > 0) return undefined;
+		if (delegation.drained) {
 			// Waking the recall is enough: it surrenders once, on its own path. Surrendering here too
 			// would write a second release entry for the same handoff.
 			const waiters = delegation.drained;
 			delegation.drained = undefined;
 			for (const resolve of waiters) resolve();
-		} else if (delegation.admitted === 0 && delegation.recalled) {
-			// Recalled with nobody waiting on the drain — the recall already returned, so this is the
-			// path that gives the delegation up.
-			return this.#surrender(keyId, delegation);
+			return undefined;
 		}
+		// Recalled with nobody waiting on the drain — the recall already returned, so this is the path
+		// that gives the delegation up. An un-recalled delegation is deliberately retained.
+		if (delegation.recalled && this.#delegations.get(keyId) === delegation) return this.#surrender(keyId, delegation);
 		return undefined;
 	}
 
@@ -643,7 +726,7 @@ export class LockCoordinator {
 		if (!this.transport.ownsCoordination()) {
 			this.#droppedOffOwner++;
 			const now = this.#monotonic();
-			if (now - this.#lastOffOwnerWarn > OFF_OWNER_WARN_INTERVAL_MS) {
+			if (now - this.#lastOffOwnerWarn > WARN_INTERVAL_MS) {
 				this.#lastOffOwnerWarn = now;
 				harperLogger.warn?.('record lock control entries are reaching a non-coordinating thread', {
 					database: this.database,
@@ -678,7 +761,7 @@ export class LockCoordinator {
 		if (epoch.number !== request.epoch) return { granted: false, reason: 'epoch', epoch: epoch.number };
 		// Both sides must agree we are the home, or two arbiters could issue for one key.
 		const keyId = this.#keyIdOf(request.key);
-		if (homeFor(String(keyId), epoch.members) !== this.nodeId) return { granted: false, reason: 'not-home' };
+		if (homeFor(this.#ringKey(keyId), epoch.members) !== this.nodeId) return { granted: false, reason: 'not-home' };
 		return this.#grant(keyId, request.key, epoch, request.leaseMs, request.requester);
 	}
 
@@ -693,7 +776,7 @@ export class LockCoordinator {
 		const delegation = this.#delegations.get(keyId);
 		if (!delegation || compareTokens(delegation.token, recall.token) !== 0) return;
 		delegation.recalled = true;
-		if (delegation.admitted > 0) {
+		if (delegation.holding > 0) {
 			await new Promise<void>((resolve) => {
 				(delegation.drained ||= []).push(resolve);
 				// A holder that never releases must not hold the recall open past its own lease: the
@@ -766,6 +849,17 @@ export class LockCoordinator {
 		tickingCoordinators.delete(this);
 	}
 
+	#ringKey(keyId: unknown): string {
+		return ringKeyFor(this.database, this.table, keyId);
+	}
+
+	/** The coordinator holding this node's authority now: this one, or the end of the handoff chain. */
+	#authority(): LockCoordinator {
+		let coordinator: LockCoordinator = this;
+		while (coordinator.#successor) coordinator = coordinator.#successor;
+		return coordinator;
+	}
+
 	#liveDelegation(keyId: unknown, leaseMs: number, epochNumber: number): Delegation | undefined {
 		const delegation = this.#delegations.get(keyId);
 		if (!delegation || delegation.recalled) return undefined;
@@ -773,7 +867,11 @@ export class LockCoordinator {
 		// re-homed, and the new home knows nothing of this token — so keeping it would let this node
 		// admit alongside whoever the new home grants.
 		if (delegation.token[0] !== epochNumber) {
+			// Authority is gone, not merely stale: the key may have been re-homed to a node that knows
+			// nothing of this token. Forgetting the delegation without revoking would leave its handles
+			// able to commit alongside whatever the new home grants.
 			this.#delegations.delete(keyId);
+			this.#revokeAll(delegation);
 			return undefined;
 		}
 		// The admission may not outlive the delegation that admitted it, so a delegation without room
@@ -782,24 +880,44 @@ export class LockCoordinator {
 		return delegation;
 	}
 
-	#admit(delegation: Delegation): LockRound {
-		delegation.admitted++;
-		return { tsR: this.#nextTimestamp(), mintedMono: this.#monotonic(), token: delegation.token };
+	#admit(delegation: Delegation, leaseMs: number): LockRound {
+		const mintedMono = this.#monotonic();
+		// Admissions that unlocked are kept only until their handle's own lease fences it. Collecting
+		// them here rather than on a timer keeps the work on the path that creates it, and a delegation
+		// can accumulate at most one entry per overlapping lock in its own lease.
+		this.#pruneAdmissions(delegation, mintedMono);
+		const admissionId = this.#nextAdmissionId++;
+		// The entry exists from the instant of admission, so a recall between admit and register still
+		// sees it.
+		delegation.admissions.set(admissionId, { revoke: noRevoke, expiresMono: mintedMono + leaseMs, holding: true });
+		delegation.holding++;
+		this.#admissions.set(admissionId, delegation);
+		return { tsR: this.#nextTimestamp(), mintedMono, admissionId };
+	}
+
+	/** Drop admissions whose handle's lease has run out; they can no longer commit anything. */
+	#pruneAdmissions(delegation: Delegation, now: number): void {
+		for (const [admissionId, admission] of delegation.admissions) {
+			if (admission.expiresMono > now) continue;
+			delegation.admissions.delete(admissionId);
+			this.#admissions.delete(admissionId);
+			if (admission.holding) delegation.holding--;
+		}
 	}
 
 	/**
 	 * Register how to revoke the handle an admission produced. `Table.lock()` calls this once the
 	 * handle has joined the round, so a recall can fence a write that was staged and then unlocked.
 	 */
-	registerAdmission(key: any, token: FencingToken, revoke: () => void): void {
-		const delegation = this.#delegations.get(this.#keyIdOf(key));
-		if (!delegation || compareTokens(delegation.token, token) !== 0) {
-			// The delegation went away between admission and registration — the handle has no authority
-			// to keep, so revoke it now rather than leaving it unfenced.
+	registerAdmission(admissionId: number, revoke: () => void): void {
+		const admission = this.#admissions.get(admissionId)?.admissions.get(admissionId);
+		if (!admission) {
+			// The admission was already revoked or collected between admit and register — the handle has
+			// no authority to keep, so revoke it now rather than leaving it unfenced.
 			revoke();
 			return;
 		}
-		delegation.revokers.add(revoke);
+		admission.revoke = revoke;
 	}
 
 	/**
@@ -820,16 +938,24 @@ export class LockCoordinator {
 		const existing = this.#delegations.get(keyId);
 		// A reply that lost a race with a newer delegation for the same key must not move it backwards.
 		if (existing && compareTokens(existing.token, token) >= 0) return existing;
+		if (existing && !existing.recalled) {
+			// A RENEWAL of authority this node never lost. Advance the token and the deadline in place so
+			// the admissions it is still answerable for ride along; installing a fresh object here
+			// orphaned them, and the next recall then surrendered while a live handle could still commit.
+			existing.token = token;
+			existing.expiresMono = expiresMono;
+			this.#startTicking();
+			return existing;
+		}
+		// Replacing a recalled delegation: its handles were revoked at surrender, so nothing carries.
+		if (existing) this.#revokeAll(existing);
 		const delegation: Delegation = {
 			key,
 			token,
 			expiresMono,
 			recalled: false,
-			// A leaked admission from a previous delegation would make every recall wait out the full
-			// lease, so the count starts fresh: the handles of the previous delegation are fenced by
-			// that delegation's own deadline, not by this one's.
-			admitted: 0,
-			revokers: new Set(),
+			admissions: new Map(),
+			holding: 0,
 		};
 		this.#delegations.set(keyId, delegation);
 		this.#startTicking();
@@ -928,7 +1054,7 @@ export class LockCoordinator {
 				return { granted: false, reason: 'contended', retryAfterMs: 25 };
 			}
 		}
-		if (this.#grants.size >= MAX_DELEGATIONS_PER_DATABASE) return { granted: false, reason: 'capacity' };
+		if (this.#grants.size >= MAX_DELEGATIONS_PER_TABLE) return { granted: false, reason: 'capacity' };
 		const perRequester = this.#grantsByRequester.get(requester) ?? 0;
 		if (perRequester >= MAX_DELEGATIONS_PER_REQUESTER) return { granted: false, reason: 'capacity' };
 		const token: FencingToken = [epoch.number, epoch.homeIncarnation, ++this.#counter];
@@ -980,15 +1106,7 @@ export class LockCoordinator {
 		if (this.#delegations.get(keyId) === delegation) this.#delegations.delete(keyId);
 		// Capability, not just admission: anything this delegation admitted must be unable to commit
 		// before the home is told it may re-grant.
-		const revokers = delegation.revokers;
-		delegation.revokers = new Set();
-		for (const revoke of revokers) {
-			try {
-				revoke();
-			} catch (error) {
-				warnOnce('failed to revoke a record lock handle during a delegation handoff', error);
-			}
-		}
+		this.#revokeAll(delegation);
 		const entry: LockControlEntry = {
 			type: 'lockRelease',
 			key: delegation.key,
@@ -1003,12 +1121,15 @@ export class LockCoordinator {
 		return this.#writeControlSafely(entry);
 	}
 
+	/** Revoke every handle this delegation is answerable for, and forget the admissions. */
 	#revokeAll(delegation: Delegation): void {
-		const revokers = delegation.revokers;
-		delegation.revokers = new Set();
-		for (const revoke of revokers) {
+		const admissions = delegation.admissions;
+		delegation.admissions = new Map();
+		delegation.holding = 0;
+		for (const [admissionId, admission] of admissions) {
+			this.#admissions.delete(admissionId);
 			try {
-				revoke();
+				admission.revoke();
 			} catch (error) {
 				warnOnce('failed to revoke a record lock handle', error);
 			}

@@ -147,13 +147,21 @@ function invalidateNodeNames(auditStore: any) {
  * The node name a local short id refers to. Callers that must attribute a replicated entry to its
  * origin node need the globally stable name, not the id, which is assigned per node.
  */
-export function getNodeNameForId(auditStore: any, nodeId: number | undefined): string | undefined {
+export function getNodeNameForId(
+	auditStore: any,
+	nodeId: number | undefined,
+	rebuildOnMiss = false
+): string | undefined {
 	if (typeof nodeId !== 'number' || !auditStore) return undefined;
 	const cached = idToNodeName.get(auditStore);
 	const hit = cached?.names.get(nodeId);
 	if (hit !== undefined) return hit;
 	const now = Date.now();
-	if (cached && now - cached.refreshedAt < NODE_NAME_REFRESH_MS) return undefined;
+	// `rebuildOnMiss` is for entry classes that arrive at most once per event and whose loss costs more
+	// than the read: a dropped record lock release leaves the home holding a grant until its own
+	// deadline. The interval below exists to keep a BURST of unmapped ids off the store, which those
+	// classes cannot produce.
+	if (!rebuildOnMiss && cached && now - cached.refreshedAt < NODE_NAME_REFRESH_MS) return undefined;
 	const nameToId = exportIdMapping(auditStore);
 	const names = new Map<number, string>();
 	for (const name in nameToId) names.set(nameToId[name], name);
