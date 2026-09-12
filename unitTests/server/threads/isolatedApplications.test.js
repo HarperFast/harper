@@ -165,19 +165,28 @@ describe('isolated applications (harper#642 tier 2)', () => {
 
 	describe('worker slot lifetime', () => {
 		it('does not auto-restart a worker after its owner withdraws the slot lease', async () => {
+			// This lifecycle-only worker must not become the process's first preload resolver: the
+			// preload suite configures its fixtures later and intentionally verifies the production cache.
+			const originalSafeMode = process.env.HARPER_SAFE_MODE;
+			process.env.HARPER_SAFE_MODE = '1';
 			let starts = 0;
 			let restartChecks = 0;
-			const worker = threads().startWorker(require.resolve('./fixtures/exitImmediately.cjs'), {
-				onStarted: () => starts++,
-				shouldAutoRestart: () => {
-					restartChecks++;
-					return false;
-				},
-			});
-			await once(worker, 'exit');
-			await new Promise(setImmediate);
-			assert.strictEqual(restartChecks, 1);
-			assert.strictEqual(starts, 1, 'the withdrawn slot did not create a replacement');
+			try {
+				const worker = threads().startWorker(require.resolve('./fixtures/exitImmediately.cjs'), {
+					onStarted: () => starts++,
+					shouldAutoRestart: () => {
+						restartChecks++;
+						return false;
+					},
+				});
+				await once(worker, 'exit');
+				await new Promise(setImmediate);
+				assert.strictEqual(restartChecks, 1);
+				assert.strictEqual(starts, 1, 'the withdrawn slot did not create a replacement');
+			} finally {
+				if (originalSafeMode === undefined) delete process.env.HARPER_SAFE_MODE;
+				else process.env.HARPER_SAFE_MODE = originalSafeMode;
+			}
 		});
 	});
 
