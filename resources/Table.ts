@@ -1599,7 +1599,7 @@ export function makeTable(options) {
 			}
 			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
 			// create the default daily cleanup timer for a table that has only an @expiresAt field.
-			if (!preserveLoadedConfiguration || expirationScanScheduled) scheduleCleanup();
+			if (!preserveLoadedConfiguration || expirationScanScheduled || evictionMs) scheduleCleanup();
 			// @expiresAt has its own interval rather than the cleanup timer above. Arm it whenever a live
 			// declaration introduces the attribute, including after this application already claimed TTL.
 			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();

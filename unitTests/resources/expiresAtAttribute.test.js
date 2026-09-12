@@ -140,10 +140,16 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 
 	it('arms one @expiresAt interval initially and when a live table gains the attribute', async () => {
 		const originalSetInterval = global.setInterval;
+		const originalSetTimeout = global.setTimeout;
 		let expirationIntervals = 0;
+		let cleanupTimers = 0;
 		global.setInterval = (callback, delay, ...args) => {
 			if (delay === 60_000) expirationIntervals++;
 			return originalSetInterval(callback, delay, ...args);
+		};
+		global.setTimeout = (callback, delay, ...args) => {
+			cleanupTimers++;
+			return originalSetTimeout(callback, delay, ...args);
 		};
 		try {
 			const beforeInitialDeclaration = expirationIntervals;
@@ -186,6 +192,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 				`unexpected retained default expiry ${storedDefaultExpiry}`
 			);
 
+			const beforeSharedDeclarationTimers = cleanupTimers;
 			table({
 				table: 'ExpiresAtAddedToSharedTable',
 				database: 'test',
@@ -201,8 +208,14 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 				],
 			});
 			assert.strictEqual(expirationIntervals, beforeSharedRedeclaration + 1);
+			assert.strictEqual(
+				cleanupTimers,
+				beforeSharedDeclarationTimers,
+				'field-only declarations do not create a default table cleanup timer'
+			);
 		} finally {
 			global.setInterval = originalSetInterval;
+			global.setTimeout = originalSetTimeout;
 		}
 	});
 });
