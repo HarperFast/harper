@@ -101,11 +101,6 @@ exports.listenOnDomainSocket = listenOnDomainSocket;
 exports.listenOnPorts = listenOnPorts;
 exports.startServers = startServers;
 exports.closeServers = closeServers;
-exports.shouldStartGlobalUwsServers = shouldStartGlobalUwsServers;
-
-function shouldStartGlobalUwsServers(isolatedApplication = thisThreadsIsolatedApplication()) {
-	return isolatedApplication === undefined;
-}
 
 function closeServers() {
 	if (isBun) {
@@ -414,9 +409,10 @@ function listenOnPorts() {
 	// These replace the Node http UDS mirror; createUwsServer binds the unix socket and bridges each
 	// request through httpChain[port] via UwsRequest.
 	const uwsServeConfigs = httpComponent.uwsServeConfigs;
-	if (uwsServeConfigs && shouldStartGlobalUwsServers()) {
+	if (uwsServeConfigs) {
 		for (const key in uwsServeConfigs) {
 			const cfg = uwsServeConfigs[key];
+			if (thisThreadsIsolatedApplication() && !cfg.socketPath) continue; // dedicated worker: mirrors only
 			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
 			const { createUwsServer } = require('../serverHelpers/uwsServer.ts');
 			listening.push(
