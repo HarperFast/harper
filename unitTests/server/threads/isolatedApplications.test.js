@@ -4,6 +4,7 @@ testUtils.preTestPrep();
 const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs');
+const os = require('node:os');
 // Required lazily, inside the tests: loading these module graphs at file load time would install real
 // loggers before sibling suites in the same mocha process (dataLoader) stub theirs.
 const iso = () => require('#src/server/threads/isolatedApplications');
@@ -26,6 +27,26 @@ describe('isolated applications (harper#642 tier 2)', () => {
 			assert.strictEqual(iso().isIsolatedApplication('shared', CONFIG), false);
 			assert.strictEqual(iso().isIsolatedApplication('http', CONFIG), false);
 			assert.deepStrictEqual(iso().isolatedApplicationNames(undefined), []);
+		});
+
+		it('counts only installed isolated applications as desired capacity', () => {
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), 'harper-isolated-presence-'));
+			const componentsRoot = path.join(root, 'components');
+			const installedRoot = path.join(root, 'installed');
+			fs.mkdirSync(path.join(componentsRoot, 'iso-one'), { recursive: true });
+			try {
+				assert.deepStrictEqual(
+					iso().presentIsolatedApplicationNames(
+						{ ...CONFIG, stale: { package: 'x', isolated: true } },
+						componentsRoot,
+						installedRoot,
+						path.join(root, 'iso-two')
+					),
+					['iso-one', 'iso-two']
+				);
+			} finally {
+				fs.rmSync(root, { recursive: true, force: true });
+			}
 		});
 
 		it('a thread with no application of its own loads only the non-isolated applications', () => {
@@ -61,6 +82,11 @@ describe('isolated applications (harper#642 tier 2)', () => {
 
 		it('defaults the admission budget when none is configured', () => {
 			assert.strictEqual(iso().maxIsolatedApplications(), iso().DEFAULT_MAX_ISOLATED_APPLICATIONS);
+			assert.strictEqual(iso().isolatedWorkerHeapShareCount(2, 8), 10);
+		});
+
+		it('refuses Windows where per-application UDS mirrors are unavailable', () => {
+			assert.match(iso().isolatedApplicationsUnreachableReason('win32'), /Windows/);
 		});
 
 		it('counts actual dedicated applications when enforcing the admission budget', () => {

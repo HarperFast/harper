@@ -58,8 +58,7 @@ const pool = (list: ThreadInfo[]) =>
 		.sort();
 const dedicated = (list: ThreadInfo[], app = 'isolated-app') => list.filter((t) => t.application === app);
 
-// Windows has no UDS mirrors, so admission refuses a dedicated worker there by design; the Bun listener
-// path is not yet exercised (design note).
+// Windows has no UDS mirrors, so admission refuses a dedicated worker there; the Bun listener path is not yet exercised.
 const UNSUPPORTED_HERE = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
 
 suite(

@@ -11,11 +11,12 @@
  */
 import { isMainThread, workerData } from 'node:worker_threads';
 import { getWorkerIndex } from './manageThreads.js';
-import { getConfigObj } from '../../config/configUtils.ts';
+import { getConfigObj, getConfigPath } from '../../config/configUtils.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { isDomainSocketPathTooLong } from '../../utility/domainSocket.ts';
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { basename, join } from 'node:path';
 
 export const DEFAULT_MAX_ISOLATED_APPLICATIONS = 8;
 
@@ -38,9 +39,27 @@ export function isolatedApplicationNames(config: Record<string, any> | undefined
 	return Object.keys(config).filter((name) => isIsolatedApplication(name, config));
 }
 
+export function presentIsolatedApplicationNames(
+	config: Record<string, any> | undefined = getConfigObj(),
+	componentsRoot: string = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT) as string,
+	installedRoot: string = join(env.get(CONFIG_PARAMS.ROOTPATH), 'components'),
+	runApplicationPath: string | undefined = process.env.RUN_HDB_APP
+): string[] {
+	return isolatedApplicationNames(config).filter(
+		(application) =>
+			existsSync(join(componentsRoot, application)) ||
+			existsSync(join(installedRoot, application)) ||
+			(runApplicationPath && basename(runApplicationPath) === application)
+	);
+}
+
 export function maxIsolatedApplications(): number {
 	const configured = Number(env.get(CONFIG_PARAMS.THREADS_MAXISOLATED));
 	return Number.isInteger(configured) && configured >= 0 ? configured : DEFAULT_MAX_ISOLATED_APPLICATIONS;
+}
+
+export function isolatedWorkerHeapShareCount(poolSize: number, max = maxIsolatedApplications()): number {
+	return poolSize + max;
 }
 
 /** Why `appName` cannot claim a place in the dedicated-worker budget, if the budget is full. */
@@ -75,7 +94,8 @@ export function shouldLoadApplicationHere(
  * without `tls.unixDomainSockets` and a secure port an isolated application would load and answer
  * nothing, silently. Refused at admission instead. Returns the reason, or undefined when reachable.
  */
-export function isolatedApplicationsUnreachableReason(): string | undefined {
+export function isolatedApplicationsUnreachableReason(platform = process.platform): string | undefined {
+	if (platform === 'win32') return 'Windows does not support per-application UDS mirrors';
 	// the main thread standing in as the only worker (threads.count: 0) has no thread to give
 	if (isMainThread && getWorkerIndex() === 0) return 'threads.count is 0, so there is no worker thread to dedicate';
 	if (!env.get(CONFIG_PARAMS.HTTP_SECUREPORT)) return 'no http.securePort is configured';

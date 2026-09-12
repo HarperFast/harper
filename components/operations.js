@@ -600,14 +600,15 @@ async function deployComponent(req) {
 			HTTP_STATUS_CODES.BAD_REQUEST
 		);
 	}
-	// Admission is checked here, where the caller can be told, not only at worker start where a refusal
-	// is a log line: an isolated application nothing could reach, or one past threads.maxIsolated, does
-	// not deploy.
+	// Only the originating node rejects admission: replicated peers must commit the same desired config,
+	// then report any node-local inability to run it through component lifecycle status.
 	const nowIsolated = req.isolated ?? wasIsolated;
-	if (nowIsolated) {
+	const isReplicatedExecution = typeof req._deploymentId === 'string';
+	if (nowIsolated && !isReplicatedExecution) {
 		const {
 			isolatedApplicationRefusal,
 			isolatedApplicationCapacityRefusal,
+			presentIsolatedApplicationNames,
 		} = require('../server/threads/isolatedApplications.ts');
 		let runningApplications;
 		try {
@@ -616,9 +617,10 @@ async function deployComponent(req) {
 			throw handleHDBError(
 				error,
 				`Cannot deploy '${req.project}' as an isolated application: the main thread's worker topology is unavailable: ${error.message}`,
-				HTTP_STATUS_CODES.CONFLICT
+				HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
 			);
 		}
+		runningApplications = new Set([...runningApplications, ...presentIsolatedApplicationNames()]);
 		const refusal =
 			isolatedApplicationRefusal(req.project) ?? isolatedApplicationCapacityRefusal(req.project, runningApplications);
 		if (refusal) {
@@ -682,7 +684,6 @@ async function deployComponent(req) {
 	// recording so we don't accumulate one row per node for the same deploy. The row
 	// reaches peers via the table's standard replication; the peer-side branch below
 	// reads payload_blob back from there.
-	const isReplicatedExecution = typeof req._deploymentId === 'string';
 	// An SSE-bound caller already attached a ProgressEmitter (created in the server
 	// handler so it can also drive the response stream). Reuse it; otherwise spin up a
 	// fresh emitter so the recorder still gets phase events for non-SSE deploys.

@@ -98,7 +98,7 @@ export async function handleApplication(scope): Promise<void> {
 	// threads:0 where the main thread acts as worker 0), and a deploy
 	// pre-flight validation scope must never touch the live engine — it can
 	// share a running component's identity, so registering from it would
-	// displace the real component's jobs (review finding).
+	// displace the real component's jobs.
 	if (!isApplicationPrimaryWorker(scope.applicationScope?.name)) {
 		schedulerLogger.debug?.('Scheduler config validated; activation skipped on non-primary worker');
 		return;

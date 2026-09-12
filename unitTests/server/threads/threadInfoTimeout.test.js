@@ -55,6 +55,16 @@ function startIsolatedApplicationsWorker(timeoutMs) {
 	);
 }
 
+function startUnavailableIsolatedApplicationsWorker() {
+	const manageThreadsPath = require.resolve('#src/server/threads/manageThreads');
+	return new Worker(
+		`const { parentPort, workerData } = require('node:worker_threads');
+		const { getRunningIsolatedApplications } = require(workerData.manageThreadsPath);
+		getRunningIsolatedApplications().catch((error) => parentPort.postMessage({ code: error.code }));`,
+		{ eval: true, workerData: { manageThreadsPath } }
+	);
+}
+
 describe('thread information liveness timeout', () => {
 	it('rejects and removes its response listener when the main thread does not reply', async () => {
 		const worker = startThreadInfoWorker(50);
@@ -123,6 +133,18 @@ describe('isolated application topology request', () => {
 			const result = messages.find((message) => message.applications);
 			assert.deepStrictEqual(result.applications, ['iso-one', 'iso-two']);
 			assert.equal(result.listenerCount, result.baselineListeners);
+		} finally {
+			await worker.terminate();
+		}
+	});
+
+	it('fails closed when a worker has no channel to the main thread', async () => {
+		const worker = startUnavailableIsolatedApplicationsWorker();
+		const messages = [];
+		worker.on('message', (message) => messages.push(message));
+		try {
+			await waitFor(() => messages.length > 0);
+			assert.equal(messages[0].code, 'ERR_ISOLATED_APPLICATIONS_UNAVAILABLE');
 		} finally {
 			await worker.terminate();
 		}

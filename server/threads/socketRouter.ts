@@ -9,21 +9,19 @@ import {
 	stopWorker,
 } from './manageThreads.js';
 import {
-	isolatedApplicationNames,
+	presentIsolatedApplicationNames,
+	isolatedWorkerHeapShareCount,
 	isolatedApplicationRefusal,
 	isolatedApplicationCapacityRefusal,
 } from './isolatedApplications.ts';
-import { getConfigPath } from '../../config/configUtils.ts';
 import { lifecycle as componentLifecycle } from '../../components/status/index.ts';
-import { existsSync } from 'node:fs';
-import * as env from '../../utility/environment/environmentManager.ts';
 import * as hdbTerms from '../../utility/hdbTerms.ts';
 import * as harperLogger from '../../utility/logging/harper_logger.ts';
 import { recordHostname } from '../../resources/analytics/write.ts';
 import { startTransactionLogCooling } from '../transactionLogCooling.ts';
 import { startLongLivedTransactionReporting } from '../../resources/longLivedTransactions.ts';
 import { isMainThread } from 'node:worker_threads';
-import { join, basename } from 'node:path';
+import { join } from 'node:path';
 
 const workers = [];
 const HTTP_WORKER_STARTUP_DIAGNOSTIC_MS = 60000;
@@ -99,27 +97,22 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 		poolSize = threadCount;
 		nextIsolatedIndex = Math.max(nextIsolatedIndex, threadCount);
 		const isolated = admittedIsolatedApplications([...isolatedSlots.keys()]);
-		const heapShareCount = threadCount + isolated.length;
+		const heapShareCount = isolatedWorkerHeapShareCount(threadCount);
 		for (let i = 0; i < threadCount; i++) {
 			workerSlots.push(startHTTPWorker(i, threadCount, undefined, heapShareCount));
 		}
 		// One dedicated worker per isolated application, numbered past the pool so no pool-only duty
 		// (worker 0's startup log, the last worker's cleanup) ever lands on it.
-		const dedicatedStarts = [];
 		for (const application of isolated) {
 			if (isolatedSlots.has(application)) continue;
 			const slot = startHTTPWorker(nextIsolatedIndex++, threadCount, application, heapShareCount);
 			isolatedSlots.set(application, slot);
 			workerSlots.push(slot);
-			// with a backstop, like a later reconcile: one application's hung boot must not hold up the instance
-			dedicatedStarts.push(watchDedicatedStart(application, slot));
+			void watchDedicatedStart(application, slot);
 		}
-		await Promise.all([
-			...workerSlots.filter((slot) => !slot.application).map((slot) => slot.ready),
-			...dedicatedStarts,
-		]);
+		await Promise.all(workerSlots.filter((slot) => !slot.application).map((slot) => slot.ready));
 	} finally {
-		for (const slot of workerSlots) slot.finishStartup();
+		for (const slot of workerSlots) if (!slot.application) slot.finishStartup();
 		threadsHaveStarted(undefined as any);
 	}
 }
@@ -162,17 +155,6 @@ function admittedIsolatedApplications(running: string[]): string[] {
 		admitted.push(name);
 	}
 	return admitted;
-}
-
-function presentIsolatedApplicationNames(): string[] {
-	const componentsRoot = getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT) as string;
-	const installedRoot = join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'components');
-	return isolatedApplicationNames().filter(
-		(application) =>
-			existsSync(join(componentsRoot, application)) ||
-			existsSync(join(installedRoot, application)) ||
-			(process.env.RUN_HDB_APP && basename(process.env.RUN_HDB_APP) === application)
-	);
 }
 
 /**
@@ -224,20 +206,15 @@ async function reconcileIsolatedWorkersNow(): Promise<string[]> {
 		stopping.push(slot.shutdown());
 	}
 	await Promise.all(stopping);
-	const starting = [];
 	const started: string[] = [];
-	const heapShareCount = poolSize + wanted.size;
+	const heapShareCount = isolatedWorkerHeapShareCount(poolSize);
 	for (const application of wanted) {
 		if (isolatedSlots.has(application)) continue;
 		const slot = startHTTPWorker(nextIsolatedIndex++, poolSize, application, heapShareCount);
 		isolatedSlots.set(application, slot);
-		starting.push(
-			watchDedicatedStart(application, slot).then((ready) => {
-				if (ready) started.push(application);
-			})
-		);
+		started.push(application);
+		void watchDedicatedStart(application, slot);
 	}
-	await Promise.all(starting);
 	return started;
 }
 if (isMainThread) {

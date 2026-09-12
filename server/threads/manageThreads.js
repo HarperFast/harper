@@ -636,9 +636,9 @@ const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
  */
 
 /**
- * `application` selects which workers of the type restart: undefined restarts the shared pool only
- * (workers dedicated to an isolated application keep running -- a redeploy of one application must not
- * restart another), a name restarts only that application's dedicated worker, and '*' restarts all.
+ * `application` selects which workers of the type restart: omitted preserves the historic all-worker
+ * behavior, explicit undefined restarts the shared pool only, a name restarts only that application's
+ * dedicated worker, and '*' restarts all.
  */
 async function restartWorkers(
 	name = null,
@@ -647,6 +647,7 @@ async function restartWorkers(
 	onProgress = null,
 	application = undefined
 ) {
+	if (arguments.length < 5) application = '*';
 	if (isMainThread) {
 		// Declining is not the same as delegating: a caller reporting on the restart must not read this
 		// as "another thread is completing it".
@@ -1427,7 +1428,13 @@ if (parentPort && workerData?.addPorts) {
 		});
 } else {
 	getThreadInfo = getChildWorkerInfo;
-	getRunningIsolatedApplications = () => runningIsolatedApplicationsGetter();
+	getRunningIsolatedApplications = isMainThread
+		? () => runningIsolatedApplicationsGetter()
+		: () => {
+				const error = new Error('No channel to the main thread for isolated application topology');
+				error.code = 'ERR_ISOLATED_APPLICATIONS_UNAVAILABLE';
+				return Promise.reject(error);
+			};
 	awaitProcessGroupTermination = (ownerThreadId) =>
 		pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
 }
