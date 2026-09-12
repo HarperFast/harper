@@ -141,25 +141,37 @@ const poolSlots: IsolatedSlot[] = [];
  */
 function admittedIsolatedApplications(running: string[]): string[] {
 	const names = presentIsolatedApplicationNames();
-	const admitted = running.filter((name) => names.includes(name));
+	const admitted = [];
+	for (const name of running) {
+		if (!names.includes(name)) continue;
+		const refusal = isolatedApplicationRefusal(name);
+		if (refusal) {
+			reportIsolatedRefusal(name, refusal);
+			continue;
+		}
+		admitted.push(name);
+	}
 	for (const name of names) {
 		if (admitted.includes(name)) continue;
 		const refusal = isolatedApplicationRefusal(name) ?? isolatedApplicationCapacityRefusal(name, admitted);
 		if (refusal) {
-			if (!refusedIsolated.has(name)) {
-				refusedIsolated.add(name);
-				const error = new Error(
-					`Application '${name}' is isolated but gets no dedicated worker: ${refusal}; it is not loaded anywhere`
-				);
-				harperLogger.error(error.message);
-				componentLifecycle.failed(name, error, `Component '${name}' failed to load`);
-			}
+			reportIsolatedRefusal(name, refusal);
 			continue;
 		}
 		refusedIsolated.delete(name);
 		admitted.push(name);
 	}
 	return admitted;
+}
+
+function reportIsolatedRefusal(name: string, refusal: string) {
+	if (refusedIsolated.has(name)) return;
+	refusedIsolated.add(name);
+	const error = new Error(
+		`Application '${name}' is isolated but gets no dedicated worker: ${refusal}; it is not loaded anywhere`
+	);
+	harperLogger.error(error.message);
+	componentLifecycle.failed(name, error, `Component '${name}' failed to load`);
 }
 
 /**
@@ -314,8 +326,24 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 		onRestartExhausted() {
 			const error = new Error(`HTTP worker slot ${index} exhausted restarts (thread ${lastThreadId})`);
 			if (waitingForInitialReady) failStartup(error);
-			else if (application && isolatedSlot && isolatedSlots.get(application) === isolatedSlot)
-				isolatedSlots.delete(application);
+			else if (application && isolatedSlot && isolatedSlots.get(application) === isolatedSlot) {
+				const exhaustedSlot = isolatedSlot;
+				componentLifecycle.failed(application, error, `Component '${application}' worker failed`);
+				void import('../http.ts').then(
+					({ cleanupApplicationSockets }) => {
+						if (isolatedSlots.get(application) !== exhaustedSlot) return;
+						cleanupApplicationSockets(application);
+						isolatedSlots.delete(application);
+					},
+					(cleanupError) => {
+						harperLogger.error(
+							`Could not clean sockets for failed isolated application '${application}'`,
+							cleanupError
+						);
+						if (isolatedSlots.get(application) === exhaustedSlot) isolatedSlots.delete(application);
+					}
+				);
+			}
 		},
 	};
 	startWorker(join(__dirname, './threadServer.js'), workerOptions);

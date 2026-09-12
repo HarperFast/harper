@@ -220,9 +220,13 @@ export function assertApplicationConfig(
 		}
 	}
 	assertBranchedDatabases(applicationName, applicationConfig.branchedDatabases);
-	if (applicationConfig.isolated !== undefined && typeof applicationConfig.isolated !== 'boolean') {
+	assertIsolationConfig(applicationName, applicationConfig.isolated);
+}
+
+export function assertIsolationConfig(applicationName: string, isolated: unknown): void {
+	if (isolated !== undefined && typeof isolated !== 'boolean') {
 		throw new TypeError(
-			`Invalid 'isolated' for application ${applicationName}: expected a boolean, got ${typeof applicationConfig.isolated}`
+			`Invalid 'isolated' for application ${applicationName}: expected a boolean, got ${typeof isolated}`
 		);
 	}
 }

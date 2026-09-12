@@ -1369,17 +1369,17 @@ async function dropComponent(req) {
 	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const componentPath = path.join(componentsRoot, project);
 	const pathToComponent = path.join(componentsRoot, projectPath);
-	// Read before the config entry goes: an isolated application's drop restarts only its own worker.
+	// Read before a full drop removes the config entry; a file drop retains it and the same restart scope.
 	const { isIsolatedApplication } = require('../server/threads/isolatedApplications.ts');
 	env.initSync(true);
-	const restartScope = !file && isIsolatedApplication(project) ? project : undefined;
+	const restartScope = isIsolatedApplication(project) ? project : undefined;
 
 	let response;
 	await withComponentPreparationLock(
 		componentPath,
 		async () => {
 			const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
-			if (await fs.pathExists(componentSymlink)) {
+			if (!file && (await fs.pathExists(componentSymlink))) {
 				await fs.unlink(componentSymlink);
 			}
 
@@ -1390,7 +1390,7 @@ async function dropComponent(req) {
 			}
 
 			const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
-			if (await fs.pathExists(packageJsonPath)) {
+			if (!file && (await fs.pathExists(packageJsonPath))) {
 				const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
 				if (packageJson?.dependencies?.[project]) {
 					delete packageJson.dependencies[project];
@@ -1398,11 +1398,11 @@ async function dropComponent(req) {
 				await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
 			}
 
-			configUtils.deleteConfigFromFile([project]);
+			if (!file) configUtils.deleteConfigFromFile([project]);
 			// The main thread's cached config still names the project; the restart below installs every
 			// package application in that cache, and installing this one would take the lock held here.
 			// (A worker's RESTART message refreshes main's config the same way.)
-			if (isMainThread) env.initSync(true);
+			if (!file && isMainThread) env.initSync(true);
 			response = await server.replication.replicateOperation(req);
 			const { applicationHasBranchStorage, removeBranchesForApplication } = require('../resources/branchDatabase.ts');
 			const branched = !file && applicationHasBranchStorage(project);

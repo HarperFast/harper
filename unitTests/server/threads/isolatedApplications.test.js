@@ -11,6 +11,7 @@ const iso = () => require('#src/server/threads/isolatedApplications');
 const application = () => require('#src/components/Application');
 const http = () => require('#src/server/http');
 const threads = () => require('#src/server/threads/manageThreads');
+const restart = () => require('#src/bin/restart');
 
 const CONFIG = {
 	'shared': { package: 'x' },
@@ -142,6 +143,13 @@ describe('isolated applications (harper#642 tier 2)', () => {
 				threads().decodeRestartScope({}),
 				'*',
 				'a message with no scope, as every pre-existing sender, means all'
+			);
+		});
+
+		it('rejects a malformed scope before selecting workers', async () => {
+			await assert.rejects(
+				() => restart().restartService({ service: 'http', scope: null }),
+				/Invalid HTTP worker restart scope/
 			);
 		});
 	});

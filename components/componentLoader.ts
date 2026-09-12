@@ -32,7 +32,7 @@ import { restartWorkers, getWorkerIndex } from '../server/threads/manageThreads.
 import { resetRestartNeeded, subscribeToRestartRequests } from './requestRestart.ts';
 import { trackScopeClose } from './scopeShutdown.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
-import { assertBranchedDatabases } from './Application.ts';
+import { assertBranchedDatabases, assertIsolationConfig } from './Application.ts';
 import { prepareBranches } from '../resources/branchDatabase.ts';
 import {
 	isIsolatedApplication,
@@ -175,6 +175,12 @@ function rootConfigBranchedDatabases(appName: string): string[] | true | undefin
  */
 function placedOnThisThread(appName: string): boolean {
 	if (Object.hasOwn(TRUSTED_RESOURCE_PLUGINS, appName)) return true;
+	try {
+		assertIsolationConfig(appName, (getConfigObj()?.[appName] as any)?.isolated);
+	} catch (error) {
+		componentLifecycle.failed(appName, error, `Component '${appName}' failed to load`);
+		return false;
+	}
 	if (isIsolatedApplication(appName) && isMainThread && getWorkerIndex() === 0) {
 		componentLifecycle.failed(
 			appName,

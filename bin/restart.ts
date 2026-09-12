@@ -193,6 +193,16 @@ async function restartService(req: any) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 	const requestedScope = decodeRestartScope(req);
+	if (requestedScope !== undefined && typeof requestedScope !== 'string') {
+		throw handleHDBError(
+			new Error(),
+			'Invalid HTTP worker restart scope: expected a string',
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
 	if (typeof requestedScope === 'string' && requestedScope !== '*' && req.scopeFallback === undefined) {
 		envMgr.initSync(true);
 		const { isIsolatedApplication } = await import('../server/threads/isolatedApplications.ts');

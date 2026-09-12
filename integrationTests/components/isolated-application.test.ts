@@ -183,6 +183,26 @@ suite(
 			strictEqual(gone.status, 404);
 		});
 
+		test('dropping one file preserves isolation and restarts only the dedicated worker', async () => {
+			const beforeList = await threads(ctx);
+			const isolatedBefore = dedicated(beforeList)[0].threadId;
+			const poolBefore = pool(beforeList);
+
+			await sendOperation(ctx.harper, {
+				operation: 'drop_component',
+				project: 'isolated-app',
+				file: 'drop-me.txt',
+				restart: true,
+			});
+
+			const afterList = await threads(ctx);
+			deepStrictEqual(pool(afterList), poolBefore, 'the pool was not restarted');
+			strictEqual(dedicated(afterList).length, 1, 'the application remains isolated');
+			ok(dedicated(afterList)[0].threadId !== isolatedBefore, 'the dedicated worker was replaced');
+			const publicRoute = await fetch(new URL('/Isolated/probe', ctx.harper.httpURL));
+			strictEqual(publicRoute.status, 404, 'the remaining application was not exposed on the shared port');
+		});
+
 		test('dropping the isolated application stops its worker and restarts nothing else', async () => {
 			const beforeList = await threads(ctx);
 			const poolBefore = pool(beforeList);

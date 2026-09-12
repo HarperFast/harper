@@ -409,6 +409,20 @@ describe('ComponentLoader Status Integration', function () {
 			assert.ok(failure, 'reported as a failed load');
 			assert.match(failure.args[1].message, /threads\.count is 0/);
 		});
+
+		it('fails a malformed isolation setting closed instead of loading it in the pool', async function () {
+			configUtils.getConfigObj.returns({ [isoName]: { isolated: 'true' } });
+			setMainIsWorker(false);
+			try {
+				await componentLoader.loadComponentDirectories(new Map(), { isWorker: true, set() {} }, new WeakMap());
+			} finally {
+				setMainIsWorker(mainWasWorker);
+			}
+			assert.strictEqual(isoStarts, 0);
+			const failure = lifecycle.failed.getCalls().find((call) => call.args[0] === isoName);
+			assert.ok(failure, 'reported as a failed load');
+			assert.match(failure.args[1].message, /expected a boolean/);
+		});
 	});
 
 	describe('deploy lifecycle listener lifecycle (#1462)', function () {
