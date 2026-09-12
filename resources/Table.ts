@@ -2165,7 +2165,9 @@ export function makeTable(options) {
 					});
 				}
 			}
-			return when(this._writeUpdate(id, (this.#changes ??= Object.create(null)), fullUpdate), () => this);
+			// Leave an untouched update lazy until validation; #saveOperation captures a selected
+			// generation before another update() can replace its changes (notably on LMDB).
+			return when(this._writeUpdate(id, this.#changes, fullUpdate), () => this);
 		}
 
 		/**
@@ -2251,6 +2253,11 @@ export function makeTable(options) {
 			}
 		}
 		#saveOperation(operation: any) {
+			// LMDB validates staged writes at transaction commit, after save() returns. Bind a lazy
+			// update's changes when this generation is selected for saving so a later update() on the
+			// same instance cannot replace them. Framework-created post/publish updates that are never
+			// saved stay lazy: an untouched one remains a no-op instead of becoming an eager empty patch.
+			operation.captureChanges?.();
 			const transaction = txnForContext(this.getContext());
 			const holder = operation.stagedIn;
 			// never-drop-on-conflict lives on the transaction and would not travel with the write, so an
@@ -3024,8 +3031,11 @@ export function makeTable(options) {
 				// are ordinary and must not carry an unrelated hold's handle.
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
 				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
+				captureChanges: () => {
+					if (recordUpdate === undefined) recordUpdate = this.#changes;
+				},
 				validate: (txnTime, committedBy = transaction) => {
-					if (!recordUpdate) recordUpdate = this.#changes;
+					write.captureChanges();
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();

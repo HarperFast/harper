@@ -53,11 +53,11 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 					return attribute.resolve(this, this.getContext?.());
 				},
 				set(related) {
-					assertWritable(this);
 					// Unlike the struct-prototype accessor (which tolerates a stored collision so a record can
 					// still load), this is a user assignment to a resolved attribute, and a read-only resolver
 					// (a scalar @computed has no attribute.set) has nowhere to put it (harper#2359).
 					if (!attribute.set) throw new ClientError(`${name} is a computed attribute and can not be assigned`);
+					assertWritable(this);
 					return attribute.set(this, related);
 				},
 				configurable: true,
