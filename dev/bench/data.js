@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789197415510,
+  "lastUpdate": 1789204070851,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -17201,6 +17201,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 614535,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b701ada487c3d998f105ca5e5875732b28862ef8",
+          "message": "Merge pull request #2574 from HarperFast/kris/derived-runtime-lock-wait\n\nTemporarily take the derived-index runner lock without an unlock callback (rocksdb-js#848 workaround)",
+          "timestamp": "2026-09-12T03:49:14Z",
+          "url": "https://github.com/HarperFast/harper/commit/b701ada487c3d998f105ca5e5875732b28862ef8"
+        },
+        "date": 1789204068683,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 17669,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 16844,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 15214,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 33642176,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 3300,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 652935,
             "unit": "ops"
           }
         ]
