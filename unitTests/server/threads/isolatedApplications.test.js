@@ -151,6 +151,14 @@ describe('isolated applications (harper#642 tier 2)', () => {
 				() => restart().restartService({ service: 'http', scope: null }),
 				/Invalid HTTP worker restart scope/
 			);
+			await assert.rejects(
+				() => restart().restartService({ service: 'http', scope: 'iso-one', scopeFallback: null }),
+				/Invalid HTTP worker restart scope fallback/
+			);
+			await assert.rejects(
+				() => restart().restartService({ service: 'http', scope: 'iso-one', scopeFallback: 'iso-two' }),
+				/Invalid HTTP worker restart scope fallback/
+			);
 		});
 	});
 

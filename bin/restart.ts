@@ -203,6 +203,20 @@ async function restartService(req: any) {
 			true
 		);
 	}
+	let fallbackScope;
+	if (req.scopeFallback !== undefined) {
+		fallbackScope = decodeRestartScope({ scope: req.scopeFallback });
+		if (fallbackScope !== undefined) {
+			throw handleHDBError(
+				new Error(),
+				'Invalid HTTP worker restart scope fallback: expected the pool scope',
+				HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+	}
 	if (typeof requestedScope === 'string' && requestedScope !== '*' && req.scopeFallback === undefined) {
 		envMgr.initSync(true);
 		const { isIsolatedApplication } = await import('../server/threads/isolatedApplications.ts');
@@ -306,7 +320,7 @@ async function restartService(req: any) {
 				let scope = requestedScope;
 				if (req.scopeFallback !== undefined && typeof scope === 'string' && scope !== '*') {
 					const runningApplications = await getRunningIsolatedApplications();
-					if (!runningApplications.includes(scope)) scope = decodeRestartScope({ scope: req.scopeFallback });
+					if (!runningApplications.includes(scope)) scope = fallbackScope;
 				}
 				await restartWorkers('http', undefined, true, null, scope);
 			}
