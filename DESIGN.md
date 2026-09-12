@@ -137,7 +137,9 @@ Before this (harper#1968), every write diffed against the pre-transaction record
 
 The chain only describes reality if **staging order is also execution order**, and on RocksDB two things used to break that. `addWrite` runs a write's commit handler immediately unless the write sets `deferSave`; `_writeUpdate` does set it and depends on `resource.save()` to run the write, and the source/replication apply path calls `_writeUpdate` directly and never calls `save()` (`replayLogs` does, explicitly). So an apply-path put executes in the commit loop while a delete executes at staging time, whichever was staged first. And the apply loop itself dispatches each record's `writeUpdate()` without awaiting; that function suspends on an async record load (RocksDB `get` is synchronous only on a block-cache hit), so within one transaction a warm key can reach `addWrite` before a cold key that arrived earlier. A leader's `delete K; put K` then staged as `put K; delete K` and executed as `delete K; put K` with neither write chained to the other — both diffed against the pre-transaction record, the delete removed **every** index entry for the record and the put, whose indexed values matched that same record, did no index work at all and re-stored the record. Live record, no index entries, permanent (harper#2211).
 
-Both orders are now pinned. `addWrite` defers a write whose earlier same-key write has not run yet, but **only for writes that both consume `priorStagedWrite()` and publish `stagedEntry`** — marked `chainsStagedState`, today just the delete write. `_writeInvalidate`/`_writeRelocate`/`_writePublish` do neither, so reordering them past a staged put would hand them a pre-transaction basis they have no way to correct; they keep their eager save. And the apply loop's `stageWrite` chains the writes to any one key through a per-transaction map so staging order is arrival order, dropping settled entries (a bulk transaction retains one entry per in-flight write, not per record) and short-circuiting successors when a predecessor rejects. LMDB was never exposed: `LMDBTransaction.addWrite` defers every write and has always executed them in `this.writes` order.
+Both orders are now pinned. `addWrite` defers a write whose earlier same-key write has not run yet, but **only for writes that both consume `priorStagedWrite()` and publish `stagedEntry`** — marked `chainsStagedState`, today the update and delete writes. `DatabaseTransaction.save()` applies the same rule when an explicit `resource.save()` bypasses `addWrite`: it drains that operation's unsaved predecessor chain oldest-first into the same native transaction before saving the requested write. `_writeInvalidate`/`_writeRelocate`/`_writePublish` consume and publish neither staged record state, so reordering them past a staged put would hand them a pre-transaction basis they have no way to correct; they keep their eager save. And the apply loop's `stageWrite` chains the writes to any one key through a per-transaction map so staging order is arrival order, dropping settled entries (a bulk transaction retains one entry per in-flight write, not per record) and short-circuiting successors when a predecessor rejects. LMDB was never exposed to the storage-order inversion: `LMDBTransaction.addWrite` defers every write and has always executed them in `this.writes` order.
+
+An ordinary tracked update instance represents one staged write at a time. Once its write is selected for saving — explicitly, as an explicit save's predecessor, or by transaction commit — its direct and lazily tracked nested mutation surfaces throw 409 until `update()` stages a fresh write. Reads remain valid. Record-lock instances retain their separate lifecycle because scoped and held locks deliberately reuse the same instance and lock handle across explicit update/save cycles.
 
 Two consequences of that scoping are worth knowing, both pre-existing and neither closed by the ordering fix. `_writeRelocate` still saves eagerly, so a replicated `put K; relocate K` where the residency list excludes this host strips K to its indexed-attribute stub first and then re-stores the **full record** — content retained on a node the residency policy excludes; `_writeInvalidate` has the milder form (a lost invalidation, so stale reads until TTL). Closing those means teaching both handlers `priorStagedWrite()`/`stagedEntry` and then flagging them, not simply deferring them. Separately, the apply loop's per-key chain narrows but does not close the cross-key escape: in `{put A, delete B}` where A's resource load rejects and B's is slow, the abort lands at `end_txn` and B's continuation then reaches `addWrite` on a CLOSED transaction, where `save()` commits it alone.
 
@@ -573,6 +575,28 @@ load validation against _that_ tree, and only then activates it. Activation is o
 transaction over two effects: the live tree moves into `.deploy-aside`, then the candidate is renamed
 into the live path.
 
+**Both renames wait out a holder, and the wait happens with the previous version in place.** Windows
+refuses a rename outright (`EPERM`) while anything holds a handle in the source tree, which is what
+`deploy_component` hit on the Windows nightly, on the swap itself. The holder was never identified —
+every Harper-held handle on the candidate is closed before the swap, so it is something outside the
+process, but that is inference, not evidence. `renameThroughTransientHolder` retries every rename in
+the activation transaction and its recovery with capped exponential backoff against a five-second
+deadline. The deadline is per top-level rename, not per activation: a redeploy held up the whole way
+spends up to five seconds each on the move-aside, the swap, and the compensating restore. A rename
+performed from inside a backoff shares its caller's deadline rather than opening a fourth.
+
+The swap's backoff is not a plain sleep: it renames the aside back to the live path, waits there, and
+displaces it again for the next attempt, so the component is missing for one rename rather than for the
+budget. Note what that does and does not buy. Watchers are NOT the beneficiary — `Scope` pauses every
+`EntryHandler` for the duration of a deploy, so an absent tree is never reported as `unlinkDir`, and
+the post-deploy resume diffs against the finished tree. What the put-back protects is everything that
+reads the live path directly: a component reading its own files, a lazily imported module, a concurrent
+scan of the components root, and any thread whose pause the best-effort deploy broadcast did not reach.
+
+The retry set is `EPERM`/`EACCES`/`EBUSY` only: a destination that exists is structural state nothing
+here clears between attempts, and `settleInterruptedActivation` already fails that case closed rather
+than guessing which tree is current.
+
 The ordering is the design. Two things used to be wrong in a way each other hid:
 
 - **The live tree was moved aside first**, so the component was broken for the whole extract +
@@ -725,12 +749,20 @@ Every npm install Harper invokes directly — automatic component installation a
 `install_node_modules` operation alike — composes its arguments in `packageManagerInstallArguments()`,
 which is production-only and adds `--omit=dev --no-audit --no-fund`. `--no-audit` is load-bearing, not
 hygiene: npm 10 puts even a `file:` link into its audit bulk request, and the registry's answer to that
-is unbounded from Harper's side.
+is unbounded from Harper's side. The operation accepts the established `install_allow_scripts`
+spelling (and `allowInstallScripts` for compatibility), defaulting to its historical `true`; false
+reaches the shared builder and adds `--ignore-scripts`.
 `installApplication()` skips the package-manager child entirely when the root manifest declares no
 production dependencies, non-empty workspaces, or enabled install lifecycle. An explicitly selected
 non-npm manager still runs so it can discover workspace configuration outside `package.json`, and it
 retains its own install defaults. A configured `install_command` remains the explicit escape hatch for
-build-time tooling. `readInstalledPackageMetadata()` must use the same automatic-work predicate so a
+build-time tooling, but not for lifecycle-script policy: unless `install_allow_scripts` is true, its
+spawn gets `npm_config_ignore_scripts=true`, which covers npm nested anywhere in the command without
+adding an argument that could break non-npm tooling. The setting uses npm's configuration namespace;
+other package managers that consume `npm_config_*` options can honor it too. When the policy is
+omitted, Harper warns that package lifecycle scripts—including `npm run` pre/post hooks—are suppressed
+and names both the operations-API and root-config opt-ins.
+`readInstalledPackageMetadata()` must use the same automatic-work predicate so a
 dev-only npm manifest does not force a restart on every redeploy for lacking a lockfile while an
 explicit non-npm workspace install still does. Absolute local archives are classified before
 package-protocol detection: a Windows drive letter's colon is path syntax, not an npm protocol. File
