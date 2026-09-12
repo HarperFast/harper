@@ -138,7 +138,7 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		assert.strictEqual(await Redeclared.get(1), null);
 	});
 
-	it('arms one @expiresAt interval initially and when a live isolated table already owns TTL', () => {
+	it('arms one @expiresAt interval initially and when a live table gains the attribute', () => {
 		const originalSetInterval = global.setInterval;
 		let expirationIntervals = 0;
 		global.setInterval = (callback, delay, ...args) => {
@@ -178,6 +178,22 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 				],
 			});
 			assert.strictEqual(expirationIntervals, before + 1);
+
+			table({
+				table: 'ExpiresAtAddedToSharedTable',
+				database: 'test',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const beforeSharedRedeclaration = expirationIntervals;
+			table({
+				table: 'ExpiresAtAddedToSharedTable',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'expiresAt', expiresAt: true, indexed: true },
+				],
+			});
+			assert.strictEqual(expirationIntervals, beforeSharedRedeclaration + 1);
 		} finally {
 			global.setInterval = originalSetInterval;
 		}

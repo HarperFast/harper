@@ -331,20 +331,20 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 			const error = new Error(`HTTP worker slot ${index} exhausted restarts (thread ${lastThreadId})`);
 			if (waitingForInitialReady) failStartup(error);
 			else if (application && isolatedSlot && isolatedSlots.get(application) === isolatedSlot) {
-				const exhaustedSlot = isolatedSlot;
+				isolatedSlots.delete(application);
 				componentLifecycle.failed(application, error, `Component '${application}' worker failed`);
 				void import('../http.ts').then(
 					({ cleanupApplicationSockets }) => {
-						if (isolatedSlots.get(application) !== exhaustedSlot) return;
+						// A config reconciliation may already have installed a replacement after the
+						// exhausted slot released its lease. Never unlink that replacement's mirror.
+						if (isolatedSlots.has(application)) return;
 						cleanupApplicationSockets(application);
-						isolatedSlots.delete(application);
 					},
 					(cleanupError) => {
 						harperLogger.error(
 							`Could not clean sockets for failed isolated application '${application}'`,
 							cleanupError
 						);
-						if (isolatedSlots.get(application) === exhaustedSlot) isolatedSlots.delete(application);
 					}
 				);
 			}

@@ -5,7 +5,11 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { SERVERS } = require('#src/server/serverRegistry');
-const { listenOnDomainSocket, listenOnPorts } = require('#src/server/threads/threadServer');
+const {
+	listenOnDomainSocket,
+	listenOnPorts,
+	shouldStartGlobalUwsServers,
+} = require('#src/server/threads/threadServer');
 const { getDomainSocketPathMaxBytes } = require('#src/utility/domainSocket');
 
 /**
@@ -50,5 +54,10 @@ describe('threadServer listenOnPorts — domain socket fail-soft', () => {
 		failingServer = net.createServer();
 		SERVERS[failingSocketPath] = failingServer;
 		await assert.rejects(listenOnPorts());
+	});
+
+	it('reserves global uWS listeners for the pool', () => {
+		assert.strictEqual(shouldStartGlobalUwsServers(undefined), true);
+		assert.strictEqual(shouldStartGlobalUwsServers('isolated-app'), false);
 	});
 });

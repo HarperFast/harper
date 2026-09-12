@@ -3100,12 +3100,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
-	if (
-		expiration ||
-		eviction ||
-		scanInterval ||
-		(isolatedApplicationOwner && attributes.some((attribute) => attribute.expiresAt))
-	)
+	if (expiration || eviction || scanInterval || attributes.some((attribute) => attribute.expiresAt))
 		Table.setTTLExpiration({
 			expiration,
 			eviction,
