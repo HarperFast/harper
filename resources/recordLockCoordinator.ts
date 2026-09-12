@@ -1079,8 +1079,13 @@ export class LockCoordinator {
 	#releaseUnclaimedGrant(key: any, token: FencingToken): void {
 		const keyId = this.#keyIdOf(key);
 		const held = this.#delegations.get(keyId);
-		// Only if we did not end up installing it for ourselves after all.
-		if (held && compareTokens(held.token, token) === 0) return;
+		// ANY live delegation for this key means this node is using it, and the tokens need not match.
+		// A duplicate or delayed request from this node renews the home's grant IN PLACE (`#grant`'s
+		// renewal branch mutates `existing.token`), so the home can hold a newer token than the one we
+		// installed. Releasing that token would clear the grant still backing our own live delegation
+		// and let the home hand the key to another node while we are inside it. Comparing tokens here
+		// caught only the case where we installed this exact grant.
+		if (held) return;
 		this.#writeControlSafely({ type: 'lockRelease', key, requester: this.nodeId, token });
 		const grant = this.#grants.get(keyId);
 		if (grant && grant.delegate === this.nodeId && compareTokens(grant.token, token) === 0)
