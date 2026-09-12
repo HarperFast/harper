@@ -274,6 +274,9 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 		threadCount,
 		application,
 		heapShareCount,
+		shouldAutoRestart: application
+			? () => isolatedSlot !== undefined && isolatedSlots.get(application) === isolatedSlot
+			: undefined,
 		onStarted(worker) {
 			const attempt = ++startupAttempts;
 			const threadId = (lastThreadId = worker.threadId);
@@ -349,11 +352,15 @@ function startHTTPWorker(index, threadCount = 1, application?: string, heapShare
 	startWorker(join(__dirname, './threadServer.js'), workerOptions);
 	// Stop of a dedicated worker whose application is gone: every worker carrying the application,
 	// a crashed one's replacement still booting included, so none is left running the removed app.
-	const shutdown = async (): Promise<void> => {
-		if (!application) return;
-		// a slot still booting must settle its readiness, or the reconcile awaiting it hangs
+	let shutdownPromise: Promise<void> | undefined;
+	const shutdown = (): Promise<void> => {
+		if (!application) return Promise.resolve();
+		if (shutdownPromise) return shutdownPromise;
+		shutdownPromise = Promise.all(workersForApplication(application).map((worker) => stopWorker(worker))).then(
+			() => undefined
+		);
 		failStartup(new Error(`Dedicated worker for '${application}' was stopped before it became ready`));
-		await Promise.all(workersForApplication(application).map((worker) => stopWorker(worker)));
+		return shutdownPromise;
 	};
 	const setHeapShareCount = (count: number) => {
 		workerOptions.heapShareCount = count;

@@ -115,4 +115,26 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await Table.primaryStore.committed;
 		assert.strictEqual(await Table.get(1), null);
 	});
+
+	it('refreshes @expiresAt behavior when a live table is redeclared', async function () {
+		const Table = table({
+			table: 'ExpiresAtRedeclared',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const Redeclared = table({
+			table: 'ExpiresAtRedeclared',
+			database: 'test',
+			isolatedApplicationOwner: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'expiresAt', expiresAt: true, indexed: true },
+			],
+		});
+		assert.strictEqual(Redeclared, Table);
+		const expiresAt = Date.now() - 1_000;
+		await Redeclared.put(1, { id: 1, expiresAt });
+		assert.strictEqual(await storedExpiresAt(Redeclared, 1), expiresAt);
+		assert.strictEqual(await Redeclared.get(1), null);
+	});
 });

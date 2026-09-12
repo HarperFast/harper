@@ -1369,10 +1369,20 @@ async function dropComponent(req) {
 	const componentsRoot = configUtils.getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const componentPath = path.join(componentsRoot, project);
 	const pathToComponent = path.join(componentsRoot, projectPath);
-	// Read before a full drop removes the config entry; a file drop retains it and the same restart scope.
-	const { isIsolatedApplication } = require('../server/threads/isolatedApplications.ts');
-	env.initSync(true);
-	const restartScope = isIsolatedApplication(project) ? project : undefined;
+	let restartScope;
+	if (req.restart === true) {
+		let runningApplications;
+		try {
+			runningApplications = await manageThreads.getRunningIsolatedApplications(ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS);
+		} catch (error) {
+			throw handleHDBError(
+				error,
+				`Cannot drop '${project}' with a restart: the main thread's worker topology is unavailable: ${error.message}`,
+				HTTP_STATUS_CODES.SERVICE_UNAVAILABLE
+			);
+		}
+		if (runningApplications.includes(project)) restartScope = project;
+	}
 
 	let response;
 	await withComponentPreparationLock(
@@ -1399,9 +1409,6 @@ async function dropComponent(req) {
 			}
 
 			if (!file) configUtils.deleteConfigFromFile([project]);
-			// The main thread's cached config still names the project; the restart below installs every
-			// package application in that cache, and installing this one would take the lock held here.
-			// (A worker's RESTART message refreshes main's config the same way.)
 			if (!file && isMainThread) env.initSync(true);
 			response = await server.replication.replicateOperation(req);
 			const { applicationHasBranchStorage, removeBranchesForApplication } = require('../resources/branchDatabase.ts');

@@ -577,6 +577,7 @@ async function listenOnPortsBun() {
 			}
 		} catch (error) {
 			harperLogger.error(`Unable to start Bun server on port ${port}`, error);
+			if (thisThreadsIsolatedApplication()) throw error;
 		}
 	}
 	// Also start any non-HTTP servers (raw socket servers) that were registered in SERVERS

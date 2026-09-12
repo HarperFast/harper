@@ -5,6 +5,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
+const { once } = require('node:events');
 // Required lazily, inside the tests: loading these module graphs at file load time would install real
 // loggers before sibling suites in the same mocha process (dataLoader) stub theirs.
 const iso = () => require('#src/server/threads/isolatedApplications');
@@ -159,6 +160,24 @@ describe('isolated applications (harper#642 tier 2)', () => {
 				() => restart().restartService({ service: 'http', scope: 'iso-one', scopeFallback: 'iso-two' }),
 				/Invalid HTTP worker restart scope fallback/
 			);
+		});
+	});
+
+	describe('worker slot lifetime', () => {
+		it('does not auto-restart a worker after its owner withdraws the slot lease', async () => {
+			let starts = 0;
+			let restartChecks = 0;
+			const worker = threads().startWorker(require.resolve('./fixtures/exitImmediately.cjs'), {
+				onStarted: () => starts++,
+				shouldAutoRestart: () => {
+					restartChecks++;
+					return false;
+				},
+			});
+			await once(worker, 'exit');
+			await new Promise(setImmediate);
+			assert.strictEqual(restartChecks, 1);
+			assert.strictEqual(starts, 1, 'the withdrawn slot did not create a replacement');
 		});
 	});
 
