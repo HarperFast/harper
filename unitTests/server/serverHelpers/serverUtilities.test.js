@@ -33,6 +33,14 @@ describe('Test serverUtilities.js module ', () => {
 		sandbox.restore();
 	});
 
+	it('attaches every built-in operation schema to its live registry entry', function () {
+		const { isOperationAllowed } = require('#src/components/mcp/tools/operations');
+		for (const [name, operation] of serverUtilities.OPERATION_FUNCTION_MAP) {
+			if (!isOperationAllowed(name, {})) continue;
+			assert.ok(operation.inputSchema, `default-allowed operation '${name}' must carry an input schema`);
+		}
+	});
+
 	describe(`Test chooseOperation`, function () {
 		it('Nominal path with insert operation.', function () {
 			let test_result;
@@ -256,18 +264,87 @@ describe('Test serverUtilities.js module ', () => {
 		const RETRACTED = 'test_cross_thread_retracted_op';
 		const ZOMBIE = 'test_cross_thread_zombie_op';
 		const FAILED_SEND = 'test_cross_thread_failed_send_op';
+		const SCHEMA = 'test_cross_thread_schema_op';
 		// Thread-exit tombstones are permanent and process-global, so synthetic ids must be ones the
 		// runtime will never assign to a real worker.
 		const DECLARING_THREAD = 9_000_061;
 		const ROUTING_THREAD = 9_000_062;
 		const DEAD_THREAD = 9_000_071;
 		const SENDER_THREAD = 9_000_081;
+		const SCHEMA_THREAD = 9_000_091;
+		const ROLLING_SCHEMA_THREAD = 9_000_092;
+		const MISSING_SCHEMA_THREAD = 9_000_093;
+		const REORDERED_SCHEMA_THREAD = 9_000_094;
+		const INVALID_SCHEMA_THREAD = 9_000_095;
 
 		after(function () {
-			for (const op of [GRANTABLE, PLAIN, SHARED, ROLLED, RETRACTED, ZOMBIE, FAILED_SEND]) {
+			for (const op of [GRANTABLE, PLAIN, SHARED, ROLLED, RETRACTED, ZOMBIE, FAILED_SEND, SCHEMA]) {
 				unregisterWorkerGrantableOperation(op);
 				unregisterGrantableOperation(op);
 			}
+			manageThreads.notifyThreadExit(SCHEMA_THREAD);
+		});
+
+		it('mirrors a worker operation input schema to the main thread', function () {
+			const inputSchema = { type: 'object', properties: { value: { type: 'string' } } };
+			registeredOperations.operationRegisteredHandler({
+				message: { name: SCHEMA, inputSchema, originator: SCHEMA_THREAD },
+			});
+
+			assert.deepEqual(
+				registeredOperations.getRemoteOperationInputSchemas().find(([name]) => name === SCHEMA),
+				[SCHEMA, { inputSchema }]
+			);
+		});
+
+		it('withholds a schema while live workers disagree during a rolling deploy', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: {
+					name: SCHEMA,
+					inputSchema: { type: 'object', properties: { changed: { type: 'boolean' } } },
+					originator: REORDERED_SCHEMA_THREAD,
+				},
+			});
+			assert.deepEqual(registeredOperations.getRemoteOperationInputSchema(SCHEMA), { issue: 'inconsistent' });
+
+			manageThreads.notifyThreadExit(REORDERED_SCHEMA_THREAD);
+			assert.deepEqual(registeredOperations.getRemoteOperationInputSchema(SCHEMA), {
+				inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+			});
+		});
+
+		it('treats schemas with different key order as equivalent', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: {
+					name: SCHEMA,
+					inputSchema: { properties: { value: { type: 'string' } }, type: 'object' },
+					originator: ROLLING_SCHEMA_THREAD,
+				},
+			});
+			assert.deepEqual(registeredOperations.getRemoteOperationInputSchema(SCHEMA), {
+				inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+			});
+			manageThreads.notifyThreadExit(ROLLING_SCHEMA_THREAD);
+		});
+
+		it('withholds a schema when one live worker has none', function () {
+			registeredOperations.operationRegisteredHandler({
+				message: { name: SCHEMA, originator: MISSING_SCHEMA_THREAD },
+			});
+			assert.deepEqual(registeredOperations.getRemoteOperationInputSchema(SCHEMA), { issue: 'missing' });
+			manageThreads.notifyThreadExit(MISSING_SCHEMA_THREAD);
+		});
+
+		it('does not throw when a worker announces an uncanonicalizable schema', function () {
+			const circular = { type: 'object' };
+			circular.self = circular;
+			assert.doesNotThrow(() =>
+				registeredOperations.operationRegisteredHandler({
+					message: { name: SCHEMA, inputSchema: circular, originator: INVALID_SCHEMA_THREAD },
+				})
+			);
+			assert.deepEqual(registeredOperations.getRemoteOperationInputSchema(SCHEMA), { issue: 'missing' });
+			manageThreads.notifyThreadExit(INVALID_SCHEMA_THREAD);
 		});
 
 		it('makes a worker-announced declared op grantable on the main thread', function () {
@@ -1016,6 +1093,110 @@ describe('Test serverUtilities.js module ', () => {
 			// ...and the caller's own function object is left untouched.
 			assert.equal(def.execute, original);
 			assert.notEqual(original.name, 'test_name_pinning_op');
+		});
+
+		it('stores a validated clone of registered operation inputSchema metadata', function () {
+			const name = 'test_schema_metadata_op';
+			const inputSchema = { type: 'object', properties: { value: { type: 'string' } } };
+			server.registerOperation({ name, execute: async () => ({}), inputSchema });
+			inputSchema.properties.value.type = 'number';
+
+			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, {
+				type: 'object',
+				properties: { value: { type: 'string' } },
+			});
+			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+		});
+
+		it('uses the shipped schema when a named operation omits inputSchema', function () {
+			const { OPERATION_INPUT_SCHEMAS } = require('#src/server/serverHelpers/operationInputSchemas');
+			const name = 'get_metrics';
+			server.registerOperation({ name, execute: async () => ({}) });
+
+			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, OPERATION_INPUT_SCHEMAS[name]);
+			assert.notEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, OPERATION_INPUT_SCHEMAS[name]);
+			server.registerOperation({ name, execute: async () => ({}) });
+			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, OPERATION_INPUT_SCHEMAS[name]);
+			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+		});
+
+		it('prefers an explicit inputSchema over the shipped schema', function () {
+			const name = 'get_metrics';
+			const inputSchema = { type: 'object', properties: { custom: { type: 'string' } } };
+			server.registerOperation({ name, execute: async () => ({}), inputSchema });
+
+			assert.deepEqual(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, inputSchema);
+			serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+		});
+
+		it('does not inherit a built-in schema when a component replaces that operation', function () {
+			const name = 'search_by_value';
+			const original = serverUtilities.OPERATION_FUNCTION_MAP.get(name);
+			server.registerOperation({ name, execute: async () => ({}) });
+
+			assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema, undefined);
+			serverUtilities.OPERATION_FUNCTION_MAP.set(name, original);
+		});
+
+		it('accepts common JSON Schema dialects on registered operations', function () {
+			for (const [name, schemaId, canonicalSchemaId] of [
+				[
+					'test_draft_06_schema_op',
+					'http://json-schema.org/draft-06/schema#',
+					'http://json-schema.org/draft-06/schema#',
+				],
+				[
+					'test_draft_07_schema_op',
+					'https://json-schema.org/draft-07/schema',
+					'http://json-schema.org/draft-07/schema#',
+				],
+				[
+					'test_draft_2019_schema_op',
+					'https://json-schema.org/draft/2019-09/schema',
+					'https://json-schema.org/draft/2019-09/schema',
+				],
+				[
+					'test_draft_2020_schema_op',
+					'https://json-schema.org/draft/2020-12/schema',
+					'https://json-schema.org/draft/2020-12/schema',
+				],
+			]) {
+				server.registerOperation({
+					name,
+					execute: async () => ({}),
+					inputSchema: { $schema: schemaId, type: 'object' },
+				});
+				assert.equal(serverUtilities.OPERATION_FUNCTION_MAP.get(name).inputSchema.$schema, canonicalSchemaId);
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+			}
+		});
+
+		it('keeps the operation registered when inputSchema metadata is invalid', function () {
+			for (const [name, inputSchema] of [
+				['test_invalid_schema_metadata_op', { type: 'not-a-json-schema-type' }],
+				['test_missing_object_type_schema_op', { properties: { value: { type: 'string' } } }],
+				['test_array_schema_op', { type: 'array', items: { type: 'string' } }],
+				[
+					'test_untrusted_schema_uri_op',
+					{ type: 'object', $schema: 'https://example.com/json-schema.org/draft-07/schema' },
+				],
+				['test_meta_invalid_schema_op', { type: 'object', required: 'value' }],
+				['test_oversized_schema_metadata_op', { type: 'object', description: 'x'.repeat(64 * 1024) }],
+				[
+					'test_circular_schema_metadata_op',
+					(() => {
+						const schema = { type: 'object' };
+						schema.self = schema;
+						return schema;
+					})(),
+				],
+			]) {
+				assert.doesNotThrow(() => server.registerOperation({ name, execute: async () => ({}), inputSchema }));
+				const registered = serverUtilities.OPERATION_FUNCTION_MAP.get(name);
+				assert.ok(registered);
+				assert.equal(registered.inputSchema, undefined);
+				serverUtilities.OPERATION_FUNCTION_MAP.delete(name);
+			}
 		});
 
 		it('does not corrupt authz when one handler function is shared across two op names', function () {

@@ -15,6 +15,7 @@ import { OPERATIONS_ENUM } from '../utility/hdbTerms.ts';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { createSession, getSession, listSessions, appendMessage, resolveApproval, setStatus } from './session.ts';
 import type { AgentConfig, AgentMessage, AgentRunStatus } from './types.ts';
+import { AGENT_OPERATION_INPUT_SCHEMAS } from './operationInputSchemas.ts';
 
 export interface OperationDeps {
 	getConfig: () => AgentConfig;
@@ -28,31 +29,37 @@ export function buildOperations(deps: OperationDeps): OperationDefinition[] {
 		{
 			name: OPERATIONS_ENUM.AGENT_PROMPT,
 			execute: async (op) => agentPrompt(op, deps),
+			inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.agent_prompt,
 			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.GET_AGENT_SESSION,
 			execute: async (op) => getAgentSession(op),
+			inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.get_agent_session,
 			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.LIST_AGENT_SESSIONS,
 			execute: async (op) => listAgentSessions(op),
+			inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.list_agent_sessions,
 			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.CANCEL_AGENT_RUN,
 			execute: async (op) => cancelAgentRun(op, deps),
+			inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.cancel_agent_run,
 			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.APPROVE_AGENT_ACTION,
 			execute: async (op) => approveAgentAction(op, deps),
+			inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.approve_agent_action,
 			requiresSuperUser: true,
 		},
 		{
 			name: OPERATIONS_ENUM.SET_AGENT_CONFIG,
 			execute: async (op) => setAgentConfig(op, deps),
+			inputSchema: AGENT_OPERATION_INPUT_SCHEMAS.set_agent_config,
 			requiresSuperUser: true,
 		},
 	];

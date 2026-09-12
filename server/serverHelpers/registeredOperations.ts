@@ -10,8 +10,8 @@
  * itc/serverHandlers.js), with one deliberate difference: executing an operation is side-effecting,
  * so a request is sent to exactly ONE registering worker (never broadcast-first-wins).
  *
- *  - Worker: `registerOperation()` announces the name (OPERATION_REGISTERED) to all threads;
- *    only the main thread records it, as name -> Set<threadId>, plus `grantable`.
+ *  - Worker: `registerOperation()` sends the name, schema, and `grantable` flag directly to main
+ *    (OPERATION_REGISTERED).
  *  - Main: on an OPERATION_FUNCTION_MAP miss, `getRemoteOperationFunction()` supplies a forwarding
  *    function that sends the request body (OPERATION_EXECUTE_REQUEST) to one live registering
  *    worker and awaits the correlated OPERATION_EXECUTE_RESPONSE.
@@ -25,7 +25,6 @@ import * as terms from '../../utility/hdbTerms.ts';
 import * as env from '../../utility/environment/environmentManager.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
-import { sendItcEvent } from '../threads/itc.js';
 import { hasThreadExited, onMessageByType, onThreadExit } from '../threads/manageThreads.js';
 import {
 	registerWorkerGrantableOperation,
@@ -63,6 +62,9 @@ export function setLocalOperationDispatch(dispatch: typeof localDispatch) {
 
 /** name -> threadIds of workers that registered it (main thread only) */
 const registeredByWorker = new Map<string, Set<number>>();
+type WorkerSchema = { inputSchema?: object; canonical?: string };
+export type RemoteOperationSchema = { inputSchema?: object; issue?: 'missing' | 'inconsistent' };
+const inputSchemaByWorker = new Map<string, Map<number, WorkerSchema>>();
 // Per originator, not per name: a rolling deploy whose new generation drops `requiresSuperUser`
 // must keep routing the name while retracting grantability, which a name-level flag cannot express.
 const grantableByWorker = new Map<string, Set<number>>();
@@ -74,26 +76,30 @@ let nextRequestId = 1;
 let mainListenersAttached = false;
 
 /**
- * Worker side: announce a registration so the main thread can forward calls here. Fire-and-forget —
- * a lost announcement just means the op stays unreachable (the pre-#1736 status quo), and the
- * broadcast has its own ack timeout.
+ * Worker side: send a registration directly to main so calls can be forwarded here. A missing main
+ * port is logged and leaves the operation unreachable there (the pre-#1736 status quo).
  */
-export function announceRegisteredOperation(name: string, grantable = false) {
+export function announceRegisteredOperation(name: string, grantable = false, inputSchema?: object) {
 	if (isMainThread) return;
-	sendItcEvent({
-		type: terms.ITC_EVENT_TYPES.OPERATION_REGISTERED,
-		message: { name, grantable },
-	}).catch((error) => operationLog.error(`Failed to announce registered operation '${name}'`, error));
+	try {
+		const sent = threads.sendToThread(0, {
+			type: terms.ITC_EVENT_TYPES.OPERATION_REGISTERED,
+			message: { name, grantable, inputSchema, originator: threadId },
+		});
+		if (!sent) operationLog.error(`Failed to announce registered operation '${name}' to the main thread`);
+	} catch (error) {
+		operationLog.error(`Failed to announce registered operation '${name}' to the main thread`, error);
+	}
 }
 
 /**
- * ITC handler (all threads receive the broadcast; only main records it).
+ * Main-thread ITC handler for direct worker registration announcements.
  */
 export function operationRegisteredHandler(event: {
-	message?: { name?: string; grantable?: boolean; originator?: number };
+	message?: { name?: string; grantable?: boolean; inputSchema?: object; originator?: number };
 }) {
 	if (!isMainThread) return;
-	const { name, grantable, originator } = event?.message ?? {};
+	const { name, grantable, inputSchema, originator } = event?.message ?? {};
 	if (typeof name !== 'string' || typeof originator !== 'number') return;
 	// An announcement can lose the race with its own thread's exit, and exit notification fires once
 	// per thread, so without this the entry would never be cleaned up. Reads manageThreads' tombstone
@@ -106,6 +112,17 @@ export function operationRegisteredHandler(event: {
 	let workerIds = registeredByWorker.get(name);
 	if (!workerIds) registeredByWorker.set(name, (workerIds = new Set()));
 	workerIds.add(originator);
+	let workerSchemas = inputSchemaByWorker.get(name);
+	if (!workerSchemas) inputSchemaByWorker.set(name, (workerSchemas = new Map()));
+	let workerSchema: WorkerSchema = {};
+	if (inputSchema) {
+		try {
+			workerSchema = { inputSchema, canonical: canonicalJson(inputSchema) };
+		} catch (error) {
+			operationLog.warn(`Ignoring invalid inputSchema announced for '${name}' by thread ${originator}`, error);
+		}
+	}
+	workerSchemas.set(originator, workerSchema);
 	// Mirroring only widens what an allowlist may name; enforcement stays on the worker's
 	// chooseOperation. A re-announcement that drops the permission retracts this thread's claim.
 	setWorkerGrantable(name, originator, grantable === true);
@@ -119,6 +136,7 @@ export function operationRegisteredHandler(event: {
 function handleThreadExit(deadThreadId: number) {
 	for (const [name, workerIds] of registeredByWorker) {
 		if (!workerIds.delete(deadThreadId)) continue;
+		inputSchemaByWorker.get(name)?.delete(deadThreadId);
 		// A surviving worker that never declared a permission must not keep the name admissible.
 		if (workerIds.size === 0) dropRegistration(name);
 		else setWorkerGrantable(name, deadThreadId, false);
@@ -150,8 +168,44 @@ function setWorkerGrantable(name: string, threadId: number, grantable: boolean) 
  */
 function dropRegistration(name: string) {
 	registeredByWorker.delete(name);
+	inputSchemaByWorker.delete(name);
 	grantableByWorker.delete(name);
 	unregisterWorkerGrantableOperation(name);
+}
+
+export function getRemoteOperationInputSchemas(): Array<[string, RemoteOperationSchema]> {
+	if (!isMainThread) return [];
+	return [...registeredByWorker.keys()].map((name) => [name, getRemoteOperationInputSchema(name)!]);
+}
+
+export function getRemoteOperationInputSchema(name: string): RemoteOperationSchema | undefined {
+	if (!isMainThread || !registeredByWorker.has(name)) return undefined;
+	const schemas = inputSchemaByWorker.get(name);
+	if (!schemas?.size) return { issue: 'missing' };
+	let firstSchema: object | undefined;
+	let canonical: string | undefined;
+	for (const workerSchema of schemas.values()) {
+		if (!workerSchema.inputSchema) return { issue: 'missing' };
+		if (canonical === undefined) {
+			firstSchema = workerSchema.inputSchema;
+			canonical = workerSchema.canonical;
+		} else if (workerSchema.canonical !== canonical) {
+			return { issue: 'inconsistent' };
+		}
+	}
+	return { inputSchema: firstSchema };
+}
+
+function canonicalJson(value: object): string {
+	return JSON.stringify(value, (_key, nested) =>
+		nested && typeof nested === 'object' && !Array.isArray(nested)
+			? Object.fromEntries(
+					Object.keys(nested)
+						.sort()
+						.map((key) => [key, nested[key]])
+				)
+			: nested
+	);
 }
 
 let rotation = 0;
@@ -225,6 +279,7 @@ async function executeRemoteOperation(name: string, body: any, bypassAuth: boole
 			// The port is gone, so this thread's claims go with it — grantability included, which
 			// handleThreadExit would otherwise not retract while other workers still route the name.
 			workerIds.delete(targetThreadId);
+			inputSchemaByWorker.get(name)?.delete(targetThreadId);
 			setWorkerGrantable(name, targetThreadId, false);
 			continue;
 		}
