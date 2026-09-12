@@ -435,6 +435,18 @@ export interface LockCoordinatorOptions {
 	autoTick?: boolean;
 }
 
+/**
+ * What a coordinator closed WITHOUT a successor leaves for its eventual replacement, per table.
+ *
+ * `close()` drops the grant table, but the delegations those grants authorize are still live on other
+ * nodes until their own deadlines — closing is a local event that no peer observes. A replacement
+ * built before then must not grant those keys again, and must not restart the counter into tokens the
+ * closed coordinator already issued. The transport's `epoch()` contract covers the same hazard across
+ * a process RESTART; this covers it across an unregister and re-register inside one process, which
+ * `epoch()` cannot see.
+ */
+const retiredCoordinators = new Map<string, { grantableAfterMono: number; counter: number }>();
+
 const tickingCoordinators = new Set<LockCoordinator>();
 let tickTimer: ReturnType<typeof setInterval> | undefined;
 function ensureTicking() {
@@ -545,6 +557,13 @@ export class LockCoordinator {
 		this.#autoTick = options.autoTick !== false;
 		this.#grantableAfterMono = options.grantableAfterMono ?? -Infinity;
 		options.adopt?.handOffTo(this);
+		// After the handoff, which sets both for the adopted case: a predecessor that closed without one
+		// left its outstanding authority here instead, and this coordinator inherits its bounds.
+		const retired = retiredCoordinators.get(this.#retirementKey());
+		if (retired) {
+			this.#counter = Math.max(this.#counter, retired.counter);
+			this.#grantableAfterMono = Math.max(this.#grantableAfterMono, retired.grantableAfterMono);
+		}
 	}
 
 	/**
@@ -642,11 +661,20 @@ export class LockCoordinator {
 
 			// A reply that claims a grant without a usable token is a broken transport, not a delegation.
 			if (reply.granted && reply.token && isDuration(reply.leaseMs, MIN_LOCK_LEASE_MS, DELEGATION_LEASE_MS)) {
-				const installed = authority.#installDelegation(keyId, key, reply.token, reply.leaseMs, requestedAtMono);
-				// A reply that outlived its own delegation grants nothing; fall through and ask again
-				// rather than admitting on authority the home has already expired.
-				if (installed && !installed.recalled && installed.expiresMono - authority.#monotonic() >= leaseMs)
-					return authority.#admit(installed, leaseMs);
+				// The epoch can advance across the await. A grant minted under a superseded one is
+				// authority for a ring that no longer exists: the key may be homed elsewhere now, and that
+				// home can already have granted it to another node. `#liveDelegation` rejects a stale
+				// token on the NEXT pass, which is too late — this pass would have admitted on it first.
+				if (reply.token[0] !== authority.transport.epoch(this.database)?.number) {
+					// Hand it back rather than let the old home hold a key nobody is using for a full lease.
+					authority.#releaseUnclaimedGrant(key, reply.token);
+				} else {
+					const installed = authority.#installDelegation(keyId, key, reply.token, reply.leaseMs, requestedAtMono);
+					// A reply that outlived its own delegation grants nothing; fall through and ask again
+					// rather than admitting on authority the home has already expired.
+					if (installed && !installed.recalled && installed.expiresMono - authority.#monotonic() >= leaseMs)
+						return authority.#admit(installed, leaseMs);
+				}
 			} else if (reply.granted)
 				throw new LockUnavailableError(
 					`The home node for this key on ${this.database}.${this.table} returned a delegation with no usable token`
@@ -785,7 +813,10 @@ export class LockCoordinator {
 				setTimeout(resolve, remaining).unref?.();
 			});
 		}
-		await this.#surrender(keyId, delegation);
+		// The swap may have landed during the drain. The delegation OBJECT moved to the successor, so
+		// surrendering here would revoke through an index this coordinator no longer owns and leave the
+		// successor still holding a delegation whose release has already been written.
+		await this.#authority().#surrender(keyId, delegation);
 	}
 
 	/** Expire delegations and grants whose deadlines have passed. Bounded work per call. */
@@ -843,10 +874,30 @@ export class LockCoordinator {
 				for (const resolve of waiters) resolve();
 			}
 		}
+		// The delegations THIS node issued as a home outlive it: no peer sees a local close, so each one
+		// stands until its own deadline. Leave the latest of those deadlines, and the counter, for
+		// whatever coordinator takes this table next.
+		let grantableAfterMono = -Infinity;
+		for (const grant of this.#grants.values()) {
+			// A grant to THIS node is settled by the same close: the loop above revoked the delegation it
+			// authorized. Only what another node holds outlives this coordinator unseen.
+			if (grant.delegate === this.nodeId) continue;
+			if (grant.expiresMono > grantableAfterMono) grantableAfterMono = grant.expiresMono;
+		}
+		const retirementKey = this.#retirementKey();
+		const retired = retiredCoordinators.get(retirementKey);
+		retiredCoordinators.set(retirementKey, {
+			grantableAfterMono: Math.max(retired?.grantableAfterMono ?? -Infinity, grantableAfterMono),
+			counter: Math.max(retired?.counter ?? 0, this.#counter),
+		});
 		this.#delegations.clear();
 		this.#grants.clear();
 		this.#grantsByRequester.clear();
 		tickingCoordinators.delete(this);
+	}
+
+	#retirementKey(): string {
+		return `${this.database}\u0000${this.table}`;
 	}
 
 	#ringKey(keyId: unknown): string {
@@ -895,10 +946,18 @@ export class LockCoordinator {
 		return { tsR: this.#nextTimestamp(), mintedMono, admissionId };
 	}
 
-	/** Drop admissions whose handle's lease has run out; they can no longer commit anything. */
+	/**
+	 * Drop admissions whose handle's lease has run out; they can no longer commit anything.
+	 *
+	 * Stops at the first entry still inside its lease rather than scanning the whole map. Admissions
+	 * are inserted in monotonic order, so with one lease length that is exact; with mixed lengths a
+	 * long lease in front retains a few expired entries behind it, which the next call collects. The
+	 * alternative — a full scan on every admission — is quadratic on a hot key, which is the one case
+	 * this design exists to make cheap.
+	 */
 	#pruneAdmissions(delegation: Delegation, now: number): void {
 		for (const [admissionId, admission] of delegation.admissions) {
-			if (admission.expiresMono > now) continue;
+			if (admission.expiresMono > now) return;
 			delegation.admissions.delete(admissionId);
 			this.#admissions.delete(admissionId);
 			if (admission.holding) delegation.holding--;

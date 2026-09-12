@@ -36,10 +36,16 @@ const LEASE = 30_000;
 const WAIT = 30_000;
 
 /** A cluster of coordinators exchanging delegation messages in memory. */
+let clusterSequence = 0;
+
 class FakeCluster {
 	constructor(nodeNames, options = {}) {
 		this.tsCounter = 0;
 		this.skewMs = options.skewMs ?? LOCK_LEASE_SKEW_MS;
+		// A distinct table per cluster, because module-level coordinator state — the bound a closed
+		// coordinator leaves its replacement — is correctly keyed by (database, table). One shared name
+		// would let one test's closed coordinator quarantine every later test's grants.
+		this.table = `LockTest${++clusterSequence}`;
 		this.epochNumber = options.epochNumber ?? 1;
 		this.members = [...nodeNames];
 		this.nodes = new Map();
@@ -75,7 +81,7 @@ class FakeCluster {
 		};
 		node.coordinator = new LockCoordinator({
 			database: 'test',
-			table: 'LockTest',
+			table: this.table,
 			nodeId: name,
 			transport: {
 				epoch: () =>
@@ -169,7 +175,7 @@ class FakeCluster {
 	homeOf(key) {
 		// The coordinator hashes database ‖ table ‖ key (§4.5); the harness must scope it identically
 		// or every keyHomedOn() would pick a different node than the coordinator does.
-		return homeFor(ringKeyFor('test', 'LockTest', key), this.members);
+		return homeFor(ringKeyFor('test', this.table, key), this.members);
 	}
 
 	/** A key homed on the given node, found by search so tests never hardcode a hash result. */
@@ -518,7 +524,7 @@ describe('record lock delegations', () => {
 			const predecessor = node.coordinator;
 			const successor = new LockCoordinator({
 				database: 'test',
-				table: 'LockTest',
+				table: cluster.table,
 				nodeId: name,
 				transport: predecessor.transport,
 				writeControl: cluster.writeControlFor(name),
@@ -563,6 +569,49 @@ describe('record lock delegations', () => {
 			handle.release();
 			await cluster.node('gamma').coordinator.acquire(key, LEASE, 5_000);
 			assert.strictEqual(handle.isLeaseExpired(), true, 'no recall could reach the late grant’s handle');
+		});
+
+		it('does not re-grant a key its own closed predecessor still has outstanding', async () => {
+			// Closing is a LOCAL event. `close()` without a successor drops the grant table, but the
+			// delegation it authorized is live on the other node until that node's own deadline, and no
+			// peer saw the close. A replacement built before then must refuse rather than hand the key to
+			// someone else — the transport's epoch contract covers a process restart, not this.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta');
+			const issued = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				epoch: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(issued.granted, true);
+			beta.coordinator.close();
+
+			const replacement = new LockCoordinator({
+				database: 'test',
+				table: cluster.table,
+				nodeId: 'beta',
+				transport: beta.coordinator.transport,
+				writeControl: cluster.writeControlFor('beta'),
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => ++cluster.tsCounter,
+				monotonic: () => beta.mono + performance.now(),
+				autoTick: false,
+			});
+			beta.coordinator = replacement;
+			const denied = await replacement.onDelegationRequest({ key, requester: 'gamma', epoch: 1, leaseMs: LEASE });
+			assert.strictEqual(denied.granted, false, 'a replacement granted a key alpha still holds');
+
+			// And its tokens must not tie the ones the closed coordinator already issued.
+			cluster.advance('beta', DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
+			const regranted = await replacement.onDelegationRequest({ key, requester: 'gamma', epoch: 1, leaseMs: LEASE });
+			assert.strictEqual(regranted.granted, true);
+			assert.strictEqual(
+				compareTokens(regranted.token, issued.token) > 0,
+				true,
+				'the replacement restarted the counter into a token its predecessor already issued'
+			);
 		});
 
 		it('cannot grant a key whose predecessor delegation is still live', async () => {
@@ -743,6 +792,26 @@ describe('record lock delegations', () => {
 			// the floor; the next recall then surrendered while that handle could still commit.
 			await cluster.node('gamma').coordinator.acquire(key, LEASE, 5_000);
 			assert.strictEqual(handle.isLeaseExpired(), true, 'a renewed delegation lost track of a live handle');
+		});
+
+		it('refuses a grant minted under an epoch that advanced while the reply was in flight', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			// The membership changes after the home granted but before the requester saw the reply. Under
+			// the new epoch the key may be homed elsewhere, and that home can already have granted it —
+			// so admitting on the epoch-1 token would put two nodes inside one key with no message
+			// between them. The acquisition itself should still succeed, by asking again under epoch 2.
+			cluster.beforeReply = () => {
+				cluster.beforeReply = undefined;
+				cluster.epochNumber = 2;
+			};
+			await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(cluster.requests.length, 2, 'the superseded-epoch grant was admitted rather than redone');
+			const released = cluster.node('alpha').written.filter((entry) => entry.type === 'lockRelease');
+			assert.strictEqual(released.length, 1, 'the stale grant was not handed back');
+			assert.strictEqual(released[0].token[0], 1, 'the handed-back token was not the superseded one');
+			assert.strictEqual(alpha.stats.delegations, 1);
 		});
 
 		it('does not let a release from a previous home incarnation clear a live grant', async () => {

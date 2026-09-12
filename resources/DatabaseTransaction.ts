@@ -1116,7 +1116,14 @@ export class DatabaseTransaction implements Transaction {
 		// isExpired() re-evaluates the deadline here rather than trusting the timer to have run: a
 		// holder whose event loop stalled past its lease would otherwise commit in the window between
 		// the deadline and its own timer callback, after peers had already granted the key onward.
-		if (lockHandle?.isExpired()) {
+		//
+		// A RE-save is judged by the lease alone. `released` belongs to the first stage — a caller that
+		// unlocked and then saved is writing through a handle it gave back — but an operation already
+		// staged was staged while the lock was held, and an `unlock()` inside the lease leaves it valid
+		// (the same rule the pre-submit fence applies below). Without the distinction,
+		// `lock(); save(); unlock(); commit()` succeeded normally and threw 409 only when a conflict
+		// retry or an open read iterator forced the replay to re-save it.
+		if (operation.saved ? lockHandle?.isLeaseExpired() : lockHandle?.isExpired()) {
 			// Remove the operation from the staged set so subsequent writes on this context do not
 			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
 			const failedIdx = this.writes.indexOf(operation);

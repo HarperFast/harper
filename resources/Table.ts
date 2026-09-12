@@ -2852,7 +2852,7 @@ export function makeTable(options) {
 						// acquisition and release reaches the coordinator that now owns the delegation.
 						if (
 							!handle.joinClusterRound(round.tsR, resolved.lease, round.mintedMono, () =>
-								TableResource.lockCoordinator?.release(id, round.admissionId)
+								TableResource.admittingCoordinator?.release(id, round.admissionId)
 							)
 						) {
 							// The round completed inside its lease but the lease elapsed before the handle
@@ -2860,14 +2860,14 @@ export function makeTable(options) {
 							// hold was never handed out.
 							// The getter, not the captured coordinator: after a transport swap the captured one no
 							// longer owns this admission, so releasing through it would be a silent no-op.
-							Promise.resolve(TableResource.lockCoordinator?.release(id, round.admissionId)).catch(noop);
+							Promise.resolve(TableResource.admittingCoordinator?.release(id, round.admissionId)).catch(noop);
 							throw new ClientError('Record lock was granted after its lease had elapsed', 423);
 						}
 						// A recall must be able to fence a write this handle staged and then unlocked, so
 						// the coordinator needs a way to revoke it — see LockCoordinator.registerAdmission.
 						// The getter again: a swap during the acquisition moved this admission to the
 						// successor, and registering on the predecessor would revoke a handle that is fine.
-						TableResource.lockCoordinator?.registerAdmission(round.admissionId, () => handle.revokeLease());
+						TableResource.admittingCoordinator?.registerAdmission(round.admissionId, () => handle.revokeLease());
 					} catch (error) {
 						handle.release();
 						throw error;
@@ -5744,6 +5744,16 @@ export function makeTable(options) {
 		 * This table's cluster lock coordinator, created on first use and only while a transport is
 		 * registered for the database. Nothing is allocated on the Phase 0 path.
 		 */
+		/**
+		 * The coordinator that holds this node's admissions, transport or not. Releasing and registering
+		 * go here rather than through `lockCoordinator`, which answers undefined while a transport is
+		 * momentarily unregistered — and a release dropped on that answer leaves the key's home holding
+		 * its grant until the delegation's own deadline.
+		 */
+		static get admittingCoordinator(): LockCoordinator | undefined {
+			return lockCoordinator;
+		}
+
 		static get lockCoordinator(): LockCoordinator | undefined {
 			const transport = getClusterLockTransport(databaseName);
 			if (!transport) {
