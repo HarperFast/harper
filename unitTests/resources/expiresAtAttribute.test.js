@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { makeTable: makeTableResource } = require('#src/resources/Table');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // A schema @expiresAt attribute must be authoritative over the table-level expiration default, in both
@@ -136,6 +137,54 @@ describe('@expiresAt attribute is authoritative over the table default', () => {
 		await Redeclared.put(1, { id: 1, expiresAt });
 		assert.strictEqual(await storedExpiresAt(Redeclared, 1), expiresAt);
 		assert.strictEqual(await Redeclared.get(1), null);
+	});
+
+	// A worker that only hydrated a table from the catalog has no cleanup scan armed: setTTLExpiration
+	// runs at construction only when an expiration is set, and an eviction-only table persists
+	// expiration 0. When an isolated application then redeclares that table with just an @expiresAt
+	// attribute, the declaration preserves the loaded configuration -- so the loaded eviction is the
+	// only thing left that can arm the scan, and without it those records are never physically evicted.
+	it('arms a preserved eviction cleanup on an ownership-only redeclaration', () => {
+		const Declared = table({
+			table: 'EvictionOnlyDeclared',
+			database: 'test',
+			eviction: 40,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		assert.strictEqual(Declared.evictionMS, 40_000);
+		// the same table as a worker that only hydrated it sees it: eviction from the persisted
+		// metadata, and no setTTLExpiration call of its own
+		const hydrated = (evictionMS) =>
+			makeTableResource({
+				primaryStore: Declared.primaryStore,
+				auditStore: Declared.auditStore,
+				audit: false,
+				evictionMS,
+				tableName: `EvictionOnlyHydrated-${evictionMS}`,
+				tableId: Declared.primaryStore.tableId,
+				primaryKey: 'id',
+				databasePath: 'test',
+				databaseName: 'test',
+				indices: {},
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+				dbisDB: Declared.dbisDB,
+			});
+		const cleanupTimersArmedBy = (Table) => {
+			const originalSetTimeout = global.setTimeout;
+			let timers = 0;
+			global.setTimeout = (callback, delay, ...args) => {
+				timers++;
+				return originalSetTimeout(callback, delay, ...args);
+			};
+			try {
+				Table.setTTLExpiration({ fromSchema: true, isolatedApplicationOwner: true });
+			} finally {
+				global.setTimeout = originalSetTimeout;
+			}
+			return timers;
+		};
+		assert.strictEqual(cleanupTimersArmedBy(hydrated(40_000)), 1, 'the preserved eviction arms the cleanup scan');
+		assert.strictEqual(cleanupTimersArmedBy(hydrated(0)), 0, 'with nothing loaded to clean up, none is armed');
 	});
 
 	it('arms one @expiresAt interval initially and when a live table gains the attribute', async () => {

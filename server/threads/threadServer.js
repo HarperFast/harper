@@ -26,7 +26,11 @@ const {
 	getShutdownDrainCeilingMs,
 } = require('../../components/shutdownDrain.ts');
 const { realExit } = require('./workerProcessGuard.ts');
-const { thisThreadsIsolatedApplication, applicationSocketName } = require('./isolatedApplications.ts');
+const {
+	thisThreadsIsolatedApplication,
+	applicationSocketName,
+	shouldStartUwsListenerHere,
+} = require('./isolatedApplications.ts');
 const { isBun } = require('../serverHelpers/Request.ts');
 const { getDomainSocketPathMaxBytes, isDomainSocketPathTooLong } = require('../../utility/domainSocket.ts');
 const { createTLSSelector, getEffectiveTlsCiphers } = require('../../security/keys.ts');
@@ -412,7 +416,7 @@ function listenOnPorts() {
 	if (uwsServeConfigs) {
 		for (const key in uwsServeConfigs) {
 			const cfg = uwsServeConfigs[key];
-			if (thisThreadsIsolatedApplication() && !cfg.socketPath) continue; // dedicated worker: mirrors only
+			if (!shouldStartUwsListenerHere(cfg)) continue; // dedicated worker: its own mirrors only
 			if (cfg.socketPath && existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath);
 			const { createUwsServer } = require('../serverHelpers/uwsServer.ts');
 			listening.push(

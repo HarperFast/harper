@@ -93,6 +93,19 @@ export function shouldLoadApplicationHere(
 }
 
 /**
+ * Whether this thread starts the uWS listener for one `uwsServeConfigs` entry (see listenOnPorts()).
+ * A dedicated worker starts only its own per-application UDS mirrors -- the entries that carry a
+ * `socketPath` -- and never a global port listener, which the kernel would hand connections for every
+ * other application.
+ */
+export function shouldStartUwsListenerHere(
+	serveConfig: { socketPath?: string },
+	owner: string | undefined = thisThreadsIsolatedApplication()
+): boolean {
+	return owner === undefined || Boolean(serveConfig.socketPath);
+}
+
+/**
  * Whether a dedicated worker can be reached at all: it binds only UDS mirrors of the secure port, so
  * without `tls.unixDomainSockets` and a secure port an isolated application would load and answer
  * nothing, silently. Refused at admission instead. Returns the reason, or undefined when reachable.

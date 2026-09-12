@@ -68,6 +68,18 @@ describe('isolated applications (harper#642 tier 2)', () => {
 			);
 		});
 
+		it("starts a dedicated worker's own uWS mirror but never a global port listener", () => {
+			// The regression this guards: skipping every uWS entry on a dedicated worker (not just the
+			// global-port ones) leaves the isolated application with no ingress at all under HARPER_UWS_UDS.
+			assert.strictEqual(
+				iso().shouldStartUwsListenerHere({ socketPath: '/tmp/app-iso%2Done-9926.sock' }, 'iso-one'),
+				true
+			);
+			assert.strictEqual(iso().shouldStartUwsListenerHere({ port: 9926 }, 'iso-one'), false);
+			assert.strictEqual(iso().shouldStartUwsListenerHere({ port: 9926 }, undefined), true, 'a pool worker binds it');
+			assert.strictEqual(iso().shouldStartUwsListenerHere({ socketPath: '/tmp/0-9926.sock' }, undefined), true);
+		});
+
 		it('identifies only a named application owned by a dedicated worker', () => {
 			assert.strictEqual(iso().thisThreadOwnsApplication('iso-one', 'iso-one'), true);
 			assert.strictEqual(iso().thisThreadOwnsApplication('iso-two', 'iso-one'), false);
