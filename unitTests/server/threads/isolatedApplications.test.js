@@ -163,8 +163,9 @@ describe('isolated applications (harper#642 tier 2)', () => {
 			const { requestRestart, restartNeeded, resetRestartNeeded } = require('#src/components/requestRestart');
 			const restartScoped = (scope) => threads().restartWorkers('http', Infinity, false, null, scope);
 			// already marked shut down, so the restart loop skips it: this stands in for the live topology
-			// the gate reads, not for a worker to replace
-			const dedicated = { name: 'http', application: 'iso-one', wasShutdown: true };
+			// the gate reads, not for a worker to replace. `recentELU` so the entry is complete on its own
+			// rather than relying on the monitor tick to backfill it.
+			const dedicated = { name: 'http', application: 'iso-one', wasShutdown: true, recentELU: { idle: 0 } };
 			try {
 				requestRestart();
 				await restartScoped('iso-one');
