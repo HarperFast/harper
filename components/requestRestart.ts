@@ -24,6 +24,17 @@ export function requestRestart() {
 	restartArrayBuffer.notify();
 }
 
+export function requestRestartAfterDeploy(
+	isNewComponent: boolean,
+	packageMetadataChanged: boolean,
+	wasIsolated: boolean,
+	isIsolated: boolean
+): boolean {
+	if (!isNewComponent && !packageMetadataChanged && wasIsolated === isIsolated) return false;
+	requestRestart();
+	return true;
+}
+
 export function restartNeeded() {
 	ensureInitialized();
 	return restartNeededArray[0] === 1;

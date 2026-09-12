@@ -534,6 +534,7 @@ function deployComponentValidator(req) {
 		// like urlPath/host above, not component config: reusing assertBranchedDatabases here (rather
 		// than re-deriving its rules in Joi) gives a synchronous 400 at deploy time instead of a load
 		// failure discovered much later and disconnected from the request that caused it.
+		isolated: Joi.boolean().optional(),
 		branchedDatabases: Joi.custom((value, helpers) => {
 			try {
 				assertBranchedDatabases(req.project, value);

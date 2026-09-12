@@ -1,5 +1,5 @@
 import { isAbsolute, join } from 'node:path';
-import { getWorkerIndex } from '../../server/threads/manageThreads.js';
+import { isApplicationPrimaryWorker } from '../../server/threads/manageThreads.js';
 import { ClientError } from '../../utility/errors/hdbError.ts';
 import { convertToMS } from '../../utility/common_utils.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -94,12 +94,12 @@ export async function handleApplication(scope): Promise<void> {
 	}
 
 	// Activation gates: one worker owns scheduling for the whole node
-	// (getWorkerIndex() === 0 is correct in every threading mode, including
+	// (the application's primary worker is correct in every threading mode, including
 	// threads:0 where the main thread acts as worker 0), and a deploy
 	// pre-flight validation scope must never touch the live engine — it can
 	// share a running component's identity, so registering from it would
-	// displace the real component's jobs (review finding).
-	if (getWorkerIndex() !== 0) {
+	// displace the real component's jobs.
+	if (!isApplicationPrimaryWorker(scope.applicationScope?.name)) {
 		schedulerLogger.debug?.('Scheduler config validated; activation skipped on non-primary worker');
 		return;
 	}

@@ -90,7 +90,14 @@ import {
 } from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
-import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
+import {
+	getWorkerIndex,
+	applicationWorkerIndex,
+	ownsStoreMaintenance,
+	ownsStoreExpiration,
+	runsApplicationCodeSingletons,
+	isDedicatedWorker,
+} from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, LOCAL_ONLY, auditRetention, removeAuditEntry } from './auditStore.ts';
 import { derivedIndexWriteRejection, hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
@@ -535,6 +542,11 @@ export function makeTable(options) {
 		isBranch,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
+	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
+	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
+	// dedicated workers open unrelated shared tables too, whose scan remains owned by the pool.
+	let ttlConfiguredByApplication = false;
+	let ttlFromLoad = false; // true only around the creation-time call below
 	evictionMs ??= 0;
 	// Eviction without explicit expiration means expiration:0. Apply at construction so
 	// describe_all sees it on every worker, not just ones that ran setTTLExpiration.
@@ -575,7 +587,7 @@ export function makeTable(options) {
 	let nonPrefetchSequence = 2;
 	let cleanupInterval = 86400000;
 	let cleanupPriority = 0;
-	let lastCleanupInterval: number;
+	let lastCleanupInterval: number | undefined;
 	let cleanupTimer: NodeJS.Timeout;
 	let recordExpirationInterval: NodeJS.Timeout;
 	// a reclamation pass awaits a scheduled cleanup, which only settles from its timer
@@ -1013,8 +1025,8 @@ export function makeTable(options) {
 						omitCurrent: true,
 					};
 					const subscribeOnThisThread = source.subscribeOnThisThread
-						? source.subscribeOnThisThread(getWorkerIndex(), subscriptionOptions)
-						: getWorkerIndex() === 0;
+						? source.subscribeOnThisThread(applicationWorkerIndex(), subscriptionOptions)
+						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
 					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
 						let txnInProgress;
@@ -1546,24 +1558,51 @@ export function makeTable(options) {
 		 * This also informs the scheduling for record eviction.
 		 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
-		 * eviction/scanInterval; object form replaces all three.
+		 * eviction/scanInterval; object form replaces all three. An internal schema ownership-only call with
+		 * none of those values preserves the settings already loaded from the catalog.
 		 */
-		static setTTLExpiration(opts: number | { expiration?: number; eviction?: number; scanInterval?: number }) {
+		static setTTLExpiration(
+			opts:
+				| number
+				| {
+						expiration?: number;
+						eviction?: number;
+						scanInterval?: number;
+						fromSchema?: boolean;
+						isolatedApplicationOwner?: boolean;
+				  }
+		) {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
+			const declaredHere = typeof opts === 'object' && opts.fromSchema;
+			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
+			const preserveLoadedConfiguration =
+				declaredHere && opts.expiration === undefined && opts.eviction === undefined && opts.scanInterval === undefined;
+			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlConfiguredByApplication) {
+				ttlConfiguredByApplication = true;
+				// the scan owner may have changed with this: re-evaluate even if the interval did not
+				lastCleanupInterval = undefined;
+			}
 			if (typeof opts === 'number') {
 				expirationMs = opts * 1000;
-			} else {
+			} else if (!preserveLoadedConfiguration) {
 				// `??` so an explicit 0 is treated as the user's chosen value, not as "missing"
 				expirationMs = (opts.expiration ?? 0) * 1000;
 				evictionMs = (opts.eviction ?? 0) * 1000;
 				cleanupInterval = (opts.scanInterval ?? 0) * 1000;
 			}
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
-			// default to one quarter of the total expiration+eviction window
-			cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
-			expirationScanScheduled = true;
-			scheduleCleanup();
+			if (!preserveLoadedConfiguration) {
+				// default to one quarter of the total expiration+eviction window
+				cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
+				expirationScanScheduled = true;
+			}
+			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
+			// create the default daily cleanup timer for a table that has only an @expiresAt field.
+			if (!preserveLoadedConfiguration || expirationScanScheduled || evictionMs) scheduleCleanup();
+			// @expiresAt has its own interval rather than the cleanup timer above. Arm it whenever a live
+			// declaration introduces the attribute, including after this application already claimed TTL.
+			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 		}
 
 		static getResidencyRecord(id: Id) {
@@ -5868,6 +5907,7 @@ export function makeTable(options) {
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
+			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
 			// Drop registry entries for attributes that are no longer `@embed`, so a dropped
 			// directive doesn't leave a stale embedder or block a default refresh on re-add.
 			const embedNames = new Set(this.embedAttributes.map((a) => a.name));
@@ -6347,8 +6387,15 @@ export function makeTable(options) {
 
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
-		if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
-		if (expiresAtProperty) runRecordExpirationEviction();
+		if (expirationMs) {
+			ttlFromLoad = true;
+			try {
+				TableResource.setTTLExpiration(expirationMs / 1000);
+			} finally {
+				ttlFromLoad = false;
+			}
+		}
+		if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 	} catch (error) {
 		TableResource.cleanup();
 		throw error;
@@ -7462,7 +7509,7 @@ export function makeTable(options) {
 		// Periodically evict expired records and deleted records searching for records who expiresAt timestamp is before now
 		if (cleanupInterval === lastCleanupInterval && !runImmediately) return;
 		lastCleanupInterval = cleanupInterval;
-		if (getWorkerIndex() === getWorkerCount() - 1) {
+		if (ownsStoreMaintenance(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
 			if (!cleanupInterval) {
@@ -7604,12 +7651,14 @@ export function makeTable(options) {
 	}
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
-		if (getWorkerIndex() === 0) {
+		if (ownsStoreExpiration(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
 			recordExpirationInterval = setInterval(async () => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
-				if (disposed || runningRecordExpiration) return;
+				// updatedAttributes() clears expiresAtProperty when a live redeclaration drops the directive,
+				// and there is nothing left for this interval to scan by
+				if (disposed || runningRecordExpiration || !expiresAtProperty) return;
 				runningRecordExpiration = true;
 				try {
 					const expiresAtName = expiresAtProperty.name;

@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
-import { join, extname, basename } from 'path';
+import { join, extname, basename } from 'node:path';
 import {
 	closeSync,
 	existsSync,
@@ -1671,6 +1671,8 @@ export function openBranchDatabase(
 	openBranches.set(path, undefined);
 	retakeBranchIdentity(storeName);
 	try {
+		// before the open: table load schedules TTL, eviction and audit cleanup, which ask who owns this store
+		manageThreads.markBranchStorePath(path);
 		rootStore = readRocksMetaDb(path, null, databaseName, { destination: tables, storeName, openedStores });
 		// Pin the handle to the roots the caller proved this branch was published with, before it is
 		// handed out. A row's `storageIndex` is a position in that list, so resolving through current
@@ -1680,6 +1682,7 @@ export function openBranchDatabase(
 		if (blobRoots) databasePaths.set(rootStore as unknown as RootDatabase, blobRoots);
 	} catch (error) {
 		openBranches.delete(path);
+		manageThreads.markBranchStorePath(path, false);
 		releaseBranchIdentity(storeName);
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
@@ -1703,6 +1706,7 @@ export function openBranchDatabase(
 			openBranches.delete(path);
 			releaseBranchIdentity(storeName);
 			rocksdbDatabaseEnvs.delete(path);
+			manageThreads.markBranchStorePath(path, false);
 			closeBranchHandles(path, rootStore, openedStores, tables);
 		},
 	};
@@ -1796,6 +1800,8 @@ interface TableDefinition {
 	// default Cache-Control for anonymous REST reads; null = schema explicitly has none (clears a
 	// prior value on reload), undefined = caller is not schema-defining (leave the current value)
 	cacheControl?: string | null;
+	/** Internal: this declaration came from the application owned by the current dedicated worker. */
+	isolatedApplicationOwner?: boolean;
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
@@ -2332,13 +2338,18 @@ const GLOBAL_TARGET: TableTarget = {
 /**
  * The factory a branched application declares tables through: each declaration goes to the branch
  * of the database it names, or to `table()` itself for a database the application did not branch.
- * An unbranched application gets `table` by identity -- no wrapper, no per-call routing.
+ * An unbranched, shared application gets `table` by identity. An isolated application still gets a
+ * wrapper so its own declarations can claim their single-threaded maintenance work.
  */
-export function scopedTableFactory(branches?: Map<string, BranchDatabase>): typeof table {
-	if (!branches?.size) return table;
+export function scopedTableFactory(
+	branches?: Map<string, BranchDatabase>,
+	isolatedApplicationOwner = false
+): typeof table {
+	if (!branches?.size && !isolatedApplicationOwner) return table;
 	return function scopedTable<TableResourceType>(tableDefinition: TableDefinition): TableResourceType {
+		if (isolatedApplicationOwner) tableDefinition = { ...tableDefinition, isolatedApplicationOwner: true };
 		// `||`, not `??`: `table()` resolves every falsy name to the default database
-		const branch = branches.get(tableDefinition.database || DEFAULT_DATABASE_NAME);
+		const branch = branches?.get(tableDefinition.database || DEFAULT_DATABASE_NAME);
 		return branch ? declareTable(branchTarget(branch), tableDefinition) : table(tableDefinition);
 	};
 }
@@ -2416,6 +2427,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		properties,
 		hidden,
 		cacheControl,
+		isolatedApplicationOwner,
 	} = tableDefinition;
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	// Reject reserved names here too, not only at the operations API: a database
@@ -2474,6 +2486,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	}
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
+	let refreshedLiveAttributes = false;
 	let deferredPrimaryRow: any;
 	let unpublishedPrimaryStore: any;
 	let published = false;
@@ -2482,6 +2495,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const indicesToRemove = [];
 	try {
 		if (Table) {
+			refreshedLiveAttributes = true;
 			primaryKey = Table.primaryKey;
 			if (Table.primaryStore.rootStore.status === 'closed') {
 				throw new Error(`Can not use a closed data store from ${tableName} class`);
@@ -3062,10 +3076,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	} finally {
 		releaseLock();
 	}
-	if (hasChanges || refreshRelationshipAttributes) {
-		Table.schemaVersion++;
-		Table.updatedAttributes();
-	}
+	if (hasChanges || refreshRelationshipAttributes) Table.schemaVersion++;
+	if (hasChanges || refreshRelationshipAttributes || refreshedLiveAttributes) Table.updatedAttributes();
 	logger.trace(`${tableName} table loading, running index`);
 	const branchPath = target.branch?.path;
 	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
@@ -3088,11 +3100,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if ((hasChanges || refreshRelationshipAttributes) && !target.branch) {
 		databaseEventsEmitter.emit('updateTable', Table, origin !== 'cluster');
 	}
-	if (expiration || eviction || scanInterval)
+	if (expiration || eviction || scanInterval || attributes.some((attribute) => attribute.expiresAt))
 		Table.setTTLExpiration({
 			expiration,
 			eviction,
 			scanInterval,
+			fromSchema: true,
+			isolatedApplicationOwner,
 		});
 	logger.trace(`${tableName} table loaded`);
 
