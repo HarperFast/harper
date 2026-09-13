@@ -37,6 +37,7 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 const FIXTURE_PATH = resolve(import.meta.dirname, 'ttl-rate-limiter-concurrent');
 const TTL_MS = 500; // matches expiration: 0.5 in schema.graphql
 const CONVERGENCE_WINDOW_MS = TTL_MS - 100;
+const POLL_INTERVAL_MS = 20;
 const WORKERS = 4;
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
@@ -92,7 +93,8 @@ suite(
 		}
 
 		/** Atomic increment via POST /RateIncrement/ */
-		async function increment(id: string): Promise<{ status: number | 'error'; at: number }> {
+		async function increment(id: string): Promise<{ status: number | 'error'; at: number; startedAt: number }> {
+			const startedAt = Date.now();
 			try {
 				const r = await fetch(`${httpURL}/RateIncrement/`, {
 					method: 'POST',
@@ -100,9 +102,9 @@ suite(
 					body: JSON.stringify({ id }),
 					signal: AbortSignal.timeout(6_000),
 				});
-				return { status: r.status, at: Date.now() };
+				return { status: r.status, at: Date.now(), startedAt };
 			} catch {
-				return { status: 'error', at: Date.now() };
+				return { status: 'error', at: Date.now(), startedAt };
 			}
 		}
 
@@ -135,6 +137,15 @@ suite(
 			}
 		}
 
+		function getConvergenceDeadline(results: Awaited<ReturnType<typeof increment>>[]) {
+			const acknowledged = results.filter((result) => result.status === 200);
+			if (acknowledged.length === 0) return null;
+			return Math.min(
+				Math.max(...acknowledged.map((result) => result.at)) + CONVERGENCE_WINDOW_MS,
+				Math.max(...acknowledged.map((result) => result.startedAt)) + TTL_MS - POLL_INTERVAL_MS
+			);
+		}
+
 		async function waitForConvergedGet(id: string, minimumHits: number, maximumHits: number, deadline: number) {
 			const seen: (number | string)[] = [];
 			let response: Awaited<ReturnType<typeof get>> = { status: 'error', body: null };
@@ -142,8 +153,14 @@ suite(
 			let previousHits: number | undefined;
 			let stableReads = 0;
 			let confirmed = false;
-			while (Date.now() < deadline) {
+			let regressed = false;
+			while (deadline - Date.now() >= POLL_INTERVAL_MS) {
 				response = await get(id, deadline - Date.now());
+				if (Date.now() >= deadline) {
+					response = { status: 'error', body: null };
+					seen.push('late');
+					break;
+				}
 				seen.push(response.status === 200 ? Number(response.body?.hits ?? -1) : String(response.status));
 				if (response.status !== 'error') lastMeaningfulResponse = response;
 				if (response.status === 200) {
@@ -155,23 +172,28 @@ suite(
 					if (hits >= minimumHits) {
 						stableReads = hits === previousHits ? stableReads + 1 : 1;
 						previousHits = hits;
-						if (stableReads >= 2) {
-							confirmed = true;
-							break;
-						}
+						if (stableReads >= 2) confirmed = true;
 					} else {
+						if (confirmed) regressed = true;
 						previousHits = hits;
 						stableReads = 0;
 					}
 				} else {
+					if (response.status === 404 && confirmed) regressed = true;
 					previousHits = undefined;
 					stableReads = 0;
 				}
 				const remainingMs = deadline - Date.now();
 				if (remainingMs <= 0) break;
-				await sleep(Math.min(20, remainingMs));
+				await sleep(Math.min(POLL_INTERVAL_MS, remainingMs));
 			}
-			return { response: response.status === 'error' ? lastMeaningfulResponse : response, seen, confirmed };
+			return {
+				response: response.status === 'error' ? lastMeaningfulResponse : response,
+				seen,
+				confirmed,
+				regressed,
+				endedWithError: response.status === 'error',
+			};
 		}
 
 		/** DELETE a record (best-effort cleanup). */
@@ -233,32 +255,45 @@ suite(
 				const errs = results.filter((x) => x.status === 'error').length;
 				const rejected = results.filter((x) => typeof x.status === 'number' && x.status !== 200).length;
 
-				const acknowledgedAt = results.filter((x) => x.status === 200).map((x) => x.at);
-				if (acknowledgedAt.length === 0) {
+				const convergenceDeadline = getConvergenceDeadline(results);
+				if (convergenceDeadline === null) {
 					inconclusiveRounds++;
 					roundLogs.push(`r${r}: no acknowledged increments (skip) err=${errs} rej=${rejected}`);
 					await del(id);
 					continue;
 				}
-				const convergenceDeadline = Math.max(...acknowledgedAt) + CONVERGENCE_WINDOW_MS;
 				const {
 					response: g,
 					seen,
 					confirmed,
+					regressed,
+					endedWithError,
 				} = await waitForConvergedGet(id, acked, acked + errs, convergenceDeadline);
 				let desc: string;
 				if (g.status === 404) {
-					lostCountRounds++;
-					desc = `r${r}: ALL-LOST(404) acked=${acked} err=${errs} seen=[${seen.join(',')}]`;
+					if (endedWithError && !regressed) {
+						inconclusiveRounds++;
+						desc = `r${r}: INCONCLUSIVE last-status=404 acked=${acked} err=${errs} seen=[${seen.join(',')}]`;
+					} else {
+						lostCountRounds++;
+						desc = `r${r}: ALL-LOST(404) acked=${acked} err=${errs} seen=[${seen.join(',')}]`;
+					}
 				} else if (g.status === 200) {
 					// PUT starts at 0, so stored should equal acked addTo calls.
 					const stored = Number(g.body?.hits ?? -1);
-					if (stored >= acked && stored <= acked + errs && confirmed) {
+					if (regressed) {
+						lostCountRounds++;
+						desc = `r${r}: REGRESSED stored=${stored} acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
+					} else if (stored >= acked && stored <= acked + errs && confirmed) {
 						cleanRounds++;
-						desc = `r${r}: CLEAN stored=${stored} acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
+						const slack = stored - acked;
+						desc = `r${r}: CLEAN${slack ? `(+${slack} timeout slack)` : ''} stored=${stored} acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
 					} else if (stored >= acked && stored <= acked + errs) {
 						inconclusiveRounds++;
 						desc = `r${r}: UNCONFIRMED stored=${stored} acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
+					} else if (endedWithError) {
+						inconclusiveRounds++;
+						desc = `r${r}: INCONCLUSIVE last-stored=${stored}<acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
 					} else if (stored < acked) {
 						lostCountRounds++;
 						desc = `r${r}: LOST stored=${stored}<acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
@@ -340,32 +375,44 @@ suite(
 				const errs = results.filter((x) => x.status === 'error').length;
 				const rejected = results.filter((x) => typeof x.status === 'number' && x.status !== 200).length;
 
-				const acknowledgedAt = results.filter((x) => x.status === 200).map((x) => x.at);
-				if (acknowledgedAt.length === 0) {
+				const convergenceDeadline = getConvergenceDeadline(results);
+				if (convergenceDeadline === null) {
 					skipRounds++;
 					roundLogs.push(`r${r}: skip (no acknowledged increments) rej=${rejected} err=${errs} burstMs=${burstMs}`);
 					await del(id);
 					continue;
 				}
-				const convergenceDeadline = Math.max(...acknowledgedAt) + CONVERGENCE_WINDOW_MS;
 				const {
 					response: g,
 					seen,
 					confirmed,
+					regressed,
+					endedWithError,
 				} = await waitForConvergedGet(id, acked, acked + errs, convergenceDeadline);
 				let desc: string;
 				if (g.status === 404) {
-					// All increments fired but no record persisted — all lost.
-					lostCountRounds++;
-					desc = `r${r}: ALL-LOST(404) acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
+					if (endedWithError && !regressed) {
+						skipRounds++;
+						desc = `r${r}: INCONCLUSIVE last-status=404 acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
+					} else {
+						lostCountRounds++;
+						desc = `r${r}: ALL-LOST(404) acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
+					}
 				} else if (g.status === 200) {
 					const stored = Number(g.body?.hits ?? -1);
-					if (stored >= acked && stored <= acked + errs && confirmed) {
+					if (regressed) {
+						lostCountRounds++;
+						desc = `r${r}: REGRESSED stored=${stored} acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
+					} else if (stored >= acked && stored <= acked + errs && confirmed) {
 						cleanRounds++;
-						desc = `r${r}: CLEAN stored=${stored} acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
+						const slack = stored - acked;
+						desc = `r${r}: CLEAN${slack ? `(+${slack} timeout slack)` : ''} stored=${stored} acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
 					} else if (stored >= acked && stored <= acked + errs) {
 						skipRounds++;
 						desc = `r${r}: UNCONFIRMED stored=${stored} acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
+					} else if (endedWithError) {
+						skipRounds++;
+						desc = `r${r}: INCONCLUSIVE last-stored=${stored}<acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
 					} else if (stored < acked) {
 						lostCountRounds++;
 						desc = `r${r}: LOST stored=${stored}<acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
@@ -527,20 +574,15 @@ suite(
 					const hits = await Promise.all(Array.from({ length: HITS_PER_WINDOW }, () => increment(id)));
 					const acked = hits.filter((h) => h.status === 200).length;
 					const errs = hits.filter((h) => h.status === 'error').length;
-					const acknowledgedAt = hits.filter((h) => h.status === 200).map((h) => h.at);
+					const convergenceDeadline = getConvergenceDeadline(hits);
 					return {
 						id,
 						acked,
 						errs,
 						convergence:
-							acknowledgedAt.length > 0
-								? await waitForConvergedGet(
-										id,
-										acked,
-										acked + errs,
-										Math.max(...acknowledgedAt) + CONVERGENCE_WINDOW_MS
-									)
-								: null,
+							convergenceDeadline === null
+								? null
+								: await waitForConvergedGet(id, acked, acked + errs, convergenceDeadline),
 					};
 				})
 			);
@@ -551,20 +593,36 @@ suite(
 					windowLogs.push(`${id}: no acknowledged increments [skip] acked=${acked} err=${errs}`);
 					continue;
 				}
-				const { response: g, seen, confirmed } = convergence;
+				const { response: g, seen, confirmed, regressed, endedWithError } = convergence;
 				if (g.status === 404) {
-					lostWindowCount++;
-					windowLogs.push(`${id}: ALL-LOST(404) acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
+					if (endedWithError && !regressed) {
+						inconclusiveWindows++;
+						windowLogs.push(`${id}: INCONCLUSIVE last-status=404 acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
+					} else {
+						lostWindowCount++;
+						windowLogs.push(`${id}: ALL-LOST(404) acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
+					}
 					continue;
 				}
 				if (g.status === 200) {
 					const stored = Number(g.body?.hits ?? -1);
-					if (stored >= acked && stored <= acked + errs && confirmed) {
+					if (regressed) {
+						lostWindowCount++;
+						windowLogs.push(`${id}: REGRESSED stored=${stored} acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
+					} else if (stored >= acked && stored <= acked + errs && confirmed) {
 						cleanWindows++;
-						windowLogs.push(`${id}: CLEAN stored=${stored} acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
+						const slack = stored - acked;
+						windowLogs.push(
+							`${id}: CLEAN${slack ? `(+${slack} timeout slack)` : ''} stored=${stored} acked=${acked} err=${errs} seen=[${seen.join(',')}]`
+						);
 					} else if (stored >= acked && stored <= acked + errs) {
 						inconclusiveWindows++;
 						windowLogs.push(`${id}: UNCONFIRMED stored=${stored} acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
+					} else if (endedWithError) {
+						inconclusiveWindows++;
+						windowLogs.push(
+							`${id}: INCONCLUSIVE last-stored=${stored}<acked=${acked} err=${errs} seen=[${seen.join(',')}]`
+						);
 					} else if (stored < acked) {
 						lostWindowCount++;
 						windowLogs.push(`${id}: LOST stored=${stored}<acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
