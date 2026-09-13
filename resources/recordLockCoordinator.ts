@@ -732,6 +732,11 @@ export class LockCoordinator {
 					// rather than admitting on authority the home has already expired.
 					if (installed && !installed.recalled && installed.expiresMono - authority.#monotonic() >= leaseMs)
 						return authority.#admit(installed, leaseMs);
+					// Nothing was installed, so the home is holding a grant this node will never use — hand it
+					// back, as the superseded-generation and raced-timeout paths already do. Without it every
+					// retry renews that grant in place and the key answers `contended` to every other node
+					// until it expires on the home's clock.
+					if (!installed) authority.#releaseUnclaimedGrant(key, reply.token);
 				}
 			} else if (reply.granted)
 				throw new LockUnavailableError(

@@ -530,7 +530,6 @@ function contextArgument(context: unknown): any {
 	return resolved instanceof DatabaseTransaction ? { transaction: resolved } : resolved;
 }
 
-/** Distinguishes bare lock options from a record target (id, URL, {id:...}). */
 /** The cluster round never ran for a node-scoped handle, so no peer ever deferred to it. */
 function scopeViolation(
 	handle: RecordLockHandle,
@@ -549,6 +548,7 @@ function scopeViolation(
 	);
 }
 
+/** Distinguishes bare lock options from a record target (id, URL, {id:...}). */
 function isPlainOptions(value: unknown): boolean {
 	return (
 		typeof value === 'object' &&

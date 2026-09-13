@@ -817,6 +817,16 @@ describe('record lock delegations', () => {
 			};
 			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 200), /not released in time/);
 			assert.strictEqual(alpha.coordinator.stats.delegations, 0, 'a dead reply must not install a delegation');
+			// And the home must not be left holding a grant nobody will use: every retry renews it in
+			// place, so without the handback the key answers `contended` to every other node until the
+			// grant expires on the home's own clock.
+			assert.strictEqual(
+				cluster.node('beta').coordinator.stats.granted,
+				0,
+				'the home kept a grant the delegate never installed'
+			);
+			const gamma = await cluster.node('gamma').coordinator.acquire(key, LEASE, 1_000);
+			cluster.node('gamma').coordinator.release(key, gamma.admissionId);
 		});
 
 		it('refuses a home map whose generation went backwards', async () => {
