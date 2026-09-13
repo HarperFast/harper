@@ -8,9 +8,13 @@ name: Perf Benchmarks Nightly (self-hosted)
 #
 # Records throughput/latency trends via github-action-benchmark (pushed to the
 # gh-pages branch, same dashboard the ycsb-nightly job uses; enable GitHub Pages on
-# gh-pages to view it) and alerts on regressions. Only pushed for `--scale=nightly`
-# runs on main — a `quick`-scale manual dispatch uses far smaller record counts and
-# would read as a false regression against the nightly baseline.
+# gh-pages to view it). Only pushed for `--scale=nightly` runs on main — a
+# `quick`-scale manual dispatch uses far smaller record counts and would read as a
+# false regression against the nightly baseline.
+#
+# Regression alerting is off: on this host the night-to-night spread of these metrics on
+# unchanged code exceeds any threshold that would still catch a regression. Each nightly
+# run's job summary carries the comparison instead.
 #
 # Triggers are schedule + manual dispatch ONLY (never pull_request): the job runs
 # on a self-hosted machine, so untrusted PR code must never execute here.
@@ -98,10 +102,10 @@ jobs:
       - name: Convert results to benchmark format
         run: node benchmarks/storage-to-benchmark-json.mts benchmarks/_results benchmarks/_bench-out
 
-      # Two suites: opposite "better" directions. auto-push only for nightly-scale runs on
-      # main so manual/quick dispatches don't pollute the trend history with incomparable
-      # numbers. Thresholds are generous to absorb self-hosted-runner variance — tune once
-      # more history has accumulated.
+      # Two suites: opposite "better" directions. Quick-scale dispatches are kept out of both
+      # the trend history and the comparison summary — their record counts make the numbers
+      # incomparable against the nightly baseline. Alert comments stay off because that POST
+      # would fail the step after the trend was already recorded.
       - name: Track throughput trend
         uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
@@ -110,10 +114,9 @@ jobs:
           output-file-path: benchmarks/_bench-out/throughput.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: ${{ github.ref == 'refs/heads/main' && (github.event.inputs.scale || 'nightly') == 'nightly' }}
-          comment-on-alert: true
+          summary-always: ${{ (github.event.inputs.scale || 'nightly') == 'nightly' }}
+          comment-on-alert: false
           fail-on-alert: false
-          alert-threshold: '130%'
-          alert-comment-cc-users: '@kriszyp'
 
       - name: Reset local gh-pages ref before second benchmark step
         run: |
@@ -128,10 +131,9 @@ jobs:
           output-file-path: benchmarks/_bench-out/latency.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: ${{ github.ref == 'refs/heads/main' && (github.event.inputs.scale || 'nightly') == 'nightly' }}
-          comment-on-alert: true
+          summary-always: ${{ (github.event.inputs.scale || 'nightly') == 'nightly' }}
+          comment-on-alert: false
           fail-on-alert: false
-          alert-threshold: '160%'
-          alert-comment-cc-users: '@kriszyp'
 
       - name: Upload raw benchmark logs
         if: always()
