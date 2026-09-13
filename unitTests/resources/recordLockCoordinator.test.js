@@ -964,6 +964,27 @@ describe('record lock delegations', () => {
 			);
 		});
 
+		it('does not start a fresh quarantine when a warm coordinator is adopted', async () => {
+			// Adoption carries the predecessor's horizon exactly. Recomputing from the successor's own
+			// construction would reject this node's whole home share for a delegation lease on every
+			// transport reload, which is a component reload away.
+			const table = `WarmSwap${Date.now()}`;
+			const database = `warmswap${Date.now()}`;
+			let mono = 1_000;
+			const predecessor = coldCoordinator(() => mono, { table, database });
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			const successor = coldCoordinator(() => mono, { table, database, adopt: predecessor });
+			const granted = await successor.onDelegationRequest({
+				key: 'warm',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true, 'a transport reload restarted the quarantine');
+			predecessor.close();
+			successor.close();
+		});
+
 		it('carries the cold-start quarantine across a transport swap', async () => {
 			// The successor adopts the predecessor's live authority, so it need not wait on THAT — but the
 			// quarantine bounds what a previous incarnation of the process granted, which neither

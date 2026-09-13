@@ -267,8 +267,13 @@ cannot both be enabled in one cluster.
 ### 5.1 Fencing tokens are ordered, not just unique
 
 A delegation's fencing token is `(generation, homeIncarnation, delegationCounter)`, compared
-lexicographically. `homeIncarnation` is a **durably persisted monotonic counter**, incremented once
-per process start and carried on the home map (§4.1) — not a random id. A random incarnation makes a
+lexicographically. `homeIncarnation` is a **durably persisted monotonic counter**, carried on the home
+map (§4.1) and incremented once per **coordination incarnation** — a process start _or_ a
+coordinating-worker restart — not a random id, and not once per process. Coordinator state, the
+delegation counter included, is per-thread: a replacement coordinating worker starts counting from
+zero, so an incarnation that did not advance with it would let the new worker re-mint tokens its
+predecessor already issued, and would leave §4.3's incarnation-bound quiescence acknowledgements
+attesting to state that restart discarded. A random incarnation makes a
 stale reply identifiable but not orderable, and a home that restarts and re-issues counter 1 after
 having issued counter 50 would let a delayed counter-50 write defeat its successor. The token must
 also survive key deletion and re-creation, which it does because it is scoped to the home and the
@@ -732,7 +737,13 @@ Still owed by harper-pro — **the one thing that blocks enablement**:
   what it lacks is the two properties §4.1 requires: an operator-published `recordLockHomes`
   generation rather than one each node derives for itself, and a digest agreed across peers before
   grants are enabled — plus §4.3's one-shot activation record, which is what makes a generation change
-  safe rather than merely announced. Derived-per-node is why the transport ships gated off: two nodes that disagree
+  safe rather than merely announced.
+- **`homeIncarnation` advanced per coordination incarnation, not per process** (§5.1). Core cannot mint
+  it — it must be durable and monotonic — and cannot check it, which puts it in the same class as
+  §4.3's activation record. It matters because coordinator state is per-thread: a replacement
+  coordinating worker restarts the delegation counter at zero, so an incarnation that only advanced
+  per process would let it re-mint tokens its predecessor issued, and a delayed release carrying one
+  of those tokens would clear a live grant. Derived-per-node is why the transport ships gated off: two nodes that disagree
   derive different rings and can both grant one key. #825 is now a config generation, a digest check
   and the §4.3 change runbook — not a consensus protocol.
 

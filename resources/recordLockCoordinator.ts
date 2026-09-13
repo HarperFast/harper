@@ -101,6 +101,12 @@ export interface LockHomeMap {
 	 * This node's durably persisted, monotonic incarnation counter as a home (§5.1). A random value
 	 * makes a stale reply identifiable but not ORDERABLE: a home that restarts and re-issues counter 1
 	 * after having issued counter 50 would let a delayed counter-50 write defeat its successor.
+	 *
+	 * **Per coordination incarnation, not per process.** Coordinator state — including the delegation
+	 * counter — is per-thread, so a replacement coordinating worker starts counting from zero. If the
+	 * incarnation did not advance with it, the new worker would re-mint tokens its predecessor already
+	 * issued, and §4.3's incarnation-bound quiescence acknowledgements would survive a restart that
+	 * discarded everything they attested to.
 	 */
 	homeIncarnation: number;
 }
@@ -624,11 +630,12 @@ export class LockCoordinator {
 		// admission in the map just carried over.
 		successor.#counter = Math.max(successor.#counter, this.#counter);
 		successor.#nextAdmissionId = Math.max(successor.#nextAdmissionId, this.#nextAdmissionId);
-		// The successor holds the full record of what THIS coordinator had outstanding, so it need not
-		// wait on that. It must still wait out the cold-start quarantine, which bounds what a previous
-		// incarnation of the PROCESS granted — neither coordinator can see those, and a transport swap
-		// is not evidence about them.
-		successor.#grantableAfterMono = Math.max(successor.#grantableAfterMono, this.#grantableAfterMono);
+		// The predecessor's horizon EXACTLY, not the successor's freshly computed one. Adoption means the
+		// successor now knows everything the predecessor knew, so it faces the same cold-start hazard and
+		// no more: recomputing from its own construction would quarantine a node for a full delegation
+		// lease on every transport reload, and clearing it would let a swap inside the window grant over
+		// an unseen predecessor incarnation.
+		successor.#grantableAfterMono = this.#grantableAfterMono;
 		this.#delegations.clear();
 		this.#grants.clear();
 		this.#grantsByRequester.clear();
