@@ -410,7 +410,10 @@ dropping the holder's first write. That is why the key is in the payload.
 
 **Fencing tokens are ordered, not merely unique.** A delegation carries
 `(generation, homeIncarnation, counter)`, compared lexicographically. `homeIncarnation` is durably
-persisted and monotonic, supplied by harper-pro. A random incarnation would make a stale reply
+persisted and monotonic, supplied by harper-pro, and advanced once per **coordination incarnation** —
+a process start or a coordinating-worker restart. Coordinator state including the delegation counter
+is per-thread, so a replacement coordinating worker that kept the same incarnation would re-mint
+tokens its predecessor issued. A random incarnation would make a stale reply
 identifiable but not _orderable_: a home that restarts and re-issues counter 1 after having issued
 counter 50 would let a delayed counter-50 reply defeat its successor.
 

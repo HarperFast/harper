@@ -117,8 +117,9 @@ Per database, `(generation, homes[])`:
   `hdb_nodes`, which is LWW-replicated and therefore not agreed.
 
 Core fails closed when no map is available and never guesses a ring. `homeIncarnation` (§5.1) rides
-alongside as the one remaining durable per-node datum: a monotonic counter incremented once per
-process start, persisted by harper-pro with the node's own identity.
+alongside as the one remaining durable per-node datum: a monotonic counter persisted by harper-pro
+with the node's own identity, and advanced once per **coordination incarnation** — §5.1 states the
+rule, and it is not once per process.
 
 **Agreement is a digest comparison, not a protocol.** Before the feature is enabled for a database,
 peers exchange a digest of `(generation, homes[])` and refuse to participate on a mismatch. There are
