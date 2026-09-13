@@ -558,7 +558,8 @@ function isPlainOptions(value: unknown): boolean {
 // Lets a transport push a received control entry straight to the right coordinator without
 // importing Table (which would be a cycle through databases.ts).
 setLockCoordinatorResolver(
-	(database: string, tableName: string) => (databases as any)[database]?.[tableName]?.lockCoordinator
+	(database: string, tableName: string) => (databases as any)[database]?.[tableName]?.lockCoordinator,
+	(database: string, tableName: string) => (databases as any)[database]?.[tableName]?.admittingCoordinator
 );
 
 export function makeTable(options) {

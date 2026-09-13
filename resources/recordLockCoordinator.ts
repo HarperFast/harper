@@ -1248,11 +1248,22 @@ const clusterLockTransports = new Map<string, ClusterLockTransport>();
 // that went away — a component reload, a failed reconnect — not proof the node became standalone,
 // so cluster scope must keep failing closed rather than quietly reverting to a node-local lock.
 const clusterRequiredDatabases = new Set<string>();
-let coordinatorResolver: ((database: string, table: string) => LockCoordinator | undefined) | undefined;
+type CoordinatorResolver = (database: string, table: string) => LockCoordinator | undefined;
+let coordinatorResolver: CoordinatorResolver | undefined;
+// Applying a release is bookkeeping on this node's own grant table and needs no transport, so it
+// resolves the coordinator that HOLDS the grant rather than the one a registered transport answers
+// for. Dropping a peer's clean-handoff release during a reconnect denies every other node that key
+// for the delegation's whole deadline. Requests and recalls keep the transport-gated resolver: both
+// are answers to a live peer, and failing them closed while the transport is gone is the right shape.
+let admittingResolver: CoordinatorResolver | undefined;
 
 /** Installed by Table.ts so a transport can push received entries in without importing Table. */
-export function setLockCoordinatorResolver(resolve: (database: string, table: string) => LockCoordinator | undefined) {
+export function setLockCoordinatorResolver(
+	resolve: CoordinatorResolver,
+	resolveAdmitting: CoordinatorResolver = resolve
+) {
 	coordinatorResolver = resolve;
+	admittingResolver = resolveAdmitting;
 }
 
 export function registerClusterLockTransport(database: string, transport: ClusterLockTransport): void {
@@ -1304,9 +1315,9 @@ export function hasClusterLockTransports(): boolean {
  * throws when this node's name is unusable — that throw must not escape a receive boundary, or it
  * reaches the replicated apply loop and drops the enclosing transaction.
  */
-function coordinatorFor(database: string, table: string): LockCoordinator | undefined {
+function coordinatorFor(database: string, table: string, resolve = coordinatorResolver): LockCoordinator | undefined {
 	try {
-		return coordinatorResolver?.(database, table);
+		return resolve?.(database, table);
 	} catch (error) {
 		warnOnce('could not resolve a record lock coordinator for a received message', error);
 		return undefined;
@@ -1319,7 +1330,7 @@ export function deliverLockControlEntry(
 	entry: LockControlEntry,
 	author: string
 ): void {
-	coordinatorFor(database, table)?.applyEntry(entry, author);
+	coordinatorFor(database, table, admittingResolver)?.applyEntry(entry, author);
 }
 
 export async function deliverDelegationRequest(

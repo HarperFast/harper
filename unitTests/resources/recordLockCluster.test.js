@@ -363,6 +363,37 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(coordinator.stats.granted, grantedBefore, 'the release cleared the grant');
 		});
 
+		it('applies a transport-pushed release while the transport is unregistered', async function () {
+			if (isLMDB) return this.skip();
+			const { deliverLockControlEntry } = require('#src/resources/recordLockCoordinator');
+			const members = [NODE_NAME, 'peer-1'];
+			useSoloTransport({ members });
+			const recordId = idHomedHere(members);
+			const coordinator = ClusterLockTest.lockCoordinator;
+			const grantedBefore = coordinator.stats.granted;
+			const granted = await coordinator.onDelegationRequest({
+				key: recordId,
+				requester: 'peer-1',
+				epoch: 1,
+				leaseMs: 5000,
+			});
+			assert.strictEqual(granted.granted, true);
+			// A reconnect, not a standalone claim: the coordinator is deliberately kept alive and still
+			// holds the grant, but the transport-gated getter now answers undefined. Applying a release is
+			// bookkeeping on that grant table and must not wait for the transport to come back — the home
+			// would otherwise deny every other node this key for the delegation's whole deadline.
+			unregisterClusterLockTransport('test');
+			assert.strictEqual(ClusterLockTest.lockCoordinator, undefined, 'the transport-gated getter is closed');
+
+			deliverLockControlEntry(
+				'test',
+				'ClusterLockTest',
+				{ type: 'lockRelease', key: recordId, requester: 'peer-1', token: granted.token },
+				'peer-1'
+			);
+			assert.strictEqual(coordinator.stats.granted, grantedBefore, 'the release was dropped with the transport');
+		});
+
 		it('contains a malformed control entry instead of failing the apply loop', function () {
 			if (isLMDB) return this.skip();
 			const recordKeyForRetiredType = 'retired-nibble-key';
