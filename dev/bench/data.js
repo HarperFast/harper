@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789284289565,
+  "lastUpdate": 1789284293368,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -13720,6 +13720,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E insert p99 — short ranges",
             "value": 48.05,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "070a489d67dd03a288a142857411f2d94b265239",
+          "message": "Reject a supplied record root instead of the instance's staged changes (#2578)\n\nThe legacy full-update fall-through in update() discards the body the\ncaller supplied and hands _writeUpdate whatever the instance had already\nstaged. Two consequences, both independent of #2561 and present before it:\n\n- `record.put(0)` on an instance with a staged update commits that update\n  as a full record replacement. No error is raised and unrelated\n  attributes are dropped — a record holding {status, metadata} keeps only\n  the staged status. #2574's captureChanges binds lazily only when no\n  root was supplied, so a falsy root still reaches validation as the\n  staged object rather than as itself.\n- A non-object root is rejected, but the #1298 message names no value\n  (\"received undefined\"), pointing at a missing body rather than a\n  wrong-shaped one.\n\nForward the supplied root and fall back to the staged changes only when\nthe caller passed nothing at all. This is a no-op for every object root:\nboth the fullUpdate and directInstance branches above already assign\n`this.#changes = updates`, so the forwarded value is the same object that\nwas passed before, and #2574's captureChanges arms exactly as it did.\n`false` needs one extra exemption: it is the sentinel that cancels a\npending patch, so it keeps that meaning on the incremental path and is\nrejected only as a full-update root, where `put(false)` otherwise\nreturned silently and let the staged patch commit.\n\nAll four sameKeySaveOrder cases fail on origin/main.\n\nVerification:\n- unitTests/resources: 2495 passing / 33 pending (rocksdb),\n  1946 passing / 377 pending (lmdb)\n- unitTests/apiTests: 201 passing / 1 pending (rocksdb),\n  200 passing / 2 pending (lmdb)\n- integrationTests/resources/bytes-scan-crash.test.ts: 6/6\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-12T18:43:37Z",
+          "url": "https://github.com/HarperFast/harper/commit/070a489d67dd03a288a142857411f2d94b265239"
+        },
+        "date": 1789284292477,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.9,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 16.38,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 20.34,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 21.09,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 26.73,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 19.71,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 38.84,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 17.21,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 19.99,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 46.79,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 187.63,
             "unit": "ms"
           }
         ]
