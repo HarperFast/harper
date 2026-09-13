@@ -268,10 +268,9 @@ describe('record lock delegations', () => {
 
 		it('grants a binary record id homed on a peer', async () => {
 			// A `Bytes` primary key is an ordinary record id: `ordered-binary` encodes it and
-			// `checkValidId` passes it, so the home has to grant it like any other. Refusing the shape
-			// made the home answer `not-home` for a key nobody held, which `acquire` retried every 25 ms
-			// to its own 423 — while the same table's self-homed keys worked, because `#grantLocally`
-			// never goes through `onDelegationRequest`.
+			// `checkValidId` passes it. Refusing the shape made the home answer `not-home` for a key
+			// nobody held, which `acquire` retried every 25 ms to its own 423 — and only for peer-homed
+			// keys, because `#grantLocally` never goes through `onDelegationRequest`.
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			let key;
 			for (let i = 0; !key && i < 10_000; i++) {
@@ -1081,10 +1080,8 @@ describe('record lock delegations', () => {
 		});
 
 		it('accepts every record-id shape the key encoder does', () => {
-			// The key check has to match what `keyIdOf` can encode, in both directions. Too loose lets a
-			// throw reach the replicated apply loop, which is the whole reason the check exists; too
-			// strict silently drops a legitimate lock — the home replies `not-home` for a shape it can
-			// encode perfectly well, and `acquire` retries that to its own 423 on an uncontended key.
+			// The predicate and the encoder have to agree shape by shape; drift off that rule in the
+			// tight direction is what refused binary record ids above.
 			const accepted = [
 				'record-1',
 				42,

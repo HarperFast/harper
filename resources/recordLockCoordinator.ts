@@ -236,16 +236,11 @@ function isDuration(value: unknown, min: number, max: number): value is number {
 }
 
 /**
- * A key whose stored-key identity survives a pack/unpack round trip. The bar is exactly what
- * `ordered-binary` encodes, because that is what `keyIdOf` runs on it, and missing it in either
- * direction is a defect: looser lets a malformed peer payload throw out of `keyIdOf` inside the
- * replicated apply loop, while tighter silently drops a legitimate lock — the home answers
- * `not-home` for a shape it can encode, and `acquire` retries that to its own 423 on a key nobody
- * holds. `unitTests/resources/recordLockCoordinator.test.js` asserts the two agree shape by shape.
- *
- * A `Uint8Array` returns from the unpack as a `Buffer`, which is the same bytes and so the same
- * stored key; a small `bigint` returns as a `number`, which `ordered-binary` encodes identically by
- * construction. Neither changes the identity this predicate is about.
+ * Accept exactly what `ordered-binary` encodes, because that is what `keyIdOf` runs on the key.
+ * Refusing a shape the encoder handles makes the home answer `not-home` for a key nobody holds, and
+ * the requester retries that to its own 423. A `Uint8Array` returns from the unpack as a `Buffer`
+ * and a small `bigint` as a `number`; both encode to the same stored key, which is the identity at
+ * issue rather than the JS value.
  */
 function isEncodableKey(value: unknown): boolean {
 	const type = typeof value;

@@ -387,6 +387,43 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(coordinator.stats.granted, grantedBefore, 'the release cleared the grant');
 		});
 
+		it('grants and clears a binary record id through the real key encoder', async function () {
+			if (isLMDB) return this.skip();
+			const {
+				decodeLockControlPayload,
+				encodeLockControlPayload,
+				deliverLockControlEntry,
+			} = require('#src/resources/recordLockCoordinator');
+			const { unpack } = require('msgpackr');
+			const members = [NODE_NAME, 'peer-1'];
+			useSoloTransport({ members });
+			let recordId;
+			for (let i = 0; !recordId && i < 10_000; i++) {
+				const candidate = new Uint8Array([i & 0xff, i >>> 8]);
+				const ringKey = ringKeyFor('test', ClusterLockTest.tableName, writeKeyId(candidate));
+				if (homeFor(ringKey, members) === getThisNodeName()) recordId = candidate;
+			}
+			assert.ok(recordId, 'no binary id in the first 10000 homes on this node');
+			const coordinator = ClusterLockTest.lockCoordinator;
+			const grantedBefore = coordinator.stats.granted;
+			const granted = await coordinator.onDelegationRequest({
+				key: recordId,
+				requester: 'peer-1',
+				epoch: 1,
+				leaseMs: 5000,
+			});
+			assert.strictEqual(granted.granted, true, 'the home granted a Bytes primary key');
+			const wire = { type: 'lockRelease', key: recordId, requester: 'peer-1', token: granted.token };
+			const decoded = decodeLockControlPayload(wire.type, unpack(encodeLockControlPayload(wire)));
+			assert.ok(decoded, 'the release decodes at the receiver');
+			// The unpack hands the receiver a `Buffer` where the sender had a `Uint8Array`. `writeKeyId`
+			// is the coordinator's map key and encodes both to the same string, so the release finds the
+			// grant it names; a keyId that kept object identity would miss and leak the grant.
+			assert.strictEqual(writeKeyId(decoded.key), writeKeyId(recordId), 'the same stored key');
+			deliverLockControlEntry('test', 'ClusterLockTest', decoded, 'peer-1');
+			assert.strictEqual(coordinator.stats.granted, grantedBefore, 'the release cleared the grant');
+		});
+
 		it('applies a transport-pushed release while the transport is unregistered', async function () {
 			if (isLMDB) return this.skip();
 			const { deliverLockControlEntry } = require('#src/resources/recordLockCoordinator');
