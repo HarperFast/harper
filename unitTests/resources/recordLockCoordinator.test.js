@@ -746,14 +746,24 @@ describe('record lock delegations', () => {
 			const key = cluster.keyHomedOn('beta');
 			const alpha = cluster.node('alpha').coordinator;
 			const round = await alpha.acquire(key, LEASE, WAIT);
-			alpha.release(key, round.admissionId);
+			const { handle, unlocked } = realHandle();
+			assert.strictEqual(
+				handle.joinClusterRound(round.tsR, LEASE, round.mintedMono, () => alpha.release(key, round.admissionId)),
+				true
+			);
+			alpha.registerAdmission(round.admissionId, () => handle.revokeLease());
+			assert.strictEqual(handle.isLeaseExpired(), false, 'the handle expired before the epoch changed');
 			assert.strictEqual(alpha.stats.delegations, 1);
 			// An epoch change may have re-homed the key to a node that knows nothing of this token.
-			// Keeping it would let alpha admit alongside whoever the new home grants.
+			// Keeping its live handle would let alpha commit alongside whoever the new home grants.
 			cluster.epochNumber = 2;
 			const requestsBefore = cluster.requests.length;
-			await alpha.acquire(key, LEASE, WAIT);
+			const replacement = await alpha.acquire(key, LEASE, WAIT);
+			assert.strictEqual(handle.isLeaseExpired(), true, 'the stale-epoch handle was not fenced');
+			assert.strictEqual(unlocked.length, 1, 'revoking the held handle did not return the native key');
 			assert.ok(cluster.requests.length > requestsBefore, 'the stale-epoch delegation was reused');
+			assert.strictEqual(alpha.stats.delegations, 1, 'the replacement delegation was not installed');
+			alpha.release(key, replacement.admissionId);
 		});
 
 		it('refuses to grant before an explicitly configured horizon', async () => {
