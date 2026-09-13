@@ -38,6 +38,7 @@ const FIXTURE_PATH = resolve(import.meta.dirname, 'ttl-rate-limiter-concurrent')
 const TTL_MS = 500; // matches expiration: 0.5 in schema.graphql
 const CONVERGENCE_WINDOW_MS = TTL_MS - 100;
 const POLL_INTERVAL_MS = 20;
+const MIN_READ_BUDGET_MS = 100;
 const WORKERS = 4;
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
@@ -140,6 +141,7 @@ suite(
 		function getConvergenceDeadline(results: Awaited<ReturnType<typeof increment>>[]) {
 			const acknowledged = results.filter((result) => result.status === 200);
 			if (acknowledged.length === 0) return null;
+			// Every acknowledged write starts after its request, so this bound precedes its expiry.
 			return Math.min(
 				Math.max(...acknowledged.map((result) => result.at)) + CONVERGENCE_WINDOW_MS,
 				Math.max(...acknowledged.map((result) => result.startedAt)) + TTL_MS - POLL_INTERVAL_MS
@@ -154,7 +156,7 @@ suite(
 			let stableReads = 0;
 			let confirmed = false;
 			let regressed = false;
-			while (deadline - Date.now() >= POLL_INTERVAL_MS) {
+			while (deadline - Date.now() >= MIN_READ_BUDGET_MS) {
 				response = await get(id, deadline - Date.now());
 				if (Date.now() >= deadline) {
 					response = { status: 'error', body: null };
@@ -187,13 +189,42 @@ suite(
 				if (remainingMs <= 0) break;
 				await sleep(Math.min(POLL_INTERVAL_MS, remainingMs));
 			}
+			let postWindowRead = false;
+			if (response.status === 'error') {
+				postWindowRead = true;
+				response = await get(id);
+				seen.push(`post:${response.status === 200 ? Number(response.body?.hits ?? -1) : String(response.status)}`);
+				if (response.status !== 'error') lastMeaningfulResponse = response;
+			}
 			return {
 				response: response.status === 'error' ? lastMeaningfulResponse : response,
 				seen,
 				confirmed,
 				regressed,
 				endedWithError: response.status === 'error',
+				postWindowRead,
 			};
+		}
+
+		function classifyConvergence(
+			convergence: Awaited<ReturnType<typeof waitForConvergedGet>>,
+			acked: number,
+			uncertain: number
+		): { kind: 'clean' | 'measured' | 'lost' | 'over' | 'inconclusive'; stored?: number } {
+			const { response, confirmed, regressed, endedWithError, postWindowRead } = convergence;
+			if (response.status === 404) {
+				if (confirmed && !regressed && uncertain === 0) return { kind: 'clean' };
+				return { kind: regressed || (!postWindowRead && !endedWithError) ? 'lost' : 'inconclusive' };
+			}
+			if (response.status !== 200) return { kind: 'inconclusive' };
+			const stored = Number(response.body?.hits ?? -1);
+			if (regressed) return { kind: 'lost', stored };
+			if (stored > acked + uncertain) return { kind: 'over', stored };
+			if (stored >= acked) {
+				if (uncertain !== 0) return { kind: 'inconclusive', stored };
+				return { kind: confirmed ? 'clean' : 'measured', stored };
+			}
+			return { kind: endedWithError || postWindowRead ? 'inconclusive' : 'lost', stored };
 		}
 
 		/** DELETE a record (best-effort cleanup). */
@@ -237,6 +268,7 @@ suite(
 			let cleanRounds = 0;
 			let lostCountRounds = 0;
 			let staleRounds = 0;
+			let measuredRounds = 0;
 			let inconclusiveRounds = 0;
 			const roundLogs: string[] = [];
 
@@ -262,49 +294,15 @@ suite(
 					await del(id);
 					continue;
 				}
-				const {
-					response: g,
-					seen,
-					confirmed,
-					regressed,
-					endedWithError,
-				} = await waitForConvergedGet(id, acked, acked + errs, convergenceDeadline);
-				let desc: string;
-				if (g.status === 404) {
-					if (endedWithError && !regressed) {
-						inconclusiveRounds++;
-						desc = `r${r}: INCONCLUSIVE last-status=404 acked=${acked} err=${errs} seen=[${seen.join(',')}]`;
-					} else {
-						lostCountRounds++;
-						desc = `r${r}: ALL-LOST(404) acked=${acked} err=${errs} seen=[${seen.join(',')}]`;
-					}
-				} else if (g.status === 200) {
-					// PUT starts at 0, so stored should equal acked addTo calls.
-					const stored = Number(g.body?.hits ?? -1);
-					if (regressed) {
-						lostCountRounds++;
-						desc = `r${r}: REGRESSED stored=${stored} acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
-					} else if (stored >= acked && stored <= acked + errs && confirmed) {
-						cleanRounds++;
-						const slack = stored - acked;
-						desc = `r${r}: CLEAN${slack ? `(+${slack} timeout slack)` : ''} stored=${stored} acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
-					} else if (stored >= acked && stored <= acked + errs) {
-						inconclusiveRounds++;
-						desc = `r${r}: UNCONFIRMED stored=${stored} acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
-					} else if (endedWithError) {
-						inconclusiveRounds++;
-						desc = `r${r}: INCONCLUSIVE last-stored=${stored}<acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
-					} else if (stored < acked) {
-						lostCountRounds++;
-						desc = `r${r}: LOST stored=${stored}<acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
-					} else {
-						staleRounds++;
-						desc = `r${r}: OVER stored=${stored}>acked+errs=${acked + errs} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
-					}
-				} else {
-					inconclusiveRounds++;
-					desc = `r${r}: unexpected status=${g.status} acked=${acked} seen=[${seen.join(',')}]`;
-				}
+				const uncertain = errs + rejected;
+				const convergence = await waitForConvergedGet(id, acked, acked + uncertain, convergenceDeadline);
+				const outcome = classifyConvergence(convergence, acked, uncertain);
+				if (outcome.kind === 'clean') cleanRounds++;
+				else if (outcome.kind === 'measured') measuredRounds++;
+				else if (outcome.kind === 'lost') lostCountRounds++;
+				else if (outcome.kind === 'over') staleRounds++;
+				else inconclusiveRounds++;
+				const desc = `r${r}: ${outcome.kind.toUpperCase()} observed=${outcome.stored ?? convergence.response.status} acked=${acked} rej=${rejected} err=${errs} seen=[${convergence.seen.join(',')}]`;
 				roundLogs.push(desc);
 				await del(id);
 			}
@@ -312,6 +310,7 @@ suite(
 			log(
 				`\n[QA-431] (2) WITHIN-WINDOW EXACTNESS (${ROUNDS} rounds × N=${N}, TTL=${TTL_MS}ms, ${WORKERS} workers)\n` +
 					`  clean rounds                  = ${cleanRounds}\n` +
+					`  single-read measured rounds   = ${measuredRounds}\n` +
 					`  lost-count rounds             = ${lostCountRounds}  ← DEFECT if > 0\n` +
 					`  over-count rounds             = ${staleRounds}  ← DEFECT if > 0\n` +
 					`  inconclusive rounds           = ${inconclusiveRounds}\n` +
@@ -320,9 +319,10 @@ suite(
 
 			ok(lostCountRounds === 0, `QA-431(2): lost-count in ${lostCountRounds} round(s) — CRDT×TTL defect`);
 			ok(staleRounds === 0, `QA-431(2): over-count in ${staleRounds} round(s) — double-apply or resurrection`);
+			// Fail rather than pass vacuously when timing or transport errors hide most outcomes.
 			ok(
-				cleanRounds + lostCountRounds + staleRounds >= ROUNDS / 2,
-				`QA-431(2): only ${cleanRounds + lostCountRounds + staleRounds}/${ROUNDS} rounds were measurable (${inconclusiveRounds} inconclusive) — cannot confirm this probe exercised the guarded regression`
+				cleanRounds + measuredRounds + lostCountRounds + staleRounds >= ROUNDS / 2,
+				`QA-431(2): only ${cleanRounds + measuredRounds + lostCountRounds + staleRounds}/${ROUNDS} rounds were measurable (${inconclusiveRounds} inconclusive) — cannot confirm this probe exercised the guarded regression`
 			);
 		});
 
@@ -341,6 +341,7 @@ suite(
 			let cleanRounds = 0;
 			let lostCountRounds = 0;
 			let staleRounds = 0;
+			let measuredRounds = 0;
 			let skipRounds = 0;
 			const roundLogs: string[] = [];
 
@@ -382,49 +383,15 @@ suite(
 					await del(id);
 					continue;
 				}
-				const {
-					response: g,
-					seen,
-					confirmed,
-					regressed,
-					endedWithError,
-				} = await waitForConvergedGet(id, acked, acked + errs, convergenceDeadline);
-				let desc: string;
-				if (g.status === 404) {
-					if (endedWithError && !regressed) {
-						skipRounds++;
-						desc = `r${r}: INCONCLUSIVE last-status=404 acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
-					} else {
-						lostCountRounds++;
-						desc = `r${r}: ALL-LOST(404) acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
-					}
-				} else if (g.status === 200) {
-					const stored = Number(g.body?.hits ?? -1);
-					if (regressed) {
-						lostCountRounds++;
-						desc = `r${r}: REGRESSED stored=${stored} acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
-					} else if (stored >= acked && stored <= acked + errs && confirmed) {
-						cleanRounds++;
-						const slack = stored - acked;
-						desc = `r${r}: CLEAN${slack ? `(+${slack} timeout slack)` : ''} stored=${stored} acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
-					} else if (stored >= acked && stored <= acked + errs) {
-						skipRounds++;
-						desc = `r${r}: UNCONFIRMED stored=${stored} acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
-					} else if (endedWithError) {
-						skipRounds++;
-						desc = `r${r}: INCONCLUSIVE last-stored=${stored}<acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
-					} else if (stored < acked) {
-						lostCountRounds++;
-						desc = `r${r}: LOST stored=${stored}<acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
-					} else {
-						staleRounds++;
-						// stored > acked: could indicate stale value from old window survived expiry.
-						desc = `r${r}: OVER stored=${stored}>acked+errs=${acked + errs} rej=${rejected} err=${errs} [seed was 99] burstMs=${burstMs} seen=[${seen.join(',')}]`;
-					}
-				} else {
-					skipRounds++;
-					desc = `r${r}: unexpected status=${g.status} acked=${acked} seen=[${seen.join(',')}]`;
-				}
+				const uncertain = errs + rejected;
+				const convergence = await waitForConvergedGet(id, acked, acked + uncertain, convergenceDeadline);
+				const outcome = classifyConvergence(convergence, acked, uncertain);
+				if (outcome.kind === 'clean') cleanRounds++;
+				else if (outcome.kind === 'measured') measuredRounds++;
+				else if (outcome.kind === 'lost') lostCountRounds++;
+				else if (outcome.kind === 'over') staleRounds++;
+				else skipRounds++;
+				const desc = `r${r}: ${outcome.kind.toUpperCase()} observed=${outcome.stored ?? convergence.response.status} acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${convergence.seen.join(',')}]`;
 				roundLogs.push(desc);
 				await del(id);
 			}
@@ -432,6 +399,7 @@ suite(
 			log(
 				`\n[QA-431] (3) FROM-NOTHING BURST (${ROUNDS} rounds × N=${N}, TTL=${TTL_MS}ms, ${WORKERS} workers)\n` +
 					`  clean rounds                  = ${cleanRounds}\n` +
+					`  single-read measured rounds   = ${measuredRounds}\n` +
 					`  lost-count rounds             = ${lostCountRounds}  ← DEFECT if > 0\n` +
 					`  over-count rounds (seed=99)   = ${staleRounds}  ← DEFECT: stale resurrection if > 0\n` +
 					`  inconclusive rounds           = ${skipRounds}\n` +
@@ -448,8 +416,8 @@ suite(
 			// above, lostCountRounds/staleRounds stay 0, and the two asserts above vacuously pass —
 			// silently failing to catch the eviction class this anchor guards.
 			ok(
-				cleanRounds + lostCountRounds + staleRounds >= ROUNDS / 2,
-				`QA-431(3): only ${cleanRounds + lostCountRounds + staleRounds}/${ROUNDS} rounds actually fired the burst (rest skipped as not-yet-expired) — TTL eviction may not be firing, and this probe cannot exercise the guarded regression`
+				cleanRounds + measuredRounds + lostCountRounds + staleRounds >= ROUNDS / 2,
+				`QA-431(3): only ${cleanRounds + measuredRounds + lostCountRounds + staleRounds}/${ROUNDS} rounds actually measured the burst (${skipRounds} inconclusive) — TTL eviction may not be firing, and this probe cannot exercise the guarded regression`
 			);
 		});
 
@@ -559,6 +527,7 @@ suite(
 			let cleanWindows = 0;
 			let lostWindowCount = 0;
 			let overWindowCount = 0;
+			let measuredWindows = 0;
 			let inconclusiveWindows = 0;
 			const windowLogs: string[] = [];
 
@@ -574,74 +543,44 @@ suite(
 					const hits = await Promise.all(Array.from({ length: HITS_PER_WINDOW }, () => increment(id)));
 					const acked = hits.filter((h) => h.status === 200).length;
 					const errs = hits.filter((h) => h.status === 'error').length;
+					const rejected = hits.filter((h) => typeof h.status === 'number' && h.status !== 200).length;
+					const uncertain = errs + rejected;
 					const convergenceDeadline = getConvergenceDeadline(hits);
 					return {
 						id,
 						acked,
 						errs,
+						rejected,
 						convergence:
 							convergenceDeadline === null
 								? null
-								: await waitForConvergedGet(id, acked, acked + errs, convergenceDeadline),
+								: await waitForConvergedGet(id, acked, acked + uncertain, convergenceDeadline),
 					};
 				})
 			);
 
-			for (const { id, acked, errs, convergence } of settled) {
+			for (const { id, acked, errs, rejected, convergence } of settled) {
 				if (!convergence) {
 					inconclusiveWindows++;
-					windowLogs.push(`${id}: no acknowledged increments [skip] acked=${acked} err=${errs}`);
+					windowLogs.push(`${id}: no acknowledged increments [skip] acked=${acked} rej=${rejected} err=${errs}`);
 					continue;
 				}
-				const { response: g, seen, confirmed, regressed, endedWithError } = convergence;
-				if (g.status === 404) {
-					if (endedWithError && !regressed) {
-						inconclusiveWindows++;
-						windowLogs.push(`${id}: INCONCLUSIVE last-status=404 acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
-					} else {
-						lostWindowCount++;
-						windowLogs.push(`${id}: ALL-LOST(404) acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
-					}
-					continue;
-				}
-				if (g.status === 200) {
-					const stored = Number(g.body?.hits ?? -1);
-					if (regressed) {
-						lostWindowCount++;
-						windowLogs.push(`${id}: REGRESSED stored=${stored} acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
-					} else if (stored >= acked && stored <= acked + errs && confirmed) {
-						cleanWindows++;
-						const slack = stored - acked;
-						windowLogs.push(
-							`${id}: CLEAN${slack ? `(+${slack} timeout slack)` : ''} stored=${stored} acked=${acked} err=${errs} seen=[${seen.join(',')}]`
-						);
-					} else if (stored >= acked && stored <= acked + errs) {
-						inconclusiveWindows++;
-						windowLogs.push(`${id}: UNCONFIRMED stored=${stored} acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
-					} else if (endedWithError) {
-						inconclusiveWindows++;
-						windowLogs.push(
-							`${id}: INCONCLUSIVE last-stored=${stored}<acked=${acked} err=${errs} seen=[${seen.join(',')}]`
-						);
-					} else if (stored < acked) {
-						lostWindowCount++;
-						windowLogs.push(`${id}: LOST stored=${stored}<acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
-					} else {
-						overWindowCount++;
-						windowLogs.push(
-							`${id}: OVER stored=${stored}>acked+errs=${acked + errs} [seed=0] seen=[${seen.join(',')}]`
-						);
-					}
-				} else {
-					inconclusiveWindows++;
-					windowLogs.push(`${id}: status=${g.status} acked=${acked} seen=[${seen.join(',')}]`);
-				}
+				const outcome = classifyConvergence(convergence, acked, errs + rejected);
+				if (outcome.kind === 'clean') cleanWindows++;
+				else if (outcome.kind === 'measured') measuredWindows++;
+				else if (outcome.kind === 'lost') lostWindowCount++;
+				else if (outcome.kind === 'over') overWindowCount++;
+				else inconclusiveWindows++;
+				windowLogs.push(
+					`${id}: ${outcome.kind.toUpperCase()} observed=${outcome.stored ?? convergence.response.status} acked=${acked} rej=${rejected} err=${errs} seen=[${convergence.seen.join(',')}]`
+				);
 			}
 			await Promise.all(settled.map(({ id }) => del(id)));
 
 			log(
 				`\n[QA-431] (5) MULTI-WORKER STRESS (${WINDOWS} windows × ${HITS_PER_WINDOW} hits, ${WORKERS} workers)\n` +
 					`  clean windows              = ${cleanWindows}/${WINDOWS}\n` +
+					`  single-read measured       = ${measuredWindows}/${WINDOWS}\n` +
 					`  lost-count windows         = ${lostWindowCount}  ← DEFECT if > 0\n` +
 					`  over-count windows         = ${overWindowCount}  ← DEFECT if > 0\n` +
 					`  inconclusive windows       = ${inconclusiveWindows}\n` +
@@ -650,9 +589,10 @@ suite(
 
 			ok(lostWindowCount === 0, `QA-431(5): ${lostWindowCount} window(s) with lost counts under multi-worker stress`);
 			ok(overWindowCount === 0, `QA-431(5): ${overWindowCount} window(s) over-counted under multi-worker stress`);
+			// Fail rather than pass vacuously when timing or transport errors hide most outcomes.
 			ok(
-				cleanWindows + lostWindowCount + overWindowCount >= WINDOWS / 2,
-				`QA-431(5): only ${cleanWindows + lostWindowCount + overWindowCount}/${WINDOWS} windows were measurable (${inconclusiveWindows} inconclusive) — cannot confirm this probe exercised the guarded regression`
+				cleanWindows + measuredWindows + lostWindowCount + overWindowCount >= WINDOWS / 2,
+				`QA-431(5): only ${cleanWindows + measuredWindows + lostWindowCount + overWindowCount}/${WINDOWS} windows were measurable (${inconclusiveWindows} inconclusive) — cannot confirm this probe exercised the guarded regression`
 			);
 		});
 	}
