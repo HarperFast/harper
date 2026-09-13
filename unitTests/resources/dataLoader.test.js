@@ -982,7 +982,7 @@ records:
 
 		beforeEach(function () {
 			// Save original function
-			originalGetWorkerIndex = manageThreads.getWorkerIndex;
+			originalGetWorkerIndex = manageThreads.isApplicationPrimaryWorker;
 
 			// Clear any previous stub calls to the logger
 			loggerStub.info.resetHistory();
@@ -992,12 +992,12 @@ records:
 
 		afterEach(function () {
 			// Restore original functions
-			manageThreads.getWorkerIndex = originalGetWorkerIndex;
+			manageThreads.isApplicationPrimaryWorker = originalGetWorkerIndex;
 		});
 
 		it('should set up file handler on primary worker', function () {
-			// Mock getWorkerIndex to return zero
-			manageThreads.getWorkerIndex = sinon.stub().returns(0);
+			// the data loader runs only on the application's primary worker
+			manageThreads.isApplicationPrimaryWorker = sinon.stub().returns(true);
 
 			const mockScope = {
 				handleEntry: sinon.stub(),
@@ -1010,7 +1010,7 @@ records:
 		});
 
 		it('should skip non-file entries', async function () {
-			manageThreads.getWorkerIndex = sinon.stub().returns(0);
+			manageThreads.isApplicationPrimaryWorker = sinon.stub().returns(true);
 
 			const mockScope = {
 				handleEntry: sinon.stub(),
@@ -1031,7 +1031,7 @@ records:
 		});
 
 		it('should skip unlink events', async function () {
-			manageThreads.getWorkerIndex = sinon.stub().returns(0);
+			manageThreads.isApplicationPrimaryWorker = sinon.stub().returns(true);
 
 			const mockScope = {
 				handleEntry: sinon.stub(),

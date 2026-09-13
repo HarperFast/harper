@@ -144,6 +144,11 @@ export type DerivedIndexRunnerOptions = {
 	maxRebuildBackoffMilliseconds?: number;
 	maxRebuildAttempts?: number;
 	/**
+	 * Cadence on which a non-owner re-tries the runner lock when no wake reaches it: the fallback for
+	 * an owner that died without releasing, whose lock is released natively with nothing to notify.
+	 */
+	lockRetryMilliseconds?: number;
+	/**
 	 * Opt-in writer backpressure: while the index is further behind than this, user writes to its
 	 * tables fail with a retryable 503 on every worker. 0 (the default) means no policy.
 	 */
@@ -397,6 +402,7 @@ function resolveRunnerOptions(
 		flushAfterMutations: 4096,
 		flushAfterBytes: 8 * 1024 * 1024,
 		rebuildBackoffMilliseconds: 1000,
+		lockRetryMilliseconds: 5000,
 		maxRebuildBackoffMilliseconds: 300_000,
 		maxRebuildAttempts: 8,
 		maxLagMilliseconds: 0,
@@ -413,6 +419,7 @@ function resolveRunnerOptions(
 		flushAfterMutations: options.flushAfterMutations ?? base.flushAfterMutations,
 		flushAfterBytes: options.flushAfterBytes ?? base.flushAfterBytes,
 		rebuildBackoffMilliseconds: options.rebuildBackoffMilliseconds ?? base.rebuildBackoffMilliseconds,
+		lockRetryMilliseconds: options.lockRetryMilliseconds ?? base.lockRetryMilliseconds,
 		maxRebuildBackoffMilliseconds: options.maxRebuildBackoffMilliseconds ?? base.maxRebuildBackoffMilliseconds,
 		maxRebuildAttempts: options.maxRebuildAttempts ?? base.maxRebuildAttempts,
 		maxLagMilliseconds: Math.max(0, options.maxLagMilliseconds ?? base.maxLagMilliseconds),
@@ -472,7 +479,9 @@ class DerivedIndexRunner {
 	#lockRetryTimer?: NodeJS.Timeout;
 	#lagBudget: number;
 	#scheduled = false;
+	#skipNextNotify = false;
 	#waitingForLock = false;
+	#lockBackoff = false;
 	#owned = false;
 	#stopped = false;
 	#generation = 0;
@@ -545,9 +554,7 @@ class DerivedIndexRunner {
 			typeof root?.getSync === 'function' &&
 			typeof root?.removeSync === 'function';
 		this.#lagBudget = effectiveLagBudget(options);
-		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => {
-			if (this.#owned) this.wake(true);
-		});
+		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => this.#notified());
 		this.#sharedViews = sharedViewsOf(this.#readinessBuffer);
 		try {
 			registration.backend.attach({
@@ -779,37 +786,78 @@ class DerivedIndexRunner {
 		return typeof this.#registration.backend.reset === 'function' && this.#scanRecords !== undefined;
 	}
 
+	/**
+	 * `notify()` reaches every registration for the key including the caller's own, exactly once
+	 * (measured on the pinned rocksdb-js 2.9.0), which is what lets the releasing runner consume the
+	 * notification it caused instead of re-acquiring the lock it just gave up. #2576 reverts to the
+	 * unlock callback and can drop the skip with it.
+	 *
+	 * Only an owner (which the shared rebuild request above is aimed at) and a runner parked on the
+	 * lock act on it. A dormant ex-owner must not: it would take the idling peer's release, find no
+	 * work, idle out and hand it back, rotating ownership — and a backend shutdown and a fresh owner
+	 * epoch with it — every grace period on a system with nothing to do.
+	 */
+	#notified() {
+		if (this.#skipNextNotify) {
+			this.#skipNextNotify = false;
+			return;
+		}
+		if (!this.#owned && !this.#waitingForLock) return;
+		this.#waitingForLock = false;
+		try {
+			this.wake(true);
+		} catch (error) {
+			this.#fail('readiness notification failed', error);
+		}
+	}
+
+	/**
+	 * The lock is taken without an unlock callback. rocksdb-js queues such a callback as a
+	 * thread-safe function of the caller's env, and on Node 22 a callback left behind by a worker that
+	 * was terminated aborts the process when another thread unlocks (HarperFast/rocksdb-js, pending).
+	 * A successor is woken by the releasing owner's `notify()` on the readiness buffer — which
+	 * tolerates a dead listener's env — and by the retry timer below.
+	 */
 	#acquire() {
-		if (this.#waitingForLock || this.#lockRetryTimer) return;
+		// Commit wakes are frequent; neither a parked nor a backing-off runner may re-probe on each one.
+		if (this.#waitingForLock || this.#lockBackoff) return;
 		if (this.#releasing) {
 			this.#releasing.then(() => this.wake(true));
 			return;
 		}
-		this.#waitingForLock = true;
-		const retry = () => {
-			this.#waitingForLock = false;
-			try {
-				this.wake(true);
-			} catch (error) {
-				this.#fail('unlock notification failed', error);
-			}
-		};
+		let acquired: boolean;
 		try {
-			if (!this.#logStore.tryLock(this.#lockKey, retry)) return;
+			acquired = this.#logStore.tryLock(this.#lockKey);
 		} catch (error) {
-			this.#waitingForLock = false;
 			logger.error(`Derived index '${this.id}' could not attempt the runner lock; retrying`, error);
-			if (!this.#lockRetryTimer) {
-				this.#lockRetryTimer = setTimeout(() => {
-					this.#lockRetryTimer = undefined;
-					this.wake(true);
-				}, this.#options.rebuildBackoffMilliseconds);
-				this.#lockRetryTimer.unref?.();
-			}
+			this.#lockBackoff = true;
+			// Replace an armed contention retry rather than inheriting its deadline.
+			clearTimeout(this.#lockRetryTimer);
+			this.#lockRetryTimer = undefined;
+			this.#armLockRetry(this.#options.rebuildBackoffMilliseconds);
 			return;
 		}
-		this.#waitingForLock = false;
+		if (!acquired) {
+			this.#waitingForLock = true;
+			this.#armLockRetry(this.#options.lockRetryMilliseconds);
+			return;
+		}
+		if (this.#lockRetryTimer) {
+			clearTimeout(this.#lockRetryTimer);
+			this.#lockRetryTimer = undefined;
+		}
 		this.#acquired();
+	}
+
+	#armLockRetry(delay: number) {
+		if (this.#lockRetryTimer) return;
+		this.#lockRetryTimer = setTimeout(() => {
+			this.#lockRetryTimer = undefined;
+			this.#lockBackoff = false;
+			this.#waitingForLock = false;
+			this.wake(true);
+		}, delay);
+		this.#lockRetryTimer.unref?.();
 	}
 
 	#acquired(reviving = false) {
@@ -1859,6 +1907,16 @@ class DerivedIndexRunner {
 				this.#logStore.unlock(this.#lockKey);
 			} catch (error) {
 				logger.error(`Failed to release derived index runner '${backend.id}'`, error);
+			}
+			// A skip left standing by an absent or throwing `notify` swallows a peer's release instead.
+			if (this.#readinessBuffer.notify) {
+				this.#skipNextNotify = !this.#stopped;
+				try {
+					this.#readinessBuffer.notify();
+				} catch (error) {
+					this.#skipNextNotify = false;
+					logger.warn?.(`Derived index '${backend.id}' could not notify peers of its release`, error);
+				}
 			}
 		};
 		const hold = (error: unknown) => {

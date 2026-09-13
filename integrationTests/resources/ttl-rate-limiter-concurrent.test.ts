@@ -36,6 +36,8 @@ import { createApiClient } from '../apiTests/utils/client.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'ttl-rate-limiter-concurrent');
 const TTL_MS = 500; // matches expiration: 0.5 in schema.graphql
+const PRE_EXPIRY_MARGIN_MS = 50;
+const POLL_INTERVAL_MS = 25;
 const WORKERS = 4;
 
 const skipSuite = process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun';
@@ -91,7 +93,8 @@ suite(
 		}
 
 		/** Atomic increment via POST /RateIncrement/ */
-		async function increment(id: string): Promise<{ status: number | 'error'; at: number }> {
+		async function increment(id: string): Promise<{ status: number | 'error'; at: number; startedAt: number }> {
+			const startedAt = Date.now();
 			try {
 				const r = await fetch(`${httpURL}/RateIncrement/`, {
 					method: 'POST',
@@ -99,9 +102,9 @@ suite(
 					body: JSON.stringify({ id }),
 					signal: AbortSignal.timeout(6_000),
 				});
-				return { status: r.status, at: Date.now() };
+				return { status: r.status, at: Date.now(), startedAt };
 			} catch {
-				return { status: 'error', at: Date.now() };
+				return { status: 'error', at: Date.now(), startedAt };
 			}
 		}
 
@@ -121,11 +124,11 @@ suite(
 		}
 
 		/** GET a record. */
-		async function get(id: string): Promise<{ status: number | 'error'; body: any }> {
+		async function get(id: string, timeoutMs = 5_000): Promise<{ status: number | 'error'; body: any }> {
 			try {
 				const r = await fetch(`${httpURL}/RateCounter/${id}`, {
 					headers: { Authorization: auth },
-					signal: AbortSignal.timeout(5_000),
+					signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
 				});
 				const body = r.status === 200 ? await r.json() : null;
 				return { status: r.status, body };
@@ -153,6 +156,31 @@ suite(
 				prev = next;
 			}
 			return prev;
+		}
+
+		async function waitForExactBeforeExpiry(id: string, expectedHits: number, deadline: number, burstStart: number) {
+			let response: Awaited<ReturnType<typeof get>> = { status: 'error', body: null };
+			const observations: string[] = [];
+			while (Date.now() < deadline) {
+				const candidate = await get(id, deadline + PRE_EXPIRY_MARGIN_MS - Date.now());
+				const observedAt = Date.now();
+				const observed = candidate.status === 200 ? Number(candidate.body?.hits ?? -1) : candidate.status;
+				observations.push(`+${observedAt - burstStart}ms:${observed}`);
+				if (
+					candidate.status === 200 &&
+					Number(candidate.body?.hits ?? -1) >= expectedHits &&
+					observedAt <= deadline + PRE_EXPIRY_MARGIN_MS
+				) {
+					response = candidate;
+					break;
+				}
+				if (observedAt > deadline) break;
+				if (candidate.status !== 'error') response = candidate;
+				const remainingMs = deadline - Date.now();
+				if (remainingMs <= 0) break;
+				await sleep(Math.min(POLL_INTERVAL_MS, remainingMs));
+			}
+			return { response, observations };
 		}
 
 		/** DELETE a record (best-effort cleanup). */
@@ -307,28 +335,38 @@ suite(
 				const errs = results.filter((x) => x.status === 'error').length;
 				const rejected = results.filter((x) => typeof x.status === 'number' && x.status !== 200).length;
 
-				// Poll for a settled value instead of a fixed sleep.
-				const g = await waitForStableGet(id);
+				const acknowledged = results.filter((x) => x.status === 200);
+				if (acknowledged.length === 0) {
+					skipRounds++;
+					roundLogs.push(`r${r}: skip (no acknowledged increments) rej=${rejected} err=${errs}`);
+					await del(id);
+					continue;
+				}
+				// A commit happens after request start, so this deadline is still before the
+				// earliest possible expiry of every acknowledged write in the burst.
+				const preExpiryDeadline =
+					Math.min(...acknowledged.map((result) => result.startedAt)) + TTL_MS - PRE_EXPIRY_MARGIN_MS;
+				const { response: g, observations } = await waitForExactBeforeExpiry(id, acked, preExpiryDeadline, t0);
 				let desc: string;
 				if (g.status === 404) {
-					// All increments fired but no record persisted — all lost.
 					lostCountRounds++;
-					desc = `r${r}: ALL-LOST(404) acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs}`;
+					desc = `r${r}: ALL-LOST(404) acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} observations=[${observations.join(',')}]`;
 				} else if (g.status === 200) {
 					const stored = Number(g.body?.hits ?? -1);
 					if (stored === acked) {
 						cleanRounds++;
-						desc = `r${r}: CLEAN stored=${stored}==acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs}`;
+						desc = `r${r}: CLEAN stored=${stored}==acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} observations=[${observations.join(',')}]`;
 					} else if (stored < acked) {
 						lostCountRounds++;
-						desc = `r${r}: LOST stored=${stored}<acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs}`;
+						desc = `r${r}: LOST stored=${stored}<acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} observations=[${observations.join(',')}]`;
 					} else {
 						staleRounds++;
 						// stored > acked: could indicate stale value from old window survived expiry.
-						desc = `r${r}: OVER stored=${stored}>acked=${acked} rej=${rejected} err=${errs} [seed was 99] burstMs=${burstMs}`;
+						desc = `r${r}: OVER stored=${stored}>acked=${acked} rej=${rejected} err=${errs} [seed was 99] burstMs=${burstMs} observations=[${observations.join(',')}]`;
 					}
 				} else {
-					desc = `r${r}: unexpected status=${g.status} acked=${acked}`;
+					skipRounds++;
+					desc = `r${r}: inconclusive (no pre-expiry sample) acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} observations=[${observations.join(',')}]`;
 				}
 				roundLogs.push(desc);
 				await del(id);
@@ -354,7 +392,7 @@ suite(
 			// silently failing to catch the eviction class this anchor guards.
 			ok(
 				cleanRounds + lostCountRounds + staleRounds >= ROUNDS / 2,
-				`QA-431(3): only ${cleanRounds + lostCountRounds + staleRounds}/${ROUNDS} rounds actually fired the burst (rest skipped as not-yet-expired) — TTL eviction may not be firing, and this probe cannot exercise the guarded regression`
+				`QA-431(3): only ${cleanRounds + lostCountRounds + staleRounds}/${ROUNDS} rounds actually measured the burst (${skipRounds} inconclusive) — TTL eviction may not be firing, and this probe cannot exercise the guarded regression`
 			);
 		});
 
@@ -483,8 +521,8 @@ suite(
 				})
 			);
 
-			// Poll each window for a settled value (see waitForStableGet/leg (3)) rather than a
-			// single immediate read. Concurrent, not sequential: serializing 10 polls could push
+			// Poll each window for a settled value rather than a single immediate read. Concurrent,
+			// not sequential: serializing 10 polls could push
 			// later keys' reads past their own 500ms TTL and misreport a clean window as expired.
 			const settled = await Promise.all(windowResults.map(({ id }) => waitForStableGet(id)));
 			for (let i = 0; i < windowResults.length; i++) {

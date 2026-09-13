@@ -41,6 +41,8 @@ import {
 	isReleasedTransaction,
 	TRANSACTION_STATE,
 	writeKeyId,
+	closeWriteInstance,
+	type WriteGeneration,
 } from './DatabaseTransaction.ts';
 import {
 	acquireRecordKey,
@@ -77,10 +79,25 @@ import {
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
-import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
+import {
+	Addition,
+	assignTrackedAccessors,
+	updateAndFreeze,
+	hasChanges,
+	GenericTrackedObject,
+	ASSERT_TRACKED_WRITABLE,
+	GET_TRACKED_WRITE_GENERATION,
+} from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
-import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
+import {
+	getWorkerIndex,
+	applicationWorkerIndex,
+	ownsStoreMaintenance,
+	ownsStoreExpiration,
+	runsApplicationCodeSingletons,
+	isDedicatedWorker,
+} from '../server/threads/manageThreads.js';
 import {
 	HAS_BLOBS,
 	LOCAL_ONLY,
@@ -532,6 +549,11 @@ export function makeTable(options) {
 		isBranch,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
+	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
+	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
+	// dedicated workers open unrelated shared tables too, whose scan remains owned by the pool.
+	let ttlConfiguredByApplication = false;
+	let ttlFromLoad = false; // true only around the creation-time call below
 	evictionMs ??= 0;
 	// Eviction without explicit expiration means expiration:0. Apply at construction so
 	// describe_all sees it on every worker, not just ones that ran setTTLExpiration.
@@ -572,7 +594,7 @@ export function makeTable(options) {
 	let nonPrefetchSequence = 2;
 	let cleanupInterval = 86400000;
 	let cleanupPriority = 0;
-	let lastCleanupInterval: number;
+	let lastCleanupInterval: number | undefined;
 	let cleanupTimer: NodeJS.Timeout;
 	let recordExpirationInterval: NodeJS.Timeout;
 	// a reclamation pass awaits a scheduled cleanup, which only settles from its timer
@@ -786,7 +808,17 @@ export function makeTable(options) {
 		#savingOperation?: any; // operation for the record is currently being saved
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
+		#writeGeneration?: WriteGeneration;
 		declare getProperty: (name: string) => any;
+		[ASSERT_TRACKED_WRITABLE](generation = this.#writeGeneration): void {
+			if (!generation) return;
+			if (generation.internalWrites > 0) return;
+			if (generation !== this.#writeGeneration || generation.closed)
+				throw new ClientError('Can not modify an update instance after it has been saved; call update() again', 409);
+		}
+		[GET_TRACKED_WRITE_GENERATION](): WriteGeneration {
+			return (this.#writeGeneration ??= { closed: false, internalWrites: 0 });
+		}
 
 		/**
 		 * Shared guard: if this instance is lock-writable but the handle is gone (expired or
@@ -794,7 +826,9 @@ export function makeTable(options) {
 		 * in addition to the save() path. Every lock-writable instance carries its own handle in
 		 * #lockHandle (scoped and hold alike), so we never need to search the registry here.
 		 */
-		#assertLiveHandle(id: Id): void {
+		#assertLiveHandle(id: Id, allowClosed = false): void {
+			if (!allowClosed && this.#writeGeneration?.closed && writeKeyId(id) === writeKeyId(this.getId()))
+				this[ASSERT_TRACKED_WRITABLE]();
 			if (!this.#lockWritable) return;
 			const handle = this.#lockHandle!;
 			// Off-key writes through the same resource instance are ordinary; only guard the
@@ -998,8 +1032,8 @@ export function makeTable(options) {
 						omitCurrent: true,
 					};
 					const subscribeOnThisThread = source.subscribeOnThisThread
-						? source.subscribeOnThisThread(getWorkerIndex(), subscriptionOptions)
-						: getWorkerIndex() === 0;
+						? source.subscribeOnThisThread(applicationWorkerIndex(), subscriptionOptions)
+						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
 					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
 						let txnInProgress;
@@ -1531,24 +1565,51 @@ export function makeTable(options) {
 		 * This also informs the scheduling for record eviction.
 		 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
-		 * eviction/scanInterval; object form replaces all three.
+		 * eviction/scanInterval; object form replaces all three. An internal schema ownership-only call with
+		 * none of those values preserves the settings already loaded from the catalog.
 		 */
-		static setTTLExpiration(opts: number | { expiration?: number; eviction?: number; scanInterval?: number }) {
+		static setTTLExpiration(
+			opts:
+				| number
+				| {
+						expiration?: number;
+						eviction?: number;
+						scanInterval?: number;
+						fromSchema?: boolean;
+						isolatedApplicationOwner?: boolean;
+				  }
+		) {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
+			const declaredHere = typeof opts === 'object' && opts.fromSchema;
+			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
+			const preserveLoadedConfiguration =
+				declaredHere && opts.expiration === undefined && opts.eviction === undefined && opts.scanInterval === undefined;
+			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlConfiguredByApplication) {
+				ttlConfiguredByApplication = true;
+				// the scan owner may have changed with this: re-evaluate even if the interval did not
+				lastCleanupInterval = undefined;
+			}
 			if (typeof opts === 'number') {
 				expirationMs = opts * 1000;
-			} else {
+			} else if (!preserveLoadedConfiguration) {
 				// `??` so an explicit 0 is treated as the user's chosen value, not as "missing"
 				expirationMs = (opts.expiration ?? 0) * 1000;
 				evictionMs = (opts.eviction ?? 0) * 1000;
 				cleanupInterval = (opts.scanInterval ?? 0) * 1000;
 			}
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
-			// default to one quarter of the total expiration+eviction window
-			cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
-			expirationScanScheduled = true;
-			scheduleCleanup();
+			if (!preserveLoadedConfiguration) {
+				// default to one quarter of the total expiration+eviction window
+				cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
+				expirationScanScheduled = true;
+			}
+			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
+			// create the default daily cleanup timer for a table that has only an @expiresAt field.
+			if (!preserveLoadedConfiguration || expirationScanScheduled || evictionMs) scheduleCleanup();
+			// @expiresAt has its own interval rather than the cleanup timer above. Arm it whenever a live
+			// declaration introduces the attribute, including after this application already claimed TTL.
+			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 		}
 
 		static getResidencyRecord(id: Id) {
@@ -2097,12 +2158,18 @@ export function makeTable(options) {
 			} else {
 				id = requestTargetToId(target);
 			}
+			if (this.#writeGeneration?.closed) {
+				this.#changes = undefined;
+				this.#writeGeneration = undefined;
+			}
+			this.#assertLiveHandle(id, true);
 
 			const context = this.getContext();
 			const envTxn = txnForContext(context);
 			if (!envTxn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
-			if (updates === false) {
+			// `false` is the patch-cancel sentinel, not a record root — but only incrementally.
+			if (updates === false && !fullUpdate) {
 				// TODO: Remove from transaction
 				return this;
 			}
@@ -2145,15 +2212,25 @@ export function makeTable(options) {
 					});
 				}
 			}
-			return when(this._writeUpdate(id, this.#changes, fullUpdate), () => this);
+			// Keep absent changes distinguishable from an explicit empty patch: framework-created
+			// post/publish updates do not necessarily mutate or save the instance.
+			// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
+			const recordRoot = updates === undefined ? this.#changes : updates;
+			return when(this._writeUpdate(id, recordRoot, fullUpdate), () => this);
 		}
 
 		/**
 		 * Save any changes into this instance to the current transaction
 		 */
 		save() {
-			this.#assertLiveHandle(this.getId()); // a write through a released or expired lock never lands
 			const operation = this.#savingOperation;
+			if (
+				!this.#lockWritable &&
+				this.#writeGeneration?.closed &&
+				(!operation || operation.writeGeneration === this.#writeGeneration)
+			)
+				return;
+			this.#assertLiveHandle(operation?.key ?? this.getId()); // a write through a released or expired lock never lands
 			if ((!operation || operation.dropped) && this.#lockWritable && this.#lockHandle?.hold) {
 				// A held lock's record stages its update here rather than at lock() time: it is often
 				// written after the acquiring transaction has already completed, which would have
@@ -2213,12 +2290,21 @@ export function makeTable(options) {
 				// resolve before that native commit actually settles. Chain on innerCommit (as the
 				// lock-writable hold branch above already does) so callers awaiting save() see the
 				// write durably land, not just the outer (possibly premature) resolution.
-				const result = this.#saveOperation(operation);
+				let result;
+				try {
+					result = this.#saveOperation(operation);
+				} catch (error) {
+					if (!operation.saved) this.#savingOperation = operation;
+					throw error;
+				}
 				const innerCommit = operation.innerCommit;
 				return innerCommit ? when(innerCommit, () => result) : result;
 			}
 		}
 		#saveOperation(operation: any) {
+			// LMDB validates staged writes at transaction commit, so bind a lazy update to the
+			// generation selected by save() before another update can replace its changes.
+			operation.captureChanges?.();
 			const transaction = txnForContext(this.getContext());
 			const holder = operation.stagedIn;
 			// never-drop-on-conflict lives on the transaction and would not travel with the write, so an
@@ -2238,13 +2324,26 @@ export function makeTable(options) {
 				// merge and index diff would be relative to a record that may never land.
 				operation.priorWrite = undefined;
 				operation.deferSave = false;
-				return when(transaction.addWrite(operation), () => operation.promise ?? operation.result);
+				const result = when(transaction.addWrite(operation), () => operation.promise ?? operation.result);
+				this.#closeWriteChain(operation);
+				return result;
 			}
 			const owner = holder ?? transaction;
-			if (owner.save) return owner.save(operation) || operation.promise || operation.result;
+			if (owner.save) {
+				const result = owner.save(operation) || operation.promise || operation.result;
+				this.#closeWriteChain(operation);
+				return result;
+			}
+		}
+		#closeWriteChain(operation: any) {
+			const owner = operation.stagedIn;
+			for (let write = operation; write && !write.instanceClosed; write = write.priorWrite) {
+				if (write === operation || owner?.ownedWrites?.has(write)) closeWriteInstance(write);
+			}
 		}
 
 		addTo(property: any, value: any) {
+			this[ASSERT_TRACKED_WRITABLE]();
 			if (typeof value === 'number' || typeof value === 'bigint') {
 				if (this.#savingOperation?.fullUpdate)
 					(this as any).set(property, (+this.getProperty(property) || 0) + (value as any));
@@ -2582,6 +2681,7 @@ export function makeTable(options) {
 			}
 			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : this.getId();
 			checkValidId(id);
+			this.#assertLiveHandle(id);
 			const resolved = resolveLockOptions(options);
 			const context = this.getContext();
 			const link = txnForContext(context);
@@ -2936,6 +3036,16 @@ export function makeTable(options) {
 				}
 				return;
 			}
+			let captureChanges;
+			if (recordUpdate === undefined) {
+				let captured = false;
+				captureChanges = () => {
+					if (!captured) {
+						captured = true;
+						recordUpdate = this.#changes;
+					}
+				};
+			}
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 			const writeToSource = () => {
 				if (!(this.constructor as any).source || (context as any)?.source) return;
@@ -2955,12 +3065,18 @@ export function makeTable(options) {
 				}
 			};
 
+			const receiverId = this.getId();
+			const closesReceiver =
+				!this.isCollection &&
+				!isSearchTarget(receiverId) &&
+				(id === receiverId || writeKeyId(id) === writeKeyId(receiverId));
 			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry,
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
+				chainsStagedState: true,
 				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
 				reloadCommitBase: options?.isCopyApply !== true,
 				deferSave: true,
@@ -2971,8 +3087,10 @@ export function makeTable(options) {
 				// Only attach the hold handle when it covers exactly this key; off-key writes
 				// are ordinary and must not carry an unrelated hold's handle.
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
+				captureChanges,
 				validate: (txnTime, committedBy = transaction) => {
-					if (!recordUpdate) recordUpdate = this.#changes;
+					write.captureChanges?.();
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();
@@ -5799,6 +5917,7 @@ export function makeTable(options) {
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
+			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
 			// Drop registry entries for attributes that are no longer `@embed`, so a dropped
 			// directive doesn't leave a stale embedder or block a default refresh on re-add.
 			const embedNames = new Set(this.embedAttributes.map((a) => a.name));
@@ -6292,8 +6411,15 @@ export function makeTable(options) {
 
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
-		if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
-		if (expiresAtProperty) runRecordExpirationEviction();
+		if (expirationMs) {
+			ttlFromLoad = true;
+			try {
+				TableResource.setTTLExpiration(expirationMs / 1000);
+			} finally {
+				ttlFromLoad = false;
+			}
+		}
+		if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 	} catch (error) {
 		TableResource.cleanup();
 		throw error;
@@ -7407,7 +7533,7 @@ export function makeTable(options) {
 		// Periodically evict expired records and deleted records searching for records who expiresAt timestamp is before now
 		if (cleanupInterval === lastCleanupInterval && !runImmediately) return;
 		lastCleanupInterval = cleanupInterval;
-		if (getWorkerIndex() === getWorkerCount() - 1) {
+		if (ownsStoreMaintenance(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
 			if (!cleanupInterval) {
@@ -7549,12 +7675,14 @@ export function makeTable(options) {
 	}
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
-		if (getWorkerIndex() === 0) {
+		if (ownsStoreExpiration(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
 			recordExpirationInterval = setInterval(async () => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
-				if (disposed || runningRecordExpiration) return;
+				// updatedAttributes() clears expiresAtProperty when a live redeclaration drops the directive,
+				// and there is nothing left for this interval to scan by
+				if (disposed || runningRecordExpiration || !expiresAtProperty) return;
 				runningRecordExpiration = true;
 				try {
 					const expiresAtName = expiresAtProperty.name;

@@ -31,14 +31,13 @@ export async function installModules(req: any) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	const { projects, dry_run: dryRun } = validatedRequest;
+	const { projects, dry_run: dryRun, allowInstallScripts } = validatedRequest;
 
 	const componentsRootDirPath = getConfigPath(CONFIG_PARAMS.COMPONENTSROOT);
 
 	const responseObject: any = {};
 
-	// `allowInstallScripts` is true because this operation has always run a project's install lifecycle
-	const args = [...packageManagerInstallArguments('npm', true, true), '--json'];
+	const args = [...packageManagerInstallArguments('npm', allowInstallScripts, true), '--json'];
 	if (dryRun) args.push('--dry-run');
 
 	for (const project of projects) {
@@ -101,7 +100,10 @@ function modulesValidator(req: any) {
 	const funcSchema = Joi.object({
 		projects: Joi.array().min(1).items(Joi.string()).required(),
 		dry_run: Joi.boolean().default(false),
-	}).rename('dryRun', 'dry_run', { ignoreUndefined: true });
+		allowInstallScripts: Joi.boolean().default(true),
+	})
+		.rename('dryRun', 'dry_run', { ignoreUndefined: true })
+		.rename('install_allow_scripts', 'allowInstallScripts', { ignoreUndefined: true });
 
 	return validator.validateAndConvertBySchema(req, funcSchema);
 }

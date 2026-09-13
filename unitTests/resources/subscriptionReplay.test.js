@@ -335,15 +335,25 @@ describe('Subscription replay', () => {
 			await RecordTable.put(99, { name: 'pre2' });
 			await delay(10);
 			const subscription = await RecordTable.subscribe({ id: 99, startTime: startTime - 1 });
+			const finalConcurrentValue = 'post4';
+			const events = [];
+			subscription.on('data', (event) => events.push(event));
 			const concurrentWrites = (async () => {
 				for (let i = 0; i < 5; i++) {
 					await RecordTable.put(99, { name: 'post' + i });
 				}
 			})();
-			const events = await collect(subscription, 150);
 			await concurrentWrites;
+			await waitFor(() => events.some((event) => event.value?.name === finalConcurrentValue), {
+				timeout: 5000,
+			}).catch(() => {});
+			await delay(100);
 			subscription.return?.();
 
+			assert.ok(
+				events.some((event) => event.value?.name === finalConcurrentValue),
+				`expected final concurrent update ${finalConcurrentValue}, got ${events.length} events`
+			);
 			const pairs = events.map((e) => `${e.id}:${e.version}`);
 			assert.equal(new Set(pairs).size, pairs.length, 'duplicate (id,version) emitted');
 			// history then concurrent updates should be chronological throughout
