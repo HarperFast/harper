@@ -154,10 +154,17 @@ export function lockAttemptKey(tableId: number, id: any): any[] {
 }
 
 const warnedLeaseTimerStores = new WeakSet();
-let warnedClusterReleaseFailure = false;
+/**
+ * Rate-limited rather than latched, for the reason `warnOnce` in the coordinator gives: a release
+ * that cannot be written leaves peers waiting out the lease, and a latch would show an operator the
+ * first occurrence and then hide the condition for as long as it lasts.
+ */
+const CLUSTER_RELEASE_WARN_INTERVAL_MS = 60_000;
+let lastClusterReleaseWarn = -Infinity;
 function warnClusterReleaseFailure(err: unknown) {
-	if (warnedClusterReleaseFailure) return;
-	warnedClusterReleaseFailure = true;
+	const now = performance.now();
+	if (now - lastClusterReleaseWarn < CLUSTER_RELEASE_WARN_INTERVAL_MS) return;
+	lastClusterReleaseWarn = now;
 	harperLogger.warn?.('cluster record lock release could not be written; peers will expire the hold', err);
 }
 

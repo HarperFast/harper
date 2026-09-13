@@ -975,16 +975,14 @@ export class LockCoordinator {
 	/**
 	 * Drop admissions whose handle's lease has run out; they can no longer commit anything.
 	 *
-	 * The leading run is the cheap case: admissions are inserted in monotonic order, so with one lease
-	 * length it is exactly the expired set. Mixed lease lengths break that — a long lease at the head
-	 * hides every shorter admission behind it for its own remaining lease, and no later call reaches
-	 * them either, so retention would grow at the lock rate rather than with the live set. A full scan
-	 * on every admission would be quadratic on the hot key this design exists to make cheap, so the
-	 * map is swept only once it has outgrown the live set the previous sweep measured: O(size) work
-	 * after size/2 more admissions is amortized O(1) each, and it bounds the map at twice the live set.
+	 * Insertion order is monotonic order, not expiry order: under one lease length the leading run IS
+	 * the expired set, but a longer-lease admission at the head hides every shorter one behind it for
+	 * its own remaining lease. Scanning the whole map on every admission instead would be quadratic on
+	 * the hot key this design exists to make cheap, so it is swept only once it has outgrown the live
+	 * set the previous sweep measured — amortized O(1) per admission, and the map stays within twice
+	 * the live set rather than growing at the lock rate.
 	 *
-	 * Only reachable for a delegation that can still admit, so it never has a drain to wake: `#admit`
-	 * runs on a recalled delegation from neither of its call sites.
+	 * Never has a drain to wake: `#admit` reaches neither call site for a recalled delegation.
 	 */
 	#pruneAdmissions(delegation: Delegation, now: number): void {
 		for (const [admissionId, admission] of delegation.admissions) {

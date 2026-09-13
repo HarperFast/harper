@@ -539,9 +539,8 @@ function scopeViolation(
 ): ClientError | undefined {
 	if (resolved.scope !== 'cluster' || handle.clusterTsR !== undefined) return undefined;
 	// The same predicate lock() fails closed on, not the transport alone: a coalesced caller re-checks
-	// this AFTER its wait, and a transport unregistered during that wait (a swap, which leaves the
-	// database still clustered) would otherwise hand an explicit cluster request the leader's
-	// node-scoped handle. Only the implicit Phase 0 case — never clustered, no transport — falls through.
+	// this after its wait, and a transport unregistered during that wait leaves the database still
+	// clustered while the lookup answers undefined. Only the implicit Phase 0 case falls through.
 	if (!resolved.scopeRequested && !isClusterLockRequired(databaseName) && !getClusterLockTransport(databaseName))
 		return undefined;
 	return new ClientError(
