@@ -64,7 +64,6 @@ import {
 	scanBlockedRestores,
 	RESTORE_META_DIR,
 	OPEN_LOCK_SELF_REENTRANT,
-	OPEN_LOCK_TIMED_OUT,
 	type RestoreLock,
 } from '../dataLayer/restoreMarker.ts';
 
@@ -436,10 +435,8 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	);
 	const openLock = !isReadOnlyMode() ? acquireTrackedDatabaseOpenLock(path) : 0;
 	try {
-		// Checked only after the open lock is held: a concurrent drop can still be removing this
-		// exact path when this call starts (rocksdb-js releases its registry entry before DestroyDB
-		// completes), and existsSync/mkdirSync here — before the lock — would resurrect the directory
-		// out from under that drop instead of waiting for it to finish.
+		// Checked after the lock, not before: a concurrent drop can still be mid-destroy on this exact
+		// path, and creating it here first would resurrect it out from under that drop.
 		if (!existsSync(path)) {
 			// Don't create directories in read-only mode
 			if (isReadOnlyMode()) {
@@ -649,8 +646,8 @@ export function getDatabases(): Databases {
 					continue;
 				}
 			} catch (err) {
-				if (isDatabaseOpenLockContention(err)) {
-					logger.warn(`Database '${dbName}' is open-locked by this thread or another holder; skipping this scan pass`);
+				if (isSelfReentrantOpenLockContention(err)) {
+					logger.warn(`Database '${dbName}' is mid-drop on this thread; skipping this scan pass`);
 					continue;
 				}
 				if (!('code' in err && (err.code === 'ENOENT' || err.code === 'ENOTDIR'))) {
@@ -710,10 +707,8 @@ export function getDatabases(): Databases {
 								continue;
 							}
 						} catch (err) {
-							if (isDatabaseOpenLockContention(err)) {
-								logger.warn(
-									`Database '${dbName}' is open-locked by this thread or another holder; skipping this scan pass`
-								);
+							if (isSelfReentrantOpenLockContention(err)) {
+								logger.warn(`Database '${dbName}' is mid-drop on this thread; skipping this scan pass`);
 								continue;
 							}
 							if (!('code' in err && (err.code === 'ENOENT' || err.code === 'ENOTDIR'))) {
@@ -946,14 +941,12 @@ function reportRelationshipError(key: string, message: string): void {
 }
 
 /**
- * Whether `error` is the open lock declining an opportunistic reopen — a same-thread re-entry (this
- * thread is mid-drop on the same path) or a cross-thread/process holder that outlasted the wait.
- * A directory-scan caller should skip that one database and pick it up on the next rescan rather
- * than aborting the scan for every other database behind it in the same readdir.
+ * True only for a same-thread reentrant open-lock decline (this thread's own drop in progress), not
+ * for `OPEN_LOCK_TIMED_OUT`: that one says nothing about whether the database still exists, so
+ * skipping it would let a schema rescan report success over a database it never actually scanned.
  */
-function isDatabaseOpenLockContention(error: unknown): boolean {
-	const code = (error as { code?: string })?.code;
-	return code === OPEN_LOCK_SELF_REENTRANT || code === OPEN_LOCK_TIMED_OUT;
+function isSelfReentrantOpenLockContention(error: unknown): boolean {
+	return (error as { code?: string })?.code === OPEN_LOCK_SELF_REENTRANT;
 }
 
 /**
