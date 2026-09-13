@@ -12,8 +12,11 @@ const {
 	registerClusterLockTransport,
 	unregisterClusterLockTransport,
 	decodeLockControlPayload,
+	homeFor,
+	ringKeyFor,
 } = require('#src/resources/recordLockCoordinator');
 const { LOCAL_ONLY, isLockControlType } = require('#src/resources/auditStore');
+const { writeKeyId } = require('#src/resources/DatabaseTransaction');
 const { IterableEventQueue } = require('#src/resources/IterableEventQueue');
 require('#src/server/serverHelpers/serverUtilities');
 
@@ -28,6 +31,21 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 	let previousHostname;
 	let nextId = 1;
 	const id = () => `cluster-lock-${nextId++}`;
+	/**
+	 * An id this node homes under `members`. A test that needs a peer IN the epoch — the home refuses a
+	 * requester the membership does not name — must not let the added peer take the key's home with it,
+	 * or the lock becomes a remote request the solo transport cannot serve.
+	 */
+	const idHomedHere = (members) => {
+		for (let i = 0; i < 10_000; i++) {
+			const candidate = id();
+			// `writeKeyId`, because that is what Table.ts hands the coordinator as `keyIdOf` — hashing the
+			// raw id here would pick a different home than the coordinator does.
+			const ringKey = ringKeyFor('test', ClusterLockTest.tableName, writeKeyId(candidate));
+			if (homeFor(ringKey, members) === getThisNodeName()) return candidate;
+		}
+		throw new Error('no id in the first 10000 homes on this node');
+	};
 	const NODE_NAME = 'lock-test-node';
 
 	before(function () {
@@ -119,9 +137,12 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('writes a replicating release with no record id when the delegation is surrendered', async function () {
 			if (isLMDB) return this.skip();
-			useSoloTransport();
+			// The asking peer must be IN the epoch: a home refuses a requester the membership does not
+			// name, so a solo epoch would deny this for the wrong reason.
+			const members = [getThisNodeName(), 'peer-asking'];
+			useSoloTransport({ members });
 			const before = controlEntries().length;
-			const recordId = id();
+			const recordId = idHomedHere(members);
 			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });
 			await record.unlock();
 			// A peer asking for the same key is what makes this node give the delegation up.
@@ -151,8 +172,9 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('does not shadow the holder’s own audit entry at the same timestamp', async function () {
 			if (isLMDB) return this.skip();
-			useSoloTransport();
-			const recordId = id();
+			const members = [getThisNodeName(), 'peer-asking'];
+			useSoloTransport({ members });
+			const recordId = idHomedHere(members);
 			await ClusterLockTest.put({ id: recordId, n: 0 });
 			const before = controlEntries().length;
 			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });

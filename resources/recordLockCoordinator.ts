@@ -787,6 +787,10 @@ export class LockCoordinator {
 		const epoch = this.transport.epoch(this.database);
 		if (!epoch) return { granted: false, reason: 'epoch' };
 		if (epoch.number !== request.epoch) return { granted: false, reason: 'epoch', epoch: epoch.number };
+		// Membership before state: a node the epoch no longer names has no claim on a key, and an
+		// authenticated replication identity outlives membership. Without this a decommissioned node
+		// takes delegations against live members and recalls the legitimate delegate to get them.
+		if (!epoch.members.includes(request.requester)) return { granted: false, reason: 'epoch', epoch: epoch.number };
 		// Both sides must agree we are the home, or two arbiters could issue for one key.
 		const keyId = this.#keyIdOf(request.key);
 		if (homeFor(this.#ringKey(keyId), epoch.members) !== this.nodeId) return { granted: false, reason: 'not-home' };
@@ -1050,9 +1054,13 @@ export class LockCoordinator {
 			);
 			// A reply that arrives after we stopped waiting still granted us the key on the home, which
 			// would then hold it for the whole delegation while every other node is denied. Hand it back.
+			// Through the authority, not through this object: a transport swap can land while the reply
+			// is in flight, and `handOffTo` empties this coordinator's delegations. The handback's
+			// "not while a delegation for the key is held" guard would then read an empty map and give
+			// back a grant that still backs the successor's live delegation.
 			requested.then(
 				(reply) => {
-					if (raced && reply?.granted && reply.token) this.#releaseUnclaimedGrant(key, reply.token);
+					if (raced && reply?.granted && reply.token) this.#authority().#releaseUnclaimedGrant(key, reply.token);
 				},
 				() => {}
 			);

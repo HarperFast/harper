@@ -697,10 +697,10 @@ The existing `recordLocks` capability does not distinguish Ricart–Agrawala fro
 cluster running both would have two independent arbiters for one key. The capability is therefore
 **versioned**, the versions are mutually exclusive, and a node advertises exactly one. Since RA never
 shipped enabled, nibbles 9/10 are retired rather than migrated, and the `LOCK_RELEASE` payload —
-today a fixed three-field tuple validated on exact length
-(`resources/recordLockCoordinator.ts:157`) — grows a leading version field plus §7.1's dependency
-set. A historical entry replayed from the log must still decode safely after its producer is gone,
-and a delayed old release must not clear a newer delegation.
+today a fixed five-field tuple `[key, requester, epochNumber, homeIncarnation, counter]` validated on
+exact length (`resources/recordLockCoordinator.ts:258`) — grows a leading version field plus §7.1's
+dependency set. A historical entry replayed from the log must still decode safely after its producer
+is gone, and a delayed old release must not clear a newer delegation.
 
 **Merging the substrate is itself gated:** nothing that still wires RA arbitration may be reachable
 as the new protocol.

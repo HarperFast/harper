@@ -420,6 +420,22 @@ describe('record lock delegations', () => {
 			assert.strictEqual(reply.epoch, 1);
 		});
 
+		it('denies a request from a node the epoch does not name', async () => {
+			// An authenticated replication identity outlives membership, and the epoch number alone proves
+			// nothing about who is in it. Without this a decommissioned node takes delegations against
+			// live members — and recalls the legitimate delegate to get them.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const reply = await beta.onDelegationRequest({ key, requester: 'retired', epoch: 1, leaseMs: LEASE });
+			assert.strictEqual(reply.granted, false);
+			assert.strictEqual(reply.reason, 'epoch');
+			// And nothing was allocated for it: the next live member still gets the key.
+			assert.strictEqual(beta.stats.granted, 0, 'a refused non-member still consumed a grant');
+			const member = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			assert.strictEqual(member.granted, true);
+		});
+
 		it('denies a request for a key it does not home', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const foreign = cluster.keyHomedOn('gamma');
@@ -625,6 +641,39 @@ describe('record lock delegations', () => {
 			const reply = await successor.onDelegationRequest({ key, requester: 'gamma', epoch: 1, leaseMs: LEASE });
 			assert.strictEqual(reply.granted, false);
 			assert.strictEqual(reply.reason, 'contended');
+		});
+
+		it('does not hand back a grant through the coordinator the swap emptied', async () => {
+			// The two-holder path this combines: a renewal reply that lost its race is cleaned up by the
+			// coordinator that SENT it, and `handOffTo` has already emptied that object's delegations. The
+			// "not while a delegation for the key is held" guard then reads an empty map, gives back the
+			// token the home renewed in place, and the home is free to grant the key to another node while
+			// the successor is still admitting under the pre-renewal delegation.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			const home = cluster.node('beta').coordinator;
+			let deliverFirst;
+			const realRequest = alpha.coordinator.transport.requestDelegation;
+			alpha.coordinator.transport.requestDelegation = (target, database, table, request) =>
+				new Promise((resolve) => {
+					deliverFirst = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
+				});
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /not released in time/);
+			alpha.coordinator.transport.requestDelegation = realRequest;
+			await alpha.coordinator.acquire(key, LEASE, WAIT);
+
+			// The reload lands between the stalled request and its reply.
+			const { predecessor, successor } = replace(cluster, 'alpha');
+			assert.strictEqual(predecessor.stats.delegations, 0);
+			assert.strictEqual(successor.stats.delegations, 1);
+
+			await deliverFirst();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.strictEqual(home.stats.granted, 1, 'the handback cleared the grant backing a live delegation');
+			assert.strictEqual(successor.stats.delegations, 1, 'the successor lost the delegation it adopted');
+			const denied = await home.onDelegationRequest({ key, requester: 'gamma', epoch: 1, leaseMs: LEASE });
+			assert.strictEqual(denied.granted, false, 'the home granted a key alpha is still inside');
 		});
 
 		it('keeps serving the node that already holds the delegation', async () => {
@@ -951,7 +1000,7 @@ describe('record lock delegations', () => {
 			}
 		});
 
-		it('rejects a payload that is not the exact three-field tuple', () => {
+		it('rejects a payload that is not the exact five-field tuple', () => {
 			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 1]), undefined);
 			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 1, 1, 'extra']), undefined);
 			assert.strictEqual(decodeLockControlPayload('lockRelease', 'not a tuple'), undefined);

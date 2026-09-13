@@ -991,7 +991,11 @@ export function makeTable(options) {
 						// The coordinator getter fails closed on an unusable node identity. That is right for
 						// an acquire and wrong here: rejecting out of this sink stalls the apply loop for
 						// every later entry rather than dropping one.
-						target?.lockCoordinator?.applyEntry(entry, author);
+						// `admittingCoordinator`, because `lockCoordinator` answers undefined while a transport
+						// is momentarily unregistered — and this sink runs off the replication stream, not off
+						// that transport. Dropping a peer's clean-handoff release there leaves the home holding
+						// its grant for the delegation's whole deadline.
+						target?.admittingCoordinator?.applyEntry(entry, author);
 					} catch (error) {
 						logger.warn?.('dropping a record lock control entry: the coordinator is unavailable', error);
 					}
