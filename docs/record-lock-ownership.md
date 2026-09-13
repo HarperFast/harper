@@ -205,26 +205,35 @@ removed and publishes `g+1={B}`; `B` drains and re-homes `A`'s keys; `A` — sti
 consistent with itself — grants one of them to whoever it can still reach. Two holders under one key.
 A drain measured from _publication_ does not bound that, because `A` never stopped.
 
-**The generation is also monotonic per node, and enforced as such.** A node refuses a map whose
-generation is below one it has already acted under. The rollback route here is a configuration
+**The generation is also monotonic, and enforced as such.** A node refuses a map whose generation is
+below one it has already acted under, per database — the scope the generation itself has. Core's half
+lasts as long as the coordinating thread; remembering it across a restart, and across threads, is
+harper-pro's. The rollback route here is a configuration
 restore or a partial publish rather than a protocol bug, which is exactly why it is refused rather
 than assumed away: a generation is the high-order component of every fencing token (§5.1), so
 re-minting under an older one issues tokens ordering _below_ ones already handed out. Core enforces
 this for the life of its process; remembering it across a restart is harper-pro's half.
 
-**A restarted home is the one interval core enforces itself.** Delegations are volatile, so a
-restarted home has no record of what a previous incarnation of its own process granted, and the
-generation does not change on a restart — there is no external event to hang the interval on. Core
-therefore refuses to grant as a home until `DELEGATION_LEASE_MS + skew` has elapsed **since its own
-process started**, on its own monotonic clock. It need not remember what it granted, only that
-everything it could have granted has expired. Because the horizon is an absolute reading on a clock
-that counts from process start, every lazily created table coordinator computes the same one.
+**A restarted home is the one interval core enforces itself.** Delegations are volatile, so a cold
+coordinator has no record of what a previous incarnation granted, and the generation does not change
+on a restart — there is no external event to hang the interval on. Core therefore refuses to grant as
+a home until `DELEGATION_LEASE_MS + skew` has elapsed **since that coordinator was constructed**, on
+its own monotonic clock. It need not remember what it granted, only that everything it could have
+granted has expired.
 
-That quarantine costs availability, and the cost is real: for keys this node homes, the first cluster
-lock after a restart waits out the interval. It does not affect keys homed elsewhere — a restarted
-node acquires those immediately — and it is bounded by the delegation lease, not by an operator's
-response time. A deployment that can prove a previous incarnation issued nothing (a fresh database, a
-first start) may override it through the transport, which is the only party that knows that.
+**Construction, not process start and not thread start**, because neither of those is sound. A
+worker's `performance.now()` and `timeOrigin` are process-wide, so a process-anchored horizon reads
+as long elapsed in a replacement coordinating worker; and a thread can take coordination ownership
+long after it booted, so a thread-anchored one has the same hole. Construction is the earliest
+instant core can prove nothing else was granting under. Where a predecessor's authority _is_ known —
+an adopted transport swap, or an unregister and re-register inside one thread — the horizon is
+waived or carried rather than recomputed.
+
+That quarantine costs availability, and the cost is real: for keys a node homes, the first cluster
+lock after a cold start waits out the interval. It does not affect keys homed elsewhere — the node
+acquires those immediately — and it is bounded by the delegation lease, not by an operator's response
+time. A deployment that can prove a previous incarnation issued nothing (a fresh database, a first
+start) may override it through the transport, which is the only party that knows that.
 
 ### 4.4 Routing — exactly one algorithm
 

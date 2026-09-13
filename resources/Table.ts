@@ -2916,7 +2916,11 @@ export function makeTable(options) {
 							// hold was never handed out.
 							// The getter, not the captured coordinator: after a transport swap the captured one no
 							// longer owns this admission, so releasing through it would be a silent no-op.
-							Promise.resolve(TableResource.admittingCoordinator?.release(id, round.admissionId)).catch(noop);
+							// `.then`, not `Promise.resolve(release())`: the call can throw synchronously, and that
+							// throw would escape the catch and replace the 423 below with an internal error.
+							Promise.resolve()
+								.then(() => TableResource.admittingCoordinator?.release(id, round.admissionId))
+								.catch(noop);
 							throw new ClientError('Record lock was granted after its lease had elapsed', 423);
 						}
 						// A recall must be able to fence a write this handle staged and then unlocked, so

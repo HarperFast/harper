@@ -3,7 +3,6 @@ const {
 	LockCoordinator,
 	LOCK_LEASE_SKEW_MS,
 	DELEGATION_LEASE_MS,
-	COORDINATION_STARTED_MONO,
 	compareTokens,
 	decodeLockControlPayload,
 	encodeLockControlPayload,
@@ -24,14 +23,16 @@ function realHandle(lease = LEASE) {
 
 /**
  * A single-node coordinator on a fixed injected clock, with NO `grantableAfterMono` override — so it
- * runs the production §4.3 default. `monotonic` is what the coordinator treats as time since process
- * start, which is what makes the quarantine assertable without depending on the suite's own uptime.
+ * runs the production §4.3 default, whose horizon is measured from construction — so an injected
+ * clock is what makes it assertable without depending on the suite's own uptime.
  */
 let coldSequence = 0;
 function coldCoordinator(monotonic, options = {}) {
+	const sequence = ++coldSequence;
 	return new LockCoordinator({
-		database: 'test',
-		table: options.table ?? `ColdStart${++coldSequence}`,
+		// Its own database unless the caller names one: the generation rollback floor is per database.
+		database: options.database ?? `cold${sequence}`,
+		table: options.table ?? `ColdStart${sequence}`,
 		adopt: options.adopt,
 		nodeId: 'alpha',
 		transport: {
@@ -78,6 +79,9 @@ class FakeCluster {
 		// coordinator leaves its replacement — is correctly keyed by (database, table). One shared name
 		// would let one test's closed coordinator quarantine every later test's grants.
 		this.table = `LockTest${++clusterSequence}`;
+		// Its own database too: the generation rollback floor is per database, and tests move
+		// generations in both directions, so a shared name would leak one test's floor into the next.
+		this.database = `test${clusterSequence}`;
 		this.generation = options.generation ?? 1;
 		this.homes = [...nodeNames];
 		this.nodes = new Map();
@@ -112,7 +116,7 @@ class FakeCluster {
 			written: [],
 		};
 		node.coordinator = new LockCoordinator({
-			database: 'test',
+			database: this.database,
 			table: this.table,
 			nodeId: name,
 			transport: {
@@ -208,7 +212,7 @@ class FakeCluster {
 	homeOf(key) {
 		// The coordinator hashes database ‖ table ‖ key (§4.4); the harness must scope it identically
 		// or every keyHomedOn() would pick a different node than the coordinator does.
-		return homeFor(ringKeyFor('test', this.table, key), this.homes);
+		return homeFor(ringKeyFor(this.database, this.table, key), this.homes);
 	}
 
 	/** A key homed on the given node, found by search so tests never hardcode a hash result. */
@@ -590,7 +594,7 @@ describe('record lock delegations', () => {
 			const node = cluster.node(name);
 			const predecessor = node.coordinator;
 			const successor = new LockCoordinator({
-				database: 'test',
+				database: cluster.database,
 				table: cluster.table,
 				nodeId: name,
 				transport: predecessor.transport,
@@ -660,7 +664,7 @@ describe('record lock delegations', () => {
 			beta.coordinator.close();
 
 			const replacement = new LockCoordinator({
-				database: 'test',
+				database: cluster.database,
 				table: cluster.table,
 				nodeId: 'beta',
 				transport: beta.coordinator.transport,
@@ -900,11 +904,12 @@ describe('record lock delegations', () => {
 
 		it('quarantines a cold home by default, on its own process clock', async () => {
 			// §4.3: the home map is immutable, so a restart advances no generation and nothing external
-			// bounds what a previous incarnation granted. The one fact core has is when coordination
-			// started in THIS thread — not process start, which `performance.now()` reports even inside a
-			// worker, and which a replacement coordinating worker would read as far past any horizon.
-			const horizon = COORDINATION_STARTED_MONO + DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
-			const cold = coldCoordinator(() => horizon - 1);
+			// bounds what a previous incarnation granted. Neither process start nor thread start is a
+			// sound anchor — `performance.now()` is process-wide inside a worker, and a thread can take
+			// coordination ownership long after it booted — so the horizon runs from CONSTRUCTION, the
+			// only instant core can prove nothing else was granting under.
+			let mono = 1_000;
+			const cold = coldCoordinator(() => mono);
 			const denied = await cold.onDelegationRequest({
 				key: 'quarantined',
 				requester: 'alpha',
@@ -914,8 +919,17 @@ describe('record lock delegations', () => {
 			assert.strictEqual(denied.granted, false, 'a cold home granted over an unseen predecessor');
 			assert.strictEqual(denied.reason, 'quarantine');
 
-			const warm = coldCoordinator(() => horizon);
-			const granted = await warm.onDelegationRequest({
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS - 1;
+			const stillDenied = await cold.onDelegationRequest({
+				key: 'quarantined',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(stillDenied.reason, 'quarantine', 'the horizon ended a millisecond early');
+
+			mono += 1;
+			const granted = await cold.onDelegationRequest({
 				key: 'quarantined',
 				requester: 'alpha',
 				generation: 1,
@@ -923,7 +937,6 @@ describe('record lock delegations', () => {
 			});
 			assert.strictEqual(granted.granted, true, 'the quarantine outlasted the delegation lease');
 			cold.close();
-			warm.close();
 		});
 
 		it('answers a quarantined home with 503 rather than burning the caller’s wait for a 423', async () => {
@@ -945,10 +958,11 @@ describe('record lock delegations', () => {
 			// The successor adopts the predecessor's live authority, so it need not wait on THAT — but the
 			// quarantine bounds what a previous incarnation of the process granted, which neither
 			// coordinator can see. A component reload is not evidence about it.
-			const mono = () => COORDINATION_STARTED_MONO + DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS - 1;
+			const mono = () => 5_000;
 			const table = `ColdSwap${Date.now()}`;
-			const predecessor = coldCoordinator(mono, { table });
-			const successor = coldCoordinator(mono, { table, adopt: predecessor });
+			const database = `coldswap${Date.now()}`;
+			const predecessor = coldCoordinator(mono, { table, database });
+			const successor = coldCoordinator(mono, { table, database, adopt: predecessor });
 			const denied = await successor.onDelegationRequest({
 				key: 'swapped',
 				requester: 'alpha',

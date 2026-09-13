@@ -47,17 +47,6 @@ import { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS } from './recordLock.ts';
  * and why no core build registers a transport.
  */
 
-/**
- * When record-lock coordination began in THIS thread, on the monotonic clock. Deliberately not
- * process start: `performance.now()` and `performance.timeOrigin` are process-wide even inside a
- * worker, while the coordinator state a cold start loses is per-thread — so a replacement
- * coordinating worker in a long-lived process would read an uptime far past any process-based horizon
- * and grant immediately, over delegations the worker it replaced had issued. Module scope is the
- * earliest reading this thread can take; loading later than the thread started only lengthens the
- * bound, which is the safe direction.
- */
-export const COORDINATION_STARTED_MONO = performance.now();
-
 /** Margin a home adds to a delegation it issued, so the delegate always stops admitting first. */
 export const LOCK_LEASE_SKEW_MS = 5_000;
 /**
@@ -473,14 +462,14 @@ export interface LockCoordinatorOptions {
 const retiredCoordinators = new Map<string, { grantableAfterMono: number; counter: number }>();
 
 /**
- * The highest home-map generation this process has acted under, keyed like `retiredCoordinators` so
- * it outlives the coordinator that observed it. A generation is the high-order component of every
- * fencing token (§5.1), so going backwards re-mints tokens that order BELOW ones already handed out,
- * and a delayed write under the newer generation then defeats its successor. Per table rather than
- * per database because that is the granularity tokens are compared at: a token for a key is only ever
- * ordered against other tokens for that key. The map is operator-published, so the rollback route is a
- * configuration restore or a partial publish rather than a protocol bug — which is why it is refused
- * here rather than assumed away. Remembering it across a process restart is harper-pro's half.
+ * The highest home-map generation this thread has acted under, per DATABASE — the scope the generation
+ * itself has, not the per-table scope a token is compared at. A generation is the high-order component
+ * of every fencing token (§5.1), so going backwards re-mints tokens that order BELOW ones already
+ * handed out, and a delayed write under the newer generation then defeats its successor. Refusing it
+ * database-wide is strictly stronger than refusing it per table and costs nothing: one rolled-back
+ * publish is one event. The map is operator-published, so the rollback route is a configuration
+ * restore or a partial publish rather than a protocol bug — which is why it is refused here rather
+ * than assumed away. Remembering it across a restart, and across threads, is harper-pro's half.
  */
 const highestGeneration = new Map<string, number>();
 
@@ -543,11 +532,13 @@ export class LockCoordinator {
 	 *
 	 * A coordinator that started cold has no record of the delegations a previous incarnation issued,
 	 * and those can still be admitting on their holders. Nothing external bounds them: the home map is
-	 * immutable, so its generation does not advance merely because a process or a worker restarted.
-	 * What core does know is when coordination started in this thread, so the quarantine runs until
-	 * `DELEGATION_LEASE_MS + skew` after `COORDINATION_STARTED_MONO` — by which point every delegation
-	 * a previous incarnation could have issued has expired. It costs availability on this node's own
-	 * share of the ring and nothing elsewhere: keys homed on other nodes are acquired immediately.
+	 * immutable, so its generation does not advance merely because a process or a worker restarted. The
+	 * only instant core can prove nothing else was granting under is this coordinator's own
+	 * construction, so the quarantine runs `DELEGATION_LEASE_MS + skew` from there — by which point
+	 * every delegation a previous incarnation could have issued has expired. It costs availability on
+	 * this node's own share of the ring and nothing elsewhere: keys homed on other nodes are acquired
+	 * immediately, and `adopt` plus the retirement record waive it wherever a predecessor's authority
+	 * is actually known.
 	 *
 	 * A deployment that can prove a previous incarnation issued nothing overrides it through
 	 * `ClusterLockTransport.grantableAfterMono`. Generation CHANGES need nothing here: the
@@ -593,10 +584,12 @@ export class LockCoordinator {
 		this.#monotonic = options.monotonic ?? (() => performance.now());
 		this.#skewMs = options.skewMs ?? LOCK_LEASE_SKEW_MS;
 		this.#autoTick = options.autoTick !== false;
-		// Anchored on when coordination started in this thread, not on construction: a coordinator built
-		// ten minutes into a thread's life has already outwaited anything its predecessor issued.
-		this.#grantableAfterMono =
-			options.grantableAfterMono ?? COORDINATION_STARTED_MONO + DELEGATION_LEASE_MS + this.#skewMs;
+		// Anchored at construction, which is the only instant core can prove nothing else was granting
+		// under: process start is wrong (`performance.now()` is process-wide inside a worker too, so a
+		// replacement coordinating thread would read an uptime far past it) and so is thread start (a
+		// thread can take coordination ownership long after it booted). `adopt` and the retirement
+		// record below waive or carry the horizon wherever a predecessor's authority is actually known.
+		this.#grantableAfterMono = options.grantableAfterMono ?? this.#monotonic() + DELEGATION_LEASE_MS + this.#skewMs;
 		options.adopt?.handOffTo(this);
 		// After the handoff, which sets both for the adopted case: a predecessor that closed without one
 		// left its outstanding authority here instead, and this coordinator inherits its bounds.
@@ -986,7 +979,7 @@ export class LockCoordinator {
 
 	/** Fail closed on a generation older than one already acted on here (see `highestGeneration`). */
 	#generationIsCurrent(generation: number): boolean {
-		const key = this.#retirementKey();
+		const key = this.database;
 		const highest = highestGeneration.get(key);
 		if (highest !== undefined && generation < highest) return false;
 		if (highest === undefined || generation > highest) highestGeneration.set(key, generation);
