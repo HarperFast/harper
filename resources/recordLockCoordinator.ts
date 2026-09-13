@@ -459,6 +459,18 @@ export interface LockCoordinatorOptions {
  */
 const retiredCoordinators = new Map<string, { grantableAfterMono: number; counter: number }>();
 
+/**
+ * The highest home-map generation this process has acted under, keyed like `retiredCoordinators` so
+ * it outlives the coordinator that observed it. A generation is the high-order component of every
+ * fencing token (§5.1), so going backwards re-mints tokens that order BELOW ones already handed out,
+ * and a delayed write under the newer generation then defeats its successor. Per table rather than
+ * per database because that is the granularity tokens are compared at: a token for a key is only ever
+ * ordered against other tokens for that key. The map is operator-published, so the rollback route is a
+ * configuration restore or a partial publish rather than a protocol bug — which is why it is refused
+ * here rather than assumed away. Remembering it across a process restart is harper-pro's half.
+ */
+const highestGeneration = new Map<string, number>();
+
 const tickingCoordinators = new Set<LockCoordinator>();
 let tickTimer: ReturnType<typeof setInterval> | undefined;
 function ensureTicking() {
@@ -663,7 +675,7 @@ export class LockCoordinator {
 			const homeMap = this.transport.homeMap(this.database);
 			// No agreed map means no agreed ring, and a ring guessed from whoever looks reachable is
 			// exactly the asymmetric-partition failure a single arbiter exists to remove.
-			if (!homeMap)
+			if (!homeMap || !this.#generationIsCurrent(homeMap.generation))
 				throw new LockUnavailableError(
 					`No agreed record lock home map for ${this.database}; cluster record locks are unavailable until one is established`
 				);
@@ -816,7 +828,7 @@ export class LockCoordinator {
 		if (!isDuration(request.leaseMs, MIN_LOCK_LEASE_MS, MAX_LOCK_LEASE_MS))
 			return { granted: false, reason: 'not-home' };
 		const homeMap = this.transport.homeMap(this.database);
-		if (!homeMap) return { granted: false, reason: 'generation' };
+		if (!homeMap || !this.#generationIsCurrent(homeMap.generation)) return { granted: false, reason: 'generation' };
 		if (homeMap.generation !== request.generation)
 			return { granted: false, reason: 'generation', generation: homeMap.generation };
 		// Membership before state: a node the current generation does not name has no claim on a key,
@@ -931,6 +943,15 @@ export class LockCoordinator {
 		this.#grants.clear();
 		this.#grantsByRequester.clear();
 		tickingCoordinators.delete(this);
+	}
+
+	/** Fail closed on a generation older than one already acted on here (see `highestGeneration`). */
+	#generationIsCurrent(generation: number): boolean {
+		const key = this.#retirementKey();
+		const highest = highestGeneration.get(key);
+		if (highest !== undefined && generation < highest) return false;
+		if (highest === undefined || generation > highest) highestGeneration.set(key, generation);
+		return true;
 	}
 
 	#retirementKey(): string {

@@ -797,6 +797,37 @@ describe('record lock delegations', () => {
 			assert.strictEqual(alpha.coordinator.stats.delegations, 0, 'a dead reply must not install a delegation');
 		});
 
+		it('refuses a home map whose generation went backwards', async () => {
+			// The generation is the high-order component of every fencing token, so re-minting under an
+			// older one hands out tokens that order BELOW ones already issued — and a delayed write under
+			// the newer generation then defeats its successor. An operator-published map makes the
+			// rollback route a config restore or a partial publish, not a protocol bug, so core refuses it
+			// rather than assuming it away.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, first.admissionId);
+			cluster.generation = 2;
+			const second = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, second.admissionId);
+			const underTwo = await cluster.node('beta').coordinator.onDelegationRequest({
+				key: cluster.keyHomedOn('beta', 'gen2-'),
+				requester: 'gamma',
+				generation: 2,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(underTwo.token[0], 2, 'the home did not mint under the new generation');
+
+			cluster.generation = 1;
+			await assert.rejects(() => alpha.acquire(key, LEASE, 200), /No agreed record lock home map/);
+			const denied = await cluster
+				.node('beta')
+				.coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(denied.granted, false, 'a home granted under a rolled-back generation');
+			assert.strictEqual(denied.reason, 'generation');
+		});
+
 		it('drops a delegation when the generation changes under it', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
