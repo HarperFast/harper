@@ -966,10 +966,9 @@ describe('record lock delegations', () => {
 			const key = cluster.keyHomedOn('gamma');
 			const alpha = cluster.node('alpha').coordinator;
 			const round = await alpha.acquire(key, LEASE, WAIT);
-			// A real handle wired exactly as Table.ts wires one, not a stub: the production `revokeLease`
-			// is what has to fence the staged write, and an earlier version of this test passed a bare
-			// callback — so it asserted that the coordinator CALLS a revoker while the real one was a
-			// no-op in exactly this state.
+			// A real handle wired exactly as Table.ts wires one, not a stub: a bare callback would assert
+			// only that the coordinator CALLS a revoker, while the production `revokeLease` is what has
+			// to fence the staged write.
 			const { handle } = realHandle();
 			assert.strictEqual(
 				handle.joinClusterRound(round.tsR, LEASE, round.mintedMono, () => alpha.release(key, round.admissionId)),

@@ -16,9 +16,9 @@ import { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS } from './recordLock.ts';
  *   handed to core through `transport.homeMap()`. It is immutable for the life of its generation:
  *   core never computes it, never advances it, and never proceeds without it.
  * - **The home node** — within a generation, a key's arbiter is a rendezvous hash over `homes[]`
- *   (§4.4). One arbiter per key is trivially exclusive, which is what removes the entire grant state
- *   machine this file used to hold: no deferral queues, no `(tsR, nodeId)` tiebreak, no synthesized
- *   grants, no split votes, no revocation protocol between peers.
+ *   (§4.4). One arbiter per key is trivially exclusive, so there is no grant state machine at all:
+ *   no deferral queues, no `(tsR, nodeId)` tiebreak, no synthesized grants, no split votes, no
+ *   revocation protocol between peers.
  * - **The delegation** — the exclusive right to admit critical sections on one key for a bounded
  *   time. While one is live, `lock()`/`unlock()` are pure Phase 0: the local key lock and **zero
  *   cluster messages**. Releasing the application lock does not release the delegation, so a node
@@ -189,10 +189,11 @@ export interface ClusterLockTransport {
 	 * undefined rather than guessing a ring.
 	 *
 	 * **One obligation core cannot check, and relies on** (§4.3): a generation change is
-	 * operator-sequenced, so no node may be served a map naming it as a home under generation `g+1`
-	 * until `DELEGATION_LEASE_MS + skew` has elapsed since the last node stopped granting under `g`.
-	 * That interval bounds every delegation `g` could have issued. Core cannot observe when the change
-	 * completed elsewhere; the operator can.
+	 * operator-sequenced, so `g+1` may only be answered here once the control plane's one-shot
+	 * activation record is active — every old home quiesced (each acknowledgement bound to the
+	 * acknowledger's `homeIncarnation`, so a restart during the drain invalidates it) or externally
+	 * fenced, then `DELEGATION_LEASE_MS + skew` elapsed. Core cannot observe what happened on other
+	 * nodes; the operator can.
 	 *
 	 * The other interval — a restart of *this* process — is core's own, because a generation does not
 	 * advance on a restart and there is no external event to hang it on. See `#grantableAfterMono`.
@@ -777,8 +778,8 @@ export class LockCoordinator {
 		const keyId = this.#keyIdOf(key);
 		// Addressed by admission, not by key: after a renewal or a replacement the delegation at this
 		// key may not be the one that admitted this handle, and releasing by key alone would either
-		// surrender a successor while its own callers were still inside, or — as it did — leave this
-		// admission on a delegation nobody can ever drain.
+		// surrender a successor while its own callers were still inside, or leave this admission on a
+		// delegation nobody can ever drain.
 		const delegation = this.#admissions.get(admissionId);
 		if (!delegation) return undefined;
 		const admission = delegation.admissions.get(admissionId);
