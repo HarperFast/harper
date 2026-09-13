@@ -989,6 +989,56 @@ describe('record lock delegations', () => {
 			const again = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
 			assert.strictEqual(again.granted, true);
 		});
+
+		it('collects expired admissions hidden behind a longer-lease one', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			// Homed here, so the whole run is local and no renewal crosses the wire to confuse the count.
+			const key = cluster.keyHomedOn('alpha');
+			const alpha = cluster.node('alpha').coordinator;
+			// A handle that staged a write and then unlocked stays revocable for its OWN lease, so this
+			// one sits at the head of the admission map — insertion order, not expiry order — for five
+			// minutes while every short admission behind it expires within a second.
+			const long = await alpha.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+			alpha.release(key, long.admissionId);
+			for (let i = 0; i < 200; i++) {
+				cluster.advance('alpha', 1_100);
+				const short = await alpha.acquire(key, 1_000, WAIT);
+				alpha.release(key, short.admissionId);
+			}
+			assert.strictEqual(alpha.stats.admitted, 0, 'every admission in the run unlocked');
+			// Without the sweep the leading long admission blocks the scan for its whole lease and all
+			// 201 entries are still retained, each holding its handle.
+			assert.ok(
+				alpha.stats.revocable < 100,
+				`expired admissions accumulated behind the long one: ${alpha.stats.revocable} retained`
+			);
+		});
+
+		it('still fences a longer-lease admission the sweep walked past', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const long = await alpha.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+			const { handle } = realHandle(MAX_LOCK_LEASE_MS);
+			assert.strictEqual(
+				handle.joinClusterRound(long.tsR, MAX_LOCK_LEASE_MS, long.mintedMono, () =>
+					alpha.release(key, long.admissionId)
+				),
+				true
+			);
+			alpha.registerAdmission(long.admissionId, () => handle.revokeLease());
+			// Staged a write, then unlocked: still revocable, and still at the head of the map.
+			handle.release();
+			for (let i = 0; i < 200; i++) {
+				cluster.advance('alpha', 1_100);
+				const short = await alpha.acquire(key, 1_000, WAIT);
+				alpha.release(key, short.admissionId);
+			}
+			// The sweep may only drop admissions that can no longer commit. Losing this one to it would
+			// be the §6 defect the head-only scan never had.
+			await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(handle.isLeaseExpired(), true, 'the surviving long admission was not revoked');
+		});
 	});
 
 	describe('the release control entry', () => {

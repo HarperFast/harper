@@ -448,6 +448,11 @@ external effects need idempotency or fencing at that system.
   paths. This is the property the fenced arm would have given up, and it is the main reason it was not
   taken. The requirement on a cached-delegation hit is **zero additional protocol allocation**, not an
   allocation-free `lock()`: Phase 0 itself allocates a handle and a promise, and that is the baseline.
+  The implementation does not meet that requirement yet — it allocates an admission record per
+  `lock()` — but what those records **retain** is bounded by the live set rather than by the lock
+  rate: the admissions a delegation is still answerable for are swept for expiry once the map has
+  outgrown the live set the previous sweep measured, so mixed lease lengths cannot hide an expired
+  admission behind a longer-lived one for the length of its lease.
 - Membership and message role are authenticated and authorized **before** state is allocated, so a
   malformed payload, a stale certificate or cap exhaustion cannot be used to accumulate state. A
   configuration certificate is validated by **authenticating each accepting identity and checking they

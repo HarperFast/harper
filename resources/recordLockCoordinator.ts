@@ -56,6 +56,11 @@ export const LOCK_LEASE_SKEW_MS = 5_000;
  * exactly the cost this design is built to remove.
  */
 export const DELEGATION_LEASE_MS = MAX_LOCK_LEASE_MS + 60_000;
+/**
+ * Below this an admission map is too small for its dead entries to matter, so the expiry sweep in
+ * `#pruneAdmissions` does not run at all; above it the map may reach twice the live set first.
+ */
+const ADMISSION_SWEEP_FLOOR = 64;
 const TICK_INTERVAL_MS = 100;
 const WARN_INTERVAL_MS = 60_000;
 /**
@@ -357,6 +362,8 @@ interface Delegation {
 	 * unlocked-but-staged write is revoked rather than waited for (harper#2580).
 	 */
 	holding: number;
+	/** `admissions.size` at which the next full expiry sweep runs; see `#pruneAdmissions`. */
+	sweepAtSize: number;
 	/** Resolvers waiting for the drain to finish, so recall can reply once rather than poll. */
 	drained?: (() => void)[];
 }
@@ -599,14 +606,29 @@ export class LockCoordinator {
 		if (successor.#delegations.size > 0 || successor.#grants.size > 0) successor.#startTicking();
 	}
 
-	/** For `cluster_status`: delegations held, delegations issued, live admissions, misrouted calls. */
-	get stats(): { delegations: number; granted: number; admitted: number; droppedOffOwner: number } {
+	/**
+	 * For `cluster_status`: delegations held, delegations issued, live admissions, admissions still
+	 * revocable, misrouted calls. `revocable` counts the ones an unlock left fenceable as well, so the
+	 * retention `#pruneAdmissions` bounds is visible rather than inferred from `admitted`.
+	 */
+	get stats(): {
+		delegations: number;
+		granted: number;
+		admitted: number;
+		revocable: number;
+		droppedOffOwner: number;
+	} {
 		let admitted = 0;
-		for (const delegation of this.#delegations.values()) admitted += delegation.holding;
+		let revocable = 0;
+		for (const delegation of this.#delegations.values()) {
+			admitted += delegation.holding;
+			revocable += delegation.admissions.size;
+		}
 		return {
 			delegations: this.#delegations.size,
 			granted: this.#grants.size,
 			admitted,
+			revocable,
 			droppedOffOwner: this.#droppedOffOwner,
 		};
 	}
@@ -953,19 +975,32 @@ export class LockCoordinator {
 	/**
 	 * Drop admissions whose handle's lease has run out; they can no longer commit anything.
 	 *
-	 * Stops at the first entry still inside its lease rather than scanning the whole map. Admissions
-	 * are inserted in monotonic order, so with one lease length that is exact; with mixed lengths a
-	 * long lease in front retains a few expired entries behind it, which the next call collects. The
-	 * alternative — a full scan on every admission — is quadratic on a hot key, which is the one case
-	 * this design exists to make cheap.
+	 * The leading run is the cheap case: admissions are inserted in monotonic order, so with one lease
+	 * length it is exactly the expired set. Mixed lease lengths break that — a long lease at the head
+	 * hides every shorter admission behind it for its own remaining lease, and no later call reaches
+	 * them either, so retention would grow at the lock rate rather than with the live set. A full scan
+	 * on every admission would be quadratic on the hot key this design exists to make cheap, so the
+	 * map is swept only once it has outgrown the live set the previous sweep measured: O(size) work
+	 * after size/2 more admissions is amortized O(1) each, and it bounds the map at twice the live set.
+	 *
+	 * Only reachable for a delegation that can still admit, so it never has a drain to wake: `#admit`
+	 * runs on a recalled delegation from neither of its call sites.
 	 */
 	#pruneAdmissions(delegation: Delegation, now: number): void {
 		for (const [admissionId, admission] of delegation.admissions) {
-			if (admission.expiresMono > now) return;
-			delegation.admissions.delete(admissionId);
-			this.#admissions.delete(admissionId);
-			if (admission.holding) delegation.holding--;
+			if (admission.expiresMono > now) break;
+			this.#dropAdmission(delegation, admissionId, admission);
 		}
+		if (delegation.admissions.size < delegation.sweepAtSize) return;
+		for (const [admissionId, admission] of delegation.admissions)
+			if (admission.expiresMono <= now) this.#dropAdmission(delegation, admissionId, admission);
+		delegation.sweepAtSize = delegation.admissions.size * 2 + ADMISSION_SWEEP_FLOOR;
+	}
+
+	#dropAdmission(delegation: Delegation, admissionId: number, admission: Admission): void {
+		delegation.admissions.delete(admissionId);
+		this.#admissions.delete(admissionId);
+		if (admission.holding) delegation.holding--;
 	}
 
 	/**
@@ -1019,6 +1054,7 @@ export class LockCoordinator {
 			recalled: false,
 			admissions: new Map(),
 			holding: 0,
+			sweepAtSize: ADMISSION_SWEEP_FLOOR,
 		};
 		this.#delegations.set(keyId, delegation);
 		this.#startTicking();
@@ -1198,6 +1234,7 @@ export class LockCoordinator {
 		const admissions = delegation.admissions;
 		delegation.admissions = new Map();
 		delegation.holding = 0;
+		delegation.sweepAtSize = ADMISSION_SWEEP_FLOOR;
 		for (const [admissionId, admission] of admissions) {
 			this.#admissions.delete(admissionId);
 			try {

@@ -286,6 +286,30 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			);
 		});
 
+		it('fails a coalesced cluster request closed when the transport goes away while it waits', async function () {
+			if (isLMDB) return this.skip();
+			useSoloTransport();
+			const recordId = id();
+			// Held from outside, so the leader below parks on the native key and the transport can be
+			// taken away at a known point instead of raced against a microtask.
+			const blocker = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000, scope: 'node' });
+			await transaction(async () => {
+				const leader = ClusterLockTest.lock(recordId, { scope: 'node', lease: 5000, timeout: 5000 });
+				// Coalesces onto the leader: it re-checks its scope only after that wait resolves.
+				const followed = ClusterLockTest.lock(recordId, { scope: 'cluster', lease: 5000, timeout: 5000 }).then(
+					() => undefined,
+					(error) => error
+				);
+				// Registered when the follower checked at entry, gone before it is handed the handle.
+				unregisterClusterLockTransport('test');
+				await blocker.unlock();
+				await leader;
+				const error = await followed;
+				assert.ok(error, 'the explicit cluster request was handed the leader’s node-scoped handle');
+				assert.strictEqual(error.statusCode, 409);
+			});
+		});
+
 		it('routes a control entry through the real replication sink, not to a record', async function () {
 			if (isLMDB) return this.skip();
 			const { getIdOfRemoteNode } = require('#src/resources/nodeIdMapping');
