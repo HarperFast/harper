@@ -981,18 +981,22 @@ export function makeTable(options) {
 						logger.warn?.('discarding a malformed record lock control entry from', event.nodeId, event.type);
 						return;
 					}
-					// The audit header's nodeId is the origin, translated on receive and preserved across
-					// relays. The payload's own names are peer-supplied and prove nothing.
-					// Rebuild the id map on a miss rather than waiting out the negative-cache window: a
-					// dropped release leaves the key's home holding its grant until the delegation's own
-					// deadline, and control entries are far too rare to drive the store.
-					const author = getNodeNameForId(auditStore, event.nodeId, true);
-					if (!author) {
-						logger.warn?.('discarding a record lock control entry whose origin node could not be resolved');
-						return;
-					}
 					const target = event.table ? databases[databaseName]?.[event.table] : TableResource;
 					try {
+						// The audit header's nodeId is the origin, translated on receive and preserved across
+						// relays. The payload's own names are peer-supplied and prove nothing. Rebuild the id
+						// map on a miss rather than waiting out the negative-cache window: a dropped release
+						// leaves the key's home holding its grant until the delegation's own deadline, and
+						// control entries are far too rare to drive the store.
+						//
+						// Inside the guard, not before it: that rebuild reads the audit store, and a throw
+						// there would escape this sink and stall the apply loop for every later entry — the §8
+						// rule that a receive boundary settles its callers and keeps admission closed.
+						const author = getNodeNameForId(auditStore, event.nodeId, true);
+						if (!author) {
+							logger.warn?.('discarding a record lock control entry whose origin node could not be resolved');
+							return;
+						}
 						// The coordinator getter fails closed on an unusable node identity. That is right for
 						// an acquire and wrong here: rejecting out of this sink stalls the apply loop for
 						// every later entry rather than dropping one.

@@ -1124,11 +1124,10 @@ export class DatabaseTransaction implements Transaction {
 		// `lock(); save(); unlock(); commit()` succeeded normally and threw 409 only when a conflict
 		// retry or an open read iterator forced the replay to re-save it.
 		if (operation.saved ? lockHandle?.isLeaseExpired() : lockHandle?.isExpired()) {
-			// Remove the operation from the staged set so subsequent writes on this context do not
-			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
-			const failedIdx = this.writes.indexOf(operation);
-			if (failedIdx > -1) this.writes[failedIdx] = null;
-			this.ownedWrites?.delete(operation);
+			// Through `detachWrite`, which also repairs the per-key chain: dropping it from `writes` alone
+			// leaves `writesByKey` pointing at a write that was refused, so a caller that catches this 409
+			// and stages the same key again would take the rejected operation as its merge basis.
+			this.detachWrite(operation);
 			throw lockNotHeldError(lockHandle);
 		}
 		// Lock-write timestamp rules.
