@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789290572975,
+  "lastUpdate": 1789290586614,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -20684,6 +20684,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 2436.6,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "070a489d67dd03a288a142857411f2d94b265239",
+          "message": "Reject a supplied record root instead of the instance's staged changes (#2578)\n\nThe legacy full-update fall-through in update() discards the body the\ncaller supplied and hands _writeUpdate whatever the instance had already\nstaged. Two consequences, both independent of #2561 and present before it:\n\n- `record.put(0)` on an instance with a staged update commits that update\n  as a full record replacement. No error is raised and unrelated\n  attributes are dropped — a record holding {status, metadata} keeps only\n  the staged status. #2574's captureChanges binds lazily only when no\n  root was supplied, so a falsy root still reaches validation as the\n  staged object rather than as itself.\n- A non-object root is rejected, but the #1298 message names no value\n  (\"received undefined\"), pointing at a missing body rather than a\n  wrong-shaped one.\n\nForward the supplied root and fall back to the staged changes only when\nthe caller passed nothing at all. This is a no-op for every object root:\nboth the fullUpdate and directInstance branches above already assign\n`this.#changes = updates`, so the forwarded value is the same object that\nwas passed before, and #2574's captureChanges arms exactly as it did.\n`false` needs one extra exemption: it is the sentinel that cancels a\npending patch, so it keeps that meaning on the incremental path and is\nrejected only as a full-update root, where `put(false)` otherwise\nreturned silently and let the staged patch commit.\n\nAll four sameKeySaveOrder cases fail on origin/main.\n\nVerification:\n- unitTests/resources: 2495 passing / 33 pending (rocksdb),\n  1946 passing / 377 pending (lmdb)\n- unitTests/apiTests: 201 passing / 1 pending (rocksdb),\n  200 passing / 2 pending (lmdb)\n- integrationTests/resources/bytes-scan-crash.test.ts: 6/6\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-12T18:43:37Z",
+          "url": "https://github.com/HarperFast/harper/commit/070a489d67dd03a288a142857411f2d94b265239"
+        },
+        "date": 1789290585429,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 5352.15,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 5352.15,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 394.5,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1979,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 5843.9,
             "unit": "ms"
           }
         ]
