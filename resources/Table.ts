@@ -5843,6 +5843,7 @@ export function makeTable(options) {
 						: (entry: LockControlEntry) => TableResource.writeLockControlEntry(entry),
 					keyIdOf: writeKeyId,
 					nextTimestamp: () => (primaryStore as any).getMonotonicTimestamp(),
+					grantableAfterMono: transport.grantableAfterMono,
 				});
 				predecessor?.close();
 			}

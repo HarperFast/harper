@@ -21,6 +21,35 @@ function realHandle(lease = LEASE) {
 	return { handle, unlocked };
 }
 
+/**
+ * A single-node coordinator on a fixed injected clock, with NO `grantableAfterMono` override — so it
+ * runs the production §4.3 default. `monotonic` is what the coordinator treats as time since process
+ * start, which is what makes the quarantine assertable without depending on the suite's own uptime.
+ */
+let coldSequence = 0;
+function coldCoordinator(monotonic) {
+	return new LockCoordinator({
+		database: 'test',
+		table: `ColdStart${++coldSequence}`,
+		nodeId: 'alpha',
+		transport: {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => true,
+			requestDelegation: () => {
+				throw new Error('a single-node home must not send a request');
+			},
+			recallDelegation: () => {
+				throw new Error('a single-node home must not send a recall');
+			},
+		},
+		writeControl: () => {},
+		keyIdOf: (key) => String(key),
+		nextTimestamp: () => 1,
+		monotonic,
+		autoTick: false,
+	});
+}
+
 // Cluster record locks (harper#483 Phase 1): amortized per-record ownership, driven by a set of
 // coordinators over an in-process transport with controllable delay, denial, replay and node death.
 // No database is involved — the coordinator is pure, with every clock injected.
@@ -47,8 +76,8 @@ class FakeCluster {
 		// coordinator leaves its replacement — is correctly keyed by (database, table). One shared name
 		// would let one test's closed coordinator quarantine every later test's grants.
 		this.table = `LockTest${++clusterSequence}`;
-		this.epochNumber = options.epochNumber ?? 1;
-		this.members = [...nodeNames];
+		this.generation = options.generation ?? 1;
+		this.homes = [...nodeNames];
 		this.nodes = new Map();
 		/** Every delegation request that crossed the wire, for message-count assertions. */
 		this.requests = [];
@@ -76,8 +105,8 @@ class FakeCluster {
 			mono: 0,
 			/** Bumped to simulate a restart of this node in its role as a home. */
 			incarnation: 1,
-			/** Set to make this node report no agreed epoch — a membership change, or a minority side. */
-			epochless: false,
+			/** Set to make this node report no agreed home map — a generation change, or a digest mismatch. */
+			mapless: false,
 			written: [],
 		};
 		node.coordinator = new LockCoordinator({
@@ -85,13 +114,12 @@ class FakeCluster {
 			table: this.table,
 			nodeId: name,
 			transport: {
-				epoch: () =>
-					node.epochless
+				homeMap: () =>
+					node.mapless
 						? undefined
 						: {
-								number: this.epochNumber,
-								members: [...this.members],
-								ringVersion: 1,
+								generation: this.generation,
+								homes: [...this.homes],
 								homeIncarnation: node.incarnation,
 							},
 				ownsCoordination: () => node.owns,
@@ -103,7 +131,9 @@ class FakeCluster {
 			nextTimestamp: () => ++this.tsCounter,
 			monotonic: () => node.mono + performance.now(),
 			skewMs: options.skewMs,
-			grantableAfterMono: options.grantableAfterMono,
+			// The harness drives an injected clock whose readings say nothing about process start, so the
+			// §4.3 restart quarantine is opted into per test rather than inherited from real uptime.
+			grantableAfterMono: options.grantableAfterMono ?? -Infinity,
 			autoTick: false,
 		});
 		this.nodes.set(name, node);
@@ -176,7 +206,7 @@ class FakeCluster {
 	homeOf(key) {
 		// The coordinator hashes database ‖ table ‖ key (§4.5); the harness must scope it identically
 		// or every keyHomedOn() would pick a different node than the coordinator does.
-		return homeFor(ringKeyFor('test', this.table, key), this.members);
+		return homeFor(ringKeyFor('test', this.table, key), this.homes);
 	}
 
 	/** A key homed on the given node, found by search so tests never hardcode a hash result. */
@@ -387,12 +417,12 @@ describe('record lock delegations', () => {
 	});
 
 	describe('failing closed', () => {
-		it('refuses to acquire with no agreed epoch', async () => {
+		it('refuses to acquire with no agreed home map', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
-			cluster.node('alpha').epochless = true;
+			cluster.node('alpha').mapless = true;
 			await assert.rejects(
 				() => cluster.node('alpha').coordinator.acquire('k1', LEASE, WAIT),
-				/No agreed membership epoch/
+				/No agreed record lock home map/
 			);
 		});
 
@@ -428,30 +458,30 @@ describe('record lock delegations', () => {
 			await assert.rejects(() => cluster.node('alpha').coordinator.acquire('k1', LEASE, WAIT), /was closed/);
 		});
 
-		it('denies a request whose epoch does not match the home’s', async () => {
+		it('denies a request whose generation does not match the home’s', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const reply = await cluster
 				.node('beta')
-				.coordinator.onDelegationRequest({ key, requester: 'alpha', epoch: 99, leaseMs: LEASE });
+				.coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 99, leaseMs: LEASE });
 			assert.strictEqual(reply.granted, false);
-			assert.strictEqual(reply.reason, 'epoch');
-			assert.strictEqual(reply.epoch, 1);
+			assert.strictEqual(reply.reason, 'generation');
+			assert.strictEqual(reply.generation, 1);
 		});
 
-		it('denies a request from a node the epoch does not name', async () => {
-			// An authenticated replication identity outlives membership, and the epoch number alone proves
+		it('denies a request from a node the generation does not name', async () => {
+			// An authenticated replication identity outlives membership, and the generation alone proves
 			// nothing about who is in it. Without this a decommissioned node takes delegations against
 			// live members — and recalls the legitimate delegate to get them.
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta').coordinator;
-			const reply = await beta.onDelegationRequest({ key, requester: 'retired', epoch: 1, leaseMs: LEASE });
+			const reply = await beta.onDelegationRequest({ key, requester: 'retired', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(reply.granted, false);
-			assert.strictEqual(reply.reason, 'epoch');
+			assert.strictEqual(reply.reason, 'generation');
 			// And nothing was allocated for it: the next live member still gets the key.
 			assert.strictEqual(beta.stats.granted, 0, 'a refused non-member still consumed a grant');
-			const member = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			const member = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(member.granted, true);
 		});
 
@@ -460,7 +490,7 @@ describe('record lock delegations', () => {
 			const foreign = cluster.keyHomedOn('gamma');
 			const reply = await cluster
 				.node('beta')
-				.coordinator.onDelegationRequest({ key: foreign, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+				.coordinator.onDelegationRequest({ key: foreign, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(reply.granted, false);
 			assert.strictEqual(reply.reason, 'not-home');
 		});
@@ -470,10 +500,10 @@ describe('record lock delegations', () => {
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta').coordinator;
 			for (const bad of [
-				{ key, requester: '', epoch: 1, leaseMs: LEASE },
-				{ key: { not: 'encodable' }, requester: 'alpha', epoch: 1, leaseMs: LEASE },
-				{ key, requester: 'alpha', epoch: 1, leaseMs: MIN_LOCK_LEASE_MS - 1 },
-				{ key, requester: 'alpha', epoch: 1, leaseMs: MAX_LOCK_LEASE_MS + 1 },
+				{ key, requester: '', generation: 1, leaseMs: LEASE },
+				{ key: { not: 'encodable' }, requester: 'alpha', generation: 1, leaseMs: LEASE },
+				{ key, requester: 'alpha', generation: 1, leaseMs: MIN_LOCK_LEASE_MS - 1 },
+				{ key, requester: 'alpha', generation: 1, leaseMs: MAX_LOCK_LEASE_MS + 1 },
 			]) {
 				const reply = await beta.onDelegationRequest(bad);
 				assert.strictEqual(reply.granted, false, `granted on ${JSON.stringify(bad)}`);
@@ -483,7 +513,7 @@ describe('record lock delegations', () => {
 	});
 
 	describe('fencing tokens', () => {
-		it('orders lexicographically by epoch, then incarnation, then counter', () => {
+		it('orders lexicographically by generation, then incarnation, then counter', () => {
 			assert.ok(compareTokens([1, 1, 5], [2, 1, 1]) < 0);
 			assert.ok(compareTokens([1, 1, 5], [1, 2, 1]) < 0);
 			assert.ok(compareTokens([1, 1, 5], [1, 1, 6]) < 0);
@@ -496,7 +526,7 @@ describe('record lock delegations', () => {
 			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
 			const first = await cluster
 				.node('beta')
-				.coordinator.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+				.coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			// Beta restarts as a home and its counter begins again — the incarnation is what keeps the
 			// new token ahead of the old one, which a random value could not do.
 			cluster.node('beta').incarnation = 2;
@@ -506,7 +536,7 @@ describe('record lock delegations', () => {
 			const key2 = fresh.keyHomedOn('beta');
 			const second = await fresh
 				.node('beta')
-				.coordinator.onDelegationRequest({ key: key2, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+				.coordinator.onDelegationRequest({ key: key2, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			assert.ok(compareTokens(first.token, second.token) < 0);
 		});
 
@@ -514,7 +544,7 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta').coordinator;
-			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(beta.stats.granted, 1);
 			// A release naming a counter that is not the live one — a delayed entry from a previous
 			// delegation, or one replayed from the log long after its producer is gone.
@@ -536,7 +566,7 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta').coordinator;
-			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			beta.applyEntry({ type: 'lockRelease', key, requester: 'gamma', token: granted.token }, 'gamma');
 			assert.strictEqual(beta.stats.granted, 1, 'a non-delegate must not be able to clear a grant');
 		});
@@ -545,7 +575,7 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta').coordinator;
-			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			// The payload is peer-supplied; the author comes from the audit header. They must agree.
 			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'gamma');
 			assert.strictEqual(beta.stats.granted, 1);
@@ -610,14 +640,14 @@ describe('record lock delegations', () => {
 			// Closing is a LOCAL event. `close()` without a successor drops the grant table, but the
 			// delegation it authorized is live on the other node until that node's own deadline, and no
 			// peer saw the close. A replacement built before then must refuse rather than hand the key to
-			// someone else — the transport's epoch contract covers a process restart, not this.
+			// someone else — `#grantableAfterMono` covers a process restart, not this.
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta');
 			const issued = await beta.coordinator.onDelegationRequest({
 				key,
 				requester: 'alpha',
-				epoch: 1,
+				generation: 1,
 				leaseMs: LEASE,
 			});
 			assert.strictEqual(issued.granted, true);
@@ -635,12 +665,17 @@ describe('record lock delegations', () => {
 				autoTick: false,
 			});
 			beta.coordinator = replacement;
-			const denied = await replacement.onDelegationRequest({ key, requester: 'gamma', epoch: 1, leaseMs: LEASE });
+			const denied = await replacement.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(denied.granted, false, 'a replacement granted a key alpha still holds');
 
 			// And its tokens must not tie the ones the closed coordinator already issued.
 			cluster.advance('beta', DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
-			const regranted = await replacement.onDelegationRequest({ key, requester: 'gamma', epoch: 1, leaseMs: LEASE });
+			const regranted = await replacement.onDelegationRequest({
+				key,
+				requester: 'gamma',
+				generation: 1,
+				leaseMs: LEASE,
+			});
 			assert.strictEqual(regranted.granted, true);
 			assert.strictEqual(
 				compareTokens(regranted.token, issued.token) > 0,
@@ -652,12 +687,14 @@ describe('record lock delegations', () => {
 		it('cannot grant a key whose predecessor delegation is still live', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
-			await cluster.node('beta').coordinator.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			await cluster
+				.node('beta')
+				.coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			// A component reload swaps the transport. The delegation alpha holds is untouched by that,
 			// so the successor must not hand the key to gamma.
 			const { successor } = replace(cluster, 'beta');
 			assert.strictEqual(successor.stats.granted, 1, 'the successor adopted the live grant');
-			const reply = await successor.onDelegationRequest({ key, requester: 'gamma', epoch: 1, leaseMs: LEASE });
+			const reply = await successor.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(reply.granted, false);
 			assert.strictEqual(reply.reason, 'contended');
 		});
@@ -691,7 +728,7 @@ describe('record lock delegations', () => {
 			await new Promise((resolve) => setTimeout(resolve, 50));
 			assert.strictEqual(home.stats.granted, 1, 'the handback cleared the grant backing a live delegation');
 			assert.strictEqual(successor.stats.delegations, 1, 'the successor lost the delegation it adopted');
-			const denied = await home.onDelegationRequest({ key, requester: 'gamma', epoch: 1, leaseMs: LEASE });
+			const denied = await home.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(denied.granted, false, 'the home granted a key alpha is still inside');
 		});
 
@@ -717,7 +754,7 @@ describe('record lock delegations', () => {
 			const first = await beta.coordinator.onDelegationRequest({
 				key: keyA,
 				requester: 'alpha',
-				epoch: 1,
+				generation: 1,
 				leaseMs: LEASE,
 			});
 			const { successor } = replace(cluster, 'beta');
@@ -725,7 +762,7 @@ describe('record lock delegations', () => {
 			const second = await successor.onDelegationRequest({
 				key: keyB,
 				requester: 'gamma',
-				epoch: 1,
+				generation: 1,
 				leaseMs: LEASE,
 			});
 			assert.ok(compareTokens(first.token, second.token) < 0, 'the successor minted a lesser-or-equal token');
@@ -760,7 +797,7 @@ describe('record lock delegations', () => {
 			assert.strictEqual(alpha.coordinator.stats.delegations, 0, 'a dead reply must not install a delegation');
 		});
 
-		it('drops a delegation when the epoch changes under it', async () => {
+		it('drops a delegation when the generation changes under it', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const alpha = cluster.node('alpha').coordinator;
@@ -771,23 +808,21 @@ describe('record lock delegations', () => {
 				true
 			);
 			alpha.registerAdmission(round.admissionId, () => handle.revokeLease());
-			assert.strictEqual(handle.isLeaseExpired(), false, 'the handle expired before the epoch changed');
+			assert.strictEqual(handle.isLeaseExpired(), false, 'the handle expired before the generation changed');
 			assert.strictEqual(alpha.stats.delegations, 1);
-			// An epoch change may have re-homed the key to a node that knows nothing of this token.
+			// A generation change may have re-homed the key to a node that knows nothing of this token.
 			// Keeping its live handle would let alpha commit alongside whoever the new home grants.
-			cluster.epochNumber = 2;
+			cluster.generation = 2;
 			const requestsBefore = cluster.requests.length;
 			const replacement = await alpha.acquire(key, LEASE, WAIT);
-			assert.strictEqual(handle.isLeaseExpired(), true, 'the stale-epoch handle was not fenced');
+			assert.strictEqual(handle.isLeaseExpired(), true, 'the stale-generation handle was not fenced');
 			assert.strictEqual(unlocked.length, 1, 'revoking the held handle did not return the native key');
-			assert.ok(cluster.requests.length > requestsBefore, 'the stale-epoch delegation was reused');
+			assert.ok(cluster.requests.length > requestsBefore, 'the stale-generation delegation was reused');
 			assert.strictEqual(alpha.stats.delegations, 1, 'the replacement delegation was not installed');
 			alpha.release(key, replacement.admissionId);
 		});
 
-		it('refuses to grant before an explicitly configured horizon', async () => {
-			// Core's grant quarantine is opt-in — the interval belongs to the epoch (see
-			// ClusterLockTransport.epoch) — so a deployment that wants a core-side bound sets it.
+		it('refuses to grant before its configured horizon', async () => {
 			// Relative to the same clock the coordinator reads, not an absolute constant: the fake
 			// monotonic is `performance.now()`-based, so a fixed horizon silently falls into the past
 			// once the process has been up longer than it.
@@ -799,7 +834,7 @@ describe('record lock delegations', () => {
 			const denied = await beta.coordinator.onDelegationRequest({
 				key,
 				requester: 'alpha',
-				epoch: 1,
+				generation: 1,
 				leaseMs: LEASE,
 			});
 			assert.strictEqual(denied.granted, false, 'a cold home must not grant over an unseen predecessor');
@@ -808,10 +843,37 @@ describe('record lock delegations', () => {
 			const granted = await beta.coordinator.onDelegationRequest({
 				key,
 				requester: 'alpha',
-				epoch: 1,
+				generation: 1,
 				leaseMs: LEASE,
 			});
 			assert.strictEqual(granted.granted, true);
+		});
+
+		it('quarantines a cold home by default, on its own process clock', async () => {
+			// §4.3: the home map is immutable, so a restart advances no generation and nothing external
+			// bounds what a previous incarnation of this process granted. The only fact core has is its
+			// own uptime, and `monotonic` counts from process start — so the default horizon is an
+			// absolute reading on that clock, and a coordinator that outlived the interval is free.
+			const cold = coldCoordinator(() => DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS - 1);
+			const denied = await cold.onDelegationRequest({
+				key: 'quarantined',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a cold home granted over an unseen predecessor');
+			assert.strictEqual(denied.reason, 'contended');
+
+			const warm = coldCoordinator(() => DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			const granted = await warm.onDelegationRequest({
+				key: 'quarantined',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true, 'the quarantine outlasted the delegation lease');
+			cold.close();
+			warm.close();
 		});
 
 		it('revokes a REAL handle whose write was staged and then unlocked', async () => {
@@ -872,20 +934,20 @@ describe('record lock delegations', () => {
 			assert.strictEqual(handle.isLeaseExpired(), true, 'a renewed delegation lost track of a live handle');
 		});
 
-		it('refuses a grant minted under an epoch that advanced while the reply was in flight', async () => {
+		it('refuses a grant minted under a generation that advanced while the reply was in flight', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const alpha = cluster.node('alpha').coordinator;
 			// The membership changes after the home granted but before the requester saw the reply. Under
-			// the new epoch the key may be homed elsewhere, and that home can already have granted it —
-			// so admitting on the epoch-1 token would put two nodes inside one key with no message
-			// between them. The acquisition itself should still succeed, by asking again under epoch 2.
+			// the new generation the key may be homed elsewhere, and that home can already have granted it
+			// — so admitting on the generation-1 token would put two nodes inside one key with no message
+			// between them. The acquisition itself should still succeed, by asking again under generation 2.
 			cluster.beforeReply = () => {
 				cluster.beforeReply = undefined;
-				cluster.epochNumber = 2;
+				cluster.generation = 2;
 			};
 			await alpha.acquire(key, LEASE, WAIT);
-			assert.strictEqual(cluster.requests.length, 2, 'the superseded-epoch grant was admitted rather than redone');
+			assert.strictEqual(cluster.requests.length, 2, 'the superseded-generation grant was admitted rather than redone');
 			const released = cluster.node('alpha').written.filter((entry) => entry.type === 'lockRelease');
 			assert.strictEqual(released.length, 1, 'the stale grant was not handed back');
 			assert.strictEqual(released[0].token[0], 1, 'the handed-back token was not the superseded one');
@@ -896,7 +958,7 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta').coordinator;
-			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			// A home that restarts begins counting again, so the SAME counter can belong to two
 			// different delegations. Only the whole token identifies one.
 			const stale = [granted.token[0], granted.token[1] - 1, granted.token[2]];
@@ -910,14 +972,14 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta');
-			await beta.coordinator.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			await beta.coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			// Past the grant's deadline, with tick() deliberately NOT run — a table whose expiry budget
 			// is saturated is exactly the case where that happens.
 			beta.mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
 			const reply = await beta.coordinator.onDelegationRequest({
 				key,
 				requester: 'gamma',
-				epoch: 1,
+				generation: 1,
 				leaseMs: LEASE,
 			});
 			assert.strictEqual(reply.granted, true, 'an uncollected expired grant blocked every other node');
@@ -930,9 +992,9 @@ describe('record lock delegations', () => {
 			const key = cluster.keyHomedOn('beta');
 			const alpha = cluster.node('alpha').coordinator;
 			const first = await alpha.acquire(key, LEASE, WAIT);
-			// The delegation is replaced while the first handle is still open — an epoch change is the
+			// The delegation is replaced while the first handle is still open — a generation change is the
 			// cheapest way to force that here.
-			cluster.epochNumber = 2;
+			cluster.generation = 2;
 			const second = await alpha.acquire(key, LEASE, WAIT);
 			assert.notStrictEqual(first.admissionId, second.admissionId, 'a second admission was not created');
 			// The OLD handle unlocks late. Untokened, this would decrement the new delegation and let it
@@ -966,7 +1028,7 @@ describe('record lock delegations', () => {
 			await deliverFirst();
 			await new Promise((resolve) => setTimeout(resolve, 50));
 			assert.strictEqual(home.stats.granted, 1, 'a live delegation lost the grant backing it');
-			const denied = await home.onDelegationRequest({ key, requester: 'gamma', epoch: 1, leaseMs: LEASE });
+			const denied = await home.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(denied.granted, false, 'the home handed the key onward while alpha was inside it');
 		});
 
@@ -998,7 +1060,7 @@ describe('record lock delegations', () => {
 				const reply = await beta.onDelegationRequest({
 					key: cluster.keyHomedOn('beta', `cap${i}-`),
 					requester: 'alpha',
-					epoch: 1,
+					generation: 1,
 					leaseMs: LEASE,
 				});
 				if (!reply.granted) denied = reply;
@@ -1011,11 +1073,11 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta').coordinator;
-			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(beta.stats.granted, 1);
 			beta.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
 			assert.strictEqual(beta.stats.granted, 0);
-			const again = await beta.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			const again = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(again.granted, true);
 		});
 
@@ -1133,7 +1195,12 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('beta');
 			const beta = cluster.node('beta');
-			const granted = await beta.coordinator.onDelegationRequest({ key, requester: 'alpha', epoch: 1, leaseMs: LEASE });
+			const granted = await beta.coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
 			beta.owns = false;
 			beta.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: granted.token }, 'alpha');
 			assert.strictEqual(beta.coordinator.stats.granted, 1);

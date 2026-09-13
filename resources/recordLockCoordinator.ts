@@ -12,11 +12,11 @@ import { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS } from './recordLock.ts';
  * outstanding acquisition per key; only then does it run the cluster step here. That step has three
  * levels at three very different rates:
  *
- * - **The membership epoch** — `(number, members[], ringVersion)`, agreed and made durable by
- *   harper-pro and handed to core through `transport.epoch()`. Core never computes it and never
- *   proceeds without it. It changes at the membership-change rate, never per lock.
- * - **The home node** — within an epoch, a key's arbiter is a rendezvous hash over `members[]`
- *   (§4.5). One arbiter per key is trivially exclusive, which is what removes the entire grant state
+ * - **The home map** — `(generation, homes[])`, published by an operator through harper-pro and
+ *   handed to core through `transport.homeMap()`. It is immutable for the life of its generation:
+ *   core never computes it, never advances it, and never proceeds without it.
+ * - **The home node** — within a generation, a key's arbiter is a rendezvous hash over `homes[]`
+ *   (§4.4). One arbiter per key is trivially exclusive, which is what removes the entire grant state
  *   machine this file used to hold: no deferral queues, no `(tsR, nodeId)` tiebreak, no synthesized
  *   grants, no split votes, no revocation protocol between peers.
  * - **The delegation** — the exclusive right to admit critical sections on one key for a bounded
@@ -87,28 +87,30 @@ const NON_DISTINCTIVE_NODE_NAMES = new Set(['127.0.0.1', '::1', 'localhost', '0.
  */
 export type LockControlType = 'lockRelease';
 
-/** The agreed membership a key's home is derived from. Supplied by harper-pro; core never computes it. */
-export interface LockEpoch {
+/**
+ * The operator-agreed map a key's home is derived from. Supplied by harper-pro; core never computes
+ * it and never advances it. Immutable for the life of a generation — nothing a node observes changes
+ * it, which is why no agreement protocol runs here (§4).
+ */
+export interface LockHomeMap {
 	/** Monotonic per database. Part of the fencing token, so it must never go backwards. */
-	number: number;
-	/** The agreed member set. Order is irrelevant — the ring hashes each name independently. */
-	members: string[];
-	/** Bumped when `members` changes within an epoch, so a stale ring is detectable without a deep compare. */
-	ringVersion: number;
+	generation: number;
+	/** The nodes that may home a key. Order is irrelevant — the ring hashes each name independently. */
+	homes: string[];
 	/**
 	 * This node's durably persisted, monotonic incarnation counter as a home (§5.1). A random value
 	 * makes a stale reply identifiable but not ORDERABLE: a home that restarts and re-issues counter 1
-	 * after having issued counter 50 would let a delayed generation-50 write defeat its successor.
+	 * after having issued counter 50 would let a delayed counter-50 write defeat its successor.
 	 */
 	homeIncarnation: number;
 }
 
 /**
  * A delegation's fencing token, ordered lexicographically as
- * `(epochNumber, homeIncarnation, counter)`. Comparable across homes only within an epoch, which is
- * all that is needed: a key has exactly one home per epoch.
+ * `(generation, homeIncarnation, counter)`. Comparable across homes only within a generation, which
+ * is all that is needed: a key has exactly one home per generation.
  */
-export type FencingToken = readonly [epochNumber: number, homeIncarnation: number, counter: number];
+export type FencingToken = readonly [generation: number, homeIncarnation: number, counter: number];
 
 export function compareTokens(a: FencingToken, b: FencingToken): number {
 	return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
@@ -141,10 +143,13 @@ export interface DelegationReply {
 	token?: FencingToken;
 	/** Granted only. How long the delegate may admit for, as a DURATION — never a remote clock reading. */
 	leaseMs?: number;
-	/** Denied only. `contended` is retryable within the caller's own wait budget; `epoch` means refresh. */
-	reason?: 'contended' | 'epoch' | 'capacity' | 'not-home';
-	/** Denied with `epoch`, so a stale requester can re-derive the ring without another round trip. */
-	epoch?: number;
+	/**
+	 * Denied only. `contended` is retryable within the caller's own wait budget; `generation` means
+	 * refresh the home map.
+	 */
+	reason?: 'contended' | 'generation' | 'capacity' | 'not-home';
+	/** Denied with `generation`, so a stale requester can re-derive the ring without another round trip. */
+	generation?: number;
 	retryAfterMs?: number;
 }
 
@@ -152,7 +157,7 @@ export interface DelegationRequest {
 	key: any;
 	/** The asking node. Established by the transport, never read from an untrusted payload. */
 	requester: string;
-	epoch: number;
+	generation: number;
 	leaseMs: number;
 }
 
@@ -167,24 +172,26 @@ export interface DelegationRecall {
  */
 export interface ClusterLockTransport {
 	/**
-	 * The agreed membership epoch for the database, or undefined while none is agreed — during a
-	 * membership change, on the minority side of a partition, or before the node has joined. Core
-	 * fails closed on undefined rather than guessing a ring.
+	 * The operator-agreed home map for the database, or undefined while none is available — before the
+	 * node has the current generation, or while peers disagree about its digest. Core fails closed on
+	 * undefined rather than guessing a ring.
 	 *
-	 * **Two obligations core cannot check, and relies on.** Both are the design note's §4.4 retirement
-	 * interval, and both exist because core cannot know what a previous incarnation of this process
-	 * did:
+	 * **One obligation core cannot check, and relies on** (§4.3): a generation change is
+	 * operator-sequenced, so no node may be served a map naming it as a home under generation `g+1`
+	 * until `DELEGATION_LEASE_MS + skew` has elapsed since the last node stopped granting under `g`.
+	 * That interval bounds every delegation `g` could have issued. Core cannot observe when the change
+	 * completed elsewhere; the operator can.
 	 *
-	 * 1. After a restart, do not name this node in an epoch until any delegation its previous
-	 *    incarnation issued as a home could have expired (`DELEGATION_LEASE_MS + skew`) — or advance
-	 *    the epoch number, which invalidates those delegations outright, since a delegate drops a
-	 *    delegation whose token belongs to a superseded epoch.
-	 * 2. After an epoch change that re-homes keys, leave enough time for the previous delegates to
-	 *    observe it before the new home starts granting.
-	 *
-	 * Without these a new home can grant a key whose previous delegate is still admitting.
+	 * The other interval — a restart of *this* process — is core's own, because a generation does not
+	 * advance on a restart and there is no external event to hang it on. See `#grantableAfterMono`.
 	 */
-	epoch(database: string): LockEpoch | undefined;
+	homeMap(database: string): LockHomeMap | undefined;
+	/**
+	 * Overrides core's cold-start grant quarantine (§4.3). Set it only where a previous incarnation
+	 * of this process provably issued nothing — a fresh database, a first start, or a test. Omitted
+	 * means core enforces the full `DELEGATION_LEASE_MS + skew` from process start.
+	 */
+	grantableAfterMono?: number;
 	/**
 	 * Whether this worker thread owns lock coordination for the process. Coordinator state is
 	 * per-thread while the key lock it arbitrates is process-wide, so a second thread running its own
@@ -223,8 +230,8 @@ let controlStructures: unknown[] = [];
 let controlPackr = new Packr({ structures: controlStructures });
 
 export function encodeLockControlPayload(entry: LockControlEntry): Uint8Array {
-	const [epochNumber, homeIncarnation, counter] = entry.token;
-	return controlPackr.pack([entry.key, entry.requester, epochNumber, homeIncarnation, counter]);
+	const [generation, homeIncarnation, counter] = entry.token;
+	return controlPackr.pack([entry.key, entry.requester, generation, homeIncarnation, counter]);
 }
 
 function isNodeName(value: unknown): value is string {
@@ -274,33 +281,27 @@ export function decodeLockControlPayload(type: unknown, value: unknown): LockCon
 }
 
 function decodeTuple(tuple: unknown[]): LockControlEntry | undefined {
-	const [key, requester, epochNumber, homeIncarnation, counter] = tuple as [
-		unknown,
-		unknown,
-		unknown,
-		unknown,
-		unknown,
-	];
+	const [key, requester, generation, homeIncarnation, counter] = tuple as [unknown, unknown, unknown, unknown, unknown];
 	if (!isEncodableKey(key) || !isNodeName(requester)) return undefined;
-	for (const part of [epochNumber, homeIncarnation, counter])
+	for (const part of [generation, homeIncarnation, counter])
 		if (typeof part !== 'number' || !Number.isFinite(part)) return undefined;
 	return {
 		type: 'lockRelease',
 		key,
 		requester,
-		token: [epochNumber, homeIncarnation, counter] as FencingToken,
+		token: [generation, homeIncarnation, counter] as FencingToken,
 	};
 }
 
 /**
- * Rendezvous (highest-random-weight) hash: a key's home is the member with the greatest score for
- * that key. Chosen over a modulo of a key hash because a membership change moves only the keys homed
- * on the departing member, rather than re-homing the whole space — which matters because every
- * re-homed key pays the §7.2 recovery path on its next lock.
+ * Rendezvous (highest-random-weight) hash: a key's home is the node with the greatest score for that
+ * key. Chosen over a modulo of a key hash because a generation change moves only the keys homed on a
+ * departing node, rather than re-homing the whole space — which matters because every re-homed key
+ * pays the §7.2 recovery path on its next lock.
  *
  * The hash is FNV-1a over the member name and the key's stable id. It does not need to be
  * cryptographic: it is not a defense against anything, only a deterministic agreement between nodes
- * that already agree on `members`.
+ * that already agree on `homes`.
  */
 function scoreFor(member: string, keyId: string): number {
 	let hash = 0x811c9dc5;
@@ -327,15 +328,15 @@ export function ringKeyFor(database: string, table: string, keyId: unknown): str
 	return `${database}\u0000${table}\u0000${String(keyId)}`;
 }
 
-export function homeFor(keyId: string, members: string[]): string | undefined {
+export function homeFor(keyId: string, homes: string[]): string | undefined {
 	let best: string | undefined;
 	let bestScore = -1;
-	for (const member of members) {
-		const score = scoreFor(member, keyId);
-		// Ties break on the name so every node picks the same home from the same member set.
-		if (score > bestScore || (score === bestScore && best !== undefined && member > best)) {
+	for (const home of homes) {
+		const score = scoreFor(home, keyId);
+		// Ties break on the name so every node picks the same home from the same set.
+		if (score > bestScore || (score === bestScore && best !== undefined && home > best)) {
 			bestScore = score;
-			best = member;
+			best = home;
 		}
 	}
 	return best;
@@ -437,8 +438,9 @@ export interface LockCoordinatorOptions {
 	 */
 	adopt?: LockCoordinator;
 	/**
-	 * Overrides the cold-start grant quarantine. Pass `-Infinity` only where a previous incarnation
-	 * provably issued nothing — a fresh database, or a test. See `#grantableAfterMono`.
+	 * Overrides the cold-start grant quarantine (§4.3). Pass `-Infinity` only where a previous
+	 * incarnation provably issued nothing — a fresh database, or a test. Required when `monotonic` is
+	 * an injected clock whose readings do not count from process start. See `#grantableAfterMono`.
 	 */
 	grantableAfterMono?: number;
 	/** False in tests, which drive `tick()` themselves. */
@@ -451,9 +453,9 @@ export interface LockCoordinatorOptions {
  * `close()` drops the grant table, but the delegations those grants authorize are still live on other
  * nodes until their own deadlines — closing is a local event that no peer observes. A replacement
  * built before then must not grant those keys again, and must not restart the counter into tokens the
- * closed coordinator already issued. The transport's `epoch()` contract covers the same hazard across
- * a process RESTART; this covers it across an unregister and re-register inside one process, which
- * `epoch()` cannot see.
+ * closed coordinator already issued. `#grantableAfterMono` covers the same hazard across a process
+ * RESTART; this covers it across an unregister and re-register inside one process, which a
+ * process-start reading cannot see.
  */
 const retiredCoordinators = new Map<string, { grantableAfterMono: number; counter: number }>();
 
@@ -511,19 +513,20 @@ export class LockCoordinator {
 	/** Set when this coordinator's state was moved to a successor, so `close()` must not expire it. */
 	#handedOff = false;
 	/**
-	 * Monotonic reading before which this coordinator may not grant as a home. Off by default, because
-	 * the interval it would enforce belongs to the epoch rather than to core.
+	 * Monotonic reading before which this coordinator may not grant as a home — the §4.3 restart
+	 * quarantine, and core's own to enforce.
 	 *
-	 * The hazard is real: a coordinator that started cold has no record of the delegations a previous
-	 * incarnation of this process issued, and those can still be admitting on their holders. But core
-	 * cannot know when that incarnation died, and enforcing the conservative bound here — a full
-	 * `DELEGATION_LEASE_MS + skew` — would make the first cluster lock after every restart wait
-	 * minutes. The epoch protocol can know: `transport.epoch()` must not name this node in an epoch
-	 * until any delegation a previous incarnation issued could have expired, which is the design
-	 * note's §4.4 retirement interval. That obligation is stated on `ClusterLockTransport.epoch`.
+	 * A coordinator that started cold has no record of the delegations a previous incarnation of this
+	 * process issued, and those can still be admitting on their holders. Nothing external bounds them:
+	 * the home map is immutable, so its generation does not advance merely because a process restarted.
+	 * What core does know is its own uptime — `monotonic` counts from process start — so the quarantine
+	 * runs until `DELEGATION_LEASE_MS + skew` on that clock, by which point every delegation a previous
+	 * incarnation could have issued has expired. It costs availability on this node's own share of the
+	 * ring and nothing elsewhere: keys homed on other nodes are acquired immediately.
 	 *
-	 * Set it explicitly to hold a core-side bound anyway. Epoch CHANGES need nothing here: the
-	 * delegate-side epoch check in `#liveDelegation` is what stops the old delegate.
+	 * A deployment that can prove a previous incarnation issued nothing overrides it through
+	 * `ClusterLockTransport.grantableAfterMono`. Generation CHANGES need nothing here: the
+	 * delegate-side generation check in `#liveDelegation` is what stops the old delegate.
 	 */
 	#grantableAfterMono: number;
 	/** Keys this node holds a delegation for. */
@@ -565,7 +568,10 @@ export class LockCoordinator {
 		this.#monotonic = options.monotonic ?? (() => performance.now());
 		this.#skewMs = options.skewMs ?? LOCK_LEASE_SKEW_MS;
 		this.#autoTick = options.autoTick !== false;
-		this.#grantableAfterMono = options.grantableAfterMono ?? -Infinity;
+		// An absolute reading, not an offset from construction: the monotonic clock counts from process
+		// start, so a coordinator created ten minutes in has already outwaited anything a previous
+		// incarnation issued.
+		this.#grantableAfterMono = options.grantableAfterMono ?? DELEGATION_LEASE_MS + this.#skewMs;
 		options.adopt?.handOffTo(this);
 		// After the handoff, which sets both for the adopted case: a predecessor that closed without one
 		// left its outstanding authority here instead, and this coordinator inherits its bounds.
@@ -654,19 +660,19 @@ export class LockCoordinator {
 		const deadlineMono = this.#monotonic() + waitMs;
 
 		for (;;) {
-			const epoch = this.transport.epoch(this.database);
-			// No agreed epoch means no agreed ring, and a ring guessed from whoever looks reachable is
+			const homeMap = this.transport.homeMap(this.database);
+			// No agreed map means no agreed ring, and a ring guessed from whoever looks reachable is
 			// exactly the asymmetric-partition failure a single arbiter exists to remove.
-			if (!epoch)
+			if (!homeMap)
 				throw new LockUnavailableError(
-					`No agreed membership epoch for ${this.database}; cluster record locks are unavailable until one is established`
+					`No agreed record lock home map for ${this.database}; cluster record locks are unavailable until one is established`
 				);
-			const delegation = this.#liveDelegation(keyId, leaseMs, epoch.number);
+			const delegation = this.#liveDelegation(keyId, leaseMs, homeMap.generation);
 			if (delegation) return this.#admit(delegation, leaseMs);
 
-			const home = homeFor(this.#ringKey(keyId), epoch.members);
+			const home = homeFor(this.#ringKey(keyId), homeMap.homes);
 			if (!home)
-				throw new LockUnavailableError(`Membership epoch for ${this.database} names no members to home a key on`);
+				throw new LockUnavailableError(`The record lock home map for ${this.database} names no nodes to home a key on`);
 
 			// Anchored before the send: the home starts its own clock when it grants, so measuring the
 			// delegation from the reply's arrival would hand a delayed reply more time than the home is
@@ -674,8 +680,8 @@ export class LockCoordinator {
 			const requestedAtMono = this.#monotonic();
 			const reply =
 				home === this.nodeId
-					? this.#grantLocally(keyId, key, epoch, leaseMs)
-					: await this.#requestRemotely(home, keyId, key, epoch, leaseMs, deadlineMono);
+					? this.#grantLocally(keyId, key, homeMap, leaseMs)
+					: await this.#requestRemotely(home, keyId, key, homeMap, leaseMs, deadlineMono);
 
 			// A transport swap can land while a request is in flight. The grant is authority for this
 			// NODE, and the successor is this node now — installing it here would leave a delegation
@@ -686,11 +692,11 @@ export class LockCoordinator {
 
 			// A reply that claims a grant without a usable token is a broken transport, not a delegation.
 			if (reply.granted && reply.token && isDuration(reply.leaseMs, MIN_LOCK_LEASE_MS, DELEGATION_LEASE_MS)) {
-				// The epoch can advance across the await. A grant minted under a superseded one is
+				// The generation can advance across the await. A grant minted under a superseded one is
 				// authority for a ring that no longer exists: the key may be homed elsewhere now, and that
 				// home can already have granted it to another node. `#liveDelegation` rejects a stale
 				// token on the NEXT pass, which is too late — this pass would have admitted on it first.
-				if (reply.token[0] !== authority.transport.epoch(this.database)?.number) {
+				if (reply.token[0] !== authority.transport.homeMap(this.database)?.generation) {
 					// Hand it back rather than let the old home hold a key nobody is using for a full lease.
 					authority.#releaseUnclaimedGrant(key, reply.token);
 				} else {
@@ -707,7 +713,7 @@ export class LockCoordinator {
 			if (reply.reason === 'capacity')
 				throw new LockUnavailableError(`Too many record lock delegations in flight on ${this.database}`);
 			if (reply.reason === 'not-home')
-				// The home disagrees about the ring. Re-reading the epoch on the next pass is the fix;
+				// The home disagrees about the ring. Re-reading the map on the next pass is the fix;
 				// if it is genuinely stale on our side we will converge, and if not we run out of wait.
 				warnOnce('record lock home disagreed about the ring', { database: this.database, table: this.table });
 
@@ -793,7 +799,7 @@ export class LockCoordinator {
 		const keyId = this.#keyIdOf(entry.key);
 		const grant = this.#grants.get(keyId);
 		// Only the delegate named in the live grant can clear it, and only for the exact token it was
-		// issued — epoch and incarnation included, since counters restart. A delayed release from a
+		// issued — generation and incarnation included, since counters restart. A delayed release from a
 		// previous delegation must not clear its successor's.
 		if (!grant || grant.delegate !== author || compareTokens(grant.token, entry.token) !== 0) return;
 		this.#clearGrant(keyId, grant);
@@ -809,17 +815,19 @@ export class LockCoordinator {
 		if (!isNodeName(request.requester) || !isEncodableKey(request.key)) return { granted: false, reason: 'not-home' };
 		if (!isDuration(request.leaseMs, MIN_LOCK_LEASE_MS, MAX_LOCK_LEASE_MS))
 			return { granted: false, reason: 'not-home' };
-		const epoch = this.transport.epoch(this.database);
-		if (!epoch) return { granted: false, reason: 'epoch' };
-		if (epoch.number !== request.epoch) return { granted: false, reason: 'epoch', epoch: epoch.number };
-		// Membership before state: a node the epoch no longer names has no claim on a key, and an
-		// authenticated replication identity outlives membership. Without this a decommissioned node
-		// takes delegations against live members and recalls the legitimate delegate to get them.
-		if (!epoch.members.includes(request.requester)) return { granted: false, reason: 'epoch', epoch: epoch.number };
+		const homeMap = this.transport.homeMap(this.database);
+		if (!homeMap) return { granted: false, reason: 'generation' };
+		if (homeMap.generation !== request.generation)
+			return { granted: false, reason: 'generation', generation: homeMap.generation };
+		// Membership before state: a node the current generation does not name has no claim on a key,
+		// and an authenticated replication identity outlives membership. Without this a decommissioned
+		// node takes delegations against live homes and recalls the legitimate delegate to get them.
+		if (!homeMap.homes.includes(request.requester))
+			return { granted: false, reason: 'generation', generation: homeMap.generation };
 		// Both sides must agree we are the home, or two arbiters could issue for one key.
 		const keyId = this.#keyIdOf(request.key);
-		if (homeFor(this.#ringKey(keyId), epoch.members) !== this.nodeId) return { granted: false, reason: 'not-home' };
-		return this.#grant(keyId, request.key, epoch, request.leaseMs, request.requester);
+		if (homeFor(this.#ringKey(keyId), homeMap.homes) !== this.nodeId) return { granted: false, reason: 'not-home' };
+		return this.#grant(keyId, request.key, homeMap, request.leaseMs, request.requester);
 	}
 
 	/**
@@ -940,13 +948,13 @@ export class LockCoordinator {
 		return coordinator;
 	}
 
-	#liveDelegation(keyId: unknown, leaseMs: number, epochNumber: number): Delegation | undefined {
+	#liveDelegation(keyId: unknown, leaseMs: number, generation: number): Delegation | undefined {
 		const delegation = this.#delegations.get(keyId);
 		if (!delegation || delegation.recalled) return undefined;
-		// A delegation is authority within ONE epoch. After an epoch change the key may have been
-		// re-homed, and the new home knows nothing of this token — so keeping it would let this node
-		// admit alongside whoever the new home grants.
-		if (delegation.token[0] !== epochNumber) {
+		// A delegation is authority within ONE generation. After a generation change the key may have
+		// been re-homed, and the new home knows nothing of this token — so keeping it would let this
+		// node admit alongside whoever the new home grants.
+		if (delegation.token[0] !== generation) {
 			// Authority is gone, not merely stale: the key may have been re-homed to a node that knows
 			// nothing of this token. Forgetting the delegation without revoking would leave its handles
 			// able to commit alongside whatever the new home grants.
@@ -1063,15 +1071,15 @@ export class LockCoordinator {
 	}
 
 	/** This node is the key's home: grant to itself through exactly the same table a peer would use. */
-	#grantLocally(keyId: unknown, key: any, epoch: LockEpoch, leaseMs: number): DelegationReply {
-		return this.#grant(keyId, key, epoch, leaseMs, this.nodeId);
+	#grantLocally(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number): DelegationReply {
+		return this.#grant(keyId, key, homeMap, leaseMs, this.nodeId);
 	}
 
 	async #requestRemotely(
 		home: string,
 		keyId: unknown,
 		key: any,
-		epoch: LockEpoch,
+		homeMap: LockHomeMap,
 		leaseMs: number,
 		deadlineMono: number
 	): Promise<DelegationReply> {
@@ -1085,7 +1093,7 @@ export class LockCoordinator {
 				this.transport.requestDelegation(home, this.database, this.table, {
 					key,
 					requester: this.nodeId,
-					epoch: epoch.number,
+					generation: homeMap.generation,
 					leaseMs,
 				})
 			);
@@ -1137,7 +1145,7 @@ export class LockCoordinator {
 			this.#clearGrant(keyId, grant);
 	}
 
-	#grant(keyId: unknown, key: any, epoch: LockEpoch, leaseMs: number, requester: string): DelegationReply {
+	#grant(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number, requester: string): DelegationReply {
 		const now = this.#monotonic();
 		const quarantine = this.#grantableAfterMono - now;
 		if (quarantine > 0) return { granted: false, reason: 'contended', retryAfterMs: Math.min(quarantine, 250) };
@@ -1152,7 +1160,7 @@ export class LockCoordinator {
 				return { granted: false, reason: 'contended', retryAfterMs: 25 };
 			else if (existing.delegate === requester) {
 				// Renewal for the node that already holds it: extend rather than recall itself.
-				existing.token = [epoch.number, epoch.homeIncarnation, ++this.#counter];
+				existing.token = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
 				existing.expiresMono = now + DELEGATION_LEASE_MS + this.#skewMs;
 				return { granted: true, token: existing.token, leaseMs: DELEGATION_LEASE_MS };
 			} else {
@@ -1166,7 +1174,7 @@ export class LockCoordinator {
 		if (this.#grants.size >= MAX_DELEGATIONS_PER_TABLE) return { granted: false, reason: 'capacity' };
 		const perRequester = this.#grantsByRequester.get(requester) ?? 0;
 		if (perRequester >= MAX_DELEGATIONS_PER_REQUESTER) return { granted: false, reason: 'capacity' };
-		const token: FencingToken = [epoch.number, epoch.homeIncarnation, ++this.#counter];
+		const token: FencingToken = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
 		this.#grants.set(keyId, {
 			key,
 			delegate: requester,
@@ -1306,13 +1314,13 @@ export function setLockCoordinatorResolver(
 
 export function registerClusterLockTransport(database: string, transport: ClusterLockTransport): void {
 	if (
-		typeof transport?.epoch !== 'function' ||
+		typeof transport?.homeMap !== 'function' ||
 		typeof transport?.ownsCoordination !== 'function' ||
 		typeof transport?.requestDelegation !== 'function' ||
 		typeof transport?.recallDelegation !== 'function'
 	)
 		throw new ClientError(
-			'A cluster lock transport must provide epoch(), ownsCoordination(), requestDelegation() and recallDelegation()'
+			'A cluster lock transport must provide homeMap(), ownsCoordination(), requestDelegation() and recallDelegation()'
 		);
 	transport.onControlEntry = (db: string, table: string, entry: LockControlEntry, author: string) =>
 		deliverLockControlEntry(db, table, entry, author);

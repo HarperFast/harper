@@ -359,18 +359,28 @@ as it did in Phase 0 — the whole feature is gated on harper-pro registering a 
 **Three levels at three very different rates.** This is the shape the design note argues for, and the
 reason the arbitration rule is one node rather than a quorum:
 
-| level            | rate                  | who owns it | what it costs                         |
-| ---------------- | --------------------- | ----------- | ------------------------------------- |
-| membership epoch | membership changes    | harper-pro  | durable agreement, never per lock     |
-| home node        | derived, free         | core        | a hash over the epoch's `members[]`   |
-| delegation       | per key, bounded time | core        | 1 RTT cold, **zero** while it is live |
+| level      | rate                  | who owns it | what it costs                         |
+| ---------- | --------------------- | ----------- | ------------------------------------- |
+| home map   | operator reconfigures | harper-pro  | published out of band, never per lock |
+| home node  | derived, free         | core        | a hash over the map's `homes[]`       |
+| delegation | per key, bounded time | core        | 1 RTT cold, **zero** while it is live |
 
-`transport.epoch(database)` hands core `(number, members[], ringVersion, homeIncarnation)`. Core
-never computes topology and never proceeds without an agreed epoch: no epoch means no agreed ring,
-and a ring guessed from whoever looks reachable is exactly the asymmetric-partition failure a single
-arbiter exists to remove. A key's **home** is the rendezvous-hash winner over `members[]` — chosen
-over a modulo because a membership change then re-homes only the departing member's keys, and every
-re-homed key pays the recovery path on its next lock.
+`transport.homeMap(database)` hands core `(generation, homes[], homeIncarnation)`. The map is
+**operator-agreed and immutable per generation**: an administrator publishes it, peers agree on its
+digest before the feature is enabled, and nothing a node observes — an unreachable peer, a restart,
+a partition — changes it. Core never computes topology, never advances a generation, and never
+proceeds without a map: no map means no agreed ring, and a ring guessed from whoever looks reachable
+is exactly the asymmetric-partition failure a single arbiter exists to remove. A key's **home** is
+the rendezvous-hash winner over `homes[]` — chosen over a modulo because a generation change then
+re-homes only the departing node's keys, and every re-homed key pays the recovery path on its next
+lock.
+
+**No consensus runs at any rate**, which is the point of the shape. An earlier revision agreed
+`members[]` by single-decree consensus so an unreachable node could be rehomed automatically; that
+was replaced on 2026-09-13 because the decision it automated — is this node briefly down, or gone? —
+has a human authority who can simply state it. The price is stated rather than hidden: an
+unavailable home's keys stay unavailable until an operator publishes a new generation. §4 of the
+design note carries the reasoning and §9 records the rejected alternative.
 
 A node that wants to lock `K` asks `K`'s home for a **delegation**: the exclusive right to admit
 critical sections on `K` for a bounded time. While one is live, `lock()`/`unlock()` are pure Phase 0
@@ -389,7 +399,7 @@ replicated log, because it is what orders a handoff behind the delegate's own da
 
 The entry is written in its own transaction, with no primary-store write, and — unlike the `reload`
 marker it is otherwise modeled on — **not** `LOCAL_ONLY`, because replicating it IS the send. Its
-payload is `[key, requesterName, epochNumber, homeIncarnation, counter]`, validated on exact tuple
+payload is `[key, requesterName, generation, homeIncarnation, counter]`, validated on exact tuple
 length: a future version that grows it must bump the type rather than widen this one, since a
 partially-understood release would clear a delegation on terms the sender did not intend.
 
@@ -399,10 +409,10 @@ its record id answers `_writeUpdate`'s keyed dedup lookup at exactly the holder'
 dropping the holder's first write. That is why the key is in the payload.
 
 **Fencing tokens are ordered, not merely unique.** A delegation carries
-`(epochNumber, homeIncarnation, counter)`, compared lexicographically. `homeIncarnation` is durably
+`(generation, homeIncarnation, counter)`, compared lexicographically. `homeIncarnation` is durably
 persisted and monotonic, supplied by harper-pro. A random incarnation would make a stale reply
 identifiable but not _orderable_: a home that restarts and re-issues counter 1 after having issued
-counter 50 would let a delayed generation-50 reply defeat its successor.
+counter 50 would let a delayed counter-50 reply defeat its successor.
 
 **The home always outwaits its delegate.** A grant's deadline on the home is the delegate's lease plus
 `LOCK_LEASE_SKEW_MS`, and both sides measure on their own monotonic clock — no remote timestamp is
@@ -417,24 +427,24 @@ the two cases are different:
 - **In-process transport swap** (a component reload re-registering a transport). The successor
   **adopts** the predecessor's delegations and grants in its constructor, before the predecessor is
   closed. The transport object changed; this node's delegations and the handles they admitted did not.
-- **Cold start** (a process restart, where there is nothing to adopt). The hazard is the same — a
-  previous incarnation may have delegations still admitting, and it left no record — but core does
-  not enforce it, because core cannot know when that incarnation died and the conservative bound
-  would make the first cluster lock after every restart wait minutes. The obligation is stated on
-  `ClusterLockTransport.epoch` instead: **do not name this node in an epoch until a previous
-  incarnation's delegations could have expired, or advance the epoch number, which invalidates them
-  outright.** That is the design note's §4.4 retirement interval, and it is harper-pro#825's to
-  provide. `grantableAfterMono` holds a core-side bound for a deployment that wants one anyway.
+- **Cold start** (a process restart, where there is nothing to adopt). A previous incarnation may
+  have delegations still admitting, and it left no record. Nothing external bounds them — the map is
+  immutable, so its generation does not advance merely because a process restarted — so **core
+  enforces this one itself**: `#grantableAfterMono` refuses to grant as a home until
+  `DELEGATION_LEASE_MS + skew` on the monotonic clock, which counts from process start. It costs
+  availability on this node's own share of the ring and nothing elsewhere. A deployment that can
+  prove a previous incarnation issued nothing overrides it through
+  `ClusterLockTransport.grantableAfterMono`.
 
 `Table.lockCoordinator` also does **not** close the coordinator when the transport merely goes away:
 harper-pro unregisters without a standalone claim during a reconnect, and closing there would discard
 this node's record of what it has granted. Only an explicit standalone claim clears it.
 
-**A delegation is authority within one epoch.** `#liveDelegation` compares the delegation's token
-epoch against the current one and drops it on a mismatch, because an epoch change may have re-homed
-the key to a node that knows nothing of this token. Bounding the window between a delegate noticing a
-new epoch and the new home granting is the design note's §4.4 retirement interval — harper-pro's to
-provide, not core's.
+**A delegation is authority within one generation.** `#liveDelegation` compares the delegation
+token's generation against the current one and drops it on a mismatch, because a generation change
+may have re-homed the key to a node that knows nothing of this token. Bounding the window between a
+delegate noticing a new generation and the new home granting is the design note's §4.3 drain —
+operator-sequenced, and harper-pro's to hold, not core's.
 
 **Recall revokes capability, not just admission.** Waiting for live admissions is not enough on its
 own: a caller that staged a write and then called `unlock()` leaves nothing for a drain to wait on,
@@ -473,7 +483,7 @@ still admitting.
 per tick, so a scan locking millions of distinct keys cannot make a home retain millions of grants and
 a single peer cannot exhaust the table on its own.
 
-**Membership is fail-closed.** No agreed epoch, no member set, an unreachable home, a closed
+**Membership is fail-closed.** No agreed home map, no named homes, an unreachable home, a closed
 coordinator, or a call on a thread that does not own coordination all reject with a retryable 503
 rather than downgrading to a node-local lock — which would hand two nodes one key. An unreachable node
 blocks only the keys it homes, which is the availability property the whole redesign exists for.
@@ -508,7 +518,7 @@ the delegation path assigns a record version.
 
 **Not implemented here, deliberately.** The successor-freshness fence of the design note's §7 — the
 inherited `(origin → position)` dependency set on the release entry and the recovery barrier — is
-harper#2542, and harper-pro's durable epoch is harper-pro#825. Until both land, a handoff carries
+harper#2542, and harper-pro's operator-agreed home map is harper-pro#825. Until both land, a handoff carries
 exclusion but not the clean-handoff freshness the note's §2 states, which is another reason nothing is
 enabled by default.
 
