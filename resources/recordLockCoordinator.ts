@@ -47,6 +47,17 @@ import { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS } from './recordLock.ts';
  * and why no core build registers a transport.
  */
 
+/**
+ * When record-lock coordination began in THIS thread, on the monotonic clock. Deliberately not
+ * process start: `performance.now()` and `performance.timeOrigin` are process-wide even inside a
+ * worker, while the coordinator state a cold start loses is per-thread — so a replacement
+ * coordinating worker in a long-lived process would read an uptime far past any process-based horizon
+ * and grant immediately, over delegations the worker it replaced had issued. Module scope is the
+ * earliest reading this thread can take; loading later than the thread started only lengthens the
+ * bound, which is the safe direction.
+ */
+export const COORDINATION_STARTED_MONO = performance.now();
+
 /** Margin a home adds to a delegation it issued, so the delegate always stops admitting first. */
 export const LOCK_LEASE_SKEW_MS = 5_000;
 /**
@@ -145,9 +156,10 @@ export interface DelegationReply {
 	leaseMs?: number;
 	/**
 	 * Denied only. `contended` is retryable within the caller's own wait budget; `generation` means
-	 * refresh the home map.
+	 * refresh the home map; `quarantine` means the home is inside its §4.3 restart interval and cannot
+	 * be waited out by any legal caller, so it converts to 503 rather than burning the wait budget.
 	 */
-	reason?: 'contended' | 'generation' | 'capacity' | 'not-home';
+	reason?: 'contended' | 'generation' | 'capacity' | 'not-home' | 'quarantine';
 	/** Denied with `generation`, so a stale requester can re-derive the ring without another round trip. */
 	generation?: number;
 	retryAfterMs?: number;
@@ -320,7 +332,7 @@ function scoreFor(member: string, keyId: string): number {
 }
 
 /**
- * The string the ring hashes for a key. §4.5 scopes it by database and table: hashing the record id
+ * The string the ring hashes for a key. §4.4 scopes it by database and table: hashing the record id
  * alone would home id `42` in every table of every database on the same node, concentrating unrelated
  * hot keys on one arbiter. The separator cannot appear in a name or a stringified key id.
  */
@@ -528,13 +540,13 @@ export class LockCoordinator {
 	 * Monotonic reading before which this coordinator may not grant as a home — the §4.3 restart
 	 * quarantine, and core's own to enforce.
 	 *
-	 * A coordinator that started cold has no record of the delegations a previous incarnation of this
-	 * process issued, and those can still be admitting on their holders. Nothing external bounds them:
-	 * the home map is immutable, so its generation does not advance merely because a process restarted.
-	 * What core does know is its own uptime — `monotonic` counts from process start — so the quarantine
-	 * runs until `DELEGATION_LEASE_MS + skew` on that clock, by which point every delegation a previous
-	 * incarnation could have issued has expired. It costs availability on this node's own share of the
-	 * ring and nothing elsewhere: keys homed on other nodes are acquired immediately.
+	 * A coordinator that started cold has no record of the delegations a previous incarnation issued,
+	 * and those can still be admitting on their holders. Nothing external bounds them: the home map is
+	 * immutable, so its generation does not advance merely because a process or a worker restarted.
+	 * What core does know is when coordination started in this thread, so the quarantine runs until
+	 * `DELEGATION_LEASE_MS + skew` after `COORDINATION_STARTED_MONO` — by which point every delegation
+	 * a previous incarnation could have issued has expired. It costs availability on this node's own
+	 * share of the ring and nothing elsewhere: keys homed on other nodes are acquired immediately.
 	 *
 	 * A deployment that can prove a previous incarnation issued nothing overrides it through
 	 * `ClusterLockTransport.grantableAfterMono`. Generation CHANGES need nothing here: the
@@ -580,10 +592,10 @@ export class LockCoordinator {
 		this.#monotonic = options.monotonic ?? (() => performance.now());
 		this.#skewMs = options.skewMs ?? LOCK_LEASE_SKEW_MS;
 		this.#autoTick = options.autoTick !== false;
-		// An absolute reading, not an offset from construction: the monotonic clock counts from process
-		// start, so a coordinator created ten minutes in has already outwaited anything a previous
-		// incarnation issued.
-		this.#grantableAfterMono = options.grantableAfterMono ?? DELEGATION_LEASE_MS + this.#skewMs;
+		// Anchored on when coordination started in this thread, not on construction: a coordinator built
+		// ten minutes into a thread's life has already outwaited anything its predecessor issued.
+		this.#grantableAfterMono =
+			options.grantableAfterMono ?? COORDINATION_STARTED_MONO + DELEGATION_LEASE_MS + this.#skewMs;
 		options.adopt?.handOffTo(this);
 		// After the handoff, which sets both for the adopted case: a predecessor that closed without one
 		// left its outstanding authority here instead, and this coordinator inherits its bounds.
@@ -618,8 +630,11 @@ export class LockCoordinator {
 		// admission in the map just carried over.
 		successor.#counter = Math.max(successor.#counter, this.#counter);
 		successor.#nextAdmissionId = Math.max(successor.#nextAdmissionId, this.#nextAdmissionId);
-		// The successor now holds the full record of what is outstanding, so it has no reason to wait.
-		successor.#grantableAfterMono = -Infinity;
+		// The successor holds the full record of what THIS coordinator had outstanding, so it need not
+		// wait on that. It must still wait out the cold-start quarantine, which bounds what a previous
+		// incarnation of the PROCESS granted — neither coordinator can see those, and a transport swap
+		// is not evidence about them.
+		successor.#grantableAfterMono = Math.max(successor.#grantableAfterMono, this.#grantableAfterMono);
 		this.#delegations.clear();
 		this.#grants.clear();
 		this.#grantsByRequester.clear();
@@ -663,6 +678,12 @@ export class LockCoordinator {
 	 * zero cluster messages.
 	 */
 	async acquire(key: any, leaseMs: number, waitMs: number): Promise<LockRound> {
+		// `Table.lock()` captures a coordinator and only reaches here after the native key lock, which
+		// can wait the caller's whole timeout — long enough for a transport swap to close what it
+		// captured. Authority moved to the successor rather than away, so run there instead of
+		// rejecting a caller that is already holding the key.
+		const authority = this.#authority();
+		if (authority !== this) return authority.acquire(key, leaseMs, waitMs);
 		if (this.#closed) throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
 		if (!this.transport.ownsCoordination())
 			throw new LockUnavailableError(
@@ -724,6 +745,10 @@ export class LockCoordinator {
 				);
 			if (reply.reason === 'capacity')
 				throw new LockUnavailableError(`Too many record lock delegations in flight on ${this.database}`);
+			if (reply.reason === 'quarantine')
+				throw new LockUnavailableError(
+					`The home node for this key on ${this.database}.${this.table} restarted and cannot grant until the delegations its previous incarnation issued have expired`
+				);
 			if (reply.reason === 'not-home')
 				// The home disagrees about the ring. Re-reading the map on the next pass is the fix;
 				// if it is genuinely stale on our side we will converge, and if not we run out of wait.
@@ -731,8 +756,15 @@ export class LockCoordinator {
 
 			const remaining = deadlineMono - this.#monotonic();
 			if (remaining <= 0) throw new ClientError('Record is locked and was not released in time', 423);
-			await delay(Math.min(reply.retryAfterMs ?? 25, remaining));
-			if (this.#closed) throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
+			await delay(Math.min(reply.retryAfterMs ?? 25, remaining)).promise;
+			if (this.#closed) {
+				// Same swap, landing in the backoff instead. Carry the remaining wait so the deadline the
+				// caller asked for is preserved across the hop.
+				const successor = this.#authority();
+				if (successor === this)
+					throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
+				return successor.acquire(key, leaseMs, Math.max(0, deadlineMono - this.#monotonic()));
+			}
 		}
 	}
 
@@ -855,11 +887,17 @@ export class LockCoordinator {
 		delegation.recalled = true;
 		if (delegation.holding > 0) {
 			await new Promise<void>((resolve) => {
-				(delegation.drained ||= []).push(resolve);
 				// A holder that never releases must not hold the recall open past its own lease: the
-				// delegation expires here on our clock, and the home outwaits that by skew anyway.
+				// delegation expires here on our clock, and the home outwaits that by skew anyway. The
+				// timer is dropped by whichever side wins, so a delegation that drains promptly does not
+				// retain one for the rest of its lease.
 				const remaining = Math.max(0, delegation.expiresMono - this.#monotonic());
-				setTimeout(resolve, remaining).unref?.();
+				const timer = setTimeout(resolve, remaining);
+				timer.unref?.();
+				(delegation.drained ||= []).push(() => {
+					clearTimeout(timer);
+					resolve();
+				});
 			});
 		}
 		// The swap may have landed during the drain. The delegation OBJECT moved to the successor, so
@@ -1130,9 +1168,16 @@ export class LockCoordinator {
 				},
 				() => {}
 			);
+			const timeout = delay(remaining);
+			// Dropped once the race settles: a reply that beats the timeout would otherwise leave a timer
+			// holding this closure for the caller's whole remaining wait.
+			requested.then(
+				() => timeout.cancel(),
+				() => timeout.cancel()
+			);
 			return await Promise.race([
 				requested,
-				delay(remaining).then(() => {
+				timeout.promise.then(() => {
 					raced = true;
 					return { granted: false, reason: 'contended', retryAfterMs: 0 } as DelegationReply;
 				}),
@@ -1169,7 +1214,10 @@ export class LockCoordinator {
 	#grant(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number, requester: string): DelegationReply {
 		const now = this.#monotonic();
 		const quarantine = this.#grantableAfterMono - now;
-		if (quarantine > 0) return { granted: false, reason: 'contended', retryAfterMs: Math.min(quarantine, 250) };
+		// NOT `contended`: the quarantine runs for a full delegation lease, and `MAX_LOCK_TIMEOUT_MS` is
+		// shorter than that, so retrying it would spend the caller's whole budget and then answer 423 —
+		// "held by someone else" — for a key nobody holds.
+		if (quarantine > 0) return { granted: false, reason: 'quarantine', retryAfterMs: Math.min(quarantine, 250) };
 		const existing = this.#grants.get(keyId);
 		if (existing) {
 			// An expired grant is not a live one. Collecting it here rather than trusting `tick()` is
@@ -1304,10 +1352,14 @@ export class LockCoordinator {
 	}
 }
 
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => {
-		setTimeout(resolve, ms).unref?.();
+/** A sleep whose timer the winner of a race can drop, rather than let it run out its full delay. */
+function delay(ms: number): { promise: Promise<void>; cancel: () => void } {
+	let timer: ReturnType<typeof setTimeout>;
+	const promise = new Promise<void>((resolve) => {
+		timer = setTimeout(resolve, ms);
+		timer.unref?.();
 	});
+	return { promise, cancel: () => clearTimeout(timer!) };
 }
 
 const clusterLockTransports = new Map<string, ClusterLockTransport>();

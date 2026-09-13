@@ -30,6 +30,11 @@ deliveries **per lock**.
 
 ## 2. The invariants
 
+**Only the first of these two ships in Phase 1**, and the second is narrowed rather than met. They
+are stated together because they are what the design is _aimed_ at and what the deferred arms would
+close; §10 is the normative wording for what `lock()` actually promises, and it is the text to read
+before writing anything user-facing.
+
 > **Exclusive admission.** At most one node may admit a critical section for
 > `(database, table, key)` at any instant. Successor authority must exclude every predecessor
 > _capability_ that can still admit or commit — not merely every predecessor handle.

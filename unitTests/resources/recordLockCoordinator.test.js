@@ -3,6 +3,7 @@ const {
 	LockCoordinator,
 	LOCK_LEASE_SKEW_MS,
 	DELEGATION_LEASE_MS,
+	COORDINATION_STARTED_MONO,
 	compareTokens,
 	decodeLockControlPayload,
 	encodeLockControlPayload,
@@ -27,10 +28,11 @@ function realHandle(lease = LEASE) {
  * start, which is what makes the quarantine assertable without depending on the suite's own uptime.
  */
 let coldSequence = 0;
-function coldCoordinator(monotonic) {
+function coldCoordinator(monotonic, options = {}) {
 	return new LockCoordinator({
 		database: 'test',
-		table: `ColdStart${++coldSequence}`,
+		table: options.table ?? `ColdStart${++coldSequence}`,
+		adopt: options.adopt,
 		nodeId: 'alpha',
 		transport: {
 			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
@@ -204,7 +206,7 @@ class FakeCluster {
 
 	/** The node that homes this key under the current membership. */
 	homeOf(key) {
-		// The coordinator hashes database ‖ table ‖ key (§4.5); the harness must scope it identically
+		// The coordinator hashes database ‖ table ‖ key (§4.4); the harness must scope it identically
 		// or every keyHomedOn() would pick a different node than the coordinator does.
 		return homeFor(ringKeyFor('test', this.table, key), this.homes);
 	}
@@ -597,6 +599,10 @@ describe('record lock delegations', () => {
 				nextTimestamp: () => ++cluster.tsCounter,
 				monotonic: () => node.mono + performance.now(),
 				adopt: predecessor,
+				// As in the harness constructor: an injected clock says nothing about process start, so the
+				// §4.3 quarantine is opted into per test. It is NOT inherited from the predecessor here —
+				// the adopting successor takes the max of the two, and both are waived.
+				grantableAfterMono: -Infinity,
 				autoTick: false,
 			});
 			predecessor.close();
@@ -747,6 +753,18 @@ describe('record lock delegations', () => {
 			assert.strictEqual(cluster.requests.length, requestsBefore, 'the adopted delegation still serves locks');
 		});
 
+		it('acquires through the successor when the swap closed the coordinator the caller captured', async () => {
+			// `Table.lock()` captures a coordinator, then waits on the native key lock — long enough for a
+			// reload to close what it captured. Authority moved to the successor, not away.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const { predecessor, successor } = replace(cluster, 'alpha');
+			const round = await predecessor.acquire(key, LEASE, WAIT);
+			assert.strictEqual(successor.stats.delegations, 1, 'the delegation landed somewhere else');
+			assert.strictEqual(predecessor.stats.delegations, 0, 'the closed coordinator took the delegation');
+			successor.release(key, round.admissionId);
+		});
+
 		it('does not restart the counter, so a successor token never ties a predecessor’s', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const beta = cluster.node('beta');
@@ -869,7 +887,7 @@ describe('record lock delegations', () => {
 				leaseMs: LEASE,
 			});
 			assert.strictEqual(denied.granted, false, 'a cold home must not grant over an unseen predecessor');
-			assert.strictEqual(denied.reason, 'contended');
+			assert.strictEqual(denied.reason, 'quarantine');
 			cluster.advance('beta', DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
 			const granted = await beta.coordinator.onDelegationRequest({
 				key,
@@ -882,10 +900,11 @@ describe('record lock delegations', () => {
 
 		it('quarantines a cold home by default, on its own process clock', async () => {
 			// §4.3: the home map is immutable, so a restart advances no generation and nothing external
-			// bounds what a previous incarnation of this process granted. The only fact core has is its
-			// own uptime, and `monotonic` counts from process start — so the default horizon is an
-			// absolute reading on that clock, and a coordinator that outlived the interval is free.
-			const cold = coldCoordinator(() => DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS - 1);
+			// bounds what a previous incarnation granted. The one fact core has is when coordination
+			// started in THIS thread — not process start, which `performance.now()` reports even inside a
+			// worker, and which a replacement coordinating worker would read as far past any horizon.
+			const horizon = COORDINATION_STARTED_MONO + DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			const cold = coldCoordinator(() => horizon - 1);
 			const denied = await cold.onDelegationRequest({
 				key: 'quarantined',
 				requester: 'alpha',
@@ -893,9 +912,9 @@ describe('record lock delegations', () => {
 				leaseMs: LEASE,
 			});
 			assert.strictEqual(denied.granted, false, 'a cold home granted over an unseen predecessor');
-			assert.strictEqual(denied.reason, 'contended');
+			assert.strictEqual(denied.reason, 'quarantine');
 
-			const warm = coldCoordinator(() => DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			const warm = coldCoordinator(() => horizon);
 			const granted = await warm.onDelegationRequest({
 				key: 'quarantined',
 				requester: 'alpha',
@@ -905,6 +924,41 @@ describe('record lock delegations', () => {
 			assert.strictEqual(granted.granted, true, 'the quarantine outlasted the delegation lease');
 			cold.close();
 			warm.close();
+		});
+
+		it('answers a quarantined home with 503 rather than burning the caller’s wait for a 423', async () => {
+			// The quarantine runs a full delegation lease (365s) and MAX_LOCK_TIMEOUT_MS is 300s, so no
+			// legal caller can wait it out. Retrying it as ordinary contention would spend the whole
+			// budget and then report 423 — "held by someone else" — for a key nobody holds.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma'], {
+				grantableAfterMono: performance.now() + DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS,
+			});
+			const alpha = cluster.node('alpha').coordinator;
+			const key = cluster.keyHomedOn('alpha');
+			await assert.rejects(
+				() => alpha.acquire(key, LEASE, WAIT),
+				(error) => error.statusCode === 503 && /restarted and cannot grant/.test(error.message)
+			);
+		});
+
+		it('carries the cold-start quarantine across a transport swap', async () => {
+			// The successor adopts the predecessor's live authority, so it need not wait on THAT — but the
+			// quarantine bounds what a previous incarnation of the process granted, which neither
+			// coordinator can see. A component reload is not evidence about it.
+			const mono = () => COORDINATION_STARTED_MONO + DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS - 1;
+			const table = `ColdSwap${Date.now()}`;
+			const predecessor = coldCoordinator(mono, { table });
+			const successor = coldCoordinator(mono, { table, adopt: predecessor });
+			const denied = await successor.onDelegationRequest({
+				key: 'swapped',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a transport swap cleared the cold-start quarantine');
+			assert.strictEqual(denied.reason, 'quarantine');
+			predecessor.close();
+			successor.close();
 		});
 
 		it('revokes a REAL handle whose write was staged and then unlocked', async () => {
