@@ -51,8 +51,8 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
  *   content or the complete new content, so a torn write can never replace a valid marker with one
  *   the scan reads as empty (and therefore honors as no block). An intact marker is also never
  *   rewritten at all — see `beginRestore`.
- * - `<meta-dir>/<key>.open` — a short-lived mutex around root RocksDB opens and destroys. The main thread tracks
- *   managed worker holders and releases their token if the worker exits before it can clean up.
+ * - `<meta-dir>/<key>.open` — a short-lived mutex around root RocksDB opens and destroys, tracked by
+ *   owning worker on the main thread so an abnormal worker exit still releases it.
  */
 
 // The backtick makes this an illegal database name (schemaRegex rejects `/` and backtick only), so
@@ -98,14 +98,13 @@ function databaseOpenLockPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + DATABASE_OPEN_LOCK_SUFFIX);
 }
 
-// Per-thread module state: paths whose open lock this thread currently holds. flock is bound to
-// the open file description, so a second tryFileLock from this same thread can never observe its
-// own release, and the Atomics.wait retry below would starve the event loop that release depends on.
+// flock binds to the open file description, not the thread, so a same-thread re-acquire would
+// never see its own release — and the Atomics.wait retry below would starve the very release it is
+// waiting on. Per-module (so per-thread) record of paths this thread currently holds, checked
+// before that retry loop.
 const heldOpenLocksByPath = new Map<string, number>();
 
-/** Thrown by a same-thread re-acquire; callers that scan opportunistically should skip and continue. */
 export const OPEN_LOCK_SELF_REENTRANT = 'EOPENLOCKSELF';
-/** Thrown when a cross-thread/process holder does not release within `maxWaitMilliseconds`. */
 export const OPEN_LOCK_TIMED_OUT = 'EOPENLOCKTIMEDOUT';
 
 /**
