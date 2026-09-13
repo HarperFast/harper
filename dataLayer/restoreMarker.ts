@@ -88,11 +88,29 @@ function databaseOpenLockPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + DATABASE_OPEN_LOCK_SUFFIX);
 }
 
+// Paths whose open lock this thread currently holds. The lock itself is bound to the open file
+// description, not the process, so a second `tryFileLock` from the very thread already holding it
+// would never see its own release — that release runs on a pending continuation this thread's own
+// `Atomics.wait` retry loop below would otherwise block for the entire `maxWaitMilliseconds`. Each
+// worker thread gets its own module instance, so this map only ever reflects this thread's holds;
+// cross-thread contention still goes through the real file lock and its retry loop.
+const heldOpenLocksByPath = new Map<string, number>();
+
 /**
  * Serialize root RocksDB opens and destroys for one database. rocksdb-js releases its registry
  * entry before `DestroyDB`, so a concurrent reopen must wait until destruction is complete.
  */
 export function acquireDatabaseOpenLock(dbPath: string, maxWaitMilliseconds = 30_000): number {
+	if (heldOpenLocksByPath.has(dbPath)) {
+		// Fail fast rather than spin the full timeout: only this thread could release the lock it
+		// already holds, and the caller reaching here is proof that hasn't happened yet — most often a
+		// schema-change rescan reopening a database this same thread is mid-drop on. Waiting would
+		// starve the event loop this thread needs to finish that drop and release the lock, turning a
+		// harmless "try again next scan" into a guaranteed `maxWaitMilliseconds` stall.
+		const error: any = new Error(`Database open lock for ${dbPath} is already held on this thread`);
+		error.code = 'EOPENLOCKSELF';
+		throw error;
+	}
 	mkdirSync(restoreMetaDir(dbPath), { recursive: true });
 	let token = tryFileLock(databaseOpenLockPath(dbPath));
 	const startedAt = Date.now();
@@ -105,11 +123,18 @@ export function acquireDatabaseOpenLock(dbPath: string, maxWaitMilliseconds = 30
 		Atomics.wait(sleeper, 0, 0, 10);
 		token = tryFileLock(databaseOpenLockPath(dbPath));
 	}
+	heldOpenLocksByPath.set(dbPath, token);
 	return token;
 }
 
 export function releaseDatabaseOpenLock(token: number): void {
 	fileLockRelease(token);
+	for (const [path, heldToken] of heldOpenLocksByPath) {
+		if (heldToken === token) {
+			heldOpenLocksByPath.delete(path);
+			break;
+		}
+	}
 }
 
 export type RestoreState = 'in-progress' | 'incomplete' | 'clear';
