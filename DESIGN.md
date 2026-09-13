@@ -1955,10 +1955,10 @@ the table first), and who owns the column-family wrappers the declaration opens.
 An application that declared `branchedDatabases` declares through `scopedTableFactory(branches)`, which
 routes each declaration by database name — to the branch of that name, or to `table()` itself. GraphQL
 `@table` (`graphql.ts`), `scope.ensureTable` (`components/Scope.ts`, `componentLoader.ts`) and
-`defineTable` (`defineTableUsing`, through `security/jsLoader.ts`) all go through it. **An unbranched
-application gets `table` and `defineTable` by identity** — `scopedTableFactory(undefined) === table` —
-so the request path of every application that does not branch is untouched; only a branched
-application pays for the routing, and only at declaration time.
+`defineTable` (`defineTableUsing`, through `security/jsLoader.ts`) all go through it. **An unbranched,
+shared application gets `table` and `defineTable` by identity** — `scopedTableFactory(undefined) ===
+table`. An isolated application gets a declaration-only wrapper even without branches, so its own
+schema can claim maintenance that no pool worker configured; hydrated tables remain pool-owned.
 
 Consequences to preserve:
 

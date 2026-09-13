@@ -84,6 +84,8 @@ interface ApplicationConfig {
 	 * Per-application globals are a property of thread-level isolation, not of branching.
 	 */
 	branchedDatabases?: string[] | true;
+	/** Run in a worker thread of its own that loads no other application. */
+	isolated?: boolean;
 	// an application config can have other arbitrary properties
 	[key: string]: unknown;
 }
@@ -218,6 +220,15 @@ export function assertApplicationConfig(
 		}
 	}
 	assertBranchedDatabases(applicationName, applicationConfig.branchedDatabases);
+	assertIsolationConfig(applicationName, applicationConfig.isolated);
+}
+
+export function assertIsolationConfig(applicationName: string, isolated: unknown): void {
+	if (isolated !== undefined && typeof isolated !== 'boolean') {
+		throw new TypeError(
+			`Invalid 'isolated' for application ${applicationName}: expected a boolean, got ${typeof isolated}`
+		);
+	}
 }
 
 /**
@@ -3444,6 +3455,7 @@ export function shouldPackLocalDirectory(packageIdentifier: string | undefined, 
  * @returns A promise that resolves when all preparation steps complete.
  */
 export type PrepareApplicationOptions = {
+	beforePrepare?: () => Promise<void>;
 	/**
 	 * Runs against the built candidate while the live version is still serving, and BEFORE the swap. A
 	 * throw here means the candidate never goes live — which is the whole difference from the previous
@@ -3460,6 +3472,7 @@ export async function prepareApplication(application: Application, options: Prep
 		await withComponentPreparationLock(
 			application.dirPath,
 			async () => {
+				await options.beforePrepare?.();
 				const asideStagingDir = extractionStagingDirectory(application.dirPath);
 				let recoveryPending = true;
 				try {

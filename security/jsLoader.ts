@@ -32,6 +32,7 @@ import {
 } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
+import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 
 type Lockdown = 'none' | 'freeze' | 'ses' | 'freeze-after-load';
 const APPLICATIONS_LOCKDOWN: Lockdown = env.get(CONFIG_PARAMS.APPLICATIONS_LOCKDOWN);
@@ -893,13 +894,14 @@ function scopedDatabaseBindings(scope: ApplicationScope): { databases: any; tabl
 }
 
 /**
- * `defineTable` for a branched application registers through that application's table factory, so
- * a branched name lands in its branch; an unbranched application gets `defineTable` itself.
+ * `defineTable` for a branched or isolated application registers through that application's table
+ * factory, so a branched name lands in its branch and an isolated schema is tagged with its owner.
  */
 function scopedDefineTable(scope: ApplicationScope): typeof defineTable {
 	const branches = scope.branches;
-	if (!branches?.size) return defineTable;
-	const declareTable = scopedTableFactory(branches);
+	const isolatedApplicationOwner = thisThreadOwnsApplication(scope.name);
+	if (!branches?.size && !isolatedApplicationOwner) return defineTable;
+	const declareTable = scopedTableFactory(branches, isolatedApplicationOwner);
 	return function (name: string, shape: any, options?: any) {
 		return defineTableUsing(declareTable, name, shape, options);
 	} as typeof defineTable;

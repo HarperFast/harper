@@ -2,7 +2,7 @@ import { readKey, writeKey } from 'ordered-binary';
 import { initSync, get as envGet } from '../utility/environment/environmentManager.ts';
 import { AUDIT_STORE_NAME } from '../utility/lmdb/terms.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
-import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
+import { getWorkerIndex, ownsStoreMaintenance } from '../server/threads/manageThreads.js';
 import { convertToMS } from '../utility/common_utils.ts';
 import { LAST_TIMESTAMP_PLACEHOLDER, HAS_STRUCTURE_UPDATE, PENDING_LOCAL_TIME } from './RecordEncoder.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
@@ -330,7 +330,7 @@ export function openAuditStore(rootStore) {
 						if (
 							!cleanupStopped &&
 							!storeClosing() &&
-							(!isRocksAuditStore || (getWorkerIndex() === getWorkerCount() - 1 && !pendingCleanupResolve))
+							(!isRocksAuditStore || (ownsStoreMaintenance(rootStore.path) && !pendingCleanupResolve))
 						) {
 							scheduleAuditCleanup();
 						}
@@ -366,7 +366,7 @@ export function openAuditStore(rootStore) {
 		pendingCleanupResolve = null;
 		return lastCleanupResolution ?? Promise.resolve();
 	};
-	if (getWorkerIndex() === getWorkerCount() - 1) {
+	if (ownsStoreMaintenance(rootStore.path)) {
 		scheduleAuditCleanup();
 	}
 	if (getWorkerIndex() === 0 && !timestampErrored) {

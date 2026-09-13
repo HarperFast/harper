@@ -10,6 +10,8 @@ import {
 	beginProcessShutdown,
 	restartWorkers,
 	isThreadRunning,
+	decodeRestartScope,
+	getRunningIsolatedApplications,
 	onMessageByType,
 	shutdownWorkersNow,
 } from '../server/threads/manageThreads.js';
@@ -26,6 +28,7 @@ envMgr.initSync();
 
 const RESTART_RESPONSE = `Restarting Harper. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
 const INVALID_SERVICE_ERR = 'Invalid service';
+const ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS = 5000;
 
 let calledFromCli;
 
@@ -35,8 +38,15 @@ export { restart, restartService };
 if (isMainThread) {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.RESTART, async (message, port) => {
 		try {
-			if (message.removeBranchesFor) await restartThenRemoveBranches(message.workerType, message.removeBranchesFor);
-			else if (message.workerType) await restartService({ service: message.workerType });
+			// `scope` stays in its wire form ('' pool, a name, absent = all) until restartService decodes it once
+			if (message.removeBranchesFor)
+				await restartThenRemoveBranches(message.workerType, message.removeBranchesFor, message.scope);
+			else if (message.workerType)
+				await restartService({
+					service: message.workerType,
+					scope: message.scope,
+					scopeFallback: message.scopeFallback,
+				});
 			else restart({ operation: 'restart' });
 		} finally {
 			port.postMessage({ type: 'restart-complete' });
@@ -48,13 +58,13 @@ if (isMainThread) {
  * Restart, then remove the branches of an application dropped on a worker (which cannot outlive the
  * restart it asked for). The restart happens even if the component lock cannot be taken.
  */
-async function restartThenRemoveBranches(service: string, project: string): Promise<void> {
+async function restartThenRemoveBranches(service: string, project: string, scope: string | undefined): Promise<void> {
 	let restarted = false;
 	const restartHttpWorkers = async () => {
 		restarted = true;
 		processMan.expectedRestartOfChildren();
 		hdbLogger.notify('Restarting http_workers');
-		return restartWorkers('http');
+		return restartWorkers('http', undefined, true, null, decodeRestartScope({ scope }));
 	};
 	try {
 		const componentPath = path.join(getConfigPath(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT) as string, project);
@@ -89,7 +99,7 @@ async function restartThenRemoveBranches(service: string, project: string): Prom
 		);
 	} catch (error) {
 		hdbLogger.error(`Could not remove the branched database storage of ${project}`, error);
-		if (!restarted) await restartService({ service });
+		if (!restarted) await restartService({ service, scope });
 	}
 }
 
@@ -183,6 +193,49 @@ async function restartService(req: any) {
 	if (hdbTerms.HDB_PROCESS_SERVICES[service] === undefined) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
+	const requestedScope = decodeRestartScope(req);
+	if (requestedScope !== undefined && typeof requestedScope !== 'string') {
+		throw handleHDBError(
+			new Error(),
+			'Invalid HTTP worker restart scope: expected a string',
+			HTTP_STATUS_CODES.BAD_REQUEST,
+			undefined,
+			undefined,
+			true
+		);
+	}
+	let fallbackScope;
+	if (req.scopeFallback !== undefined) {
+		fallbackScope = decodeRestartScope({ scope: req.scopeFallback });
+		if (fallbackScope !== undefined) {
+			throw handleHDBError(
+				new Error(),
+				'Invalid HTTP worker restart scope fallback: expected the pool scope',
+				HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+	}
+	if (typeof requestedScope === 'string' && requestedScope !== '*' && req.scopeFallback === undefined) {
+		envMgr.initSync(true);
+		const { isIsolatedApplication } = await import('../server/threads/isolatedApplications.ts');
+		const configured = isIsolatedApplication(requestedScope);
+		const runningApplications = configured
+			? []
+			: await getRunningIsolatedApplications(ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS);
+		if (!configured && !runningApplications.includes(requestedScope)) {
+			throw handleHDBError(
+				new Error(),
+				`Unknown isolated application restart scope: ${requestedScope}`,
+				HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+	}
 	processMan.expectedRestartOfChildren();
 	if (!isMainThread) {
 		if (req.replicated) {
@@ -191,6 +244,8 @@ async function restartService(req: any) {
 		parentPort.postMessage({
 			type: hdbTerms.ITC_EVENT_TYPES.RESTART,
 			workerType: service,
+			scope: req.scope, // wire form, forwarded as received
+			scopeFallback: req.scopeFallback,
 		});
 		parentPort.ref(); // don't let the parent thread exit until we're done
 		await new Promise<void>((resolve) => {
@@ -265,7 +320,12 @@ async function restartService(req: any) {
 			if (calledFromCli) {
 				await processMan.restart(hdbTerms.PROCESS_DESCRIPTORS.HDB);
 			} else {
-				await restartWorkers('http');
+				let scope = requestedScope;
+				if (req.scopeFallback !== undefined && typeof scope === 'string' && scope !== '*') {
+					const runningApplications = await getRunningIsolatedApplications(ISOLATED_TOPOLOGY_REQUEST_TIMEOUT_MS);
+					if (!runningApplications.includes(scope)) scope = fallbackScope;
+				}
+				await restartWorkers('http', undefined, true, null, scope);
 			}
 			break;
 		default:
