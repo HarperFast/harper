@@ -122,11 +122,11 @@ suite(
 		}
 
 		/** GET a record. */
-		async function get(id: string): Promise<{ status: number | 'error'; body: any }> {
+		async function get(id: string, timeoutMs = 5_000): Promise<{ status: number | 'error'; body: any }> {
 			try {
 				const r = await fetch(`${httpURL}/RateCounter/${id}`, {
 					headers: { Authorization: auth },
-					signal: AbortSignal.timeout(5_000),
+					signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
 				});
 				const body = r.status === 200 ? await r.json() : null;
 				return { status: r.status, body };
@@ -135,19 +135,43 @@ suite(
 			}
 		}
 
-		/** Two matching early reads do not prove cross-worker convergence. */
-		async function waitForConvergedGet(id: string, minimumHits: number, deadline: number) {
-			let response = await get(id);
+		async function waitForConvergedGet(id: string, minimumHits: number, maximumHits: number, deadline: number) {
 			const seen: (number | string)[] = [];
-			while (true) {
+			let response: Awaited<ReturnType<typeof get>> = { status: 'error', body: null };
+			let lastMeaningfulResponse = response;
+			let previousHits: number | undefined;
+			let stableReads = 0;
+			let confirmed = false;
+			while (Date.now() < deadline) {
+				response = await get(id, deadline - Date.now());
 				seen.push(response.status === 200 ? Number(response.body?.hits ?? -1) : String(response.status));
-				if (response.status === 200 && Number(response.body?.hits ?? -1) >= minimumHits) break;
+				if (response.status !== 'error') lastMeaningfulResponse = response;
+				if (response.status === 200) {
+					const hits = Number(response.body?.hits ?? -1);
+					if (hits > maximumHits) {
+						confirmed = true;
+						break;
+					}
+					if (hits >= minimumHits) {
+						stableReads = hits === previousHits ? stableReads + 1 : 1;
+						previousHits = hits;
+						if (stableReads >= 2) {
+							confirmed = true;
+							break;
+						}
+					} else {
+						previousHits = hits;
+						stableReads = 0;
+					}
+				} else {
+					previousHits = undefined;
+					stableReads = 0;
+				}
 				const remainingMs = deadline - Date.now();
 				if (remainingMs <= 0) break;
 				await sleep(Math.min(20, remainingMs));
-				response = await get(id);
 			}
-			return { response, seen };
+			return { response: response.status === 'error' ? lastMeaningfulResponse : response, seen, confirmed };
 		}
 
 		/** DELETE a record (best-effort cleanup). */
@@ -191,6 +215,7 @@ suite(
 			let cleanRounds = 0;
 			let lostCountRounds = 0;
 			let staleRounds = 0;
+			let inconclusiveRounds = 0;
 			const roundLogs: string[] = [];
 
 			for (let r = 0; r < ROUNDS; r++) {
@@ -203,19 +228,24 @@ suite(
 				}
 
 				// Fire N concurrent increments immediately (well before expiry).
-				const burstStartedAt = Date.now();
 				const results = await Promise.all(Array.from({ length: N }, () => increment(id)));
 				const acked = results.filter((x) => x.status === 200).length;
 				const errs = results.filter((x) => x.status === 'error').length;
 				const rejected = results.filter((x) => typeof x.status === 'number' && x.status !== 200).length;
 
-				const convergenceDeadline = burstStartedAt + CONVERGENCE_WINDOW_MS;
-				if (Date.now() >= convergenceDeadline) {
-					roundLogs.push(`r${r}: burst-outlasted-convergence-window (skip) acked=${acked} err=${errs}`);
+				const acknowledgedAt = results.filter((x) => x.status === 200).map((x) => x.at);
+				if (acknowledgedAt.length === 0) {
+					inconclusiveRounds++;
+					roundLogs.push(`r${r}: no acknowledged increments (skip) err=${errs} rej=${rejected}`);
 					await del(id);
 					continue;
 				}
-				const { response: g, seen } = await waitForConvergedGet(id, acked, convergenceDeadline);
+				const convergenceDeadline = Math.max(...acknowledgedAt) + CONVERGENCE_WINDOW_MS;
+				const {
+					response: g,
+					seen,
+					confirmed,
+				} = await waitForConvergedGet(id, acked, acked + errs, convergenceDeadline);
 				let desc: string;
 				if (g.status === 404) {
 					lostCountRounds++;
@@ -223,9 +253,12 @@ suite(
 				} else if (g.status === 200) {
 					// PUT starts at 0, so stored should equal acked addTo calls.
 					const stored = Number(g.body?.hits ?? -1);
-					if (stored >= acked && stored <= acked + errs) {
+					if (stored >= acked && stored <= acked + errs && confirmed) {
 						cleanRounds++;
 						desc = `r${r}: CLEAN stored=${stored} acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
+					} else if (stored >= acked && stored <= acked + errs) {
+						inconclusiveRounds++;
+						desc = `r${r}: UNCONFIRMED stored=${stored} acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
 					} else if (stored < acked) {
 						lostCountRounds++;
 						desc = `r${r}: LOST stored=${stored}<acked=${acked} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
@@ -234,6 +267,7 @@ suite(
 						desc = `r${r}: OVER stored=${stored}>acked+errs=${acked + errs} rej=${rejected} err=${errs} seen=[${seen.join(',')}]`;
 					}
 				} else {
+					inconclusiveRounds++;
 					desc = `r${r}: unexpected status=${g.status} acked=${acked} seen=[${seen.join(',')}]`;
 				}
 				roundLogs.push(desc);
@@ -242,21 +276,18 @@ suite(
 
 			log(
 				`\n[QA-431] (2) WITHIN-WINDOW EXACTNESS (${ROUNDS} rounds × N=${N}, TTL=${TTL_MS}ms, ${WORKERS} workers)\n` +
-					`  clean rounds (stored==acked)  = ${cleanRounds}\n` +
+					`  clean rounds                  = ${cleanRounds}\n` +
 					`  lost-count rounds             = ${lostCountRounds}  ← DEFECT if > 0\n` +
 					`  over-count rounds             = ${staleRounds}  ← DEFECT if > 0\n` +
+					`  inconclusive rounds           = ${inconclusiveRounds}\n` +
 					`  ${roundLogs.join('\n  ')}`
 			);
 
 			ok(lostCountRounds === 0, `QA-431(2): lost-count in ${lostCountRounds} round(s) — CRDT×TTL defect`);
 			ok(staleRounds === 0, `QA-431(2): over-count in ${staleRounds} round(s) — double-apply or resurrection`);
-			// Every round that lands in "expired-during-burst" is measured by nothing above — if
-			// eviction regressed to fire too aggressively, every round could take that branch and
-			// the two asserts above would vacuously pass on 0/0. Guard that a meaningful fraction
-			// of rounds were actually measurable.
 			ok(
 				cleanRounds + lostCountRounds + staleRounds >= ROUNDS / 2,
-				`QA-431(2): only ${cleanRounds + lostCountRounds + staleRounds}/${ROUNDS} rounds were measurable (rest expired-during-burst) — cannot confirm this probe exercised the guarded regression`
+				`QA-431(2): only ${cleanRounds + lostCountRounds + staleRounds}/${ROUNDS} rounds were measurable (${inconclusiveRounds} inconclusive) — cannot confirm this probe exercised the guarded regression`
 			);
 		});
 
@@ -309,16 +340,19 @@ suite(
 				const errs = results.filter((x) => x.status === 'error').length;
 				const rejected = results.filter((x) => typeof x.status === 'number' && x.status !== 200).length;
 
-				const convergenceDeadline = t0 + CONVERGENCE_WINDOW_MS;
-				if (Date.now() >= convergenceDeadline) {
+				const acknowledgedAt = results.filter((x) => x.status === 200).map((x) => x.at);
+				if (acknowledgedAt.length === 0) {
 					skipRounds++;
-					roundLogs.push(
-						`r${r}: skip (burst outlasted convergence window) acked=${acked} err=${errs} burstMs=${burstMs}`
-					);
+					roundLogs.push(`r${r}: skip (no acknowledged increments) rej=${rejected} err=${errs} burstMs=${burstMs}`);
 					await del(id);
 					continue;
 				}
-				const { response: g, seen } = await waitForConvergedGet(id, acked, convergenceDeadline);
+				const convergenceDeadline = Math.max(...acknowledgedAt) + CONVERGENCE_WINDOW_MS;
+				const {
+					response: g,
+					seen,
+					confirmed,
+				} = await waitForConvergedGet(id, acked, acked + errs, convergenceDeadline);
 				let desc: string;
 				if (g.status === 404) {
 					// All increments fired but no record persisted — all lost.
@@ -326,9 +360,12 @@ suite(
 					desc = `r${r}: ALL-LOST(404) acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
 				} else if (g.status === 200) {
 					const stored = Number(g.body?.hits ?? -1);
-					if (stored >= acked && stored <= acked + errs) {
+					if (stored >= acked && stored <= acked + errs && confirmed) {
 						cleanRounds++;
 						desc = `r${r}: CLEAN stored=${stored} acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
+					} else if (stored >= acked && stored <= acked + errs) {
+						skipRounds++;
+						desc = `r${r}: UNCONFIRMED stored=${stored} acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
 					} else if (stored < acked) {
 						lostCountRounds++;
 						desc = `r${r}: LOST stored=${stored}<acked=${acked} rej=${rejected} err=${errs} burstMs=${burstMs} seen=[${seen.join(',')}]`;
@@ -338,6 +375,7 @@ suite(
 						desc = `r${r}: OVER stored=${stored}>acked+errs=${acked + errs} rej=${rejected} err=${errs} [seed was 99] burstMs=${burstMs} seen=[${seen.join(',')}]`;
 					}
 				} else {
+					skipRounds++;
 					desc = `r${r}: unexpected status=${g.status} acked=${acked} seen=[${seen.join(',')}]`;
 				}
 				roundLogs.push(desc);
@@ -349,7 +387,7 @@ suite(
 					`  clean rounds                  = ${cleanRounds}\n` +
 					`  lost-count rounds             = ${lostCountRounds}  ← DEFECT if > 0\n` +
 					`  over-count rounds (seed=99)   = ${staleRounds}  ← DEFECT: stale resurrection if > 0\n` +
-					`  skipped (expiry-timing)        = ${skipRounds}\n` +
+					`  inconclusive rounds           = ${skipRounds}\n` +
 					`  ${roundLogs.join('\n  ')}`
 			);
 
@@ -474,6 +512,7 @@ suite(
 			let cleanWindows = 0;
 			let lostWindowCount = 0;
 			let overWindowCount = 0;
+			let inconclusiveWindows = 0;
 			const windowLogs: string[] = [];
 
 			// Seed all windows first.
@@ -482,36 +521,37 @@ suite(
 			ok(allSeeded, 'QA-431(5): failed to seed one or more windows');
 
 			// Fire all bursts simultaneously across all windows.
-			const windowResults = await Promise.all(
+			const settled = await Promise.all(
 				Array.from({ length: WINDOWS }, async (_, w) => {
 					const id = `mw${w}`;
-					const burstStartedAt = Date.now();
 					const hits = await Promise.all(Array.from({ length: HITS_PER_WINDOW }, () => increment(id)));
+					const acked = hits.filter((h) => h.status === 200).length;
+					const errs = hits.filter((h) => h.status === 'error').length;
+					const acknowledgedAt = hits.filter((h) => h.status === 200).map((h) => h.at);
 					return {
 						id,
-						acked: hits.filter((h) => h.status === 200).length,
-						errs: hits.filter((h) => h.status === 'error').length,
-						convergenceDeadline: burstStartedAt + CONVERGENCE_WINDOW_MS,
+						acked,
+						errs,
+						convergence:
+							acknowledgedAt.length > 0
+								? await waitForConvergedGet(
+										id,
+										acked,
+										acked + errs,
+										Math.max(...acknowledgedAt) + CONVERGENCE_WINDOW_MS
+									)
+								: null,
 					};
 				})
 			);
 
-			// Poll each window for a converged value (see leg (3)) rather than a
-			// single immediate read. Concurrent, not sequential: serializing 10 polls could push
-			// later keys' reads past their own 500ms TTL and misreport a clean window as expired.
-			const settled = await Promise.all(
-				windowResults.map(({ id, acked, convergenceDeadline }) =>
-					Date.now() < convergenceDeadline ? waitForConvergedGet(id, acked, convergenceDeadline) : null
-				)
-			);
-			for (let i = 0; i < windowResults.length; i++) {
-				const { id, acked, errs } = windowResults[i];
-				const convergence = settled[i];
+			for (const { id, acked, errs, convergence } of settled) {
 				if (!convergence) {
-					windowLogs.push(`${id}: burst-outlasted-convergence-window [skip] acked=${acked} err=${errs}`);
+					inconclusiveWindows++;
+					windowLogs.push(`${id}: no acknowledged increments [skip] acked=${acked} err=${errs}`);
 					continue;
 				}
-				const { response: g, seen } = convergence;
+				const { response: g, seen, confirmed } = convergence;
 				if (g.status === 404) {
 					lostWindowCount++;
 					windowLogs.push(`${id}: ALL-LOST(404) acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
@@ -519,9 +559,12 @@ suite(
 				}
 				if (g.status === 200) {
 					const stored = Number(g.body?.hits ?? -1);
-					if (stored >= acked && stored <= acked + errs) {
+					if (stored >= acked && stored <= acked + errs && confirmed) {
 						cleanWindows++;
 						windowLogs.push(`${id}: CLEAN stored=${stored} acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
+					} else if (stored >= acked && stored <= acked + errs) {
+						inconclusiveWindows++;
+						windowLogs.push(`${id}: UNCONFIRMED stored=${stored} acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
 					} else if (stored < acked) {
 						lostWindowCount++;
 						windowLogs.push(`${id}: LOST stored=${stored}<acked=${acked} err=${errs} seen=[${seen.join(',')}]`);
@@ -532,26 +575,26 @@ suite(
 						);
 					}
 				} else {
+					inconclusiveWindows++;
 					windowLogs.push(`${id}: status=${g.status} acked=${acked} seen=[${seen.join(',')}]`);
 				}
 			}
-			await Promise.all(windowResults.map(({ id }) => del(id)));
+			await Promise.all(settled.map(({ id }) => del(id)));
 
 			log(
 				`\n[QA-431] (5) MULTI-WORKER STRESS (${WINDOWS} windows × ${HITS_PER_WINDOW} hits, ${WORKERS} workers)\n` +
 					`  clean windows              = ${cleanWindows}/${WINDOWS}\n` +
 					`  lost-count windows         = ${lostWindowCount}  ← DEFECT if > 0\n` +
 					`  over-count windows         = ${overWindowCount}  ← DEFECT if > 0\n` +
+					`  inconclusive windows       = ${inconclusiveWindows}\n` +
 					`  ${windowLogs.join('\n  ')}`
 			);
 
 			ok(lostWindowCount === 0, `QA-431(5): ${lostWindowCount} window(s) with lost counts under multi-worker stress`);
 			ok(overWindowCount === 0, `QA-431(5): ${overWindowCount} window(s) over-counted under multi-worker stress`);
-			// Bursts that leave no pre-expiry convergence window are inconclusive. Keep enough
-			// measurable windows that slow CI cannot turn this probe into a vacuous pass.
 			ok(
 				cleanWindows + lostWindowCount + overWindowCount >= WINDOWS / 2,
-				`QA-431(5): only ${cleanWindows + lostWindowCount + overWindowCount}/${WINDOWS} windows were measurable (rest expired before read) — cannot confirm this probe exercised the guarded regression`
+				`QA-431(5): only ${cleanWindows + lostWindowCount + overWindowCount}/${WINDOWS} windows were measurable (${inconclusiveWindows} inconclusive) — cannot confirm this probe exercised the guarded regression`
 			);
 		});
 	}
