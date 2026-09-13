@@ -435,8 +435,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 	);
 	const openLock = !isReadOnlyMode() ? acquireTrackedDatabaseOpenLock(path) : 0;
 	try {
-		// Checked after the lock, not before: a concurrent drop can still be mid-destroy on this exact
-		// path, and creating it here first would resurrect it out from under that drop.
+		// after the lock, not before, so a concurrent drop's DestroyDB can't be resurrected mid-destroy
 		if (!existsSync(path)) {
 			// Don't create directories in read-only mode
 			if (isReadOnlyMode()) {
@@ -2124,9 +2123,7 @@ export async function dropDatabase(databaseName) {
 					await unlink(rootStore.path);
 				}
 			}
-			// inside the open lock's finally below: a reopen of this path must wait for the blob
-			// directory to be gone too, or a database created in that window can have its
-			// just-written blobs swept up by this still-running deletion
+			// before releasing the open lock below, so a same-named recreate can't race this deletion
 			await deleteRootBlobPathsForDB(rootStore);
 		} finally {
 			for (const lock of openLocks) releaseTrackedDatabaseOpenLock(lock.token);
