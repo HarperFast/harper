@@ -6,11 +6,12 @@ unchanged and remains the local primitive everything here builds on.
 
 Planning-review history, because two of its findings changed the design rather than annotating it:
 
-| round              | verdict                     | what it changed                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ------------------ | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 (`453905f0de82`) | `chosen-approach-sound`     | Shape cleared. Five blockers against under-specification: epoch protocol, lease transfer, drain, freshness fence, the LWW claim. §§4–8 exist to close them.                                                                                                                                                                                                                                                                        |
-| 2 (`4b9648dbab5f`) | `better-alternative-exists` | **Adopted.** My stateless epoch agreement forks (§4.0). Durable agreement state is the alternative, and it is better: it removes the fork, removes the restart-quarantine availability cost, and gives the ordered fencing token §7.3 needs. Four further repairs adopted: acceptor-side retirement reservations (§4.4), drain must revoke live handles (§6), the freshness fence is a dependency set not a scalar version (§7.1). |
-| 3 (`0a3f817ca56e`) | `chosen-approach-sound`     | Framing clears. Surviving findings were protocol-level and are folded in — see §14 for the map and for what still blocks implementation.                                                                                                                                                                                                                                                                                           |
+| round              | verdict                     | what it changed                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------ | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 (`453905f0de82`) | `chosen-approach-sound`     | Shape cleared. Five blockers against under-specification: epoch protocol, lease transfer, drain, freshness fence, the LWW claim. §§4–8 exist to close them.                                                                                                                                                                                                                                                                                                                              |
+| 2 (`4b9648dbab5f`) | `better-alternative-exists` | **Adopted, then superseded by round 7.** My stateless epoch agreement forks; durable agreement state was the better alternative, and its counterexample survives in §4.2 as the reason not to automate rehoming cheaply. Three repairs from that round stand: drain must revoke live handles (§6), the freshness fence is a dependency set not a scalar version (§7.1), and the fencing token must be orderable (§5.1).                                                                  |
+| 3 (`0a3f817ca56e`) | `chosen-approach-sound`     | Framing clears. Surviving findings were protocol-level and are folded in — see §14 for the map and for what still blocks implementation.                                                                                                                                                                                                                                                                                                                                                 |
+| 7 (`14c1b5510`)    | `better-alternative-exists` | **Adopted, 2026-09-13.** The membership epoch was a consensus protocol built to _infer_ what an operator can simply state: whether an unreachable node is briefly down or permanently gone. §4 is now an **operator-agreed, immutable home map** and the whole agreement protocol — durable acceptor state, ballots, renewal leases, retirement reservations, transitive activation — is **deleted, not deferred**. §9 records the epoch protocol as the rejected alternative it now is. |
 
 ## 1. The problem with what is on the branch
 
@@ -42,7 +43,7 @@ cannot keep in recovery mode for free.
 
 **That narrowing is the shipping guarantee.** The §10 decision is **exclusion-only** (§7.3 (b)):
 `lock()` promises exclusive _admission_, and successor freshness after a clean handoff _while the
-home still holds that handoff's dependency set_ — a home restart, epoch change or cap eviction routes
+home still holds that handoff's dependency set_ — a home restart, home-map change or cap eviction routes
 the successor to the recovery barrier even after a clean release. It promises
 neither conflict-ordering fences nor quorum-confirmed settlement, so the exclusion invariant above
 ships narrower than it is written on two counts — the commit half holds only up to the
@@ -61,16 +62,16 @@ asynchronous replica fresh, which is what §6 and §7 are for.
 
 Three levels, at three very different rates.
 
-**Level 1 — the membership epoch (rare, agreed, durable).** Per database, an epoch
-`(number, members[], ringVersion)` with a lease. Advancing it is single-decree agreement over a
-majority of the current members, with acceptor state persisted before it is acknowledged (§4). This
-is the only place consensus appears, and it runs once per membership change plus one renewal per
-node per lease period — not per key and not per lock. A node that cannot renew with a majority stops
-acting, so the minority side of a partition stops issuing locks while the majority side continues.
+**Level 1 — the home map (rare, operator-agreed, immutable).** Per database, a map
+`(generation, homes[])`, published by the operator through harper-pro and never derived from
+liveness. It is immutable for the life of its generation: nothing a node observes — an unreachable
+peer, a restart, a partition — changes it. Consensus does not appear at this level at all; agreement
+is that every node holds the same generation, checked by digest before the feature is enabled (§4).
+A node that cannot obtain the current map stops acting.
 
-**Level 2 — the home node (derived, free).** Within an epoch the arbiter for a key is a rendezvous
-hash over `members[]` (§4.5). A single arbiter per key is trivially exclusive, which removes the
-entire grant state machine — no deferral queues, no `(tsR, nodeName)` tiebreak, no synthesized
+**Level 2 — the home node (derived, free).** Within a generation the arbiter for a key is a
+rendezvous hash over `homes[]` (§4.4). A single arbiter per key is trivially exclusive, which removes
+the entire grant state machine — no deferral queues, no `(tsR, nodeName)` tiebreak, no synthesized
 grants, no split votes, no `INQUIRE`/revocation protocol.
 
 **Level 3 — the delegation (the amortization).** A node that wants to lock `K` asks `K`'s home node
@@ -82,169 +83,135 @@ same record repeatedly pays one round, then nothing, and the delegate is in prac
 ```
 first lock on K from node B            steady state (B keeps locking K)      C wants K
   B → home(K): DELEGATE(K)               B: local key lock only                C → home(K): DELEGATE(K)
-  home → B:    GRANTED(K, gen, until)    (zero cluster messages)               home → B: RECALL(K, gen)
+  home → B:    GRANTED(K, tok, until)    (zero cluster messages)               home → B: RECALL(K, tok)
   B: local key lock, run                                                       B: drain (§6), RELEASE entry
-                                                                               home → C: GRANTED(K, gen+1, …)
+                                                                               home → C: GRANTED(K, tok+1, …)
 ```
 
-Delegations are **volatile**; the epoch is **durable**. That split is the design: durable work runs
-at the membership-change rate, never on an acquisition and never on an ordinary write.
+Delegations are **volatile**; the home map is **durable, and written by an operator**. That split is
+the design: the only durable, agreed state changes at the rate an administrator reshapes the cluster,
+never on an acquisition and never on an ordinary write.
 
-## 4. The epoch protocol
+## 4. The home map
 
-harper-pro owns this, because it owns topology. `hdb_nodes` cannot back it directly: that table is
-LWW-replicated and therefore not agreed.
+harper-pro owns this, because it owns topology. The map is **operator-agreed and immutable per
+generation**: an administrator publishes it through harper-pro, and no node ever derives, proposes or
+advances one from what it observes.
 
-### 4.0 Why it must be durable
+### 4.1 What core consumes
 
-Round 2's counterexample, which killed the stateless version and is worth keeping in the note so it
-is not reinvented:
+Per database, `(generation, homes[])`:
 
-> Epoch `e` = `{A,B,C}`. `A,B` accept successor configuration `X = {A,D,E}`; `X` installs and stays
-> live on `D`/`E` renewals. `B` restarts and forgets its acceptance; `C` never learned `X`; `A` is
-> unreachable from `B`/`C`. After any quarantine, `B` and `C` observe epoch `e` expired and accept a
-> different successor `Y = {B,C,F}`. `X` and `Y` now renew on disjoint majorities and derive
+- `generation` is a monotonic number. It is the high-order component of the fencing token (§5.1), so
+  it must never go backwards, and a delegation minted under one generation is not honoured under
+  another.
+- `homes[]` is the set of node names that may home a key. It is a **lock-home map, not a residency
+  directive** — it says who arbitrates a key, not where the record lives, and it is not derived from
+  `hdb_nodes`, which is LWW-replicated and therefore not agreed.
+
+Core fails closed when no map is available and never guesses a ring. `homeIncarnation` (§5.1) rides
+alongside as the one remaining durable per-node datum: a monotonic counter incremented once per
+process start, persisted by harper-pro with the node's own identity.
+
+**Agreement is a digest comparison, not a protocol.** Before the feature is enabled for a database,
+peers exchange a digest of `(generation, homes[])` and refuse to participate on a mismatch. There are
+no ballots, no acceptors, no promises and no configuration certificates, because nothing is being
+decided at run time — the decision was made by the operator and published.
+
+### 4.2 Why the operator, and what that buys
+
+The hard question in an ownership map is not _how_ to change it but _whether to_: an unreachable
+node may be briefly down or permanently gone, and those want opposite answers. A protocol that
+decides for itself has to infer intent from timeouts, and the price of inferring it safely is a
+durable consensus subsystem. Round 2's counterexample is the proof, and is kept here so the cheap
+version is not reinvented:
+
+> Generation `g` = `{A,B,C}`. `A,B` accept successor configuration `X = {A,D,E}`; `X` installs and
+> stays live on `D`/`E` renewals. `B` restarts and forgets its acceptance; `C` never learned `X`; `A`
+> is unreachable from `B`/`C`. After any quarantine, `B` and `C` observe generation `g` expired and
+> accept a different successor `Y = {B,C,F}`. `X` and `Y` now renew on disjoint majorities and derive
 > different homes for the same key.
 
 Waiting out old leases cannot extinguish a configuration that has already been chosen and renews on
-its _new_ membership. Paxos requires promised and accepted state to survive restart, and there is no
-timing argument that substitutes for it. So: **promises, accepted values, and the installed
-configuration chain are persisted (fsynced) before they are acknowledged.** This is O(1) per node
-per membership change — kilobytes, at a rate of days — and it is not on any acquisition path.
+its _new_ membership, and there is no timing argument that substitutes for persisted promises. An
+operator-published map does not have this shape at all: there is exactly one authority, it is
+external, and a node either holds the published generation or refuses to act.
 
-### 4.1 Single-decree agreement per epoch number
+So the intent that a protocol would have had to infer is simply **stated**:
 
-Ballot `(counter, proposerName)`, totally ordered. To install epoch `e+1`:
+| the operator means                         | what they do                        | what the cluster does                                          |
+| ------------------------------------------ | ----------------------------------- | -------------------------------------------------------------- |
+| this node is temporarily down              | nothing                             | its keys fail closed; every other home keeps serving           |
+| this node is permanently gone, or replaced | publish generation `g+1` without it | §4.3's transition, then its keys are served by their new homes |
 
-1. **Prepare.** Proposer sends `PREPARE(e+1, ballot)` to `members(e)`.
-2. **Promise.** An acceptor answers only if `ballot` exceeds every ballot it has promised for `e+1`.
-   It **persists the promise before replying**, and from that moment refuses to renew epoch `e` — a
-   promise for the successor is a retirement of the predecessor. The promise carries any value the
-   acceptor has already accepted for `e+1`, and its outstanding epoch-`e` renewal reservation (§4.4).
-3. **Accept.** With `floor(|members(e)|/2)+1` promises the proposer sends
-   `ACCEPT(e+1, ballot, members', ringVersion)`, choosing the highest-ballot previously-accepted
-   value if any promise carried one. An acceptor persists the accepted value before replying. A
-   majority of `ACCEPTED` installs `e+1`.
-4. **Renewal.** Epoch `e+1` is live on a node only while that node holds an unexpired lease for it,
-   renewed against a majority of `members(e+1)` once per `epochLeaseMs`. Renewal is the liveness
-   signal; there is no separate heartbeat.
+The cost of that is stated just as plainly, and it is the reason this is a decision rather than an
+optimization: **an unavailable home's keys stay unavailable until an operator acts.** Automatic,
+failure-driven rehoming is not deferred work — it is the thing being declined, and it returns only if
+§10's measurements show the manual path is operationally unacceptable.
 
-Agreement for `e+1` runs against `members(e)`; `members(e+1)` becomes the acceptor set only once
-`e+1` is installed. A node is in exactly one live epoch, and an installed configuration certificate
-(the majority of `ACCEPTED` responses) is what a rejoining node fetches to learn the chain — an
-obsolete certificate is rejected by epoch number.
+### 4.3 Changing the map, and restarts
 
-### 4.2 Bootstrap and rejoin
+A generation change is **fail-closed and operator-sequenced**, because the danger in any ownership
+change is a key acquiring a second arbiter while a delegation issued by the first is still live.
+Delegations are volatile and bounded, so the transition is a drain rather than an agreement:
 
-A node with no persisted state is **joining**, not restarting: it may not act as an acceptor for any
-epoch it has no certificate for, and it obtains the current chain from a majority before
-participating. A node whose persisted state is present but behind catches up by certificate.
+1. The operator publishes generation `g+1`. Nodes stop granting and stop honouring delegations under
+   `g`: a delegate drops a delegation whose token names a superseded generation, and a home refuses a
+   request that names one.
+2. No node grants under `g+1` until `maxDelegationMs + skew` has elapsed since the last node stopped
+   granting under `g`. That interval is what bounds every delegation `g` could have issued.
+3. Grants resume. Keys whose home did not move are affected by the interval exactly as much as keys
+   that did: an unchanged home is still a new arbiter under a new token prefix.
 
-**Renewal reservations do not survive a crash, and must be reconstructed.** Persisted promises and
-accepted configurations do not reconstruct an acknowledgement the node gave to _someone else's_
-renewal: in `{A,B,C}`, `A` holds a renewal acknowledged by `A` and `B`; `B` restarts with its
-configuration intact but its reservation gone; `B` and `C` then promise a successor reporting no
-outstanding reservation, and their wait can end while `A`'s lease is still valid. Two ways to close
-it, and this design takes the second:
+The interval is **observed, not inferred** — the operator knows when step 1 completed everywhere,
+which is precisely the knowledge a retirement protocol would have had to reconstruct from acceptor
+reservations.
 
-1. Persist reservation protection before acknowledging a renewal. Sound, but it puts a durable write
-   on the lease-renewal path, at lease frequency rather than membership-change frequency.
-2. **Reconstruct conservatively on restart:** a restarted node treats every epoch it holds a
-   certificate for as reserved for a full `epochLeaseMs + skew` from its own restart instant, and
-   reports that as its outstanding reservation. No steady-state durable writes; the cost is a restart
-   wait, which is real and must not be claimed away.
+**A restarted home is the one interval core enforces itself.** Delegations are volatile, so a
+restarted home has no record of what a previous incarnation of its own process granted, and the
+generation does not change on a restart — there is no external event to hang the interval on. Core
+therefore refuses to grant as a home until `DELEGATION_LEASE_MS + skew` has elapsed **since its own
+process started**, on its own monotonic clock. It need not remember what it granted, only that
+everything it could have granted has expired.
 
-So a restart does carry an availability cost — one lease period of conservative reservation — and the
-durable state is written at membership-change frequency only.
+That quarantine costs availability, and the cost is real: for keys this node homes, the first cluster
+lock after a restart waits out the interval. It does not affect keys homed elsewhere — a restarted
+node acquires those immediately — and it is bounded by the delegation lease, not by an operator's
+response time. A deployment that can prove a previous incarnation issued nothing (a fresh database,
+a first start) may override it through the transport, which is the only party that knows that.
 
-### 4.3 Retiring a healthy epoch
+### 4.4 Routing — exactly one algorithm
 
-A planned membership change must not be blocked by the fact that the current epoch is renewing
-normally. The promise precondition is therefore **not** "epoch `e` looks dead" — it is the ordinary
-ballot rule of §4.1 step 2. Promising retires `e` on that acceptor, so once a majority has promised,
-`e` cannot renew, and it lapses on its own holders' clocks. Failure-driven and administrative
-changes are then the same protocol, differing only in who proposes.
-
-### 4.4 Retirement interval, anchored on acceptor reservations
-
-A local "when did _I_ last renew" timestamp does not bound other holders: an acceptor may have
-stopped renewing its own actor lease long ago while still acknowledging someone else's, so its own
-old timestamp has already elapsed while that other node's authority is live.
-
-So every acknowledged renewal creates a **reservation** on the acceptor: acknowledging a renewal of
-epoch `e` at local instant `t` reserves `e` as possibly-live until `t + epochLeaseMs + skew`. Each
-promise in §4.1 step 2 reports that reservation as a _remaining duration_, never as an absolute
-instant.
-
-**Anchor it at promise receipt, not at prepare-send.** Anchoring a requested _lease_ at send is safe
-because it shortens the holder's own authority; applying the same technique to an exclusion _wait_
-shortens the protection instead, which is backwards. With a 100 s epoch lease, 10 s maximum
-delegation and 1 s margin: a prepare sent at `t=0` reaches the quorum at `t=100`; an old actor renews
-at `t=80` and holds authority to ≈180; its acceptor's reservation ends at 181, so the promise reports
-81 s remaining. Anchored at send, the successor could grant from `0 + 81 + 10 + 1 = 92` — immediately
-on installation, with old authority live. Anchored at receipt of that promise (`t=100`), it waits to
-192, which covers it.
-
-```
-activateAfter_i = t_promise_received_i + remaining_i × (1 + clockRateError) + maxDelegationMs + skew
-activateAfter   = max over the promise quorum
-```
-
-This bounds all predecessor authority, including nodes newly added in `e+1` that hold no reservation
-of their own: any prior renewal of `e` required a majority of `members(e)`, and the promise majority
-intersects it, so at least one promiser reports the governing reservation.
-
-**Protection is transition state, and must be recoverable and transitive.** Two failures if it lives
-only in the proposer's memory:
-
-- A replacement proposer, or a home joining later, has no way to reconstruct `activateAfter`. So it
-  is carried **in the accepted value** as a remaining duration, and each acceptor converts it to a
-  local deadline on install.
-- Install `e+1` while `e` still has live authority, then install `e+2` before `e+1` has acquired any
-  renewal reservations. Promises for `e+2` truthfully report zero outstanding reservation for `e+1`,
-  while `e` is still live. Waiting only on the immediate predecessor admits too early. So an
-  installed configuration carries forward **any unelapsed protection of its own predecessors**, and
-  a successor's `activateAfter` is the maximum of its own computation and everything carried
-  forward. Equivalently: successor installation may serialize behind predecessor retirement; carrying
-  it forward is the non-blocking form of the same rule.
-
-Activation protection gates granting for **every** key the node homes in the new epoch, not only
-newly-mapped ones — an unchanged home is still a home in a new epoch.
-
-### 4.5 Routing — exactly one algorithm
-
-`home(K) = argmax_{m ∈ members} H(nodeName(m) ‖ 0x00 ‖ canonicalKey(K))`, ties broken by the lexically
-greater `nodeName`. Rendezvous (highest-random-weight), **not** modulo indexing: an epoch change then
-moves only the keys homed to a departing member.
+`home(K) = argmax_{m ∈ homes} H(nodeName(m) ‖ 0x00 ‖ canonicalKey(K))`, ties broken by the lexically
+greater `nodeName`. Rendezvous (highest-random-weight), **not** modulo indexing: a generation change
+then moves only the keys homed to a departing node.
 
 `canonicalKey(K) = utf8(database) ‖ 0x00 ‖ utf8(table) ‖ 0x00 ‖ orderedBinary(key)`, using the same
 ordered-binary key encoding the primary store already uses, so two nodes cannot disagree about the
-bytes. `H` is named and versioned by `ringVersion` in the epoch, so changing it is an epoch change
-rather than a silent split.
+bytes. `H` is fixed by the generation rather than versioned separately: changing the hash is a new
+generation, which is what makes it a coordinated transition rather than a silent split.
 
 ## 5. Exclusion
 
-- **One arbiter.** Within an epoch every node derives the same home from the same `members[]` and
-  `ringVersion`.
-- **Across an epoch change** — §4.4.
-- **Across a home restart.** Delegations are volatile, so a restarted home refuses to grant any key
-  for `maxDelegationMs + skew` after start: it need not remember what it granted, only that
-  everything it could have granted has expired. Unlike the epoch case this timing argument _is_
-  sufficient, because a delegation's liveness never migrates to a new set of holders — it is one
-  node, one bounded lease.
+- **One arbiter.** Within a generation every node derives the same home from the same `homes[]`, and
+  a digest mismatch stops a node acting rather than letting it derive a second ring (§4.1).
+- **Across a generation change** — §4.3's drain.
+- **Across a home restart** — §4.3's quarantine, which core enforces on its own process clock. The
+  timing argument is sufficient here because a delegation's liveness never migrates to a new set of
+  holders: it is one node, one bounded lease.
 - **A delegate that loses contact** stops admitting when its delegation expires, enforced by the
   existing commit-time fence. The home may re-grant only after its own issue instant plus
   `durationMs + skew`, on the home's own monotonic clock.
 
 ### 5.1 Fencing tokens are ordered, not just unique
 
-A delegation's fencing token is `(epochNumber, homeIncarnation, delegationCounter)`, compared
+A delegation's fencing token is `(generation, homeIncarnation, delegationCounter)`, compared
 lexicographically. `homeIncarnation` is a **durably persisted monotonic counter**, incremented once
-per process start in the same record §4 already writes — not a random id. A random incarnation makes
-a stale reply identifiable but not orderable, and a home that restarts and re-issues `generation 1`
-after having issued `generation 50` would let a delayed generation-50 write defeat its successor.
-The token must also survive key deletion and re-creation, which it does because it is scoped to the
-home and the epoch, not to the record.
+per process start and carried on the home map (§4.1) — not a random id. A random incarnation makes a
+stale reply identifiable but not orderable, and a home that restarts and re-issues counter 1 after
+having issued counter 50 would let a delayed counter-50 write defeat its successor. The token must
+also survive key deletion and re-creation, which it does because it is scoped to the home and the
+generation, not to the record.
 
 ### 5.2 Lease transfer and local handle bounds
 
@@ -255,24 +222,24 @@ clock at receipt overlaps the next delegate.
   `t_send + durationMs`. Never from receipt, never from `deadline − Date.now()`.
 - A reply arriving after `t_send + durationMs − minUsefulMs` is **rejected**, not clamped: a
   delegation with no usable window is a retry, not a hold.
-- Every message carries `(epoch, homeIncarnation, delegationCounter, requestId)` and is bound to the
-  authenticated replication origin. A reply that does not match the requester's current epoch and its
-  outstanding request is discarded; a validly authenticated but retired member can neither renew an
-  obsolete epoch nor clear a current delegation. **The `requestId` half is not implemented** — the
-  wire carries no request identity, correlation is the transport's per-call promise, and the home
-  therefore cannot tell a duplicate or delayed request from a genuine renewal. Core closes the
-  resulting two-holder path by refusing to hand back a grant while any delegation for the key is held;
-  the residue, and the protocol fix, are harper#2582. The epoch half **is** implemented: the epoch is
-  re-read after the round and a grant minted under a superseded one is handed back rather than
-  installed.
-- **Every local handle is bounded by `min(requested lease, delegation deadline, epoch-lease
-deadline)`** — including re-entrant acquisition and the `{hold: true}` upgrade. The branch's
+- Every message carries `(generation, homeIncarnation, delegationCounter, requestId)` and is bound to
+  the authenticated replication origin. A reply that does not match the requester's current generation
+  and its outstanding request is discarded; a validly authenticated node that the current generation
+  does not name can neither obtain a delegation nor clear one. **The `requestId` half is not
+  implemented** — the wire carries no request identity, correlation is the transport's per-call
+  promise, and the home therefore cannot tell a duplicate or delayed request from a genuine renewal.
+  Core closes the resulting two-holder path by refusing to hand back a grant while any delegation for
+  the key is held; the residue, and the protocol fix, are harper#2582. The generation half **is**
+  implemented: the map is re-read after the round and a grant minted under a superseded generation is
+  handed back rather than installed.
+- **Every local handle is bounded by `min(requested lease, delegation deadline)`** — including
+  re-entrant acquisition and the `{hold: true}` upgrade. The branch's
   `upgradeToHold` already clamps to the granted round's deadline rather than extending it
   (`resources/recordLock.ts:305`); that clamp is retargeted, and must not be dropped along with the
   round it currently reads.
 - **Clock assumptions, stated rather than implied:** every deadline is compared only against readings
   of the _same_ node's `performance.now()`; no remote instant is ever compared against a local one,
-  and every cross-node duration travels as a remaining-duration (§4.4). `skew` covers bounded clock
+  and every cross-node duration travels as a remaining-duration. `skew` covers bounded clock
   _rate_ divergence over one lease period, not offset. A process suspended past a deadline (VM pause,
   container freeze, long GC) resumes with its monotonic clock advanced and observes its own expiry —
   which is why expiry is checked at commit submission and not only on a timer.
@@ -348,8 +315,8 @@ fail closed, not silently pass.
 
 ### 7.2 Recovery paths, and where the guarantee is explicitly weaker
 
-The home holds the dependency set in memory, so a home restart, an epoch change, or a delegate crash
-with no clean release loses it. `verify:` whether a durable copy is recoverable from the log within
+The home holds the dependency set in memory, so a home restart, a generation change, or a delegate
+crash with no clean release loses it. `verify:` whether a durable copy is recoverable from the log within
 retention — if it is, that is a cheaper recovery than the barrier below and should be preferred.
 
 Without it, the first grant for a key carries no set, and the acquirer must instead **drain its
@@ -440,7 +407,7 @@ external effects need idempotency or fencing at that system.
   a key's dependency set cannot distinguish it from a key never delegated at all, and would take the
   §7.2 barrier on both — so a workload cycling through more keys than the cap pays the recovery cost
   during _normal_ operation, not only after a restart. The home therefore keeps a compact
-  ever-delegated-in-this-epoch filter (add-only, so it has no false negatives): outside it, a key has
+  ever-delegated-in-this-generation filter (add-only, so it has no false negatives): outside it, a key has
   no predecessor and needs no barrier; inside it with the set evicted, the barrier is required. Retain
   dependency sets longer than delegations, and size the filter as part of the cap budget.
 - Ordinary writes keep their existing ungated path, with no exception: exclusion-only (§7.3) adds
@@ -453,23 +420,25 @@ external effects need idempotency or fencing at that system.
   rate: the admissions a delegation is still answerable for are swept for expiry once the map has
   outgrown the live set the previous sweep measured, so mixed lease lengths cannot hide an expired
   admission behind a longer-lived one for the length of its lease.
-- Membership and message role are authenticated and authorized **before** state is allocated, so a
-  malformed payload, a stale certificate or cap exhaustion cannot be used to accumulate state. A
-  configuration certificate is validated by **authenticating each accepting identity and checking they
-  are distinct members of the preceding configuration** — an authenticated sender presenting a claimed
-  list of votes is not quorum evidence. Certificate, dependency-set and key payload sizes are bounded
-  before allocation. Trusted origin identity stays the transport's responsibility, as it already is
-  (`resources/recordLockCoordinator.ts:79`).
+- Home-map membership and message role are authenticated and authorized **before** state is
+  allocated, so a malformed payload, a superseded generation or cap exhaustion cannot be used to
+  accumulate state. A request from a node the current generation does not name is refused before any
+  grant, waiter or timer is allocated. Dependency-set and key payload sizes are bounded before
+  allocation. Trusted origin identity stays the transport's responsibility, as it already is
+  (`resources/recordLockCoordinator.ts:79`). There are no configuration certificates to validate,
+  because there is no election — the map's digest is agreed once, out of band, before the feature is
+  enabled (§4.1).
 
 ## 9. Approaches considered
 
-| Axis                | Candidate                                                                                                                                           | Why not chosen                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Different layer** | Put arbitration entirely in harper-pro's replication layer, or behind an embedded/external Raft group that owns the lock table.                     | Not rejected on principle — this design _is_ the hybrid: durable agreement for membership epochs only (§4), volatile delegations underneath, so consensus never runs per lock or per key. The disqualifier for a full replicated lock table is specific, not "bigger": **replicating per-key ownership puts durable, majority-acknowledged work on every acquisition**, which is exactly what volatile delegations remove and what §10's amortization depends on. It would also still need §7's fence, because it is off-stream. (This design introduces consensus and election-shaped behavior of its own in §4, so "adds consensus" is not itself an argument against the alternative and is not used as one.) If Harper later wants consensus for membership, shard maps and schema changes, §4 is the piece to replace with it. |
-| **Deeper cause**    | Do not hand out locks at all: make the conflicting operation a conditional/compare-and-swap write evaluated by one authority (the residency owner). | Covers only retryable single-record read-modify-write. `lock()` exists in harper#483 for a caller holding the lock across arbitrary application work, including calls to other systems, which no CAS expresses. It also does not remove the authority problem: an independent local CAS against asynchronously replicated copies is not cluster-wide exclusion. Worth having _as well_.                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| **Do less**         | Keep Ricart–Agrawala and accept the availability limit: it is implemented, tested, and gated off by `replication.recordLocks`.                      | The limit is the feature's value, not a rollout caveat: a lock any single unreachable peer disables is not usable for the correctness-critical work `lock()` exists for. Cost points the same way — 13 durable commits and 143 frame deliveries per lock at `P=12`, per key, with no amortization for a node locking the same record repeatedly.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **Do less (2)**     | Use `server.shards`, which already maps shard id → node list and already routes residency reads, as the ownership map.                              | Requires operator sharding configuration, which one customer uses. §4.5 derives the ring from replication-group membership, so it needs none; where sharding _is_ configured the shard map is a valid ring and can be adopted later.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| **Chosen**          | Durable membership epochs + rendezvous homes + volatile per-record delegations, local Phase 0 locks underneath.                                     | Agreement is paid once per membership change rather than once per lock; a single arbiter per key removes the contention protocol entirely; durable epoch state is O(1) per node at a rate of days and is what makes §5.1's fencing token orderable; repeated locking by one node costs zero cluster messages.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Axis                | Candidate                                                                                                                                                                                                                                   | Why not chosen                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Different layer** | Put arbitration entirely in harper-pro's replication layer, or behind an embedded/external Raft group that owns the lock table.                                                                                                             | The disqualifier for a full replicated lock table is specific, not "bigger": **replicating per-key ownership puts durable, majority-acknowledged work on every acquisition**, which is exactly what volatile delegations remove and what §10's amortization depends on. It would also still need §7's fence, because it is off-stream. The consensus objection is now clean rather than hypocritical: this design runs no election of its own, at any rate, so "adds consensus" is an argument it is entitled to make. If Harper later wants consensus for membership, shard maps and schema changes, §4's map is the piece to replace with it — and the replacement would be invisible to §§5–8.                                                                   |
+| **Deeper cause**    | Do not hand out locks at all: make the conflicting operation a conditional/compare-and-swap write evaluated by one authority (the residency owner).                                                                                         | Covers only retryable single-record read-modify-write. `lock()` exists in harper#483 for a caller holding the lock across arbitrary application work, including calls to other systems, which no CAS expresses. It also does not remove the authority problem: an independent local CAS against asynchronously replicated copies is not cluster-wide exclusion. Worth having _as well_.                                                                                                                                                                                                                                                                                                                                                                             |
+| **Do less**         | Keep Ricart–Agrawala and accept the availability limit: it is implemented, tested, and gated off by `replication.recordLocks`.                                                                                                              | The limit is the feature's value, not a rollout caveat: a lock any single unreachable peer disables is not usable for the correctness-critical work `lock()` exists for. Cost points the same way — 13 durable commits and 143 frame deliveries per lock at `P=12`, per key, with no amortization for a node locking the same record repeatedly.                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Do more**         | Durable membership epochs: agree `members[]` by single-decree consensus over a majority, with acceptor state persisted before acknowledgement, so an unreachable node is rehomed automatically. **This note's own design through round 6.** | Rejected 2026-09-13. What it buys over the chosen map is exactly one thing: **unattended rehoming**. What it costs is a durable consensus subsystem in harper-pro — persisted promises and accepted values, ballots, renewal leases as the liveness signal, acceptor-side retirement reservations, transitive activation protection, and a conservative restart quarantine to reconstruct reservations a crash lost. All of that exists to _infer_ whether an unreachable node is briefly down or permanently gone. An operator already knows, and can say so in one published generation. The judgement is not that consensus is too hard; it is that **this particular decision has an authority who can simply state it**, so inferring it is unpaid complexity. |
+| **Adjacent**        | Derive the map from `server.shards`, which already maps shard id → node list and already routes residency reads.                                                                                                                            | A shard map is a **residency** directive — it says where records live. Making it the lock-home map couples arbitration to data placement and requires sharding configuration, which one customer uses. The chosen map is a separate, purpose-built `recordLockHomes` generation, so a cluster adopts record locks without adopting sharding. Where sharding _is_ configured the shard map is a valid set of homes and an operator may publish it as one.                                                                                                                                                                                                                                                                                                            |
+| **Chosen**          | Operator-agreed immutable home map + rendezvous homes + volatile per-record delegations, local Phase 0 locks underneath.                                                                                                                    | No agreement protocol runs at any rate: the only agreed state is published out of band and checked by digest. A single arbiter per key removes the contention protocol entirely; a monotonic generation is what makes §5.1's fencing token orderable; repeated locking by one node costs zero cluster messages. The price is stated in §4.2 and is the whole of the tradeoff: **an unavailable home's keys stay unavailable until an operator acts.**                                                                                                                                                                                                                                                                                                               |
 
 **Quorum-granted bounded delegations** (each voter reserves `K`; `floor(n/2)+1` wins; a preferred
 proposer to damp contention) also amortize local locks, and is the closest rejected alternative. The
@@ -479,20 +448,20 @@ intersecting quorum. The facts that decide against it are cost and complexity, b
 fan-out on every delegation acquisition **and renewal**, where a single home pays two unicast
 messages and no renewal fan-out; and a retained contention-arbitration protocol between competing
 claimants, which the single-arbiter design deletes rather than simplifies. What it buys is avoiding
-§4.4's home-failure recovery interval. For a lock whose stated goal is per-record throughput, that
-trade goes the other way.
+§4.3's operator-sequenced transition and restart quarantine. For a lock whose stated goal is
+per-record throughput, that trade goes the other way.
 
 ## 10. Cost, and the guarantee decision
 
 Per uncontended acquisition, `P` participants, `d` = locks served under one delegation:
 
-|                                                                                      | durable commits | frame deliveries                         | latency                              | one node down                                         |
-| ------------------------------------------------------------------------------------ | --------------- | ---------------------------------------- | ------------------------------------ | ----------------------------------------------------- |
-| Ricart–Agrawala (branch today)                                                       | `P+1`           | `P²−1`                                   | slowest participant                  | **all** cluster locks block                           |
-| This design, first lock on a key                                                     | 0               | 2 unicast                                | 1 RTT to the home, 0 if local        | that node's ring share only, until the epoch advances |
-| This design, handoff to another node                                                 | 1 (release)     | `P−1` + 3 unicast                        | 2 RTT                                | —                                                     |
-| This design, steady state                                                            | 0               | 0                                        | local key lock                       | —                                                     |
-| **Recovery path (§7.2)** — first access per key after a home restart or epoch change | 0               | position query to every reachable member | **1 RTT + replication-backlog wait** | —                                                     |
+|                                                                                           | durable commits | frame deliveries                         | latency                              | one node down                                                      |
+| ----------------------------------------------------------------------------------------- | --------------- | ---------------------------------------- | ------------------------------------ | ------------------------------------------------------------------ |
+| Ricart–Agrawala (branch today)                                                            | `P+1`           | `P²−1`                                   | slowest participant                  | **all** cluster locks block                                        |
+| This design, first lock on a key                                                          | 0               | 2 unicast                                | 1 RTT to the home, 0 if local        | that node's ring share only, until an operator republishes the map |
+| This design, handoff to another node                                                      | 1 (release)     | `P−1` + 3 unicast                        | 2 RTT                                | —                                                                  |
+| This design, steady state                                                                 | 0               | 0                                        | local key lock                       | —                                                                  |
+| **Recovery path (§7.2)** — first access per key after a home restart or generation change | 0               | position query to every reachable member | **1 RTT + replication-backlog wait** | —                                                                  |
 
 The recovery row is the one that can dominate and it is not amortized: a scan touching many distinct
 cold keys after a recovery pays it per key. Barriers must be shared or batched across keys without
@@ -504,7 +473,8 @@ the re-acquisition rate are as load-bearing as the handoff rate.
 current `lock()` rate. harper-pro#822 already carries an enablement gate; producing these numbers is
 this design's first deliverable, before the protocol change lands. Everything above is a message
 count, not a benchmark. The gate needs: acquisition latency distribution; delegation re-acquisition
-rate at candidate `durationMs`; epoch renewal cost; hot-key handoff throughput; **cold-key throughput
+rate at candidate `durationMs`; the §4.3 restart quarantine's observed effect on lock availability;
+hot-key handoff throughput; **cold-key throughput
 and backlog sensitivity on the recovery path**; allocation rate on the cached-delegation path; cap
 saturation behavior; and throughput with the feature _disabled_, to prove the ungated write path is
 untouched.
@@ -530,7 +500,7 @@ feature that has not yet been measured.
 > node **admits** a critical section for a key at a time. It further guarantees that a node admitted
 > after another node released cleanly has already applied that node's committed writes to the key —
 > but **only while the key's home still holds the dependency set from that release**. A home restart,
-> an epoch change, or cap eviction (§7.2, §8) loses it and routes the successor to the recovery
+> a generation change, or cap eviction (§7.2, §8) loses it and routes the successor to the recovery
 > barrier instead, which is limitation (2) below: so (2) is reachable after a perfectly clean release,
 > not only after a failure. It does **not** guarantee either of the following, and neither of them
 > needs a crash:
@@ -670,9 +640,9 @@ Removed — **done on this branch**:
 
 Added — **core's half is done on this branch**:
 
-- The home ring (§4.5), the delegation table, recall-and-drain (§6), ordered fencing tokens (§5.1)
+- The home ring (§4.4), the delegation table, recall-and-drain (§6), ordered fencing tokens (§5.1)
   and §8's aggregate caps, in `resources/recordLockCoordinator.ts`.
-- The transport interface core needs from harper-pro: `epoch(database)`,
+- The transport interface core needs from harper-pro: `homeMap(database)`,
   `requestDelegation(...)` and `recallDelegation(...)`, plus the inbound handlers core exposes so a
   transport can route a peer's request or recall to the right coordinator.
 
@@ -690,11 +660,13 @@ Added — **harper-pro's delegation server, on harper-pro#822**:
 
 Still owed by harper-pro — **the one thing that blocks enablement**:
 
-- The epoch protocol (§4) and its durable per-database record, behind `transport.epoch(database)`
-  (harper-pro#825). #822 carries a **static** epoch as scaffolding: it is derived, not agreed, so two
-  nodes that disagree about membership derive different rings and can both grant one key. That is why
-  the transport ships gated off. #825 is also what finally lets harper-pro assert `agreedDown`, the
-  gap #822 records as a core follow-up.
+- The operator-agreed home map (§4) behind `transport.homeMap(database)` (harper-pro#825). #822
+  already carries a **static** map as scaffolding, and under this design static is the right shape —
+  what it lacks is the two properties §4.1 requires: an operator-published `recordLockHomes`
+  generation rather than one each node derives for itself, and a digest agreed across peers before
+  grants are enabled. Derived-per-node is why the transport ships gated off: two nodes that disagree
+  derive different rings and can both grant one key. #825 is now a config generation, a digest check
+  and the §4.3 change runbook — not a consensus protocol.
 
 ### Protocol version and mixed deployments
 
@@ -702,7 +674,7 @@ The existing `recordLocks` capability does not distinguish Ricart–Agrawala fro
 cluster running both would have two independent arbiters for one key. The capability is therefore
 **versioned**, the versions are mutually exclusive, and a node advertises exactly one. Since RA never
 shipped enabled, nibbles 9/10 are retired rather than migrated, and the `LOCK_RELEASE` payload —
-today a fixed five-field tuple `[key, requester, epochNumber, homeIncarnation, counter]` validated on
+today a fixed five-field tuple `[key, requester, generation, homeIncarnation, counter]` validated on
 exact length (`resources/recordLockCoordinator.ts:258`) — grows a leading version field plus §7.1's
 dependency set. A historical entry replayed from the log must still decode safely after its producer
 is gone, and a delayed old release must not clear a newer delegation.
@@ -714,22 +686,21 @@ as the new protocol.
 
 - **Unit**, coordinator as a pure state machine with **independent per-node clocks** rather than one
   shared fake clock (`unitTests/resources/recordLockCoordinator.test.js:24` uses a shared one, which
-  cannot express §5.2): delayed grant reply rejected; renewal/restart overlap; **disjoint successor
-  configurations** (§4.0 — needs more than three node identities, so the existing three-node shape
-  cannot express it); acceptor reservation arithmetic; recall against a live handle that staged
-  nothing (§6); recall against an unlocked-but-staged write; transitive freshness including the
-  equal-timestamp and dependent-patch cases (§7.1); fencing-token ordering across a home restart
-  (§5.1); and the negative cases — grant inside a home-restart window, grant inside an epoch-change
-  window, admit before the dependency set is satisfied, admit with an unsatisfiable set. Also the
-  delayed-prepare / late-renewal schedule of §4.4, a restart at the quorum-intersection node while the
-  old holder stays alive (§4.2), and proposer crash after acceptance plus two rapid replacements while
-  an original holder keeps running (§4.4).
+  cannot express §5.2): delayed grant reply rejected; renewal/restart overlap; recall against a live
+  handle that staged nothing (§6); recall against an unlocked-but-staged write; transitive freshness
+  including the equal-timestamp and dependent-patch cases (§7.1); fencing-token ordering across a home
+  restart (§5.1); and the negative cases — grant inside the §4.3 restart quarantine, a request naming
+  a superseded generation, a grant minted under a generation superseded across the round, a request
+  from a node the current generation does not name, admit before the dependency set is satisfied,
+  admit with an unsatisfiable set.
 - **Integration, multi-process**, with independent message/apply/commit delays: exclusion and
   handoff; **a node down and locks still acquired on the majority side**, with a bounded recovery
   time — the case Ricart–Agrawala cannot pass, and the reason for the change; minority side stops;
-  home crash → epoch advance → keys re-homed; home restart after a _clean_ release (the §7.2 set-loss
-  path); delegate crash → expiry → successor; native commit delayed past expiry; membership
-  _replacement_ (not just failure); mixed protocol versions refuse to interoperate; feature disabled
+  home crash → operator publishes a new generation → keys re-homed, with the §4.3 drain observed;
+  home restart after a _clean_ release (the §7.2 set-loss path); delegate crash → expiry → successor;
+  native commit delayed past expiry; a generation change that _replaces_ a node rather than removing
+  one; a node holding a superseded generation refused rather than served; mixed protocol versions
+  refuse to interoperate; feature disabled
   is byte-for-byte the current write path. Counter tests assert observed read/write histories, not
   only final totals, and snapshot-free reload must still work after the applied-history fence
   (`Table.ts:2759`). Under exclusion-only there is no fenced-mode suite to add here; the stale
@@ -762,18 +733,23 @@ harper#2498 stays a draft and does not ship Ricart–Agrawala as the arbitration
 replaced on the branch**. harper-pro#822 keeps its capability, participant-set, ownership and switch
 work, and its transport implementation is replaced — the delegation wire is in place there. Neither is enabled by default at any point, and with
 harper#2542 and harper-pro#825 outstanding the branch cannot be enabled even deliberately: core fails
-closed without an agreed epoch, and no core build supplies one.
+closed without an agreed home map, and no core build supplies one.
 
-## 14. Round 3 record, and what still blocks implementation
+## 14. Planning record, and what still blocks implementation
 
-Round 3 (`0a3f817ca56e`) returned `Framing-Verdict: chosen-approach-sound`: the architecture clears,
-and the reviewer states it could not identify a replacement meeting the amortization and
-majority-availability goals with fewer obligations. Its surviving findings were protocol-level, and
-are folded into the sections above — §4.2 (reservation reconstruction, and the withdrawn "no restart
-cost" claim), §4.4 (anchoring direction, transitive and recoverable protection), §6 (revocation vs
-release, logical-transaction settlement), §7.2 (fail-closed is not freshness), §7.3 (the third arm
-and the fenced-mode costs), §8 (dependency-set retention, certificate authentication), §9 (the
-unsupported "months-scale" rejection, replaced with the durable-work-per-acquisition fact), §10, §12.
+Round 3 (`0a3f817ca56e`) cleared the framing of the epoch design, and its protocol-level findings are
+folded into §6 (revocation vs release, logical-transaction settlement), §7.2 (fail-closed is not
+freshness), §7.3 (the third arm and the fenced-mode costs), §8 (dependency-set retention), §10 and
+§12. The findings that were specific to the agreement protocol went with it.
+
+**Round 7 (`14c1b5510`) returned `better-alternative-exists` against that framing, and it was
+adopted on 2026-09-13.** The reviewer's point, and the ruling that followed it: the epoch protocol
+automated a decision that has a human authority. Whether an unreachable node is briefly down or
+permanently gone is knowledge an operator holds and a protocol can only infer from timeouts, and
+inferring it safely costs a durable consensus subsystem. §4 is now an operator-agreed immutable home
+map; the agreement protocol is deleted rather than scheduled, and §9 carries it as the rejected
+alternative with the reason. Automatic failure-driven rehoming returns only if §10's measurements
+show the operator-sequenced path is unacceptable in practice.
 
 **A cleared framing is not authorization to implement.** Two things had to be settled first, and one
 still is:
@@ -784,20 +760,22 @@ still is:
    harper-pro#824, and it is the only piece of this work that is unblocked today.
 
 Everything else above is implementable as written. The work is decomposed as harper-pro#825 (the
-epoch protocol, §4), harper#2541 (home ring, delegations, drain and caps, §§5/6/8, plus the three
-inherited substrate defects in §11) and harper#2542 (successor freshness, §7).
+operator-agreed home map, §4 — a `recordLockHomes` generation, a peer digest check and the §4.3
+change runbook, which is what remains of that issue after the round-7 adoption), harper#2541 (home
+ring, delegations, drain and caps, §§5/6/8, plus the three inherited substrate defects in §11) and
+harper#2542 (successor freshness, §7).
 
 **Status.** harper#2541's core half is implemented on this branch: the Ricart–Agrawala state machine
 is gone, and the home ring, the delegation table, recall with §6 steps 1, 2 and 4, ordered fencing
-tokens, the caps and the transport-swap grant fence are in place, with all three inherited defects
-fixed. **§6 step 3 — settlement — is not implemented**: a recall revokes capability and then writes
+tokens, the caps, the §4.3 restart quarantine and the transport-swap grant fence are in place, with
+all three inherited defects fixed. **§6 step 3 — settlement — is not implemented**: a recall revokes capability and then writes
 the release without waiting for a native commit already submitted to complete. That is exactly
 limitation (2)'s third route in §10, which the contract already states, so the gap is disclosed
 rather than hidden — but §6 must not be read as fully implemented. Closing it means hanging the
 release hook off logical-transaction settlement rather than off the last admission unlocking. What is not here, and is what keeps the feature unusable rather than merely disabled:
-harper-pro#825's durable epoch — core fails closed without one and no core build supplies one — and
-harper#2542's freshness fence, without which a handoff carries exclusion but not the clean-handoff
-freshness §2 states. **The measurement gate (harper-pro#824) still has not run**, and the decision to
+harper-pro#825's operator-agreed home map — core fails closed without one and no core build supplies
+one — and harper#2542's freshness fence, without which a handoff carries exclusion but not the
+clean-handoff freshness §2 states. **The measurement gate (harper-pro#824) still has not run**, and the decision to
 implement ahead of it was the human's, recorded here so the sequence is not mistaken for the one this
 note recommends.
 
