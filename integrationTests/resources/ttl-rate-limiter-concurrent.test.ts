@@ -144,7 +144,7 @@ suite(
 			// Every acknowledged write starts after its request, so this bound precedes its expiry.
 			return Math.min(
 				Math.max(...acknowledged.map((result) => result.at)) + CONVERGENCE_WINDOW_MS,
-				Math.max(...acknowledged.map((result) => result.startedAt)) + TTL_MS - POLL_INTERVAL_MS
+				Math.min(...acknowledged.map((result) => result.startedAt)) + TTL_MS - MIN_READ_BUDGET_MS
 			);
 		}
 
@@ -156,11 +156,15 @@ suite(
 			let stableReads = 0;
 			let confirmed = false;
 			let regressed = false;
+			let regressionSignature: string | undefined;
+			let regressionReads = 0;
+			let postWindowRead = false;
 			while (deadline - Date.now() >= MIN_READ_BUDGET_MS) {
 				response = await get(id, deadline - Date.now());
 				if (Date.now() >= deadline) {
-					response = { status: 'error', body: null };
-					seen.push('late');
+					postWindowRead = true;
+					seen.push(`post:${response.status === 200 ? Number(response.body?.hits ?? -1) : String(response.status)}`);
+					if (response.status !== 'error') lastMeaningfulResponse = response;
 					break;
 				}
 				seen.push(response.status === 200 ? Number(response.body?.hits ?? -1) : String(response.status));
@@ -172,16 +176,30 @@ suite(
 						break;
 					}
 					if (hits >= minimumHits) {
+						regressionSignature = undefined;
+						regressionReads = 0;
 						stableReads = hits === previousHits ? stableReads + 1 : 1;
 						previousHits = hits;
 						if (stableReads >= 2) confirmed = true;
 					} else {
-						if (confirmed) regressed = true;
+						if (confirmed) {
+							const signature = String(hits);
+							regressionReads = signature === regressionSignature ? regressionReads + 1 : 1;
+							regressionSignature = signature;
+							if (regressionReads >= 2) regressed = true;
+						}
 						previousHits = hits;
 						stableReads = 0;
 					}
 				} else {
-					if (response.status === 404 && confirmed) regressed = true;
+					if (response.status === 404 && confirmed) {
+						regressionReads = regressionSignature === '404' ? regressionReads + 1 : 1;
+						regressionSignature = '404';
+						if (regressionReads >= 2) regressed = true;
+					} else {
+						regressionSignature = undefined;
+						regressionReads = 0;
+					}
 					previousHits = undefined;
 					stableReads = 0;
 				}
@@ -189,8 +207,11 @@ suite(
 				if (remainingMs <= 0) break;
 				await sleep(Math.min(POLL_INTERVAL_MS, remainingMs));
 			}
-			let postWindowRead = false;
-			if (response.status === 'error') {
+			if (
+				response.status === 'error' ||
+				(!confirmed && seen.length <= 1) ||
+				(!postWindowRead && confirmed && regressionReads === 1)
+			) {
 				postWindowRead = true;
 				response = await get(id);
 				seen.push(`post:${response.status === 200 ? Number(response.body?.hits ?? -1) : String(response.status)}`);
@@ -201,6 +222,7 @@ suite(
 				seen,
 				confirmed,
 				regressed,
+				regressionObserved: regressionReads > 0,
 				endedWithError: response.status === 'error',
 				postWindowRead,
 			};
@@ -211,9 +233,9 @@ suite(
 			acked: number,
 			uncertain: number
 		): { kind: 'clean' | 'measured' | 'lost' | 'over' | 'inconclusive'; stored?: number } {
-			const { response, confirmed, regressed, endedWithError, postWindowRead } = convergence;
+			const { response, confirmed, regressed, regressionObserved, endedWithError, postWindowRead } = convergence;
 			if (response.status === 404) {
-				if (confirmed && !regressed && uncertain === 0) return { kind: 'clean' };
+				if (confirmed && !regressed && !regressionObserved && uncertain === 0) return { kind: 'clean' };
 				return { kind: regressed || (!postWindowRead && !endedWithError) ? 'lost' : 'inconclusive' };
 			}
 			if (response.status !== 200) return { kind: 'inconclusive' };
@@ -319,7 +341,6 @@ suite(
 
 			ok(lostCountRounds === 0, `QA-431(2): lost-count in ${lostCountRounds} round(s) — CRDT×TTL defect`);
 			ok(staleRounds === 0, `QA-431(2): over-count in ${staleRounds} round(s) — double-apply or resurrection`);
-			// Fail rather than pass vacuously when timing or transport errors hide most outcomes.
 			ok(
 				cleanRounds + measuredRounds + lostCountRounds + staleRounds >= ROUNDS / 2,
 				`QA-431(2): only ${cleanRounds + measuredRounds + lostCountRounds + staleRounds}/${ROUNDS} rounds were measurable (${inconclusiveRounds} inconclusive) — cannot confirm this probe exercised the guarded regression`
@@ -589,7 +610,6 @@ suite(
 
 			ok(lostWindowCount === 0, `QA-431(5): ${lostWindowCount} window(s) with lost counts under multi-worker stress`);
 			ok(overWindowCount === 0, `QA-431(5): ${overWindowCount} window(s) over-counted under multi-worker stress`);
-			// Fail rather than pass vacuously when timing or transport errors hide most outcomes.
 			ok(
 				cleanWindows + measuredWindows + lostWindowCount + overWindowCount >= WINDOWS / 2,
 				`QA-431(5): only ${cleanWindows + measuredWindows + lostWindowCount + overWindowCount}/${WINDOWS} windows were measurable (${inconclusiveWindows} inconclusive) — cannot confirm this probe exercised the guarded regression`
