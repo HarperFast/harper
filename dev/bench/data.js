@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789204074543,
+  "lastUpdate": 1789284289565,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -5810,6 +5810,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 1839,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "070a489d67dd03a288a142857411f2d94b265239",
+          "message": "Reject a supplied record root instead of the instance's staged changes (#2578)\n\nThe legacy full-update fall-through in update() discards the body the\ncaller supplied and hands _writeUpdate whatever the instance had already\nstaged. Two consequences, both independent of #2561 and present before it:\n\n- `record.put(0)` on an instance with a staged update commits that update\n  as a full record replacement. No error is raised and unrelated\n  attributes are dropped — a record holding {status, metadata} keeps only\n  the staged status. #2574's captureChanges binds lazily only when no\n  root was supplied, so a falsy root still reaches validation as the\n  staged object rather than as itself.\n- A non-object root is rejected, but the #1298 message names no value\n  (\"received undefined\"), pointing at a missing body rather than a\n  wrong-shaped one.\n\nForward the supplied root and fall back to the staged changes only when\nthe caller passed nothing at all. This is a no-op for every object root:\nboth the fullUpdate and directInstance branches above already assign\n`this.#changes = updates`, so the forwarded value is the same object that\nwas passed before, and #2574's captureChanges arms exactly as it did.\n`false` needs one extra exemption: it is the sentinel that cancels a\npending patch, so it keeps that meaning on the incremental path and is\nrejected only as a full-update root, where `put(false)` otherwise\nreturned silently and let the staged patch commit.\n\nAll four sameKeySaveOrder cases fail on origin/main.\n\nVerification:\n- unitTests/resources: 2495 passing / 33 pending (rocksdb),\n  1946 passing / 377 pending (lmdb)\n- unitTests/apiTests: 201 passing / 1 pending (rocksdb),\n  200 passing / 2 pending (lmdb)\n- integrationTests/resources/bytes-scan-crash.test.ts: 6/6\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-12T18:43:37Z",
+          "url": "https://github.com/HarperFast/harper/commit/070a489d67dd03a288a142857411f2d94b265239"
+        },
+        "date": 1789284287989,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6016.1,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 7884.58,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 7981.3,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 5922.69,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4331.9,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 7790.58,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 964.33,
             "unit": "ops/sec"
           }
         ]
