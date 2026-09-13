@@ -8,9 +8,15 @@ name: Perf Benchmarks Nightly (self-hosted)
 #
 # Records throughput/latency trends via github-action-benchmark (pushed to the
 # gh-pages branch, same dashboard the ycsb-nightly job uses; enable GitHub Pages on
-# gh-pages to view it) and alerts on regressions. Only pushed for `--scale=nightly`
-# runs on main — a `quick`-scale manual dispatch uses far smaller record counts and
-# would read as a false regression against the nightly baseline.
+# gh-pages to view it). Only pushed for `--scale=nightly` runs on main — a
+# `quick`-scale manual dispatch uses far smaller record counts and would read as a
+# false regression against the nightly baseline.
+#
+# This job does NOT alert on regressions, by measurement rather than preference: over
+# the 70 nightly entries on gh-pages, `concurrent-rw write ops` spans 1238x and read
+# p99 spans 15.6x on unchanged code, so 49 of 69 night-to-night transitions tripped a
+# threshold. Comparison tables land in each run's job summary instead; re-enabling
+# alerts needs metrics stable enough to page on.
 #
 # Triggers are schedule + manual dispatch ONLY (never pull_request): the job runs
 # on a self-hosted machine, so untrusted PR code must never execute here.
@@ -100,8 +106,12 @@ jobs:
 
       # Two suites: opposite "better" directions. auto-push only for nightly-scale runs on
       # main so manual/quick dispatches don't pollute the trend history with incomparable
-      # numbers. Thresholds are generous to absorb self-hosted-runner variance — tune once
-      # more history has accumulated.
+      # numbers; summary-always is scale-gated for the same reason — a quick run compared
+      # against the nightly baseline renders a regression table this workflow refuses to
+      # publish. The gh-pages push stays fatal: it is what this job produces. Nothing else
+      # here may fail it, which is why comment-on-alert is off — that POST is neither
+      # measurement nor recording, and v1.22.1 leaves it unguarded (dist/src/write.js:263),
+      # so a GitHub API fault on it turns main red (run 34747941818).
       - name: Track throughput trend
         uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
@@ -110,10 +120,9 @@ jobs:
           output-file-path: benchmarks/_bench-out/throughput.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: ${{ github.ref == 'refs/heads/main' && (github.event.inputs.scale || 'nightly') == 'nightly' }}
-          comment-on-alert: true
+          summary-always: ${{ (github.event.inputs.scale || 'nightly') == 'nightly' }}
+          comment-on-alert: false
           fail-on-alert: false
-          alert-threshold: '130%'
-          alert-comment-cc-users: '@kriszyp'
 
       - name: Reset local gh-pages ref before second benchmark step
         run: |
@@ -128,10 +137,9 @@ jobs:
           output-file-path: benchmarks/_bench-out/latency.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: ${{ github.ref == 'refs/heads/main' && (github.event.inputs.scale || 'nightly') == 'nightly' }}
-          comment-on-alert: true
+          summary-always: ${{ (github.event.inputs.scale || 'nightly') == 'nightly' }}
+          comment-on-alert: false
           fail-on-alert: false
-          alert-threshold: '160%'
-          alert-comment-cc-users: '@kriszyp'
 
       - name: Upload raw benchmark logs
         if: always()
