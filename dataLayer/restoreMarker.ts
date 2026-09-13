@@ -98,13 +98,15 @@ function databaseOpenLockPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + DATABASE_OPEN_LOCK_SUFFIX);
 }
 
-// Paths whose open lock this thread currently holds. The lock itself is bound to the open file
-// description, not the process, so a second `tryFileLock` from the very thread already holding it
-// would never see its own release — that release runs on a pending continuation this thread's own
-// `Atomics.wait` retry loop below would otherwise block for the entire `maxWaitMilliseconds`. Each
-// worker thread gets its own module instance, so this map only ever reflects this thread's holds;
-// cross-thread contention still goes through the real file lock and its retry loop.
+// Per-thread module state: paths whose open lock this thread currently holds. flock is bound to
+// the open file description, so a second tryFileLock from this same thread can never observe its
+// own release, and the Atomics.wait retry below would starve the event loop that release depends on.
 const heldOpenLocksByPath = new Map<string, number>();
+
+/** Thrown by a same-thread re-acquire; callers that scan opportunistically should skip and continue. */
+export const OPEN_LOCK_SELF_REENTRANT = 'EOPENLOCKSELF';
+/** Thrown when a cross-thread/process holder does not release within `maxWaitMilliseconds`. */
+export const OPEN_LOCK_TIMED_OUT = 'EOPENLOCKTIMEDOUT';
 
 /**
  * Serialize root RocksDB opens and destroys for one database. rocksdb-js releases its registry
@@ -112,13 +114,8 @@ const heldOpenLocksByPath = new Map<string, number>();
  */
 export function acquireDatabaseOpenLock(dbPath: string, maxWaitMilliseconds = 30_000): number {
 	if (heldOpenLocksByPath.has(dbPath)) {
-		// Fail fast rather than spin the full timeout: only this thread could release the lock it
-		// already holds, and the caller reaching here is proof that hasn't happened yet — most often a
-		// schema-change rescan reopening a database this same thread is mid-drop on. Waiting would
-		// starve the event loop this thread needs to finish that drop and release the lock, turning a
-		// harmless "try again next scan" into a guaranteed `maxWaitMilliseconds` stall.
 		const error: any = new Error(`Database open lock for ${dbPath} is already held on this thread`);
-		error.code = 'EOPENLOCKSELF';
+		error.code = OPEN_LOCK_SELF_REENTRANT;
 		throw error;
 	}
 	mkdirSync(restoreMetaDir(dbPath), { recursive: true });
@@ -127,7 +124,9 @@ export function acquireDatabaseOpenLock(dbPath: string, maxWaitMilliseconds = 30
 	let sleeper: Int32Array;
 	while (token === 0) {
 		if (Date.now() - startedAt >= maxWaitMilliseconds) {
-			throw new Error(`Timed out acquiring RocksDB open lock for ${dbPath}`);
+			const error: any = new Error(`Timed out acquiring RocksDB open lock for ${dbPath}`);
+			error.code = OPEN_LOCK_TIMED_OUT;
+			throw error;
 		}
 		sleeper ??= new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 		Atomics.wait(sleeper, 0, 0, 10);
