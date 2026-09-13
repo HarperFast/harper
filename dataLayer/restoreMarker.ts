@@ -98,10 +98,7 @@ function databaseOpenLockPath(dbPath: string): string {
 	return join(restoreMetaDir(dbPath), restoreMetaKey(dbPath) + DATABASE_OPEN_LOCK_SUFFIX);
 }
 
-// flock binds to the open file description, not the thread, so a same-thread re-acquire would
-// never see its own release — and the Atomics.wait retry below would starve the very release it is
-// waiting on. Per-module (so per-thread) record of paths this thread currently holds, checked
-// before that retry loop.
+// Per-thread record of paths this thread holds the open lock on (flock can't detect same-thread reentry).
 const heldOpenLocksByPath = new Map<string, number>();
 
 export const OPEN_LOCK_SELF_REENTRANT = 'EOPENLOCKSELF';
