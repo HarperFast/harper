@@ -809,10 +809,8 @@ function branchDirectoriesFor(appName: string): { branches: string[]; tombstones
 			const entryPath = join(appDirectory, entry.name);
 			if (entry.name.endsWith(BRANCH_REMOVING_SUFFIX))
 				tombstones.push(entryPath.slice(0, -BRANCH_REMOVING_SUFFIX.length));
-			// the open/restore lock metadata sibling every database directory under this app can grow
-			// (dataLayer/restoreMarker.ts) -- not branch data, harmless to leave behind, same as
-			// getDatabases()'s own scan of the top-level databases root skips it
-			else if (entry.name === RESTORE_META_DIR) continue;
+			else if (entry.name === RESTORE_META_DIR)
+				continue; // open/restore lock metadata, not branch data
 			else if (entry.name.includes('`'))
 				fail(entryPath, new Error('not a branch directory and not a known control path'));
 			else branches.push(entryPath);

@@ -63,6 +63,8 @@ import {
 	restoreMarkerPresent,
 	scanBlockedRestores,
 	RESTORE_META_DIR,
+	OPEN_LOCK_SELF_REENTRANT,
+	OPEN_LOCK_TIMED_OUT,
 	type RestoreLock,
 } from '../dataLayer/restoreMarker.ts';
 
@@ -74,7 +76,7 @@ const workerDatabaseOpenLocks = new Map<number, number>();
 
 if (isMainThread) {
 	manageThreads.onMessageByType(DATABASE_OPEN_LOCK_ACQUIRED, (message, port) => {
-		workerDatabaseOpenLocks.set(message.token, port.threadId);
+		if (port) workerDatabaseOpenLocks.set(message.token, port.threadId);
 	});
 	manageThreads.onMessageByType(DATABASE_OPEN_LOCK_RELEASED, (message) => {
 		workerDatabaseOpenLocks.delete(message.token);
@@ -432,15 +434,19 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 			availableMemory: Math.min(process.constrainedMemory?.() ?? Infinity, totalmem()),
 		})
 	);
-	if (!existsSync(path)) {
-		// Don't create directories in read-only mode
-		if (isReadOnlyMode()) {
-			throw new Error(`Database cannot be created in read-only mode: ${path}`);
-		}
-		mkdirSync(path, { recursive: true });
-	}
 	const openLock = !isReadOnlyMode() ? acquireTrackedDatabaseOpenLock(path) : 0;
 	try {
+		// Checked only after the open lock is held: a concurrent drop can still be removing this
+		// exact path when this call starts (rocksdb-js releases its registry entry before DestroyDB
+		// completes), and existsSync/mkdirSync here — before the lock — would resurrect the directory
+		// out from under that drop instead of waiting for it to finish.
+		if (!existsSync(path)) {
+			// Don't create directories in read-only mode
+			if (isReadOnlyMode()) {
+				throw new Error(`Database cannot be created in read-only mode: ${path}`);
+			}
+			mkdirSync(path, { recursive: true });
+		}
 		let db: RocksRootDatabase;
 		if (options.dupSort) {
 			db = new RocksIndexStore(path, options).open() as any;
@@ -643,6 +649,10 @@ export function getDatabases(): Databases {
 					continue;
 				}
 			} catch (err) {
+				if (isDatabaseOpenLockContention(err)) {
+					logger.warn(`Database '${dbName}' is open-locked by this thread or another holder; skipping this scan pass`);
+					continue;
+				}
 				if (!('code' in err && (err.code === 'ENOENT' || err.code === 'ENOTDIR'))) {
 					throw err;
 				}
@@ -700,6 +710,12 @@ export function getDatabases(): Databases {
 								continue;
 							}
 						} catch (err) {
+							if (isDatabaseOpenLockContention(err)) {
+								logger.warn(
+									`Database '${dbName}' is open-locked by this thread or another holder; skipping this scan pass`
+								);
+								continue;
+							}
 							if (!('code' in err && (err.code === 'ENOENT' || err.code === 'ENOTDIR'))) {
 								throw err;
 							}
@@ -927,6 +943,17 @@ function reportRelationshipError(key: string, message: string): void {
 	if (reportedRelationshipErrors.has(key)) return;
 	reportedRelationshipErrors.add(key);
 	logger.error(message);
+}
+
+/**
+ * Whether `error` is the open lock declining an opportunistic reopen — a same-thread re-entry (this
+ * thread is mid-drop on the same path) or a cross-thread/process holder that outlasted the wait.
+ * A directory-scan caller should skip that one database and pick it up on the next rescan rather
+ * than aborting the scan for every other database behind it in the same readdir.
+ */
+function isDatabaseOpenLockContention(error: unknown): boolean {
+	const code = (error as { code?: string })?.code;
+	return code === OPEN_LOCK_SELF_REENTRANT || code === OPEN_LOCK_TIMED_OUT;
 }
 
 /**
@@ -2104,10 +2131,13 @@ export async function dropDatabase(databaseName) {
 					await unlink(rootStore.path);
 				}
 			}
+			// inside the open lock's finally below: a reopen of this path must wait for the blob
+			// directory to be gone too, or a database created in that window can have its
+			// just-written blobs swept up by this still-running deletion
+			await deleteRootBlobPathsForDB(rootStore);
 		} finally {
 			for (const lock of openLocks) releaseTrackedDatabaseOpenLock(lock.token);
 		}
-		await deleteRootBlobPathsForDB(rootStore);
 	} finally {
 		for (const lock of restoreLocks) releaseRestoreLock(lock);
 	}
