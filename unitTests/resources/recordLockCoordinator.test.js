@@ -10,6 +10,7 @@ const {
 	ringKeyFor,
 } = require('#src/resources/recordLockCoordinator');
 const { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS, makeKeyLockHandle } = require('#src/resources/recordLock');
+const { toBufferKey } = require('ordered-binary');
 
 /** A real lock handle over a fake store, so revocation is tested through production code. */
 function realHandle(lease = LEASE) {
@@ -262,6 +263,25 @@ describe('record lock delegations', () => {
 			}
 			// This is the whole point of the design: releasing the application lock does not release the
 			// delegation, so 26 locks spread over 25 seconds cost one round.
+			assert.strictEqual(cluster.requests.length, 1);
+		});
+
+		it('grants a binary record id homed on a peer', async () => {
+			// A `Bytes` primary key is an ordinary record id: `ordered-binary` encodes it and
+			// `checkValidId` passes it, so the home has to grant it like any other. Refusing the shape
+			// made the home answer `not-home` for a key nobody held, which `acquire` retried every 25 ms
+			// to its own 423 — while the same table's self-homed keys worked, because `#grantLocally`
+			// never goes through `onDelegationRequest`.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			let key;
+			for (let i = 0; !key && i < 10_000; i++) {
+				const candidate = new Uint8Array([i & 0xff, i >>> 8]);
+				if (cluster.homeOf(candidate) === 'beta') key = candidate;
+			}
+			assert.ok(key, 'no binary key in the first 10000 homes on beta');
+			// A short wait, because the failure this guards is a retry loop that ends in a 423.
+			const round = await cluster.node('alpha').coordinator.acquire(key, LEASE, 250);
+			assert.ok(round.tsR > 0);
 			assert.strictEqual(cluster.requests.length, 1);
 		});
 
@@ -1058,6 +1078,42 @@ describe('record lock delegations', () => {
 				const decoded = decodeLockControlPayload('lockRelease', encodeLockControlPayload(entry));
 				assert.deepStrictEqual(decoded, entry);
 			}
+		});
+
+		it('accepts every record-id shape the key encoder does', () => {
+			// The key check has to match what `keyIdOf` can encode, in both directions. Too loose lets a
+			// throw reach the replicated apply loop, which is the whole reason the check exists; too
+			// strict silently drops a legitimate lock — the home replies `not-home` for a shape it can
+			// encode perfectly well, and `acquire` retries that to its own 423 on an uncontended key.
+			const accepted = [
+				'record-1',
+				42,
+				-1.5,
+				NaN,
+				Infinity,
+				1n,
+				2n ** 70n,
+				true,
+				false,
+				null,
+				new Uint8Array([1, 2]),
+				Buffer.from([3]),
+				// `Id` declares `(number | string | null)[]`, and a composite key is the shape most likely
+				// to carry the scalars a table would not use on their own.
+				[1n, 'k', null, true, new Uint8Array([4])],
+			];
+			for (const key of accepted) {
+				assert.doesNotThrow(() => toBufferKey(key), `${String(key)} is encodable`);
+				assert.ok(decodeLockControlPayload('lockRelease', [key, 'alpha', 1, 1, 1]), `${String(key)} is accepted`);
+			}
+			// Shapes `toBufferKey` throws on, plus the ones it would encode to something no record id
+			// can be — those must still be refused rather than reaching the delegation table.
+			for (const key of [{ not: 'a key' }, new Date(0), ['ok', { nested: 1 }], undefined, Symbol('s')])
+				assert.strictEqual(
+					decodeLockControlPayload('lockRelease', [key, 'alpha', 1, 1, 1]),
+					undefined,
+					`${String(key)} is refused`
+				);
 		});
 
 		it('rejects a payload that is not the exact five-field tuple', () => {
