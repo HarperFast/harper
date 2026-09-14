@@ -197,7 +197,7 @@ describe('OptionsWatcher env-config overlay (#1618)', () => {
 		assert.strictEqual(errors.length, 1, 'the compose failure must not be discarded by the fallback');
 	});
 
-	it('reports a compose failure the arming re-read found rather than carrying it past the deferral', async () => {
+	it('does not carry a compose failure the arming read hit past its deferral', async () => {
 		const filePath = join(dir, 'harper-config.yaml');
 		writeFileSync(filePath, stringify({ [NAME]: { enabled: false } }));
 
@@ -207,12 +207,17 @@ describe('OptionsWatcher env-config overlay (#1618)', () => {
 		watcher.on('error', (error) => errors.push(error));
 
 		// An arming re-read that finds the file gone defers one absence check instead of reporting a
-		// removal; a compose failure it hit on the way there must not wait for that deferred read.
+		// removal, so a compose failure it hit on the way there outlives its own call chain.
 		process.env.HARPER_SET_CONFIG = '{not json';
 		rmSync(filePath);
 		watcher._refreshForTests(true);
 
-		assert.strictEqual(errors.length, 1, 'the compose failure must be surfaced before the deferral');
+		// Env config that composes but does not provide this scope: the next terminal read reports
+		// whatever failure is still held, which is where a retained one would surface.
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ http: { port: 9926 } });
+		watcher._refreshForTests();
+
+		assert.deepStrictEqual(errors, [], 'a compose failure the deferral outlived must not surface later');
 	});
 
 	// `#handleUnlink` runs inside chokidar's own dispatch, and the env-only fallback merges — so a

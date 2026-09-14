@@ -328,9 +328,11 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 				// dropped either: the unarmed window is exactly where an `unlink` can go missing.
 				// So it goes back to the loop once, and chokidar's own `unlink` cancels it.
 				if (arming) {
+					// Every resolution of the deferral recomposes and reports the env state it finds,
+					// so a failure held across it is one that may no longer be true — and the next
+					// path to report would attach it to an unrelated event.
+					this.#envComposeError = undefined;
 					this.#deferAbsenceCheck();
-					// Carrying it across the deferral would emit it against whatever event reports next.
-					this.#reportEnvComposeFailure();
 					return;
 				}
 				this.#resetConfig();
