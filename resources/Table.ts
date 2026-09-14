@@ -5867,7 +5867,6 @@ export function makeTable(options) {
 				if (canEstimate && !estimatorFailed) {
 					try {
 						estimator ??= primaryStore.createCountEstimator({ start: true });
-						// advance() is incremental
 						estimator.advance(lastKey, entriesScanned - checkpointedEntries);
 						checkpointedEntries = entriesScanned;
 						entryCount = usableCount(estimator.estimate());
@@ -5886,14 +5885,16 @@ export function makeTable(options) {
 					entryCount > 0 &&
 					(checkpoints >= MAX_ESTIMATE_CHECKPOINTS || entriesScanned < Math.floor(entryCount / 2))
 				) {
-					try {
-						const remaining = primaryStore.estimateCount({ start: lastKey, exclusiveStart: true });
-						// widened by its own reported untrustworthiness: block-granular, so it can land below
-						// the live count it is meant to bound
-						const remainingCount = usableCount(remaining);
-						remainderPhysical = remainingCount > 0 ? remainingCount * (2 - remaining.confidence) : 0;
-					} catch {
-						remainderPhysical = 0;
+					if (canEstimate) {
+						try {
+							const remaining = primaryStore.estimateCount({ start: lastKey, exclusiveStart: true });
+							// widened by its own reported untrustworthiness: block-granular, so it can land below
+							// the live count it is meant to bound
+							const remainingCount = usableCount(remaining);
+							remainderPhysical = remainingCount > 0 ? remainingCount * (2 - remaining.confidence) : 0;
+						} catch {
+							remainderPhysical = 0;
+						}
 					}
 					limit = entriesScanned;
 					break;
@@ -5915,7 +5916,7 @@ export function makeTable(options) {
 				// the base, which is an estimate that can overshoot by more than 2x.
 				let sampledWholeTable = false;
 				for (const { key, value } of primaryStore.getRange({
-					start: '￿',
+					start: '\uffff',
 					reverse: true,
 					lazy: true,
 					limit,
@@ -5930,7 +5931,7 @@ export function makeTable(options) {
 					await rest();
 					if (reverseScanned >= limit) break;
 				}
-				// The two samples met, so between them they covered every entry and the count is exact.
+				// the samples met, so between them they covered every entry
 				if (sampledWholeTable) return { recordCount: recordCount + firstRecordCount };
 				// Use the actual entries sampled, not limit*2: the reverse scan can yield fewer than `limit`
 				// (concurrent deletions under snapshot:false, or an overestimated entryCount), and counting
@@ -5948,15 +5949,12 @@ export function makeTable(options) {
 				// narrowly around the wrong number. Both endpoints are themselves estimates on RocksDB, so
 				// this is a widened heuristic interval, not a guaranteed bound on the live count.
 				const baseMin = entriesScanned + reverseScanned;
-				// a block-granular remainder that undershoots must not clamp the interval below the base
 				const baseMax = Math.max(entriesScanned + remainderPhysical, entryCount, baseMin);
-				// What both samples actually counted is a floor on the base too: a calibration that undershoots
-				// must not extrapolate below the entries already observed.
+				// a calibration that undershoots must not extrapolate below what the samples already counted
 				const estimatedRecordCount = Math.round(recordRate * Math.max(entryCount, baseMin));
 				// TODO: This uses a normal/Wald interval, but a binomial confidence interval is probably better calculated using
 				// Wilson score interval or Agresti-Coull interval (I think the latter is a little easier to calculate/implement).
 				const rateSd = Math.sqrt(variance);
-				// the rate's uncertainty scales with the base it is applied to, so each end uses its own
 				const lowerCiLimit = Math.max((recordRate - 1.96 * rateSd) * baseMin, recordCount + firstRecordCount);
 				const upperCiLimit = Math.min((recordRate + 1.96 * rateSd) * baseMax, baseMax);
 				const spread = Math.max((upperCiLimit - lowerCiLimit) / 2, 1);
@@ -5964,7 +5962,6 @@ export function makeTable(options) {
 				if (significantUnit > estimatedRecordCount) significantUnit = significantUnit / 10;
 				const lower = Math.round(lowerCiLimit);
 				const upper = Math.round(upperCiLimit);
-				// rounding to the significant unit must not push the count outside the interval beside it
 				recordCount = Math.min(
 					Math.max(Math.round(estimatedRecordCount / significantUnit) * significantUnit, lower),
 					upper
