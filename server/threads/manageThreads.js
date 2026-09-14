@@ -1653,24 +1653,30 @@ function addProcessGroup(ownerThreadId, processGroupId, spawnedAt, spawnStartedA
 	let processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) processGroupsByThread.set(ownerThreadId, (processGroups = new Set()));
 	processGroups.add(processGroupId);
+	// Stamped with its owner: the map is keyed by PID, which the OS reuses the instant a process
+	// exits, so the entry for a PID can already belong to another thread's newer child by the time
+	// this one's unregister arrives. Only the thread the entry names may clear it.
 	processGroupSpawnedAt.set(processGroupId, {
+		ownerThreadId,
 		spawnedAt: Number.isFinite(spawnedAt) ? spawnedAt : Date.now(),
 		spawnStartedAt: Number.isFinite(spawnStartedAt) && spawnStartedAt <= spawnedAt ? spawnStartedAt : undefined,
 	});
 }
 
 function removeProcessGroup(ownerThreadId, processGroupId) {
-	// Ownership first, and only then the per-PID state. A group id is a PID, which the OS reuses the
-	// moment the process exits, so an UNREGISTER_PROCESS_GROUP that arrives after this thread already
-	// released the PID can name one another thread has since registered for a new child. Clearing the
-	// creation stamp of THAT group would leave its termination with no identity to check, falling back
-	// to `rootKnownAt = Date.now()`, which `findWindowsTreeRoot` accepts for whatever process holds the
-	// PID now — the harper#2273 unrelated-process kill this module exists to prevent.
+	// This thread's own membership goes unconditionally; the PID-keyed state does NOT. A group id is
+	// a PID the OS reuses the instant its process exits, so an UNREGISTER_PROCESS_GROUP delayed behind
+	// the recycle names a PID another thread has since registered for a new child — and this thread
+	// still holds that PID in its own set, so membership alone does not distinguish the two. The
+	// stamp names its owner, and only that owner may clear it: wiping a live group's creation time
+	// leaves its termination with no identity to check, back to a `rootKnownAt` of now, which
+	// `findWindowsTreeRoot` accepts for whatever process holds the PID — the harper#2273
+	// unrelated-process kill this module exists to prevent.
 	const processGroups = processGroupsByThread.get(ownerThreadId);
-	if (!processGroups?.delete(processGroupId)) return;
+	if (processGroups?.delete(processGroupId) && processGroups.size === 0) processGroupsByThread.delete(ownerThreadId);
+	if (processGroupSpawnedAt.get(processGroupId)?.ownerThreadId !== ownerThreadId) return;
 	clearProcessGroupLivenessState(processGroupId);
 	processGroupSpawnedAt.delete(processGroupId);
-	if (processGroups.size === 0) processGroupsByThread.delete(ownerThreadId);
 }
 
 // Returns a promise that resolves once every process group tracked for `ownerThreadId` is
@@ -1702,8 +1708,11 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	}
 	const termination = Promise.all(
 		groupIds.map((processGroupId) => {
-			const spawn = processGroupSpawnedAt.get(processGroupId);
-			processGroupSpawnedAt.delete(processGroupId);
+			// same rule as removeProcessGroup: an entry a recycled PID has already handed to another
+			// thread's child is not this termination's to read or to consume
+			const stamped = processGroupSpawnedAt.get(processGroupId);
+			const spawn = stamped?.ownerThreadId === ownerThreadId ? stamped : undefined;
+			if (spawn) processGroupSpawnedAt.delete(processGroupId);
 			return process.platform === 'win32'
 				? waitForWindowsGroupExit(processGroupId, spawn, killedAt.get(processGroupId))
 				: waitForProcessGroupExit(processGroupId);

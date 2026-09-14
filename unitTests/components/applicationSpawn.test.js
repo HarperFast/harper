@@ -454,6 +454,9 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 			now: () => now,
 		};
 
+		// A owned the PID first — this is the case membership alone cannot tell apart, because A still
+		// holds it in its own set when its delayed unregister finally arrives
+		addProcessGroup(7, 4242, 100, 90);
 		addProcessGroup(11, 4242, 500, 400); // thread B's fresh child on the recycled PID
 		assert.strictEqual(isProcessGroupAlive(4242, options), true);
 		const scansBefore = scanCount;
