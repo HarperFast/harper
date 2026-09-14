@@ -2252,6 +2252,7 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 	const dbTables = databases[databaseName];
 	const rootStores = new Set<any>();
 	const tableClosures: Promise<unknown>[] = [];
+	let keepRootsOpen = false;
 	const closeStore = (store: any, description: string, pending: Promise<unknown>[]) => {
 		try {
 			const result = store?.close?.();
@@ -2287,7 +2288,7 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 		if (!table?.primaryStore) continue;
 		if (typeof table.cleanup === 'function') {
 			try {
-				table.cleanup(tableClosures);
+				table.cleanup(tableClosures, () => (keepRootsOpen = true));
 			} catch (error) {
 				logger.warn(`Error releasing table ${tableName} while closing database ${databaseName}:`, error);
 				try {
@@ -2314,7 +2315,15 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 		if (definedDatabase) (definedDatabase as any).rootStore = undefined;
 		if (rootClosures.length > 0) return Promise.all(rootClosures);
 	};
-	const closed = tableClosures.length > 0 ? Promise.all(tableClosures).then(closeRoots) : closeRoots();
+	const closed =
+		tableClosures.length > 0
+			? Promise.allSettled(tableClosures).then((results) => {
+					const failed = results.find((result) => result.status === 'rejected');
+					return Promise.resolve(keepRootsOpen ? undefined : closeRoots()).then(() => {
+						if (failed) throw failed.reason;
+					});
+				})
+			: closeRoots();
 	if (closed) {
 		if (closing) closing.push(closed);
 		else closed.catch((error) => logger.warn(`Error finishing close of database ${databaseName}:`, error));

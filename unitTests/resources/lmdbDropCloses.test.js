@@ -28,7 +28,7 @@ describe('LMDB drop closes the environment before unlinking under it', () => {
 		const closing = [];
 		assert.equal(closeDatabase(DB, closing), true);
 		assert.ok(closing.length >= 1, 'the environment close is a promise the caller has to await');
-		assert.notEqual(rootStore.status, 'open');
+		assert.equal(rootStore.status, 'open', 'the environment outlives its table handles');
 		await Promise.all(closing);
 		assert.equal(rootStore.status, 'closed');
 

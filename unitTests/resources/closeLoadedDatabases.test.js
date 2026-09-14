@@ -186,7 +186,8 @@ describe('RocksDB handle release', function () {
 		if (!(T.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
 		await settleSchemaRescan('closerelease7');
 		const Live = databases.closerelease7.pkg;
-		const dbPath = Live.primaryStore.rootStore.path;
+		const rootStore = Live.primaryStore.rootStore;
+		const dbPath = rootStore.path;
 		Live.derivedIndexRuntime = { close: () => Promise.reject(new Error('could not prove quiescence')) };
 
 		const lock = beginDrop(dbPath);
@@ -194,9 +195,11 @@ describe('RocksDB handle release', function () {
 			await schemaHandler(closeBroadcast('closerelease7'));
 
 			assert.ok(refCountFor(dbPath) > 0, 'the stores the runtime might still write through stay open');
+			assert.notStrictEqual(rootStore.status, 'closed', 'their root stays open too');
 		} finally {
 			// nothing reaches them through `databases` any more, so this test owns their release
 			Live.closeStores();
+			rootStore.close();
 			completeDrop(lock);
 		}
 	});

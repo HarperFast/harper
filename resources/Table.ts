@@ -6367,7 +6367,7 @@ export function makeTable(options) {
 		 * Returns a promise when a derived-index runtime has to be released first; a caller that needs
 		 * the handles actually closed (drop_database's process-wide check) collects it through `closing`.
 		 */
-		static cleanup(closing?: Promise<unknown>[]) {
+		static cleanup(closing?: Promise<unknown>[], keepRootOpen?: () => void) {
 			disposed = true;
 			// every synchronous release first: `derivedIndexRuntime.close()` is another component's
 			// method and a synchronous throw from it would otherwise skip all of them, leaving this
@@ -6390,6 +6390,7 @@ export function makeTable(options) {
 			const closed = released.then(
 				() => TableResource.closeStores(),
 				(error) => {
+					keepRootOpen?.();
 					harperLogger.warn?.(
 						`Derived index teardown for ${databaseName}.${tableName} did not settle; leaving its stores open`,
 						error
