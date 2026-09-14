@@ -263,9 +263,12 @@ suite(
 			const writers = Array.from({ length: WRITER_COUNT }, (_, i) => writerLoop(i));
 			const readers = Array.from({ length: READER_COUNT }, () => readerLoop());
 
-			await Promise.all(writers);
-			stormOver = true;
-			await Promise.all(readers);
+			try {
+				await Promise.all(writers);
+			} finally {
+				stormOver = true;
+				await Promise.allSettled(readers);
+			}
 
 			// Recycle the workers that staged every intent this storm produced. Convergence below is
 			// then necessarily the work of rows recovered from the internal dbi by workers that never

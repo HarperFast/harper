@@ -3020,10 +3020,8 @@ describe('durable blob-unlink queue (#1832)', () => {
 });
 
 describe('durable blob-unlink queue interlock (#1832)', () => {
-	// Each case pins one interleaving of the queue protocol by hooking the internal dbi at the exact
-	// operation the race sits on, so a competing drain or write runs inside that operation rather
-	// than on a timer. Its own database: the epoch cache these depend on is per root, and the
-	// queue has to start provably empty.
+	// Each case hooks the internal dbi at the operation its race sits on. Its own database: the
+	// epoch cache is per root, and the queue has to start provably empty.
 	const UNLINK_QUEUE_KEY = Symbol.for('blob_unlink_queue');
 	let Interlock;
 	before(() => {
@@ -3154,6 +3152,113 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 
 		assert.strictEqual(queueRow(fileId), undefined, 'storing the allocating instance again must withdraw the intent');
 		assert.ok(existsSync(filePath));
+	});
+
+	it('refuses a write when the queue cannot be read', async () => {
+		// Unknown is not absent: a row this write could not see is one a drain executes against the
+		// bytes it is about to reference.
+		const { fileId, stored } = await fileBackedBlob('unreadable-queue');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() + 600000, storageIndex: 0 });
+		drainBlobUnlinkQueue(rootStore()); // a non-empty read, so no drain's "empty" can stand in for the read
+		const db = queueDb();
+		const { getSync } = db;
+		db.getSync = function (key) {
+			if (isQueueKey(key) && key[1] === fileId) throw new Error('queue unreadable');
+			return getSync.apply(this, arguments);
+		};
+		try {
+			await assert.rejects(async () => Interlock.put({ id: 'unreadable-queue', blob: stored }), /refusing the write/);
+		} finally {
+			db.getSync = getSync;
+		}
+	});
+
+	it('keeps the lock while the row of a removed file cannot be settled', async () => {
+		// A row that outlives its file must not be withdrawable: with the lock free, a write finds the
+		// row, withdraws it, takes the lock, and commits a reference to bytes that are gone.
+		const { fileId, filePath, stored } = await fileBackedBlob('stuck-row');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0 });
+		const db = queueDb();
+		const { removeSync } = db;
+		let refusals = 0;
+		let releaseRow = false;
+		let writerWithdrawing = false;
+		db.removeSync = function (key) {
+			// The dbi refuses the drain's removal and has recovered by the time the writer withdraws.
+			if (isQueueKey(key) && key[1] === fileId && !releaseRow && !writerWithdrawing) {
+				refusals++;
+				throw new Error('dbi refused the removal');
+			}
+			return removeSync.apply(this, arguments);
+		};
+		try {
+			drainBlobUnlinkQueue(rootStore());
+			await waitFor(() => !existsSync(filePath) && refusals > 0, {
+				timeout: 5000,
+				message: 'the unlink must land first',
+			});
+			await new Promise((resolve) => setImmediate(resolve)); // the unlink callback has returned
+			writerWithdrawing = true;
+			assert.throws(
+				() =>
+					encodeBlobsWithFilePath(
+						() => Interlock.primaryStore.encoder.encode({ id: 'stuck-row', blob: stored }),
+						'stuck-row',
+						rootStore(),
+						'BlobInterlockTest'
+					),
+				/being reclaimed/,
+				'the lock must be held for as long as the stale row can be found'
+			);
+			writerWithdrawing = false;
+			releaseRow = true;
+			await waitFor(() => queueRow(fileId) === undefined, { timeout: 10000, message: 'the removal must be retried' });
+		} finally {
+			db.removeSync = removeSync;
+		}
+	});
+
+	it('stages the intent synchronously when the batched write is rejected', async () => {
+		// Whether the record write shared the rejected batch is not knowable here; a durable row is
+		// safe either way, because the drain re-reads the owner before it acts on one.
+		const { fileId, stored } = await fileBackedBlob('rejected-batch');
+		const priorVersion = Interlock.primaryStore.getEntry('rejected-batch').version;
+		const db = queueDb();
+		const { put } = db;
+		let rejected = false;
+		db.put = function (key) {
+			// Only the batched write is rejected; lmdb-js routes putSync through put as well.
+			if (isQueueKey(key) && key[1] === fileId && !rejected) {
+				rejected = true;
+				return Promise.reject(new Error('batch rejected'));
+			}
+			return put.apply(this, arguments);
+		};
+		try {
+			deleteBlob(stored, { priorVersion, synchronous: false });
+			await waitFor(() => queueRow(fileId) !== undefined, {
+				timeout: 2000,
+				message: 'a rejected batched stage must be re-staged synchronously',
+			});
+		} finally {
+			db.put = put;
+		}
+		assert.deepEqual(queueRow(fileId).owner, ['BlobInterlockTest', 'rejected-batch']);
+	});
+
+	it('consults the in-memory reclamation for an allocated instance deleted without a supersession', async () => {
+		// The in-memory path writes no row, but it condemns the file all the same; the allocating
+		// instance stored again afterwards must find and cancel it.
+		setDeletionDelay(100);
+		const blob = createBlob(randomBytes(20000));
+		await Interlock.put({ id: 'bare-delete', blob });
+		const filePath = getFilePathForBlob(blob);
+		deleteBlob(blob);
+
+		await Interlock.put({ id: 'bare-delete', blob });
+
+		await delay(600);
+		assert.ok(existsSync(filePath), 'the record references the file again; its reclamation must have been cancelled');
 	});
 
 	it('does not answer an unreadable queue as an empty one', () => {

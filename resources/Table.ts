@@ -609,7 +609,7 @@ export function makeTable(options) {
 <<<<<<< HEAD
 	const updateRecord = recordUpdater(primaryStore, tableId, auditStore, tableName);
 	// The blob unlink drain resolves the owner recorded in a blob reference through this registry; a
-	// row staged by another process names a table id, and nothing else can turn that back into a store.
+	// row staged by another process names a table, and nothing else can turn that name into a store.
 	registerBlobOwnerTable(primaryStore.rootStore, tableName, primaryStore);
 	// Created on first cluster-scoped lock() or first arriving control entry, and only while a
 	// transport is registered for this database.

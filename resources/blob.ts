@@ -1459,9 +1459,9 @@ function isBlobHeld(storageInfo: BlobFileInfo | undefined, claim = false): boole
 /**
  * Cancel a queued reclamation because a record version being written references the file again: the
  * retain-on-update check covers only the write that supersedes, not a file already queued by an
- * earlier one. Cancelling at encode rather than at commit means an aborted write leaves the file
- * unreclaimed until its intent is re-validated at drain time — chosen deliberately over the
- * alternative failure, which is unlinking a file the committed record still points at.
+ * earlier one. Cancelling at encode rather than at commit means a write that fails after this point
+ * leaves the file with no intent, for the orphan sweep — chosen deliberately over the alternative
+ * failure, which is unlinking a file the committed record still points at.
  *
  * Throws when the file is already being unlinked. That is not a new failure mode so much as an
  * honest one: the write it refuses would have committed a reference to bytes that are going away,
@@ -1515,12 +1515,10 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 }
 
 /**
- * Whether the queue can go unread for this file: this process allocated it, and no unlink intent —
- * for it or for anything else in the database — has been staged since it was first encoded. A file
- * cannot be superseded before it has been stored, so its first encode is the earliest point a
- * supersession can follow, and every supersession moves the epoch. `allocated` alone does not say
- * this: it holds for the life of the instance, and the same instance can be stored again long after
- * an intervening write superseded the file.
+ * Whether the queue can go unread for this file: this process allocated it, and nothing in the
+ * database has been condemned since it was first encoded — the earliest point a supersession of it
+ * could follow. `allocated` alone does not say this: it holds for the life of the instance, which can
+ * be stored again long after an intervening write superseded the file.
  */
 function allocatedAndNeverSuperseded(storageInfo: StorageInfo): boolean {
 	if (!storageInfo.allocated) return false;
@@ -1547,8 +1545,12 @@ function hasUnlinkIntent(storageInfo: BlobFileInfo): boolean {
 	try {
 		return queueDb.getSync([UNLINK_QUEUE_KEY, storageInfo.fileId]) !== undefined;
 	} catch (error) {
-		logger.debug?.('Could not read the blob unlink queue while cancelling a reclamation', error);
-		return false;
+		// Unknown is refused, not read as absent: a row this write could not see is one a drain executes
+		// against the bytes it is about to reference.
+		throw new Error(
+			`Could not read the blob unlink queue while referencing blob file ${storageInfo.fileId}; refusing the write`,
+			{ cause: error }
+		);
 	}
 }
 
@@ -1559,7 +1561,9 @@ function queueIsEmpty(store: any): boolean {
 	const seen = queueEmptyAt.get(store);
 	if (seen === undefined) return false;
 	const epoch = unlinkEpoch(store);
-	return !!epoch && Atomics.load(epoch, STAGED) === seen && Atomics.load(epoch, SETTLED) === seen;
+	// SETTLED first: read the other way round, a stage beginning between the two loads shows the
+	// same value on both.
+	return !!epoch && Atomics.load(epoch, SETTLED) === seen && Atomics.load(epoch, STAGED) === seen;
 }
 
 /**
@@ -1741,12 +1745,13 @@ function unlinkQueueRange(queueDb: any): any {
 }
 
 /**
- * Two cross-thread counters for this root, in the store's shared buffer: intents STAGED (bumped
- * before the row is written) and intents SETTLED (bumped once the write has landed or failed). A
- * stage is in flight while they differ. They exist so the main-thread backstop can tell an idle
- * database from a busy one with an atomic load instead of a range scan — at ten thousand open
- * databases the scans alone were thousands of empty reads a second — and so an encode can prove
- * there is no row to read the same way.
+ * Two cross-thread counters for this root, in the store's shared buffer: files STAGED for
+ * reclamation (bumped before the row is written) and stages SETTLED (bumped once the write has
+ * landed or failed); a stage is in flight while they differ. They let the main-thread backstop and
+ * the encode prove there is nothing to read with atomic loads instead of a range scan — at ten
+ * thousand open databases the scans alone were thousands of empty reads a second. A worker killed
+ * between the two bumps leaves them apart for the life of the process; the cost is the read on every
+ * encode and a range scan per backstop tick for that root, never a wrong answer.
  */
 const STAGED = 0;
 const SETTLED = 1;
@@ -1805,11 +1810,9 @@ function stageDurableUnlink(
 		supersededAt,
 		priorVersion,
 	};
-	// Counted on both sides of the write. STAGED ahead of it, for the encode: from the moment a stage
-	// begins, no write may skip the queue read on the strength of a count a drain saw earlier. SETTLED
-	// behind it, for the drain: a pass that read the range while the row was in flight would otherwise
-	// record the queue as empty at the very count the row lands under, and every encode after it
-	// would take that at its word.
+	// STAGED ahead of the write, so no encode skips the queue read once a stage has begun; SETTLED
+	// behind it, so a drain that read the range while the row was in flight cannot record the queue
+	// as empty at the count the row lands under.
 	bumpUnlinkEpoch(fileInfo.store, STAGED);
 	try {
 		if (synchronous) {
@@ -1828,15 +1831,23 @@ function stageDurableUnlink(
 						// then find nothing and arm no successor. This is the wakeup certain to see the row.
 						scheduleBlobUnlinkDrain(fileInfo.store, value.due - Date.now());
 					},
-					// A rejected batch took the record write queued behind this row with it, so the file is
-					// still referenced and nothing here may delete it. Handed to cleanup_orphan_blobs, whose
-					// reference scan can prove what this entry no longer can.
+					// Whether the record write landed is not knowable from here — it may have shared the
+					// rejected batch, or (a removal, a drop) have committed before this row was queued. The
+					// row is re-staged synchronously, and the drain's owner re-read settles which it was;
+					// only a second failure hands the file to cleanup_orphan_blobs.
 					(error: any) => {
-						bumpUnlinkEpoch(fileInfo.store, SETTLED);
-						logger.warn?.(
-							`The unlink intent for blob file ${fileInfo.fileId} could not be recorded; the file is left for cleanup_orphan_blobs`,
-							error
-						);
+						try {
+							queueDb.putSync(key, value);
+							scheduleBlobUnlinkDrain(fileInfo.store, value.due - Date.now());
+						} catch (retryError) {
+							logger.warn?.(
+								`The unlink intent for blob file ${fileInfo.fileId} could not be recorded; the file is left for cleanup_orphan_blobs`,
+								retryError,
+								error
+							);
+						} finally {
+							bumpUnlinkEpoch(fileInfo.store, SETTLED);
+						}
 					}
 				);
 			} else bumpUnlinkEpoch(fileInfo.store, SETTLED);
@@ -1892,8 +1903,8 @@ export function drainBlobUnlinkQueue(rootStore: any): boolean | undefined {
 	// Sampled before the range is read, so a row staged during the pass cannot be recorded as absent;
 	// and a stage already in flight at the sample cannot be vouched for either way.
 	const epoch = unlinkEpoch(rootStore);
-	const stagedAtStart = epoch ? Atomics.load(epoch, STAGED) : undefined;
 	const settledAtStart = epoch ? Atomics.load(epoch, SETTLED) : undefined;
+	const stagedAtStart = epoch ? Atomics.load(epoch, STAGED) : undefined;
 	let entries;
 	try {
 		entries = unlinkQueueRange(queueDb);
@@ -1997,24 +2008,23 @@ export function drainBlobUnlinkQueue(rootStore: any): boolean | undefined {
 			continue;
 		}
 		unlink(filePath, (error) => {
-			inFlight.delete(fileId);
 			// The row is settled before the lock is handed back. A cancelling write withdraws the row
 			// and then tests the lock, so a row still present after the lock is free would let it
 			// withdraw, take the lock, and commit a reference to bytes that are already gone.
 			if (error && error.code !== 'ENOENT') {
+				inFlight.delete(fileId);
 				if (!recordUnlinkFailure(queueDb, key, value, storageInfo, attemptCounts, error)) {
 					releaseReclaimLock(storageInfo);
 					settleOne(); // still queued; a later drain retries
 					return;
 				}
+				releaseReclaimLock(storageInfo);
 			} else {
 				attemptCounts.delete(fileId);
 				// The row is dropped before the claim is handed back, so a hold taken after the release
 				// can never be followed by another drain unlinking the file out from under it.
-				removeUnlinkQueueRow(queueDb, key);
-				releaseReclaimClaim(storageInfo);
+				finishUnlinkedRow(queueDb, key, storageInfo, inFlight);
 			}
-			releaseReclaimLock(storageInfo);
 			pendingReclamation.delete(filePath);
 			if (pendingReclamation.size === 0) queueTailDeadline = 0;
 			settleOne();
@@ -2252,12 +2262,47 @@ function recordUnlinkFailure(
  * `removeSync` on both engines, never the async `remove()`: called from an unlink callback, whose
  * frame has returned by the time an async rejection (a dbi mid-close) would land.
  */
-function removeUnlinkQueueRow(queueDb: any, key: any): void {
+function removeUnlinkQueueRow(queueDb: any, key: any): boolean {
 	try {
 		queueDb.removeSync(key);
+		return true;
 	} catch (error) {
 		logger.debug?.('Unable to remove blob unlink queue entry', error);
+		return false;
 	}
+}
+
+/**
+ * Settle the row of a file that is now gone, then hand back the claim and the lock. A row that
+ * cannot be removed keeps the lock: released, it would let a write withdraw the stale row and
+ * commit a reference to bytes that no longer exist. The removal is retried on a backoff, and if it
+ * never lands the lock stays held for the life of this process — a restart frees it, and the next
+ * drain finishes the row with an ENOENT. The claim is hash-shared and cannot be held that long.
+ */
+function finishUnlinkedRow(
+	queueDb: any,
+	key: any,
+	storageInfo: BlobFileInfo,
+	inFlight: Set<string>,
+	attempt = 0
+): void {
+	const removed = removeUnlinkQueueRow(queueDb, key);
+	if (removed || attempt >= MAX_UNLINK_ATTEMPTS) {
+		inFlight.delete(storageInfo.fileId);
+		releaseReclaimClaim(storageInfo);
+		if (removed) releaseReclaimLock(storageInfo);
+		else {
+			logger.warn?.(
+				`Blob file ${storageInfo.fileId} was removed but its unlink intent could not be; the file stays locked against re-reference until restart`
+			);
+		}
+		return;
+	}
+	const timer = setTimeout(
+		() => finishUnlinkedRow(queueDb, key, storageInfo, inFlight, attempt + 1),
+		Math.min(UNLINK_RETRY_BASE_DELAY * 2 ** attempt, UNLINK_RETRY_MAX_DELAY)
+	);
+	timer.unref?.();
 }
 
 /**
@@ -2334,8 +2379,9 @@ function runUnlinkSafetyPass(): void {
 			continue;
 		}
 		const epoch = unlinkEpoch(store);
+		const settled = epoch ? Atomics.load(epoch, SETTLED) : undefined;
 		const staged = epoch ? Atomics.load(epoch, STAGED) : undefined;
-		const inFlight = !epoch || Atomics.load(epoch, SETTLED) !== staged;
+		const inFlight = !epoch || settled !== staged;
 		// Nothing has been staged since a pass that found the queue empty: there is provably no work.
 		if (staged !== undefined && safetyIdleAtEpoch.get(store) === staged) continue;
 		let queued: boolean | undefined;
@@ -2422,6 +2468,10 @@ export function deleteBlob(blob: Blob, supersession?: BlobSupersession): void {
 		}
 	}
 	if (pending.durable) return; // the row already carries this deletion, with its own deadline
+	// Counted like a staged intent, though nothing is written: the counters stand for files condemned,
+	// and an allocated instance stored again after this must consult its reclamation too.
+	bumpUnlinkEpoch(pending.fileInfo.store, STAGED);
+	bumpUnlinkEpoch(pending.fileInfo.store, SETTLED);
 	scheduleReclamation(enqueue(filePath, pending, Math.max(pending.deadline, now + getReclamationDelay())));
 }
 
