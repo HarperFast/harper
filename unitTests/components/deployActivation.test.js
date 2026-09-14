@@ -140,6 +140,34 @@ describe('interrupted activation recovery', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	it('returns a STAGED artifact to dormant instead of discarding it, in that same state', async () => {
+		// Same on-disk shape as the case below — live present, candidate present, no rollback record — but
+		// the deployment carries an artifact descriptor, so it is a build somebody staged deliberately and
+		// whose payload may already have been reclaimed. Deleting it would leave nothing to activate.
+		const root = await newRoot('preb1-staged');
+		const { deploymentDir } = await stageState(root, 'web', 'd1', {
+			live: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: true,
+		});
+		await fs.writeFile(
+			path.join(deploymentDir, '.artifact.json'),
+			JSON.stringify({ v: 1, component: 'web', rootConfig: null, installationIsOpaque: false, isolated: false })
+		);
+
+		await recoverInterruptedActivations(root);
+
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n', 'the live tree is untouched');
+		assert.ok(existsSync(path.join(deploymentDir, '.complete')), 'the artifact survives');
+		assert.strictEqual(
+			existsSync(path.join(deploymentDir, '.activation.json')),
+			false,
+			'and is dormant again, so deployment_id can still activate it'
+		);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('discards a candidate that never activated, leaving the live tree', async () => {
 		const root = await newRoot('preb1');
 		await stageState(root, 'web', 'd1', { live: 'LIVE\n', candidate: 'CANDIDATE\n', complete: true, journal: true });

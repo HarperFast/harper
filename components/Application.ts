@@ -2463,6 +2463,20 @@ async function settleInterruptedActivation(
 					`whichever of the two is not the release you want once you have determined which that is.`
 			);
 		}
+		// A STAGED artifact is not a disposable build. `rollBack()` removes the whole deployment directory,
+		// which is right for an immediate deploy — the candidate came from a payload the operator still has —
+		// but wrong for one somebody staged deliberately and may have had its payload reclaimed. The
+		// descriptor is what tells the two apart, and it is on disk precisely so recovery can. Returning the
+		// artifact to dormant by removing only the journal leaves it exactly as `deployment_id` expects it.
+		if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE))) {
+			await rm(journalPath, { force: true });
+			await syncDirectory(deploymentDirPath);
+			logger.info?.(
+				`Returned the staged build ${basename(deploymentDirPath)} of ${journal.component} to dormant after an ` +
+					`activation that never moved its live tree aside`
+			);
+			return;
+		}
 		await rollBack();
 	} else {
 		// The candidate is already live; only the tail of the transaction was lost.
@@ -4284,8 +4298,15 @@ async function activateStagedArtifact(
 ): Promise<void> {
 	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, artifactId);
 	const candidateDirPath = candidateApplicationPath(application.dirPath, artifactId);
-	const unavailable = (why: string) =>
-		new Error(`Cannot deploy ${application.name} from deployment ${artifactId}: ${why}`);
+	const unavailable = (why: string) => {
+		// The caller named something that is not there or is not theirs — a 4xx, not the 500 a bare Error
+		// gets from the operations error handler.
+		const error: Error & { statusCode?: number } = new Error(
+			`Cannot deploy ${application.name} from deployment ${artifactId}: ${why}`
+		);
+		error.statusCode = 404;
+		return error;
+	};
 
 	const owner = await candidateComponentName(deploymentDirPath);
 	if (owner === undefined) throw unavailable('there is no staged build with that id on this node');
