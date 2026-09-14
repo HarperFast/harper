@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789371342234,
+  "lastUpdate": 1789377438892,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -17625,6 +17625,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 713127,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "eec839eec3a5f57b51d7ba630fa2a4337c8c78a7",
+          "message": "Merge pull request #2528 from HarperFast/fix/node-adapter-writable-response\n\nRebuild withNodeAdapter's response on a real Writable so Node middleware (Next.js, compression, send) runs against it",
+          "timestamp": "2026-09-14T04:19:07Z",
+          "url": "https://github.com/HarperFast/harper/commit/eec839eec3a5f57b51d7ba630fa2a4337c8c78a7"
+        },
+        "date": 1789377436245,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 25029,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 17541,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 10433,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 27101376,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 2970,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 430230,
             "unit": "ops"
           }
         ]
