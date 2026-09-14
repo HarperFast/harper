@@ -1937,6 +1937,23 @@ describe('record lock delegations', () => {
 				.catch(() => {});
 			assert.ok(alpha.writerCalls > 0, 'the failing writer was never reached');
 			assert.strictEqual(alpha.coordinator.stats.delegations, 0, 'a throwing writer left the delegation held');
+
+			// The delegation is deleted before the write is attempted and every caller above catches, so
+			// neither assertion above can tell containment from a rejection absorbed further up. The home
+			// can: a recall that RESOLVED is confirmed and never re-sent, while a rejected one is re-sent
+			// once past the retry interval.
+			const recalled = () => cluster.recalls.filter((recall) => recall.to === 'alpha').length;
+			const confirmed = recalled();
+			cluster.advance('beta', RECALL_RETRY_MS + 100);
+			await cluster
+				.node('gamma')
+				.coordinator.acquire(key, LEASE, 100)
+				.catch(() => {});
+			assert.strictEqual(
+				recalled(),
+				confirmed,
+				'the writer throw escaped the surrender, so the home retried the recall'
+			);
 		});
 	});
 });
