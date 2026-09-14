@@ -2903,6 +2903,15 @@ export function makeTable(options) {
 				}
 				// Anything that fails from here must give the native key back, or it becomes a lock this
 				// caller does not know it owns.
+				// Re-resolved, not the snapshot taken before `acquireRecordKey`: that wait can run the
+				// caller's whole timeout, long enough for harper-pro to register the transport on this
+				// worker. Using the snapshot would take the native key alone and hand back a node-scoped
+				// handle while a peer that already had the transport is granted the same key.
+				try {
+					if (resolved.scope !== 'node') coordinator = TableResource.lockCoordinator ?? coordinator;
+				} catch {
+					// The getter fails closed on an unusable node identity; keep what we resolved before.
+				}
 				if (coordinator) {
 					try {
 						const remaining = resolved.timeout - (performance.now() - clusterStart);

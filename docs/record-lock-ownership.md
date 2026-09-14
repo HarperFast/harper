@@ -744,6 +744,13 @@ Still owed by harper-pro — **the one thing that blocks enablement**:
   generation rather than one each node derives for itself, and a digest agreed across peers before
   grants are enabled — plus §4.3's one-shot activation record, which is what makes a generation change
   safe rather than merely announced.
+- **A received `lockRelease` routed to the thread that owns coordination.** Core's log-delivery sink
+  runs wherever `subscribeOnThisThread(applicationWorkerIndex())` is true, which since harper#2524's
+  dedicated application workers is _routinely_ a different thread from the coordinating one — so this
+  is now the expected shape, not an edge case. `applyEntry` drops an entry it receives off the owner
+  thread (it counts and warns, it cannot forward), and the home then holds its grant until
+  `DELEGATION_LEASE_MS + skew` even though the delegate stopped admitting cleanly. Relaying it is the
+  same obligation the delegation RPC already carries.
 - **The transport registered on every worker thread that can serve a `lock()`**, not only the
   coordinating one, and including a dedicated application worker (harper#2524). Core cannot check
   it: the "this database is clustered" latch is per-thread module state, so a worker that never

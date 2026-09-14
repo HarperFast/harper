@@ -834,6 +834,34 @@ describe('record lock delegations', () => {
 			cluster.node('gamma').coordinator.release(key, gamma.admissionId);
 		});
 
+		it('does not latch a generation it never minted under', async () => {
+			// The rollback floor has to be raised where authority is TAKEN, not where a map is read. One
+			// `homeMap()` returning a too-large generation — a partial publish, a transport glitch — would
+			// otherwise pin the floor above anything the operator ever publishes and fail every later lock
+			// on the database until the thread restarts, for a key nobody holds. Raised by the round-22
+			// outside lens against the floor added earlier in this branch.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			// One glitched read on the requester's side, of a generation nobody grants under. The home is
+			// untouched and still on 1, so it refuses and nothing is ever minted under 99.
+			const realMap = cluster.node('alpha').coordinator.transport.homeMap;
+			cluster.node('alpha').coordinator.transport.homeMap = () => ({
+				...realMap(),
+				generation: 99,
+			});
+			await assert.rejects(
+				() => alpha.acquire(key, LEASE, 100),
+				(error) => error.statusCode === 503
+			);
+
+			// The real generation still works: nothing was minted under 99, so nothing is protected from.
+			cluster.node('alpha').coordinator.transport.homeMap = realMap;
+			const round = await alpha.acquire(key, LEASE, WAIT);
+			assert.ok(round, 'a glitched read poisoned the generation floor');
+			alpha.release(key, round.admissionId);
+		});
+
 		it('refuses a home map whose generation went backwards', async () => {
 			// The generation is the high-order component of every fencing token, so re-minting under an
 			// older one hands out tokens that order BELOW ones already issued — and a delayed write under

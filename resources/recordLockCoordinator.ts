@@ -1021,13 +1021,25 @@ export class LockCoordinator {
 		tickingCoordinators.delete(this);
 	}
 
-	/** Fail closed on a generation older than one already acted on here (see `highestGeneration`). */
+	/** Fail closed on a generation older than one already ACTED on here (see `highestGeneration`). */
 	#generationIsCurrent(generation: number): boolean {
-		const key = this.database;
-		const highest = highestGeneration.get(key);
-		if (highest !== undefined && generation < highest) return false;
-		if (highest === undefined || generation > highest) highestGeneration.set(key, generation);
-		return true;
+		const highest = highestGeneration.get(this.database);
+		return highest === undefined || generation >= highest;
+	}
+
+	/**
+	 * Raise the floor, at the moment authority is actually taken under this generation — a token
+	 * minted or a delegation installed — and never merely on reading a map.
+	 *
+	 * Observing was the obvious place and it is the wrong one: a single `homeMap()` that returns a
+	 * too-large generation once, from a partial publish or a transport glitch, would pin the floor
+	 * above anything the operator ever publishes and fail every later lock on this database until the
+	 * thread restarts. Nothing was minted under that reading, so nothing needs protecting from it. The
+	 * invariant only ever needed to be "never mint below a generation already minted".
+	 */
+	#recordGenerationActedOn(generation: number): void {
+		const highest = highestGeneration.get(this.database);
+		if (highest === undefined || generation > highest) highestGeneration.set(this.database, generation);
 	}
 
 	#retirementKey(): string {
@@ -1139,6 +1151,9 @@ export class LockCoordinator {
 	): Delegation | undefined {
 		const expiresMono = requestedAtMono + leaseMs;
 		if (expiresMono <= this.#monotonic()) return undefined;
+		// The delegate side of taking authority under a generation: installing this makes it admit under
+		// `token[0]`, so that is the floor a later map may not go below.
+		this.#recordGenerationActedOn(token[0]);
 		const existing = this.#delegations.get(keyId);
 		// A reply that lost a race with a newer delegation for the same key must not move it backwards.
 		if (existing && compareTokens(existing.token, token) >= 0) return existing;
@@ -1267,6 +1282,7 @@ export class LockCoordinator {
 				return { granted: false, reason: 'contended', retryAfterMs: 25 };
 			else if (existing.delegate === requester) {
 				// Renewal for the node that already holds it: extend rather than recall itself.
+				this.#recordGenerationActedOn(homeMap.generation);
 				existing.token = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
 				existing.expiresMono = now + DELEGATION_LEASE_MS + this.#skewMs;
 				return { granted: true, token: existing.token, leaseMs: DELEGATION_LEASE_MS };
@@ -1281,6 +1297,7 @@ export class LockCoordinator {
 		if (this.#grants.size >= MAX_DELEGATIONS_PER_TABLE) return { granted: false, reason: 'capacity' };
 		const perRequester = this.#grantsByRequester.get(requester) ?? 0;
 		if (perRequester >= MAX_DELEGATIONS_PER_REQUESTER) return { granted: false, reason: 'capacity' };
+		this.#recordGenerationActedOn(homeMap.generation);
 		const token: FencingToken = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
 		this.#grants.set(keyId, {
 			key,
