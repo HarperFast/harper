@@ -22,8 +22,10 @@ const {
 	openBranchDatabase,
 	closeBranchDatabases,
 } = require('#src/resources/databases');
+const { beginDrop, completeDrop } = require('#src/dataLayer/restoreMarker');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
 const { waitFor } = require('../waitFor');
+const { setTimeout: sleep } = require('node:timers/promises');
 
 describe('RocksDB handle release', function () {
 	before(function () {
@@ -106,6 +108,58 @@ describe('RocksDB handle release', function () {
 		release();
 		await closed;
 		assert.strictEqual(refCountFor(dbPath), 0, 'and released by the time the caller may exit the thread');
+	});
+
+	it('the close_database acknowledgement waits for the derived index runtime too', async function () {
+		this.timeout(30000);
+		// drop_database and restore_backup read a thread's acknowledgement of the close broadcast as
+		// "that thread has let go of the database". The ITC handler that sends it is a second call site
+		// of the same release, on the threads the drop is actually waiting for.
+		const { schemaHandler } = require('#js/server/itc/serverHandlers');
+		const ITCEventObject = require('#js/server/itc/utility/ITCEventObject');
+		const { SchemaEventMsg } = require('#js/server/threads/itc');
+		const { ITC_EVENT_TYPES, ITC_SCHEMA_OPERATIONS } = require('#src/utility/hdbTerms');
+		const T = table({
+			table: 'pkg',
+			database: 'closerelease6',
+			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
+		});
+		getDatabases();
+		if (!(T.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		await settleSchemaRescan('closerelease6');
+		const Live = databases.closerelease6.pkg;
+		const dbPath = Live.primaryStore.rootStore.path;
+		let release;
+		Live.derivedIndexRuntime = { close: () => new Promise((resolve) => (release = resolve)) };
+
+		// the drop holds the lifecycle lock across the broadcast, so the rescan this handler runs after
+		// the release leaves the database unloaded, as it does on a real drop; without the marker that
+		// rescan reopens the very handles the acknowledgement reports as released
+		const lock = beginDrop(dbPath);
+		try {
+			let acknowledged = false;
+			const handled = schemaHandler(
+				new ITCEventObject(
+					ITC_EVENT_TYPES.SCHEMA,
+					new SchemaEventMsg(process.pid, ITC_SCHEMA_OPERATIONS.CLOSE_DATABASE, 'closerelease6')
+				)
+			).then(() => (acknowledged = true));
+
+			await waitFor(() => release, { message: 'the derived runtime was never asked to release' });
+			// a grace period for the negative assertion below: a handler that did not wait for the release
+			// resolves within a few turns of this point. Too short only lets a regression pass, never the
+			// reverse — the fixed handler cannot resolve until release() is called.
+			await sleep(50);
+			assert.equal(acknowledged, false, 'the acknowledgement must not fire while the runtime is releasing');
+			assert.ok(refCountFor(dbPath) > 0, 'the table handles are still open while it is');
+
+			release();
+			await handled;
+
+			assert.strictEqual(refCountFor(dbPath), 0, 'and gone by the time drop_database reads the acknowledgement');
+		} finally {
+			completeDrop(lock);
+		}
 	});
 
 	it('closeLoadedDatabases releases a branch database (invisible to the databases map it walks)', async function () {
