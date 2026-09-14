@@ -127,11 +127,10 @@ describe('Table.getRecordCount', () => {
 		// a within-budget scan returns the exact count directly and must not pay for it. The source is
 		// engine-dependent -- getKeysCount() (a full key scan) on RocksDB, getStats().entryCount on LMDB
 		// (the resources suite runs under both) -- so spy on whichever the store exposes.
-		// `primaryStore` is shared, and the scan yields (`await rest()`) once per entry, so an absolute
-		// call count is not a count of what this call did: the analytics aggregation timer sweeps every
-		// table's getStats() every half aggregate period (resources/analytics/write.ts:686 on RocksDB,
-		// Table.getSize() via storeTableSizeMetrics on LMDB) and lands inside the window at random.
-		// Attribute each invocation to the async context of the call under test instead.
+		// `primaryStore` is shared and the scan yields once per entry, so an absolute call count is not a
+		// count of what this call did: the analytics aggregation timer sweeps every table's getStats()
+		// every half aggregate period (storeRocksDBStatsMetrics, or Table.getSize via
+		// storeTableSizeMetrics under LMDB) and lands inside the window at random.
 		const store = RecordCountTable.primaryStore;
 		const underTest = new AsyncLocalStorage();
 		let calls = 0;
@@ -153,8 +152,16 @@ describe('Table.getRecordCount', () => {
 		}
 		try {
 			// Positive control for the attribution, in the shape of the analytics sweep. This immediate is
-			// queued before the scan's first `await rest()`, so it runs while the scan is suspended.
-			setImmediate(() => store.getStats());
+			// queued before the scan's first `await rest()`, so it runs while the scan is suspended. The
+			// spy counts before delegating, so a store that throws here still proves the control; letting
+			// it escape an immediate would abort the run instead of failing this test.
+			setImmediate(() => {
+				try {
+					store.getStats();
+				} catch {
+					// intentionally ignored — see above
+				}
+			});
 			const completed = await underTest.run(true, () =>
 				RecordCountTable.getRecordCount({ timeLimit: WITHIN_BUDGET_TIME_LIMIT })
 			);
