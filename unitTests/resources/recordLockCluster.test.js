@@ -597,6 +597,39 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			);
 		});
 
+		it('reports the leader’s failure reason rather than inventing contention for the follower', async function () {
+			if (isLMDB) return this.skip();
+			// No agreed map fails the leader's round with a 503 that names why the guarantee could not be
+			// established. Nobody held the key, so the follower must end on that reason and not on a 423.
+			useSoloTransport({ mapless: true });
+			const recordId = id();
+			await transaction(async () => {
+				const leader = ClusterLockTest.lock(recordId, { lease: 5000, timeout: 5000 }).then(
+					() => undefined,
+					(error) => error
+				);
+				// Coalesces onto the leader, with the smallest budget lock() accepts.
+				const follower = ClusterLockTest.lock(recordId, { lease: 5000, timeout: 1 }).then(
+					() => undefined,
+					(error) => error
+				);
+				// Spend the follower's budget without yielding: the leader's rejection travels on microtasks,
+				// so it settles the follower's race ahead of the deadline timer, leaving nothing to retry on.
+				const spinUntil = Date.now() + 5;
+				while (Date.now() < spinUntil) {
+					/* hold the event loop */
+				}
+				const leaderError = await leader;
+				assert.ok(leaderError, 'the leader’s round failed');
+				assert.strictEqual(leaderError.statusCode, 503);
+				assert.strictEqual(
+					await follower,
+					leaderError,
+					'the follower answered with a fabricated 423 instead of the leader’s reason'
+				);
+			});
+		});
+
 		it('releases the transaction’s other locks when one of them lapses at commit', async function () {
 			if (isLMDB) return this.skip();
 			useSoloTransport();
