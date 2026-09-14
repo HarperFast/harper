@@ -7,7 +7,7 @@ const { startWorker, restartWorkers, shutdownWorkers, workers } = require('#js/s
 
 const FIXTURE = path.join(__dirname, 'restartThrottle-fixture.cjs');
 const SERVING_TYPE = 'restart-throttle-serving';
-const POOL_SIZE = 3; // workers actually started
+const POOL_SIZE = 3;
 // The topology they declare. Chosen so the default throttle is Math.floor(16 / 8) === 2: a pool whose
 // expected throttle were 1 could not tell a preserved topology from a poisoned one clamped back to 1.
 const DECLARED_THREADS = 16;
