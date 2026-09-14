@@ -212,6 +212,7 @@ export function openAuditStore(rootStore) {
 	let cleanupPriority = 0;
 	auditStore.auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
 	let cleanupStopped = false;
+	let latestStopBarrier: Promise<void> | undefined;
 	// a last-removed marker whose write failed, retried on later passes: dropping it would leave
 	// getLastRemoved() reporting a boundary the entries behind it have already been deleted past
 	let pendingLastRemoved: number | undefined;
@@ -405,7 +406,14 @@ export function openAuditStore(rootStore) {
 		pendingCleanup = null;
 		pendingCleanupResolve?.();
 		pendingCleanupResolve = null;
-		return lastCleanupResolution ?? Promise.resolve();
+		return (latestStopBarrier = lastCleanupResolution ?? Promise.resolve());
+	};
+	auditStore.resumeAuditCleanup = async function (stopBarrier: Promise<void>): Promise<boolean> {
+		await stopBarrier;
+		if (latestStopBarrier !== stopBarrier || !cleanupStopped || storeClosing()) return false;
+		cleanupStopped = false;
+		if (ownsStoreMaintenance(rootStore.path)) scheduleAuditCleanup();
+		return true;
 	};
 	if (ownsStoreMaintenance(rootStore.path)) {
 		scheduleAuditCleanup();

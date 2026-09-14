@@ -189,6 +189,9 @@ describe('RocksDB handle release', function () {
 		const rootStore = Live.primaryStore.rootStore;
 		const dbPath = rootStore.path;
 		Live.derivedIndexRuntime = { close: () => Promise.reject(new Error('could not prove quiescence')) };
+		let cleanupPasses = 0;
+		const realPurgeLogs = rootStore.purgeLogs.bind(rootStore);
+		rootStore.purgeLogs = () => cleanupPasses++;
 
 		const lock = beginDrop(dbPath);
 		try {
@@ -196,7 +199,11 @@ describe('RocksDB handle release', function () {
 
 			assert.ok(refCountFor(dbPath) > 0, 'the stores the runtime might still write through stay open');
 			assert.notStrictEqual(rootStore.status, 'closed', 'their root stays open too');
+			await rootStore.auditStore.scheduleAuditCleanup(1);
+			assert.equal(cleanupPasses, 1, 'the retained root must resume audit cleanup before the acknowledgement');
 		} finally {
+			await rootStore.auditStore.stopAuditCleanup();
+			rootStore.purgeLogs = realPurgeLogs;
 			// nothing reaches them through `databases` any more, so this test owns their release
 			Live.closeStores();
 			rootStore.close();

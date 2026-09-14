@@ -2261,6 +2261,7 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 	const dbTables = databases[databaseName];
 	const rootStores = new Set<any>();
 	const tableClosures: Promise<unknown>[] = [];
+	const auditCleanupRetirements = new Map<any, Promise<void>>();
 	let keepRootsOpen = false;
 	const closeStore = (store: any, description: string, pending: Promise<unknown>[]) => {
 		try {
@@ -2290,7 +2291,10 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 	// plus the fact that a RocksDB pass is one synchronous purgeLogs() call with nothing suspended
 	// mid-removal, and the one caller whose pass is asynchronous — the LMDB drop — awaits the drain
 	// itself before calling in.
-	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
+	for (const rootStore of rootStores) {
+		const retirement = rootStore.auditStore?.stopAuditCleanup?.();
+		if (retirement) auditCleanupRetirements.set(rootStore.auditStore, retirement);
+	}
 	if (!dbTables && rootStores.size === 0) return false;
 	for (const tableName in dbTables ?? {}) {
 		const table: any = dbTables[tableName];
@@ -2324,11 +2328,15 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 		if (definedDatabase) (definedDatabase as any).rootStore = undefined;
 		if (rootClosures.length > 0) return Promise.all(rootClosures);
 	};
+	const resumeAuditCleanup = () =>
+		Promise.all(
+			[...auditCleanupRetirements].map(([auditStore, retirement]) => auditStore.resumeAuditCleanup?.(retirement))
+		);
 	const closed =
 		tableClosures.length > 0
 			? Promise.allSettled(tableClosures).then((results) => {
 					const failed = results.find((result) => result.status === 'rejected');
-					return Promise.resolve(keepRootsOpen ? undefined : closeRoots()).then(() => {
+					return Promise.resolve(keepRootsOpen ? resumeAuditCleanup() : closeRoots()).then(() => {
 						if (failed) throw failed.reason;
 					});
 				})
