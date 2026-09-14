@@ -1715,7 +1715,18 @@ function ownerTableIsGone(rootStore: any, tableName: string): boolean {
 	if (!catalog) return false;
 	try {
 		const meta = catalog.getSync(tableName + '/');
-		return !meta || !!meta.dropping;
+		if (meta) return !!meta.dropping;
+		// A legacy standalone root has one table and unprefixed attribute keys. For a shared database,
+		// pre-5 catalogs can keep the primary descriptor at tableName/primaryKey instead of the bare key.
+		if (rootStore.blobOwnerTableName === tableName) return false;
+		for (const _key of catalog.getKeys({
+			start: tableName + '/',
+			end: tableName + '0',
+			limit: 1,
+			snapshot: false,
+		}))
+			return false;
+		return true;
 	} catch (error) {
 		logger.debug?.('Could not read the table catalog for a queued blob unlink', tableName, error);
 		return false;

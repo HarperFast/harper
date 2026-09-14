@@ -3137,8 +3137,8 @@ describe('durable blob-unlink queue (#1832)', () => {
 		});
 		const catalogKey = 'BlobQueueTest/';
 		const catalogRow = queueDb().getSync(catalogKey);
-		assert.ok(catalogRow, 'the live table must have a catalog row to remove');
-		queueDb().removeSync(catalogKey);
+		assert.ok(catalogRow, 'the live table must have a catalog row to tombstone');
+		queueDb().putSync(catalogKey, { ...catalogRow, dropping: true });
 		try {
 			assert.ok(
 				QueueTest.primaryStore.getEntry('dropped-yet-readable')?.value,
@@ -3154,6 +3154,72 @@ describe('durable blob-unlink queue (#1832)', () => {
 			await waitFor(() => queueRow(fileId) === undefined, { timeout: 5000, message: 'the row must be removed' });
 		} finally {
 			queueDb().putSync(catalogKey, catalogRow);
+		}
+	});
+
+	it('revalidates an owner whose legacy primary descriptor is not on the bare catalog row', async () => {
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('legacy-primary-owner');
+		const catalogKey = 'BlobQueueTest/';
+		const legacyKey = 'BlobQueueTest/id';
+		const catalogRow = queueDb().getSync(catalogKey);
+		const previousLegacyRow = queueDb().getSync(legacyKey);
+		assert.ok(catalogRow, 'the fixture needs the modern catalog row to relocate');
+		queueDb().putSync(legacyKey, { ...catalogRow, name: 'id', isPrimaryKey: true });
+		queueDb().removeSync(catalogKey);
+		try {
+			queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+				due: Date.now() - 1,
+				storageIndex: 0,
+				owner: ['BlobQueueTest', 'legacy-primary-owner'],
+				supersededAt: Date.now() - 5000,
+			});
+
+			drainBlobUnlinkQueue(rootStore());
+
+			await waitFor(() => queueRow(fileId) === undefined, {
+				timeout: 5000,
+				message: 'the live legacy owner must cancel the intent',
+			});
+			assert.ok(existsSync(filePath), 'a live legacy catalog must not be mistaken for a dropped table');
+		} finally {
+			if (previousLegacyRow === undefined) queueDb().removeSync(legacyKey);
+			else queueDb().putSync(legacyKey, previousLegacyRow);
+			queueDb().putSync(catalogKey, catalogRow);
+		}
+	});
+
+	it('revalidates an owner in a legacy standalone table root with unprefixed attributes', async () => {
+		setDeletionDelay(600000);
+		const { fileId, filePath } = await fileBackedBlob('legacy-root-owner');
+		const root = rootStore();
+		const previousOwnerTableName = root.blobOwnerTableName;
+		const legacyAttributeKey = 'id';
+		const previousLegacyAttribute = queueDb().getSync(legacyAttributeKey);
+		const catalogEntries = [...queueDb().getRange({ start: 'BlobQueueTest/', end: 'BlobQueueTest0', snapshot: false })];
+		for (const { key } of catalogEntries) queueDb().removeSync(key);
+		queueDb().putSync(legacyAttributeKey, { name: 'id', isPrimaryKey: true });
+		root.blobOwnerTableName = 'BlobQueueTest';
+		try {
+			queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+				due: Date.now() - 1,
+				storageIndex: 0,
+				owner: ['BlobQueueTest', 'legacy-root-owner'],
+				supersededAt: Date.now() - 5000,
+			});
+
+			drainBlobUnlinkQueue(root);
+
+			await waitFor(() => queueRow(fileId) === undefined, {
+				timeout: 5000,
+				message: 'the standalone legacy owner must cancel the intent',
+			});
+			assert.ok(existsSync(filePath), 'an unprefixed legacy catalog must not be mistaken for a dropped table');
+		} finally {
+			root.blobOwnerTableName = previousOwnerTableName;
+			if (previousLegacyAttribute === undefined) queueDb().removeSync(legacyAttributeKey);
+			else queueDb().putSync(legacyAttributeKey, previousLegacyAttribute);
+			for (const { key, value } of catalogEntries) queueDb().putSync(key, value);
 		}
 	});
 

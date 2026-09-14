@@ -291,6 +291,7 @@ interface LMDBDatabase extends Database {
 }
 interface LMDBRootDatabase extends RootDatabase {
 	auditStore?: LMDBRootDatabase;
+	blobOwnerTableName?: string;
 	databaseName?: string;
 	dbisDb?: LMDBDatabase;
 	isLegacy?: boolean;
@@ -314,6 +315,7 @@ interface RocksDatabaseEx extends RocksDatabase {
 
 interface RocksRootDatabase extends RocksDatabaseEx {
 	auditStore?: RocksDatabaseEx;
+	blobOwnerTableName?: string;
 	databaseName?: string;
 	dbisDb?: RocksDatabaseEx;
 	store: any;
@@ -1015,6 +1017,9 @@ function initStores(
 ) {
 	// a store with no tables never reaches the per-table loop below, and blob roots resolve from this
 	rootStore.databaseName = storeName ?? databaseName;
+	// A legacy per-table environment stores bare attribute names, so its catalog has no table-name
+	// prefix for the blob unlink drain to probe. Preserve the sole table identity on the root instead.
+	rootStore.blobOwnerTableName = isLegacy ? defaultTable : undefined;
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	const internalDbiInit = createOpenDBIObject(false);
 	let attributesDbi = rootStore.dbisDb;
