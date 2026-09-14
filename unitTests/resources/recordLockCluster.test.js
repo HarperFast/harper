@@ -675,6 +675,38 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(getNodeNameForId(store, 2), 'node-c', 'and is resolved once it joins');
 		});
 
+		it('reads the store once per window for an id it will never resolve', async function () {
+			if (isLMDB) return this.skip();
+			const { pack } = require('msgpackr');
+			const { getNodeNameForId } = require('#src/resources/nodeIdMapping');
+			// `rebuildOnMiss` bypassed the refresh window on EVERY call, so a replayed run of control
+			// entries naming an id this database never minted — a purged node, an origin relayed from
+			// elsewhere — cost a store read and an unpack each, on the apply thread. One per window is
+			// what the window is for; a rebuild inside it is not stale, because writing the mapping drops
+			// the cache entry outright.
+			let reads = 0;
+			const store = {
+				getBinary: () => {
+					reads++;
+					return pack({ remoteNameToId: { [NODE_NAME]: 0, 'node-b': 1 } });
+				},
+			};
+			assert.strictEqual(getNodeNameForId(store, 99, true), undefined);
+			const afterFirst = reads;
+			assert.strictEqual(afterFirst, 1, 'the first miss did not read the mapping');
+			for (let i = 0; i < 25; i++) assert.strictEqual(getNodeNameForId(store, 99, true), undefined);
+			assert.strictEqual(reads, afterFirst, `a burst of unresolvable ids drove ${reads} store reads`);
+
+			// And the window still ends, which is what keeps a node admitted after the cache was built
+			// from being stranded: the next miss past it re-reads, once.
+			await delay(120);
+			assert.strictEqual(getNodeNameForId(store, 99, true), undefined);
+			assert.strictEqual(reads, afterFirst + 1, 'the refresh window never reopened');
+			// A hit never reads at all, window or not.
+			assert.strictEqual(getNodeNameForId(store, 1, true), 'node-b');
+			assert.strictEqual(reads, afterFirst + 1, 'a cache hit read the mapping');
+		});
+
 		it('resolves a node id to a name per database, not process-wide', function () {
 			if (isLMDB) return this.skip();
 			const { pack } = require('msgpackr');

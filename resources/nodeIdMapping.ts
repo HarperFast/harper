@@ -136,9 +136,11 @@ export function getThisNodeId(auditStore: any) {
 // a newly admitted node is absent from every other worker's map until it is rebuilt. Rebuilding on
 // every miss would put a store read and unpack back on the apply thread for each unmapped entry, so
 // misses re-read at most this often — short enough that a joining node loses at most a stray entry,
-// long enough that a burst of unmapped ids cannot drive the store.
+// long enough that a burst of unmapped ids cannot drive the store. `onMiss` records whether the
+// cached map was built by a `rebuildOnMiss` caller, which is what bounds that caller to one read per
+// window too rather than exempting it from the interval entirely.
 const NODE_NAME_REFRESH_MS = 50;
-const idToNodeName = new WeakMap<object, { names: Map<number, string>; refreshedAt: number }>();
+const idToNodeName = new WeakMap<object, { names: Map<number, string>; refreshedAt: number; onMiss: boolean }>();
 function invalidateNodeNames(auditStore: any) {
 	idToNodeName.delete(auditStore);
 }
@@ -157,14 +159,17 @@ export function getNodeNameForId(
 	const hit = cached?.names.get(nodeId);
 	if (hit !== undefined) return hit;
 	const now = Date.now();
-	// `rebuildOnMiss` is for entry classes that arrive at most once per event and whose loss costs more
-	// than the read: a dropped record lock release leaves the home holding a grant until its own
-	// deadline. The interval below exists to keep a BURST of unmapped ids off the store, which those
-	// classes cannot produce.
-	if (!rebuildOnMiss && cached && now - cached.refreshedAt < NODE_NAME_REFRESH_MS) return undefined;
+	// `rebuildOnMiss` is for entry classes whose loss costs more than the read: a dropped record lock
+	// release leaves the home holding a grant until its own deadline, so a just-minted id is worth one
+	// store read rather than up to `NODE_NAME_REFRESH_MS` of dropped entries. ONE read, though, not one
+	// per entry — an id this map will never resolve (a node whose mapping was purged, an origin
+	// relayed from a database that never minted one) is exactly the burst the interval exists to keep
+	// off the apply thread, and a rebuild inside the window is not stale: a write to the mapping drops
+	// this entry outright (`invalidateNodeNames`).
+	if (cached && now - cached.refreshedAt < NODE_NAME_REFRESH_MS && (!rebuildOnMiss || cached.onMiss)) return undefined;
 	const nameToId = exportIdMapping(auditStore);
 	const names = new Map<number, string>();
 	for (const name in nameToId) names.set(nameToId[name], name);
-	idToNodeName.set(auditStore, { names, refreshedAt: now });
+	idToNodeName.set(auditStore, { names, refreshedAt: now, onMiss: rebuildOnMiss });
 	return names.get(nodeId);
 }
