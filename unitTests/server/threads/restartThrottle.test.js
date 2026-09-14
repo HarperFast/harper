@@ -34,17 +34,24 @@ describe('rolling restart throttle', function () {
 		}
 	});
 
-	// Every one of these loses its relational comparisons, which would leave the loop with no throttle
-	// at all rather than a bad one.
+	// None of these can produce a working throttle: NaN and a string lose every relational comparison,
+	// and null coerces through the ratio branch to zero, which stops the restart after one worker.
 	for (const throttle of [Number.NaN, 'two', null]) {
 		it(`treats a ${typeof throttle} throttle of ${String(throttle)} as the documented minimum of one`, async function () {
 			this.timeout(60000);
 			const concurrency = { down: 0, peak: 0 };
 			const started = await startPool(concurrency);
 			try {
-				await restartWorkers(SERVING_TYPE, throttle, false);
+				const result = await restartWorkers(SERVING_TYPE, throttle, false);
 
 				assert.equal(concurrency.peak, 1);
+				// One at a time is only the documented minimum if the restart still walks the whole pool; a
+				// zero throttle also peaks at one, then abandons the rest.
+				assert.equal(result.workersKeptOnOldCode, 0);
+				assert.deepEqual(
+					started.map((worker) => worker.wasShutdown),
+					started.map(() => true)
+				);
 			} finally {
 				await cleanUp(started);
 			}
