@@ -3771,7 +3771,6 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		// generation next to the retired one and must survive this sweep.
 		const primaryRow = attributesDbi.getSync(tableName + '/');
 		const stores = storeNamesFor(attributesDbi, tableName, primaryRow?.generation);
-		// a tombstone from before dropGeneration existed gets an obligation of its own
 		if (primaryRow && !primaryRow.dropGeneration) {
 			// a tombstone from before dropGeneration existed: give it one, durably, so retries share it
 			primaryRow.dropGeneration = randomUUID();
