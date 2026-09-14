@@ -55,6 +55,18 @@ describe('RocksDB handle release', function () {
 		await waitFor(() => databases[databaseName], { message: `no schema rescan reopened ${databaseName}` });
 	}
 
+	// the close broadcast drop_database and restore_backup send, as the receiving thread's ITC handler
+	// sees it. Required lazily: the ITC module graph is far heavier than this file's other subjects.
+	function closeBroadcast(databaseName) {
+		const ITCEventObject = require('#js/server/itc/utility/ITCEventObject');
+		const { SchemaEventMsg } = require('#js/server/threads/itc');
+		const { ITC_EVENT_TYPES, ITC_SCHEMA_OPERATIONS } = require('#src/utility/hdbTerms');
+		return new ITCEventObject(
+			ITC_EVENT_TYPES.SCHEMA,
+			new SchemaEventMsg(process.pid, ITC_SCHEMA_OPERATIONS.CLOSE_DATABASE, databaseName)
+		);
+	}
+
 	it('closeDatabase releases all of a database’s native handles (refCount → 0)', async function () {
 		this.timeout(30000);
 		const rootStore = openRocksDb('closerelease1');
@@ -116,9 +128,6 @@ describe('RocksDB handle release', function () {
 		// "that thread has let go of the database". The ITC handler that sends it is a second call site
 		// of the same release, on the threads the drop is actually waiting for.
 		const { schemaHandler } = require('#js/server/itc/serverHandlers');
-		const ITCEventObject = require('#js/server/itc/utility/ITCEventObject');
-		const { SchemaEventMsg } = require('#js/server/threads/itc');
-		const { ITC_EVENT_TYPES, ITC_SCHEMA_OPERATIONS } = require('#src/utility/hdbTerms');
 		const T = table({
 			table: 'pkg',
 			database: 'closerelease6',
@@ -138,12 +147,7 @@ describe('RocksDB handle release', function () {
 		const lock = beginDrop(dbPath);
 		try {
 			let acknowledged = false;
-			const handled = schemaHandler(
-				new ITCEventObject(
-					ITC_EVENT_TYPES.SCHEMA,
-					new SchemaEventMsg(process.pid, ITC_SCHEMA_OPERATIONS.CLOSE_DATABASE, 'closerelease6')
-				)
-			).then(() => (acknowledged = true));
+			const handled = schemaHandler(closeBroadcast('closerelease6')).then(() => (acknowledged = true));
 
 			await waitFor(() => release, { message: 'the derived runtime was never asked to release' });
 			// a grace period for the negative assertion below: a handler that did not wait for the release
@@ -158,6 +162,38 @@ describe('RocksDB handle release', function () {
 
 			assert.strictEqual(refCountFor(dbPath), 0, 'and gone by the time drop_database reads the acknowledgement');
 		} finally {
+			completeDrop(lock);
+		}
+	});
+
+	it('the acknowledgement still lands when the runtime cannot prove it released', async function () {
+		this.timeout(30000);
+		// Table.cleanup() deliberately leaves the column families open when derivedIndexRuntime.close()
+		// rejects — closing them under a flush it could not prove finished is a write through a freed
+		// handle. The cost is that this thread stays a holder and the drop refuses with 409 instead of
+		// destroying under it, which is only reachable if the acknowledgement lands at all: a rejection
+		// escaping into the handler's `Promise.all` would take the broadcast (and the worker) down.
+		const { schemaHandler } = require('#js/server/itc/serverHandlers');
+		const T = table({
+			table: 'pkg',
+			database: 'closerelease7',
+			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
+		});
+		getDatabases();
+		if (!(T.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		await settleSchemaRescan('closerelease7');
+		const Live = databases.closerelease7.pkg;
+		const dbPath = Live.primaryStore.rootStore.path;
+		Live.derivedIndexRuntime = { close: () => Promise.reject(new Error('could not prove quiescence')) };
+
+		const lock = beginDrop(dbPath);
+		try {
+			await schemaHandler(closeBroadcast('closerelease7'));
+
+			assert.ok(refCountFor(dbPath) > 0, 'the stores the runtime might still write through stay open');
+		} finally {
+			// nothing reaches them through `databases` any more, so this test owns their release
+			Live.closeStores();
 			completeDrop(lock);
 		}
 	});
