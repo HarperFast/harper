@@ -131,6 +131,9 @@ describe('an index build that ends without completing is marked and recovered', 
 		const dbisDB = Rebuilding.dbisDB;
 		const rootStore = Rebuilding.primaryStore.rootStore;
 		const isRocksDatabase = rootStore instanceof RocksDatabase;
+		// this handle is now shared across suites (table() reuses it rather than reopening), so the
+		// restore below has to remove the own property rather than assign the prototype's method onto it
+		const hadOwnGetSync = Object.hasOwn(dbisDB, 'getSync');
 		const originalGetSync = dbisDB.getSync.bind(dbisDB);
 		const originalTransactionSync = rootStore.transactionSync;
 		let reads = 0;
@@ -165,7 +168,8 @@ describe('an index build that ends without completing is marked and recovered', 
 			Rebuilding.primaryStore.getRange = originalGetRange;
 			if (originalStatus) Object.defineProperty(rootStore, 'status', originalStatus);
 			else delete rootStore.status;
-			dbisDB.getSync = originalGetSync;
+			if (hadOwnGetSync) dbisDB.getSync = originalGetSync;
+			else delete dbisDB.getSync; // an own property would shadow the prototype for every later suite
 			if (!isRocksDatabase) rootStore.transactionSync = originalTransactionSync;
 		}
 
