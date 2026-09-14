@@ -16,7 +16,7 @@ Bot authors, external authors, at-most-two-line PRs, and PRs that are not AI-aut
 
 ## Framing verdict
 
-Callers can provide newline-delimited `framing_paths` as exact repository paths or directory prefixes ending in `/**`. For a ready organization-member PR that changes one of those paths, `framing_mode: enforce` requires one of these live, line-anchored body forms:
+Callers can provide newline-delimited `framing_paths` as exact repository paths or directory prefixes ending in `/**`. For a ready organization-member PR that changes one of those paths, `framing_mode: enforce` requires one of these line-anchored body forms:
 
 ```text
 Framing-Verdict: chosen-approach-sound
@@ -79,3 +79,5 @@ steps:
 ## Known limits
 
 The check reads the PR body, which the author can edit. Deleting the generator signature and the HEG fields makes a PR read as not-AI-authored and exempts it; commit trailers are not consulted. This is a guardrail against forgetting a review leg, not a control against an author who means to bypass it.
+
+A framing receipt is not pinned to the current PR head. Synchronizing a PR re-checks whether the body still contains a valid receipt, but cannot determine whether the reviewed approach changed after that receipt was produced. This first-cut gate detects a missing planning receipt; it does not prove the receipt is fresh.

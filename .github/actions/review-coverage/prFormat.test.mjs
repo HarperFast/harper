@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
@@ -15,6 +15,7 @@ const HEAD = '609896d762efe2c9f529a0f9989ce0a53dd29b40';
 const FILE = 'resources/auditStore.ts';
 const HASH = 'db526bfa2603e0ee94ab17a9ea8c2b8bd02e1f626dd6907624cfe8508ad356ba';
 const LINK = `https://github.com/${REPO}/pull/${NUMBER}/changes?w=1#diff-${HASH}R211`;
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const PR_FILES = {
 	version: 1,
 	complete: true,
@@ -470,7 +471,10 @@ test('the enforcing workflow never runs from the PR checkout', () => {
 	assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.base\.ref \}\}/);
 	assert.doesNotMatch(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\./);
 	assert.match(workflow, /permissions:\n\s+contents: read\n\s+pull-requests: read/);
-	assert.doesNotMatch(workflow, /^\s*[\w-]+:[ \t]*(?:write|write-all)\b/m);
+	assert.doesNotMatch(
+		workflow,
+		/^\s*(?:permissions\s*:\s*(?:['"]?write-all\b|\{[^\n}]*\b(?:write|write-all)\b)|[\w-]+:[ \t]*['"]?(?:write|write-all)\b)/m
+	);
 	assert.match(workflow, /mode: enforce/);
 });
 
@@ -494,7 +498,7 @@ test('the report workflow keeps the existing check identity and gates PR-files c
 		'resources/indexes/HierarchicalNavigableSmallWorld.ts',
 		'utility/lmdb/writeUtility.ts',
 	])
-		assert.match(workflow, new RegExp(`^\\s+${framingPath.replaceAll('*', '\\*')}\\s*$`, 'm'));
+		assert.match(workflow, new RegExp(`^\\s+${escapeRegExp(framingPath)}\\s*$`, 'm'));
 	assert.strictEqual(
 		workflow.match(/api_with_retry "\$head_response"/g)?.length,
 		2,
@@ -529,7 +533,10 @@ test('Harper framing policy covers every production storage-binding importer', (
 			else if (/\.(?:js|ts)$/.test(entry.name) && !/\.test\.[jt]s$/.test(entry.name)) files.push(entryPath);
 		}
 	};
-	for (const sourceRoot of sourceRoots) visit(path.join(root, sourceRoot));
+	for (const sourceRoot of sourceRoots) {
+		const directory = path.join(root, sourceRoot);
+		if (existsSync(directory)) visit(directory);
+	}
 	const bindingImport =
 		/(?:\bfrom\s+|\bimport\s*\(|\brequire\s*\()\s*['"](?:lmdb|@harperfast\/rocksdb-js)(?:\/[^'"]*)?['"]/;
 	const importers = files
@@ -537,5 +544,9 @@ test('Harper framing policy covers every production storage-binding importer', (
 		.map((file) => path.relative(root, file).replaceAll(path.sep, '/'));
 	const workflow = readFileSync(path.join(root, '.github/workflows/review-coverage.yml'), 'utf8');
 	for (const importer of importers)
-		assert.match(workflow, new RegExp(`^\\s+${importer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm'));
+		assert.match(
+			workflow,
+			new RegExp(`^\\s+${escapeRegExp(importer)}\\s*$`, 'm'),
+			`${importer} imports a storage binding — add it to framing_paths in .github/workflows/review-coverage.yml`
+		);
 });
