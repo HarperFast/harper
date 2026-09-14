@@ -114,6 +114,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				recordId: entry.recordId,
 				version: entry.version,
 				extendedType: entry.extendedType,
+				structureVersion: entry.structureVersion,
 				value: entry.getValue(forTable.primaryStore),
 			});
 		}
@@ -165,6 +166,11 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(release.type, 'lockRelease');
 			assert.strictEqual(release.recordId, null, 'the locked key rides in the payload, not the record id');
 			assert.strictEqual(release.extendedType & LOCAL_ONLY, 0, 'control entries must replicate');
+			// Zero, because the payload was packed by the private control Packr and carries none of the
+			// table's structures. A non-zero value lets the release raise the per-(log, table) structure
+			// watermark and take HAS_STRUCTURE_UPDATE, leaving the next real write at that version
+			// unflagged for any receiver that learns structures from flagged entries.
+			assert.strictEqual(release.structureVersion ?? 0, 0, 'a control entry must not advance table structures');
 			const decoded = decodeLockControlPayload(release.type, release.value);
 			assert.ok(decoded, 'the payload decodes');
 			assert.strictEqual(decoded.key, recordId);

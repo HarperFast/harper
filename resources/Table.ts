@@ -5795,8 +5795,14 @@ export function makeTable(options) {
 									type: entry.type,
 									encodedRecord,
 									extendedType: 0,
-									structureVersion:
-										primaryStore.encoder.structures.length + (primaryStore.encoder.typedStructs?.length ?? 0),
+									// Zero, not the table's count: these bytes were packed by the private control `Packr`
+									// and carry none of the table's structures. `RocksTransactionLogStore` raises the
+									// per-(log, table) structure watermark from this field and flags the entry that does
+									// it, so claiming the table's version would let a release take `HAS_STRUCTURE_UPDATE`
+									// and leave the next real write at that version unflagged — a receiver that learns
+									// structures only from flagged entries then decodes later records against a stale set
+									// (harper#1348's class). A payload with no table structures cannot advance them.
+									structureVersion: 0,
 								},
 								{ instructedWrite: true, transaction: nativeTransaction, nodeId, viaNodeId: nodeId }
 							),
