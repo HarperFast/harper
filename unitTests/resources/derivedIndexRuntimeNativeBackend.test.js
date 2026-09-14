@@ -2033,6 +2033,17 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('counts records a backend reports as unindexable', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const backend = new SyncBackend('backend-unindexable', cursor(10));
+		const { runtime } = runtimeFor(store, new Map());
+		runtime.register(registration(backend));
+		backend.host.noteUnindexable('FulltextError (E_BATCH_TOO_LARGE)');
+		backend.host.noteUnindexable('FulltextError (E_BATCH_TOO_LARGE)');
+		assert.strictEqual(runtime.getMetrics(backend.id).unindexableRecords, 2);
+		await runtime.stop();
+	});
+
 	it('settles a backend that fails every rebuild into an observable unavailable state', async () => {
 		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
 		const store = new FakeLogStore(new Map([[7, []]]), {

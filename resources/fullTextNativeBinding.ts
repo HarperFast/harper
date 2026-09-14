@@ -1,5 +1,7 @@
 import type { FullTextDerivedIndexEngine, FullTextMutationBatch } from './FullTextDerivedIndexBackend.ts';
 
+const FULLTEXT_NATIVE_ABI_VERSION = 2;
+
 export interface NativeFullTextIndexConfiguration {
 	fields: Array<{ name: string; weight?: number }>;
 	analyzer: 'english@1';
@@ -62,7 +64,7 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		!info ||
 		typeof info.packageVersion !== 'string' ||
 		typeof info.tantivyVersion !== 'string' ||
-		!Number.isSafeInteger(info.nativeAbiVersion) ||
+		info.nativeAbiVersion !== FULLTEXT_NATIVE_ABI_VERSION ||
 		!Array.isArray(info.storageBackends) ||
 		!info.storageBackends.includes('native')
 	)

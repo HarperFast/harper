@@ -406,15 +406,28 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			packed = this.#encodeMutationBatch(toFullTextMutationRecords(records));
 			if (!(packed instanceof Uint8Array)) throw new TypeError('Full-text batch encoder must return a Uint8Array');
 		} catch (error) {
-			if (packedBatchTooLarge(error) && records.length > 1) {
+			if (errorCodeInChain(error) === 'E_BATCH_TOO_LARGE' && records.length > 1) {
 				const middle = Math.ceil(records.length / 2);
 				if (!(await this.#applyRecords(command, records.slice(0, middle)))) return false;
 				return this.#applyRecords(command, records.slice(middle));
 			}
-			const failure = new FullTextDerivedIndexError('Failed to encode a full-text mutation batch', error);
-			if (persistentEncodingError(error)) throw failure;
-			await this.#recoverAcceptedWork(command.epoch, failure);
-			return false;
+			if (errorCodeInChain(error) === 'E_BATCH_TOO_LARGE' && records[0]?.state.kind === 'record') {
+				const removal = { ...records[0], state: { kind: 'absent' } as const };
+				try {
+					packed = this.#encodeMutationBatch(toFullTextMutationRecords([removal]));
+				} catch (removalError) {
+					throw new FullTextDerivedIndexError(
+						'Failed to encode removal for an unindexable full-text record',
+						new AggregateError([error, removalError])
+					);
+				}
+				this.#host?.noteUnindexable('FulltextError (E_BATCH_TOO_LARGE)');
+			} else {
+				const failure = new FullTextDerivedIndexError('Failed to encode a full-text mutation batch', error);
+				if (persistentEncodingError(error)) throw failure;
+				await this.#recoverAcceptedWork(command.epoch, failure);
+				return false;
+			}
 		}
 		const expected = records.length;
 		let applied: number;
@@ -621,33 +634,21 @@ function toFullTextMutationRecords(records: DerivedIndexBatch['records']): FullT
 }
 
 function persistentEncodingError(error: unknown): boolean {
-	return error instanceof TypeError || errorCodeInChain(error) === 'E_INVALID_ARGUMENT';
-}
-
-function packedBatchTooLarge(error: unknown): boolean {
-	return errorCodeInChain(error) === 'E_INVALID_ARGUMENT' && messageInChain(error).includes('packed value exceeds');
+	const code = errorCodeInChain(error);
+	return error instanceof TypeError || code === 'E_INVALID_ARGUMENT' || code === 'E_BATCH_TOO_LARGE';
 }
 
 function errorCodeInChain(error: unknown): string | undefined {
+	const seen = new Set<object>();
 	for (
 		let current = error;
 		current && typeof current === 'object';
 		current = 'cause' in current ? current.cause : undefined
 	) {
+		if (seen.has(current)) return;
+		seen.add(current);
 		if ('code' in current && typeof current.code === 'string') return current.code;
 	}
-}
-
-function messageInChain(error: unknown): string {
-	const messages: string[] = [];
-	for (
-		let current = error;
-		current && typeof current === 'object';
-		current = 'cause' in current ? current.cause : undefined
-	) {
-		if ('message' in current && typeof current.message === 'string') messages.push(current.message);
-	}
-	return messages.join(': ');
 }
 
 function logWarning(message: string, error: unknown): void {

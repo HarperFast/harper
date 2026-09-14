@@ -102,6 +102,8 @@ export interface DerivedIndexBackendHost {
 	/** True while `epoch` is the most recently minted owner epoch for this backend. */
 	isOwnerEpoch(epoch: bigint): boolean;
 	getReadiness(): DerivedIndexReadiness;
+	/** Count a source record the backend deliberately omitted without exposing record data. */
+	noteUnindexable(reason: string): void;
 }
 
 /**
@@ -580,6 +582,7 @@ class DerivedIndexRunner {
 			registration.backend.attach({
 				isOwnerEpoch: (epoch) => Atomics.load(this.#sharedViews.epoch, 0) === epoch,
 				getReadiness: () => this.getReadiness(),
+				noteUnindexable: (reason) => this.#noteUnindexable(reason),
 			});
 			this.#unsubscribeBackend = registration.backend.onStateChange((change = 'changed') =>
 				this.#backendStateChanged(change)
@@ -1465,10 +1468,14 @@ class DerivedIndexRunner {
 			if (typeof statusCode !== 'number' || statusCode < 400 || statusCode >= 500) throw error;
 			// Validation messages can quote record values, which must not reach the backend or the log.
 			const reason = `${error instanceof Error && error.name ? error.name : 'Error'} (${statusCode})`;
-			if (this.#unindexableRecords++ === 0)
-				logger.warn?.(`Derived index '${this.#registration.backend.id}' skipped a record it cannot project: ${reason}`);
+			this.#noteUnindexable(reason);
 			return { kind: 'unindexable', version, reason };
 		}
+	}
+
+	#noteUnindexable(reason: string) {
+		if (this.#unindexableRecords++ === 0)
+			logger.warn?.(`Derived index '${this.#registration.backend.id}' skipped an unindexable record: ${reason}`);
 	}
 
 	#assertRecord(record: AuditRecord) {

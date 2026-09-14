@@ -142,8 +142,10 @@ that names another store or a newer format.
 
 The encoder collaborator accepts the Harper mutation input and returns Fulltext's packed batch. The
 backend owns the mapping from `DerivedIndexBatch.records`; it never serializes the batch object.
-An oversized multi-record packed batch is split and retried without changing ordering. A transient
-encoder failure rolls back and replays accepted work; invalid single-record input fails closed.
+A native `E_BATCH_TOO_LARGE` multi-record batch is split and retried without changing ordering. A
+single oversized upsert becomes a removal so stale text cannot remain searchable and increments
+Harper's `unindexableRecords` metric; a delete that cannot be encoded still fails closed. Other
+invalid arguments remain terminal. A transient encoder failure rolls back and replays accepted work.
 Only string and string-array projection fields are forwarded. Other values are omitted so one
 schema-drifted record cannot poison a batch; the later schema integration validates configured
 attributes at the projection boundary so Harper can count them as unindexable.
