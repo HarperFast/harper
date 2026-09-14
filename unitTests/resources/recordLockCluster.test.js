@@ -500,6 +500,36 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(coordinator.stats.granted, grantedBefore, 'the release was dropped with the transport');
 		});
 
+		it('fails a recall it cannot route instead of reporting it as a confirmation', async function () {
+			if (isLMDB) return this.skip();
+			const homes = [NODE_NAME, 'peer-1'];
+			// Registered by hand so the test holds the same transport object harper-pro would, and can
+			// push a recall in through `onDelegationRecall` after the registration goes away.
+			const transport = {
+				homeMap: () => ({ generation: 1, homes, homeIncarnation: 1 }),
+				grantableAfterMono: -Infinity,
+				ownsCoordination: () => true,
+				requestDelegation: () => Promise.reject(new Error('no peer transport')),
+				recallDelegation: () => Promise.resolve(),
+			};
+			registerClusterLockTransport('test', transport);
+			const recordId = idHomedHere(homes);
+			const warmUp = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });
+			await warmUp.unlock();
+			// The reconnect window: the coordinator is deliberately kept alive with its delegations, but
+			// the transport-gated getter answers undefined, so this thread cannot apply the recall.
+			unregisterClusterLockTransport('test');
+			assert.strictEqual(ClusterLockTest.lockCoordinator, undefined, 'the transport-gated getter is closed');
+
+			// `recallDelegation` resolves only once the delegate has drained; the home latches
+			// `recallConfirmed` on that resolution and never re-sends. Resolving here would deny the key
+			// to every other node for the delegation's whole deadline.
+			await assert.rejects(
+				() => transport.onDelegationRecall('test', 'ClusterLockTest', { key: recordId, token: [1, 1, 1] }),
+				/No record lock coordinator on this thread/
+			);
+		});
+
 		it('contains a malformed control entry instead of failing the apply loop', function () {
 			if (isLMDB) return this.skip();
 			const recordKeyForRetiredType = 'retired-nibble-key';

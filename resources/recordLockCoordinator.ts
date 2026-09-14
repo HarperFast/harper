@@ -53,7 +53,7 @@ import { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS } from './recordLock.ts';
  * deadline. Without both rules a contender polling at 25 ms re-armed the recall on every pass and
  * turned one handoff into an RPC storm lasting the rest of the delegation.
  */
-const RECALL_RETRY_MS = 1_000;
+export const RECALL_RETRY_MS = 1_000;
 
 /** Margin a home adds to a delegation it issued, so the delegate always stops admitting first. */
 export const LOCK_LEASE_SKEW_MS = 5_000;
@@ -1376,10 +1376,21 @@ export class LockCoordinator {
 		if (grant.recalling || grant.recallConfirmed) return;
 		if (grant.recallRetryAfterMono !== undefined && this.#monotonic() < grant.recallRetryAfterMono) return;
 		if (grant.delegate === this.nodeId) {
-			// We are both home and delegate. Recall ourselves through the same path a peer would take.
-			grant.recalling = this.onDelegationRecall({ key: grant.key, token: grant.token }).catch((error) => {
-				warnOnce('failed to recall a local record lock delegation', error);
-			});
+			// We are both home and delegate. Recall ourselves through the same path a peer would take,
+			// and settle it the same way: a recall that did not apply must leave the grant recallable,
+			// or `recalling` stays latched here for the rest of the delegation and no contender ever
+			// prompts another one.
+			grant.recalling = this.onDelegationRecall({ key: grant.key, token: grant.token }).then(
+				() => {
+					grant.recalling = undefined;
+					grant.recallConfirmed = true;
+				},
+				(error) => {
+					warnOnce('failed to recall a local record lock delegation', error);
+					grant.recalling = undefined;
+					grant.recallRetryAfterMono = this.#monotonic() + RECALL_RETRY_MS;
+				}
+			);
 			return;
 		}
 		grant.recalling = Promise.resolve(
@@ -1600,11 +1611,14 @@ export async function deliverDelegationRecall(
 	table: string,
 	recall: DelegationRecall
 ): Promise<void> {
+	// This is core's receiving end of `recallDelegation`, which resolves only "once the delegate has
+	// drained and stopped admitting" — and `#beginRecall` latches `recallConfirmed` on that resolution
+	// and never re-sends. So a recall this thread could not apply has to FAIL rather than resolve:
+	// `coordinatorFor` is the transport-gated resolver and answers undefined through a reconnect, and
+	// the home reading that silence as a drained delegate denies the key to every other node for the
+	// delegation's whole deadline. Failing it leaves the home's `.catch` to retry on RECALL_RETRY_MS.
 	const coordinator = coordinatorFor(database, table);
-	if (!coordinator) return;
-	try {
-		await coordinator.onDelegationRecall(recall);
-	} catch (error) {
-		warnOnce('failed to apply a record lock delegation recall', error);
-	}
+	if (!coordinator)
+		throw new Error(`No record lock coordinator on this thread to apply a recall for ${database}.${table}`);
+	await coordinator.onDelegationRecall(recall);
 }

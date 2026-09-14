@@ -3,6 +3,7 @@ const {
 	LockCoordinator,
 	LOCK_LEASE_SKEW_MS,
 	DELEGATION_LEASE_MS,
+	RECALL_RETRY_MS,
 	compareTokens,
 	decodeLockControlPayload,
 	encodeLockControlPayload,
@@ -927,6 +928,40 @@ describe('record lock delegations', () => {
 			});
 			assert.strictEqual(granted.granted, true, 'the ownership quarantine never ended');
 			coordinator.close();
+		});
+
+		it('leaves a grant recallable when a local recall fails', async () => {
+			// The home's own delegate goes through `#beginRecall`'s local branch, which used to assign
+			// `grant.recalling` and never clear it on a rejection — so one failed recall latched the grant
+			// for the rest of the delegation and no contender could prompt another. The remote branch had
+			// always cleared it and armed `RECALL_RETRY_MS`; both settle the same way now.
+			const cluster = new FakeCluster(['alpha', 'beta']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const own = await beta.acquire(key, LEASE, WAIT);
+			assert.ok(own, 'beta did not take the key it homes');
+
+			let recalls = 0;
+			beta.onDelegationRecall = () => {
+				recalls++;
+				return Promise.reject(new Error('the drain failed'));
+			};
+			const first = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(first.granted, false, 'alpha was granted over a live local delegation');
+			await delayMs(5);
+			assert.strictEqual(recalls, 1, 'the contender did not prompt a recall');
+
+			// Only on the retry interval, not on the contender's 25 ms poll.
+			const tooSoon = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(tooSoon.granted, false);
+			await delayMs(5);
+			assert.strictEqual(recalls, 1, 'a failed recall was re-sent on the contender’s poll interval');
+
+			cluster.advance('beta', RECALL_RETRY_MS + 100);
+			const retried = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(retried.granted, false);
+			await delayMs(5);
+			assert.strictEqual(recalls, 2, `a failed local recall was never retried (${recalls} sent)`);
 		});
 
 		it('does not renew a delegate that already confirmed a recall', async () => {
