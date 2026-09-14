@@ -31,10 +31,7 @@ jobs:
         if: >-
           github.event.pull_request.user.type != 'Bot' &&
           !endsWith(github.event.pull_request.user.login, '[bot]') &&
-          (github.event.pull_request.author_association == 'MEMBER' || github.event.pull_request.author_association == 'OWNER') &&
-          (github.event.pull_request.additions > 2 || github.event.pull_request.deletions > 2 ||
-          (github.event.pull_request.additions == 2 && github.event.pull_request.deletions > 0) ||
-          (github.event.pull_request.deletions == 2 && github.event.pull_request.additions > 0))
+          (github.event.pull_request.author_association == 'MEMBER' || github.event.pull_request.author_association == 'OWNER')
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -65,6 +62,41 @@ jobs:
         with:
           mode: enforce
           format_mode: report
+          framing_mode: enforce
+          framing_paths: |
+            resources/Table.ts
+            resources/RecordEncoder.ts
+            resources/tracked.ts
+            resources/PrimaryRocksDatabase.ts
+            replication/**
+            bin/copyDb.ts
+            dataLayer/harperBridge/ResourceBridge.ts
+            dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetBackup.js
+            dataLayer/restoreMarker.ts
+            dataLayer/rocksdbBackup.ts
+            dataLayer/schemaDescribe.ts
+            resources/DatabaseTransaction.ts
+            resources/LMDBTransaction.ts
+            resources/RocksIndexStore.ts
+            resources/RocksTransactionLogStore.ts
+            resources/analytics/write.ts
+            resources/auditStore.ts
+            resources/blob.ts
+            resources/branchDatabase.ts
+            resources/databases.ts
+            resources/indexes/HierarchicalNavigableSmallWorld.ts
+            resources/longLivedTransactions.ts
+            resources/nodeIdMapping.ts
+            resources/replayLogs.ts
+            resources/search.ts
+            server/http.ts
+            server/transactionLogCooling.ts
+            utility/environment/systemInformation.ts
+            utility/lmdb/commonUtility.ts
+            utility/lmdb/deleteUtility.ts
+            utility/lmdb/environmentUtility.ts
+            utility/lmdb/searchUtility.ts
+            utility/lmdb/writeUtility.ts
           pr_files: ${{ steps.pr-files.outputs.path }}
           pr_files_ready: ${{ steps.pr-files.outputs.ready }}
           pr_files_superseded: ${{ steps.pr-files.outputs.superseded }}

@@ -7,7 +7,7 @@
 #   - uses: HarperFast/harper/.github/actions/review-coverage@<full sha> # main
 #
 name: review-coverage
-description: Report cross-model coverage and PR-description format
+description: Report cross-model coverage, PR-description format, and framing policy
 inputs:
   mode:
     description: report (always green, informational) or enforce (red when under-reported)
@@ -24,6 +24,12 @@ inputs:
   format_mode:
     description: off, report (always green), or enforce PR-description format
     default: off
+  framing_mode:
+    description: report (always green) or enforce Framing-Verdict for configured paths
+    default: report
+  framing_paths:
+    description: newline-delimited exact repository paths or directory/** prefixes requiring Framing-Verdict
+    default: ''
   pr_files:
     description: normalized PR-files API artifact used for current line-link validation
     default: ''

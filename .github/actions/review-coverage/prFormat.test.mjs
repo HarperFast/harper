@@ -1,5 +1,6 @@
 import assert from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -469,7 +470,7 @@ test('the enforcing workflow never runs from the PR checkout', () => {
 	assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.base\.ref \}\}/);
 	assert.doesNotMatch(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\./);
 	assert.match(workflow, /permissions:\n\s+contents: read\n\s+pull-requests: read/);
-	assert.doesNotMatch(workflow, /\b(write|write-all)\b/);
+	assert.doesNotMatch(workflow, /^\s+[\w-]+:\s*(?:write|write-all)\s*$/m);
 	assert.match(workflow, /mode: enforce/);
 });
 
@@ -478,9 +479,55 @@ test('the report workflow keeps the existing check identity and gates PR-files c
 	assert.match(workflow, /jobs:\n\s+coverage:\n\s+runs-on:/);
 	assert.doesNotMatch(workflow, /\n\s+name:\s+report/);
 	assert.match(workflow, /author_association == 'MEMBER'/);
+	assert.doesNotMatch(workflow, /pull_request\.additions > 2/);
 	assert.match(workflow, /continue-on-error: true/);
 	assert.match(workflow, /persist-credentials: false/);
 	assert.match(workflow, /format_mode: report/);
+	assert.match(workflow, /framing_mode: enforce/);
+	for (const framingPath of [
+		'resources/Table.ts',
+		'resources/RecordEncoder.ts',
+		'resources/tracked.ts',
+		'resources/PrimaryRocksDatabase.ts',
+		'replication/**',
+		'resources/branchDatabase.ts',
+		'resources/indexes/HierarchicalNavigableSmallWorld.ts',
+		'utility/lmdb/writeUtility.ts',
+	])
+		assert.match(workflow, new RegExp(`^\\s+${framingPath.replaceAll('*', '\\*')}\\s*$`, 'm'));
 	assert.strictEqual(workflow.match(/live_head=\$\(gh api/g)?.length, 2, 'head is checked before and after collection');
 	assert.match(workflow, /pr_files_superseded:/);
+});
+
+test('Harper framing policy covers every production storage-binding importer', () => {
+	const root = fileURLToPath(new URL('../../../', import.meta.url));
+	const sourceRoots = [
+		'bin',
+		'components',
+		'config',
+		'dataLayer',
+		'resources',
+		'security',
+		'server',
+		'sqlTranslator',
+		'upgrade',
+		'utility',
+		'validation',
+	];
+	const files = [];
+	const visit = (directory) => {
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const entryPath = path.join(directory, entry.name);
+			if (entry.isDirectory()) visit(entryPath);
+			else if (/\.(?:js|ts)$/.test(entry.name) && !/\.test\.[jt]s$/.test(entry.name)) files.push(entryPath);
+		}
+	};
+	for (const sourceRoot of sourceRoots) visit(path.join(root, sourceRoot));
+	const bindingImport = /(?:from\s+)?['"](?:lmdb|@harperfast\/rocksdb-js)(?:\/[^'"]*)?['"]/;
+	const importers = files
+		.filter((file) => bindingImport.test(readFileSync(file, 'utf8')))
+		.map((file) => path.relative(root, file).replaceAll(path.sep, '/'));
+	const workflow = readFileSync(path.join(root, '.github/workflows/review-coverage.yml'), 'utf8');
+	for (const importer of importers)
+		assert.match(workflow, new RegExp(`^\\s+${importer.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\s*$`, 'm'));
 });
