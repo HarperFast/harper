@@ -493,11 +493,10 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	/**
 	 * Shared fallback for the ENOENT read path and `#handleUnlink`: when config env vars
 	 * define this scope, apply the env-only overlay (first source application → `ready`;
-	 * already configured → `merge`, never reset). Returns true when the event was handled —
-	 * including the malformed-env case, which routes to `error` like the file-read path
-	 * rather than an unhandled rejection. Returns false (root config untouched) when this
-	 * is not a root config or the env config does not provide the scope, so callers keep
-	 * their own reset semantics.
+	 * already configured → `merge`, never reset). Returns false — root config untouched, so
+	 * callers keep their own reset semantics — when this is not a root config, when the env
+	 * config does not provide the scope, and when composing it threw, which is held for
+	 * `#reportEnvComposeFailure` rather than emitted here.
 	 */
 	#applyEnvOnlyConfig(): boolean {
 		if (!this.#isRootConfig) return false;
@@ -706,9 +705,8 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.#handleError(error);
 	}
 
-	// Test-only: deliver the deletion at a point the test chooses. A real unlink cannot be ordered
-	// against a read already in flight — chokidar's own event delivery needs the libuv threadpool,
-	// so the techniques that hold a read open hold the unlink behind it too.
+	// Test-only: a real unlink cannot be ordered against a read already in flight — chokidar's
+	// event delivery needs the libuv threadpool, so holding a read open holds the unlink behind it.
 	_simulateUnlinkForTests(path: string): void {
 		this.#handleUnlink(path);
 	}
