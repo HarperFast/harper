@@ -155,6 +155,13 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Security: No known issues.
 - Eventual removal: This is a very well maintained package and is the industry standard for serving static files. We could remove with very careful usage of `fs` and `http`, but would probably require a lot of testing and edge case handling.
 
+## compression, compression-1.7 (alias of compression@1.7.4), on-finished, on-headers (devDependencies)
+
+- Need for usage: `unitTests/server/serverHelpers/nodeAdapterMiddleware.test.js` drives `Request.withNodeAdapter()` with the real Node middleware that first broke it (harper#2527): `compression` (1.8, and 1.7.4 under the `compression-1.7` alias because that is the version Next.js vendors and it gates on `_header`/`_implicitHeader()` rather than `headersSent`/`writeHead()`), `send` (already a dependency), and the `on-finished` / `on-headers` hooks they use. A synthetic handler cannot reproduce the ordering and backpressure contract these packages rely on.
+- Size: about 170 kB installed including `compressible`, `negotiator`, `vary` and `bytes`; test-only, never loaded in production.
+- Security: jshttp / expressjs maintained; no known issues.
+- Eventual removal: drop when Harper ships its own Node-middleware conformance fixture, or when the `@harperfast/nextjs` integration suite covers the adapter end to end.
+
 ## easy-ocsp
 
 - Need for usage: Provides OCSP (Online Certificate Status Protocol) verification for TLS certificates to check if certificates have been revoked.

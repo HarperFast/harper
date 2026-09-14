@@ -1,10 +1,11 @@
 import type { IncomingMessage as NodeIncomingMessage, ServerResponse as NodeServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { TLSSocket } from 'node:tls';
-import { EventEmitter } from 'node:events';
-import { Readable, PassThrough } from 'node:stream';
+import { Readable } from 'node:stream';
 import { Headers as ResponseHeaders } from './Headers.ts';
+import { NodeAdapterResponse, type AdaptedResponse } from './NodeAdapterResponse.ts';
 import type { ConnectionInfo } from './proxyProtocol.ts';
+import harperLogger from '../../utility/logging/harper_logger.ts';
 
 export const isBun = typeof globalThis.Bun !== 'undefined';
 
@@ -178,10 +179,8 @@ export class Request {
 	 * status, headers, and body, resolving the returned promise as soon as headers are available with a
 	 * streaming body that can be piped back through the Harper middleware chain.
 	 *
-	 * **Important:** The resolved `body` PassThrough must have an `error` listener attached (or be piped
-	 * to a destination that handles errors) before it is consumed. If the underlying connection is reset
-	 * after headers are sent, the body stream is destroyed with an error — without a listener, Node.js
-	 * will throw an uncaught exception.
+	 * Consume the returned body with `pipeline()`, `finished()` or async iteration so stored stream errors
+	 * and premature closes are reported.
 	 *
 	 * Example:
 	 *   server.http((request, next) =>
@@ -190,11 +189,13 @@ export class Request {
 	 */
 	withNodeAdapter(
 		handler: (request: NodeIncomingMessage, response: NodeServerResponse) => void | Promise<void>
-	): Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }> {
-		// Flat headers object matching IncomingMessage.headers format (lowercase keys)
-		const reqHeaders: Record<string, string | string[]> = Object.create(null);
+	): Promise<AdaptedResponse> {
+		const reqHeaders: Record<string, string | string[]> = {};
 		for (const [key, value] of this.headers) {
-			reqHeaders[key.toLowerCase()] = value;
+			const lowerKey = key.toLowerCase();
+			if (lowerKey === '__proto__')
+				Object.defineProperty(reqHeaders, lowerKey, { value, configurable: true, enumerable: true, writable: true });
+			else reqHeaders[lowerKey] = value;
 		}
 
 		// Proxy the underlying IncomingMessage so body streaming works, but expose
@@ -209,131 +210,32 @@ export class Request {
 			},
 		}) as NodeIncomingMessage;
 
-		let resolveResponse!: (value: { status: number; headers: ResponseHeaders; body: PassThrough }) => void;
-		let rejectResponse!: (reason: unknown) => void;
-		const response = new Promise<{ status: number; headers: ResponseHeaders; body: PassThrough }>((resolve, reject) => {
-			resolveResponse = resolve;
-			rejectResponse = reject;
+		let nodeRes!: NodeAdapterResponse;
+		const response = new Promise<AdaptedResponse>((resolve, reject) => {
+			nodeRes = new NodeAdapterResponse(nodeReq, this._nodeResponse, resolve, reject);
 		});
 
-		const responseBody = new PassThrough();
-		const capturedHeaders = new ResponseHeaders();
-		let headersFlushed = false;
-		let nodeRes: ReturnType<typeof Object.assign> & NodeServerResponse;
+		const signal = this.signal;
+		const onAbort = () => nodeRes.destroy(nodeRes.headersSent ? undefined : signal.reason);
+		if (signal.aborted) onAbort();
+		else {
+			signal.addEventListener('abort', onAbort, { once: true });
+			nodeRes.once('close', () => signal.removeEventListener('abort', onAbort));
+		}
 
-		const flushHeaders = () => {
-			if (!headersFlushed) {
-				headersFlushed = true;
-				nodeRes.headersSent = true;
-				resolveResponse({ status: nodeRes.statusCode as number, headers: capturedHeaders, body: responseBody });
-			}
+		const onHandlerFailure = (error: Error) => {
+			if (!nodeRes.writableEnded) nodeRes.destroy(error);
+			else harperLogger.warn('withNodeAdapter handler failed after ending its response', error);
 		};
-
-		const applyHeaders = (hdrs: object | unknown[]) => {
-			if (Array.isArray(hdrs)) {
-				if (hdrs.length > 0 && Array.isArray(hdrs[0])) {
-					for (const [name, value] of hdrs as [string, string][]) capturedHeaders.set(name, value);
-				} else {
-					for (let i = 0; i < hdrs.length; i += 2) capturedHeaders.set(hdrs[i] as string, hdrs[i + 1] as string);
-				}
-			} else {
-				for (const [k, v] of Object.entries(hdrs)) capturedHeaders.set(k, v as string);
-			}
-		};
-
-		nodeRes = Object.assign(new EventEmitter(), {
-			statusCode: 200 as number,
-			statusMessage: '',
-			headersSent: false,
-			writable: true,
-			writableEnded: false,
-			writableFinished: false,
-			socket: this._nodeRequest.socket,
-
-			setHeader(name: string, value: string | number | string[]) {
-				if (Array.isArray(value)) {
-					// Use set() for first value (overwrites any existing entry) then append() for
-					// the rest so multiple values — critical for Set-Cookie — are preserved as an
-					// array rather than collapsed into a single comma-joined string.
-					if (value.length > 0) {
-						capturedHeaders.set(name, String(value[0]));
-						for (let i = 1; i < value.length; i++) capturedHeaders.append(name, String(value[i]));
-					}
-				} else {
-					capturedHeaders.set(name, String(value));
-				}
-				return nodeRes;
-			},
-			getHeader(name: string) {
-				return capturedHeaders.get(name);
-			},
-			getHeaders() {
-				return Object.fromEntries(capturedHeaders);
-			},
-			hasHeader(name: string) {
-				return capturedHeaders.has(name);
-			},
-			removeHeader(name: string) {
-				capturedHeaders.delete(name);
-			},
-			flushHeaders() {
-				flushHeaders();
-			},
-			writeHead(statusCode: number, statusMessageOrHeaders?: string | object, maybeHeaders?: object) {
-				if (headersFlushed) return nodeRes;
-				nodeRes.statusCode = statusCode;
-				const hdrs = typeof statusMessageOrHeaders === 'string' ? maybeHeaders : statusMessageOrHeaders;
-				if (hdrs) applyHeaders(hdrs as object | unknown[]);
-				flushHeaders();
-				return nodeRes;
-			},
-			write(
-				chunk: unknown,
-				encoding?: BufferEncoding | ((error?: Error | null) => void),
-				callback?: (error?: Error | null) => void
-			) {
-				flushHeaders();
-				if (typeof encoding === 'function') return responseBody.write(chunk as any, encoding);
-				return responseBody.write(chunk as any, encoding, callback);
-			},
-			end(chunk?: unknown, encoding?: BufferEncoding | (() => void), callback?: () => void) {
-				flushHeaders();
-				nodeRes.writableEnded = true;
-				if (typeof chunk === 'function') responseBody.end(chunk as () => void);
-				else if (typeof encoding === 'function') responseBody.end(chunk as any, encoding);
-				else responseBody.end(chunk as any, encoding, callback);
-				return nodeRes;
-			},
-			destroy(error?: Error) {
-				if (!headersFlushed) {
-					if (error) rejectResponse(error);
-					else rejectResponse(new Error('Response destroyed before headers were sent'));
-					// The error has been forwarded to the response promise; suppress the
-					// PassThrough 'error' event for this one destroy call so Node doesn't
-					// throw due to having no other listeners.
-					responseBody.once('error', () => {});
-				}
-				responseBody.destroy(error);
-				return nodeRes;
-			},
-		}) as unknown as NodeServerResponse;
-
-		responseBody.on('finish', () => {
-			nodeRes.writableFinished = true;
-			(nodeRes as unknown as EventEmitter).emit('finish');
-		});
-		responseBody.on('drain', () => {
-			(nodeRes as unknown as EventEmitter).emit('drain');
-		});
-		responseBody.on('close', () => {
-			(nodeRes as unknown as EventEmitter).emit('close');
-		});
-
-		const handlerResult = handler(nodeReq, nodeRes);
-		if (handlerResult != null && typeof (handlerResult as unknown as Promise<void>).then === 'function') {
-			(handlerResult as unknown as Promise<void>).catch((err: unknown) => {
-				if (!headersFlushed) rejectResponse(err);
-			});
+		let handlerResult: void | Promise<void>;
+		try {
+			handlerResult = handler(nodeReq, nodeRes);
+		} catch (error) {
+			onHandlerFailure(error as Error);
+			return response;
+		}
+		if (typeof (handlerResult as Promise<void>)?.then === 'function') {
+			Promise.resolve(handlerResult).catch(onHandlerFailure);
 		}
 		return response;
 	}

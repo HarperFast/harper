@@ -31,6 +31,10 @@ export class Headers extends Map<string, [string, string | string[]]> {
 		if (typeof name !== 'string') name = '' + name;
 		return super.has(name.toLowerCase());
 	}
+	delete(name) {
+		if (typeof name !== 'string') name = '' + name;
+		return super.delete(name.toLowerCase());
+	}
 	setIfNone(name, value) {
 		if (typeof name !== 'string') name = '' + name;
 		if (typeof value !== 'string') value = '' + value;
@@ -239,7 +243,7 @@ function nodeResponseHeaders(nodeResponse: any) {
 	};
 }
 
-function applyWriteHeadHeaders(nodeResponse: any, headers: any): void {
+export function applyWriteHeadHeaders(nodeResponse: any, headers: any): void {
 	const suppliedHeaders = new Map<string, { name: string; value: any }>();
 	const addHeader = (name: string, value: any) => {
 		const key = String(name).toLowerCase();
