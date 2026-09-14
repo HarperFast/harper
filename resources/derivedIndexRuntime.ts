@@ -4,12 +4,19 @@ import type { RocksTransactionLogStore, TransactionLogIterable } from './RocksTr
 import { writeKeyId } from './DatabaseTransaction.ts';
 import { registerDerivedIndexTables } from './derivedIndexRegistry.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
+import {
+	DERIVED_INDEX_ACCEPTED,
+	DERIVED_INDEX_DEFERRED,
+	DERIVED_INDEX_FAILED,
+} from './derivedIndexBackendConstants.ts';
+
+export {
+	DERIVED_INDEX_ACCEPTED,
+	DERIVED_INDEX_DEFERRED,
+	DERIVED_INDEX_FAILED,
+} from './derivedIndexBackendConstants.ts';
 
 const logger = loggerWithTag('derived-index');
-
-export const DERIVED_INDEX_ACCEPTED = 1;
-export const DERIVED_INDEX_DEFERRED = 0;
-export const DERIVED_INDEX_FAILED = -1;
 
 export type DerivedIndexDeliveryResult =
 	typeof DERIVED_INDEX_ACCEPTED | typeof DERIVED_INDEX_DEFERRED | typeof DERIVED_INDEX_FAILED;

@@ -72,10 +72,12 @@ function makeBackend(lifecycleValue, options = {}) {
 	const backend = new FullTextDerivedIndexBackend({
 		id: options.id ?? 'products-title',
 		lifecycle: lifecycleValue,
-		encodeMutationBatch: (batch) => {
-			options.onEncode?.(batch);
-			return Buffer.from(JSON.stringify(batch));
-		},
+		encodeMutationBatch:
+			options.encodeMutationBatch ??
+			((batch) => {
+				options.onEncode?.(batch);
+				return Buffer.from(JSON.stringify(batch));
+			}),
 		maxQueuedBatches: options.maxQueuedBatches,
 		maxQueuedBytes: options.maxQueuedBytes,
 		openAttempts: options.openAttempts ?? 1,
@@ -209,6 +211,66 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(encoded, 0);
 		assert.strictEqual(engine.applied.length, 0);
 		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
+		await backend.shutdown(1n);
+	});
+
+	it('splits an oversized packed batch before applying it', async () => {
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const { backend } = makeBackend(lifecycle([engine]), {
+			encodeMutationBatch: (mutationBatch) => {
+				const count = mutationBatch.upserts.length + mutationBatch.deletes.length;
+				if (count > 2)
+					throw Object.assign(new Error('packed value exceeds 1024 bytes'), { code: 'E_INVALID_ARGUMENT' });
+				return Buffer.from(JSON.stringify(mutationBatch));
+			},
+		});
+		await backend.acquire(1n);
+		backend.deliver(
+			batch(
+				1n,
+				['a', 'b', 'c', 'd'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
+				cursor(20)
+			)
+		);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.deepStrictEqual(
+			engine.applied.flatMap((mutationBatch) => mutationBatch.upserts.map(({ fields }) => fields.title)),
+			['a', 'b', 'c', 'd']
+		);
+		await backend.shutdown(1n);
+	});
+
+	it('replays after a transient encoder failure without condemning the generation', async () => {
+		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const reopened = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		let attempts = 0;
+		const { backend } = makeBackend(lifecycle([first, reopened]), {
+			encodeMutationBatch: (mutationBatch) => {
+				if (attempts++ === 0) throw new RangeError('allocation failed');
+				return Buffer.from(JSON.stringify(mutationBatch));
+			},
+		});
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		await backend.acquire(1n);
+		backend.deliver(batch(1n, [mutation('a', { kind: 'absent' })], cursor(20)));
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		assert.strictEqual(changes.includes('failed'), false);
+		assert.deepStrictEqual(first.closes, [{ mode: 'rollback' }]);
+		await backend.shutdown(1n);
+	});
+
+	it('fails closed when the native engine violates its applied-count contract', async () => {
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		engine.apply = async () => 0;
+		const { backend } = makeBackend(lifecycle([engine]));
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		await backend.acquire(1n);
+		backend.deliver(batch(1n, [mutation('a', { kind: 'absent' })], cursor(20)));
+		await waitFor(() => changes.includes('failed'));
+		assert.strictEqual(backend.deliver(batch(1n, [], cursor(20))), DERIVED_INDEX_FAILED);
 		await backend.shutdown(1n);
 	});
 

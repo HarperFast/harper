@@ -1,18 +1,17 @@
+import type {
+	DerivedIndexBackend,
+	DerivedIndexBackendHost,
+	DerivedIndexBackendStateChange,
+	DerivedIndexBatch,
+	DerivedIndexCursor,
+	DerivedIndexDeliveryResult,
+	DerivedIndexFlushReason,
+} from './derivedIndexRuntime.ts';
 import {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
 	DERIVED_INDEX_FAILED,
-	type DerivedIndexBackend,
-	type DerivedIndexBackendHost,
-	type DerivedIndexBackendStateChange,
-	type DerivedIndexBatch,
-	type DerivedIndexCursor,
-	type DerivedIndexDeliveryResult,
-	type DerivedIndexFlushReason,
-} from './derivedIndexRuntime.ts';
-import { loggerWithTag } from '../utility/logging/logger.ts';
-
-const logger = loggerWithTag('fulltext-derived-index');
+} from './derivedIndexBackendConstants.ts';
 
 const DEFAULT_MAX_QUEUED_BATCHES = 16;
 const DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
@@ -196,7 +195,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			engine = await this.#open(ownerEpoch);
 		} catch (error) {
 			if (invalidGenerationError(error)) {
-				logger.warn?.(`Full-text derived index '${this.id}' has an invalid generation; rebuilding`, error);
+				logWarning(`Full-text derived index '${this.id}' has an invalid generation; rebuilding`, error);
 				return;
 			}
 			throw error;
@@ -225,7 +224,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				throw failure;
 			}
 			if (error === payloadError) {
-				logger.warn?.(`Full-text derived index '${this.id}' has an invalid committed cursor; rebuilding`, error);
+				logWarning(`Full-text derived index '${this.id}' has an invalid committed cursor; rebuilding`, error);
 				return;
 			}
 			throw error;
@@ -396,23 +395,38 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#lastAppliedSequence = command.sequence;
 			return;
 		}
+		if (!(await this.#applyRecords(command, command.batch.records))) return;
+		this.#assertCommandEpoch(command.epoch);
+		this.#lastAppliedSequence = command.sequence;
+	}
+
+	async #applyRecords(command: ApplyCommand, records: DerivedIndexBatch['records']): Promise<boolean> {
 		let packed: Uint8Array;
 		try {
-			packed = this.#encodeMutationBatch(toFullTextMutationBatch(command.batch));
+			packed = this.#encodeMutationBatch(toFullTextMutationRecords(records));
 			if (!(packed instanceof Uint8Array)) throw new TypeError('Full-text batch encoder must return a Uint8Array');
 		} catch (error) {
-			throw new FullTextDerivedIndexError('Failed to encode a full-text mutation batch', error);
+			if (packedBatchTooLarge(error) && records.length > 1) {
+				const middle = Math.ceil(records.length / 2);
+				if (!(await this.#applyRecords(command, records.slice(0, middle)))) return false;
+				return this.#applyRecords(command, records.slice(middle));
+			}
+			const failure = new FullTextDerivedIndexError('Failed to encode a full-text mutation batch', error);
+			if (persistentEncodingError(error)) throw failure;
+			await this.#recoverAcceptedWork(command.epoch, failure);
+			return false;
 		}
-		const expected = command.batch.records.length;
+		const expected = records.length;
+		let applied: number;
 		try {
-			const applied = await this.#engine!.apply(packed);
-			if (applied !== expected)
-				throw new FullTextDerivedIndexError(`Full-text engine applied ${applied} of ${expected} mutations`);
-			this.#assertCommandEpoch(command.epoch);
-			this.#lastAppliedSequence = command.sequence;
+			applied = await this.#engine!.apply(packed);
 		} catch (error) {
 			await this.#recoverAcceptedWork(command.epoch, error);
+			return false;
 		}
+		if (applied !== expected)
+			throw new FullTextDerivedIndexError(`Full-text engine applied ${applied} of ${expected} mutations`);
+		return true;
 	}
 
 	async #publish(command: BarrierCommand): Promise<void> {
@@ -535,7 +549,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (this.#failed) return false;
 		this.#failed = true;
 		this.#discardCommands();
-		logger.error('Full-text derived index backend failed', error);
+		logError('Full-text derived index backend failed', error);
 		return true;
 	}
 
@@ -579,7 +593,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			try {
 				wake(change);
 			} catch (error) {
-				logger.error('Full-text derived index state notification failed', error);
+				logError('Full-text derived index state notification failed', error);
 			} finally {
 				if (change === 'accepted-work-lost' && this.#lossPendingEpoch === activeEpoch)
 					this.#lossPendingEpoch = undefined;
@@ -589,9 +603,13 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 }
 
 export function toFullTextMutationBatch(batch: DerivedIndexBatch): FullTextMutationBatch {
+	return toFullTextMutationRecords(batch.records);
+}
+
+function toFullTextMutationRecords(records: DerivedIndexBatch['records']): FullTextMutationBatch {
 	const upserts: FullTextMutationBatch['upserts'] = [];
 	const deletes: string[] = [];
-	for (const record of batch.records) {
+	for (const record of records) {
 		const id = `${record.tableId}.${Buffer.from(record.recordKey, 'latin1').toString('base64url')}`;
 		if (record.state.kind === 'record') {
 			upserts.push({ id, fields: fullTextFields(record.state.projection) });
@@ -600,6 +618,50 @@ export function toFullTextMutationBatch(batch: DerivedIndexBatch): FullTextMutat
 		}
 	}
 	return { upserts, deletes };
+}
+
+function persistentEncodingError(error: unknown): boolean {
+	return error instanceof TypeError || errorCodeInChain(error) === 'E_INVALID_ARGUMENT';
+}
+
+function packedBatchTooLarge(error: unknown): boolean {
+	return errorCodeInChain(error) === 'E_INVALID_ARGUMENT' && messageInChain(error).includes('packed value exceeds');
+}
+
+function errorCodeInChain(error: unknown): string | undefined {
+	for (
+		let current = error;
+		current && typeof current === 'object';
+		current = 'cause' in current ? current.cause : undefined
+	) {
+		if ('code' in current && typeof current.code === 'string') return current.code;
+	}
+}
+
+function messageInChain(error: unknown): string {
+	const messages: string[] = [];
+	for (
+		let current = error;
+		current && typeof current === 'object';
+		current = 'cause' in current ? current.cause : undefined
+	) {
+		if ('message' in current && typeof current.message === 'string') messages.push(current.message);
+	}
+	return messages.join(': ');
+}
+
+function logWarning(message: string, error: unknown): void {
+	log('warn', message, error);
+}
+
+function logError(message: string, error: unknown): void {
+	log('error', message, error);
+}
+
+function log(level: 'warn' | 'error', message: string, error: unknown): void {
+	void import('../utility/logging/logger.ts')
+		.then(({ loggerWithTag }) => loggerWithTag('fulltext-derived-index')[level]?.(message, error))
+		.catch(() => undefined);
 }
 
 export function encodeFullTextCursorPayload(
