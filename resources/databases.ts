@@ -2050,9 +2050,13 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string, attempt =
  */
 function beginDropOfDatabase(dbPath: string, databaseName: string, blobRoots: string[]): RestoreLock {
 	try {
-		// the roots this call resolved, recorded in the marker: a recovery after a crash must delete what
-		// this drop targeted, not what `storage.blobPaths` resolves to whenever that recovery runs
-		return beginDrop(dbPath, { database: dbPath, blobRoots });
+		// The roots this call resolved, recorded in the marker: a recovery after a crash must delete what
+		// this drop targeted, not what `storage.blobPaths` resolves to whenever that recovery runs.
+		// Resolved here rather than at recovery: `storage.blobPaths` may be relative, and the thread that
+		// recovers need not share this one's working directory — workers chdir to the root path
+		// (`server/threads/threadServer.js`) while the main thread keeps the launch directory, so a
+		// relative root recorded verbatim would name a different directory on the thread that acts on it.
+		return beginDrop(resolve(dbPath), { database: resolve(dbPath), blobRoots: blobRoots.map((root) => resolve(root)) });
 	} catch (error: any) {
 		if (error.lifecycleConflict === 'restore')
 			throw conflict(`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`);

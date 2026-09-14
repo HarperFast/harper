@@ -186,6 +186,11 @@ module.exports = {
 	notifyThreadExit,
 	registerProcessGroup,
 	unregisterProcessGroup,
+	// the owner-keyed pair behind the two above: the cross-thread UNREGISTER_PROCESS_GROUP message
+	// names the owner it came from, and a group id is a reusable PID, so which owner asks decides
+	// whether the state is theirs to clear
+	addProcessGroup,
+	removeProcessGroup,
 	isProcessGroupAlive,
 	isThreadRunning,
 	restartNumber: workerData?.restartNumber || 1,
@@ -1655,11 +1660,16 @@ function addProcessGroup(ownerThreadId, processGroupId, spawnedAt, spawnStartedA
 }
 
 function removeProcessGroup(ownerThreadId, processGroupId) {
+	// Ownership first, and only then the per-PID state. A group id is a PID, which the OS reuses the
+	// moment the process exits, so an UNREGISTER_PROCESS_GROUP that arrives after this thread already
+	// released the PID can name one another thread has since registered for a new child. Clearing the
+	// creation stamp of THAT group would leave its termination with no identity to check, falling back
+	// to `rootKnownAt = Date.now()`, which `findWindowsTreeRoot` accepts for whatever process holds the
+	// PID now — the harper#2273 unrelated-process kill this module exists to prevent.
+	const processGroups = processGroupsByThread.get(ownerThreadId);
+	if (!processGroups?.delete(processGroupId)) return;
 	clearProcessGroupLivenessState(processGroupId);
 	processGroupSpawnedAt.delete(processGroupId);
-	const processGroups = processGroupsByThread.get(ownerThreadId);
-	if (!processGroups) return;
-	processGroups.delete(processGroupId);
 	if (processGroups.size === 0) processGroupsByThread.delete(ownerThreadId);
 }
 

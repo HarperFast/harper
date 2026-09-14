@@ -15,7 +15,7 @@ import {
 	writeSync,
 } from 'node:fs';
 import { opendir, rmdir, unlink } from 'node:fs/promises';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
 import logger from '../utility/logging/harper_logger.ts';
@@ -515,8 +515,12 @@ export function recoverInterruptedDrop(
  */
 function assertRecordedBlobRoots(blobRoots: string[], dbName: string): string[] {
 	for (const blobRoot of blobRoots) {
-		const resolved = resolve(blobRoot);
-		if (basename(resolved) !== dbName || dirname(resolved) === resolved) {
+		// Absolute, because the thread that recovers need not share the working directory of the one
+		// that recorded: workers chdir to the root path while the main thread keeps the launch
+		// directory, so a relative root would name a different place on each. The drop resolves them
+		// before recording; a marker carrying one unresolved is from a build that did not, and
+		// resolving it here against THIS thread's directory is the guess the manifest exists to avoid.
+		if (!isAbsolute(blobRoot) || basename(blobRoot) !== dbName || dirname(blobRoot) === blobRoot) {
 			throw new Error(`Refusing to recover the drop of '${dbName}': its marker records a blob root at ${blobRoot}`);
 		}
 	}

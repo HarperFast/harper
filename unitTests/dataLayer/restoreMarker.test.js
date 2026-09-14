@@ -470,6 +470,19 @@ describe('restoreMarker', function () {
 			assert.ok(existsSync(dbPath));
 		});
 
+		it('refuses a recorded blob root that is not absolute', function () {
+			// storage.blobPaths may be relative, and the recovering thread need not share the working
+			// directory of the one that recorded — workers chdir to the root path while the main thread
+			// keeps the launch directory. Resolving it here would be the guess the manifest exists to avoid.
+			leaveInterruptedDrop();
+			writeFileSync(
+				restoringMarkerPath(dbPath),
+				`somedb\ndrop started now\ntargets 1 ${JSON.stringify({ database: dbPath, blobRoots: ['blobs/somedb'] })}\n`
+			);
+			assert.throws(() => recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [] }), /records a blob root/);
+			assert.ok(existsSync(dbPath));
+		});
+
 		it('refuses a manifest whose database path no longer resolves here', function () {
 			leaveInterruptedDrop();
 			const elsewhere = join(tempDir, 'moved', 'somedb');

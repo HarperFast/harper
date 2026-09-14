@@ -28,6 +28,8 @@ const {
 	isProcessGroupAlive,
 	registerProcessGroup,
 	unregisterProcessGroup,
+	addProcessGroup,
+	removeProcessGroup,
 } = require('#src/server/threads/manageThreads');
 
 // Write `script` to a temp .js file and return its path; auto-removed in `after`.
@@ -427,6 +429,46 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		childState = 'Z';
 		assert.strictEqual(isProcessGroupAlive(567, options), false);
 		assert.strictEqual(scanCount, 6);
+	});
+
+	it('ignores an unregister from a thread that does not own the group id', () => {
+		// A group id is a PID, and the OS reuses it the moment the process exits. Thread A's
+		// UNREGISTER_PROCESS_GROUP can arrive after A already released the PID and thread B registered
+		// a new child that recycled it; clearing B's state there leaves B's termination with no
+		// identity to check, falling back to a `rootKnownAt` of now, which findWindowsTreeRoot accepts
+		// for whatever process holds the PID — the harper#2273 unrelated-process kill.
+		let now = 0;
+		let scanCount = 0;
+		let childState = 'S';
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => {
+				scanCount++;
+				return ['4243'];
+			},
+			readStat: (path) => {
+				if (path === '/proc/4243/stat') return `4243 (installer child) ${childState} 1 4242 4242`;
+				throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+			},
+			now: () => now,
+		};
+
+		addProcessGroup(11, 4242, 500, 400); // thread B's fresh child on the recycled PID
+		assert.strictEqual(isProcessGroupAlive(4242, options), true);
+		const scansBefore = scanCount;
+
+		removeProcessGroup(7, 4242); // thread A's late unregister, for the PID it used to own
+
+		childState = 'Z';
+		now = 1;
+		// B's group is still registered, so A's message must not reset the throttle that keeps this
+		// answer cached — a reset would rescan and report B's live group as gone
+		assert.strictEqual(isProcessGroupAlive(4242, options), true, "a foreign unregister must not clear B's state");
+		assert.strictEqual(scanCount, scansBefore, 'and must not force a rescan of it');
+
+		removeProcessGroup(11, 4242); // B's own unregister does clear it
+		assert.strictEqual(isProcessGroupAlive(4242, options), false);
 	});
 
 	it('terminates a detached process tree when its owning worker is force-terminated', async () => {
