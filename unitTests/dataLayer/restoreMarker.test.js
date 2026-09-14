@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = require('node:fs');
+const { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = require('node:fs');
 const { basename, dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { tryFileLock, fileLockRelease } = require('@harperfast/rocksdb-js');
@@ -17,6 +17,7 @@ const {
 	restoreLockPath,
 	restoringMarkerPath,
 	restoreMetaDir,
+	restoreMetaKey,
 	scanBlockedRestores,
 	scanLifecycleMarkers,
 	beginDrop,
@@ -248,6 +249,25 @@ describe('restoreMarker', function () {
 
 		it('returns [] when there is no .restore directory', function () {
 			assert.deepStrictEqual(scanBlockedRestores(join(tempDir, 'no-such-root')), []);
+		});
+
+		it('reports an unreadable marker key while still returning other databases', function () {
+			if (process.platform === 'win32' || process.getuid?.() === 0) return this.skip();
+			const otherPath = join(tempDir, 'otherdb');
+			abandonRestore(beginRestore(dbPath));
+			abandonRestore(beginRestore(otherPath));
+			const unreadablePath = restoringMarkerPath(dbPath);
+			chmodSync(unreadablePath, 0o000);
+			try {
+				const unreadable = [];
+				const markers = scanLifecycleMarkers(tempDir, (markerKey, error) =>
+					unreadable.push({ markerKey, code: error.code })
+				);
+				assert.deepEqual(unreadable, [{ markerKey: restoreMetaKey(dbPath), code: 'EACCES' }]);
+				assert.deepEqual(markers, [{ dbName: 'otherdb', state: 'incomplete', kind: 'restore' }]);
+			} finally {
+				chmodSync(unreadablePath, 0o600);
+			}
 		});
 	});
 

@@ -69,6 +69,7 @@ import {
 	completeDrop,
 	lifecycleMarkerKind,
 	recoverInterruptedDrop,
+	restoreMetaKey,
 	scanLifecycleMarkers,
 	RESTORE_META_DIR,
 	type RestoreLock,
@@ -593,7 +594,8 @@ export function getDatabases(): Databases {
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
-			if (blockedByLifecycle.has(dbName)) continue;
+			if (blockedByLifecycle.databaseNames.has(dbName) || blockedByLifecycle.markerKeys.has(restoreMetaKey(dbPath)))
+				continue;
 			if (isOpenBranchPath(dbPath)) continue;
 
 			if (
@@ -657,13 +659,18 @@ export function getDatabases(): Databases {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
-					if (blockedByLifecycle.has(basename(databaseEntry.name, '.mdb'))) continue;
-					if (isOpenBranchPath(join(databasePath, databaseEntry.name))) continue;
+					const discoveredName = basename(databaseEntry.name, '.mdb');
+					const dbPath = join(databasePath, databaseEntry.name);
+					if (
+						blockedByLifecycle.databaseNames.has(discoveredName) ||
+						blockedByLifecycle.markerKeys.has(restoreMetaKey(dbPath))
+					)
+						continue;
+					if (isOpenBranchPath(dbPath)) continue;
 					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
-						readMetaDb(join(databasePath, databaseEntry.name), basename(databaseEntry.name, '.mdb'), dbName);
+						readMetaDb(dbPath, discoveredName, dbName);
 					} else {
 						try {
-							const dbPath = join(databasePath, databaseEntry.name);
 							const files = readdirSync(dbPath, { withFileTypes: true });
 							if (
 								files.find((file) => file.name === 'CURRENT')?.isFile() &&
@@ -905,6 +912,7 @@ function reportRelationshipError(key: string, message: string): void {
 // Interrupted drops whose recovery failed on this thread; each is reported once per process rather
 // than on every rescan (a rescan runs on every thread for every schema event).
 const reportedDropRecoveryFailures = new Set<string>();
+const reportedUnreadableLifecycleMarkers = new Set<string>();
 
 /**
  * Scan a databases directory's lifecycle lock/marker files and return the names of databases that
@@ -915,10 +923,21 @@ const reportedDropRecoveryFailures = new Set<string>();
  * never take a booting worker down with it. The files live *next to* the database directory, so
  * this also covers a database whose directory is missing or empty.
  */
-function databasesBlockedByLifecycle(databasePath: string): Set<string> {
-	const blocked = new Set<string>();
-	for (const { dbName, state, kind } of scanLifecycleMarkers(databasePath)) {
-		blocked.add(dbName);
+function databasesBlockedByLifecycle(databasePath: string): {
+	databaseNames: Set<string>;
+	markerKeys: Set<string>;
+} {
+	const databaseNames = new Set<string>();
+	const markerKeys = new Set<string>();
+	const markers = scanLifecycleMarkers(databasePath, (markerKey, error) => {
+		markerKeys.add(markerKey);
+		if (!reportedUnreadableLifecycleMarkers.has(markerKey)) {
+			reportedUnreadableLifecycleMarkers.add(markerKey);
+			logger.error(`Could not read lifecycle marker ${markerKey}; its database will not be loaded`, error);
+		}
+	});
+	for (const { dbName, state, kind } of markers) {
+		databaseNames.add(dbName);
 		if (state === 'in-progress') {
 			logger.warn(`A ${kind} of database '${dbName}' is in progress; not loading it`);
 		} else if (kind === 'restore') {
@@ -960,7 +979,7 @@ function databasesBlockedByLifecycle(databasePath: string): Set<string> {
 			}
 		}
 	}
-	return blocked;
+	return { databaseNames, markerKeys };
 }
 
 /**

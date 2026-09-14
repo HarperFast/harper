@@ -1623,7 +1623,10 @@ function processGroupIsAlive(processGroupId) {
 }
 
 async function waitForProcessGroupExit(processGroupId, registration) {
-	while (processGroupSpawnedAt.get(processGroupId) === registration && processGroupIsAlive(processGroupId)) {
+	while (true) {
+		const currentRegistration = processGroupSpawnedAt.get(processGroupId);
+		if (currentRegistration !== undefined && currentRegistration !== registration) return;
+		if (!processGroupIsAlive(processGroupId)) return;
 		await delay(PROCESS_GROUP_TERMINATION_POLL_MS);
 	}
 }

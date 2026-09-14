@@ -81,7 +81,7 @@ export function restoreMetaDir(dbPath: string): string {
  * the database-name namespace. Database directory names are unique within a databases root, so
  * their hashes are too.
  */
-function restoreMetaKey(dbPath: string): string {
+export function restoreMetaKey(dbPath: string): string {
 	return createHash('sha256').update(basename(dbPath)).digest('hex').slice(0, 32);
 }
 
@@ -660,7 +660,10 @@ export interface LifecycleMarkerEntry {
  * would delete, so it is only trusted when the file was written for that database. Markers whose
  * state is `clear` were removed concurrently and their databases are loadable.
  */
-export function scanLifecycleMarkers(databasesRoot: string): LifecycleMarkerEntry[] {
+export function scanLifecycleMarkers(
+	databasesRoot: string,
+	onUnreadable?: (markerKey: string, error: unknown) => void
+): LifecycleMarkerEntry[] {
 	const metaDir = join(databasesRoot, RESTORE_META_DIR);
 	if (!existsSync(metaDir)) return [];
 	const blocked: LifecycleMarkerEntry[] = [];
@@ -671,7 +674,9 @@ export function scanLifecycleMarkers(databasesRoot: string): LifecycleMarkerEntr
 			content = readFileSync(join(metaDir, entry.name), 'utf8');
 		} catch (error: any) {
 			if (error.code === 'ENOENT') continue;
-			throw error;
+			if (!onUnreadable) throw error;
+			onUnreadable(entry.name.slice(0, -RESTORING_MARKER_SUFFIX.length), error);
+			continue;
 		}
 		const dbName = content.split('\n', 1)[0];
 		if (!dbName) continue;
