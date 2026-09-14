@@ -242,6 +242,36 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('rolls back an applied shard when a later shard is permanently unencodable', async () => {
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const { backend } = makeBackend(lifecycle([engine]), {
+			encodeMutationBatch: (mutationBatch) => {
+				if (mutationBatch.upserts.length > 1)
+					throw Object.assign(new Error('packed value exceeds 1024 bytes'), { code: 'E_BATCH_TOO_LARGE' });
+				if (mutationBatch.upserts[0]?.fields.title === 'bad')
+					throw Object.assign(new Error('invalid field value'), { code: 'E_INVALID_ARGUMENT' });
+				return Buffer.from(JSON.stringify(mutationBatch));
+			},
+		});
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		await backend.acquire(1n);
+		backend.deliver(
+			batch(
+				1n,
+				['good', 'bad'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
+				cursor(20)
+			)
+		);
+		await waitFor(() => changes.includes('failed'));
+		assert.deepStrictEqual(
+			engine.applied.flatMap(({ upserts }) => upserts.map(({ fields }) => fields.title)),
+			['good']
+		);
+		await backend.shutdown(1n);
+		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
+	});
+
 	it('removes a single unencodable record without poisoning the index', async () => {
 		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		const { backend, unindexable } = makeBackend(lifecycle([engine]), {

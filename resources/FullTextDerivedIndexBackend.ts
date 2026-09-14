@@ -119,6 +119,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#lastAcceptedSequence = 0;
 	#lastAppliedSequence = 0;
 	#lastPublishedSequence = 0;
+	#hasStagedMutations = false;
 	#lastBarrierHorizon = 0;
 	#lastMutationSequence = 0;
 	#lastAcceptedCursor?: DerivedIndexCursor;
@@ -433,6 +434,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		let applied: number;
 		try {
 			applied = await this.#engine!.apply(packed);
+			this.#hasStagedMutations = true;
 		} catch (error) {
 			await this.#recoverAcceptedWork(command.epoch, error);
 			return false;
@@ -453,6 +455,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			await this.#engine!.publish(payload);
 			this.#assertCommandEpoch(command.epoch);
 			this.#lastPublishedSequence = command.horizon;
+			this.#hasStagedMutations = false;
 			if (cursor) this.#durableCursor = cloneCursor(cursor);
 			if (!this.#shutdown) this.#notify('changed');
 		} catch (error) {
@@ -501,7 +504,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#activeEpoch = undefined;
 		try {
 			if (engine) {
-				const mode = this.#lastAppliedSequence > this.#lastPublishedSequence ? 'rollback' : 'require-clean';
+				const mode =
+					this.#hasStagedMutations || this.#lastAppliedSequence > this.#lastPublishedSequence
+						? 'rollback'
+						: 'require-clean';
 				await engine.close({ mode });
 			}
 			this.#engine = undefined;
@@ -541,6 +547,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#lastAcceptedSequence = 0;
 		this.#lastAppliedSequence = 0;
 		this.#lastPublishedSequence = 0;
+		this.#hasStagedMutations = false;
 		this.#lastBarrierHorizon = 0;
 		this.#lastMutationSequence = 0;
 		this.#lastAcceptedCursor = undefined;
