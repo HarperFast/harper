@@ -425,8 +425,8 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 
 		childState = 'S';
 		assert.strictEqual(isProcessGroupAlive(567, options), true);
-		registerProcessGroup(567);
-		unregisterProcessGroup(567);
+		const registrationGeneration = registerProcessGroup(567);
+		unregisterProcessGroup(567, registrationGeneration);
 		childState = 'Z';
 		assert.strictEqual(isProcessGroupAlive(567, options), false);
 		assert.strictEqual(scanCount, 6);

@@ -4060,12 +4060,14 @@ function spawnWithEnv(
 			rootKnownAt,
 			rootStartedWithinMs: rootKnownAt - spawnStartedAt,
 		};
-		if (trackedProcessId) registerProcessGroup(trackedProcessId, rootKnownAt, spawnStartedAt);
+		const processGroupRegistration = trackedProcessId
+			? registerProcessGroup(trackedProcessId, rootKnownAt, spawnStartedAt)
+			: undefined;
 		let processGroupIsTracked = Boolean(trackedProcessId);
 		const untrackProcessGroup = () => {
 			if (!processGroupIsTracked || !trackedProcessId) return;
 			processGroupIsTracked = false;
-			unregisterProcessGroup(trackedProcessId);
+			unregisterProcessGroup(trackedProcessId, processGroupRegistration);
 		};
 
 		let didTimeout = false;

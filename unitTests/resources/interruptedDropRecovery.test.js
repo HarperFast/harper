@@ -96,8 +96,9 @@ describe('interrupted drop recovery', function () {
 		this.timeout(30000);
 		const DB = 'interrupteddropmanifest';
 		const configuredBefore = environment.get(CONFIG_PARAMS.STORAGE_BLOBPATHS);
-		const firstVolume = join(dirname(setupTestDBPath()), 'drop-manifest-volume-a');
-		const secondVolume = join(dirname(setupTestDBPath()), 'drop-manifest-volume-b');
+		const testRoot = setupTestDBPath();
+		const firstVolume = join(dirname(testRoot), 'drop-manifest-volume-a');
+		const secondVolume = join(dirname(testRoot), 'drop-manifest-volume-b');
 		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume]);
 		const T = table({
 			table: 'rows',

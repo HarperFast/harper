@@ -741,7 +741,7 @@ rename the live tree into staging before best-effort cleanup, avoiding an in-pla
 race with the running worker. Recovery is durable across a process crash. It relies on rename/create
 ordering rather than `fsync`, so a host power loss can lose the marker.
 
-A package-manager timeout must not release this lock while npm descendants are still mutating `node_modules`. POSIX spawns therefore run in a dedicated process group; timeout sends the group `SIGTERM`, escalates to `SIGKILL`, and waits for exit before rejecting. Windows uses `taskkill /T /F` for the equivalent process-tree termination. `manageThreads` tracks each spawned process tree by its owning Harper thread and force-terminates it if that worker exits, preventing detached installers from surviving a worker restart or Harper shutdown. `SIGKILL`/`taskkill` only queue termination, so a worker's dead-owner reclamation (above) waits for that thread's tracked process groups to be confirmed gone, not merely signaled—otherwise a replacement preparation could start while the old writer might still be alive. A process group a dead worker's own event loop spawned is never reaped from another thread, so it persists as a zombie rather than fully disappearing; since a zombie can no longer touch the filesystem, confirmation treats a zombie the same as a fully reaped exit.
+A package-manager timeout must not release this lock while npm descendants are still mutating `node_modules`. POSIX spawns therefore run in a dedicated process group; timeout sends the group `SIGTERM`, escalates to `SIGKILL`, and waits for exit before rejecting. Windows uses `taskkill /T /F` for the equivalent process-tree termination. `manageThreads` tracks each spawned process tree by its owning Harper thread and a per-registration generation, so a delayed unregister cannot erase a newer child after the OS recycles its PID; it force-terminates the exact registered generation if that worker exits, preventing detached installers from surviving a worker restart or Harper shutdown. `SIGKILL`/`taskkill` only queue termination, so a worker's dead-owner reclamation (above) waits for that thread's tracked process groups to be confirmed gone, not merely signaled—otherwise a replacement preparation could start while the old writer might still be alive. A process group a dead worker's own event loop spawned is never reaped from another thread, so it persists as a zombie rather than fully disappearing; since a zombie can no longer touch the filesystem, confirmation treats a zombie the same as a fully reaped exit.
 
 Boot's `harper-application-lock.json` records an application configuration only after preparation fulfills. Recording at queue time would make a failed install look complete and suppress its retry on the next boot.
 
@@ -1236,7 +1236,11 @@ worker threads, purging its directory (`backups.restore` with `purgeAllFiles`), 
 per-database lock and writes the marker typed `drop` (second line), every thread releases its
 handles on the ITC `close_database` message (`ITC_SCHEMA_OPERATIONS`, never an API operation),
 `waitForDatabaseClosedProcessWide` checks rocksdb-js's registry, and only then are the directory and
-its blob roots destroyed — through the same strict removal as boot-time recovery (`removeDroppedDatabaseFiles`:
+its blob roots destroyed. A drop marker's third line records a versioned manifest of those absolute
+paths; an online resume and boot-time recovery both preserve and use it instead of re-deriving roots
+from configuration, so a `storage.blobPaths` change after a crash cannot retarget deletion. Markers
+from older builds carry no manifest and fall back to current configuration. Removal uses the same
+strict rules online and at boot (`removeDroppedDatabaseFiles`:
 nothing deleted through a symlink, parent directories fsynced, the first failed removal keeps the
 marker) — and the marker cleared. A handle that remains — a running job (job workers
 never receive broadcasts), or a component holding its own `RocksDatabase` — fails the drop with 409

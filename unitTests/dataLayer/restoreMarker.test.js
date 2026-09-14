@@ -473,6 +473,7 @@ describe('restoreMarker', function () {
 				writeFileSync(restoringMarkerPath(dbPath), `somedb\ndrop started now\n${manifest}\n`);
 				assert.throws(() => recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [blobRoot] }), /Refusing/);
 				assert.ok(existsSync(dbPath), 'nothing is deleted on a manifest this build cannot read');
+				rmSync(restoringMarkerPath(dbPath), { force: true });
 			}
 		});
 

@@ -186,9 +186,8 @@ module.exports = {
 	notifyThreadExit,
 	registerProcessGroup,
 	unregisterProcessGroup,
-	// the owner-keyed pair behind the two above: the cross-thread UNREGISTER_PROCESS_GROUP message
-	// names the owner it came from, and a group id is a reusable PID, so which owner asks decides
-	// whether the state is theirs to clear
+	// the owner- and generation-keyed pair behind the two above: a group id is a reusable PID, so
+	// which exact registration asks decides whether the state is theirs to clear
 	addProcessGroup,
 	removeProcessGroup,
 	terminateProcessGroupsForThread,
@@ -1493,6 +1492,7 @@ const processGroupLivenessStates = new Map();
 // When each group's root was registered — by then it was already running, which is what lets the
 // Windows scan tell our root from a later process that recycled its PID.
 const processGroupSpawnedAt = new Map();
+let processGroupRegistrationGeneration = 0;
 
 function processGroupExists(processGroupId) {
 	try {
@@ -1649,33 +1649,33 @@ function waitForWindowsGroupExit(processGroupId, spawn, killedAt) {
 	);
 }
 
-function addProcessGroup(ownerThreadId, processGroupId, spawnedAt, spawnStartedAt) {
+function addProcessGroup(ownerThreadId, processGroupId, spawnedAt, spawnStartedAt, registrationGeneration) {
 	if (!Number.isInteger(processGroupId) || processGroupId <= 0) return;
 	let processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) processGroupsByThread.set(ownerThreadId, (processGroups = new Set()));
 	processGroups.add(processGroupId);
-	// Stamped with its owner: the map is keyed by PID, which the OS reuses the instant a process
-	// exits, so the entry for a PID can already belong to another thread's newer child by the time
-	// this one's unregister arrives. Only the thread the entry names may clear it.
+	// The map is keyed by PID, which the OS reuses the instant a process exits. Owner distinguishes
+	// threads; generation distinguishes two children of the same thread that receive the same PID.
 	processGroupSpawnedAt.set(processGroupId, {
 		ownerThreadId,
+		registrationGeneration,
 		spawnedAt: Number.isFinite(spawnedAt) ? spawnedAt : Date.now(),
 		spawnStartedAt: Number.isFinite(spawnStartedAt) && spawnStartedAt <= spawnedAt ? spawnStartedAt : undefined,
 	});
 }
 
-function removeProcessGroup(ownerThreadId, processGroupId) {
-	// This thread's own membership goes unconditionally; the PID-keyed state does NOT. A group id is
-	// a PID the OS reuses the instant its process exits, so an UNREGISTER_PROCESS_GROUP delayed behind
-	// the recycle names a PID another thread has since registered for a new child — and this thread
-	// still holds that PID in its own set, so membership alone does not distinguish the two. The
-	// stamp names its owner, and only that owner may clear it: wiping a live group's creation time
-	// leaves its termination with no identity to check, back to a `rootKnownAt` of now, which
-	// `findWindowsTreeRoot` accepts for whatever process holds the PID — the harper#2273
-	// unrelated-process kill this module exists to prevent.
-	const processGroups = processGroupsByThread.get(ownerThreadId);
-	if (processGroups?.delete(processGroupId) && processGroups.size === 0) processGroupsByThread.delete(ownerThreadId);
-	if (processGroupSpawnedAt.get(processGroupId)?.ownerThreadId !== ownerThreadId) return;
+function removeProcessGroup(ownerThreadId, processGroupId, registrationGeneration) {
+	const currentRegistration = processGroupSpawnedAt.get(processGroupId);
+	const sameOwnerNewerGeneration =
+		currentRegistration?.ownerThreadId === ownerThreadId &&
+		currentRegistration.registrationGeneration !== registrationGeneration;
+	if (!sameOwnerNewerGeneration) {
+		const processGroups = processGroupsByThread.get(ownerThreadId);
+		if (processGroups?.delete(processGroupId) && processGroups.size === 0) {
+			processGroupsByThread.delete(ownerThreadId);
+		}
+	}
+	if (currentRegistration?.ownerThreadId !== ownerThreadId || sameOwnerNewerGeneration) return;
 	clearProcessGroupLivenessState(processGroupId);
 	processGroupSpawnedAt.delete(processGroupId);
 }
@@ -1739,13 +1739,23 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 // `spawnedAt` / `spawnStartedAt`: the caller's clock as its spawn() of the group's root returned and
 // as it was called — the root was created between the two.
 function registerProcessGroup(processGroupId, spawnedAt = Date.now(), spawnStartedAt) {
-	if (isMainThread) addProcessGroup(threadId, processGroupId, spawnedAt, spawnStartedAt);
-	else parentPort?.postMessage({ type: REGISTER_PROCESS_GROUP, processGroupId, spawnedAt, spawnStartedAt });
+	const registrationGeneration = ++processGroupRegistrationGeneration;
+	if (isMainThread) addProcessGroup(threadId, processGroupId, spawnedAt, spawnStartedAt, registrationGeneration);
+	else {
+		parentPort?.postMessage({
+			type: REGISTER_PROCESS_GROUP,
+			processGroupId,
+			spawnedAt,
+			spawnStartedAt,
+			registrationGeneration,
+		});
+	}
+	return registrationGeneration;
 }
 
-function unregisterProcessGroup(processGroupId) {
-	if (isMainThread) removeProcessGroup(threadId, processGroupId);
-	else parentPort?.postMessage({ type: UNREGISTER_PROCESS_GROUP, processGroupId });
+function unregisterProcessGroup(processGroupId, registrationGeneration) {
+	if (isMainThread) removeProcessGroup(threadId, processGroupId, registrationGeneration);
+	else parentPort?.postMessage({ type: UNREGISTER_PROCESS_GROUP, processGroupId, registrationGeneration });
 }
 
 class ProcessGroupTerminationUnconfirmedError extends Error {
@@ -1852,9 +1862,15 @@ function addPort(port, keepRef, isJobWorker) {
 	port
 		.on('message', (message) => {
 			if (message.type === REGISTER_PROCESS_GROUP) {
-				addProcessGroup(portThreadId, message.processGroupId, message.spawnedAt, message.spawnStartedAt);
+				addProcessGroup(
+					portThreadId,
+					message.processGroupId,
+					message.spawnedAt,
+					message.spawnStartedAt,
+					message.registrationGeneration
+				);
 			} else if (message.type === UNREGISTER_PROCESS_GROUP) {
-				removeProcessGroup(portThreadId, message.processGroupId);
+				removeProcessGroup(portThreadId, message.processGroupId, message.registrationGeneration);
 			} else if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
 				addPort(message.port, false, message.isJobWorker);

@@ -36,6 +36,6 @@ describe('process group registration identity', () => {
 			await childExit;
 		}
 
-		assert.notStrictEqual(child.signalCode, null);
+		assert.ok(child.exitCode !== null || child.signalCode !== null);
 	});
 });

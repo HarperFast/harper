@@ -1008,15 +1008,15 @@ describe('index backfill convergence (#2536)', () => {
 			});
 			assert.ok(Tbl.indexingOperation, 'adding an indexed attribute should trigger a backfill');
 			const checkpoints = [];
-			const originalPut = Tbl.dbisDB.put;
-			Tbl.dbisDB.put = function (key, value, options) {
+			const originalPutSync = Tbl.dbisDB.putSync;
+			Tbl.dbisDB.putSync = function (key, value, options) {
 				if (value?.name === 'tag' && value.lastIndexedKey !== undefined) checkpoints.push(value.lastIndexedKey);
-				return originalPut.call(this, key, value, options);
+				return originalPutSync.call(this, key, value, options);
 			};
 			try {
 				await Tbl.indexingOperation;
 			} finally {
-				Tbl.dbisDB.put = originalPut;
+				Tbl.dbisDB.putSync = originalPutSync;
 			}
 			assert.ok(checkpoints.length > 0, 'a 25k-row backfill should checkpoint');
 			const stringKeys = (key) => typeof key === 'string';

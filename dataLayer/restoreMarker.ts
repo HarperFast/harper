@@ -170,14 +170,14 @@ function markerKindFromContent(content: string): LifecycleKind {
  * then failed (which carries no name at all and would otherwise read as an untyped restore), is
  * not evidence about this database and must not be allowed to stand in for one.
  */
-function markerForDatabase(dbPath: string): LifecycleKind | null {
+function markerContentForDatabase(dbPath: string): string | null {
 	const content = readMarker(dbPath);
 	if (content === null || content.split('\n', 1)[0] !== basename(dbPath)) return null;
-	return markerKindFromContent(content);
+	return content;
 }
 
 /**
- * The same, without `markerForDatabase`'s name check: for a caller that has already established
+ * The same, without `markerContentForDatabase`'s name check: for a caller that has already established
  * which database the marker belongs to and only needs to know whether it is a drop or a restore.
  */
 export function lifecycleMarkerKind(dbPath: string): LifecycleKind | null {
@@ -212,12 +212,14 @@ export type RestoreLock = {
 	/** The database directory this lock guards. */
 	dbPath: string;
 	/**
-	 * True when a `.restoring` marker already existed at `beginRestore` time — i.e. this restore is a
-	 * recovery attempt over a possibly half-purged directory. A pre-existing marker must never be
+	 * True when a `.restoring` marker already existed at lifecycle-begin time — i.e. this operation is
+	 * resuming over a possibly half-mutated directory. A pre-existing marker must never be
 	 * cleared by a *failed* recovery attempt, or the directory could be reloaded as healthy while
-	 * still partial. Only set on `beginRestore`; always false for a bare `acquireRestoreLock`.
+	 * still partial. Always false for a bare `acquireRestoreLock`.
 	 */
 	preexisting: boolean;
+	/** The durable deletion intent a drop acquired, including one preserved from an earlier attempt. */
+	dropTargets?: DropTargets;
 };
 
 /**
@@ -320,6 +322,7 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind, targets?: DropTarge
 	const lock = acquireRestoreLock(dbPath);
 	let preexisting = false;
 	let published = false;
+	let effectiveTargets = targets;
 	// Everything from here to the marker write runs inside the try: whatever fails, the lock this
 	// acquired must be released, or the file lock is held for the life of the process and every
 	// later drop or restore of the database 409s.
@@ -331,7 +334,8 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind, targets?: DropTarge
 		// the empty file a truncating open whose write then failed leaves behind — is superseded here,
 		// so treating it as pre-existing would make a later refusal preserve THIS call's own marker for
 		// a rescan to act on, and the rescan would delete an intact database.
-		const existing = markerForDatabase(dbPath);
+		const existingContent = markerContentForDatabase(dbPath);
+		const existing = existingContent === null ? null : markerKindFromContent(existingContent);
 		preexisting = existing !== null;
 		if (kind === 'drop' && existing === 'restore') {
 			const error: any = new Error(
@@ -341,40 +345,56 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind, targets?: DropTarge
 			error.lifecycleConflict = 'restore';
 			throw error;
 		}
+		let preserveExistingMarker = false;
+		if (kind === 'drop' && existing === 'drop') {
+			const recorded = dropTargetsFromContent(existingContent, basename(dbPath));
+			if (recorded) {
+				if (resolve(recorded.database) !== resolve(dbPath)) {
+					throw new Error(
+						`Refusing to resume the drop of '${basename(dbPath)}': its marker records the database at ${recorded.database}, which no longer resolves to ${resolve(dbPath)}`
+					);
+				}
+				assertRecordedBlobRoots(recorded.blobRoots, basename(dbPath));
+				effectiveTargets = recorded;
+				preserveExistingMarker = true;
+			}
+		}
 		// Write beside the marker and rename over it, rather than truncating it and writing in place:
 		// this call can be superseding a crashed drop's marker, and a write that fails between the
 		// truncation and the content (ENOSPC) would leave a marker with no database name — which the
 		// startup scan skips, so a partially deleted database would load as healthy. The rename is
 		// atomic within the directory, so the marker is either the old one or the new one.
-		const stagedPath = markerPath + STAGED_MARKER_SUFFIX;
-		try {
-			const fd = openSync(stagedPath, 'w');
+		if (!preserveExistingMarker) {
+			const stagedPath = markerPath + STAGED_MARKER_SUFFIX;
 			try {
-				// writeSync can report a short write without throwing, and renaming a truncated marker over
-				// the live one is the very thing staging it is here to prevent
-				const content = Buffer.from(markerContent(dbPath, kind, targets));
-				for (let written = 0; written < content.length;) {
-					const wrote = writeSync(fd, content, written);
-					// a write that reports no progress and does not throw would otherwise spin here holding
-					// the lifecycle lock, which no drop or restore of this database could then take
-					if (wrote <= 0) throw new Error(`Could not write the lifecycle marker for ${dbPath}`);
-					written += wrote;
+				const fd = openSync(stagedPath, 'w');
+				try {
+					// writeSync can report a short write without throwing, and renaming a truncated marker over
+					// the live one is the very thing staging it is here to prevent
+					const content = Buffer.from(markerContent(dbPath, kind, effectiveTargets));
+					for (let written = 0; written < content.length;) {
+						const wrote = writeSync(fd, content, written);
+						// a write that reports no progress and does not throw would otherwise spin here holding
+						// the lifecycle lock, which no drop or restore of this database could then take
+						if (wrote <= 0) throw new Error(`Could not write the lifecycle marker for ${dbPath}`);
+						written += wrote;
+					}
+					fsyncSync(fd);
+				} finally {
+					closeSync(fd);
 				}
-				fsyncSync(fd);
-			} finally {
-				closeSync(fd);
+			} catch (error) {
+				try {
+					unlinkSync(stagedPath);
+				} catch {}
+				throw error;
 			}
-		} catch (error) {
-			try {
-				unlinkSync(stagedPath);
-			} catch {}
-			throw error;
+			renameSync(stagedPath, markerPath);
+			published = true;
+			// fsync the metadata directory so the marker's directory entry is durable — without this a
+			// power loss can lose the entry, and a half-purged database would load as healthy
+			fsyncDir(restoreMetaDir(dbPath));
 		}
-		renameSync(stagedPath, markerPath);
-		published = true;
-		// fsync the metadata directory so the marker's directory entry is durable — without this a
-		// power loss can lose the entry, and a half-purged database would load as healthy
-		fsyncDir(restoreMetaDir(dbPath));
 	} catch (error) {
 		// A marker this call published cannot outlive the failure that follows it: the next scan reads
 		// a drop marker as an interrupted drop and finishes the deletion, so a database nothing has
@@ -393,7 +413,7 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind, targets?: DropTarge
 		fileLockRelease(lock.token);
 		throw error;
 	}
-	return { ...lock, preexisting };
+	return { ...lock, preexisting, dropTargets: kind === 'drop' ? effectiveTargets : undefined };
 }
 
 /**
