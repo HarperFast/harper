@@ -575,6 +575,18 @@ export class LockCoordinator {
 	 * delegate-side generation check in `#liveDelegation` is what stops the old delegate.
 	 */
 	#grantableAfterMono: number;
+	/**
+	 * When this coordinator was last observed to own coordination, and `undefined` while it does not.
+	 *
+	 * The quarantine has to run from here and not only from construction: a coordinator is built when a
+	 * transport registers, but `ownsCoordination()` can flip to true long afterwards — a thread that
+	 * took over from an owner that died. By then the construction horizon has aged out, and this
+	 * coordinator would grant immediately over delegations the previous OWNER issued. Regaining
+	 * ownership re-arms it for the same reason: something else was coordinating in between.
+	 */
+	#ownedSinceMono: number | undefined;
+	/** Set when the caller supplied an explicit horizon, which waives both halves of the quarantine. */
+	#quarantineWaived: boolean;
 	/** Keys this node holds a delegation for. */
 	#delegations = new Map<unknown, Delegation>();
 	/**
@@ -619,6 +631,15 @@ export class LockCoordinator {
 		// replacement coordinating thread would read an uptime far past it) and so is thread start (a
 		// thread can take coordination ownership long after it booted). `adopt` and the retirement
 		// record below waive or carry the horizon wherever a predecessor's authority is actually known.
+		this.#quarantineWaived = options.grantableAfterMono !== undefined;
+		// Ownership observed here, not lazily on the first grant: a coordinator built while this thread
+		// already coordinates has owned it since construction, and the construction horizon covers that.
+		// Leaving it unset until a grant would date ownership from the grant and re-quarantine a reload.
+		try {
+			if (options.transport.ownsCoordination()) this.#ownedSinceMono = this.#monotonic();
+		} catch {
+			// A transport that cannot answer yet is not owning yet; `#ownershipHorizon` will observe it.
+		}
 		this.#grantableAfterMono = options.grantableAfterMono ?? this.#monotonic() + DELEGATION_LEASE_MS + this.#skewMs;
 		options.adopt?.handOffTo(this);
 		// After the handoff, which sets both for the adopted case: a predecessor that closed without one
@@ -660,6 +681,9 @@ export class LockCoordinator {
 		// lease on every transport reload, and clearing it would let a swap inside the window grant over
 		// an unseen predecessor incarnation.
 		successor.#grantableAfterMono = this.#grantableAfterMono;
+		// And the ownership clock: a transport reload does not change which thread coordinates, so the
+		// successor inherits how long this one has owned it rather than starting a fresh interval.
+		successor.#ownedSinceMono = this.#ownedSinceMono;
 		this.#delegations.clear();
 		this.#grants.clear();
 		this.#grantsByRequester.clear();
@@ -1034,6 +1058,19 @@ export class LockCoordinator {
 		tickingCoordinators.delete(this);
 	}
 
+	/**
+	 * The horizon owning coordination imposes, tracked here rather than at construction — see
+	 * `#ownedSinceMono`. Not owning resets it, so regaining ownership starts a fresh interval.
+	 */
+	#ownershipHorizon(now: number): number {
+		if (!this.transport.ownsCoordination()) {
+			this.#ownedSinceMono = undefined;
+			return Infinity;
+		}
+		if (this.#ownedSinceMono === undefined) this.#ownedSinceMono = now;
+		return this.#ownedSinceMono + DELEGATION_LEASE_MS + this.#skewMs;
+	}
+
 	/** Fail closed on a generation older than one already ACTED on here (see `highestGeneration`). */
 	#generationIsCurrent(generation: number): boolean {
 		const highest = highestGeneration.get(this.database);
@@ -1281,7 +1318,10 @@ export class LockCoordinator {
 
 	#grant(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number, requester: string): DelegationReply {
 		const now = this.#monotonic();
-		const quarantine = this.#grantableAfterMono - now;
+		const quarantine =
+			(this.#quarantineWaived
+				? this.#grantableAfterMono
+				: Math.max(this.#grantableAfterMono, this.#ownershipHorizon(now))) - now;
 		// NOT `contended`: the quarantine runs for a full delegation lease, and `MAX_LOCK_TIMEOUT_MS` is
 		// shorter than that, so retrying it would spend the caller's whole budget and then answer 423 —
 		// "held by someone else" — for a key nobody holds.

@@ -2912,8 +2912,13 @@ export function makeTable(options) {
 				// handle while a peer that already had the transport is granted the same key.
 				try {
 					if (resolved.scope !== 'node') coordinator = TableResource.lockCoordinator ?? coordinator;
-				} catch {
-					// The getter fails closed on an unusable node identity; keep what we resolved before.
+				} catch (error) {
+					// The getter fails closed on an unusable node identity, and that has to reach the caller
+					// the same way it does before the wait. Swallowing it let an implicit cluster lock fall
+					// through to node-local authority — the one outcome failing closed exists to prevent —
+					// because `coordinator` is still whatever it was, including undefined.
+					handle.release();
+					throw error as Error;
 				}
 				if (coordinator) {
 					try {

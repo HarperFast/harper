@@ -882,6 +882,53 @@ describe('record lock delegations', () => {
 			alpha.release(localKey, local.admissionId);
 		});
 
+		it('re-arms the quarantine when a thread becomes the coordination owner later', async () => {
+			// A coordinator is built when a transport registers, but `ownsCoordination()` can flip long
+			// afterwards — a thread taking over from an owner that died. The construction horizon has aged
+			// out by then, so anchoring only there let the new owner grant immediately over delegations the
+			// previous OWNER issued. Found by the round-24 graded pass, on the anchor two earlier rounds
+			// had already moved.
+			let owns = false;
+			let mono = 1_000;
+			const coordinator = new LockCoordinator({
+				database: `owner${Date.now()}`,
+				table: 'OwnerSwap',
+				nodeId: 'alpha',
+				transport: {
+					homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+					ownsCoordination: () => owns,
+					requestDelegation: () => Promise.reject(new Error('single node')),
+					recallDelegation: () => Promise.resolve(),
+				},
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				autoTick: false,
+			});
+			// Long past the construction horizon, and only now does this thread take coordination over.
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			owns = true;
+			const denied = await coordinator.onDelegationRequest({
+				key: 'owned',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a new owner granted over its predecessor’s delegations');
+			assert.strictEqual(denied.reason, 'quarantine');
+
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			const granted = await coordinator.onDelegationRequest({
+				key: 'owned',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true, 'the ownership quarantine never ended');
+			coordinator.close();
+		});
+
 		it('does not renew a delegate that already confirmed a recall', async () => {
 			// The hole the confirmed-recall guard opened, found on the next round. The delegate can confirm
 			// and re-ask before its release reaches the home — the production writer is an async log commit
