@@ -1167,6 +1167,14 @@ function initStores(
 			continue;
 		}
 		const failedAttempts = getInterruptedDropAttempts(path, tableName, generation);
+		// a holder of the lock (a create, or a drop whose broadcast this thread already acked) completes
+		// the drop itself; a contended attempt is not a failed one
+		const locked = !(rootStore instanceof RocksDatabase) || tryUpdateAttributesLock(rootStore);
+		if (!locked) {
+			definedTables?.delete(tableName);
+			tablesToLoad.delete(tableName);
+			continue;
+		}
 		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 			try {
 				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
@@ -1197,6 +1205,7 @@ function initStores(
 				}
 			}
 		}
+		if (rootStore instanceof RocksDatabase) releaseUpdateAttributesLock(rootStore);
 		// whether or not cleanup succeeded, never load a table that was being dropped
 		tablesToLoad.delete(tableName);
 	}
