@@ -9,10 +9,9 @@
  * evidence that a stall was survived — it is a guard against a future streaming-decode or
  * synchronous-body-read change that would make one possible.
  *
- * The two HTTP servers differ on whether a stalled body survives the measurement window: the uWS
- * server reaps it after roughly ten seconds, the Node one holds it open. Only the pre-burst check
- * demands the socket still be in flight; after the burst a reap is accepted and logged, because it
- * is the safer of the two behaviours and not the property under test.
+ * Under HARPER_UWS_HTTP=1 the stall covers only about ten of each window's fifteen seconds (see
+ * assertStalledUploadsInert), so the last third of a uWS burst runs with nothing stalled and its
+ * availability numbers are not fully under-stall. The Node runs measure the whole window.
  *
  * https://github.com/HarperFast/harper/issues/1862
  */
@@ -43,6 +42,11 @@ const DURING_SINGLE_MS = 15_000;
 const DURING_QUAD_MS = 15_000;
 const BLOB_PAYLOAD_LEN = 8 * 1024 * 1024;
 const SENT_LEN = 2 * 1024 * 1024;
+// Same switch the uWS CI job sets and integrationTests/server/stream-error-contract.test.ts:43 reads.
+const UWS_HTTP = process.env.HARPER_UWS_HTTP === '1';
+// uWS reaps a stalled body at 8-11s in practice; anything much earlier is a regression, not the
+// documented behaviour, so an accepted reap still has to clear this floor.
+const MIN_ACCEPTED_REAP_MS = 5_000;
 
 const findings: string[] = [];
 function log(msg: string) {
@@ -371,10 +375,12 @@ suite(
 		/**
 		 * The oracles that must hold whenever a partial body is outstanding: the key stays an exact
 		 * 404, no blob file appears, and no partial upload is ever answered with a 2xx. `requirePending`
-		 * additionally demands every socket still be in flight — true for the pre-burst check, because a
-		 * measurement window that starts with nothing stalled is measuring nothing. It is false after the
-		 * burst: whether the server reaps a stalled body mid-window is server-implementation detail (the
-		 * uWS HTTP server does, the Node one does not), and reaping is the safer behaviour of the two.
+		 * additionally demands every socket still be in flight. It is always true for the pre-burst
+		 * check, because a measurement window that starts with nothing stalled is measuring nothing;
+		 * after the burst it stays true on the Node server, which holds a stalled body until
+		 * `http.timeout` (120s), and is relaxed only under uWS, which reaps one at 8-11s. Relaxing it
+		 * on both servers would let a future Node-side body-inactivity timeout reap a stall after two
+		 * seconds with the suite still green, so an accepted reap must also clear MIN_ACCEPTED_REAP_MS.
 		 */
 		async function assertStalledUploadsInert(
 			uploads: StalledUpload[],
@@ -408,8 +414,17 @@ suite(
 			if (requirePending)
 				ok(
 					pendingCount === uploads.length,
-					`${label}: an incomplete upload responded, closed, or errored before the measurement window opened`
+					`${label}: an incomplete upload responded, closed, or errored during measurement — ${reaped}`
 				);
+			else {
+				const early = uploads.filter(
+					(upload) => upload.endedAt !== null && upload.endedAt - upload.startedAt < MIN_ACCEPTED_REAP_MS
+				);
+				ok(
+					early.length === 0,
+					`${label}: a stalled upload was reaped sooner than ${MIN_ACCEPTED_REAP_MS}ms — ${reapSummary(early)}`
+				);
+			}
 		}
 
 		before(async () => {
@@ -497,7 +512,7 @@ suite(
 			const duringStats = await runControlBurst(DURING_SINGLE_MS, 'during-single');
 			log(`during single stall (${DURING_SINGLE_MS}ms): ${statsSummary(duringStats)}`);
 			assertControlAvailability(duringStats, 'single stall');
-			await assertStalledUploadsInert([upload], blobBaseline, 'single stall after control burst', false);
+			await assertStalledUploadsInert([upload], blobBaseline, 'single stall after control burst', !UWS_HTTP);
 			duringSingleStats = duringStats;
 			blobBaselineForSingle = blobBaseline;
 
@@ -539,7 +554,7 @@ suite(
 			const duringQuadStats = await runControlBurst(DURING_QUAD_MS, 'during-quad');
 			log(`during 4x stall (${DURING_QUAD_MS}ms): ${statsSummary(duringQuadStats)}`);
 			assertControlAvailability(duringQuadStats, 'four concurrent stalls');
-			await assertStalledUploadsInert(uploads, blobBaseline, 'concurrent stalls after control burst', false);
+			await assertStalledUploadsInert(uploads, blobBaseline, 'concurrent stalls after control burst', !UWS_HTTP);
 
 			for (const upload of uploads) upload.socket.destroy();
 
