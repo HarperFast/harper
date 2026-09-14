@@ -261,8 +261,13 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
 		// The marker is read under the lock, never before taking it: a restore that begins and abandons
 		// in the gap between an unlocked read and this acquisition leaves a marker the write below would
 		// truncate into a drop marker, erasing the recovery state that marker exists to preserve.
-		preexisting = existsSync(markerPath);
-		if (kind === 'drop' && markerForDatabase(dbPath) === 'restore') {
+		// Only a marker that names this database counts as one to resume: debris — a foreign name, or
+		// the empty file a truncating open whose write then failed leaves behind — is superseded here,
+		// so treating it as pre-existing would make a later refusal preserve THIS call's own marker for
+		// a rescan to act on, and the rescan would delete an intact database.
+		const existing = markerForDatabase(dbPath);
+		preexisting = existing !== null;
+		if (kind === 'drop' && existing === 'restore') {
 			const error: any = new Error(
 				`Database at ${dbPath} has an incomplete restore; rerun restore_backup to recover it`
 			);

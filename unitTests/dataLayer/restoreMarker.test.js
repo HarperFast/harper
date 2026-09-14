@@ -304,6 +304,7 @@ describe('restoreMarker', function () {
 			writeFileSync(restoringMarkerPath(dbPath), '');
 			const lock = beginDrop(dbPath);
 			assert.equal(lifecycleMarkerKind(dbPath), 'drop');
+			assert.equal(lock.preexisting, false, 'debris is not a drop this call is resuming');
 			completeDrop(lock);
 			// and a marker that names another database is not evidence about this one either
 			writeFileSync(restoringMarkerPath(dbPath), 'otherdb\nrestore started now\n');
