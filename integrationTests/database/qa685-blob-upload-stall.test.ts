@@ -238,17 +238,15 @@ function assertControlAvailability(stats: WriterStats, label: string) {
 		stats.threadCounts.size >= WORKER_COUNT,
 		`${label} reached ${stats.threadCounts.size}, expected at least ${WORKER_COUNT} workers: ${statsSummary(stats)}`
 	);
-	// Node and Bun need nothing more: a blocked worker stays blocked for the whole window, so its
-	// writes exceed CONTROL_TIMEOUT_MS and land in errCount. Under uWS the reap unblocks it at 8-11s,
-	// inside that timeout, so the block completes instead of erroring and the slowest write is the
-	// only trace left. Healthy writes here are single-digit milliseconds.
-	if (UWS_HTTP) {
-		const slowest = Math.max(...stats.latencies);
-		ok(
-			slowest < MAX_CONTROL_LATENCY_MS,
-			`${label} had a control write take ${slowest}ms, long enough for a reap to have hidden a blocked worker: ${statsSummary(stats)}`
-		);
-	}
+	// errCount alone cannot see a bounded blackout: any block that ends before CONTROL_TIMEOUT_MS
+	// completes its queued writes instead of erroring. Under uWS the 8-11s reap ends one at exactly
+	// that length; on Node a regression with its own internal bound could do the same. Healthy writes
+	// here are single-digit milliseconds, so the slowest one is what makes a blackout visible.
+	const slowest = Math.max(...stats.latencies);
+	ok(
+		slowest < MAX_CONTROL_LATENCY_MS,
+		`${label} had a control write take ${slowest}ms, long enough to hide an availability blackout: ${statsSummary(stats)}`
+	);
 }
 
 suite(
