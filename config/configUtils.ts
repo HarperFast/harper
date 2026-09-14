@@ -105,10 +105,7 @@ export function getConfigPath(param: string) {
 // Windows has no POSIX-style "replace an open file" semantics. The shared retry helper also
 // handles WSL, network mounts, and bind mounts that report the same transient errors on Linux.
 // Its synchronous sleep can only outwait a holder that does not need this worker's event loop.
-type AtomicWriteOptions = Pick<
-	RenameRetryOptions,
-	'retryBudgetMs' | 'maxRetries' | 'initialDelayMs' | 'maxDelayMs'
-> & {
+type AtomicWriteOptions = Pick<RenameRetryOptions, 'retryBudgetMs' | 'maxRetries' | 'initialDelayMs' | 'maxDelayMs'> & {
 	skipIfUnchanged?: boolean;
 };
 
@@ -175,11 +172,7 @@ export function atomicWriteFile(
 	return true;
 }
 
-export function renameWithRetry(
-	fromPath: string,
-	toPath: string,
-	options: RenameRetryOptions = {}
-) {
+export function renameWithRetry(fromPath: string, toPath: string, options: RenameRetryOptions = {}) {
 	return retryRename(fromPath, toPath, {
 		...options,
 		rename: fs.renameSync,
