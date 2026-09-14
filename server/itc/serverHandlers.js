@@ -60,7 +60,12 @@ async function schemaHandler(event) {
 			event.message.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA ||
 			event.message.operation === hdbTerms.OPERATIONS_ENUM.DROP_DATABASE)
 	) {
-		closeDatabase(event.message.schema);
+		// the ack this handler gates is what `drop_database` and `restore_backup` treat as this thread
+		// having released the database, so it has to outlast the closes a table with a derived index
+		// only finishes once its runtime has settled
+		const closing = [];
+		closeDatabase(event.message.schema, closing);
+		await Promise.all(closing);
 	}
 	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);
