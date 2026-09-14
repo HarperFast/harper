@@ -228,9 +228,10 @@ export class NativeFullTextDerivedIndexLifecycle {
 		const stat = lstatSync(metadataPath);
 		if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_CONTROL_FILE_BYTES)
 			throw new FullTextGenerationInvalidError('Full-text store metadata is invalid');
+		const encodedMetadata = readFileSync(metadataPath, 'utf8');
 		let metadata: unknown;
 		try {
-			metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+			metadata = JSON.parse(encodedMetadata);
 		} catch (error) {
 			if (repairMetadata) {
 				this.#writeControlFile(metadataPath, JSON.stringify({ format: 1, storeName: this.#options.storeName }));
@@ -271,9 +272,10 @@ export class NativeFullTextDerivedIndexLifecycle {
 			throw new FullTextGenerationInvalidError('Full-text generation selector is not a regular file');
 		if (stat.size > MAX_CONTROL_FILE_BYTES)
 			throw new FullTextGenerationInvalidError('Full-text generation selector is too large');
+		const encodedSelector = readFileSync(this.#selectorPath, 'utf8');
 		let value: unknown;
 		try {
-			value = JSON.parse(readFileSync(this.#selectorPath, 'utf8'));
+			value = JSON.parse(encodedSelector);
 		} catch (error) {
 			throw new FullTextGenerationInvalidError('Full-text generation selector is invalid', error);
 		}
