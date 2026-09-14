@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789371339464,
+  "lastUpdate": 1789371342234,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -13854,6 +13854,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 187.63,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "eec839eec3a5f57b51d7ba630fa2a4337c8c78a7",
+          "message": "Merge pull request #2528 from HarperFast/fix/node-adapter-writable-response\n\nRebuild withNodeAdapter's response on a real Writable so Node middleware (Next.js, compression, send) runs against it",
+          "timestamp": "2026-09-14T04:19:07Z",
+          "url": "https://github.com/HarperFast/harper/commit/eec839eec3a5f57b51d7ba630fa2a4337c8c78a7"
+        },
+        "date": 1789371341650,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.79,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 16.49,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 20.96,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 21.47,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 28.42,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 20.16,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 39.87,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 17.23,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 22.18,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 47.99,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 195.35,
             "unit": "ms"
           }
         ]
