@@ -1781,11 +1781,12 @@ type StagedRow = [key: any, value: { due: number }];
 const unsettledStages = new WeakMap<any, StagedRow[]>();
 
 /**
- * Settle a row on the commit of the batch it joined. Everything queued in one turn of the event loop
- * lands in one lmdb-js transaction, and `committed` names that transaction's promise from the end of
- * the turn until it commits — so it is read in a microtask, once per root per turn, on behalf of
- * every row staged in the turn. One microtask and one array entry per row, rather than a promise
- * chain each: a table drop stages every record's rows in a single turn.
+ * Settle a row on the commit of the batch it joined. `committed` names the transaction the enclosing
+ * batch closed, or the one open when the turn ends, so it is read in a microtask, once per root per
+ * turn, on behalf of every row staged in the turn — one array entry per row rather than a promise
+ * chain each, since a table drop stages every record's rows in a single turn. A transaction that
+ * fails while `committed` named a later one settles as a success and its rows are simply not there:
+ * the files leak to cleanup_orphan_blobs, which is the safe direction (see settleStagedRows).
  */
 function settleWithBatch(store: any, queueDb: any, key: any, value: { due: number }): void {
 	let rows = unsettledStages.get(store);
@@ -1803,21 +1804,18 @@ function settleWithBatch(store: any, queueDb: any, key: any, value: { due: numbe
 }
 
 /**
- * The rows' batch has committed, or failed. What the commit carried is read back rather than
- * inferred from the promise: a row that is not there — the batch failed, or the promise named a
- * later transaction than the one the row joined — is re-staged synchronously. A row withdrawn by a
- * re-referencing write in the meantime is re-staged too, harmlessly: the drain re-reads the owner
- * before acting on any owned row and drops one the record references again. Whether the record
- * writes landed with the batch is not knowable from here either — they may have shared a rejected
- * batch, or (a removal, a drop) have committed before the rows were queued — and the same re-read
- * settles that; only a second failure hands the file to cleanup_orphan_blobs.
+ * The rows' batch has committed, or failed. A failed row is re-staged synchronously: no row existed,
+ * so nothing can have withdrawn one, and whether the record writes landed with the batch is settled
+ * by the drain's owner re-read — only a second failure hands the file to cleanup_orphan_blobs. A row
+ * that is absent after a successful commit is deliberately NOT read back and restored: absence is
+ * indistinguishable from a re-referencing write's withdrawal whose own commit has not landed yet, and
+ * restoring the row would hand a due drain the file that write is about to reference.
  */
 function settleStagedRows(store: any, queueDb: any, rows: StagedRow[], error?: any): void {
 	let wakeAt = Infinity;
-	if (!error) queueDb.resetReadTxn?.();
 	for (const [key, value] of rows) {
 		try {
-			if (error || queueDb.getSync(key) === undefined) queueDb.putSync(key, value);
+			if (error) queueDb.putSync(key, value);
 			if (value.due < wakeAt) wakeAt = value.due;
 		} catch (retryError) {
 			logger.warn?.(

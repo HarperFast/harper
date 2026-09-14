@@ -1113,11 +1113,11 @@ export function removeEntry(store: any, entry: any, options?: any) {
 		// conflicted removal — leaving a record that references a now-missing blob and wedges
 		// replication on ENOENT. The removal promise resolves when the write commits (false on
 		// a conditional-version miss; rejects on abort), so gate the unlink on it. See #1364.
+		// Always synchronous: the removal has already committed when this runs, so the intent has no
+		// record write to ride ahead of, and a worker recycled before a batched intent landed would
+		// leave the file with neither a record nor a row.
 		const deleteOldBlobs = () =>
-			deleteBlobsInObject(entry.value, undefined, {
-				priorVersion: entry.version,
-				synchronous: store instanceof RocksDatabase,
-			});
+			deleteBlobsInObject(entry.value, undefined, { priorVersion: entry.version, synchronous: true });
 		if (removal && typeof removal.then === 'function') {
 			// Swallow rejections (aborted removal) — leave the blob in place in that case.
 			removal.then(

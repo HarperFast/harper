@@ -3337,34 +3337,18 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 		assert.ok(existsSync(filePath));
 	});
 
-	it('re-stages a row the awaited commit did not carry', async () => {
-		// The commit promise is a claim about a transaction; whether it was the row's own is read back.
-		const { fileId, stored } = await fileBackedBlob('missed-commit');
-		const priorVersion = Interlock.primaryStore.getEntry('missed-commit').version;
-		const db = queueDb();
-		const { put } = db;
-		let dropped = false;
-		db.put = function (key) {
-			// The batched write is lost, while the commit that is awaited succeeds.
-			if (isQueueKey(key) && key[1] === fileId && !dropped) {
-				dropped = true;
-				return Promise.resolve(true);
-			}
-			return put.apply(this, arguments);
-		};
-		const hadCommitted = 'committed' in db;
-		if (hadCommitted) db.committed = { then: (onFulfilled) => Promise.resolve().then(() => onFulfilled(true)) };
-		try {
-			deleteBlob(stored, { priorVersion, synchronous: false });
-			await waitFor(() => queueRow(fileId) !== undefined, {
-				timeout: 2000,
-				message: 'a row the commit did not land must be re-staged',
-			});
-		} finally {
-			db.put = put;
-			if (hadCommitted) delete db.committed;
-		}
-		assert.equal(queueRow(fileId).priorVersion, priorVersion);
+	it('records the intent durably before a committed removal returns', async () => {
+		// The removal has already committed when its blobs are staged, so the intent has no record
+		// write to ride ahead of: batched, a worker recycled before it landed would leave the file
+		// with neither a record nor a row.
+		const { fileId, filePath } = await fileBackedBlob('removed');
+
+		await Interlock.delete('removed');
+
+		const row = queueRow(fileId);
+		assert.ok(row, 'the intent must be committed by the time the removal has resolved');
+		assert.deepEqual(row.owner, ['BlobInterlockTest', 'removed']);
+		assert.ok(existsSync(filePath), 'the file itself waits for the drain');
 	});
 
 	it('does not answer an unreadable queue as an empty one', () => {
