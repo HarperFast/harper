@@ -215,6 +215,41 @@ describe('selectWindowsProcessTree', () => {
 		assert.deepEqual(pids(selectWindowsProcessTree([ambiguous, itsChild], identity, SPAWNED_AT + 300)), [ROOT, 4100]);
 	});
 
+	it('does not widen a same-clock parent bound by the clock skew, on either starting frontier', () => {
+		// a parent's observed creation time and its children's come from the same WMI clock, so a row
+		// that predates it was created by an earlier holder of that PID — CLOCK_SKEW_MS has nothing to
+		// cover here, and widening by it adopts (and kills) a stranger's process
+		const rootIdentity = { rootPid: ROOT, rootKnownAt: SPAWNED_AT, rootCreatedAt: SPAWNED_AT + 5 };
+		const predatesTheRoot = row(4100, ROOT, SPAWNED_AT - 20);
+		assert.deepEqual(
+			selectWindowsProcessTree([row(ROOT, 1, SPAWNED_AT + 5, 'cmd.exe'), predatesTheRoot], rootIdentity),
+			[row(ROOT, 1, SPAWNED_AT + 5, 'cmd.exe')]
+		);
+		// the same for a remembered descendant's frontier
+		const descendantIdentity = {
+			rootPid: ROOT,
+			rootKnownAt: SPAWNED_AT,
+			rootExitedAt: EXITED_AT,
+			descendants: new Map([[4100, { created: SPAWNED_AT + 200 }]]),
+		};
+		const predatesTheDescendant = row(4200, 4100, SPAWNED_AT + 180);
+		assert.deepEqual(
+			pids(
+				selectWindowsProcessTree(
+					[row(4100, ROOT, SPAWNED_AT + 200), predatesTheDescendant],
+					descendantIdentity,
+					EXITED_AT + 1_000
+				)
+			),
+			[4100]
+		);
+		// a root whose own creation was never observed is bounded by OUR clock against WMI's, so that
+		// one keeps the skew allowance
+		const unobservedRoot = { rootPid: ROOT, rootKnownAt: SPAWNED_AT, rootStartedWithinMs: 10 };
+		const withinSkew = row(4100, ROOT, SPAWNED_AT - 40);
+		assert.deepEqual(pids(selectWindowsProcessTree([withinSkew], unobservedRoot, SPAWNED_AT + 100)), [4100]);
+	});
+
 	it('never attributes a process without a creation time to the tree', () => {
 		const table = [row(4100, ROOT, null)];
 		const members = selectWindowsProcessTree(table, {

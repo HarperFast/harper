@@ -182,9 +182,12 @@ export function selectWindowsProcessTree(
 		{
 			pid: identity.rootPid,
 			notBefore:
-				(rootCreatedAt === undefined || rootCreatedAt === null
-					? identity.rootKnownAt - (identity.rootStartedWithinMs ?? ROOT_SPAWN_ALLOWANCE_MS)
-					: rootCreatedAt) - CLOCK_SKEW_MS,
+				rootCreatedAt === undefined || rootCreatedAt === null
+					? // our own clock against WMI's, so it carries the skew allowance
+						identity.rootKnownAt - (identity.rootStartedWithinMs ?? ROOT_SPAWN_ALLOWANCE_MS) - CLOCK_SKEW_MS
+					: // WMI's clock against itself: a process created before the one whose PID it names as its
+						// parent was created by an earlier holder of that PID, so it is never ours
+						rootCreatedAt,
 			notAfter: Math.min(
 				// this bound is our own clock against WMI's, so it carries the skew allowance
 				(identity.rootExitedAt ?? now) + CLOCK_SKEW_MS,
@@ -203,11 +206,11 @@ export function selectWindowsProcessTree(
 		if (live) {
 			seen.add(pid);
 			members.push(live);
-			frontier.push({ pid, notBefore: known.created - CLOCK_SKEW_MS, notAfter: Infinity });
+			frontier.push({ pid, notBefore: known.created, notAfter: Infinity });
 		} else {
 			frontier.push({
 				pid,
-				notBefore: known.created - CLOCK_SKEW_MS,
+				notBefore: known.created,
 				notAfter: Math.min(
 					(known.exitedAt ?? now) + CLOCK_SKEW_MS,
 					(impostorCreatedAt(pid, known.created) ?? Infinity) - 1
@@ -223,7 +226,7 @@ export function selectWindowsProcessTree(
 				if (process.created < parent.notBefore || process.created > parent.notAfter) continue;
 				seen.add(process.pid);
 				members.push(process);
-				next.push({ pid: process.pid, notBefore: process.created - CLOCK_SKEW_MS, notAfter: Infinity });
+				next.push({ pid: process.pid, notBefore: process.created, notAfter: Infinity });
 			}
 		}
 		frontier = next;
