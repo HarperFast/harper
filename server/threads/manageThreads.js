@@ -704,8 +704,8 @@ async function restartWorkers(
 		}
 
 		module.exports.restartNumber++;
-		// NaN only: `Infinity` is shutdownWorkers' "all at once" sentinel. See DESIGN.md on the two workerCounts.
-		if (Number.isNaN(maxWorkersDown)) {
+		// `Infinity` is shutdownWorkers' "all at once" sentinel and must survive. See DESIGN.md on the two workerCounts.
+		if (typeof maxWorkersDown !== 'number' || Number.isNaN(maxWorkersDown)) {
 			maxWorkersDown = 1;
 		} else if (maxWorkersDown < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of

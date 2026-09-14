@@ -34,18 +34,22 @@ describe('rolling restart throttle', function () {
 		}
 	});
 
-	it('treats a NaN throttle as the documented minimum of one', async function () {
-		this.timeout(60000);
-		const concurrency = { down: 0, peak: 0 };
-		const started = await startPool(concurrency);
-		try {
-			await restartWorkers(SERVING_TYPE, Number.NaN, false);
+	// Every one of these loses its relational comparisons, which would leave the loop with no throttle
+	// at all rather than a bad one.
+	for (const throttle of [Number.NaN, 'two', null]) {
+		it(`treats a ${typeof throttle} throttle of ${String(throttle)} as the documented minimum of one`, async function () {
+			this.timeout(60000);
+			const concurrency = { down: 0, peak: 0 };
+			const started = await startPool(concurrency);
+			try {
+				await restartWorkers(SERVING_TYPE, throttle, false);
 
-			assert.equal(concurrency.peak, 1);
-		} finally {
-			await cleanUp(started);
-		}
-	});
+				assert.equal(concurrency.peak, 1);
+			} finally {
+				await cleanUp(started);
+			}
+		});
+	}
 
 	it('keeps Infinity meaning "all at once", marked before the first await', async function () {
 		this.timeout(60000);
