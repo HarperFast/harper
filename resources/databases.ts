@@ -2143,9 +2143,12 @@ export async function dropDatabase(databaseName) {
 		);
 		const openHandles = await describeOpenHandles(path);
 		if (openHandles !== null) {
-			// nothing was destroyed: clear the marker and let every thread reload the intact database
+			// nothing was destroyed: clear the marker and let every thread reload the intact database —
+			// unless the marker is one this call found, in which case an earlier drop had already begun
+			// removing this database and only finishing that is safe
 			lockSettled = true;
-			completeDrop(lock);
+			if (lock.preexisting) abandonDrop(lock);
+			else completeDrop(lock);
 			await signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, ITC_SCHEMA_OPERATIONS.CLOSE_DATABASE, databaseName)
 			);
@@ -2160,9 +2163,12 @@ export async function dropDatabase(databaseName) {
 		lockSettled = true;
 		completeDrop(lock);
 	} finally {
-		// a failure after destruction began leaves the marker: the next scan finishes the deletion
+		// a failure after destruction began leaves the marker: the next scan finishes the deletion. So
+		// does a failure over a marker this call found rather than wrote — an earlier drop of this
+		// database got far enough to leave one, and clearing it would publish whatever it had already
+		// removed as a healthy database.
 		if (!lockSettled) {
-			if (destructionStarted) abandonDrop(lock);
+			if (destructionStarted || lock.preexisting) abandonDrop(lock);
 			else completeDrop(lock);
 		}
 	}
