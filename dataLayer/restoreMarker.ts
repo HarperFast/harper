@@ -286,12 +286,22 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
 		// startup scan skips, so a partially deleted database would load as healthy. The rename is
 		// atomic within the directory, so the marker is either the old one or the new one.
 		const stagedPath = markerPath + STAGED_MARKER_SUFFIX;
-		const fd = openSync(stagedPath, 'w');
 		try {
-			writeSync(fd, markerContent(dbPath, kind));
-			fsyncSync(fd);
-		} finally {
-			closeSync(fd);
+			const fd = openSync(stagedPath, 'w');
+			try {
+				// writeSync can report a short write without throwing, and renaming a truncated marker over
+				// the live one is the very thing staging it is here to prevent
+				const content = Buffer.from(markerContent(dbPath, kind));
+				for (let written = 0; written < content.length;) written += writeSync(fd, content, written);
+				fsyncSync(fd);
+			} finally {
+				closeSync(fd);
+			}
+		} catch (error) {
+			try {
+				unlinkSync(stagedPath);
+			} catch {}
+			throw error;
 		}
 		renameSync(stagedPath, markerPath);
 		// fsync the metadata directory so the marker's directory entry is durable — without this a
