@@ -1396,7 +1396,6 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 	const loaderOwnedDir = join(candidateDirPath, 'node_modules');
 	const walk = async (dirPath: string): Promise<void> => {
 		const entries = await readdir(dirPath, { withFileTypes: true });
-		const isUnderNodeModules = dirPath === loaderOwnedDir || dirPath.startsWith(loaderOwnedDir + sep);
 		for (const entry of entries) {
 			const entryPath = join(dirPath, entry.name);
 			if (entry.isDirectory()) {
@@ -1416,14 +1415,22 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 				);
 			}
 			// Inside the build, but named ABSOLUTELY — so it names `.deploy-staging/<id>/…`, a path activation
-			// renames away. `repairRelocatedDependencyLinks` re-points exactly what lives under `node_modules`
-			// (npm writes absolute junctions there on Windows for a `file:`/workspace dependency), so only a
-			// link OUTSIDE that subtree would dangle in the release this stage certified. A relative link
-			// survives the rename untouched wherever it sits.
-			if (!isUnderNodeModules && isAbsolute(await readlink(entryPath))) {
+			// renames away. `repairRelocatedDependencyLinks` re-points these after the swap, but it runs PAST
+			// THE COMMIT POINT and can only warn: it logs and continues when a re-point fails, and logs and
+			// skips a whole subtree on EACCES/EMFILE. So relying on it means a component can go live holding a
+			// junction to a path that no longer exists while the operation reports success. Staging is the
+			// cheap place to fail instead, and it fails closed.
+			//
+			// The cost is real and is the reason this rule moved twice: npm writes absolute junctions under
+			// `node_modules` on Windows for a `file:`/workspace dependency, so such a component deploys
+			// immediately but cannot be staged until its links are relative. A refusal naming the path is a
+			// better answer than a release that loads on POSIX and not on Windows.
+			if (isAbsolute(await readlink(entryPath))) {
 				throw new Error(
-					`Cannot stage ${componentName}: ${entryPath} names its target inside the build by absolute path, ` +
-						`which activation moves — link it relatively so it survives the swap`
+					`Cannot stage ${componentName}: ${entryPath} names its target inside the build by absolute path ` +
+						`(${await readlink(entryPath)}), which activation moves. Re-link it relatively — on Windows, npm ` +
+						`writes absolute junctions for 'file:' and workspace dependencies, so those have to be relative ` +
+						`before the component can be staged.`
 				);
 			}
 		}
@@ -2632,7 +2639,8 @@ async function syncArtifactAncestors(deploymentDirPath: string): Promise<void> {
  * Make a built and validated candidate live, as one compensating transaction over two effects: the live tree
  * moves aside, then the candidate takes its place. Root config is NOT one of them — for an immediate deploy
  * it is still published before the build, unchanged, and making it transactional is tracked separately
- * (#2315). A delayed activation publishes the entry its artifact recorded, immediately before calling this.
+ * (#2315). A delayed activation hands its artifact's recorded entry in as `afterJournal`, which publishes it
+ * from inside the window a crash rolls forward from — see that call site.
  *
  * The candidate must ALREADY be certified: `markCandidateComplete` is the caller's, so a delayed activation
  * does not re-walk and re-fsync a whole dependency tree it certified when it was built. The activation

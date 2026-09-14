@@ -52,7 +52,6 @@ function applicationAt(componentsRoot, name, payload) {
 	return app;
 }
 
-/** Stage `marker` as component `name` under `id`, through the real preparation path. */
 async function stage(componentsRoot, name, id, marker, options = {}) {
 	const app = applicationAt(
 		componentsRoot,
@@ -270,7 +269,6 @@ describe('activating a staged artifact', () => {
 		await writeLive(root, 'web', 'LIVE v1\n');
 		await stage(root, 'web', 'a1', 'STAGED v2\n');
 
-		// No payload: an activation resolves and installs nothing.
 		await prepareApplication(applicationAt(root, 'web'), { mode: 'activate', artifactId: 'a1' });
 
 		assert.strictEqual(await readLive(root, 'web'), 'STAGED v2\n');

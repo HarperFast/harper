@@ -25,7 +25,6 @@ const PROJECT = 'stage-then-activate';
 // the build directory it runs in, so the line count IS the number of installs this artifact has had.
 const INSTALL_COUNTER_COMMAND = `node -e "require('node:fs').appendFileSync('install-count.txt','ran\\n')"`;
 
-/** Raw request, for the cases whose whole point is a non-2xx answer. */
 async function rawOperation(ctx: ContextWithHarper, body: Record<string, unknown>): Promise<any> {
 	const response = await fetch(ctx.harper.operationsAPIURL, {
 		method: 'POST',
