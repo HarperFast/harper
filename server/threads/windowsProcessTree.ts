@@ -231,16 +231,28 @@ export function selectWindowsProcessTree(
 	return members;
 }
 
+// `CreateProcess` rejects a command line over 8191 characters, and the rejection surfaces as a
+// spawn error this module deliberately absorbs — so a tree with enough orphans would be "killed"
+// by a command that never ran, and the wait would never end. At ~11 characters per `/pid NNNNN`
+// this is an order of magnitude inside the limit.
+const TASKKILL_PIDS_PER_INVOCATION = 200;
+
 /**
- * The taskkill argument list that terminates `members`: the whole tree through the root while the
+ * The taskkill argument lists that terminate `members`: the whole tree through the root while the
  * root itself is still ours — never also by descendant PID in the same round, since `/T` frees
  * those PIDs before a second invocation could run — and otherwise every member by its own PID,
- * which is safe only because the root's PID is then no longer ours to `/T`.
+ * which is safe only because the root's PID is then no longer ours to `/T`. Per-PID kills are
+ * batched, since one command line cannot name an unbounded number of them.
  */
-export function taskkillInvocation(members: WindowsProcessRecord[], rootPid: number): string[] | null {
+export function taskkillInvocation(members: WindowsProcessRecord[], rootPid: number): string[][] | null {
 	if (members.length === 0) return null;
-	if (members.some((member) => member.pid === rootPid)) return ['/pid', String(rootPid), '/T', '/F'];
-	return ['/F', ...members.flatMap((member) => ['/pid', String(member.pid)])];
+	if (members.some((member) => member.pid === rootPid)) return [['/pid', String(rootPid), '/T', '/F']];
+	const invocations: string[][] = [];
+	for (let i = 0; i < members.length; i += TASKKILL_PIDS_PER_INVOCATION) {
+		const batch = members.slice(i, i + TASKKILL_PIDS_PER_INVOCATION);
+		invocations.push(['/F', ...batch.flatMap((member) => ['/pid', String(member.pid)])]);
+	}
+	return invocations;
 }
 
 function runTaskkill(args: string[]): Promise<void> {
@@ -252,8 +264,7 @@ function runTaskkill(args: string[]): Promise<void> {
 }
 
 async function killWindowsProcesses(members: WindowsProcessRecord[], rootPid: number): Promise<void> {
-	const args = taskkillInvocation(members, rootPid);
-	if (args) await runTaskkill(args);
+	for (const args of taskkillInvocation(members, rootPid) ?? []) await runTaskkill(args);
 }
 
 function rememberDescendants(identity: WindowsProcessTreeIdentity, members: WindowsProcessRecord[], scannedAt: number) {

@@ -232,13 +232,24 @@ describe('taskkillInvocation', () => {
 		const grandchild = row(4200, 4100, SPAWNED_AT + 300);
 		// /T frees the descendants' PIDs, so a same-round per-PID kill could hit whatever recycled them
 		assert.deepEqual(taskkillInvocation([row(ROOT, 1, SPAWNED_AT), child, grandchild], ROOT), [
-			'/pid',
-			String(ROOT),
-			'/T',
-			'/F',
+			['/pid', String(ROOT), '/T', '/F'],
 		]);
-		assert.deepEqual(taskkillInvocation([child, grandchild], ROOT), ['/F', '/pid', '4100', '/pid', '4200']);
+		assert.deepEqual(taskkillInvocation([child, grandchild], ROOT), [['/F', '/pid', '4100', '/pid', '4200']]);
 		assert.equal(taskkillInvocation([], ROOT), null);
+	});
+
+	it('batches per-PID kills so a tree of orphans cannot exceed the Windows command-line limit', () => {
+		const orphans = Array.from({ length: 450 }, (_, i) => row(10_000 + i, 4100, SPAWNED_AT + 200));
+		const invocations = taskkillInvocation(orphans, ROOT);
+		assert.equal(invocations.length, 3);
+		assert.deepEqual(
+			invocations.flatMap((args) => args.filter((arg) => arg !== '/F' && arg !== '/pid')),
+			orphans.map((orphan) => String(orphan.pid))
+		);
+		for (const args of invocations) {
+			assert.equal(args[0], '/F');
+			assert.ok(args.join(' ').length < 8191, String(args.join(' ').length));
+		}
 	});
 });
 
@@ -369,10 +380,7 @@ describe('confirmWindowsProcessTreeGone', () => {
 			now: () => (clock += 100),
 			pollMs: 1,
 		});
-		assert.deepEqual(kills, [
-			['/pid', String(ROOT), '/T', '/F'],
-			['/F', '/pid', '4100'],
-		]);
+		assert.deepEqual(kills, [[['/pid', String(ROOT), '/T', '/F']], [['/F', '/pid', '4100']]]);
 		// the exit was latched from the first scan that no longer found the root, so a process that
 		// recycles its PID afterwards is never mistaken for it
 		assert.ok(
