@@ -13,52 +13,6 @@ const POOL_SIZE = 3;
 const DECLARED_THREADS = 16;
 const EXPECTED_THROTTLE = 2;
 
-function startFixtureWorker(options) {
-	return new Promise((resolve, reject) => {
-		startWorker(FIXTURE, {
-			autoRestart: false,
-			...options,
-			onStarted(worker) {
-				const onMessage = (message) => {
-					if (message?.type !== 'fixture-ready') return;
-					worker.off('message', onMessage);
-					worker.reportedWorkerCount = message.workerCount;
-					resolve(worker);
-				};
-				worker.on('message', onMessage);
-				worker.once('error', reject);
-				worker.once('exit', () => reject(new Error('fixture worker exited before reporting ready')));
-			},
-		});
-	});
-}
-
-function trackDowntime(worker, concurrency) {
-	worker.on('shutdown', () => {
-		concurrency.down++;
-		concurrency.peak = Math.max(concurrency.peak, concurrency.down);
-	});
-	worker.on('exit', () => concurrency.down--);
-}
-
-async function startPool(concurrency) {
-	const started = [];
-	for (let index = 0; index < POOL_SIZE; index++) {
-		const worker = await startFixtureWorker({ name: SERVING_TYPE, workerIndex: index, threadCount: DECLARED_THREADS });
-		trackDowntime(worker, concurrency);
-		started.push(worker);
-	}
-	return started;
-}
-
-async function cleanUp(started) {
-	for (const worker of started.reverse()) {
-		if (!workers.includes(worker)) continue;
-		worker.wasShutdown = true;
-		await worker.terminate();
-	}
-}
-
 describe('rolling restart throttle', function () {
 	it('still throttles after a job worker has been started', async function () {
 		this.timeout(60000);
@@ -113,3 +67,49 @@ describe('rolling restart throttle', function () {
 		}
 	});
 });
+
+function startFixtureWorker(options) {
+	return new Promise((resolve, reject) => {
+		startWorker(FIXTURE, {
+			autoRestart: false,
+			...options,
+			onStarted(worker) {
+				const onMessage = (message) => {
+					if (message?.type !== 'fixture-ready') return;
+					worker.off('message', onMessage);
+					worker.reportedWorkerCount = message.workerCount;
+					resolve(worker);
+				};
+				worker.on('message', onMessage);
+				worker.once('error', reject);
+				worker.once('exit', () => reject(new Error('fixture worker exited before reporting ready')));
+			},
+		});
+	});
+}
+
+function trackDowntime(worker, concurrency) {
+	worker.on('shutdown', () => {
+		concurrency.down++;
+		concurrency.peak = Math.max(concurrency.peak, concurrency.down);
+	});
+	worker.on('exit', () => concurrency.down--);
+}
+
+async function startPool(concurrency) {
+	const started = [];
+	for (let index = 0; index < POOL_SIZE; index++) {
+		const worker = await startFixtureWorker({ name: SERVING_TYPE, workerIndex: index, threadCount: DECLARED_THREADS });
+		trackDowntime(worker, concurrency);
+		started.push(worker);
+	}
+	return started;
+}
+
+async function cleanUp(started) {
+	for (const worker of started.reverse()) {
+		if (!workers.includes(worker)) continue;
+		worker.wasShutdown = true;
+		await worker.terminate();
+	}
+}
