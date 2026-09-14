@@ -1421,14 +1421,30 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 			// junction to a path that no longer exists while the operation reports success. Staging is the
 			// cheap place to fail instead, and it fails closed.
 			//
-			// The cost is real and is the reason this rule moved twice: npm writes absolute junctions under
-			// `node_modules` on Windows for a `file:`/workspace dependency, so such a component deploys
-			// immediately but cannot be staged until its links are relative. A refusal naming the path is a
-			// better answer than a release that loads on POSIX and not on Windows.
-			if (isAbsolute(await readlink(entryPath))) {
+			// The cost is real: npm writes absolute junctions under `node_modules` on Windows for a
+			// `file:`/workspace dependency, so such a component deploys immediately but cannot be staged until
+			// its links are relative. A refusal naming the path beats a release that loads on POSIX only.
+			const linkTarget = await readlink(entryPath);
+			// The containment check above tests where the link resolves TODAY. A relative target that climbs
+			// out of the candidate and back in — `../../../<id>/<component>/assets` — resolves inside it now
+			// and somewhere else entirely once activation renames the tree, because the same expression is
+			// then evaluated from `components/<component>/…`. So the EXPRESSION has to stay inside too: track
+			// the link's depth below the candidate root and refuse one that ever ascends past it.
+			let depth = relative(candidateDirPath, dirname(entryPath)).split(sep).filter(Boolean).length;
+			for (const segment of linkTarget.split(/[\\/]/)) {
+				if (segment === '..') depth -= 1;
+				else if (segment !== '.' && segment !== '') depth += 1;
+				if (depth < 0) {
+					throw new Error(
+						`Cannot stage ${componentName}: ${entryPath} points at ${linkTarget}, which leaves the build before ` +
+							`re-entering it — after activation moves the tree that path resolves somewhere else`
+					);
+				}
+			}
+			if (isAbsolute(linkTarget)) {
 				throw new Error(
 					`Cannot stage ${componentName}: ${entryPath} names its target inside the build by absolute path ` +
-						`(${await readlink(entryPath)}), which activation moves. Re-link it relatively — on Windows, npm ` +
+						`(${linkTarget}), which activation moves. Re-link it relatively — on Windows, npm ` +
 						`writes absolute junctions for 'file:' and workspace dependencies, so those have to be relative ` +
 						`before the component can be staged.`
 				);
@@ -2652,7 +2668,7 @@ async function syncArtifactAncestors(deploymentDirPath: string): Promise<void> {
 export async function activateCandidateApplication(
 	application: Application,
 	deploymentId: string,
-	options: { afterJournal?: () => Promise<void> } = {}
+	options: { afterJournal?: () => Promise<(() => Promise<void>) | void> } = {}
 ): Promise<void> {
 	const liveDirPath = application.dirPath;
 	const candidateDirPath = candidateApplicationPath(liveDirPath, deploymentId);
@@ -2716,8 +2732,8 @@ export async function activateCandidateApplication(
 			);
 			return;
 		}
-		// The journal is gone in this process, so the artifact IS retryable now; what is uncertain is whether
-		// its removal reached storage. Said separately because it is the opposite situation to the one above.
+		// The journal is gone in this process, so the artifact is retryable now; what is uncertain is whether
+		// its removal reached storage.
 		await syncDirectory(deploymentDirPath).catch((error) =>
 			application.logger.warn(
 				`Restored ${application.name} and returned its staged build ${deploymentId} to a retryable state, but ` +
@@ -2734,6 +2750,7 @@ export async function activateCandidateApplication(
 	 * rename may enter this catch — see B2.
 	 */
 	let pendingEffect = 'record the activation';
+	let undoAfterJournal: (() => Promise<void>) | void;
 	try {
 		try {
 			await writeControlFileDurably(
@@ -2793,7 +2810,7 @@ export async function activateCandidateApplication(
 		// PREVIOUS release. Closing that needs config to be an effect of the journal itself, which is #2315
 		// step 3.
 		pendingEffect = 'publish the root configuration';
-		await options.afterJournal?.();
+		undoAfterJournal = await options.afterJournal?.();
 
 		// B2 — the candidate becomes live. THE RENAME IS THE COMMIT POINT: nothing after it may compensate,
 		// because the live path now holds the candidate and renaming the aside back over it cannot succeed. A
@@ -2818,6 +2835,19 @@ export async function activateCandidateApplication(
 		});
 	} catch (error) {
 		await compensate(error, pendingEffect, restoreLive, application);
+		// BEFORE `returnToDormant`, which durably retires the journal. Undoing the config afterwards — or a
+		// stack frame later — leaves a window where config names the staged release and no journal survives to
+		// roll forward, so the next boot re-resolves that package from the registry instead of activating the
+		// certified artifact sitting beside it.
+		if (undoAfterJournal) {
+			await undoAfterJournal().catch((undoError) =>
+				application.logger.warn(
+					`Restored ${application.name} after a failed activation but could not restore its root config, ` +
+						`which still names deployment ${deploymentId}:`,
+					undoError
+				)
+			);
+		}
 		await returnToDormant();
 		throw error;
 	}
@@ -4278,43 +4308,18 @@ async function activateStagedArtifact(
 
 	await options.admitIsolation?.(descriptor);
 
-	let unpublishRootConfig: (() => Promise<void>) | void;
-	try {
-		if (!application.isNewComponent) {
-			application.packageMetadataChanged = installedRuntimeChanged(
-				previousPackageMetadata,
-				await readInstalledPackageMetadata(candidateDirPath),
-				descriptor.installationIsOpaque
-			);
-		}
-		// Published AFTER the activation journal is durable, not before. A crash in between would otherwise
-		// leave config naming the staged release, the live tree still on the previous one, and no journal —
-		// and the next boot's `installApplications()` re-resolves and installs that package identifier from
-		// scratch instead of activating the certified artifact sitting in `.deploy-staging`, which is exactly
-		// the substitution this whole step exists to prevent. With the journal already on disk, the same
-		// crash is a roll-forward to the certified bytes. Payload artifacts record `rootConfig: null` and
-		// never reach this.
-		await activateCandidateApplication(application, artifactId, {
-			afterJournal: descriptor.rootConfig
-				? async () => {
-						unpublishRootConfig = await options.publishRootConfig?.(descriptor.rootConfig!);
-					}
-				: undefined,
-		});
-	} catch (error) {
-		// Only a pre-commit failure is compensable — past the swap the component IS the new release, and
-		// unpublishing its config would leave the tree and the config describing different versions.
-		if (!compensationIncomplete(error) && unpublishRootConfig) {
-			await unpublishRootConfig().catch((undoError) =>
-				application.logger.warn(
-					`Restored ${application.name} after a failed activation but could not restore its root config, ` +
-						`which still names deployment ${artifactId}:`,
-					undoError
-				)
-			);
-		}
-		throw error;
+	if (!application.isNewComponent) {
+		application.packageMetadataChanged = installedRuntimeChanged(
+			previousPackageMetadata,
+			await readInstalledPackageMetadata(candidateDirPath),
+			descriptor.installationIsOpaque
+		);
 	}
+	await activateCandidateApplication(application, artifactId, {
+		// Returns its own undo, which the swap runs inside its pre-commit boundary — see there for why it
+		// cannot be run out here.
+		afterJournal: descriptor.rootConfig ? () => options.publishRootConfig!(descriptor.rootConfig!) : undefined,
+	});
 }
 
 /**

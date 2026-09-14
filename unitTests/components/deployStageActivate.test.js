@@ -156,6 +156,36 @@ describe('staging a build without activating it', () => {
 		await fs.rm(outside, { recursive: true, force: true });
 	});
 
+	it('refuses a relative link that leaves the build and re-enters it', async function () {
+		this.timeout(20000);
+		if (process.platform === 'win32') return this.skip();
+		const root = await newRoot('reentrant-link');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'STAGED\n' })
+		);
+
+		await assert.rejects(
+			() =>
+				prepareApplication(app, {
+					mode: 'stage',
+					artifactId: 'a1',
+					validateCandidate: async (candidateDirPath) => {
+						// Resolves inside the candidate today — `.deploy-staging/a1/web/shared` — so the containment
+						// check passes. After activation renames the tree the same expression is evaluated from
+						// `components/web/assets/`, where it names a path that does not exist.
+						await fs.mkdir(path.join(candidateDirPath, 'shared'), { recursive: true });
+						await fs.mkdir(path.join(candidateDirPath, 'assets'), { recursive: true });
+						await fs.symlink('../../../a1/web/shared', path.join(candidateDirPath, 'assets', 'shared'), 'dir');
+					},
+				}),
+			/leaves the build before re-entering it/
+		);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('exempts only the loader-owned link at the top level, not a copy nested in a dependency', async function () {
 		this.timeout(20000);
 		if (process.platform === 'win32') return this.skip();
