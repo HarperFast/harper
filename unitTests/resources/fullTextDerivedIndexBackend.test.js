@@ -69,6 +69,7 @@ function lifecycle(opened, replacements = []) {
 
 function makeBackend(lifecycleValue, options = {}) {
 	let epoch = 1n;
+	const unindexable = [];
 	const backend = new FullTextDerivedIndexBackend({
 		id: options.id ?? 'products-title',
 		lifecycle: lifecycleValue,
@@ -89,8 +90,9 @@ function makeBackend(lifecycleValue, options = {}) {
 	backend.attach({
 		isOwnerEpoch: (candidate) => candidate === epoch,
 		getReadiness: () => ({ state: 'ready', ownerEpoch: epoch, rebuildAttempts: 0 }),
+		noteUnindexable: (reason) => unindexable.push(reason),
 	});
-	return { backend, setEpoch: (value) => (epoch = value) };
+	return { backend, unindexable, setEpoch: (value) => (epoch = value) };
 }
 
 function mutation(recordId, state, tableId = 1) {
@@ -219,8 +221,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		const { backend } = makeBackend(lifecycle([engine]), {
 			encodeMutationBatch: (mutationBatch) => {
 				const count = mutationBatch.upserts.length + mutationBatch.deletes.length;
-				if (count > 2)
-					throw Object.assign(new Error('packed value exceeds 1024 bytes'), { code: 'E_INVALID_ARGUMENT' });
+				if (count > 2) throw Object.assign(new Error('packed value exceeds 1024 bytes'), { code: 'E_BATCH_TOO_LARGE' });
 				return Buffer.from(JSON.stringify(mutationBatch));
 			},
 		});
@@ -241,13 +242,42 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('removes a single unencodable record without poisoning the index', async () => {
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const { backend, unindexable } = makeBackend(lifecycle([engine]), {
+			encodeMutationBatch: (mutationBatch) => {
+				if (mutationBatch.upserts.length)
+					throw Object.assign(new Error('record exceeds the packed limit'), { code: 'E_BATCH_TOO_LARGE' });
+				return Buffer.from(JSON.stringify(mutationBatch));
+			},
+		});
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		await backend.acquire(1n);
+		backend.deliver(
+			batch(1n, [mutation('huge', { kind: 'record', version: 1, projection: { title: 'huge' } })], cursor(20))
+		);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.strictEqual(engine.applied.length, 1);
+		assert.strictEqual(engine.applied[0].upserts.length, 0);
+		assert.strictEqual(engine.applied[0].deletes.length, 1);
+		assert.deepStrictEqual(unindexable, ['FulltextError (E_BATCH_TOO_LARGE)']);
+		assert.strictEqual(changes.includes('failed'), false);
+		await backend.shutdown(1n);
+	});
+
 	it('replays after a transient encoder failure without condemning the generation', async () => {
 		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		const reopened = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		let attempts = 0;
 		const { backend } = makeBackend(lifecycle([first, reopened]), {
 			encodeMutationBatch: (mutationBatch) => {
-				if (attempts++ === 0) throw new RangeError('allocation failed');
+				if (attempts++ === 0) {
+					const error = new RangeError('allocation failed');
+					error.cause = error;
+					throw error;
+				}
 				return Buffer.from(JSON.stringify(mutationBatch));
 			},
 		});

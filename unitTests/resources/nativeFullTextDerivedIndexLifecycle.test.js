@@ -138,11 +138,40 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await replacement.close({ mode: 'rollback' });
 	});
 
+	it('canonicalizes malformed version-one metadata during replacement', async () => {
+		const binding = new FakeNativeModule();
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		const seeded = await lifecycle.replace(1n);
+		await seeded.close({ mode: 'rollback' });
+		fs.writeFileSync(
+			path.join(lifecycle.path, 'STORE.json'),
+			JSON.stringify({ format: 1, storeName: 'catalog.Product.title', unexpected: true })
+		);
+		const replacement = await lifecycle.replace(2n);
+		assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(lifecycle.path, 'STORE.json'))), {
+			format: 1,
+			storeName: 'catalog.Product.title',
+		});
+		await replacement.close({ mode: 'rollback' });
+	});
+
 	it('rejects a native module without the required runtime contract', async () => {
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(
 			options(storePath, { openNativeFullTextIndex() {}, encodeMutationBatch() {} })
 		);
 		await assert.rejects(lifecycle.replace(1n), /required Harper binding contract/);
+	});
+
+	it('rejects a native module with an incompatible ABI', async () => {
+		const binding = new FakeNativeModule();
+		binding.runtimeInfo = async () => ({
+			packageVersion: 'test',
+			tantivyVersion: 'test',
+			nativeAbiVersion: 3,
+			storageBackends: ['native'],
+		});
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.replace(1n), /incompatible runtime capabilities/);
 	});
 
 	it('validates native configuration before creating storage', () => {

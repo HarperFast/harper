@@ -238,10 +238,18 @@ export class NativeFullTextDerivedIndexLifecycle {
 			}
 			throw new FullTextGenerationInvalidError('Full-text store metadata is invalid', error);
 		}
-		if (plainObject(metadata) && metadata.format === 1 && typeof metadata.storeName === 'string') {
-			if (metadata.storeName !== this.#options.storeName)
+		if (plainObject(metadata) && metadata.format === 1) {
+			if (typeof metadata.storeName === 'string' && metadata.storeName !== this.#options.storeName)
 				throw new FullTextGenerationInvalidError('Full-text store metadata does not match the requested index');
-			if (Object.keys(metadata).every((name) => name === 'format' || name === 'storeName')) return;
+			if (
+				metadata.storeName === this.#options.storeName &&
+				Object.keys(metadata).every((name) => name === 'format' || name === 'storeName')
+			)
+				return;
+			if (repairMetadata) {
+				this.#writeControlFile(metadataPath, JSON.stringify({ format: 1, storeName: this.#options.storeName }));
+				return;
+			}
 		}
 		if (repairMetadata && (!plainObject(metadata) || !('format' in metadata))) {
 			this.#writeControlFile(metadataPath, JSON.stringify({ format: 1, storeName: this.#options.storeName }));
