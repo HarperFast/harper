@@ -1509,7 +1509,7 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 		// "already reclaimed" to every colliding file. Any other row's claim is not this write's to
 		// release: an owned row's is taken and handed back by the drain itself, and a row recovered
 		// from a previous process, or one enqueued past the age cap, never held one.
-		if (!intent.owner && intent.claimedBy === process.pid) {
+		if (!intent.owner && intent.claimedBy === unlinkIncarnation(storageInfo.store)) {
 			releaseReclaimClaim({ store: storageInfo.store, fileId: storageInfo.fileId, claimed: true });
 		}
 	}
@@ -1762,22 +1762,25 @@ function unlinkQueueRange(queueDb: any): any {
 }
 
 /**
- * Two cross-thread counters for this root, in the store's shared buffer: files STAGED for
+ * Cross-thread state for this root, in the store's shared buffer. Two counters: files STAGED for
  * reclamation (bumped before the row is written) and stages SETTLED (bumped once the write has
  * landed or failed); a stage is in flight while they differ. They let the main-thread backstop and
  * the encode prove there is nothing to read with atomic loads instead of a range scan — at ten
  * thousand open databases the scans alone were thousands of empty reads a second. A worker killed
  * between the two bumps leaves them apart for the life of the process; the cost is the read on every
- * encode and a range scan per backstop tick for that root, never a wrong answer.
+ * encode and a range scan per backstop tick for that root, never a wrong answer. The third word is
+ * the INCARNATION: a nonce this process's threads share, so a row can name the process whose
+ * reclamation claimed its file — a pid cannot, being reused, and 1 on every container boot.
  */
 const STAGED = 0;
 const SETTLED = 1;
+const INCARNATION = 2;
 const unlinkEpochs = new WeakMap<any, Int32Array>();
 function unlinkEpoch(store: any): Int32Array | undefined {
 	let epoch = unlinkEpochs.get(store);
 	if (!epoch) {
 		try {
-			epoch = new Int32Array(store.getUserSharedBuffer('blob-unlink-epochs', new ArrayBuffer(8)), 0, 2);
+			epoch = new Int32Array(store.getUserSharedBuffer('blob-unlink-epochs', new ArrayBuffer(16)), 0, 4);
 		} catch (error) {
 			logger.debug?.('Could not get the shared blob unlink epoch', error);
 			return undefined;
@@ -1789,6 +1792,17 @@ function unlinkEpoch(store: any): Int32Array | undefined {
 function bumpUnlinkEpoch(store: any, counter: typeof STAGED | typeof SETTLED): void {
 	const epoch = unlinkEpoch(store);
 	if (epoch) Atomics.add(epoch, counter, 1);
+}
+/** This process's incarnation for the root; the first thread to ask settles it for every thread. */
+function unlinkIncarnation(store: any): number | undefined {
+	const epoch = unlinkEpoch(store);
+	if (!epoch) return undefined;
+	let incarnation = Atomics.load(epoch, INCARNATION);
+	if (incarnation === 0) {
+		const candidate = (Math.random() * 0x7fffffff) | 0 || 1;
+		incarnation = Atomics.compareExchange(epoch, INCARNATION, 0, candidate) || candidate;
+	}
+	return incarnation;
 }
 
 type StagedRow = [key: any, value: { due: number }];
@@ -1932,7 +1946,7 @@ function enqueueBlobUnlink(storageInfo: BlobFileInfo): boolean {
 	const value = {
 		due: Date.now(),
 		storageIndex: storageInfo.storageIndex,
-		claimedBy: storageInfo.claimed ? process.pid : undefined,
+		claimedBy: storageInfo.claimed ? unlinkIncarnation(storageInfo.store) : undefined,
 	};
 	bumpUnlinkEpoch(storageInfo.store, STAGED);
 	try {
@@ -2013,7 +2027,7 @@ export function drainBlobUnlinkQueue(rootStore: any): boolean | undefined {
 			fileId,
 			store: rootStore,
 			owner: value.owner,
-			claimed: value.claimedBy === process.pid,
+			claimed: value.claimedBy !== undefined && value.claimedBy === unlinkIncarnation(rootStore),
 		};
 		let filePath: string;
 		try {

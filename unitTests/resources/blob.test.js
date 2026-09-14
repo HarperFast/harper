@@ -2612,6 +2612,13 @@ describe('durable blob-unlink queue (#1832)', () => {
 	const rootStore = () => QueueTest.primaryStore.rootStore;
 	const queueDb = () => rootStore().dbisDb;
 	const queueRow = (fileId) => queueDb().getSync([UNLINK_QUEUE_KEY, fileId]);
+	// The process incarnation reclamation stamps on a row it claimed: word 2 of the shared epoch buffer,
+	// settled by whichever thread first swaps it from zero.
+	const incarnation = () => {
+		const words = new Int32Array(rootStore().getUserSharedBuffer('blob-unlink-epochs', new ArrayBuffer(16)), 0, 4);
+		const candidate = (Math.random() * 0x7fffffff) | 0 || 1;
+		return Atomics.load(words, 2) || Atomics.compareExchange(words, 2, 0, candidate) || candidate;
+	};
 	const stageUnlink = (fileId) =>
 		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0 });
 
@@ -2694,7 +2701,7 @@ describe('durable blob-unlink queue (#1832)', () => {
 		writeFileSync(join(filePath, 'occupied'), 'x');
 		const state = getBlobHoldStateForTesting(rootStore(), fileId);
 		Atomics.store(state.table, state.slot, RECLAIMING); // as reclamation leaves it when it enqueues
-		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0, claimedBy: process.pid });
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0, claimedBy: incarnation() });
 
 		// Driven rather than slept through: the retries now back off, so a fixed number of fixed-length
 		// waits either races the unlink callback or has to be padded to the worst case.
@@ -3389,6 +3396,26 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 			RECLAIMING,
 			'a claim this process never took is not its to release'
 		);
+		Atomics.store(state.table, state.slot, 0);
+	});
+
+	it('does not mistake a reused pid for its own claim', async () => {
+		// A container boots Harper as pid 1 every time, so a prior life's row can carry this pid; the
+		// claim it names lived in that process's memory and whatever is in the slot now is not it.
+		const { fileId, stored } = await fileBackedBlob('reused-pid');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+			due: Date.now() + 600000,
+			storageIndex: 0,
+			claimedBy: process.pid,
+		});
+		drainBlobUnlinkQueue(rootStore()); // a non-empty read, so no drain's "empty" can stand in for the read
+		const state = getBlobHoldStateForTesting(rootStore(), fileId);
+		Atomics.store(state.table, state.slot, RECLAIMING);
+
+		await Interlock.put({ id: 'reused-pid', blob: stored });
+
+		assert.strictEqual(queueRow(fileId), undefined, 'the intent is withdrawn');
+		assert.equal(Atomics.load(state.table, state.slot), RECLAIMING, 'a pid is not an identity for the claim');
 		Atomics.store(state.table, state.slot, 0);
 	});
 
