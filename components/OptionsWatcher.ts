@@ -329,6 +329,8 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 				// So it goes back to the loop once, and chokidar's own `unlink` cancels it.
 				if (arming) {
 					this.#deferAbsenceCheck();
+					// Carrying it across the deferral would emit it against whatever event reports next.
+					this.#reportEnvComposeFailure();
 					return;
 				}
 				this.#resetConfig();

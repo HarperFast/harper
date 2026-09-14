@@ -197,6 +197,24 @@ describe('OptionsWatcher env-config overlay (#1618)', () => {
 		assert.strictEqual(errors.length, 1, 'the compose failure must not be discarded by the fallback');
 	});
 
+	it('reports a compose failure the arming re-read found rather than carrying it past the deferral', async () => {
+		const filePath = join(dir, 'harper-config.yaml');
+		writeFileSync(filePath, stringify({ [NAME]: { enabled: false } }));
+
+		watcher = new OptionsWatcher(NAME, filePath);
+		await watcher.ready;
+		const errors = [];
+		watcher.on('error', (error) => errors.push(error));
+
+		// An arming re-read that finds the file gone defers one absence check instead of reporting a
+		// removal; a compose failure it hit on the way there must not wait for that deferred read.
+		process.env.HARPER_SET_CONFIG = '{not json';
+		rmSync(filePath);
+		watcher._refreshForTests(true);
+
+		assert.strictEqual(errors.length, 1, 'the compose failure must be surfaced before the deferral');
+	});
+
 	// `#handleUnlink` runs inside chokidar's own dispatch, and the env-only fallback merges — so a
 	// plugin's own `change` handler throwing would take the worker down on a config deletion the
 	// watcher had just decided to survive.

@@ -1310,9 +1310,12 @@ throws out of chokidar's dispatch and takes the worker down over a fault it just
 
 An env-compose failure rides that settle rather than preceding it: `#envComposeError` is reported
 only after the barrier has settled, because an `error` emitted first rejects `once(this, 'ready')`
-instead of settling it. It is set and reported inside one synchronous call chain, so the early
-returns taken when the env-only overlay _succeeded_ cannot be carrying one — and hoisting the report
-ahead of them for symmetry would put it back before the settle on the paths this ordering exists for.
+instead of settling it. It is set and reported inside one synchronous call chain, the arming path
+included: that path defers an absence check rather than reporting a removal, and it reports the
+compose failure before deferring, because a failure carried across the deferral surfaces against
+whatever event reports next. So the early returns taken when the env-only overlay _succeeded_ cannot
+be carrying one — and hoisting the report ahead of them for symmetry would put it back before the
+settle on the paths this ordering exists for.
 
 What a scope does about a config that arrives late is the other half of settling early.
 `OptionsWatcher.ready` is not once-per-watcher: it fires whenever a scope goes from having no
