@@ -592,8 +592,6 @@ async function deployComponent(req) {
 	const { isIsolatedApplication } = require('../server/threads/isolatedApplications.ts');
 	const requestedIsolation = req.isolated;
 	const isReplicatedExecution = typeof req._deploymentId === 'string';
-	// `activate` builds nothing: it swaps an artifact an earlier `activate: false` request left staged.
-	// `stage` builds and certifies one and stops. Everything else is the ordinary build-and-swap deploy.
 	const mode = req.deployment_id ? 'activate' : req.activate === false ? 'stage' : 'deploy';
 	const isActivation = mode === 'activate';
 	// this thread's cached config may predate an earlier deploy that changed the entry without a restart
@@ -986,12 +984,15 @@ async function deployComponent(req) {
 				const detail = failedPeers
 					.map((peer) => `${peer.node ?? 'unknown'} (${peer.error?.message ?? 'unknown error'})`)
 					.join(', ');
-				throw new ServerError(
-					`Component '${application.name}' was deployed on the origin node but failed to replicate to ` +
-						`${failedPeers.length} of ${recorder.row.peer_results.length} peer node(s): ${detail}. ` +
-						`See deployment ${recorder.deploymentId} (get_deployment) for details, or pass ` +
-						`ignore_replication_errors: true to treat replication failures as non-fatal.`
+				const replicationError = new ServerError(
+					`Component '${application.name}' was ${mode === 'stage' ? 'staged' : 'deployed'} on the origin node ` +
+						`but failed to replicate to ${failedPeers.length} of ${recorder.row.peer_results.length} peer ` +
+						`node(s): ${detail}. See deployment ${recorder.deploymentId} (get_deployment) for details, or ` +
+						`pass ignore_replication_errors: true to treat replication failures as non-fatal.`
 				);
+				// The origin's artifact is on disk, certified and activatable by this id whatever the peers did.
+				if (mode === 'stage') replicationError.stagedOnOrigin = true;
+				throw replicationError;
 			}
 
 			// A peer running a build that predates staged deploys accepts `activate: false` as an unknown

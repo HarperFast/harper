@@ -1403,7 +1403,7 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 				await walk(entryPath);
 				continue;
 			}
-			// Junctions report as symbolic links here too, which is what makes this cover Windows.
+			// Junctions report as symbolic links here, which is what makes this cover Windows.
 			if (!entry.isSymbolicLink()) continue;
 			if (LOADER_OWNED_LINKS.has(entry.name) && dirPath === loaderOwnedDir) continue;
 			// An unresolvable link is rejected for the same reason a foreign one is: nothing certified what
@@ -1641,7 +1641,13 @@ async function claimDeploymentDirectory(deploymentDirPath: string, componentName
 		// another component's candidate being extracted right now. Only the component's own preparation lock
 		// serializes claims, and that lock does not span components, so removing an unattributable directory
 		// here can delete a live build. Refusing costs a retry; reclaiming costs someone else's deploy.
-		if (owner === undefined && (await readdir(deploymentDirPath)).length > 0) {
+		// ENOENT means the claimant removed it between the failed mkdir and this read (a failed build under a
+		// duplicated id discards its whole directory), which is an empty directory by another name.
+		const entries = await readdir(deploymentDirPath).catch((error: NodeJS.ErrnoException) => {
+			if (error?.code === 'ENOENT') return [];
+			throw error;
+		});
+		if (owner === undefined && entries.length > 0) {
 			throw new Error(
 				`Deployment id ${basename(deploymentDirPath)} is already in use by a build that has not named its ` +
 					`component yet`
@@ -2634,7 +2640,11 @@ async function syncArtifactAncestors(deploymentDirPath: string): Promise<void> {
  * after it may compensate, because the live path holds the candidate and renaming the aside back over it
  * cannot succeed.
  */
-export async function activateCandidateApplication(application: Application, deploymentId: string): Promise<void> {
+export async function activateCandidateApplication(
+	application: Application,
+	deploymentId: string,
+	options: { afterJournal?: () => Promise<void> } = {}
+): Promise<void> {
 	const liveDirPath = application.dirPath;
 	const candidateDirPath = candidateApplicationPath(liveDirPath, deploymentId);
 	const deploymentDirPath = candidateDeploymentDirPath(liveDirPath, deploymentId);
@@ -2720,6 +2730,11 @@ export async function activateCandidateApplication(application: Application, dep
 			// An existing journal is a retry of this same activation, not a conflict.
 			if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 		}
+
+		// Inside the boundary, and after the journal: a failure here is compensated and returned to dormant,
+		// and a CRASH here is a roll-forward rather than a config pointing at a release nothing activated.
+		pendingEffect = 'publish the root configuration';
+		await options.afterJournal?.();
 
 		pendingEffect = 'prepare the component staging directory';
 		await ensureExtractionStagingDirectory(asideStagingDir);
@@ -4235,18 +4250,30 @@ async function activateStagedArtifact(
 	if (!descriptor) throw unavailable('it does not record what its build decided');
 
 	await options.admitIsolation?.(descriptor);
-	const unpublishRootConfig = descriptor.rootConfig
-		? await options.publishRootConfig?.(descriptor.rootConfig)
-		: undefined;
-	if (!application.isNewComponent) {
-		application.packageMetadataChanged = installedRuntimeChanged(
-			previousPackageMetadata,
-			await readInstalledPackageMetadata(candidateDirPath),
-			descriptor.installationIsOpaque
-		);
-	}
+
+	let unpublishRootConfig: (() => Promise<void>) | void;
 	try {
-		await activateCandidateApplication(application, artifactId);
+		if (!application.isNewComponent) {
+			application.packageMetadataChanged = installedRuntimeChanged(
+				previousPackageMetadata,
+				await readInstalledPackageMetadata(candidateDirPath),
+				descriptor.installationIsOpaque
+			);
+		}
+		// Published AFTER the activation journal is durable, not before. A crash in between would otherwise
+		// leave config naming the staged release, the live tree still on the previous one, and no journal —
+		// and the next boot's `installApplications()` re-resolves and installs that package identifier from
+		// scratch instead of activating the certified artifact sitting in `.deploy-staging`, which is exactly
+		// the substitution this whole step exists to prevent. With the journal already on disk, the same
+		// crash is a roll-forward to the certified bytes. Payload artifacts record `rootConfig: null` and
+		// never reach this.
+		await activateCandidateApplication(application, artifactId, {
+			afterJournal: descriptor.rootConfig
+				? async () => {
+						unpublishRootConfig = await options.publishRootConfig?.(descriptor.rootConfig!);
+					}
+				: undefined,
+		});
 	} catch (error) {
 		// Only a pre-commit failure is compensable — past the swap the component IS the new release, and
 		// unpublishing its config would leave the tree and the config describing different versions.
