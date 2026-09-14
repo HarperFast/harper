@@ -228,12 +228,27 @@ describe('Table.getRecordCount', () => {
 		await last;
 		Trimmed.primaryStore.flushSync?.();
 
-		let nullValued = 0;
+		// Counted per end, not table-wide: the sampler reads a run from each end, so a table-wide total
+		// can clear the floor on head entries alone while the reverse sample is entirely live -- which is a
+		// rate of 0.5, not the rate-0 case this test exists for.
+		let leadingNulls = 0;
+		let trailingNulls = 0;
 		for (const { value } of Trimmed.primaryStore.getRange({ start: true, lazy: true, snapshot: false })) {
-			if (value == null) nullValued++;
+			if (value != null) break;
+			leadingNulls++;
 		}
-		if (nullValued < MIN_ESTIMATOR_SAMPLE) {
-			return this.skip(); // the engine reclaimed the deletion entries, so the sampler never sees them
+		for (const { value } of Trimmed.primaryStore.getRange({
+			start: '\uffff',
+			reverse: true,
+			lazy: true,
+			snapshot: false,
+		})) {
+			if (value != null) break;
+			trailingNulls++;
+		}
+		if (leadingNulls < MIN_ESTIMATOR_SAMPLE || trailingNulls < MIN_ESTIMATOR_SAMPLE) {
+			// the engine reclaimed the deletion entries, so the sampler never sees an all-deleted end
+			return this.skip();
 		}
 
 		const result = await Trimmed.getRecordCount({ timeLimit: -1 });
@@ -242,6 +257,37 @@ describe('Table.getRecordCount', () => {
 			lower <= LIVE && LIVE <= upper,
 			`range [${lower}, ${upper}] must contain the ${LIVE} live records between the deleted ends`
 		);
+	});
+
+	it('does not round the estimate away when the physical base dwarfs it', async function () {
+		this.timeout(120000);
+		// The reported precision is derived from the interval, whose upper end is the *physical* base --
+		// on a churn-heavy table that exceeds the *calibrated* estimate by orders of magnitude. A single
+		// corrective division cannot walk a unit that large back below the estimate, so the estimate
+		// rounds to zero and is published as the interval's lower end instead.
+		const store = EstimatorTable.primaryStore;
+		if (typeof store.createCountEstimator !== 'function') return this.skip();
+		const originalEstimator = store.createCountEstimator;
+		const originalCount = store.estimateCount;
+		const ownedEstimator = Object.hasOwn(store, 'createCountEstimator');
+		const ownedCount = Object.hasOwn(store, 'estimateCount');
+		store.createCountEstimator = () => ({
+			advance() {},
+			estimate: () => ({ count: LIVE_ROWS, confidence: 0.5 }),
+		});
+		store.estimateCount = () => ({ count: 9_900_000, confidence: 0.5 });
+		try {
+			const result = await EstimatorTable.getRecordCount({ timeLimit: -1 });
+			assert.ok(
+				result.recordCount >= LIVE_ROWS * 0.9,
+				`reported ${result.recordCount} for ~${LIVE_ROWS} live records; the estimate was rounded away by a unit taken from the physical base`
+			);
+		} finally {
+			if (ownedEstimator) store.createCountEstimator = originalEstimator;
+			else delete store.createCountEstimator;
+			if (ownedCount) store.estimateCount = originalCount;
+			else delete store.estimateCount;
+		}
 	});
 
 	it('stops scanning when the base keeps saying the scan is past halfway', async function () {

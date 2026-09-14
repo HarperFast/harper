@@ -6154,6 +6154,7 @@ export function makeTable(options) {
 			const canEstimate =
 				typeof primaryStore.createCountEstimator === 'function' && typeof primaryStore.estimateCount === 'function';
 			let estimatorFailed = false;
+			let warnedNoBase = false;
 			let checkpoints = 0;
 			let checkpointedEntries = 0;
 			let recordCount = 0;
@@ -6186,6 +6187,21 @@ export function makeTable(options) {
 						entryCount = 0;
 					}
 				} else if (!canEstimate) entryCount = primaryStore.getStats().entryCount;
+				if (!entryCount && canEstimate && !estimatorFailed) {
+					// Range estimates are block-granular and can report 0 for a store whose entries are still
+					// in the memtable. Without a base the escape cannot fire at all, so fall back to the
+					// whole-store property rather than silently walking the table.
+					try {
+						const wholeStore = primaryStore.getEstimatedKeyCount();
+						entryCount = Number.isFinite(wholeStore) && wholeStore > 0 ? wholeStore : 0;
+					} catch {
+						entryCount = 0;
+					}
+					if (!entryCount && !warnedNoBase) {
+						warnedNoBase = true;
+						logger.debug?.(`No usable key-count estimate for ${tableName}; counting records by full scan`);
+					}
+				}
 				// Zero is "no usable base": degrade to the exact scan. The checkpoint ceiling is what stops a
 				// base that keeps undershooting from holding the halfway test false forever and walking the
 				// whole table; the reverse sample is bounded by `limit` in turn.
@@ -6244,12 +6260,8 @@ export function makeTable(options) {
 				// Use the actual entries sampled, not limit*2: the reverse scan can yield fewer than `limit`
 				// (concurrent deletions under snapshot:false, or an overestimated entryCount), and counting
 				// those un-scanned slots would inflate the denominator and underestimate the rate.
-				const sampleSize = limit + reverseScanned;
-				const recordRate = (recordCount + firstRecordCount) / sampleSize;
-				const variance =
-					Math.pow((recordCount - firstRecordCount + 1) / limit / 2, 2) + // variance between samples
-					(recordRate * (1 - recordRate)) / sampleSize;
-
+				const sampledRecords = recordCount + firstRecordCount;
+				const recordRate = sampledRecords / (limit + reverseScanned);
 				// Endpoints for the extrapolation base, spanning both ways an estimated base can be wrong:
 				// every remaining entry superseded (only what was sampled is live) through every remaining
 				// entry live (the uncalibrated physical count). Churn concentrated outside the sampled ends
@@ -6258,22 +6270,19 @@ export function makeTable(options) {
 				// this is a widened heuristic interval, not a guaranteed bound on the live count.
 				const baseMin = entriesScanned + reverseScanned;
 				const baseMax = Math.max(entriesScanned + remainderPhysical, entryCount, baseMin);
-				// a calibration that undershoots must not extrapolate below what the samples already counted
 				const estimatedRecordCount = Math.round(recordRate * Math.max(entryCount, baseMin));
-				// TODO: This uses a normal/Wald interval, but a binomial confidence interval is probably better calculated using
-				// Wilson score interval or Agresti-Coull interval (I think the latter is a little easier to calculate/implement).
-				const rateSd = Math.sqrt(variance);
-				const lowerCiLimit = Math.max((recordRate - 1.96 * rateSd) * baseMin, recordCount + firstRecordCount);
-				// Every unsampled entry could be live, and the sampled rate is evidence about the ends only.
-				// Narrowing this below `baseMax` would have narrowed it exactly when the ends are least
-				// representative of the middle: sampled ends that are entirely deletion entries give a rate
-				// of 0, which collapses a statistical upper end to ~0 while live rows sit in between.
-				const upperCiLimit = baseMax;
-				const spread = Math.max((upperCiLimit - lowerCiLimit) / 2, 1);
-				let significantUnit = Math.pow(10, Math.round(Math.log10(spread)));
-				if (significantUnit > estimatedRecordCount) significantUnit = significantUnit / 10;
-				const lower = Math.round(lowerCiLimit);
-				const upper = Math.round(upperCiLimit);
+				// The samples counted these directly, and the entries between them can only add; everything
+				// outside the samples could be live. A statistical interval inside those endpoints would be
+				// narrowest exactly where the ends are least representative of the middle -- sampled ends
+				// that are all deletion entries give a rate of 0, collapsing an upper end to ~0 with live
+				// rows in between -- so the endpoints are the evidence itself.
+				const lower = sampledRecords;
+				const upper = Math.round(baseMax);
+				// Report only the precision the interval supports, but never so coarse a unit that the
+				// estimate rounds away: `baseMax` is physical and can exceed a calibrated estimate by
+				// orders of magnitude, which a single division cannot walk back.
+				let significantUnit = Math.pow(10, Math.round(Math.log10(Math.max((upper - lower) / 2, 1))));
+				while (significantUnit > estimatedRecordCount && significantUnit > 1) significantUnit /= 10;
 				recordCount = Math.min(
 					Math.max(Math.round(estimatedRecordCount / significantUnit) * significantUnit, lower),
 					upper
