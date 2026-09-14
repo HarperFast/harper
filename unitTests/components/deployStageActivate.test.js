@@ -459,21 +459,14 @@ describe('an activation that fails before it commits', () => {
 	// The live tree is restored by compensation, but the artifact also has to come back to DORMANT — no
 	// journal — or the next preparation reads live-plus-candidate as an abandoned activation and deletes the
 	// very artifact the operator staged.
-	// The failure has to land after verification, after `publishRootConfig`, and after the journal is
-	// written, or none of that is exercised. Only ONE injection reaches that window: make the components
-	// ROOT read-only, so the rename that moves the live tree aside (or, for a first deploy, the rename that
-	// moves the candidate in) fails for want of write permission on its parent, while every directory the
-	// earlier steps write into — the deployment directory, the lock root, the aside staging directory —
-	// stays writable.
-	//
-	// The aside staging directory is pre-created for the same reason: absent, the preparation preamble skips
-	// its recovery branch and creates it later from inside the boundary; present as a regular FILE, the
-	// preamble's own `ensureExtractionStagingDirectory` throws first and the test proves nothing.
+	// A read-only components ROOT is what lands the failure past verification, `publishRootConfig` and the
+	// journal write: reads still succeed, the deployment directory and lock root stay writable, and only a
+	// rename whose parent is the root fails. The aside staging directory is pre-created so the preparation
+	// preamble takes its recovery branch here rather than creating it later from inside the boundary.
 	/**
-	 * Whether a read-only directory actually denies this process a write. Root ignores the mode bits, and
-	 * Windows does not model them this way, so on those the injection silently does nothing — and a test
-	 * whose injection does nothing is the failure mode this fixture already hit twice. Probing is what keeps
-	 * an ineffective environment SKIPPING rather than passing vacuously or failing spuriously.
+	 * Whether a read-only directory actually denies this process a write. Root ignores the mode bits and
+	 * Windows does not model them this way, so the injection below would silently do nothing there; probing
+	 * keeps such an environment skipping rather than passing with nothing exercised.
 	 */
 	const readOnlyDirectoryDeniesWrites = async () => {
 		const probe = await fs.mkdtemp(path.join(os.tmpdir(), 'stage-activate-probe-'));

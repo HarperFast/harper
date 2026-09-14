@@ -1415,6 +1415,16 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 						`so the bytes activated later would not be the bytes this build certified`
 				);
 			}
+			// Inside the build, but named ABSOLUTELY — so it names `.deploy-staging/<id>/…`, a path activation
+			// renames away. `repairRelocatedDependencyLinks` re-points only what lives under `node_modules`, so
+			// anything else would dangle in the release this stage certified. A relative link to the same
+			// target survives the rename untouched.
+			if (isAbsolute(await readlink(entryPath))) {
+				throw new Error(
+					`Cannot stage ${componentName}: ${entryPath} names its target inside the build by absolute path, ` +
+						`which activation moves — link it relatively so it survives the swap`
+				);
+			}
 		}
 	};
 	await walk(candidateDirPath);

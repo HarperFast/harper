@@ -30,8 +30,10 @@ const HOSTNAME_SCHEMA = Joi.string().hostname();
 const IPV6_SCHEMA = Joi.string().ip({ version: 'ipv6' });
 
 // A deployment id names both an hdb_deployment row and a staging directory, so it is held to the shape
-// the recorder mints (`randomUUID()`) rather than to whatever a filesystem would accept.
-const DEPLOYMENT_ID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+// the recorder mints — `randomUUID()`, which is lowercase. LOWERCASE ONLY, because a case-insensitive
+// filesystem resolves an uppercase id to the real directory while every string compare against it fails:
+// the retention pin would not recognise the artifact the request is about to activate, and would evict it.
+const DEPLOYMENT_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 module.exports = {
 	getDropCustomFunctionValidator,

@@ -1007,13 +1007,18 @@ async function deployComponent(req) {
 				const unconfirmed = response.replicated.filter((peer) => peer && peer.staged !== true);
 				if (unconfirmed.length > 0) {
 					const detail = unconfirmed.map((peer) => peer.node ?? 'unknown').join(', ');
-					throw new ServerError(
+					const unconfirmedError = new ServerError(
 						`Component '${application.name}' was staged on the origin node, but ${unconfirmed.length} peer ` +
 							`node(s) did not confirm staging: ${detail}. Either they are unreachable, or they run a build ` +
 							`that predates staged deploys — which treats this request as an ordinary deploy, so the ` +
 							`release is already serving there. Check those nodes before activating deployment ` +
 							`${recorder.deploymentId}, or pass ignore_replication_errors: true to accept the difference.`
 					);
+					// The origin's own artifact IS staged and activatable, and the error text tells the operator
+					// to activate it — so the row must say `staged`, or `list_deployments status=staged` would
+					// not list the very deployment the error names.
+					unconfirmedError.stagedOnOrigin = true;
+					throw unconfirmedError;
 				}
 			}
 		}
@@ -1028,9 +1033,19 @@ async function deployComponent(req) {
 			// the tarball when it's still the artifact you'd debug or retry with: failed deploys
 			// don't reach this branch, and a deploy that reached here only because
 			// ignore_replication_errors masked failed peers keeps its payload for those peers.
+			// Never for a stage: the artifact on disk is not yet a release anyone can re-derive, and retention
+			// can evict it (it shares `deployment_stagingRetention_maxCount` with incidental dormant builds),
+			// so dropping the tarball here is how a staged release becomes unrecoverable — no tree, no bytes,
+			// and a row still reporting `staged`. An operator can still reclaim it deliberately with
+			// delete_deployment_payload once they accept that.
 			const payloadSize = recorder.row.payload_size;
 			const retentionMaxSize = getPayloadRetentionMaxSize();
-			if (typeof payloadSize === 'number' && payloadSize > retentionMaxSize && recorder.getFailedPeers().length === 0) {
+			if (
+				mode !== 'stage' &&
+				typeof payloadSize === 'number' &&
+				payloadSize > retentionMaxSize &&
+				recorder.getFailedPeers().length === 0
+			) {
 				const freed = recorder.dropPayload();
 				if (freed > 0) emit('payload_dropped', { payload_size: freed, max_size: retentionMaxSize });
 			}
@@ -1080,7 +1095,7 @@ async function deployComponent(req) {
 		// install output, and failed_peers the caller needs.
 		if (recorder) {
 			try {
-				await recorder.finish('failed', err);
+				await recorder.finish(err?.stagedOnOrigin ? 'staged' : 'failed', err);
 			} catch (finishErr) {
 				log.warn('Failed to record deployment failure row', finishErr);
 			}
