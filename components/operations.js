@@ -1007,7 +1007,12 @@ async function deployComponent(req) {
 			// The wording stays at "did not confirm". An unreachable peer and one that dropped the request
 			// look identical from here, and telling an operator those nodes went live would be a guess.
 			if (mode === 'stage' && Array.isArray(response?.replicated)) {
-				const unconfirmed = response.replicated.filter((peer) => peer && peer.staged !== true);
+				// The entry shape is the replicator's, not this repo's — `normalizePeerResult` already tolerates
+				// two of them — so the marker is read flat or from a wrapped body. Assuming flat would make
+				// every peer in a fully-upgraded cluster read as unconfirmed.
+				const confirmed = (peer) =>
+					peer?.staged === true || peer?.value?.staged === true || peer?.body?.staged === true;
+				const unconfirmed = response.replicated.filter((peer) => peer && !confirmed(peer));
 				if (unconfirmed.length > 0) {
 					const detail = unconfirmed.map((peer) => peer.node ?? 'unknown').join(', ');
 					const unconfirmedError = new ServerError(

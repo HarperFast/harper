@@ -181,7 +181,38 @@ describe('staging a build without activating it', () => {
 						await fs.symlink('../../../a1/web/shared', path.join(candidateDirPath, 'assets', 'shared'), 'dir');
 					},
 				}),
-			/leaves the build before re-entering it/
+			/leaving the build/
+		);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('refuses a link whose escape is hidden behind an intermediate symlink', async function () {
+		this.timeout(20000);
+		if (process.platform === 'win32') return this.skip();
+		const root = await newRoot('hidden-escape');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'STAGED\n' })
+		);
+
+		await assert.rejects(
+			() =>
+				prepareApplication(app, {
+					mode: 'stage',
+					artifactId: 'a1',
+					validateCandidate: async (candidateDirPath) => {
+						// `up` spells one segment but resolves to `..`, so counting `..` in the target never dips
+						// below zero and a lexical check passes it. Only following the links prefix by prefix sees
+						// that the walk leaves the candidate.
+						await fs.mkdir(path.join(candidateDirPath, 'a', 'b'), { recursive: true });
+						await fs.mkdir(path.join(candidateDirPath, 'shared'), { recursive: true });
+						await fs.symlink('..', path.join(candidateDirPath, 'a', 'b', 'up'), 'dir');
+						await fs.symlink('up/../../../a1/web/shared', path.join(candidateDirPath, 'a', 'b', 'link'), 'dir');
+					},
+				}),
+			/leaving the build/
 		);
 		await fs.rm(root, { recursive: true, force: true });
 	});

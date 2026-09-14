@@ -1414,33 +1414,13 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 						`so the bytes activated later would not be the bytes this build certified`
 				);
 			}
-			// Inside the build, but named ABSOLUTELY — so it names `.deploy-staging/<id>/…`, a path activation
-			// renames away. `repairRelocatedDependencyLinks` re-points these after the swap, but it runs PAST
-			// THE COMMIT POINT and can only warn: it logs and continues when a re-point fails, and logs and
-			// skips a whole subtree on EACCES/EMFILE. So relying on it means a component can go live holding a
-			// junction to a path that no longer exists while the operation reports success. Staging is the
-			// cheap place to fail instead, and it fails closed.
-			//
-			// The cost is real: npm writes absolute junctions under `node_modules` on Windows for a
-			// `file:`/workspace dependency, so such a component deploys immediately but cannot be staged until
-			// its links are relative. A refusal naming the path beats a release that loads on POSIX only.
+			// `repairRelocatedDependencyLinks` re-points links after the swap, but it runs PAST THE COMMIT
+			// POINT and can only warn — it logs and continues on a failed re-point, and skips a whole subtree
+			// on EACCES/EMFILE — so a component could go live holding a link to a path that no longer exists
+			// while the operation reports success. Staging fails closed instead. The cost: npm writes absolute
+			// junctions under `node_modules` on Windows for a `file:`/workspace dependency, so such a component
+			// deploys immediately but cannot be staged until its links are relative.
 			const linkTarget = await readlink(entryPath);
-			// The containment check above tests where the link resolves TODAY. A relative target that climbs
-			// out of the candidate and back in — `../../../<id>/<component>/assets` — resolves inside it now
-			// and somewhere else entirely once activation renames the tree, because the same expression is
-			// then evaluated from `components/<component>/…`. So the EXPRESSION has to stay inside too: track
-			// the link's depth below the candidate root and refuse one that ever ascends past it.
-			let depth = relative(candidateDirPath, dirname(entryPath)).split(sep).filter(Boolean).length;
-			for (const segment of linkTarget.split(/[\\/]/)) {
-				if (segment === '..') depth -= 1;
-				else if (segment !== '.' && segment !== '') depth += 1;
-				if (depth < 0) {
-					throw new Error(
-						`Cannot stage ${componentName}: ${entryPath} points at ${linkTarget}, which leaves the build before ` +
-							`re-entering it — after activation moves the tree that path resolves somewhere else`
-					);
-				}
-			}
 			if (isAbsolute(linkTarget)) {
 				throw new Error(
 					`Cannot stage ${componentName}: ${entryPath} names its target inside the build by absolute path ` +
@@ -1448,6 +1428,23 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 						`writes absolute junctions for 'file:' and workspace dependencies, so those have to be relative ` +
 						`before the component can be staged.`
 				);
+			}
+			// Where the link ENDS UP is not enough: a target that leaves the candidate and comes back resolves
+			// inside it today and somewhere else once activation renames the tree, because the same relative
+			// expression is then evaluated from `components/<component>/…`. Counting `..` segments does not
+			// catch it either, since an intermediate symlink (`up -> ..`) reduces depth without spelling it.
+			// So every PREFIX of the walk is resolved, with symlinks followed as the filesystem will follow
+			// them, and each one has to still be inside the candidate.
+			let prefix = dirname(entryPath);
+			for (const segment of linkTarget.split(/[\\/]/)) {
+				if (segment === '' || segment === '.') continue;
+				prefix = await realpath(join(prefix, segment)).catch(() => join(prefix, segment));
+				if (prefix !== ownedRoot && !prefix.startsWith(ownedRoot + sep)) {
+					throw new Error(
+						`Cannot stage ${componentName}: ${entryPath} reaches ${prefix} on its way to ${linkTarget}, ` +
+							`leaving the build — after activation moves the tree that path resolves somewhere else`
+					);
+				}
 			}
 		}
 	};
@@ -2835,20 +2832,26 @@ export async function activateCandidateApplication(
 		});
 	} catch (error) {
 		await compensate(error, pendingEffect, restoreLive, application);
-		// BEFORE `returnToDormant`, which durably retires the journal. Undoing the config afterwards — or a
-		// stack frame later — leaves a window where config names the staged release and no journal survives to
-		// roll forward, so the next boot re-resolves that package from the registry instead of activating the
-		// certified artifact sitting beside it.
+		// Before the journal is retired: config naming the staged release with no journal to roll forward is
+		// what sends the next boot to the registry instead of the certified artifact.
+		let configRestored = true;
 		if (undoAfterJournal) {
-			await undoAfterJournal().catch((undoError) =>
-				application.logger.warn(
-					`Restored ${application.name} after a failed activation but could not restore its root config, ` +
-						`which still names deployment ${deploymentId}:`,
-					undoError
-				)
+			configRestored = await undoAfterJournal().then(
+				() => true,
+				(undoError) => {
+					application.logger.warn(
+						`Restored ${application.name} after a failed activation but could not restore its root config, ` +
+							`which still names deployment ${deploymentId}; keeping its activation journal so recovery can ` +
+							`roll the certified build forward instead:`,
+						undoError
+					);
+					return false;
+				}
 			);
 		}
-		await returnToDormant();
+		// An undo that failed leaves exactly the state the journal exists for. Retiring it here would strand
+		// config on a release that is not live with nothing saying how to get there.
+		if (configRestored) await returnToDormant();
 		throw error;
 	}
 
