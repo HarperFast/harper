@@ -123,8 +123,10 @@ describe('dropTable racing a cross-worker source-fill commit', function () {
 	// error on the whole environment. The binding retires the family and drops it behind the admitted
 	// commit (rocksdb-js#850); an older binding drops inline and fails this on iteration 0.
 	it('leaves the storage environment writable and the catalog clean', async function () {
-		if (!('columnFamily.pendingReclaims' in (database({ database: 'test', table: null }).getStats?.() ?? {})))
-			return this.skip();
+		assert.ok(
+			'columnFamily.pendingReclaims' in (database({ database: 'test', table: null }).getStats?.() ?? {}),
+			'the drop path no longer drains in-flight writes and needs a @harperfast/rocksdb-js that defers physical column-family drops behind admitted commits (rocksdb-js#850); bump the pin'
+		);
 		let raced = 0;
 		for (let i = 0; i < ITERATIONS; i++) {
 			const name = `CrossDrop${i}`;
