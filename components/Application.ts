@@ -1389,6 +1389,10 @@ const LOADER_OWNED_LINKS = new Set(['harper', 'harperdb']);
  */
 async function assertOwnedArtifactTree(candidateDirPath: string, componentName: string): Promise<void> {
 	const ownedRoot = await realpath(candidateDirPath);
+	// The loader repairs the component's OWN `node_modules/harper`, not a copy nested inside a dependency,
+	// so only that one path is exempt. Matching the name at any depth would let `dep/node_modules/harper`
+	// point anywhere and still pass.
+	const loaderOwnedDir = join(candidateDirPath, 'node_modules');
 	const walk = async (dirPath: string): Promise<void> => {
 		const entries = await readdir(dirPath, { withFileTypes: true });
 		for (const entry of entries) {
@@ -1399,7 +1403,7 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 			}
 			// Junctions report as symbolic links here too, which is what makes this cover Windows.
 			if (!entry.isSymbolicLink()) continue;
-			if (LOADER_OWNED_LINKS.has(entry.name) && basename(dirPath) === 'node_modules') continue;
+			if (LOADER_OWNED_LINKS.has(entry.name) && dirPath === loaderOwnedDir) continue;
 			// An unresolvable link is rejected for the same reason a foreign one is: nothing certified what
 			// it will resolve to by the time somebody activates it.
 			const target = await realpath(entryPath).catch(() => undefined);
@@ -1621,8 +1625,18 @@ async function claimDeploymentDirectory(deploymentDirPath: string, componentName
 					`deploy it with deployment_id, or deploy again to build a new one`
 			);
 		}
-		// No completion marker: an abandoned build from a request delivered twice, or one this node crashed
-		// during. Nothing certified it, so nothing is lost by rebuilding over it.
+		// Ownership has to be POSITIVE to reclaim. A directory that names nobody is either empty — a claim
+		// that got no further — or a build in flight that has not written its sidecar yet, and the second is
+		// another component's candidate being extracted right now. Only the component's own preparation lock
+		// serializes claims, and that lock does not span components, so removing an unattributable directory
+		// here can delete a live build. Refusing costs a retry; reclaiming costs someone else's deploy.
+		if (owner === undefined && (await readdir(deploymentDirPath)).length > 0) {
+			throw new Error(
+				`Deployment id ${basename(deploymentDirPath)} is already in use by a build that has not named its ` +
+					`component yet`
+			);
+		}
+		// Nothing certified it, so nothing is lost by rebuilding over it.
 		await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 		await mkdir(deploymentDirPath, { mode: 0o700 });
 	}
@@ -2626,19 +2640,6 @@ export async function activateCandidateApplication(application: Application, dep
 	}
 
 	const journalPath = activationJournalPath(liveDirPath, deploymentId);
-	try {
-		await writeControlFileDurably(
-			journalPath,
-			JSON.stringify({
-				v: ACTIVATION_JOURNAL_VERSION,
-				component: application.name,
-				candidateId: deploymentId,
-			})
-		);
-	} catch (error) {
-		// An existing journal is a retry of this same activation, not a conflict.
-		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-	}
 
 	// B1 — the live tree moves aside. It stays the rollback source until B4 retires it.
 	let asidePath: string | undefined;
@@ -2688,18 +2689,34 @@ export async function activateCandidateApplication(application: Application, dep
 	};
 
 	/**
-	 * One pre-commit failure boundary, opened as soon as the journal exists.
+	 * One pre-commit failure boundary, and the journal write is INSIDE it.
 	 *
-	 * Everything from here to the commit rename can fail — creating the aside staging directory, reading the
-	 * live path, the move-aside, writing the prior-absent record, flushing either parent. Each of those runs
-	 * AFTER the journal is published, so a failure that only rethrew would leave a journal behind: the next
-	 * settlement then deletes a certified artifact, or (first deploy, live absent) activates it with nobody
-	 * asking. So they share one catch that restores and then returns the artifact to dormant.
+	 * Everything from the journal write to the commit rename can fail — a durable write that lands the file
+	 * and then fails its parent flush, creating the aside staging directory, reading the live path, the
+	 * move-aside, writing the prior-absent record, flushing either parent. Any of those leaves a journal
+	 * behind if it only rethrows, and the next settlement then deletes a certified artifact, or (first
+	 * deploy, live absent) activates it with nobody asking. So they share one catch that restores and then
+	 * returns the artifact to dormant.
 	 *
 	 * Nothing below the commit rename may enter it — see B2.
 	 */
-	let pendingEffect = 'prepare the component staging directory';
+	let pendingEffect = 'record the activation';
 	try {
+		try {
+			await writeControlFileDurably(
+				journalPath,
+				JSON.stringify({
+					v: ACTIVATION_JOURNAL_VERSION,
+					component: application.name,
+					candidateId: deploymentId,
+				})
+			);
+		} catch (error) {
+			// An existing journal is a retry of this same activation, not a conflict.
+			if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+		}
+
+		pendingEffect = 'prepare the component staging directory';
 		await ensureExtractionStagingDirectory(asideStagingDir);
 		pendingEffect = 'read the live component directory';
 		const liveExists = await lstat(liveDirPath).then(
@@ -4025,8 +4042,13 @@ export type PrepareApplicationOptions = {
 	 * these options have been constructed.
 	 */
 	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; isolated: boolean };
-	/** `activate` only: publish the artifact's recorded root-config entry, immediately before the swap. */
-	publishRootConfig?: (entry: Record<string, unknown>) => Promise<void>;
+	/**
+	 * `activate` only: publish the artifact's recorded root-config entry, immediately before the swap. May
+	 * return an undo, run if the activation then fails before it commits — otherwise a failed activation
+	 * leaves config naming a release that is not live, which the next boot install would resolve and build
+	 * from scratch over a component whose certified artifact is sitting beside it.
+	 */
+	publishRootConfig?: (entry: Record<string, unknown>) => Promise<(() => Promise<void>) | void>;
 	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
 	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
 };
@@ -4208,7 +4230,9 @@ async function activateStagedArtifact(
 	if (!descriptor) throw unavailable('it does not record what its build decided');
 
 	await options.admitIsolation?.(descriptor);
-	if (descriptor.rootConfig) await options.publishRootConfig?.(descriptor.rootConfig);
+	const unpublishRootConfig = descriptor.rootConfig
+		? await options.publishRootConfig?.(descriptor.rootConfig)
+		: undefined;
 	if (!application.isNewComponent) {
 		application.packageMetadataChanged = installedRuntimeChanged(
 			previousPackageMetadata,
@@ -4216,7 +4240,22 @@ async function activateStagedArtifact(
 			descriptor.installationIsOpaque
 		);
 	}
-	await activateCandidateApplication(application, artifactId);
+	try {
+		await activateCandidateApplication(application, artifactId);
+	} catch (error) {
+		// Only a pre-commit failure is compensable — past the swap the component IS the new release, and
+		// unpublishing its config would leave the tree and the config describing different versions.
+		if (!compensationIncomplete(error) && unpublishRootConfig) {
+			await unpublishRootConfig().catch((undoError) =>
+				application.logger.warn(
+					`Restored ${application.name} after a failed activation but could not restore its root config, ` +
+						`which still names deployment ${artifactId}:`,
+					undoError
+				)
+			);
+		}
+		throw error;
+	}
 }
 
 /**

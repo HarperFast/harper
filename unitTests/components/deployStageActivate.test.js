@@ -156,6 +156,37 @@ describe('staging a build without activating it', () => {
 		await fs.rm(root, { recursive: true, force: true });
 		await fs.rm(outside, { recursive: true, force: true });
 	});
+
+	it('exempts only the loader-owned link at the top level, not a copy nested in a dependency', async function () {
+		this.timeout(20000);
+		if (process.platform === 'win32') return this.skip();
+		const root = await newRoot('nested-loader-link');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'stage-nested-'));
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'STAGED\n' })
+		);
+
+		await assert.rejects(
+			() =>
+				prepareApplication(app, {
+					mode: 'stage',
+					artifactId: 'a1',
+					validateCandidate: async (candidateDirPath) => {
+						// The loader repairs the component's own node_modules/harper. It never touches one nested
+						// inside a dependency, so that name there is an ordinary external link.
+						const nested = path.join(candidateDirPath, 'node_modules', 'dep', 'node_modules');
+						await fs.mkdir(nested, { recursive: true });
+						await fs.symlink(outside, path.join(nested, 'harper'), 'dir');
+					},
+				}),
+			/links outside the build/
+		);
+		await fs.rm(root, { recursive: true, force: true });
+		await fs.rm(outside, { recursive: true, force: true });
+	});
 });
 
 describe('claiming a deployment id', () => {
@@ -198,6 +229,27 @@ describe('claiming a deployment id', () => {
 		await stage(root, 'web', 'a1', 'STAGED v2\n');
 
 		assert.strictEqual(await fs.readFile(path.join(dir, 'web', 'index.js'), 'utf8'), 'STAGED v2\n');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('refuses an id held by a build that has not named its component yet', async function () {
+		this.timeout(20000);
+		const root = await newRoot('claim-unattributable');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		// A build in flight under this id, caught before it is attributable: no sidecar yet, and no single
+		// component directory for ownership to be inferred from either — an extraction that has written its
+		// tarball but not yet its tree. It may belong to ANOTHER component, and only that component's own
+		// lock serializes its claim, so removing it here would delete a live build.
+		const dir = deploymentDir(root, 'a1');
+		await fs.mkdir(dir, { recursive: true });
+		await fs.writeFile(path.join(dir, 'payload.tgz'), 'BEING BUILT\n');
+
+		await assert.rejects(() => stage(root, 'web', 'a1', 'WEB STAGED\n'), /has not named its component yet/);
+		assert.strictEqual(
+			await fs.readFile(path.join(dir, 'payload.tgz'), 'utf8'),
+			'BEING BUILT\n',
+			'the in-flight build is left alone'
+		);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -407,28 +459,38 @@ describe('an activation that fails before it commits', () => {
 	// The live tree is restored by compensation, but the artifact also has to come back to DORMANT — no
 	// journal — or the next preparation reads live-plus-candidate as an abandoned activation and deletes the
 	// very artifact the operator staged.
-	const failSwap = async (root, component, id) => {
-		const deployment = deploymentDir(root, id);
-		// Deny traversal into the deployment directory so the candidate cannot be renamed out of it. The
-		// rename fails after the journal is published, which is the window this covers.
-		await fs.chmod(deployment, 0o000);
+	// The failure has to land AFTER the journal is written, or none of the above is exercised. Putting a
+	// regular file where the aside staging directory belongs does exactly that: verification passes, the
+	// journal is published, and `ensureExtractionStagingDirectory` then refuses a path that is not a
+	// directory — the first step inside the boundary. Permission games cannot reach the same window, because
+	// the directory that has to be unwritable for the swap to fail is the one the journal lives in.
+	const blockAsideStaging = async (root, component) => {
+		const asideDir = path.join(root, '.deploy-aside', component);
+		await fs.mkdir(path.dirname(asideDir), { recursive: true, mode: 0o700 });
+		await fs.rm(asideDir, { recursive: true, force: true });
+		await fs.writeFile(asideDir, '');
+		return () => fs.rm(asideDir, { force: true });
+	};
+
+	const failActivation = async (root, component, id, options = {}) => {
+		const unblock = await blockAsideStaging(root, component);
 		try {
-			await assert.rejects(() =>
-				prepareApplication(applicationAt(root, component), { mode: 'activate', artifactId: id })
+			await assert.rejects(
+				() => prepareApplication(applicationAt(root, component), { mode: 'activate', artifactId: id, ...options }),
+				/EEXIST|not a directory/
 			);
 		} finally {
-			await fs.chmod(deployment, 0o700);
+			await unblock();
 		}
 	};
 
 	it('leaves an existing component live and its artifact dormant and retryable', async function () {
 		this.timeout(30000);
-		if (process.platform === 'win32') return this.skip(); // permission-denied renames are a POSIX shape
 		const root = await newRoot('compensate-existing');
 		await writeLive(root, 'web', 'LIVE v1\n');
 		await stage(root, 'web', 'a1', 'STAGED v2\n');
 
-		await failSwap(root, 'web', 'a1');
+		await failActivation(root, 'web', 'a1');
 
 		assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n', 'the previous version is back');
 		assert.strictEqual(
@@ -446,12 +508,11 @@ describe('an activation that fails before it commits', () => {
 
 	it('leaves a first-ever component absent and its artifact dormant, not rolled forward', async function () {
 		this.timeout(30000);
-		if (process.platform === 'win32') return this.skip();
 		const root = await newRoot('compensate-first');
 		await fs.mkdir(root, { recursive: true });
 		await stage(root, 'web', 'a1', 'STAGED v1\n');
 
-		await failSwap(root, 'web', 'a1');
+		await failActivation(root, 'web', 'a1');
 
 		assert.strictEqual(existsSync(path.join(root, 'web')), false, 'a first deploy that failed is still not live');
 		assert.strictEqual(
@@ -459,6 +520,26 @@ describe('an activation that fails before it commits', () => {
 			false,
 			'and recovery has nothing telling it to activate a component nobody activated'
 		);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('takes back the root-config entry it published, so config does not name a release that is not live', async function () {
+		this.timeout(30000);
+		const root = await newRoot('compensate-config');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		await stage(root, 'web', 'a1', 'STAGED v2\n', {
+			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: false }, isolated: false }),
+		});
+
+		const published = [];
+		await failActivation(root, 'web', 'a1', {
+			publishRootConfig: async (entry) => {
+				published.push(entry);
+				return async () => published.pop();
+			},
+		});
+
+		assert.deepStrictEqual(published, [], 'the entry that named the unactivated release was taken back');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 });

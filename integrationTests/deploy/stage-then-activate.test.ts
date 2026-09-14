@@ -27,6 +27,10 @@ import { authHeader, operation } from './redeploy-restart-flag-helpers.ts';
 
 const PROJECT = 'stage-then-activate';
 
+// `node` is in the default `applications.allowedSpawnCommands`. The command appends one line per run to
+// the build directory it runs in, so the line count IS the number of installs this artifact has had.
+const INSTALL_COUNTER_COMMAND = `node -e "require('node:fs').appendFileSync('install-count.txt','ran\\n')"`;
+
 /** Raw request, for the cases whose whole point is a non-2xx answer. */
 async function rawOperation(ctx: ContextWithHarper, body: Record<string, unknown>): Promise<any> {
 	const response = await fetch(ctx.harper.operationsAPIURL, {
@@ -86,6 +90,10 @@ suite('deploy_component stages a build and activates it later by deployment id',
 			project: PROJECT,
 			payload: await buildPayload(PROJECT, 2),
 			activate: false,
+			// Counts its own runs into the build directory. The activation later asserts the count is still 1,
+			// which is what proves the install did not run again — the tree being identical would not, since a
+			// rebuild from the same payload produces the same bytes.
+			install_command: INSTALL_COUNTER_COMMAND,
 		});
 
 		stagedId = response.deployment_id;
@@ -135,7 +143,12 @@ suite('deploy_component stages a build and activates it later by deployment id',
 		strictEqual(
 			await readFile(join(componentsRoot(ctx), PROJECT, 'not-rebuilt.txt'), 'utf8'),
 			'certified once',
-			'the live tree IS the certified tree — nothing was resolved, fetched or installed'
+			'the live tree IS the certified tree, not a fresh extract of the payload'
+		);
+		strictEqual(
+			(await readFile(join(componentsRoot(ctx), PROJECT, 'install-count.txt'), 'utf8')).trim(),
+			'ran',
+			'and its install ran exactly once, at staging time — the activation installed nothing'
 		);
 		strictEqual(existsSync(stagingDir(ctx, stagedId)), false, 'and the rename consumed the artifact');
 	});

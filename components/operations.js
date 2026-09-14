@@ -639,7 +639,11 @@ async function deployComponent(req) {
 			);
 		}
 	};
-	await assertIsolationAdmission(requestedIsolation ?? initiallyIsolated);
+	// Skipped for an activation: the artifact's descriptor is the authority for the isolation it wants, and
+	// `admitIsolation` runs the real check under the preparation lock. Admitting the CURRENT value here would
+	// refuse an activation whose artifact turns isolation OFF for a component whose present isolated state is
+	// itself the refusal — a 409 for the request that would fix it.
+	if (!isActivation) await assertIsolationAdmission(requestedIsolation ?? initiallyIsolated);
 	const { ingestCredentials, resolveCredentials } = require('./secretOperations.ts');
 	// An activation resolves, fetches and installs nothing, so there is no credential for it to carry.
 	// The validator rejects one; this keeps the ingest itself off the path rather than relying on that.
@@ -809,9 +813,21 @@ async function deployComponent(req) {
 			artifactId: req.deployment_id ?? req._deploymentId,
 			mode,
 			describeArtifact: () => ({ rootConfig: stagedRootConfig, isolated: Boolean(nowIsolated) }),
+			// Returns its own undo. Publication happens BEFORE the swap, in the same order a normal deploy
+			// uses, so an activation that fails pre-commit would otherwise leave config naming a release that
+			// is not live — and `installApplications()` would resolve and install that package from scratch at
+			// the next boot, over a component whose certified artifact is sitting right there. Restoring is
+			// best-effort and not durable (that is #2315 step 3's work); it is still the difference between a
+			// failed activation that changed nothing and one that re-points the component.
 			publishRootConfig: async (entry) => {
+				const previous = configUtils.getConfigObj()?.[req.project];
 				await configUtils.addConfig(req.project, entry);
 				env.initSync(true);
+				return async () => {
+					if (previous === undefined) configUtils.deleteConfigFromFile([req.project]);
+					else await configUtils.addConfig(req.project, previous);
+					env.initSync(true);
+				};
 			},
 			admitIsolation: async (descriptor) => {
 				env.initSync(true);
@@ -994,10 +1010,10 @@ async function deployComponent(req) {
 					const detail = unconfirmed.map((peer) => peer.node ?? 'unknown').join(', ');
 					throw new ServerError(
 						`Component '${application.name}' was staged on the origin node, but ${unconfirmed.length} peer ` +
-							`node(s) did not confirm staging: ${detail}. A node running a build that predates staged ` +
-							`deploys treats this request as an ordinary deploy and is serving the release already. Check ` +
-							`those nodes before activating deployment ${recorder.deploymentId}, or pass ` +
-							`ignore_replication_errors: true to accept the difference.`
+							`node(s) did not confirm staging: ${detail}. Either they are unreachable, or they run a build ` +
+							`that predates staged deploys — which treats this request as an ordinary deploy, so the ` +
+							`release is already serving there. Check those nodes before activating deployment ` +
+							`${recorder.deploymentId}, or pass ignore_replication_errors: true to accept the difference.`
 					);
 				}
 			}
