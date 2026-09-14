@@ -3953,7 +3953,12 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		const primaryRow = attributesDbi.getSync(tableName + '/');
 		const stores = storeNamesFor(attributesDbi, tableName, primaryRow?.generation);
 		// a tombstone from before dropGeneration existed gets an obligation of its own
-		recordRetiredGeneration(attributesDbi, tableName, primaryRow?.dropGeneration ?? randomUUID(), stores);
+		if (primaryRow && !primaryRow.dropGeneration) {
+			// a tombstone from before dropGeneration existed: give it one, durably, so retries share it
+			primaryRow.dropGeneration = randomUUID();
+			attributesDbi.putSync(tableName + '/', primaryRow);
+		}
+		if (primaryRow) recordRetiredGeneration(attributesDbi, tableName, primaryRow.dropGeneration, stores);
 		const columns = new Set<string>((rootStore as any).columns);
 		for (const columnName of stores) {
 			if (columns.has(columnName)) dropColumnFamily(rootStore, columnName);

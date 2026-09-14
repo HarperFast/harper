@@ -2041,12 +2041,9 @@ export function makeTable(options) {
 				throw error;
 			}
 			if (databaseName === databasePath) {
-				// LMDB: the awaited drop, then the tombstone-guarded catalog removal - never the
-				// reverse: a removed-then-failed drop orphans a store that a same-name recreate would
-				// reuse, so a genuine drop failure must surface and leave the tombstoned rows for the
-				// reconcile. The rows are removed only if this drop's tombstone is still the live
-				// primary row: a concurrent same-name create completes the interrupted drop and writes
-				// fresh catalog rows, and clobbering those would orphan the new table.
+				// LMDB: drop, then remove the catalog rows, never the reverse (a removed-then-failed
+				// drop orphans a store a same-name recreate would reuse), and only while this drop's
+				// tombstone is the live primary row.
 				const removeTombstonedCatalog = () => {
 					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
@@ -2113,8 +2110,6 @@ export function makeTable(options) {
 					const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName);
 					message.dropGeneration = dropGeneration;
 					await signalling.signalSchemaChange(message);
-					// the catalog rows go only if this drop's tombstone is still the live primary row (a
-					// concurrent same-name create may have written fresh ones)
 					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
 						const stores = storeNamesFor(dbisDb, tableName, generation);
 						recordRetiredGeneration(dbisDb, tableName, dropGeneration, stores);
@@ -2134,8 +2129,9 @@ export function makeTable(options) {
 								ignoreAlreadyDropped(error);
 							}
 						}
+						// only this drop's own tombstone: the rows may already belong to a recreated generation
 						const currentPrimary = (dbisDb as any).getSync(tableName + '/');
-						if (!currentPrimary?.dropping) return false;
+						if (!currentPrimary?.dropping || currentPrimary.dropGeneration !== dropGeneration) return false;
 						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
 							if (key !== tableName + '/') dbisDb.remove(key);
 						}
@@ -2143,7 +2139,6 @@ export function makeTable(options) {
 						return true;
 					});
 					if (removed) await dbisDb.committed;
-					// the retired generation stays readable through this handle
 					await settlePhysicalDrops(rootStore, `${databaseName}.${tableName}`);
 					try {
 						for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
