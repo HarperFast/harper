@@ -70,7 +70,14 @@ import {
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
-import { databases, table } from './databases.ts';
+import {
+	databases,
+	table,
+	markDropInProgress,
+	openRocksDatabase,
+	recordRetiredGeneration,
+	storeNameFor,
+} from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
 	searchByIndex,
@@ -235,7 +242,7 @@ function usableCount(estimate: any): number {
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
-// This bounds schema-lock acquisition; LOCK_TIMEOUT bounds in-flight record writes during a drop.
+// This bounds schema-lock acquisition; LOCK_TIMEOUT bounds record-lock waits and the post-drop reclaim wait.
 export const UPDATE_ATTRIBUTES_LOCK_TIMEOUT = 10000;
 const UPDATE_ATTRIBUTES_LOCK = 'update-attributes';
 // Contention is otherwise only visible once it becomes a timeout (harper#2251).
@@ -277,6 +284,9 @@ export function acquireUpdateAttributesLock(
 		} catch {}
 }
 
+export function tryUpdateAttributesLock(rootStore: RocksDatabase): boolean {
+	return rootStore.tryLock(updateAttributesLockKey);
+}
 export function releaseUpdateAttributesLock(rootStore: RocksDatabase) {
 	rootStore.unlock(updateAttributesLockKey);
 }
@@ -313,6 +323,13 @@ export function withUpdateAttributesLock<Callback extends () => unknown>(
 export function ignoreAlreadyDropped(error: any): void {
 	if (error?.message?.includes('Column family already dropped')) return;
 	throw error;
+}
+/** Resolves once no physical column-family drop is deferred on the database (bounded; older bindings drop inline). */
+async function settlePhysicalDrops(rootStore: RocksDatabase): Promise<void> {
+	const deadline = Date.now() + LOCK_TIMEOUT;
+	while ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0 && Date.now() < deadline) {
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
 }
 // A frozen record we may need to copy-on-mutate before stamping it (records are immutable — decoded
 // records are frozen and 5.2 record caching relies on it). Only plain/record objects qualify: never
@@ -635,14 +652,9 @@ export function makeTable(options) {
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
-	// getFromSource() intentionally resolves its caller before the resolved record's cache
-	// write has committed (see there) so GET latency doesn't pay for the write. dropTable()
-	// must not drop this table's column families while one of those writes is still landing —
-	// racing a drop against an in-flight write is what corrupts the column family handle and
-	// produces "Invalid column family specified in write batch" (harper#1381). Track the
-	// in-flight commit promises here so dropTable() can drain them first, and stop admitting
-	// new ones (droppingTable) once a drop has actually started.
-	const pendingSourceCommits = new Set<Promise<any>>();
+	// getFromSource() resolves its caller before the record's cache write has committed; once a drop
+	// has started no new such write may begin, while one already admitted lands in the retired
+	// generation (rocksdb-js drops the family behind it) or is refused by the binding.
 	let droppingTable = false;
 	let createdTimeProperty: Attribute | undefined,
 		updatedTimeProperty: Attribute | undefined,
@@ -865,6 +877,11 @@ export function makeTable(options) {
 			},
 			{ transaction, nodeId }
 		);
+	}
+	function unavailableResource(): never {
+		const error: any = new Error(`Table ${databaseName}.${tableName} has been dropped or unloaded on this thread`);
+		error.statusCode = 404;
+		throw error;
 	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
@@ -1928,6 +1945,8 @@ export function makeTable(options) {
 			};
 			let dropIdentityConfirmed = databaseName !== databasePath;
 			let primaryCatalogKey = TableResource.tableName + '/';
+			let storeGeneration: string | undefined;
+			let dropGeneration: string | undefined;
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
 				// destructive work. If the process dies or a column family drop fails
@@ -1947,6 +1966,8 @@ export function makeTable(options) {
 						}
 					}
 					if (!primaryMeta || (primaryMeta.tableId != null && primaryMeta.tableId !== tableId)) return false;
+					dropGeneration = primaryMeta.dropGeneration;
+					storeGeneration = primaryMeta.generation;
 					if (primaryMeta.dropping) return true;
 					primaryMeta.dropping = true;
 					// Stamps this drop's identity so the interrupted-drop retry budget in
@@ -1956,7 +1977,9 @@ export function makeTable(options) {
 					// own drop, without ever seeing a non-tombstoned row to reset on. Keying
 					// the budget by generation instead makes the new drop's tombstone carry
 					// its own fresh key regardless of what any worker last observed.
-					primaryMeta.dropGeneration = randomUUID();
+					primaryMeta.dropGeneration = primaryMeta.generation ?? randomUUID();
+					dropGeneration = primaryMeta.dropGeneration;
+					storeGeneration = primaryMeta.generation;
 					tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
 					return true;
 				};
@@ -1998,41 +2021,11 @@ export function makeTable(options) {
 			// invisible, and the tombstone guarantees the drop completes on the
 			// next startup (or on a same-name create).
 			if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
-			// The above stops new source-fill writes from starting, but a write from a get()
-			// that already returned to its caller may still be in flight. Dropping the column
-			// families out from under that write is a genuine invariant violation, not just a
-			// benign race: RocksDB rejects the still-open write batch with "Invalid column
-			// family specified in write batch" (or "Could not access column family N"), which
-			// can also abort this drop before it removes the tombstoned catalog rows - leaving
-			// the table stuck "dropping" for completeInterruptedDrop to retry (and fail
-			// identically) on every subsequent load (harper#1381). Drain any in-flight commits
-			// before the blob sweep below (so it observes every row a drain-caught write just
-			// committed) and before touching a single column family.
-			//
-			// Bounded, and fails CLOSED: the tracked promise covers the whole source round-trip
-			// plus the local commit (see getFromSource), so a hung/slow source or a slow commit
-			// (e.g. a large blob write) could otherwise wedge this drop forever. Rather than
-			// give up and drop anyway - which would reopen exactly the race this drain exists to
-			// close, just less often - a timeout FAILS the drop. The tombstone written above is
-			// already durable, so completeInterruptedDrop picks the drop back up on the next
-			// load, once the stuck write has had time to finish.
-			if (pendingSourceCommits.size) {
-				const pending = [...pendingSourceCommits];
-				let timer: NodeJS.Timeout;
-				const timedOut = Symbol('timedOut');
-				const result = await Promise.race([
-					Promise.allSettled(pending),
-					new Promise<typeof timedOut>((resolve) => {
-						timer = setTimeout(() => resolve(timedOut), LOCK_TIMEOUT);
-					}),
-				]);
-				clearTimeout(timer);
-				if (result === timedOut) {
-					derivedIndexRuntime?.completeDrop?.();
-					throw new Error(
-						`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.length} in-flight source-populated cache write(s) on ${tableName} to settle; refusing to drop the column families out from under a write that may still be staged. The drop tombstone is durable, so this will be retried on the next load.`
-					);
-				}
+			TableResource.cleanup();
+			if (databaseName === databasePath && rootStore instanceof RocksDatabase) {
+				if (dropGeneration) await retireRocksStores(storeGeneration, dropGeneration);
+				derivedIndexRuntime?.completeDrop?.();
+				return;
 			}
 			try {
 				for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
@@ -2045,20 +2038,12 @@ export function makeTable(options) {
 				throw error;
 			}
 			if (databaseName === databasePath) {
-				// part of a database.
-				// Drop the column families, then remove the catalog metadata - never
-				// the reverse: a removed-then-failed drop orphans a "ghost" column
-				// family that poisons same-name recreates, so a genuine drop failure
-				// must surface and leave the tombstoned catalog rows for the reconcile.
-				//
-				// A drop is broadcast to every worker thread, and each holds its own
-				// handle to the same underlying column family, so a concurrent worker
-				// (or completeInterruptedDrop) may already have dropped it - surfaced
-				// as "Column family already dropped!". That is the intended end state,
-				// not a failure, so tolerate it. The catalog rows are removed only if
-				// this drop's tombstone is still the live primary row: a concurrent
-				// same-name create completes the interrupted drop and writes fresh
-				// catalog rows, and clobbering those would orphan the new table.
+				// LMDB: the awaited drop, then the tombstone-guarded catalog removal - never the
+				// reverse: a removed-then-failed drop orphans a store that a same-name recreate would
+				// reuse, so a genuine drop failure must surface and leave the tombstoned rows for the
+				// reconcile. The rows are removed only if this drop's tombstone is still the live
+				// primary row: a concurrent same-name create completes the interrupted drop and writes
+				// fresh catalog rows, and clobbering those would orphan the new table.
 				const removeTombstonedCatalog = () => {
 					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
@@ -2069,80 +2054,35 @@ export function makeTable(options) {
 					dbisDb.remove(primaryCatalogKey);
 					return true;
 				};
-				if (rootStore instanceof RocksDatabase) {
-					// Serialize the drops + catalog removal against a concurrent
-					// same-name create (and completeInterruptedDrop) under the database's
-					// 'update-attributes' exclusive lock - the same lock the create path
-					// holds. It is a synchronous lock wait that blocks the event loop, so
-					// the locked section MUST stay synchronous: drop with dropSync (as
-					// completeInterruptedDrop does), never an awaited drop(), or a
-					// concurrent create's wait would be stuck on a drop that the blocked
-					// event loop can never resolve, burning its full deadline before failing.
-					let removed: boolean;
-					try {
-						removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
-							const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
-							if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
-								return false;
-							for (const attribute of attributes) {
-								const index = indices[attribute.name];
-								if (index)
-									try {
-										index.customIndex?.resetDerivedStorage?.();
-										index.dropSync();
-									} catch (error) {
-										ignoreAlreadyDropped(error);
-									}
-							}
-							try {
-								primaryStore.dropSync();
-							} catch (error) {
-								ignoreAlreadyDropped(error);
-							}
-							return removeTombstonedCatalog();
-						});
-						if (removed) await dbisDb.committed;
-					} catch (error) {
-						derivedIndexRuntime?.completeDrop?.();
-						throw error;
-					}
-					if (!removed) {
+				// LMDB keeps its awaited physical drops and current-main stale-owner checks.
+				let removed: boolean;
+				try {
+					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
 						abortStaleDrop();
 						return;
 					}
-				} else {
-					// LMDB: no shared column-family double-drop, and its engine lock is
-					// transactional rather than this spin lock, so keep the awaited drop
-					// plus the same tombstone-guarded catalog removal.
-					let removed: boolean;
-					try {
-						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
-						if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
-							abortStaleDrop();
-							return;
+					const drops = [];
+					for (const attribute of attributes) {
+						const index = indices[attribute.name];
+						if (index) {
+							index.customIndex?.resetDerivedStorage?.();
+							drops.push(index.drop().catch(ignoreAlreadyDropped));
 						}
-						const drops = [];
-						for (const attribute of attributes) {
-							const index = indices[attribute.name];
-							if (index) {
-								index.customIndex?.resetDerivedStorage?.();
-								drops.push(index.drop().catch(ignoreAlreadyDropped));
-							}
-						}
-						drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
-						await Promise.all(drops);
-						removed = removeTombstonedCatalog();
-						if (removed) await dbisDb.committed;
-					} catch (error) {
-						derivedIndexRuntime?.completeDrop?.();
-						throw error;
 					}
-					if (!removed) {
-						abortStaleDrop();
-						throw new Error(
-							`Could not complete drop of ${databaseName}.${tableName}: a replacement table became current while the LMDB stores were being dropped`
-						);
-					}
+					drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
+					await Promise.all(drops);
+					removed = removeTombstonedCatalog();
+					if (removed) await dbisDb.committed;
+				} catch (error) {
+					derivedIndexRuntime?.completeDrop?.();
+					throw error;
+				}
+				if (!removed) {
+					abortStaleDrop();
+					throw new Error(
+						`Could not complete drop of ${databaseName}.${tableName}: a replacement table became current while the LMDB stores were being dropped`
+					);
 				}
 			} else {
 				// legacy table per database. The store to retire is this table's own audit store: nothing
@@ -2163,6 +2103,75 @@ export function makeTable(options) {
 			signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName)
 			);
+
+			/**
+			 * RocksDB: stop serving everywhere first, then retire the families. The awaited broadcast is
+			 * the barrier — a worker acks only after it has unloaded the table — and rocksdb-js retires a
+			 * name immediately while it drops the bytes behind commits already admitted, so nothing on
+			 * the write path has to drain and the drop cannot fail for want of quiescence (harper#1381).
+			 */
+			async function retireRocksStores(generation: string | undefined, dropGeneration: string) {
+				const releaseDropMark = markDropInProgress(dropGeneration);
+				try {
+					const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName);
+					message.dropGeneration = dropGeneration;
+					await signalling.signalSchemaChange(message);
+					// Drop the column families, then remove the catalog metadata - never the reverse: a
+					// removed-then-failed drop orphans a "ghost" column family, so a genuine drop failure
+					// must surface and leave the tombstoned catalog rows for the reconcile. Another worker
+					// (or completeInterruptedDrop) may already have dropped a family - the intended end
+					// state, tolerated. The catalog rows are removed only if this drop's tombstone is still
+					// the live primary row: a concurrent same-name create completes the interrupted drop
+					// and writes fresh catalog rows, and clobbering those would orphan the new table.
+					// The locked section must stay synchronous (see withUpdateAttributesLock).
+					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
+						// the retirement set comes from the catalog, not this worker's attribute list, which
+						// can trail an index another worker added
+						const columns = new Set<string>((rootStore as any).columns);
+						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+							const attributeName = key.slice(tableName.length + 1);
+							let store = attributeName === '' ? primaryStore : indices[attributeName];
+							let opened = false;
+							if (!store) {
+								const columnName = storeNameFor(key, generation);
+								if (!columns.has(columnName)) continue;
+								store = openRocksDatabase(rootStore.path, { name: columnName });
+								opened = true;
+							}
+							try {
+								store.customIndex?.resetDerivedStorage?.();
+								store.dropSync();
+							} catch (error) {
+								ignoreAlreadyDropped(error);
+							} finally {
+								if (opened) store.close();
+							}
+						}
+						if (generation) recordRetiredGeneration(dbisDb, tableName, generation);
+						const currentPrimary = (dbisDb as any).getSync(tableName + '/');
+						if (!currentPrimary?.dropping) return false;
+						for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+							if (key !== tableName + '/') dbisDb.remove(key);
+						}
+						dbisDb.remove(tableName + '/');
+						return true;
+					});
+					if (removed) await dbisDb.committed;
+					// Blob files are released from the retired generation's rows, read through this handle
+					// once every commit admitted before the retire has landed, so a source-fill write that
+					// raced the drop still gets its blobs released.
+					await settlePhysicalDrops(rootStore);
+					try {
+						for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
+							if (entry.metadataFlags & HAS_BLOBS && entry.value) deleteBlobsInObject(entry.value);
+						}
+					} catch (error) {
+						logger.warn?.(`Could not sweep the blob files of dropped table ${databaseName}.${tableName}`, error);
+					}
+				} finally {
+					releaseDropMark();
+				}
+			}
 		}
 		// #section: read-path
 		/**
@@ -7043,7 +7052,10 @@ export function makeTable(options) {
 		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
 		static cleanup() {
 			disposed = true;
-			void TableResource.derivedIndexRuntime?.close();
+			TableResource.getResource = unavailableResource;
+			TableResource.derivedIndexRuntime
+				?.close()
+				.catch((error) => logger.warn?.(`Derived index shutdown failed for ${databaseName}.${tableName}`, error));
 			clearTimeout(cleanupTimer);
 			settlePendingCleanup();
 			clearInterval(recordExpirationInterval);
@@ -7677,9 +7689,8 @@ export function makeTable(options) {
 			replacingRecord: existingRecord,
 			replacingEntry: existingEntry,
 			replacingVersion: existingVersion,
-			// Once dropTable() has started, no new source-fill write may begin (dropTable()
-			// only drains writes already in flight - see there); still resolve the caller's
-			// read with fresh source data, just don't cache it into a table that's going away.
+			// Once dropTable() has started, no new source-fill write may begin; still resolve the
+			// caller's read with fresh source data, just don't cache it into a table that's going away.
 			noCacheStore: droppingTable,
 			source: null,
 			transaction: undefined,
@@ -7691,17 +7702,6 @@ export function makeTable(options) {
 			// we don't want to wait for the transaction because we want to return as fast as possible
 			// and let the transaction commit in the background
 			let resolved;
-			// Tracked in pendingSourceCommits (below) for the full lifetime of this transaction -
-			// including the source round-trip, not just from the point it's actually staged -
-			// so dropTable() can wait for it before dropping the table's column families (see the
-			// comment there). Registering only once a write reaches staging would track less (no
-			// Set churn for a plain cache miss, and a slow/hung source couldn't delay a drop) and
-			// is safe on its own given the live droppingTable re-checks in this function - but it
-			// would make dropTable()'s correctness depend on every future early-return path in
-			// this function remembering to check droppingTable, rather than on dropTable() simply
-			// waiting for whatever this function is doing. Tracking the whole lifetime is the
-			// belt to that suspenders, at the cost of a bounded wait on a merely slow source
-			// before the drain's fail-closed timeout below.
 			const commitPromise = transaction(sourceContext, async (_txn) => {
 				const start = performance.now();
 				let updatedRecord, assignCreatedTime, sourceVersion;
@@ -8055,15 +8055,12 @@ export function makeTable(options) {
 				sourceWrite.before = preCommitBlobsForRecordBefore(sourceWrite, updatedRecord);
 				dbTxn.addWrite(sourceWrite);
 			});
-			pendingSourceCommits.add(commitPromise);
 			when(
 				commitPromise,
 				() => {
-					pendingSourceCommits.delete(commitPromise);
 					primaryStore.unlock(id);
 				},
 				(error) => {
-					pendingSourceCommits.delete(commitPromise);
 					primaryStore.unlock(id);
 					if (resolved) logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned
