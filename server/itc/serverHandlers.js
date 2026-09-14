@@ -98,7 +98,6 @@ async function syncSchemaMetadata(msg) {
 				if (dropped) {
 					const derivedIndexRuntime = dropped.derivedIndexRuntime;
 					dropped.derivedIndexRuntime = undefined;
-					// stop routing to the table before the await, so a stalled shutdown cannot keep it live
 					delete databases[msg.schema][msg.table];
 					dropped.cleanup?.();
 					try {
