@@ -873,8 +873,57 @@ Additional parameters:
 - `credentials` — credentials for installing a component from a private npm registry or private git repository (see below)
 - `deployment_timeout` <VersionBadge version="v5.1.4" /> — how long, in milliseconds, a peer waits to receive the replicated deployment payload before failing (default: `120000`)
 - `ignore_replication_errors` <VersionBadge version="v5.1.4" /> — set to `true` to treat a peer that fails to receive the deploy as non-fatal instead of failing the whole operation. By default a failed peer causes `deploy_component` to return a non-2xx status; the component is still deployed (and, if requested, restarted) on the origin node.
+- `activate` <VersionBadge version="v5.3.0" /> — set to `false` to build and verify the component without making it live. See [Staging a build and activating it later](#staging-a-build-and-activating-it-later).
+- `deployment_id` <VersionBadge version="v5.3.0" /> — make a previously staged build live. Takes no build inputs of its own.
 
 `urlPath` and `host` both require `package` and are rejected on a payload-only deploy. To mount a payload-deployed component, add `host`/`urlPath` to its entry in the root `harper-config.yaml` instead.
+
+#### Staging a build and activating it later
+
+<VersionBadge version="v5.3.0" />
+
+A deploy normally builds the new version and swaps it in as one operation. `activate: false` stops after the build, so the work that takes time and can fail — fetching, resolving, installing dependencies — happens when you choose, and the cut-over itself is two directory renames you can run in a maintenance window.
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"package": "npm:@my-org/my-app@1.2.3",
+	"activate": false
+}
+```
+
+The response names the artifact that is now waiting:
+
+```json
+{
+	"deployment_id": "a3f8c2d1-...",
+	"message": "Staged: my-app. Deploy it with deploy_component deployment_id=a3f8c2d1-..."
+}
+```
+
+Nothing about the running component changes: the live directory, the root config entry, and the restart-required flag are all untouched, and `get_deployment` reports the deployment as `staged`. Make it live with that id:
+
+```json
+{
+	"operation": "deploy_component",
+	"project": "my-app",
+	"deployment_id": "a3f8c2d1-..."
+}
+```
+
+That request takes no `package`, `payload`, `credentials`, install options, or `urlPath`/`host` — they are rejected rather than ignored, because the staged build already decided them and re-supplying one here would have no effect. It resolves and installs nothing; it swaps in the exact bytes that were verified at staging time, including across a full Harper restart in between.
+
+A few things worth knowing before you rely on it:
+
+- **Activation consumes the build.** The swap is a rename, so a deployment id can be activated once. To go back to a previous version, stage it again.
+- **Staged builds are bounded.** [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment) caps how many unactivated builds a component keeps (default `5`); the oldest are removed at the start of that component's next deploy and at startup. A build pruned before you activate it has to be staged again.
+- **A deployment id names one build.** Staging again with the same id is rejected rather than rebuilding over it, and the id stays bound to that build until it is activated or pruned.
+- **`file:` directory sources cannot be staged.** A local-directory package is linked rather than copied, so the bytes could change between staging and activation. Deploy those normally.
+
+:::warning
+**Upgrade every node before staging.** A stage is replicated like any other deploy, and a node still running a version before v5.3.0 does not recognize `activate: false` — it performs an ordinary deploy and serves the release immediately. The origin cannot detect this in advance, so it checks afterward: any peer that does not confirm staging fails the operation with the node names, and you should check those nodes before activating. Pass `ignore_replication_errors: true` only if you have accepted that difference.
+:::
 
 #### Deploy credentials (`credentials`)
 
@@ -965,14 +1014,14 @@ Harper records every `deploy_component` call in the `system.hdb_deployment` tabl
 
 Returns a list of deployment records, newest first. All filter parameters are optional.
 
-| Parameter | Type   | Description                                      |
-| --------- | ------ | ------------------------------------------------ |
-| `project` | string | Filter to a specific component project           |
-| `status`  | string | Filter by status: `pending`, `success`, `failed` |
-| `since`   | number | Start of time range (Unix timestamp ms)          |
-| `until`   | number | End of time range (Unix timestamp ms)            |
-| `limit`   | number | Maximum number of results (default: 100)         |
-| `offset`  | number | Pagination offset                                |
+| Parameter | Type   | Description                                                |
+| --------- | ------ | ---------------------------------------------------------- |
+| `project` | string | Filter to a specific component project                     |
+| `status`  | string | Filter by status: `pending`, `success`, `failed`, `staged` |
+| `since`   | number | Start of time range (Unix timestamp ms)                    |
+| `until`   | number | End of time range (Unix timestamp ms)                      |
+| `limit`   | number | Maximum number of results (default: 100)                   |
+| `offset`  | number | Pagination offset                                          |
 
 ```json
 {
@@ -1003,7 +1052,7 @@ The deployment record includes:
 | `deployment_id`      | Unique identifier (content hash)                                        |
 | `project`            | Component project name                                                  |
 | `package_identifier` | Package reference or `payload` for tar uploads                          |
-| `status`             | `pending`, `success`, `failed`, or `rolled_back`                        |
+| `status`             | `pending`, `success`, `failed`, `staged`, or `rolled_back`              |
 | `phase`              | Current lifecycle phase: `prepare`, `load`, `replicate`, `restart`      |
 | `event_log`          | Bounded log of install output and phase transitions (up to 200 entries) |
 | `peer_results`       | Per-node outcome map for replicated deployments                         |
