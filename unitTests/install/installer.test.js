@@ -7,7 +7,7 @@ const { expect } = chai;
 const rewire = require('rewire');
 const hdb_utils = require('#src/utility/common_utils');
 const fs = require('fs-extra');
-const inquirer = require('inquirer');
+const { prompts } = require('#src/utility/interactivePrompts');
 const path = require('path');
 const hdb_info_controller = require('#src/dataLayer/hdbInfoController');
 const hdb_logger = require('#src/utility/logging/harper_logger');
@@ -160,7 +160,7 @@ describe.skip('Test installer module', () => {
 
 	it('Test termsAgreement logs and exits if answer not yes', async () => {
 		const termsAgreement = installer.__get__('termsAgreement');
-		const inquirer_stub = sandbox.stub(inquirer, 'prompt').resolves({ TC_AGREEMENT: 'no' });
+		const inquirer_stub = sandbox.stub(prompts, 'confirm').resolves(false);
 		const process_exit_stub = sandbox.stub(process, 'exit');
 		await termsAgreement({});
 		process_exit_stub.restore();
@@ -259,7 +259,7 @@ describe.skip('Test installer module', () => {
 	});
 
 	it('Test installPrompts passes correct schema and override works', async () => {
-		const prompt_stub = sandbox.stub(inquirer, 'prompt');
+		const prompt_stub = sandbox.stub(prompts, 'input');
 		const installPrompts = installer.__get__('installPrompts');
 		const override = {
 			DEFAULTS_MODE: 'dev',
