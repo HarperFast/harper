@@ -2633,6 +2633,64 @@ describe('durable blob-unlink queue (#1832)', () => {
 		return { fileId: getFileId(record.blob), filePath };
 	}
 
+	it('durably queues cleanup for a saved blob from an unsuccessful write', async () => {
+		setDeletionDelay(600000); // the worker-local retention timer must not be able to satisfy this test
+		const retained = createBlob(randomBytes(20000));
+		const unused = createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(retained).saving, rootStore());
+		await decodeFromDatabase(() => saveBlob(unused).saving, rootStore());
+		const retainedId = getFileId(retained);
+		const unusedId = getFileId(unused);
+		const retainedPath = getFilePathForBlob(retained);
+		const unusedPath = getFilePathForBlob(unused);
+
+		cleanupUnusedBlobs([retained, unused], new Set([retainedId]));
+
+		assert.ok(queueRow(unusedId), 'cleanup must publish the unlink before a worker recycle can lose it');
+		assert.equal(queueRow(retainedId), undefined, "the committed record's retained blob must never be queued");
+		await waitFor(() => !existsSync(unusedPath), {
+			timeout: 5000,
+			message: 'the durable cleanup intent must unlink the unused file',
+		});
+		await waitFor(() => queueRow(unusedId) === undefined, {
+			timeout: 5000,
+			message: 'the durable cleanup intent must settle after unlinking',
+		});
+		assert.ok(existsSync(retainedPath), 'draining the unused blob must leave the retained file intact');
+		assert.equal((await retained.arrayBuffer()).byteLength, 20000, 'the retained blob must remain readable');
+		unlinkSync(retainedPath); // never stored in a record; leave no orphan behind
+	});
+
+	it('falls back to local cleanup when the durable unused-blob intent cannot be written', async () => {
+		setDeletionDelay(0);
+		const unused = createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(unused).saving, rootStore());
+		const fileId = getFileId(unused);
+		const filePath = getFilePathForBlob(unused);
+		const db = queueDb();
+		const realPutSync = db.putSync;
+		let attempted = false;
+		db.putSync = function (key) {
+			if (Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) {
+				attempted = true;
+				throw new Error('queue unavailable');
+			}
+			return realPutSync.apply(this, arguments);
+		};
+		try {
+			cleanupUnusedBlobs([unused]);
+		} finally {
+			db.putSync = realPutSync;
+		}
+
+		assert.ok(attempted, 'cleanup must attempt to publish the durable intent');
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'the local fallback must unlink the unused file',
+		});
+		assert.equal(queueRow(fileId), undefined, 'a failed queue write must not leave a partial intent');
+	});
+
 	it('executes an intent committed by a process that died before unlinking', async () => {
 		setDeletionDelay(600000); // no in-thread reclamation can reach this file; only the drain can
 		const { fileId, filePath } = await fileBackedBlob('recovered');

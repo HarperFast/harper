@@ -4221,14 +4221,44 @@ export function cleanupUnusedBlobs(blobs: Blob[] | undefined, retainedFileIds?: 
 		// unlink waits for an in-flight save to settle, and a re-store in that window would otherwise
 		// mint a reference to a file that is already condemned (issue #2062).
 		discardStorage(storageInfo);
-		const settle = storageInfo.saving ?? Promise.resolve();
-		settle.then(
-			() => deleteBlob(blob),
-			() => deleteBlob(blob) // even on save failure, attempt cleanup in case a partial file remains
-		);
+		const remove = () => deleteUnusedBlob(blob, storageInfo);
+		// A completed pre-save is the common commit/skip path. Queue it synchronously so the worker cannot
+		// report the losing write and recycle before its cleanup decision becomes durable. An open writer
+		// must still settle first: unlinking beneath it is unsafe on Windows and loses the final path on Unix.
+		if (storageInfo.saved) remove();
+		else (storageInfo.saving ?? Promise.resolve()).then(remove, remove);
 	}
 	// idempotent: subsequent calls (e.g. from abort after commit-handler already cleaned up) are no-ops
 	blobs.length = 0;
+}
+
+/**
+ * Persist cleanup for a file that this unsuccessful write allocated but no committed record retained.
+ * Unlike a superseded committed blob, it has no owner or snapshot-visible version to revalidate; the
+ * ownerless queue row is therefore the complete safety decision and may be drained immediately.
+ */
+function deleteUnusedBlob(blob: Blob, storageInfo: StorageInfo): void {
+	try {
+		if (
+			enqueueBlobUnlink({
+				store: storageInfo.store,
+				fileId: storageInfo.fileId,
+				storageIndex: storageInfo.storageIndex,
+			})
+		) {
+			scheduleBlobUnlinkDrain(storageInfo.store);
+			return;
+		}
+	} catch (error) {
+		// A closing or unavailable internal dbi must not turn best-effort transaction cleanup into an
+		// unhandled rejection. The local reclamation path still removes the file while this worker lives.
+		logger.debug?.(
+			'Could not durably queue an unused blob; falling back to local reclamation',
+			storageInfo.fileId,
+			error
+		);
+	}
+	deleteBlob(blob);
 }
 
 /**
