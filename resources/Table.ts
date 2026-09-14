@@ -199,6 +199,10 @@ const MAX_COUNT_PAGE = 10_000;
 // How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
 // check). Keeps a large scan from monopolizing the event loop without adding a yield per row.
 const COUNT_YIELD_INTERVAL = 2_048;
+// Smallest forward sample `getRecordCount` will extrapolate a record rate from. Below it the scan runs
+// to completion and reports an exact count -- cheap at this size, and it keeps the estimated-base path
+// off the small, heavily rewritten tables whose physical key statistics are least trustworthy.
+const MIN_ESTIMATOR_SAMPLE = 1_000;
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -1919,8 +1923,7 @@ export function makeTable(options) {
 					records: './', // an href to the records themselves
 					name: tableName,
 					database: databaseName,
-					auditSize:
-						auditStore instanceof RocksDatabase ? auditStore.getKeysCount() : auditStore?.getStats().entryCount,
+					auditSize: auditStore?.getStats().entryCount,
 					attributes,
 					recordCount: undefined,
 					estimatedRecordRange: undefined,
@@ -5828,37 +5831,52 @@ export function makeTable(options) {
 			const exactCount = options?.exactCount;
 			const TIME_LIMIT = options?.timeLimit ?? 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
 			const start = performance.now();
-			// `entryCount` (the exact key count) is only needed once the scan blows the time budget --
-			// to decide whether to estimate and as the extrapolation base. On RocksDB it is a full
-			// key-only scan, so we defer it: tables that finish within budget (the common case) and
-			// `exact_count` requests never pay for it. `halfway`/`entryCount` stay 0 until first computed.
+			// `entryCount` (the extrapolation base) is only needed once the scan blows the time budget, so
+			// tables that finish within budget and `exact_count` requests probe nothing. On RocksDB it comes
+			// from a CountEstimator rather than an exact key count: the escape exists because the scan is
+			// already too slow, and an exact `getKeysCount()` is a second scan of the same key space.
 			let entryCount = 0;
-			let halfway = 0;
-			let counted = false;
-			let completeForExact = false;
+			let remainderPhysical = 0;
+			let estimator;
+			let checkpointedEntries = 0;
 			let recordCount = 0;
 			let entriesScanned = 0;
+			let lastKey;
 			let limit: number;
-			for (const { value } of primaryStore.getRange({ start: true, lazy: true, snapshot: false })) {
+			let nextCheckAt = start + TIME_LIMIT;
+			for (const { key, value } of primaryStore.getRange({ start: true, lazy: true, snapshot: false })) {
 				if (value != null) recordCount++;
 				entriesScanned++;
+				lastKey = key;
 				await rest();
-				if (!exactCount && !completeForExact && performance.now() - start > TIME_LIMIT) {
-					if (!counted) {
-						counted = true;
-						entryCount = isRocksDB
-							? primaryStore.getKeysCount({ start: undefined })
-							: primaryStore.getStats().entryCount;
-						halfway = Math.floor(entryCount / 2);
+				// A rate extrapolated from a handful of entries is noise whatever the base is, and a table
+				// too small to reach the floor is small enough to finish exactly -- which is also what keeps
+				// a small, heavily rewritten table off an estimated base altogether.
+				if (exactCount || entriesScanned < MIN_ESTIMATOR_SAMPLE) continue;
+				const now = performance.now();
+				if (now <= nextCheckAt) continue;
+				nextCheckAt = now + TIME_LIMIT;
+				if (isRocksDB) {
+					estimator ??= primaryStore.createCountEstimator({ start: true });
+					// `advance` is incremental, so each checkpoint reports only the entries since the last one
+					estimator.advance(lastKey, entriesScanned - checkpointedEntries);
+					checkpointedEntries = entriesScanned;
+					entryCount = estimator.estimate().count;
+				} else entryCount = primaryStore.getStats().entryCount;
+				// Re-decided every interval instead of latched: an underestimated base must not be able to
+				// commit the scan to running to completion. Breaking only below the halfway point keeps the
+				// forward and reverse samples disjoint against the base actually used to extrapolate.
+				if (entriesScanned < Math.floor(entryCount / 2)) {
+					// Uncalibrated physical bound on the region the scan will not reach, captured before the
+					// break because it is what the reported interval's upper end is built from. Widened by the
+					// estimate's own reported untrustworthiness: it is block-granular and can land below the
+					// live count it is meant to bound.
+					if (estimator) {
+						const remaining = primaryStore.estimateCount({ start: lastKey, exclusiveStart: true });
+						remainderPhysical = remaining.count * (2 - remaining.confidence);
 					}
-					if (entriesScanned < halfway) {
-						// it is taking too long, so we will just take this sample and a sample from the end to estimate
-						limit = entriesScanned;
-						break;
-					}
-					// Past the halfway point already: finishing the scan for an exact count is cheaper
-					// than estimating. Set the flag so we stop re-evaluating the budget on each remaining iteration.
-					completeForExact = true;
+					limit = entriesScanned;
+					break;
 				}
 			}
 			if (limit) {
@@ -5892,13 +5910,24 @@ export function makeTable(options) {
 				const variance =
 					Math.pow((recordCount - firstRecordCount + 1) / limit / 2, 2) + // variance between samples
 					(recordRate * (1 - recordRate)) / sampleSize;
-				const sd = Math.max(Math.sqrt(variance) * entryCount, 1);
 				const estimatedRecordCount = Math.round(recordRate * entryCount);
+				// Bounds on the extrapolation base. An estimated base cannot see the untraversed region, so
+				// the interval spans both ways it can be wrong: every remaining entry superseded (only what
+				// was scanned is live) through every remaining entry live (the uncalibrated physical count).
+				// Churn concentrated outside the scanned prefix calibrates to nothing -- prefix density says
+				// the remainder is clean -- so an interval derived from the estimator's confidence would sit
+				// narrowly around the wrong number instead of containing the true one.
+				const baseMin = estimator ? entriesScanned + reverseScanned : entryCount;
+				const baseMax = estimator ? entriesScanned + remainderPhysical : entryCount;
 				// TODO: This uses a normal/Wald interval, but a binomial confidence interval is probably better calculated using
 				// Wilson score interval or Agresti-Coull interval (I think the latter is a little easier to calculate/implement).
-				const lowerCiLimit = Math.max(estimatedRecordCount - 1.96 * sd, recordCount + firstRecordCount);
-				const upperCiLimit = Math.min(estimatedRecordCount + 1.96 * sd, entryCount);
-				let significantUnit = Math.pow(10, Math.round(Math.log10(sd)));
+				const sd = Math.max(Math.sqrt(variance) * entryCount, 1);
+				const lowerCiLimit = Math.max(recordRate * baseMin - 1.96 * sd, recordCount + firstRecordCount);
+				const upperCiLimit = Math.min(recordRate * baseMax + 1.96 * sd, baseMax);
+				// Round to the precision the interval actually supports, so a wide base range can't be
+				// reported as a precise-looking record count.
+				const spread = Math.max((upperCiLimit - lowerCiLimit) / 2, 1);
+				let significantUnit = Math.pow(10, Math.round(Math.log10(spread)));
 				if (significantUnit > estimatedRecordCount) significantUnit = significantUnit / 10;
 				recordCount = Math.round(estimatedRecordCount / significantUnit) * significantUnit;
 				return {
