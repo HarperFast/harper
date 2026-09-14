@@ -2423,9 +2423,7 @@ That makes the global writable only by a start that declares the topology. It us
 unconditionally from `options.threadCount` inside the `workerData` literal, so every job worker — which
 passes no `threadCount` — set it to `undefined`, and the next rolling restart computed `NaN` (harper#2491).
 `NaN` defeats the guard below it (`NaN < 1` is false) _and_ every throttle comparison, so the restart
-took the whole pool down at once. The fix is the conditional write plus a NaN clamp at the consumer — NaN only: `Infinity` is the
-deliberate "all at once" sentinel `shutdownWorkers` passes, and `shutdownWorkersNow` depends on it to
-mark every worker synchronously before the first await.
+took the whole pool down at once. A string does the same thing for the same reason. So the fix is the conditional write plus a consumer guard that clamps anything not a usable number. `Infinity` is exempt: it is the deliberate "all at once" sentinel `shutdownWorkers` passes, and `shutdownWorkersNow` depends on it to mark every worker synchronously before the first await. A literal `0` is also left alone, because it reads as a ratio rather than as garbage — it still reaches the ratio branch and stops the restart after one worker (harper#2601).
 
 `workerData.workerCount` must stay exactly what it is for each start, `undefined` for job workers
 included: an earlier attempt to give job workers the serving count instead broke the Windows

@@ -704,7 +704,7 @@ async function restartWorkers(
 		}
 
 		module.exports.restartNumber++;
-		// `Infinity` is shutdownWorkers' "all at once" sentinel and must survive. See DESIGN.md on the two workerCounts.
+		// `Infinity` is shutdownWorkers' "all at once" sentinel and must survive.
 		if (typeof maxWorkersDown !== 'number' || Number.isNaN(maxWorkersDown)) {
 			maxWorkersDown = 1;
 		} else if (maxWorkersDown < 1) {
