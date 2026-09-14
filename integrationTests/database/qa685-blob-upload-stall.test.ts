@@ -42,11 +42,10 @@ const DURING_SINGLE_MS = 15_000;
 const DURING_QUAD_MS = 15_000;
 const BLOB_PAYLOAD_LEN = 8 * 1024 * 1024;
 const SENT_LEN = 2 * 1024 * 1024;
-// Same switch the uWS CI job sets and integrationTests/server/stream-error-contract.test.ts:43 reads.
+// The switch the uWS CI job sets, also read by integrationTests/server/stream-error-contract.test.ts.
 const UWS_HTTP = process.env.HARPER_UWS_HTTP === '1';
-// uWS reaps a stalled body at 8-11s in practice; anything much earlier is a regression, not the
-// documented behaviour, so an accepted reap still has to clear this floor.
 const MIN_ACCEPTED_REAP_MS = 5_000;
+const MAX_CONTROL_LATENCY_MS = 5_000;
 
 const findings: string[] = [];
 function log(msg: string) {
@@ -239,6 +238,17 @@ function assertControlAvailability(stats: WriterStats, label: string) {
 		stats.threadCounts.size >= WORKER_COUNT,
 		`${label} reached ${stats.threadCounts.size}, expected at least ${WORKER_COUNT} workers: ${statsSummary(stats)}`
 	);
+	// Node and Bun need nothing more: a blocked worker stays blocked for the whole window, so its
+	// writes exceed CONTROL_TIMEOUT_MS and land in errCount. Under uWS the reap unblocks it at 8-11s,
+	// inside that timeout, so the block completes instead of erroring and the slowest write is the
+	// only trace left. Healthy writes here are single-digit milliseconds.
+	if (UWS_HTTP) {
+		const slowest = Math.max(...stats.latencies);
+		ok(
+			slowest < MAX_CONTROL_LATENCY_MS,
+			`${label} had a control write take ${slowest}ms, long enough for a reap to have hidden a blocked worker: ${statsSummary(stats)}`
+		);
+	}
 }
 
 suite(
