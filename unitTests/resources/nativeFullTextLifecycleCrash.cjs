@@ -1,4 +1,4 @@
-const { NativeFullTextDerivedIndexLifecycle } = require('../../dist/resources/NativeFullTextDerivedIndexLifecycle');
+const { NativeFullTextDerivedIndexLifecycle } = require('#src/resources/NativeFullTextDerivedIndexLifecycle');
 
 const [, , storePath, crashPoint] = process.argv;
 const limits = {
@@ -11,6 +11,14 @@ const limits = {
 };
 
 const binding = {
+	async runtimeInfo() {
+		return {
+			packageVersion: 'test',
+			tantivyVersion: 'test',
+			nativeAbiVersion: 2,
+			storageBackends: ['native'],
+		};
+	},
 	encodeMutationBatch() {
 		return Buffer.alloc(0);
 	},
@@ -43,7 +51,7 @@ const lifecycle = new NativeFullTextDerivedIndexLifecycle({
 	binding,
 });
 
-lifecycle.open(1n).then(
+lifecycle.replace(1n).then(
 	() => {
 		process.stdout.write('selector-published\n');
 		setInterval(() => {}, 60_000);

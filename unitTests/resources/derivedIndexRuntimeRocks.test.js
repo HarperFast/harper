@@ -250,7 +250,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			},
 			binding,
 		};
-		const seeded = await new NativeFullTextDerivedIndexLifecycle(lifecycleOptions).open(1n);
+		const seeded = await new NativeFullTextDerivedIndexLifecycle(lifecycleOptions).replace(1n);
 		await seeded.close({ mode: 'rollback' });
 		const staleGeneration = binding.opens.at(-1).generation;
 		binding.failNextOpenCode = 'E_SCHEMA_MISMATCH';
@@ -297,6 +297,15 @@ class FakeNativeFullTextModule {
 	constructor() {
 		this.states = new Map();
 		this.opens = [];
+	}
+
+	async runtimeInfo() {
+		return {
+			packageVersion: 'test',
+			tantivyVersion: 'test',
+			nativeAbiVersion: 2,
+			storageBackends: ['native'],
+		};
 	}
 
 	encodeMutationBatch(batch) {

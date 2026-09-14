@@ -12,8 +12,7 @@ import {
 } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { renameWithRetry } from '../config/configUtils.ts';
-import { loggerWithTag } from '../utility/logging/logger.ts';
+import { renameWithRetry } from '../utility/renameWithRetry.ts';
 import {
 	FullTextDerivedIndexBackend,
 	FullTextDerivedIndexError,
@@ -25,9 +24,9 @@ import {
 	loadFullTextNativeBinding,
 	type NativeFullTextIndexConfiguration,
 	type NativeFullTextModule,
+	validateFullTextNativeBinding,
 } from './fullTextNativeBinding.ts';
 
-const logger = loggerWithTag('fulltext-derived-index');
 const SELECTOR_NAME = 'CURRENT';
 const METADATA_NAME = 'STORE.json';
 const GENERATIONS_NAME = 'generations';
@@ -78,7 +77,12 @@ export class NativeFullTextDerivedIndexLifecycle {
 		if (!options.storeName) throw new TypeError('Full-text storeName is required');
 		if (!options.indexId) throw new TypeError('Full-text indexId is required');
 		if (!options.sourceGeneration) throw new TypeError('Full-text sourceGeneration is required');
-		this.#options = options;
+		validateNativeConfiguration(options);
+		this.#options = {
+			...options,
+			fields: options.fields.map((field) => ({ ...field })),
+			limits: { ...options.limits },
+		};
 		this.#sourceIdentity = digest(options.sourceGeneration);
 		this.#rootPath = join(resolve(options.storePath), `${digest(options.storeName)}.fulltext`);
 		this.#generationsPath = join(this.#rootPath, GENERATIONS_NAME);
@@ -93,27 +97,38 @@ export class NativeFullTextDerivedIndexLifecycle {
 		await this.#closeStranded();
 		this.#ensureLayout();
 		const selector = this.#readSelector();
-		if (!selector) {
-			const engine = await this.#createAndSelect();
-			this.#sweepExcept(this.#readSelector()!.generationId);
-			return engine;
-		}
+		if (!selector) throw new FullTextGenerationInvalidError('Full-text generation selector is missing');
 		if (selector.sourceIdentity !== this.#sourceIdentity)
 			throw new FullTextGenerationInvalidError('Full-text source generation does not match the selected index');
 		const generationPath = this.#generationPath(selector.generationId);
 		this.#assertDirectory(generationPath, 'selected full-text generation');
 		const engine = await this.#openGeneration(selector.generationId, generationPath);
-		this.#sweepExcept(selector.generationId);
-		return engine;
+		return this.#finishOpen(engine, selector.generationId);
 	}
 
 	async replace(_ownerEpoch: bigint): Promise<FullTextDerivedIndexEngine> {
 		await this.#closeStranded();
-		this.#ensureLayout();
-		const priorGenerationId = this.#readGenerationIdForCleanup();
+		this.#ensureLayout(true);
 		const replacement = await this.#createAndSelect();
-		this.#sweepExcept(this.#readSelector()!.generationId, priorGenerationId);
-		return replacement;
+		return this.#finishOpen(replacement.engine, replacement.generationId);
+	}
+
+	async #finishOpen(engine: FullTextDerivedIndexEngine, generationId: string): Promise<FullTextDerivedIndexEngine> {
+		try {
+			this.#sweepExcept(generationId);
+			return engine;
+		} catch (error) {
+			try {
+				await engine.close({ mode: 'rollback' });
+			} catch (closeError) {
+				this.#stranded = { engine, generationId, remove: false };
+				throw new FullTextDerivedIndexError(
+					'Full-text generation could not close after activation failed',
+					new AggregateError([error, closeError])
+				);
+			}
+			throw error;
+		}
 	}
 
 	encodeMutationBatch(batch: Parameters<NativeFullTextModule['encodeMutationBatch']>[0]): Uint8Array {
@@ -121,7 +136,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 		return this.#binding.encodeMutationBatch(batch, this.#options.limits.maxBatchBytes);
 	}
 
-	async #createAndSelect(): Promise<FullTextDerivedIndexEngine> {
+	async #createAndSelect(): Promise<{ engine: FullTextDerivedIndexEngine; generationId: string }> {
 		const generationId = randomUUID();
 		const generationPath = this.#generationPath(generationId);
 		mkdirSync(generationPath, { mode: 0o700 });
@@ -134,7 +149,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 			this.#syncDirectory(generationPath);
 			this.#syncDirectory(this.#generationsPath);
 			this.#writeSelector({ format: 1, sourceIdentity: this.#sourceIdentity, generationId });
-			return engine;
+			return { engine, generationId };
 		} catch (error) {
 			if (engine) {
 				try {
@@ -192,12 +207,15 @@ export class NativeFullTextDerivedIndexLifecycle {
 	async #getBinding(): Promise<NativeFullTextModule> {
 		if (this.#binding) return this.#binding;
 		const configured = this.#options.binding;
-		this.#binding =
-			typeof configured === 'function' ? await configured() : (configured ?? (await loadFullTextNativeBinding()));
+		if (!configured) this.#binding = await loadFullTextNativeBinding();
+		else
+			this.#binding = await validateFullTextNativeBinding(
+				typeof configured === 'function' ? await configured() : configured
+			);
 		return this.#binding;
 	}
 
-	#ensureLayout(): void {
+	#ensureLayout(repairMetadata = false): void {
 		mkdirSync(this.#rootPath, { recursive: true, mode: 0o700 });
 		this.#assertDirectory(this.#rootPath, 'full-text index root');
 		mkdirSync(this.#generationsPath, { recursive: true, mode: 0o700 });
@@ -214,7 +232,20 @@ export class NativeFullTextDerivedIndexLifecycle {
 		try {
 			metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
 		} catch (error) {
+			if (repairMetadata) {
+				this.#writeControlFile(metadataPath, JSON.stringify({ format: 1, storeName: this.#options.storeName }));
+				return;
+			}
 			throw new FullTextGenerationInvalidError('Full-text store metadata is invalid', error);
+		}
+		if (plainObject(metadata) && metadata.format === 1 && typeof metadata.storeName === 'string') {
+			if (metadata.storeName !== this.#options.storeName)
+				throw new FullTextGenerationInvalidError('Full-text store metadata does not match the requested index');
+			if (Object.keys(metadata).every((name) => name === 'format' || name === 'storeName')) return;
+		}
+		if (repairMetadata && (!plainObject(metadata) || !('format' in metadata))) {
+			this.#writeControlFile(metadataPath, JSON.stringify({ format: 1, storeName: this.#options.storeName }));
+			return;
 		}
 		if (
 			!plainObject(metadata) ||
@@ -250,14 +281,6 @@ export class NativeFullTextDerivedIndexLifecycle {
 		return value as GenerationSelector;
 	}
 
-	#readGenerationIdForCleanup(): string | undefined {
-		try {
-			return this.#readSelector()?.generationId;
-		} catch {
-			return;
-		}
-	}
-
 	#writeSelector(selector: GenerationSelector): void {
 		this.#writeControlFile(this.#selectorPath, JSON.stringify(selector));
 	}
@@ -274,6 +297,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 		let published = false;
 		try {
 			renameWithRetry(tempPath, filePath, { maxRetries: 2, initialDelayMs: 5, maxDelayMs: 10 });
+			// A later fsync failure must not reclaim a generation the selector may already name.
 			published = true;
 			this.#syncDirectory(this.#rootPath);
 		} catch (error) {
@@ -305,15 +329,15 @@ export class NativeFullTextDerivedIndexLifecycle {
 				closeSync(descriptor);
 			}
 		} catch (error) {
+			// Windows cannot open directories as files; its metadata journal supplies the ordering.
 			if (process.platform !== 'win32') throw error;
 		}
 	}
 
-	#sweepExcept(selectedGenerationId: string, preferredGenerationId?: string): void {
+	#sweepExcept(selectedGenerationId: string): void {
 		const entries = readdirSync(this.#generationsPath, { withFileTypes: true });
 		for (const entry of entries) {
 			if (entry.name === selectedGenerationId || !GENERATION_ID_PATTERN.test(entry.name)) continue;
-			if (preferredGenerationId && entry.name !== preferredGenerationId) continue;
 			this.#removeGeneration(entry.name);
 		}
 	}
@@ -323,12 +347,12 @@ export class NativeFullTextDerivedIndexLifecycle {
 		try {
 			generationPath = this.#generationPath(generationId);
 		} catch (error) {
-			logger.warn?.('Refused to remove an invalid full-text generation path', error);
+			logWarning('Refused to remove an invalid full-text generation path', error);
 			return;
 		}
 		if (!strictChild(this.#generationsPath, generationPath)) return;
 		void rm(generationPath, { recursive: true, force: true }).catch((error) =>
-			logger.warn?.(`Could not remove retired full-text generation '${generationPath}'`, error)
+			logWarning(`Could not remove retired full-text generation '${generationPath}'`, error)
 		);
 	}
 }
@@ -374,4 +398,56 @@ function plainObject(value: unknown): value is Record<string, unknown> {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const prototype = Object.getPrototypeOf(value);
 	return prototype === Object.prototype || prototype === null;
+}
+
+function validateNativeConfiguration(options: NativeFullTextDerivedIndexLifecycleOptions): void {
+	if (options.analyzer !== 'english@1') throw new TypeError('Full-text analyzer must be english@1');
+	if (!Array.isArray(options.fields) || options.fields.length === 0 || options.fields.length > 0xffff)
+		throw new TypeError('Full-text fields must contain between 1 and 65535 entries');
+	const names = new Set<string>();
+	for (const field of options.fields) {
+		if (
+			!plainObject(field) ||
+			typeof field.name !== 'string' ||
+			field.name.length === 0 ||
+			field.name === '__fulltext_id' ||
+			names.has(field.name)
+		)
+			throw new TypeError('Full-text field names must be non-empty, unique, and not reserved');
+		if (field.weight !== undefined && (!Number.isFinite(field.weight) || field.weight <= 0))
+			throw new TypeError('Full-text field weights must be finite and greater than zero');
+		names.add(field.name);
+	}
+	for (const name of ['stopWords', 'positions', 'surfaceTerms'] as const) {
+		if (options[name] !== undefined && typeof options[name] !== 'boolean')
+			throw new TypeError(`Full-text ${name} must be a boolean`);
+	}
+	const { limits } = options;
+	if (!plainObject(limits)) throw new TypeError('Full-text limits are required');
+	for (const name of [
+		'indexingThreads',
+		'searchThreads',
+		'writerMemoryBytes',
+		'maxQueuedCommands',
+		'maxQueuedBytes',
+		'maxBatchBytes',
+	] as const) {
+		if (!Number.isSafeInteger(limits[name]) || limits[name] <= 0)
+			throw new TypeError(`Full-text limits.${name} must be a positive safe integer`);
+	}
+	if (limits.indexingThreads > 64 || limits.searchThreads > 64)
+		throw new RangeError('Full-text thread limits must not exceed 64');
+	if (limits.maxQueuedCommands > 0xffff_ffff)
+		throw new RangeError('Full-text maxQueuedCommands exceeds its packed integer range');
+	const writerMemoryPerThread = limits.writerMemoryBytes / limits.indexingThreads;
+	if (writerMemoryPerThread < 15_000_000 || writerMemoryPerThread >= 0xffff_ffff)
+		throw new RangeError('Full-text writerMemoryBytes per indexing thread is outside Tantivy limits');
+	if (limits.maxBatchBytes > limits.maxQueuedBytes)
+		throw new RangeError('Full-text maxBatchBytes must not exceed maxQueuedBytes');
+}
+
+function logWarning(message: string, error: unknown): void {
+	void import('../utility/logging/logger.ts')
+		.then(({ loggerWithTag }) => loggerWithTag('fulltext-derived-index').warn?.(message, error))
+		.catch(() => undefined);
 }
