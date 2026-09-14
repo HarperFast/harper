@@ -87,10 +87,8 @@ describe('Test log rotation on the write path (#1877)', () => {
 		}
 	}
 
-	// The sink batches into a timer once its own appends start costing measurable time, so a return
-	// from logger.error() is not the point at which the entry is on disk — and a synchronous loop
-	// never lets that timer run. Every assertion below about a file has to wait for the write it is
-	// asserting on, not for the call that made it.
+	// The sink batches into a timer once its own appends start costing measurable time, so
+	// logger.error() returning is not the point at which the entry is on disk.
 	function writeAndObserve(logger, message, logPath, rotatedDir) {
 		const size = activeSize(logPath);
 		const generations = archives(rotatedDir).length;
