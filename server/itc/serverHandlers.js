@@ -12,7 +12,13 @@ const harperBridge =
 	require('../../dataLayer/harperBridge/harperBridge.ts');
 const process = require('process');
 const { isMainThread, threadId, workerData } = require('node:worker_threads');
-const { resetDatabases, closeDatabase, reloadBranchAt } = require('../../resources/databases.ts');
+const {
+	databases,
+	resetDatabases,
+	closeDatabase,
+	reloadBranchAt,
+	markDropInProgress,
+} = require('../../resources/databases.ts');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -83,11 +89,29 @@ async function syncSchemaMetadata(msg) {
 			reloadBranchAt(msg.branchPath);
 			return;
 		}
+		if (msg.operation === hdbTerms.OPERATIONS_ENUM.DROP_TABLE && msg.table) {
+			// The dropper retires the table's stores only after this ack, so anything this thread still
+			// applies to them must have settled here, not merely been scheduled; the rescan then
+			// unloads the tombstoned table without racing the dropper to complete it.
+			const dropped = databases[msg.schema]?.[msg.table];
+			if (dropped) {
+				const derivedIndexRuntime = dropped.derivedIndexRuntime;
+				dropped.derivedIndexRuntime = undefined;
+				await derivedIndexRuntime?.close();
+			}
+			const releaseDropMark = msg.dropGeneration ? markDropInProgress(msg.dropGeneration) : undefined;
+			try {
+				resetDatabases();
+			} finally {
+				releaseDropMark?.();
+			}
+			return;
+		}
 		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
-		let databases = resetDatabases();
+		const rescanned = resetDatabases();
 		if (msg.table && msg.database)
 			// wait for a write to finish to ensure all writes have been written
-			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
+			await rescanned[msg.database][msg.table].put(Symbol.for('write-verify'), null);
 	} catch (e) {
 		hdbLogger.error(e);
 	}
