@@ -151,7 +151,8 @@ describe('dropTable generation-distinct stores', function () {
 		await Promise.all([Twice.dropTable(), Twice.dropTable()]);
 		assert.deepStrictEqual(catalogRows('GenDoubleDrop'), []);
 		const journal = dbisDb().getSync(`${GENERATION_ROW_PREFIX}${generation}`);
-		if (journal) assert.ok(journal.stores.includes(family), 'the second drop must not narrow the store list');
+		assert.ok(journal, 'the retirement row stays until a load confirms the reclaim');
+		assert.ok(journal.stores.includes(family), 'the second drop must not narrow the store list');
 		resetDatabases();
 		assert.ok(!rootStore().columns.includes(family));
 		assert.deepStrictEqual(generationRows(), []);
