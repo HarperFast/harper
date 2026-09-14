@@ -816,6 +816,24 @@ describe('OptionsWatcher', () => {
 		await teardown({ fixture, options });
 	});
 
+	it('does not let a read in flight when the file is deleted put the removed config back', async () => {
+		const { fixture, configFilePath, options } = await setup();
+
+		const events = [];
+		options.on('remove', () => events.push('remove'));
+		options.on('change', () => events.push('change'));
+		options.on('ready', () => events.push('ready'));
+
+		const inFlight = options._refreshForTests();
+		options._simulateUnlinkForTests(configFilePath);
+		await inFlight;
+		await delay(50);
+
+		assert.deepEqual(events, ['remove'], 'the read the deletion superseded must report nothing');
+		assert.equal(options.get(['str']), undefined, 'the deleted scope must not be reapplied');
+		await teardown({ fixture, options });
+	});
+
 	it('does not surface the source lines yaml frames into a parse failure', async () => {
 		useShortReadRetryBudget();
 		const fixture = mkdtempSync(getFixtureName());

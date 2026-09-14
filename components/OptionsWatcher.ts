@@ -706,6 +706,13 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.#handleError(error);
 	}
 
+	// Test-only: deliver the deletion at a point the test chooses. A real unlink cannot be ordered
+	// against a read already in flight — chokidar's own event delivery needs the libuv threadpool,
+	// so the techniques that hold a read open hold the unlink behind it too.
+	_simulateUnlinkForTests(path: string): void {
+		this.#handleUnlink(path);
+	}
+
 	get _usingPollingForTests(): boolean {
 		return this.#usingPolling;
 	}
