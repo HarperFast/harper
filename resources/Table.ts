@@ -606,7 +606,6 @@ export function makeTable(options) {
 		options;
 	if (!attributes) attributes = [];
 	if (!properties) properties = projectAttributesToProperties(attributes);
-<<<<<<< HEAD
 	const updateRecord = recordUpdater(primaryStore, tableId, auditStore, tableName);
 	// The blob unlink drain resolves the owner recorded in a blob reference through this registry; a
 	// row staged by another process names a table, and nothing else can turn that name into a store.
