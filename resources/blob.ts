@@ -107,11 +107,11 @@ type BlobOwner = [tableName: string | null, key: any];
 // colliding file's claim under the drain still using it.
 type BlobFileInfo = { store?: any; fileId?: string; storageIndex?: number; owner?: BlobOwner; claimed?: boolean };
 /**
- * The record write that gave a blob file up: the version of the record it replaced, and whether that
- * write commits synchronously. The second is what decides how the intent has to be written — see
- * {@link stageDurableUnlink}.
+ * The record write that gave a blob file up: the version of the record it replaced, whether that
+ * write commits synchronously, and whether an owner-aware intent must be durable to be safe. The
+ * second is what decides how the intent has to be written — see {@link stageDurableUnlink}.
  */
-type BlobSupersession = { priorVersion?: number; synchronous?: boolean };
+type BlobSupersession = { priorVersion?: number; synchronous?: boolean; requireDurable?: boolean };
 
 function discardStorage(storageInfo: StorageInfo): void {
 	(storageInfo.fileState ??= {}).discarded = true;
@@ -2569,6 +2569,9 @@ export function deleteBlob(blob: Blob, supersession?: BlobSupersession): void {
 			scheduleBlobUnlinkDrain(pending.fileInfo.store, Math.max(0, pending.deadline - now));
 			return;
 		}
+		// Cleanup of an unused blob with a stamped owner must never degrade to an ownerless local unlink:
+		// another write can have committed that shared instance, so only a durable owner recheck is safe.
+		if (supersession.requireDurable) return;
 	}
 	if (pending.durable) return; // the row already carries this deletion, with its own deadline
 	// Counted like a staged intent, though nothing is written: the counters stand for files condemned,
@@ -4217,10 +4220,10 @@ export function cleanupUnusedBlobs(blobs: Blob[] | undefined, retainedFileIds?: 
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (!storageInfo?.fileId || (blob as FileBackedBlob).saveInRecord) continue; // no file written, nothing to clean up
 		if (retainedFileIds?.has(storageInfo.fileId)) continue; // the committed record still references this blob
-		// Tombstone the instance as soon as the deletion is DECIDED, not when the unlink is issued: the
-		// unlink waits for an in-flight save to settle, and a re-store in that window would otherwise
-		// mint a reference to a file that is already condemned (issue #2062).
-		discardStorage(storageInfo);
+		// A never-owned blob is already condemned, even if its writer is still settling; tombstone it now
+		// so it cannot be re-stored in that window. A stamped owner means another write committed this
+		// shared instance, so only the drain may discard it after revalidating that owner.
+		if (!storageInfo.owner) discardStorage(storageInfo);
 		const remove = () => deleteUnusedBlob(blob, storageInfo);
 		if (storageInfo.saved) remove();
 		// Do not unlink beneath an open writer: Windows refuses it and Unix loses the final path.
@@ -4231,11 +4234,25 @@ export function cleanupUnusedBlobs(blobs: Blob[] | undefined, retainedFileIds?: 
 }
 
 /**
- * Persist cleanup for a file that this unsuccessful write allocated but no committed record retained.
- * Unlike a superseded committed blob, it has no owner or snapshot-visible version to revalidate; the
- * ownerless queue row is therefore the complete safety decision and may be drained immediately.
+ * Persist cleanup for a file that this unsuccessful write did not retain. A shared blob instance can
+ * have acquired an owner from another committed write, so that case uses the normal owned durable path
+ * and lets the drain revalidate the record. Only a never-owned file is safe to queue ownerless and due
+ * immediately.
  */
 function deleteUnusedBlob(blob: Blob, storageInfo: StorageInfo): void {
+	if (storageInfo.owner) {
+		try {
+			deleteBlob(blob, { synchronous: true, requireDurable: true });
+		} catch (error) {
+			// If the owner-aware intent cannot be staged, leave the file to the orphan sweep. Falling back
+			// to an ownerless unlink could delete a file that the committed owner still references.
+			logger.debug?.('Could not durably queue an owned unused blob; leaving it to the orphan sweep', error);
+		}
+		return;
+	}
+	// Tombstone a never-owned instance as soon as deletion is decided. The queue drain can unlink it
+	// immediately, and reusing the instance after this point must not mint a new reference to that file.
+	discardStorage(storageInfo);
 	try {
 		if (
 			enqueueBlobUnlink({

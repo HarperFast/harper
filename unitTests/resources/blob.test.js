@@ -2661,6 +2661,75 @@ describe('durable blob-unlink queue (#1832)', () => {
 		unlinkSync(retainedPath); // never stored in a record; leave no orphan behind
 	});
 
+	it('revalidates a blob another write committed before cleaning up a skipped write', async () => {
+		setDeletionDelay(0);
+		const shared = createBlob(randomBytes(20000), { saveBeforeCommit: true });
+		const unusedWrite = startPreCommitBlobsForRecord({ id: 'shared-skipped', blob: shared }, rootStore(), false, false);
+		await unusedWrite.complete();
+		await QueueTest.put({ id: 'shared-owner', blob: shared });
+		const fileId = getFileId(shared);
+		const filePath = getFilePathForBlob(shared);
+		const db = queueDb();
+		const realPutSync = db.putSync;
+		let cleanupIntent;
+		db.putSync = function (key, value) {
+			if (Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) cleanupIntent = value;
+			return realPutSync.apply(this, arguments);
+		};
+		try {
+			cleanupUnusedBlobs(unusedWrite.blobs);
+		} finally {
+			db.putSync = realPutSync;
+		}
+		const row = queueRow(fileId);
+		const committed = QueueTest.primaryStore.getEntry('shared-owner')?.value;
+
+		assert.equal(getFileId(committed?.blob), fileId, 'the first write must commit the shared file');
+		assert.deepEqual(cleanupIntent?.owner, ['BlobQueueTest', 'shared-owner'], 'cleanup must stage the owner');
+		assert.deepEqual(row?.owner, ['BlobQueueTest', 'shared-owner'], 'cleanup must retain the committed owner');
+		assert.equal(row?.priorVersion, undefined, 'the cleanup intent is not tied to a superseded owner version');
+		assert.equal(row?.claimedBy, undefined, 'cleanup must not claim the file before the drain validates its owner');
+		await waitFor(() => queueRow(fileId) === undefined, {
+			timeout: 5000,
+			message: 'the drain must drop cleanup for a file the committed owner still references',
+		});
+		assert.ok(existsSync(filePath), 'owner revalidation must preserve the committed file');
+		assert.equal((await shared.arrayBuffer()).byteLength, 20000, 'cleanup must not tombstone the live blob instance');
+		await QueueTest.put({ id: 'shared-owner', blob: shared });
+		assert.equal((await (await QueueTest.get('shared-owner')).blob.arrayBuffer()).byteLength, 20000);
+	});
+
+	it('leaves an owned unused blob intact when its owner-aware intent cannot be staged', async () => {
+		setDeletionDelay(0);
+		const shared = createBlob(randomBytes(20000), { saveBeforeCommit: true });
+		const unusedWrite = startPreCommitBlobsForRecord({ id: 'failed-stage', blob: shared }, rootStore(), false, false);
+		await unusedWrite.complete();
+		await QueueTest.put({ id: 'failed-stage-owner', blob: shared });
+		const fileId = getFileId(shared);
+		const filePath = getFilePathForBlob(shared);
+		const db = queueDb();
+		const realPutSync = db.putSync;
+		let attempts = 0;
+		db.putSync = function (key) {
+			if (Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) {
+				attempts++;
+				throw new Error('queue unavailable');
+			}
+			return realPutSync.apply(this, arguments);
+		};
+		try {
+			cleanupUnusedBlobs(unusedWrite.blobs);
+		} finally {
+			db.putSync = realPutSync;
+		}
+
+		assert.equal(attempts, 1, 'cleanup must attempt to stage the owner-aware intent');
+		assert.equal(queueRow(fileId), undefined, 'a rejected stage must not leave a partial intent');
+		assert.ok(existsSync(filePath), 'cleanup must fail safe when it cannot persist owner revalidation');
+		assert.equal((await shared.arrayBuffer()).byteLength, 20000, 'cleanup must not tombstone the live blob instance');
+		await QueueTest.put({ id: 'failed-stage-owner', blob: shared });
+	});
+
 	it('retries a rejected durable unused-blob intent through local reclamation', async () => {
 		setDeletionDelay(0);
 		const unused = createBlob(randomBytes(20000));
