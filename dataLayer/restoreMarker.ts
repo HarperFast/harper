@@ -292,7 +292,13 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
 				// writeSync can report a short write without throwing, and renaming a truncated marker over
 				// the live one is the very thing staging it is here to prevent
 				const content = Buffer.from(markerContent(dbPath, kind));
-				for (let written = 0; written < content.length;) written += writeSync(fd, content, written);
+				for (let written = 0; written < content.length;) {
+					const wrote = writeSync(fd, content, written);
+					// a write that reports no progress and does not throw would otherwise spin here holding
+					// the lifecycle lock, which no drop or restore of this database could then take
+					if (wrote <= 0) throw new Error(`Could not write the lifecycle marker for ${dbPath}`);
+					written += wrote;
+				}
 				fsyncSync(fd);
 			} finally {
 				closeSync(fd);
