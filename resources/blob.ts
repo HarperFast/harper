@@ -102,7 +102,10 @@ type StorageInfo = {
  * encoder had no table to give (the v4 migration, bare-store unit tests), which is never persisted.
  */
 type BlobOwner = [tableName: string | null, key: any];
-type BlobFileInfo = { store?: any; fileId?: string; storageIndex?: number; owner?: BlobOwner };
+// `claimed` records that this holder took the file's reclaim claim, which is the only thing that
+// licenses handing it back: the slot is shared by hash, so a release by anyone else could free a
+// colliding file's claim under the drain still using it.
+type BlobFileInfo = { store?: any; fileId?: string; storageIndex?: number; owner?: BlobOwner; claimed?: boolean };
 /**
  * The record write that gave a blob file up: the version of the record it replaced, and whether that
  * write commits synchronously. The second is what decides how the intent has to be written — see
@@ -1435,8 +1438,10 @@ function snapshotStillSees(storageInfo: BlobFileInfo | undefined, supersededAt: 
 
 /** Undo a reclaimer's claim once its unlink has landed, leaving the slot usable again. */
 function releaseReclaimClaim(storageInfo: BlobFileInfo | undefined): void {
-	const store = storageInfo?.store;
-	const fileId = storageInfo?.fileId;
+	if (!storageInfo?.claimed) return;
+	storageInfo.claimed = false;
+	const store = storageInfo.store;
+	const fileId = storageInfo.fileId;
 	if (!store || !fileId) return;
 	const state = blobHoldState(store, fileId);
 	if (state) Atomics.compareExchange(state.table, state.slot + HOLDS, RECLAIMING, 0);
@@ -1452,7 +1457,11 @@ function isBlobHeld(storageInfo: BlobFileInfo | undefined, claim = false): boole
 	if (!store || !fileId) return false;
 	const state = blobHoldState(store, fileId);
 	if (!state) throw new Error(`Could not read hold state for blob ${fileId}`);
-	if (claim) return Atomics.compareExchange(state.table, state.slot + HOLDS, 0, RECLAIMING) !== 0;
+	if (claim) {
+		const held = Atomics.compareExchange(state.table, state.slot + HOLDS, 0, RECLAIMING) !== 0;
+		if (!held) storageInfo.claimed = true;
+		return held;
+	}
 	return Atomics.load(state.table, state.slot + HOLDS) > 0;
 }
 
@@ -1495,12 +1504,14 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 		} finally {
 			releaseReclaimLock(storageInfo);
 		}
-		// An ownerless row was written by reclamation with the claim already taken, and that claim goes
-		// back with the row: the slot is shared by hash, and one left claimed reads as "already
-		// reclaimed" to every colliding file. An owned row's claim is only ever taken by a drain, which
-		// hands it back itself on every path that does not unlink — released here as well, the same
-		// shared slot could be a colliding file's claim, freed under a drain that is still using it.
-		if (!intent.owner) releaseReclaimClaim(storageInfo);
+		// An ownerless row written by this process's reclamation carries the claim it took, and that
+		// claim goes back with the row: the slot is shared by hash, and one left claimed reads as
+		// "already reclaimed" to every colliding file. Any other row's claim is not this write's to
+		// release: an owned row's is taken and handed back by the drain itself, and a row recovered
+		// from a previous process, or one enqueued past the age cap, never held one.
+		if (!intent.owner && intent.claimedBy === process.pid) {
+			releaseReclaimClaim({ store: storageInfo.store, fileId: storageInfo.fileId, claimed: true });
+		}
 	}
 	// Also recorded in shared memory for the in-memory reclamation path, whose queue lives on whichever
 	// worker superseded the file and may not be this one.
@@ -1917,7 +1928,12 @@ function enqueueBlobUnlink(storageInfo: BlobFileInfo): boolean {
 	const queueDb = unlinkQueueDb(storageInfo.store);
 	if (!queueDb) return false;
 	const key = [UNLINK_QUEUE_KEY, storageInfo.fileId];
-	const value = { due: Date.now(), storageIndex: storageInfo.storageIndex };
+	// The claim lives in this process's shared memory, so the row names the process that took it.
+	const value = {
+		due: Date.now(),
+		storageIndex: storageInfo.storageIndex,
+		claimedBy: storageInfo.claimed ? process.pid : undefined,
+	};
 	bumpUnlinkEpoch(storageInfo.store, STAGED);
 	try {
 		queueDb.putSync(key, value);
@@ -1997,6 +2013,7 @@ export function drainBlobUnlinkQueue(rootStore: any): boolean | undefined {
 			fileId,
 			store: rootStore,
 			owner: value.owner,
+			claimed: value.claimedBy === process.pid,
 		};
 		let filePath: string;
 		try {

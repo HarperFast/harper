@@ -2694,7 +2694,7 @@ describe('durable blob-unlink queue (#1832)', () => {
 		writeFileSync(join(filePath, 'occupied'), 'x');
 		const state = getBlobHoldStateForTesting(rootStore(), fileId);
 		Atomics.store(state.table, state.slot, RECLAIMING); // as reclamation leaves it when it enqueues
-		stageUnlink(fileId);
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0, claimedBy: process.pid });
 
 		// Driven rather than slept through: the retries now back off, so a fixed number of fixed-length
 		// waits either races the unlink callback or has to be padded to the worst case.
@@ -3368,6 +3368,26 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 			Atomics.load(state.table, state.slot),
 			RECLAIMING,
 			"the claim in the shared slot is not this write's to release"
+		);
+		Atomics.store(state.table, state.slot, 0);
+	});
+
+	it('leaves the shared reclaim slot alone when withdrawing a row it did not claim', async () => {
+		// A row recovered from a previous process, or enqueued past the age cap, never held a claim in
+		// this process's table; whatever is in the shared slot belongs to a colliding file.
+		const { fileId, stored } = await fileBackedBlob('unclaimed-withdrawal');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() + 600000, storageIndex: 0 });
+		drainBlobUnlinkQueue(rootStore()); // a non-empty read, so no drain's "empty" can stand in for the read
+		const state = getBlobHoldStateForTesting(rootStore(), fileId);
+		Atomics.store(state.table, state.slot, RECLAIMING);
+
+		await Interlock.put({ id: 'unclaimed-withdrawal', blob: stored });
+
+		assert.strictEqual(queueRow(fileId), undefined, 'the intent is withdrawn');
+		assert.equal(
+			Atomics.load(state.table, state.slot),
+			RECLAIMING,
+			'a claim this process never took is not its to release'
 		);
 		Atomics.store(state.table, state.slot, 0);
 	});
