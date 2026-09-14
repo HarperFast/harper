@@ -834,6 +834,28 @@ describe('record lock delegations', () => {
 			cluster.node('gamma').coordinator.release(key, gamma.admissionId);
 		});
 
+		it('does not re-send a recall the delegate already confirmed', async () => {
+			// A contender polls the home every 25 ms, and `#beginRecall` used to re-arm as soon as the
+			// previous recall settled — so one handoff became a recall RPC per pass for the rest of the
+			// delegation. A confirmed recall is never re-sent: the grant clears on its release or on its
+			// own deadline.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const round = await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(round, 'alpha did not take the key');
+			// The delegate confirms the recall but never writes the release, which is the case that used
+			// to leave the grant re-armable for its whole lifetime.
+			let recallsSent = 0;
+			cluster.node('beta').coordinator.transport.recallDelegation = async () => {
+				recallsSent++;
+			};
+			await assert.rejects(
+				() => cluster.node('gamma').coordinator.acquire(key, LEASE, 300),
+				() => true
+			);
+			assert.strictEqual(recallsSent, 1, `the confirmed recall was re-sent ${recallsSent} times`);
+		});
+
 		it('does not latch a generation it never minted under', async () => {
 			// The rollback floor has to be raised where authority is TAKEN, not where a map is read. One
 			// `homeMap()` returning a too-large generation — a partial publish, a transport glitch — would

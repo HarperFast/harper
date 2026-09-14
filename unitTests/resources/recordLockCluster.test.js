@@ -405,10 +405,11 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			} = require('#src/resources/recordLockCoordinator');
 			const { unpack } = require('msgpackr');
 			useSoloTransport({ homes: [NODE_NAME, 'peer-1'] });
-			const { homeFor } = require('#src/resources/recordLockCoordinator');
-			// The home check is mutual, so this test needs a key that actually homes here.
-			let recordId = id();
-			while (homeFor(recordId, [NODE_NAME, 'peer-1']) !== NODE_NAME) recordId = id();
+			// Through `idHomedHere`, which hashes `ringKeyFor(database, table, writeKeyId(id))` exactly as
+			// Table.ts hands it to the coordinator. Hashing the raw id here picked a home under a
+			// different input than the one the mutual check below actually uses, so the loop guaranteed
+			// nothing and the assertion passed on luck.
+			const recordId = idHomedHere([NODE_NAME, 'peer-1']);
 			const coordinator = ClusterLockTest.lockCoordinator;
 			assert.ok(coordinator, 'the coordinator resolved through the registry');
 			// Delegations granted by earlier tests on this table are deliberately retained, so this

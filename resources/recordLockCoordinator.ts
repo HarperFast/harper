@@ -47,6 +47,14 @@ import { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS } from './recordLock.ts';
  * and why no core build registers a transport.
  */
 
+/**
+ * How long a home waits before re-sending a recall that FAILED. A recall the delegate confirmed is
+ * never re-sent: it has stopped admitting, and the grant is then cleared by its release or by its own
+ * deadline. Without both rules a contender polling at 25 ms re-armed the recall on every pass and
+ * turned one handoff into an RPC storm lasting the rest of the delegation.
+ */
+const RECALL_RETRY_MS = 1_000;
+
 /** Margin a home adds to a delegation it issued, so the delegate always stops admitting first. */
 export const LOCK_LEASE_SKEW_MS = 5_000;
 /**
@@ -412,6 +420,10 @@ interface HomeGrant {
 	 */
 	expiresMono: number;
 	recalling?: Promise<void>;
+	/** Set once the delegate confirmed it stopped admitting, so the recall is never re-sent. */
+	recallConfirmed?: boolean;
+	/** After a FAILED recall, the earliest this home may try that delegate again (`RECALL_RETRY_MS`). */
+	recallRetryAfterMono?: number;
 }
 
 export interface LockRound {
@@ -1315,7 +1327,8 @@ export class LockCoordinator {
 	}
 
 	#beginRecall(keyId: unknown, grant: HomeGrant): void {
-		if (grant.recalling) return;
+		if (grant.recalling || grant.recallConfirmed) return;
+		if (grant.recallRetryAfterMono !== undefined && this.#monotonic() < grant.recallRetryAfterMono) return;
 		if (grant.delegate === this.nodeId) {
 			// We are both home and delegate. Recall ourselves through the same path a peer would take.
 			grant.recalling = this.onDelegationRecall({ key: grant.key, token: grant.token }).catch((error) => {
@@ -1330,15 +1343,19 @@ export class LockCoordinator {
 			})
 		)
 			.then(() => {
-				// The delegate confirmed it stopped admitting. Its release entry clears the grant; if that
-				// write never lands the grant still expires on its own deadline — but the recall must be
-				// cleared either way, or a later contender's recall is skipped and it waits forever.
+				// The delegate confirmed it stopped admitting, so re-sending buys nothing: the grant is
+				// cleared by its release entry, or failing that by its own deadline. Re-arming here is what
+				// let a contender polling at 25 ms fire a recall per pass for the rest of the delegation.
 				grant.recalling = undefined;
+				grant.recallConfirmed = true;
 			})
 			.catch(() => {
 				// An unreachable delegate is not a reason to re-grant early: the grant's own deadline is
-				// what makes the successor safe, and it already includes the skew margin.
+				// what makes the successor safe, and it already includes the skew margin. Retrying IS
+				// worthwhile here — the delegate may come back — but on its own interval, not the
+				// contender's.
 				grant.recalling = undefined;
+				grant.recallRetryAfterMono = this.#monotonic() + RECALL_RETRY_MS;
 			});
 	}
 
