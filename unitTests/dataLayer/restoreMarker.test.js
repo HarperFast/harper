@@ -332,6 +332,26 @@ describe('restoreMarker', function () {
 			releaseRestoreLock(acquireRestoreLock(dbPath));
 		});
 
+		it('removes a marker it published when the step after publication fails', function () {
+			// the marker is live from the rename on, and a drop marker is what the next scan finishes by
+			// deleting the database — so a failure after it (the metadata-directory fsync is the only
+			// step left) must not leave this call's marker behind on a database nothing has touched
+			const fs = require('node:fs');
+			const originalFsync = fs.fsyncSync;
+			fs.fsyncSync = (fd) => {
+				if (fs.fstatSync(fd).isDirectory()) throw Object.assign(new Error('injected fsync failure'), { code: 'EIO' });
+				return originalFsync(fd);
+			};
+			try {
+				assert.throws(() => beginDrop(dbPath), /injected fsync failure/);
+			} finally {
+				fs.fsyncSync = originalFsync;
+			}
+			assert.equal(lifecycleMarkerKind(dbPath), null, 'no marker may survive a failed beginDrop');
+			assert.equal(checkRestoreState(dbPath), 'clear');
+			releaseRestoreLock(acquireRestoreLock(dbPath));
+		});
+
 		it('releases the lock when the marker cannot be read at all', function () {
 			// the read happens under the lock, so anything but ENOENT has to release it on the way out —
 			// a leaked flock is held for the life of the process and wedges every later drop and restore

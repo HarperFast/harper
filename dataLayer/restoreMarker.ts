@@ -18,6 +18,7 @@ import { opendir, rmdir, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
+import logger from '../utility/logging/harper_logger.ts';
 
 /**
  * Lifecycle lock + marker protocol for the two operations that destroy a RocksDB database directory:
@@ -259,6 +260,7 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
 	const lock = acquireRestoreLock(dbPath);
 	let preexisting = false;
+	let published = false;
 	// Everything from here to the marker write runs inside the try: whatever fails, the lock this
 	// acquired must be released, or the file lock is held for the life of the process and every
 	// later drop or restore of the database 409s.
@@ -310,10 +312,25 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
 			throw error;
 		}
 		renameSync(stagedPath, markerPath);
+		published = true;
 		// fsync the metadata directory so the marker's directory entry is durable — without this a
 		// power loss can lose the entry, and a half-purged database would load as healthy
 		fsyncDir(restoreMetaDir(dbPath));
 	} catch (error) {
+		// A marker this call published cannot outlive the failure that follows it: the next scan reads
+		// a drop marker as an interrupted drop and finishes the deletion, so a database nothing has
+		// touched would be deleted after the operation returned an error. One that was already there is
+		// left alone — it belongs to an earlier drop of this database and is still true.
+		if (published && !preexisting) {
+			try {
+				unlinkSync(markerPath);
+				fsyncDir(restoreMetaDir(dbPath));
+			} catch (cleanupError) {
+				// nothing else can remove it, so say so: the database is now marked for a deletion that
+				// this call did not perform
+				logger.error(`Could not remove the lifecycle marker of a failed ${kind} at ${dbPath}:`, cleanupError);
+			}
+		}
 		fileLockRelease(lock.token);
 		throw error;
 	}
