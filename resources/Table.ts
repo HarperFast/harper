@@ -2834,6 +2834,10 @@ export function makeTable(options) {
 				// The follower waits on the leader's acquisition, but only for its own timeout.
 				let followerTimer: ReturnType<typeof setTimeout> | undefined;
 				const followerTimedOut = Symbol('follower timeout');
+				// Why the leader failed, so the follower can report that instead of inventing contention
+				// when its own budget runs out. A leader 503 means the guarantee could not be established
+				// at all; retrying is still right (the condition may clear) but 423 at the end is not.
+				let leaderFailure: Error | undefined;
 				const followerStart = Date.now();
 				const followerDeadline = new Promise<never>((_, reject) => {
 					followerTimer = setTimeout(() => reject(followerTimedOut), resolved.timeout).unref();
@@ -2847,7 +2851,8 @@ export function makeTable(options) {
 					if (link.open === TRANSACTION_STATE.CLOSED && !link.saveCommits)
 						throw new ServerError('Transaction was closed while waiting for a record lock', 500);
 					const remaining = resolved.timeout - (Date.now() - followerStart);
-					if (remaining <= 0) throw new ClientError(`Record is locked and was not released in time`, 423);
+					if (remaining <= 0)
+						throw leaderFailure ?? new ClientError(`Record is locked and was not released in time`, 423);
 					// Carry the scope only if the caller named it: spreading the resolved options would turn
 					// a defaulted 'cluster' into an explicit one, which is fail-closed when no transport is
 					// registered.
@@ -2875,10 +2880,12 @@ export function makeTable(options) {
 					},
 					(error) => {
 						clearTimeout(followerTimer);
-						// 423 here, unlike the cluster paths below: a follower only waits because another caller
-						// in this process holds or is acquiring the same key, which is the contention the status
-						// describes. The leader reports the accurate reason for its own failure.
+						// A follower that simply ran out of its own wait was waiting on another caller in this
+						// process, which is the contention 423 describes. But if the LEADER failed for a reason
+						// that is not contention, that reason is the true one — keep it and report it if the
+						// retries below also run out, rather than ending on a 423 for a key nobody held.
 						if (error === followerTimedOut) throw new ClientError(`Record is locked and was not released in time`, 423);
+						if (error instanceof LockUnavailableError) leaderFailure = error;
 						return retryOnRemainingBudget();
 					}
 				);

@@ -1240,6 +1240,32 @@ describe('record lock delegations', () => {
 			assert.strictEqual(recalls, 2, `a failed local recall was never retried (${recalls} sent)`);
 		});
 
+		it('arms the retry interval when the recall transport throws synchronously', async () => {
+			// `Promise.resolve(recallDelegation(...))` evaluates the call first, so a synchronous throw
+			// escaped `#beginRecall` entirely: the handlers never ran, `recallRetryAfterMono` was never
+			// set, and the next contender pass threw again immediately instead of backing off. Third
+			// instance of this pattern on this branch, so it is pinned rather than just fixed.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const granted = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(granted.granted, true);
+
+			let attempts = 0;
+			cluster.node('beta').coordinator.transport.recallDelegation = () => {
+				attempts++;
+				throw new Error('transport is not connected');
+			};
+			// The contender must get a denial, not the transport's throw.
+			const first = await beta.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(first.granted, false, 'a throwing recall must not grant');
+			await delayMs(5);
+			// And the next pass must be throttled rather than throwing again straight away.
+			const second = await beta.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(second.granted, false);
+			assert.strictEqual(attempts, 1, `the failed recall was re-sent ${attempts} times without backing off`);
+		});
+
 		it('does not renew a delegate that already confirmed a recall', async () => {
 			// The hole the confirmed-recall guard opened, found on the next round. The delegate can confirm
 			// and re-ask before its release reaches the home — the production writer is an async log commit

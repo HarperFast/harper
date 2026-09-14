@@ -1481,12 +1481,17 @@ export class LockCoordinator {
 			);
 			return;
 		}
-		grant.recalling = Promise.resolve(
-			this.transport.recallDelegation(grant.delegate, this.database, this.table, {
-				key: grant.key,
-				token: grant.token,
-			})
-		)
+		// `.then`, not `Promise.resolve(recallDelegation(...))`: the transport call is evaluated before
+		// `Promise.resolve` and can throw synchronously, which escapes this whole method — so the
+		// handlers below never run, the retry interval is never armed, and the next contender pass
+		// throws again immediately instead of backing off.
+		grant.recalling = Promise.resolve()
+			.then(() =>
+				this.transport.recallDelegation(grant.delegate, this.database, this.table, {
+					key: grant.key,
+					token: grant.token,
+				})
+			)
 			.then(() => {
 				// The delegate confirmed it stopped admitting, so re-sending buys nothing: the grant is
 				// cleared by its release entry, or failing that by its own deadline. Re-arming here is what
