@@ -1,0 +1,8 @@
+# Regression fixture — chooseOperation must authorize the real principal against the real operation.
+#
+# A table is needed only so the fixture mounts a database; the escalation attempts below target
+# system operations (add_user, export_local), not this table.
+type AuthzProbe @table @export {
+	id: ID @primaryKey
+	label: String
+}

@@ -1,7 +1,7 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { statfs } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
+import { ownsStoreMaintenance } from '../server/threads/manageThreads.js';
 import { logger } from '../utility/logging/logger.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import * as envMgr from '../utility/environment/environmentManager.ts';
@@ -106,7 +106,7 @@ export function onStorageReclamation(
 	handler: (priority: number) => Promise<void> | void,
 	skipThreadCheck?: boolean
 ) {
-	if (skipThreadCheck || getWorkerIndex() === getWorkerCount() - 1) {
+	if (skipThreadCheck || ownsStoreMaintenance(path)) {
 		// only run on one thread (last one)
 		if (!path) {
 			throw new Error('Storage reclamation path cannot be empty');

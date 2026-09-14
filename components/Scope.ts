@@ -20,6 +20,7 @@ import {
 } from './componentSecrets.ts';
 import type { SecretsView } from './componentSecrets.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
+import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
 	constructor() {
@@ -241,7 +242,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	ensureTable<TableResourceType = unknown>(options: any): TableResourceType {
 		options.origin = this.#origin;
-		return scopedTableFactory(this.applicationScope?.branches)<TableResourceType>(options);
+		return scopedTableFactory(
+			this.applicationScope?.branches,
+			thisThreadOwnsApplication(this.applicationScope?.name)
+		)<TableResourceType>(options);
 	}
 
 	#handleOptionsWatcherReady(): void {

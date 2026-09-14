@@ -2,6 +2,7 @@ import { dirname } from 'path';
 import { Script } from 'node:vm';
 import { scopedTableFactory, table } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
+import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 import { Resources } from './Resources.ts';
 import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
 import { ClientError } from '../utility/errors/hdbError.ts';
@@ -79,7 +80,7 @@ export function handleApplication(scope: import('../components/Scope.ts').Scope)
 			entry.urlPath,
 			entry.absolutePath,
 			scope.resources,
-			scopedTableFactory(scope.applicationScope?.branches),
+			scopedTableFactory(scope.applicationScope?.branches, thisThreadOwnsApplication(scope.applicationScope?.name)),
 			scope.logger
 		);
 	});

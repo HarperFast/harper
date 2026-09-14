@@ -6,7 +6,7 @@ const { table } = require('#src/resources/databases');
 const { Resource } = require('#src/resources/Resource');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RequestTarget } = require('#src/resources/RequestTarget');
-const { VERSION_NOT_UNIQUE_FLAG } = require('#src/resources/RecordEncoder');
+const { VERSION_REUSED } = require('#src/resources/RecordEncoder');
 const { INVALIDATED } = require('#src/resources/Table');
 const { exportIdMapping } = require('#src/resources/nodeIdMapping');
 const { transaction } = require('#src/resources/transaction');
@@ -599,7 +599,7 @@ describe('Caching', () => {
 		assert.equal(ConflictCachingTable.primaryStore.getSync(id).name, 'refreshed');
 		const refreshedEntry = ConflictCachingTable.primaryStore.getEntry(id);
 		assert.equal(refreshedEntry.version, invalidatedVersion);
-		assert(refreshedEntry.metadataFlags & VERSION_NOT_UNIQUE_FLAG);
+		assert(refreshedEntry.metadataFlags & VERSION_REUSED);
 	});
 
 	it('uses a source-reported version before the transaction timestamp', async function () {
@@ -668,7 +668,7 @@ describe('Caching', () => {
 		await waitFor(() => !ConflictCachingTable.primaryStore.hasLock(id));
 		const refreshedEntry = ConflictCachingTable.primaryStore.getEntry(id);
 		assert.equal(refreshedEntry.version, invalidatedVersion);
-		assert(refreshedEntry.metadataFlags & VERSION_NOT_UNIQUE_FLAG);
+		assert(refreshedEntry.metadataFlags & VERSION_REUSED);
 	});
 
 	it('falls back from an invalid source-reported version', async function () {

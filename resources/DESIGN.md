@@ -12,24 +12,26 @@ See also: `../DESIGN.md` for cross-cutting non-obvious internals (RecordObject p
 
 ## File overview
 
-| File                    | Purpose                                                                                                                                      |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Resource.ts`           | Base class; `transactional()` wrapper; method routing                                                                                        |
-| `Table.ts`              | Table-as-Resource implementation. Factory `makeTable()` returns a `TableResource` subclass per table. **See section markers below.**         |
-| `Resources.ts`          | Registry mapping URL paths → Resource classes                                                                                                |
-| `RequestTarget.ts`      | Parses path/query into a structured target                                                                                                   |
-| `ResourceInterface.ts`  | Type definitions (`Context`, `Record`, etc.)                                                                                                 |
-| `RecordEncoder.ts`      | msgpack encoding + `entryMap` (record → storage entry)                                                                                       |
-| `IterableEventQueue.ts` | Async iterable used for subscriptions and streaming responses                                                                                |
-| `transaction.ts`        | Per-request transaction object stored in `contextStorage`                                                                                    |
-| `auditStore.ts`         | Append-only audit log records                                                                                                                |
-| `recordLock.ts`         | Exclusive record locks (harper#483): option contract, native key lock primitives (`lockAttemptKey`, `makeKeyLockHandle`, `acquireRecordKey`) |
-| `nodeIdMapping.ts`      | Maps node IDs ↔ timestamps for replication ordering                                                                                          |
-| `openApi.ts`            | Generates OpenAPI/JSON Schema from `@export` schemas                                                                                         |
-| `defineTable.ts`        | Code-first table authoring (`defineTable` + `types`) — a TS front-end to the canonical `table()` model                                       |
-| `defineResource.ts`     | Per-method request contract (`defineResource` / `Resource.withSchema`, `t`, `schemaOf`) — typed handlers + edge validation                   |
-| `jsonSchemaTypes.ts`    | Shared `JsonSchemaFragment` IR + `attributeToFragment` projector (one vocabulary for validation/OpenAPI/MCP)                                 |
-| `analytics/`            | Telemetry recording (separate from monitoring)                                                                                               |
+| File                      | Purpose                                                                                                                                                                                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Resource.ts`             | Base class; `transactional()` wrapper; method routing                                                                                                                                                                                             |
+| `Table.ts`                | Table-as-Resource implementation. Factory `makeTable()` returns a `TableResource` subclass per table. **See section markers below.**                                                                                                              |
+| `Resources.ts`            | Registry mapping URL paths → Resource classes                                                                                                                                                                                                     |
+| `RequestTarget.ts`        | Parses path/query into a structured target                                                                                                                                                                                                        |
+| `ResourceInterface.ts`    | Type definitions (`Context`, `Record`, etc.)                                                                                                                                                                                                      |
+| `RecordEncoder.ts`        | msgpack encoding + `entryMap` (record → storage entry)                                                                                                                                                                                            |
+| `IterableEventQueue.ts`   | Async iterable used for subscriptions and streaming responses                                                                                                                                                                                     |
+| `transaction.ts`          | Per-request transaction object stored in `contextStorage`                                                                                                                                                                                         |
+| `auditStore.ts`           | Append-only audit log records                                                                                                                                                                                                                     |
+| `derivedIndexRuntime.ts`  | Lock-elected, exact-cursor delivery of committed RocksDB log mutations to derived-index backends; chunked collection, flush cadence, rebuild phase, epoch fencing, shared readiness, lag policy. Design: root `DESIGN.md` § Derived-index runtime |
+| `derivedIndexRegistry.ts` | Worker-local registration counts (which tables emit cache-eviction markers) and per-table write-admission checks for the lag policy                                                                                                               |
+| `recordLock.ts`           | Exclusive record locks (harper#483): option contract, native key lock primitives (`lockAttemptKey`, `makeKeyLockHandle`, `acquireRecordKey`)                                                                                                      |
+| `nodeIdMapping.ts`        | Maps node IDs ↔ timestamps for replication ordering                                                                                                                                                                                               |
+| `openApi.ts`              | Generates OpenAPI/JSON Schema from `@export` schemas                                                                                                                                                                                              |
+| `defineTable.ts`          | Code-first table authoring (`defineTable` + `types`) — a TS front-end to the canonical `table()` model                                                                                                                                            |
+| `defineResource.ts`       | Per-method request contract (`defineResource` / `Resource.withSchema`, `t`, `schemaOf`) — typed handlers + edge validation                                                                                                                        |
+| `jsonSchemaTypes.ts`      | Shared `JsonSchemaFragment` IR + `attributeToFragment` projector (one vocabulary for validation/OpenAPI/MCP)                                                                                                                                      |
+| `analytics/`              | Telemetry recording (separate from monitoring)                                                                                                                                                                                                    |
 
 ---
 

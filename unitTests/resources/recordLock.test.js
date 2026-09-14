@@ -1082,7 +1082,7 @@ describe('Record locks (harper#483)', () => {
 			assert.strictEqual((await LockTest.get(recordId)).n, 1, 'write from s.save() landed');
 		});
 
-		it('scoped→hold upgrade detaches its scoped write behind a static write', async function () {
+		it('scoped→hold upgrade retains its scoped write before a static write', async function () {
 			if (isLMDB) return this.skip();
 			const recordId = id();
 			await LockTest.put({ id: recordId, n: 0, name: 'before' });
@@ -1094,12 +1094,28 @@ describe('Record locks (harper#483)', () => {
 				holder = await LockTest.lock(recordId, { hold: true, lease: 5000 });
 			});
 			const afterUpgrade = await LockTest.get(recordId);
-			assert.strictEqual(afterUpgrade.n, 0, 'unsaved scoped change did not auto-commit');
+			assert.strictEqual(afterUpgrade.n, 1, 'the later static save first committed its same-key predecessor');
 			assert.strictEqual(afterUpgrade.name, 'static', 'intervening static write landed');
 			holder.set('n', 2);
 			await holder.save();
 			await holder.unlock();
 			assert.strictEqual((await LockTest.get(recordId)).n, 2, 'explicit hold write landed');
+		});
+
+		it('does not resurrect a detached scoped write from a successor memo', async function () {
+			if (isLMDB) return this.skip();
+			const recordId = id();
+			await LockTest.put({ id: recordId, n: 0, name: 'before' });
+			await transaction(async (context) => {
+				const scoped = await LockTest.lock(recordId);
+				scoped.set('n', 1);
+				const successor = await LockTest.update(recordId, { name: 'successor' }, context);
+				await scoped.unlock();
+				await successor.save();
+			});
+			const committed = await LockTest.get(recordId);
+			assert.strictEqual(committed.n, 0, 'the unlocked scoped write stayed detached');
+			assert.strictEqual(committed.name, 'successor', 'the successor still saved');
 		});
 
 		it('major: same-instance scoped→hold re-entrant upgrade: hold persists after transaction commit', async function () {

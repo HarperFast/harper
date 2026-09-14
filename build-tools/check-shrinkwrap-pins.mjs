@@ -30,7 +30,9 @@
 // Usage: node check-shrinkwrap-pins.mjs <package-root>
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
 
 const CHECKED_DEPS = ['@harperfast/rocksdb-js', 'fastify', '@aws-sdk/client-s3'];
 const ROCKSDB_SINGLE_INSTANCE_DEPS = ['@harperfast/extended-iterable', 'msgpackr'];
@@ -51,6 +53,7 @@ if (packed.lockfileVersion !== 3) {
 	process.exit(1);
 }
 const manifest = JSON.parse(readFileSync(`${pkgRoot}/package.json`, 'utf8'));
+const requireFromRoot = createRequire(realpathSync(resolve(pkgRoot, 'package.json')));
 
 let failed = false;
 const pins = {};
@@ -175,8 +178,14 @@ function verifyCanariesDiscriminate(pins) {
 
 function verifyRocksDbDependencyAlignment() {
 	let rocksdbManifest;
+	let satisfies;
+	let validRange;
+	let requireFromRocksDb;
+	const rocksdbManifestPath = `${pkgRoot}/node_modules/@harperfast/rocksdb-js/package.json`;
 	try {
-		rocksdbManifest = JSON.parse(readFileSync(`${pkgRoot}/node_modules/@harperfast/rocksdb-js/package.json`, 'utf8'));
+		rocksdbManifest = JSON.parse(readFileSync(rocksdbManifestPath, 'utf8'));
+		({ satisfies, validRange } = requireFromRoot('semver'));
+		requireFromRocksDb = createRequire(realpathSync(rocksdbManifestPath));
 	} catch (e) {
 		console.error(`::error::could not inspect rocksdb-js dependency alignment: ${e.message}`);
 		failed = true;
@@ -193,9 +202,23 @@ function verifyRocksDbDependencyAlignment() {
 			failed = true;
 			continue;
 		}
-		if (rootSpec !== rocksdbSpec) {
+		if (rocksdbSpec == null) {
 			console.error(
-				`::error::the root ${dep} pin ${rootSpec} does not match rocksdb-js ${rocksdbSpec ?? 'missing'} -- update these pins together to preserve one module instance`
+				`::error::rocksdb-js no longer declares ${dep} -- update this check for the new dependency contract before publishing an image`
+			);
+			failed = true;
+			continue;
+		}
+		if (validRange(rocksdbSpec) == null) {
+			console.error(
+				`::error::rocksdb-js declares ${dep} with unsupported range ${rocksdbSpec} -- use a semver range or update this check for the new dependency contract`
+			);
+			failed = true;
+			continue;
+		}
+		if (!satisfies(rootSpec, rocksdbSpec)) {
+			console.error(
+				`::error::the root ${dep} pin ${rootSpec} is outside rocksdb-js ${rocksdbSpec} -- update these specs together to preserve one module instance`
 			);
 			failed = true;
 			continue;
@@ -212,15 +235,28 @@ function verifyRocksDbDependencyAlignment() {
 			failed = true;
 		}
 
-		const nestedManifest = `${pkgRoot}/node_modules/@harperfast/rocksdb-js/node_modules/${dep}/package.json`;
-		if (existsSync(nestedManifest)) {
-			let nestedVersion = 'unknown';
-			try {
-				nestedVersion = JSON.parse(readFileSync(nestedManifest, 'utf8')).version;
-			} catch {}
-			console.error(
-				`::error::rocksdb-js loaded a nested ${dep}@${nestedVersion} -- root and rocksdb-js must share one module instance`
-			);
+		try {
+			const rootResolution = realpathSync(requireFromRoot.resolve(dep));
+			const rocksdbResolution = realpathSync(requireFromRocksDb.resolve(dep));
+			if (rootResolution === rocksdbResolution) continue;
+
+			const nestedManifest = `${pkgRoot}/node_modules/@harperfast/rocksdb-js/node_modules/${dep}/package.json`;
+			if (existsSync(nestedManifest)) {
+				let nestedVersion = 'unknown';
+				try {
+					nestedVersion = JSON.parse(readFileSync(nestedManifest, 'utf8')).version;
+				} catch {}
+				console.error(
+					`::error::rocksdb-js loaded a nested ${dep}@${nestedVersion} -- root and rocksdb-js must share one module instance`
+				);
+			} else {
+				console.error(
+					`::error::rocksdb-js resolves ${dep} from ${rocksdbResolution}, but the root resolves it from ${rootResolution} -- both must share one module instance`
+				);
+			}
+			failed = true;
+		} catch (e) {
+			console.error(`::error::could not resolve the shared ${dep} instance: ${e?.message ?? e}`);
 			failed = true;
 		}
 	}
@@ -248,9 +284,6 @@ function reportMissingRange(dep, range) {
 	failed = true;
 }
 
-// Numeric major.minor.patch comparison, ignoring any prerelease/build suffix -- sufficient
-// for the stable releases this check compares (avoids depending on a semver-parsing
-// package that may not be resolvable from this script's own location).
 function compareVersions(a, b) {
 	const partsA = a.split(/[-+]/)[0].split('.').map(Number);
 	const partsB = b.split(/[-+]/)[0].split('.').map(Number);

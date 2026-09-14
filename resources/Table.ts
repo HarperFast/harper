@@ -41,6 +41,8 @@ import {
 	isReleasedTransaction,
 	TRANSACTION_STATE,
 	writeKeyId,
+	closeWriteInstance,
+	type WriteGeneration,
 } from './DatabaseTransaction.ts';
 import {
 	acquireRecordKey,
@@ -53,6 +55,7 @@ import {
 import * as envMngr from '../utility/environment/environmentManager.ts';
 import { addSubscription } from './transactionBroadcast.ts';
 import {
+	DerivedIndexLagError,
 	handleHDBError,
 	ClientError,
 	ServerError,
@@ -76,11 +79,27 @@ import {
 } from './search.ts';
 import { logger } from '../utility/logging/logger.ts';
 import { isStaticResourceInstance } from './staticResourceDispatch.ts';
-import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
+import {
+	Addition,
+	assignTrackedAccessors,
+	updateAndFreeze,
+	hasChanges,
+	GenericTrackedObject,
+	ASSERT_TRACKED_WRITABLE,
+	GET_TRACKED_WRITE_GENERATION,
+} from './tracked.ts';
 import { transaction, contextStorage } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
-import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
-import { HAS_BLOBS, auditRetention, removeAuditEntry } from './auditStore.ts';
+import {
+	getWorkerIndex,
+	applicationWorkerIndex,
+	ownsStoreMaintenance,
+	ownsStoreExpiration,
+	runsApplicationCodeSingletons,
+	isDedicatedWorker,
+} from '../server/threads/manageThreads.js';
+import { HAS_BLOBS, LOCAL_ONLY, auditRetention, removeAuditEntry } from './auditStore.ts';
+import { derivedIndexWriteRejection, hasDerivedIndexRegistration } from './derivedIndexRegistry.ts';
 import { buildEmbedBefore, createDefaultEmbedder, type EmbedAttribute, type Embedder } from './models/embedHook.ts';
 import { autoCast, autoCastBooleanStrict } from '../utility/common_utils.ts';
 import {
@@ -523,6 +542,11 @@ export function makeTable(options) {
 		isBranch,
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
+	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
+	// an isolated application's schema was declared here. Hydrating persisted metadata does not set it:
+	// dedicated workers open unrelated shared tables too, whose scan remains owned by the pool.
+	let ttlConfiguredByApplication = false;
+	let ttlFromLoad = false; // true only around the creation-time call below
 	evictionMs ??= 0;
 	// Eviction without explicit expiration means expiration:0. Apply at construction so
 	// describe_all sees it on every worker, not just ones that ran setTTLExpiration.
@@ -563,7 +587,7 @@ export function makeTable(options) {
 	let nonPrefetchSequence = 2;
 	let cleanupInterval = 86400000;
 	let cleanupPriority = 0;
-	let lastCleanupInterval: number;
+	let lastCleanupInterval: number | undefined;
 	let cleanupTimer: NodeJS.Timeout;
 	let recordExpirationInterval: NodeJS.Timeout;
 	// a reclamation pass awaits a scheduled cleanup, which only settles from its timer
@@ -746,6 +770,29 @@ export function makeTable(options) {
 		}
 		return { txnLogKey: version, nodeId };
 	}
+	// Canonical-source applies (sourceApply), replay and replication notifications are never shed;
+	// dropping one would advance the source cursor past a write that never landed.
+	function assertDerivedIndexAdmission(options: any, transaction: any) {
+		if (options?.isNotification || transaction?.sourceApply || transaction?.isReplay) return;
+		const reason = derivedIndexWriteRejection(auditStore, tableId);
+		if (reason) throw new DerivedIndexLagError(reason);
+	}
+	function stageDerivedIndexEviction(transaction: RocksTransaction, id: Id, version: number) {
+		if (!hasDerivedIndexRegistration(auditStore, tableId)) return;
+		const nodeId = getThisNodeId(auditStore) ?? 0;
+		auditStore.put(
+			null,
+			{
+				type: 'evict',
+				tableId,
+				recordId: id,
+				version,
+				nodeId,
+				extendedType: LOCAL_ONLY,
+			},
+			{ transaction, nodeId }
+		);
+	}
 	class TableResource<Record extends object = any> extends Resource<Record> {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -754,7 +801,17 @@ export function makeTable(options) {
 		#savingOperation?: any; // operation for the record is currently being saved
 		#lockHandle?: RecordLockHandle; // the record lock acquired by lock() — scoped or hold
 		#lockWritable?: boolean; // set by #reloadLocked to let save() stage lock-writable updates
+		#writeGeneration?: WriteGeneration;
 		declare getProperty: (name: string) => any;
+		[ASSERT_TRACKED_WRITABLE](generation = this.#writeGeneration): void {
+			if (!generation) return;
+			if (generation.internalWrites > 0) return;
+			if (generation !== this.#writeGeneration || generation.closed)
+				throw new ClientError('Can not modify an update instance after it has been saved; call update() again', 409);
+		}
+		[GET_TRACKED_WRITE_GENERATION](): WriteGeneration {
+			return (this.#writeGeneration ??= { closed: false, internalWrites: 0 });
+		}
 
 		/**
 		 * Shared guard: if this instance is lock-writable but the handle is gone (expired or
@@ -762,7 +819,9 @@ export function makeTable(options) {
 		 * in addition to the save() path. Every lock-writable instance carries its own handle in
 		 * #lockHandle (scoped and hold alike), so we never need to search the registry here.
 		 */
-		#assertLiveHandle(id: Id): void {
+		#assertLiveHandle(id: Id, allowClosed = false): void {
+			if (!allowClosed && this.#writeGeneration?.closed && writeKeyId(id) === writeKeyId(this.getId()))
+				this[ASSERT_TRACKED_WRITABLE]();
 			if (!this.#lockWritable) return;
 			const handle = this.#lockHandle!;
 			// Off-key writes through the same resource instance are ordinary; only guard the
@@ -780,6 +839,7 @@ export function makeTable(options) {
 		static tableName = tableName;
 		static tableId = tableId;
 		static indices = indices;
+		static derivedIndexRuntime: { close(): Promise<void> } | undefined;
 		static audit = audit;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
@@ -965,8 +1025,8 @@ export function makeTable(options) {
 						omitCurrent: true,
 					};
 					const subscribeOnThisThread = source.subscribeOnThisThread
-						? source.subscribeOnThisThread(getWorkerIndex(), subscriptionOptions)
-						: getWorkerIndex() === 0;
+						? source.subscribeOnThisThread(applicationWorkerIndex(), subscriptionOptions)
+						: runsApplicationCodeSingletons(); // set up by the defining application's code, so it runs where that code does
 					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
 						let txnInProgress;
@@ -1498,24 +1558,51 @@ export function makeTable(options) {
 		 * This also informs the scheduling for record eviction.
 		 * @param opts Time in seconds until records expire, or an options object with `expiration`, `eviction`,
 		 * and `scanInterval` (all in seconds, all optional). Number form preserves any previously configured
-		 * eviction/scanInterval; object form replaces all three.
+		 * eviction/scanInterval; object form replaces all three. An internal schema ownership-only call with
+		 * none of those values preserves the settings already loaded from the catalog.
 		 */
-		static setTTLExpiration(opts: number | { expiration?: number; eviction?: number; scanInterval?: number }) {
+		static setTTLExpiration(
+			opts:
+				| number
+				| {
+						expiration?: number;
+						eviction?: number;
+						scanInterval?: number;
+						fromSchema?: boolean;
+						isolatedApplicationOwner?: boolean;
+				  }
+		) {
 			if (opts == null || (typeof opts !== 'number' && typeof opts !== 'object'))
 				throw new Error('Invalid expiration value type');
+			const declaredHere = typeof opts === 'object' && opts.fromSchema;
+			const isolatedApplicationOwner = declaredHere && opts.isolatedApplicationOwner;
+			const preserveLoadedConfiguration =
+				declaredHere && opts.expiration === undefined && opts.eviction === undefined && opts.scanInterval === undefined;
+			if (((!ttlFromLoad && !declaredHere) || isolatedApplicationOwner) && !ttlConfiguredByApplication) {
+				ttlConfiguredByApplication = true;
+				// the scan owner may have changed with this: re-evaluate even if the interval did not
+				lastCleanupInterval = undefined;
+			}
 			if (typeof opts === 'number') {
 				expirationMs = opts * 1000;
-			} else {
+			} else if (!preserveLoadedConfiguration) {
 				// `??` so an explicit 0 is treated as the user's chosen value, not as "missing"
 				expirationMs = (opts.expiration ?? 0) * 1000;
 				evictionMs = (opts.eviction ?? 0) * 1000;
 				cleanupInterval = (opts.scanInterval ?? 0) * 1000;
 			}
 			if (expirationMs < 0) throw new Error('Expiration can not be negative');
-			// default to one quarter of the total expiration+eviction window
-			cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
-			expirationScanScheduled = true;
-			scheduleCleanup();
+			if (!preserveLoadedConfiguration) {
+				// default to one quarter of the total expiration+eviction window
+				cleanupInterval = cleanupInterval || (expirationMs + evictionMs) / 4;
+				expirationScanScheduled = true;
+			}
+			// Re-evaluate an existing table-level scan after an ownership-only declaration, but do not
+			// create the default daily cleanup timer for a table that has only an @expiresAt field.
+			if (!preserveLoadedConfiguration || expirationScanScheduled || evictionMs) scheduleCleanup();
+			// @expiresAt has its own interval rather than the cleanup timer above. Arm it whenever a live
+			// declaration introduces the attribute, including after this application already claimed TTL.
+			if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 		}
 
 		static getResidencyRecord(id: Id) {
@@ -1621,6 +1708,12 @@ export function makeTable(options) {
 
 		static async dropTable() {
 			TableResource.assertSchemaMutable('drop a table');
+			// Release post-commit derived-index delivery before any destructive work: the runner's
+			// backend must have quiesced before its stores and native file are destroyed, and a
+			// same-name recreate must not race an owner still applying to the old generation.
+			const derivedIndexRuntime = TableResource.derivedIndexRuntime;
+			TableResource.derivedIndexRuntime = undefined;
+			await derivedIndexRuntime?.close();
 			const rootStore = primaryStore.rootStore;
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
@@ -1757,6 +1850,7 @@ export function makeTable(options) {
 							const index = indices[attribute.name];
 							if (index)
 								try {
+									index.customIndex?.resetDerivedStorage?.();
 									index.dropSync();
 								} catch (error) {
 									ignoreAlreadyDropped(error);
@@ -1777,7 +1871,10 @@ export function makeTable(options) {
 					const drops = [];
 					for (const attribute of attributes) {
 						const index = indices[attribute.name];
-						if (index) drops.push(index.drop().catch(ignoreAlreadyDropped));
+						if (index) {
+							index.customIndex?.resetDerivedStorage?.();
+							drops.push(index.drop().catch(ignoreAlreadyDropped));
+						}
 					}
 					drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
 					await Promise.all(drops);
@@ -2054,12 +2151,18 @@ export function makeTable(options) {
 			} else {
 				id = requestTargetToId(target);
 			}
+			if (this.#writeGeneration?.closed) {
+				this.#changes = undefined;
+				this.#writeGeneration = undefined;
+			}
+			this.#assertLiveHandle(id, true);
 
 			const context = this.getContext();
 			const envTxn = txnForContext(context);
 			if (!envTxn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
-			if (updates === false) {
+			// `false` is the patch-cancel sentinel, not a record root — but only incrementally.
+			if (updates === false && !fullUpdate) {
 				// TODO: Remove from transaction
 				return this;
 			}
@@ -2102,15 +2205,25 @@ export function makeTable(options) {
 					});
 				}
 			}
-			return when(this._writeUpdate(id, this.#changes, fullUpdate), () => this);
+			// Keep absent changes distinguishable from an explicit empty patch: framework-created
+			// post/publish updates do not necessarily mutate or save the instance.
+			// A supplied root must reach validation as itself, not as the staged changes (harper#1298).
+			const recordRoot = updates === undefined ? this.#changes : updates;
+			return when(this._writeUpdate(id, recordRoot, fullUpdate), () => this);
 		}
 
 		/**
 		 * Save any changes into this instance to the current transaction
 		 */
 		save() {
-			this.#assertLiveHandle(this.getId()); // a write through a released or expired lock never lands
 			const operation = this.#savingOperation;
+			if (
+				!this.#lockWritable &&
+				this.#writeGeneration?.closed &&
+				(!operation || operation.writeGeneration === this.#writeGeneration)
+			)
+				return;
+			this.#assertLiveHandle(operation?.key ?? this.getId()); // a write through a released or expired lock never lands
 			if ((!operation || operation.dropped) && this.#lockWritable && this.#lockHandle?.hold) {
 				// A held lock's record stages its update here rather than at lock() time: it is often
 				// written after the acquiring transaction has already completed, which would have
@@ -2170,12 +2283,21 @@ export function makeTable(options) {
 				// resolve before that native commit actually settles. Chain on innerCommit (as the
 				// lock-writable hold branch above already does) so callers awaiting save() see the
 				// write durably land, not just the outer (possibly premature) resolution.
-				const result = this.#saveOperation(operation);
+				let result;
+				try {
+					result = this.#saveOperation(operation);
+				} catch (error) {
+					if (!operation.saved) this.#savingOperation = operation;
+					throw error;
+				}
 				const innerCommit = operation.innerCommit;
 				return innerCommit ? when(innerCommit, () => result) : result;
 			}
 		}
 		#saveOperation(operation: any) {
+			// LMDB validates staged writes at transaction commit, so bind a lazy update to the
+			// generation selected by save() before another update can replace its changes.
+			operation.captureChanges?.();
 			const transaction = txnForContext(this.getContext());
 			const holder = operation.stagedIn;
 			// never-drop-on-conflict lives on the transaction and would not travel with the write, so an
@@ -2195,13 +2317,26 @@ export function makeTable(options) {
 				// merge and index diff would be relative to a record that may never land.
 				operation.priorWrite = undefined;
 				operation.deferSave = false;
-				return when(transaction.addWrite(operation), () => operation.promise ?? operation.result);
+				const result = when(transaction.addWrite(operation), () => operation.promise ?? operation.result);
+				this.#closeWriteChain(operation);
+				return result;
 			}
 			const owner = holder ?? transaction;
-			if (owner.save) return owner.save(operation) || operation.promise || operation.result;
+			if (owner.save) {
+				const result = owner.save(operation) || operation.promise || operation.result;
+				this.#closeWriteChain(operation);
+				return result;
+			}
+		}
+		#closeWriteChain(operation: any) {
+			const owner = operation.stagedIn;
+			for (let write = operation; write && !write.instanceClosed; write = write.priorWrite) {
+				if (write === operation || owner?.ownedWrites?.has(write)) closeWriteInstance(write);
+			}
 		}
 
 		addTo(property: any, value: any) {
+			this[ASSERT_TRACKED_WRITABLE]();
 			if (typeof value === 'number' || typeof value === 'bigint') {
 				if (this.#savingOperation?.fullUpdate)
 					(this as any).set(property, (+this.getProperty(property) || 0) + (value as any));
@@ -2255,6 +2390,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
+			assertDerivedIndexAdmission(options, transaction);
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -2262,6 +2398,7 @@ export function makeTable(options) {
 				entry: this.#entry,
 				recordVersion: options?.version,
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				reloadCommitBase: true,
 				commit: (txnTime, existingEntry, _retry, transaction: any) => {
 					const txnLogKey =
 						isRocksDB && options?.version != null ? (transaction?.getTimestamp?.() ?? txnTime) : txnTime;
@@ -2313,6 +2450,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
+			assertDerivedIndexAdmission(options, transaction);
 			const write: any = {
 				key: id,
 				store: primaryStore,
@@ -2320,6 +2458,7 @@ export function makeTable(options) {
 				entry: this.#entry,
 				recordVersion: options?.version,
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				reloadCommitBase: true,
 				before:
 					(this.constructor as any).source?.relocate && !(context as any)?.source
 						? (this.constructor as any).source.relocate.bind((this.constructor as any).source, id, undefined, context)
@@ -2428,9 +2567,8 @@ export function makeTable(options) {
 					// if there is a resolution in-progress, abandon the eviction
 					if (primaryStore.hasLock(id, entry.version)) return;
 				}
-				// evictions never go in the audit log, so we can not record a deletion entry for the eviction
-				// as there is no corresponding audit entry and it would never get cleaned up. So we must simply
-				// removed the entry entirely, but first cleanup indices
+				// Eviction is not a canonical delete. Indexed caching tables add a local-only control entry so
+				// their derived indexes can remove the resident projection without exposing a delete event.
 				let lmdbCompletion: MaybePromise<unknown>;
 				if (primaryStore.ifVersion) {
 					// lmdb: the index cleanup and the record removal are both version-guarded optimistic writes.
@@ -2443,6 +2581,7 @@ export function makeTable(options) {
 					lmdbCompletion = Promise.all([indexCleanup, removal]);
 				} else {
 					updateIndices(id, existingRecord, null, options);
+					stageDerivedIndexEviction(transaction as RocksTransaction, id, existingVersion);
 					removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), options);
 				}
 				committed = true;
@@ -2535,6 +2674,7 @@ export function makeTable(options) {
 			}
 			const id = target != null ? requestTargetToId(target as RequestTargetOrId) : this.getId();
 			checkValidId(id);
+			this.#assertLiveHandle(id);
 			const resolved = resolveLockOptions(options);
 			const context = this.getContext();
 			const link = txnForContext(context);
@@ -2871,6 +3011,7 @@ export function makeTable(options) {
 			const context = this.getContext();
 			const transaction = txnForContext(context);
 			const replaying = transaction.isReplay === true;
+			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
 			if (fullUpdate && recordUpdate == null && options?.isNotification) {
 				// A source/replication-applied put must carry the record; these applies skip record
@@ -2887,6 +3028,16 @@ export function makeTable(options) {
 					);
 				}
 				return;
+			}
+			let captureChanges;
+			if (recordUpdate === undefined) {
+				let captured = false;
+				captureChanges = () => {
+					if (!captured) {
+						captured = true;
+						recordUpdate = this.#changes;
+					}
+				};
 			}
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 			const writeToSource = () => {
@@ -2907,12 +3058,20 @@ export function makeTable(options) {
 				}
 			};
 
+			const receiverId = this.getId();
+			const closesReceiver =
+				!this.isCollection &&
+				!isSearchTarget(receiverId) &&
+				(id === receiverId || writeKeyId(id) === writeKeyId(receiverId));
 			const write: any = {
 				key: id,
 				store: primaryStore,
 				entry,
 				nodeName: (context as any)?.nodeName,
 				fullUpdate,
+				chainsStagedState: true,
+				// copy-apply rows keep their pre-read base: one read per row, healed by the post-copy replay
+				reloadCommitBase: options?.isCopyApply !== true,
 				deferSave: true,
 				// the origin's record version on an applied write; absent for a locally-originated one
 				recordVersion: options?.version,
@@ -2921,8 +3080,10 @@ export function makeTable(options) {
 				// Only attach the hold handle when it covers exactly this key; off-key writes
 				// are ordinary and must not carry an unrelated hold's handle.
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
+				writeGeneration: !this.#lockWritable && closesReceiver ? this[GET_TRACKED_WRITE_GENERATION]() : undefined,
+				captureChanges,
 				validate: (txnTime, committedBy = transaction) => {
-					if (!recordUpdate) recordUpdate = this.#changes;
+					write.captureChanges?.();
 					if (fullUpdate || (recordUpdate && hasChanges(this.#changes === recordUpdate ? this : recordUpdate))) {
 						if (!(context as any)?.source) {
 							committedBy.checkOverloaded();
@@ -2973,10 +3134,13 @@ export function makeTable(options) {
 											: txnTime;
 							}
 							if (createdTimeProperty) {
-								if (entry?.value) {
+								// the reloaded commit base, not the pre-read one: a full PUT racing a create
+								// would otherwise stamp a fresh created time over the real one
+								const base = write.entry;
+								if (base?.value) {
 									if (fullUpdate || recordUpdate[createdTimeProperty.name]) {
 										// make sure to retain original created time
-										recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
+										recordUpdate[createdTimeProperty.name] = base.value[createdTimeProperty.name];
 									}
 								} else {
 									// new entry, set created time
@@ -3495,8 +3659,8 @@ export function makeTable(options) {
 					if (recordToStore && recordToStore.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
 					if (residencyId == undefined) {
-						if (entry?.residencyId)
-							(context as any).previousResidency = TableResource.getResidencyRecord(entry.residencyId);
+						if (existingEntry?.residencyId)
+							(context as any).previousResidency = TableResource.getResidencyRecord(existingEntry.residencyId);
 						const residency = residencyFromFunction(TableResource.getResidency(recordToStore, context));
 						if (residency) {
 							if (!residency.includes(server.hostname)) {
@@ -3736,6 +3900,7 @@ export function makeTable(options) {
 			this.#assertLiveHandle(id);
 			const context = this.getContext();
 			const transaction = txnForContext(context);
+			assertDerivedIndexAdmission(options, transaction);
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id, { transaction: transaction.getReadTxn() });
 
@@ -3744,6 +3909,7 @@ export function makeTable(options) {
 				store: primaryStore,
 				entry,
 				chainsStagedState: true,
+				reloadCommitBase: true,
 				nodeName: (context as any)?.nodeName,
 				recordVersion: options?.version,
 				lockHandle: this.#lockHandle && this.#lockHandle.keyId === writeKeyId(id) ? this.#lockHandle : undefined,
@@ -3967,6 +4133,7 @@ export function makeTable(options) {
 			// objects. Entries are small and shallow; the clone is cheap next to the query.
 			conditions = cloneConditions(conditions);
 			let orderAlignedCondition;
+			let syntheticOrderCondition;
 			const filtered = {};
 
 			function prepareConditions(conditions: any[], operator: string) {
@@ -4105,7 +4272,7 @@ export function makeTable(options) {
 							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index.
 							// the primary key has no secondary index, but the primary store is itself keyed in
 							// primary-key order, so scanning it is already aligned with the sort
-							orderAlignedCondition = { ...sort, comparator: 'sort' };
+							orderAlignedCondition = syntheticOrderCondition = { ...sort, comparator: 'sort' };
 							conditions.push(orderAlignedCondition);
 						} else if (conditions.length === 0 && !target.allowFullScan)
 							throw handleHDBError(
@@ -4135,8 +4302,10 @@ export function makeTable(options) {
 						};
 					}
 				} else {
-					// if we had to add an aligned condition that isn't first, we remove it and do ordering later
-					if (orderAlignedCondition) conditions.splice(conditions.indexOf(orderAlignedCondition), 1);
+					// if we had to add an aligned condition that isn't first, we remove it and do ordering later —
+					// only the one we added; a caller's own condition on the sort attribute is still a filter
+					const syntheticIndex = syntheticOrderCondition ? conditions.indexOf(syntheticOrderCondition) : -1;
+					if (syntheticIndex >= 0) conditions.splice(syntheticIndex, 1);
 					postOrdering = sort;
 				}
 			}
@@ -4949,7 +5118,7 @@ export function makeTable(options) {
 									await rest();
 									if (!isActive()) return;
 								}
-								if (auditRecord.tableId !== tableId) continue;
+								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									const value = auditRecord.getValue(primaryStore, getFullRecord, auditRecord.txnLogKey);
@@ -4986,7 +5155,7 @@ export function makeTable(options) {
 								if (!isActive()) return;
 							}
 							try {
-								if (auditRecord.tableId !== tableId) continue;
+								if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 								const id = auditRecord.recordId;
 								if (thisId == null || isDescendantId(thisId, id)) {
 									// Bound entries INSPECTED for THIS scope, independent of `count` (entries
@@ -5741,6 +5910,7 @@ export function makeTable(options) {
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
+			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
 			// Drop registry entries for attributes that are no longer `@embed`, so a dropped
 			// directive doesn't leave a stale embedder or block a default refresh on re-add.
 			const embedNames = new Set(this.embedAttributes.map((a) => a.name));
@@ -6113,7 +6283,7 @@ export function makeTable(options) {
 				end: endTime,
 			})) {
 				await rest(); // yield to other async operations
-				if (auditRecord.tableId !== tableId) continue;
+				if (auditRecord.tableId !== tableId || auditRecord.type === 'evict') continue;
 				yield {
 					id: auditRecord.recordId,
 					// Compatibility-facing LMDB history has always reported/grouped by record version.
@@ -6143,7 +6313,11 @@ export function makeTable(options) {
 				let highestPreviousVersion = 0;
 				const start = nextVersion - auditWindow;
 				for (const auditRecord of auditStore.getRange({ start, end: nextVersion + 0.001 })) {
-					if (auditRecord.tableId === tableId && compareKeys(auditRecord.recordId, id) === 0) {
+					if (
+						auditRecord.tableId === tableId &&
+						auditRecord.type !== 'evict' &&
+						compareKeys(auditRecord.recordId, id) === 0
+					) {
 						history.splice(insertionPoint, 0, {
 							id: auditRecord.recordId,
 							localTime: isRocksDB ? auditRecord.txnLogKey : auditRecord.version,
@@ -6179,6 +6353,7 @@ export function makeTable(options) {
 			const promises = [primaryStore.clear()];
 			for (const key in indices) {
 				const index = indices[key];
+				index.customIndex?.resetDerivedStorage?.();
 				promises.push(index.clearAsync ? index.clearAsync() : index.clear());
 			}
 			return Promise.all(promises);
@@ -6186,6 +6361,7 @@ export function makeTable(options) {
 		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
 		static cleanup() {
 			disposed = true;
+			void TableResource.derivedIndexRuntime?.close();
 			clearTimeout(cleanupTimer);
 			settlePendingCleanup();
 			clearInterval(recordExpirationInterval);
@@ -6214,8 +6390,15 @@ export function makeTable(options) {
 
 	try {
 		TableResource.updatedAttributes(); // on creation, update accessors as well
-		if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
-		if (expiresAtProperty) runRecordExpirationEviction();
+		if (expirationMs) {
+			ttlFromLoad = true;
+			try {
+				TableResource.setTTLExpiration(expirationMs / 1000);
+			} finally {
+				ttlFromLoad = false;
+			}
+		}
+		if (expiresAtProperty && !recordExpirationInterval) runRecordExpirationEviction();
 	} catch (error) {
 		TableResource.cleanup();
 		throw error;
@@ -7238,6 +7421,7 @@ export function makeTable(options) {
 					if (entry.value == null) continue; // already removed
 					if (hasSourceGet && primaryStore.hasLock(item.key, entry.version)) continue; // resolution in progress
 					updateIndices(item.key, entry.value, null, options);
+					stageDerivedIndexEviction(transaction, item.key, entry.version);
 				}
 				removeEntry(primaryStore, entry, options);
 				staged++;
@@ -7328,7 +7512,7 @@ export function makeTable(options) {
 		// Periodically evict expired records and deleted records searching for records who expiresAt timestamp is before now
 		if (cleanupInterval === lastCleanupInterval && !runImmediately) return;
 		lastCleanupInterval = cleanupInterval;
-		if (getWorkerIndex() === getWorkerCount() - 1) {
+		if (ownsStoreMaintenance(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanupTimer) clearTimeout(cleanupTimer);
 			if (!cleanupInterval) {
@@ -7470,12 +7654,14 @@ export function makeTable(options) {
 	}
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
-		if (getWorkerIndex() === 0) {
+		if (ownsStoreExpiration(primaryStore.path) || (ttlConfiguredByApplication && isDedicatedWorker())) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
 			recordExpirationInterval = setInterval(async () => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
-				if (disposed || runningRecordExpiration) return;
+				// updatedAttributes() clears expiresAtProperty when a live redeclaration drops the directive,
+				// and there is nothing left for this interval to scan by
+				if (disposed || runningRecordExpiration || !expiresAtProperty) return;
 				runningRecordExpiration = true;
 				try {
 					const expiresAtName = expiresAtProperty.name;

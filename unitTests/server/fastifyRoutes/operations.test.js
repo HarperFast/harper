@@ -522,7 +522,7 @@ describe('Test custom functions operations', () => {
 			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
 
 			// Mock prepareApplication to prevent actual installation
-			const prepareApplicationStub = sandbox.stub();
+			const prepareApplicationStub = sandbox.stub().callsFake((_application, options) => options.beforePrepare());
 			operations.__set__('prepareApplication', prepareApplicationStub);
 
 			// This should work - user components can be overwritten without force
@@ -548,7 +548,7 @@ describe('Test custom functions operations', () => {
 			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
 
 			// Mock prepareApplication to prevent actual installation
-			const prepareApplicationStub = sandbox.stub();
+			const prepareApplicationStub = sandbox.stub().callsFake((_application, options) => options.beforePrepare());
 			operations.__set__('prepareApplication', prepareApplicationStub);
 
 			// This should work fine - no component exists yet
@@ -591,7 +591,7 @@ describe('Test custom functions operations', () => {
 			const addConfigStub = sandbox.stub(configUtils, 'addConfig').resolves();
 
 			// Mock prepareApplication to prevent actual installation
-			const prepareApplicationStub = sandbox.stub();
+			const prepareApplicationStub = sandbox.stub().callsFake((_application, options) => options.beforePrepare());
 			operations.__set__('prepareApplication', prepareApplicationStub);
 
 			// This should NOT throw an error because force is true
