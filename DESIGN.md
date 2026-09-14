@@ -430,14 +430,18 @@ the two cases are different:
 - **In-process transport swap** (a component reload re-registering a transport). The successor
   **adopts** the predecessor's delegations and grants in its constructor, before the predecessor is
   closed. The transport object changed; this node's delegations and the handles they admitted did not.
-- **Cold start** (a process restart, where there is nothing to adopt). A previous incarnation may
-  have delegations still admitting, and it left no record. Nothing external bounds them — the map is
-  immutable, so its generation does not advance merely because a process restarted — so **core
-  enforces this one itself**: `#grantableAfterMono` refuses to grant as a home until
-  `DELEGATION_LEASE_MS + skew` on the monotonic clock, which counts from process start. It costs
-  availability on this node's own share of the ring and nothing elsewhere. A deployment that can
-  prove a previous incarnation issued nothing overrides it through
-  `ClusterLockTransport.grantableAfterMono`.
+- **Cold start** (nothing to adopt: a process restart, or a worker taking coordination over from one
+  that died). A previous incarnation may have delegations still admitting, and it left no record.
+  Nothing external bounds them — the map is immutable, so its generation does not advance merely
+  because a process or a worker restarted — so **core enforces this one itself**:
+  `#grantableAfterMono` refuses to grant as a home until `DELEGATION_LEASE_MS + skew` after **that
+  coordinator was constructed**. Not process start: `performance.now()` and `timeOrigin` are
+  process-wide inside a worker too, so a process-anchored horizon reads as long elapsed in a
+  replacement coordinating worker — and not thread start either, since a thread can take coordination
+  ownership long after it booted. It costs availability on this node's own share of the ring and
+  nothing elsewhere; an adopted successor inherits the predecessor's horizon rather than starting a
+  new one, so a transport reload is free. A deployment that can prove a previous incarnation issued
+  nothing overrides it through `ClusterLockTransport.grantableAfterMono`.
 
 `Table.lockCoordinator` also does **not** close the coordinator when the transport merely goes away:
 harper-pro unregisters without a standalone claim during a reconnect, and closing there would discard
