@@ -15,6 +15,7 @@ testUtils.preTestPrep();
 
 const {
 	activateCandidateApplication,
+	markCandidateComplete,
 	prepareApplication,
 	recoverInterruptedActivations,
 	recoverInterruptedComponentExtraction,
@@ -36,6 +37,18 @@ async function writeTree(dirPath, marker) {
 	await fs.mkdir(dirPath, { recursive: true });
 	await fs.writeFile(path.join(dirPath, 'index.js'), marker);
 	return dirPath;
+}
+
+/**
+ * A candidate tree AND its certification — the state `activateCandidateApplication` is entered in.
+ * Certification belongs to the caller now that a staged build certifies once and is activated later, so a
+ * test that swaps an uncertified tree would exercise a sequence production never produces.
+ */
+async function writeCertifiedCandidate(liveDirPath, deploymentId, marker) {
+	const candidate = candidateApplicationPath(liveDirPath, deploymentId);
+	await writeTree(candidate, marker);
+	await markCandidateComplete(liveDirPath, deploymentId, path.basename(liveDirPath));
+	return candidate;
 }
 
 /** Build the on-disk state a crash at a given boundary would leave, without running a deploy. */
@@ -453,7 +466,7 @@ describe('activation transaction', () => {
 	it('swaps the candidate in and clears its own records', async () => {
 		const root = await newRoot('happy');
 		await writeTree(path.join(root, 'web'), 'LIVE\n');
-		await writeTree(candidateApplicationPath(path.join(root, 'web'), 'd1'), 'CANDIDATE\n');
+		await writeCertifiedCandidate(path.join(root, 'web'), 'd1', 'CANDIDATE\n');
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
 
@@ -479,6 +492,7 @@ describe('activation transaction', () => {
 		await writeTree(live, 'LIVE\n');
 		const candidate = candidateApplicationPath(live, 'd1');
 		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
 		const vendored = path.join(candidate, 'vendor', 'probe');
 		await fs.mkdir(vendored, { recursive: true });
 		await fs.writeFile(path.join(vendored, 'index.js'), 'module.exports = 1;\n');
@@ -512,6 +526,7 @@ describe('activation transaction', () => {
 		await writeTree(live, 'LIVE\n');
 		const candidate = candidateApplicationPath(live, 'd1');
 		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
 		// A real directory that merely SHARES a prefix with the candidate path.
 		const sibling = `${candidate}-shared`;
 		await fs.mkdir(sibling, { recursive: true });
@@ -595,7 +610,7 @@ describe('activation transaction', () => {
 		const live = path.join(root, 'web');
 		await writeTree(live, 'LIVE\n');
 		const deployment = path.dirname(candidateApplicationPath(live, 'd1'));
-		await writeTree(candidateApplicationPath(live, 'd1'), 'CANDIDATE\n');
+		await writeCertifiedCandidate(live, 'd1', 'CANDIDATE\n');
 		// Pre-created, so a read-only root blocks B1's rename rather than the staging mkdir ahead of it.
 		await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
 		const app = new Application({ name: 'web' });
@@ -628,7 +643,7 @@ describe('activation transaction', () => {
 		const root = await newRoot('b2-retry');
 		const live = path.join(root, 'web');
 		const deployment = path.dirname(candidateApplicationPath(live, 'd1'));
-		await writeTree(candidateApplicationPath(live, 'd1'), 'CANDIDATE\n');
+		await writeCertifiedCandidate(live, 'd1', 'CANDIDATE\n');
 		await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
 		const app = new Application({ name: 'web' });
 		app.dirPath = live;
@@ -664,6 +679,7 @@ describe('activation transaction', () => {
 			await writeTree(live, 'LIVE\n');
 			const candidate = candidateApplicationPath(live, 'd1');
 			await writeTree(candidate, 'CANDIDATE\n');
+			await markCandidateComplete(live, 'd1', 'web');
 			const deployment = path.dirname(candidate);
 			await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
 			const app = new Application({ name: 'web' });
@@ -705,6 +721,7 @@ describe('activation transaction', () => {
 		await writeTree(live, 'LIVE\n');
 		const candidate = candidateApplicationPath(live, 'd1');
 		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
 		const deployment = path.dirname(candidate);
 		await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
 		const app = new Application({ name: 'web' });
@@ -763,6 +780,7 @@ describe('activation transaction', () => {
 		await writeTree(live, 'LIVE\n');
 		const candidate = candidateApplicationPath(live, 'd1');
 		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
 		const app = new Application({ name: 'web' });
 		app.dirPath = live;
 
@@ -780,7 +798,7 @@ describe('activation transaction', () => {
 
 	it('activates a first-ever deploy, where there is no previous tree to move aside', async () => {
 		const root = await newRoot('firstever');
-		await writeTree(candidateApplicationPath(path.join(root, 'web'), 'd1'), 'CANDIDATE\n');
+		await writeCertifiedCandidate(path.join(root, 'web'), 'd1', 'CANDIDATE\n');
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
 

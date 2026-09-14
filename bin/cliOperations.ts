@@ -572,6 +572,15 @@ export function prepareDeployByRef(req: any): void {
 
 const PREPARE_OPERATION: any = {
 	deploy_component: async (req) => {
+		if (req.deployment_id) {
+			// Activating a staged build: the bytes are already on the server. `by_ref`/`ref` are consumed
+			// here and never transmitted, so the server's validator cannot see the conflict — it has to be
+			// rejected on this side or it would be silently ignored.
+			if (req.by_ref || req.ref) {
+				throw new Error('deploy deployment_id: cannot be combined with by_ref/ref — the build already exists.');
+			}
+			return;
+		}
 		if (req.package) {
 			return;
 		}

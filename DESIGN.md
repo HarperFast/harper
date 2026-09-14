@@ -618,9 +618,55 @@ The ordering is the design. Two things used to be wrong in a way each other hid:
   do not share the publication lock). It is tracked as its own step so the tree half can land on its own
   evidence.
 
+### Staging a build now and activating it later
+
+`deploy_component { activate: false }` stops after certification, leaving a dormant artifact; a later
+`deploy_component { project, deployment_id }` swaps that artifact in without resolving, fetching or
+installing anything. Four things make the delay safe, and each of them exists because the immediate deploy
+did not need it:
+
+- **The artifact directory is named by the PUBLIC deployment id**, not by the deploy-lifecycle token. The
+  two are separate on purpose: `DeployLifecycle` de-duplicates starts by the id a start announces and
+  releases watcher suppression on the first matching end, so two overlapping activations of one artifact
+  sharing that id would count as one owner. `prepareApplication` therefore takes `artifactId` and lets
+  `broadcastDeployStart` keep minting a fresh token per invocation.
+- **`.artifact.json` is mandatory and versioned**, written before `.complete` so the marker vouches for it.
+  It carries the root-config entry the build would have published (explicitly `null` for a payload deploy,
+  which owns none), `installationIsOpaque`, and the isolation intent that was admitted — everything a later
+  activation cannot re-derive. An _optional_ record could not distinguish a payload build from a package
+  build whose record was lost, so a missing, malformed or wrong-version one is refused rather than defaulted.
+- **Claiming an id is exclusive.** `buildCandidateApplication` used to tolerate an existing deployment
+  directory because a fresh UUID could not collide; a public id can be repeated by an operator or by a
+  redelivered replication, so a claim now rejects another component's directory and any directory carrying
+  `.complete`, and rebuilds only over an uncertified partial. The id this request names is also pinned
+  through the preparation preamble, so retention cannot evict the artifact the request is about to use —
+  which it otherwise would, immediately, at `deployment_stagingRetention_maxCount: 0`. The contract is
+  bounded: an id names one artifact _while that artifact exists_. Activation consumes it (the swap is a
+  rename) and retention can prune it, after which the id is free again.
+- **Staging owns its bytes.** A `file:<directory>` source is refused, and so is any symlink in the built
+  tree resolving outside it (bar the `node_modules/harper`/`harperdb` links the loader owns and repairs).
+  Certification fsyncs the tree but follows no links, and the post-swap relocation repair leaves external
+  targets alone — so a link out of the build is a hole in "activate exactly the bytes that were certified"
+  that only a delay makes reachable.
+
+Certification moved out of `activateCandidateApplication` and up into `prepareApplication` for the same
+reason: `markCandidateComplete` fsyncs the whole candidate tree, and a delayed activation must not re-walk
+a `node_modules` it certified at build time while holding the preparation lock. The swap primitive's
+contract is now "the candidate is already certified", and its direct callers — including tests — certify
+first.
+
+**Mixed-version clusters are a known, accepted hazard.** A stage replicates as an ordinary
+`deploy_component`, and a peer running a build without this change ignores the unknown `activate: false`
+and deploys immediately, so it serves a release the operator asked only to stage. Nothing in core or in
+harper-pro's replicator carries a peer version or capability, so the origin cannot refuse in advance; a
+node that staged returns `staged: true` in its response instead, and the origin fails the stage naming any
+peer that did not confirm. That is detection after the fact, not prevention — the accepted trade is
+recorded on #2315, and the documented prerequisite is to upgrade every node before staging.
+
 ### Recovering an interrupted activation
 
-Every control file is dot-prefixed — `.activation.json`, `.component`, `.complete`, `.unsettled` — because
+Every control file is dot-prefixed — `.activation.json`, `.artifact.json`, `.component`, `.complete`,
+`.unsettled` — because
 a deployment directory holds the candidate tree under the _component's_ own name beside them, and
 `isJoinableComponentName` rejects a leading dot. An undotted control file shares that namespace: a component
 named `activation.json` would put its tree on the journal path and activate with no journal at all, and one

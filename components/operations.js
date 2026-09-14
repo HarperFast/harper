@@ -592,6 +592,10 @@ async function deployComponent(req) {
 	const { isIsolatedApplication } = require('../server/threads/isolatedApplications.ts');
 	const requestedIsolation = req.isolated;
 	const isReplicatedExecution = typeof req._deploymentId === 'string';
+	// `activate` builds nothing: it swaps an artifact an earlier `activate: false` request left staged.
+	// `stage` builds and certifies one and stops. Everything else is the ordinary build-and-swap deploy.
+	const mode = req.deployment_id ? 'activate' : req.activate === false ? 'stage' : 'deploy';
+	const isActivation = mode === 'activate';
 	// this thread's cached config may predate an earlier deploy that changed the entry without a restart
 	env.initSync(true);
 	const initiallyIsolated = isIsolatedApplication(req.project);
@@ -637,7 +641,9 @@ async function deployComponent(req) {
 	};
 	await assertIsolationAdmission(requestedIsolation ?? initiallyIsolated);
 	const { ingestCredentials, resolveCredentials } = require('./secretOperations.ts');
-	req.credentials = await ingestCredentials(req, req.credentials, req.project);
+	// An activation resolves, fetches and installs nothing, so there is no credential for it to carry.
+	// The validator rejects one; this keeps the ingest itself off the path rather than relying on that.
+	if (!isActivation) req.credentials = await ingestCredentials(req, req.credentials, req.project);
 	// References are safe to persist (config + deployment row) and replicate; a no-custody literal
 	// token is not — it is used only for this node's install below, then stripped before replication.
 	const credentialReferences = (req.credentials ?? []).filter((entry) => entry && entry.secret !== undefined);
@@ -676,6 +682,7 @@ async function deployComponent(req) {
 				project: req.project,
 				package_identifier: req.package ?? null,
 				user: req.hdb_user?.username,
+				activated_from: req.deployment_id ?? null,
 				restart_mode: req.restart === 'rolling' ? 'rolling' : req.restart ? 'immediate' : null,
 				// Reference form only — the rollback source for re-resolving the credential.
 				credentials: credentialReferences.length ? credentialReferences : null,
@@ -705,7 +712,13 @@ async function deployComponent(req) {
 		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
 		// from the persisted blob. When `system` replicates, the blob becomes the channel
 		// peers read from; when it doesn't, the blob stays local for audit and rollback.
-		if (recorder && req.payload != null) {
+		if (isActivation) {
+			// Deliberately none of the below. An activation's bytes are already on disk, and a replicated
+			// activation has exactly the shape the peer-side blob branch keys on — neither `package` nor
+			// `payload` — so without this branch every peer would wait out `deployment_timeout` for a
+			// payload its row never had while the origin swapped successfully.
+			extractionPayload = undefined;
+		} else if (recorder && req.payload != null) {
 			await recorder.ingestPayload(req.payload);
 			extractionPayload = recorder.row.payload_blob.stream();
 		} else if (isReplicatedExecution && req.payload == null && !req.package) {
@@ -741,9 +754,13 @@ async function deployComponent(req) {
 		if (isReplicatedExecution) {
 			credentialsWaitMs = coerceTimeoutMs(req.deployment_timeout, DEFAULT_AWAIT_ROW_TIMEOUT_MS);
 		}
-		const resolvedCredentials = await resolveCredentials(req.credentials, req.project, {
-			waitMs: credentialsWaitMs,
-		});
+		// Skipped for an activation, which runs no pack, clone or install: waiting for an hdb_secret row to
+		// replicate in would only delay a swap that has nothing to authenticate to.
+		const resolvedCredentials = isActivation
+			? undefined
+			: await resolveCredentials(req.credentials, req.project, {
+					waitMs: credentialsWaitMs,
+				});
 
 		const application = new Application({
 			name: req.project,
@@ -781,8 +798,33 @@ async function deployComponent(req) {
 		// committed" — so a later failure arrives after both phases reported success. The operation's error
 		// is the authority on whether the deploy landed, not the phase stream.
 		emit('phase', { phase: 'prepare', status: 'start' });
+		// The root-config entry a package deploy publishes. A stage records it with the artifact instead of
+		// publishing it, so a staged release nobody activated cannot leave config naming it — and the
+		// activation that eventually publishes it does so in the same order a normal deploy does.
+		let stagedRootConfig = null;
 		await prepareApplication(application, {
+			// `.deploy-staging/<artifactId>`. The public deployment id, so the id the caller was handed is
+			// the id a later `deployment_id` request can name; an activation names the artifact's own id,
+			// not the new row's.
+			artifactId: req.deployment_id ?? req._deploymentId,
+			mode,
+			describeArtifact: () => ({ rootConfig: stagedRootConfig, isolated: Boolean(nowIsolated) }),
+			publishRootConfig: async (entry) => {
+				await configUtils.addConfig(req.project, entry);
+				env.initSync(true);
+			},
+			admitIsolation: async (descriptor) => {
+				env.initSync(true);
+				wasIsolated = isIsolatedApplication(req.project);
+				// A package artifact restores its own root-config entry, so its recorded intent is what will
+				// be in force. A payload artifact publishes no config, so the effective configuration is the
+				// only authority there — a saved `false` must not admit past an isolation the operator set
+				// between the stage and this call.
+				nowIsolated = descriptor.rootConfig ? descriptor.isolated : wasIsolated;
+				await assertIsolationAdmission(nowIsolated);
+			},
 			beforePrepare: async () => {
+				if (isActivation) return;
 				env.initSync(true);
 				wasIsolated = isIsolatedApplication(req.project);
 				nowIsolated = requestedIsolation ?? wasIsolated;
@@ -802,6 +844,10 @@ async function deployComponent(req) {
 				if (req.branchedDatabases !== undefined) applicationConfig.branchedDatabases = req.branchedDatabases;
 				if (nowIsolated) applicationConfig.isolated = true;
 				if (credentialReferences.length) applicationConfig.credentials = credentialReferences;
+				if (mode === 'stage') {
+					stagedRootConfig = applicationConfig;
+					return;
+				}
 				await configUtils.addConfig(req.project, applicationConfig);
 				env.initSync(true);
 			},
@@ -856,7 +902,14 @@ async function deployComponent(req) {
 		// pool: a shared application, and either direction of an isolation flip, where the reconcile in
 		// restartWorkers starts or stops the moving application's own worker.
 		const restartScope = wasIsolated && nowIsolated ? application.name : undefined;
-		if (req.restart === true) {
+		if (mode === 'stage') {
+			// No restart and no restart-required flag: nothing about the running component changed. The
+			// marker is what tells the origin which peers understood the request — see the confirmation
+			// check below — and it is set on every node, origin included, since a peer returns this same
+			// object as its operation response.
+			response.staged = true;
+			response.message = `Staged: ${application.name}`;
+		} else if (req.restart === true) {
 			emit('phase', { phase: 'restart', status: 'start' });
 			// Workers not yet replaced keep serving the pre-deploy component set, and where the OS lets
 			// replacements share a port they keep accepting connections for the whole rolling restart, so
@@ -925,6 +978,29 @@ async function deployComponent(req) {
 						`ignore_replication_errors: true to treat replication failures as non-fatal.`
 				);
 			}
+
+			// A peer running a build that predates staged deploys accepts `activate: false` as an unknown
+			// field and performs its ordinary deploy, so it is now serving a release the operator asked only
+			// to stage. Nothing can prevent that — the operations channel carries no peer version or
+			// capability — so the origin reports it, from the one signal that separates the two cases: a node
+			// that staged says so in its response. Read from the raw aggregate, because the recorder's peer
+			// normalization keeps only node/status/error.
+			//
+			// The wording stays at "did not confirm". An unreachable peer and one that dropped the request
+			// look identical from here, and telling an operator those nodes went live would be a guess.
+			if (mode === 'stage' && Array.isArray(response?.replicated)) {
+				const unconfirmed = response.replicated.filter((peer) => peer && peer.staged !== true);
+				if (unconfirmed.length > 0) {
+					const detail = unconfirmed.map((peer) => peer.node ?? 'unknown').join(', ');
+					throw new ServerError(
+						`Component '${application.name}' was staged on the origin node, but ${unconfirmed.length} peer ` +
+							`node(s) did not confirm staging: ${detail}. A node running a build that predates staged ` +
+							`deploys treats this request as an ordinary deploy and is serving the release already. Check ` +
+							`those nodes before activating deployment ${recorder.deploymentId}, or pass ` +
+							`ignore_replication_errors: true to accept the difference.`
+					);
+				}
+			}
 		}
 
 		if (recorder) {
@@ -943,8 +1019,12 @@ async function deployComponent(req) {
 				const freed = recorder.dropPayload();
 				if (freed > 0) emit('payload_dropped', { payload_size: freed, max_size: retentionMaxSize });
 			}
-			emit('phase', { phase: 'success', status: 'done' });
-			await recorder.finish('success');
+			emit('phase', { phase: mode === 'stage' ? 'staged' : 'success', status: 'done' });
+			await recorder.finish(mode === 'stage' ? 'staged' : 'success');
+			if (mode === 'stage') {
+				response.message =
+					`Staged: ${application.name}. Deploy it with deploy_component ` + `deployment_id=${recorder.deploymentId}`;
+			}
 		}
 		return response;
 	} catch (err) {

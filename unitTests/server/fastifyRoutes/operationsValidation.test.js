@@ -223,6 +223,64 @@ describe('Test operationsValidation module', () => {
 		});
 	});
 
+	describe('Test deployComponentValidator staging and activation', () => {
+		it('accepts a stage request', () => {
+			expect(validator.deployComponentValidator({ project: 'my_app', activate: false })).to.equal(undefined);
+		});
+
+		it("rejects a string 'false' for activate, which would otherwise deploy the release it staged", () => {
+			// `validateBySchema` throws away Joi's converted value, so a coercing boolean would validate here
+			// and then read as truthy in the handler.
+			const result = validator.deployComponentValidator({ project: 'my_app', activate: 'false' });
+			expect(result.message).to.contain('activate');
+		});
+
+		it('rejects a restart alongside a stage, which changes nothing to restart into', () => {
+			const result = validator.deployComponentValidator({ project: 'my_app', activate: false, restart: true });
+			expect(result.message).to.contain('restart');
+		});
+
+		it('accepts an activation addressed by deployment id', () => {
+			const result = validator.deployComponentValidator({
+				project: 'my_app',
+				deployment_id: '1b4e28ba-2fa1-11d2-883f-0016d3cca427',
+			});
+			expect(result).to.equal(undefined);
+		});
+
+		it('rejects a deployment id that is not a UUID, since it names a staging directory', () => {
+			for (const deployment_id of ['../escape', 'not-a-uuid', '']) {
+				const result = validator.deployComponentValidator({ project: 'my_app', deployment_id });
+				expect(result.message, deployment_id).to.contain('deployment_id');
+			}
+		});
+
+		it('rejects a traversal-bearing internal deployment id, which also names a staging directory', () => {
+			const result = validator.deployComponentValidator({ project: 'my_app', _deploymentId: '../../escape' });
+			expect(result.message).to.contain('_deploymentId');
+		});
+
+		it('rejects build and routing inputs on an activation, whose artifact already decided them', () => {
+			for (const extra of [
+				{ package: 'npm:app' },
+				{ payload: 'dGFy' },
+				{ activate: false },
+				{ install_command: 'npm ci' },
+				{ credentials: [{ registry: 'https://npm.pkg.github.com', token: 'tok' }] },
+				{ urlPath: '/app' },
+				{ host: 'example.com' },
+				{ isolated: true },
+			]) {
+				const result = validator.deployComponentValidator({
+					project: 'my_app',
+					deployment_id: '1b4e28ba-2fa1-11d2-883f-0016d3cca427',
+					...extra,
+				});
+				expect(result, JSON.stringify(extra)).to.not.equal(undefined);
+			}
+		});
+	});
+
 	describe('Test deployComponentValidator credentials', () => {
 		it('accepts a valid credentials array', () => {
 			const result = validator.deployComponentValidator({

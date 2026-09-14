@@ -20,7 +20,7 @@ import {
 import { getSecretDecryptor } from '../resources/secretDecryptor.ts';
 import { ENV_ENCRYPTED_PREFIX } from '../utility/envFile.ts';
 
-import { basename, dirname, extname, isAbsolute, join, relative, win32 } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, sep, win32 } from 'node:path';
 import {
 	access,
 	chmod,
@@ -33,6 +33,7 @@ import {
 	readdir,
 	readFile,
 	readlink,
+	realpath,
 	rename,
 	rmdir,
 	rm,
@@ -1043,7 +1044,13 @@ const CANDIDATE_COMPONENT_FILE = '.component';
 // well-formed. Workers cannot infer that case: a well-formed journal is indistinguishable from one belonging
 // to a deploy in flight, so without a record they would treat an unsettled component as healthy and load it.
 const UNSETTLED_MARKER = '.unsettled';
+// Everything the build decided that a later activation cannot re-derive: the root-config entry to publish,
+// whether the installation is opaque to metadata comparison, and the isolation intent that was admitted.
+// Written before `.complete`, so the marker vouches for it. An OPTIONAL record would not do: it could not
+// distinguish a payload build, which owns no root config, from a package build whose record was lost.
+const CANDIDATE_ARTIFACT_FILE = '.artifact.json';
 const ACTIVATION_JOURNAL_VERSION = 1;
+const ARTIFACT_DESCRIPTOR_VERSION = 1;
 const DEFAULT_STAGING_RETENTION_MAX_COUNT = 5;
 
 /** `deployment_stagingRetention_maxCount`; 0 keeps none. Only a number or numeric string counts, so `true`/`[]`/blank cannot become "keep nothing". */
@@ -1088,11 +1095,16 @@ async function dormantBuildAt(deploymentDirPath: string, owner: string): Promise
  * every catalogued build is re-derived under it before the kept set is chosen, so a catalog read unlocked
  * cannot hold or miss a slot. Never throws: a failure must neither fail a component closed nor replace a
  * deploy's own error.
+ *
+ * `pinnedDeploymentId` is never evicted. A delayed activation runs this preamble under the same lock it is
+ * about to activate under, so without the pin retention would delete the artifact the request named —
+ * immediately, when the knob is `0`. It still occupies a slot, so the bound holds.
  */
 export async function pruneDormantBuilds(
 	componentName: string,
 	builds: DormantBuild[],
-	maxCount: number
+	maxCount: number,
+	pinnedDeploymentId?: string
 ): Promise<void> {
 	const current: DormantBuild[] = [];
 	for (const build of builds) {
@@ -1112,7 +1124,8 @@ export async function pruneDormantBuilds(
 				right.completedAt - left.completedAt ||
 				(left.deploymentId < right.deploymentId ? -1 : left.deploymentId > right.deploymentId ? 1 : 0)
 		)
-		.slice(Math.max(0, maxCount));
+		.slice(Math.max(0, maxCount))
+		.filter((build) => build.deploymentId !== pinnedDeploymentId);
 	for (const build of evictions) {
 		try {
 			await rm(build.deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
@@ -1296,6 +1309,129 @@ function activationJournalPath(componentDirPath: string, deploymentId: string): 
 	return join(candidateDeploymentDirPath(componentDirPath, deploymentId), ACTIVATION_JOURNAL);
 }
 
+function candidateArtifactFilePath(componentDirPath: string, deploymentId: string): string {
+	return join(candidateDeploymentDirPath(componentDirPath, deploymentId), CANDIDATE_ARTIFACT_FILE);
+}
+
+export type ArtifactDescriptor = {
+	v: number;
+	component: string;
+	/** The root-config entry to publish with the activation; `null` for a payload build, which owns none. */
+	rootConfig: Record<string, unknown> | null;
+	installationIsOpaque: boolean;
+	isolated: boolean;
+};
+
+/**
+ * Read and fully validate a staged artifact's descriptor. Every field is checked, not just the ones the
+ * caller happens to use: a descriptor is activation input for a build this process did not make, possibly
+ * not even on this node, so a partially-checked one is a way to activate under someone else's intent.
+ * Absence is `undefined`; anything present but unusable throws, because a staged artifact that cannot
+ * describe itself must be refused rather than activated under defaults.
+ */
+async function readArtifactDescriptor(
+	deploymentDirPath: string,
+	componentName: string
+): Promise<ArtifactDescriptor | undefined> {
+	const descriptorPath = join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE);
+	const raw = await readFile(descriptorPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+		if (error?.code === 'ENOENT') return undefined;
+		throw error;
+	});
+	if (raw === undefined) return undefined;
+	let parsed: any;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (error) {
+		throw new Error(`Artifact descriptor ${descriptorPath} is not readable JSON: ${errorMessage(error)}`);
+	}
+	if (!parsed || typeof parsed !== 'object' || parsed.v !== ARTIFACT_DESCRIPTOR_VERSION) {
+		throw new Error(`Artifact descriptor ${descriptorPath} is version ${parsed?.v}, which this build cannot activate`);
+	}
+	if (!isJoinableComponentName(parsed.component) || parsed.component !== componentName) {
+		throw new Error(
+			`Artifact descriptor ${descriptorPath} names component '${parsed.component}', not '${componentName}'`
+		);
+	}
+	if (typeof parsed.installationIsOpaque !== 'boolean' || typeof parsed.isolated !== 'boolean') {
+		throw new Error(`Artifact descriptor ${descriptorPath} does not record its build's runtime decisions`);
+	}
+	if (parsed.rootConfig !== null && (typeof parsed.rootConfig !== 'object' || Array.isArray(parsed.rootConfig))) {
+		throw new Error(`Artifact descriptor ${descriptorPath} does not record a root-config entry or its absence`);
+	}
+	// Admission reads one field and publication writes the other, so two authorities that disagree would
+	// admit one isolation and then publish the opposite.
+	if (parsed.rootConfig && Boolean(parsed.rootConfig.isolated) !== parsed.isolated) {
+		throw new Error(
+			`Artifact descriptor ${descriptorPath} admits isolated=${parsed.isolated} but publishes ` +
+				`isolated=${Boolean(parsed.rootConfig.isolated)}`
+		);
+	}
+	return parsed as ArtifactDescriptor;
+}
+
+// `node_modules/harper` and `node_modules/harperdb` are links the LOADER owns: it points them at the
+// running install on every non-root component load and repairs them when they are missing or stale. They
+// are outside the artifact by construction and by design, so they are the one external link a staged
+// artifact may carry.
+const LOADER_OWNED_LINKS = new Set(['harper', 'harperdb']);
+
+/**
+ * Reject a staged artifact that reaches outside itself.
+ *
+ * Certification fsyncs the tree but follows no links, and the post-swap relocation repair deliberately
+ * leaves external targets alone — so a symlink into a directory this artifact does not own is a hole in
+ * "activate exactly the bytes that were certified": the target can be edited, or replaced wholesale,
+ * between the stage and the activation. An immediate deploy is not exposed to this, because certification
+ * and activation happen within one call; the delay is what makes it reachable.
+ *
+ * Only staging pays this walk, and it walks the same tree certification is about to walk anyway.
+ */
+async function assertOwnedArtifactTree(candidateDirPath: string, componentName: string): Promise<void> {
+	const ownedRoot = await realpath(candidateDirPath);
+	const walk = async (dirPath: string): Promise<void> => {
+		const entries = await readdir(dirPath, { withFileTypes: true });
+		for (const entry of entries) {
+			const entryPath = join(dirPath, entry.name);
+			if (entry.isDirectory()) {
+				await walk(entryPath);
+				continue;
+			}
+			// Junctions report as symbolic links here too, which is what makes this cover Windows.
+			if (!entry.isSymbolicLink()) continue;
+			if (LOADER_OWNED_LINKS.has(entry.name) && basename(dirPath) === 'node_modules') continue;
+			// An unresolvable link is rejected for the same reason a foreign one is: nothing certified what
+			// it will resolve to by the time somebody activates it.
+			const target = await realpath(entryPath).catch(() => undefined);
+			if (target === undefined || (target !== ownedRoot && !target.startsWith(ownedRoot + sep))) {
+				throw new Error(
+					`Cannot stage ${componentName}: ${entryPath} links outside the build to ${target ?? 'a missing target'}, ` +
+						`so the bytes activated later would not be the bytes this build certified`
+				);
+			}
+		}
+	};
+	await walk(candidateDirPath);
+}
+
+/** Record the build's decisions beside the candidate. Called before `.complete`, which vouches for it. */
+async function writeArtifactDescriptor(
+	componentDirPath: string,
+	deploymentId: string,
+	descriptor: ArtifactDescriptor
+): Promise<void> {
+	try {
+		await writeControlFileDurably(
+			candidateArtifactFilePath(componentDirPath, deploymentId),
+			JSON.stringify(descriptor)
+		);
+	} catch (error) {
+		// An existing descriptor belongs to this same artifact — the id is claimed exclusively, so nothing
+		// else can have written one — which makes this a retry of its own stage rather than a conflict.
+		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+	}
+}
+
 /**
  * A component name safe to join onto the components root: no separator, no traversal, not dot-prefixed.
  * Applied to EVERY source of the name — the journal and the sidecar — because validating one and trusting
@@ -1350,8 +1486,25 @@ async function readActivationJournal(journalPath: string): Promise<ActivationJou
 	return parsed as ActivationJournal;
 }
 
-/** The deployment directory holding one candidate build: `<root>/.deploy-staging/<deploymentId>`. */
+/**
+ * The deployment directory holding one candidate build: `<root>/.deploy-staging/<deploymentId>`.
+ *
+ * The id is asserted here rather than only at the request boundary because every caller funnels through
+ * this one join, and the id is now operator-supplied (`deployment_id`) or replication-supplied
+ * (`_deploymentId`). A traversal-bearing id would otherwise direct both the build and its removal outside
+ * `.deploy-staging`.
+ */
 function candidateDeploymentDirPath(componentDirPath: string, deploymentId: string): string {
+	if (
+		typeof deploymentId !== 'string' ||
+		deploymentId.length === 0 ||
+		deploymentId !== basename(deploymentId) ||
+		// `basename` returns these unchanged, so the comparison above admits both.
+		deploymentId === '.' ||
+		deploymentId === '..'
+	) {
+		throw new Error(`Deployment id '${deploymentId}' is not a single path segment`);
+	}
 	return join(dirname(componentDirPath), DEPLOY_STAGING_DIR, deploymentId);
 }
 
@@ -1435,6 +1588,54 @@ async function ensureSecureStagingDirectory(stagingDir: string): Promise<void> {
 	if (process.platform !== 'win32' && (stagingStat.mode & 0o777) !== 0o700) {
 		await chmod(stagingDir, 0o700).catch((error) =>
 			logger.warn(`Could not restrict component deploy staging permissions for ${stagingDir}:`, errorForLog(error))
+		);
+	}
+}
+
+/**
+ * Claim a deployment directory for this build, EXCLUSIVELY. The id used to be a fresh UUID nothing else
+ * could name, so tolerating an existing directory was harmless; it is now the public deployment id, which
+ * an operator can repeat and a redelivered replication can repeat for them. Tolerating it there would let a
+ * replayed stage rewrite the bytes under an existing `.complete` and descriptor — and a crash mid-rebuild
+ * would leave a partial tree that still reads as certified.
+ *
+ * The caller holds the component's preparation lock, which is what makes the EEXIST verdicts sound: no
+ * other preparation of THIS component is running, and a directory belonging to another component is not
+ * this lock's to touch.
+ */
+async function claimDeploymentDirectory(deploymentDirPath: string, componentName: string): Promise<void> {
+	try {
+		await mkdir(deploymentDirPath, { mode: 0o700 });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+		const owner = await candidateComponentName(deploymentDirPath);
+		if (owner !== undefined && owner !== componentName) {
+			throw new Error(
+				`Deployment id ${basename(deploymentDirPath)} already holds a build of '${owner}'; a deployment id ` +
+					`names one artifact for its lifetime`
+			);
+		}
+		if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER))) {
+			throw new Error(
+				`Deployment id ${basename(deploymentDirPath)} already holds a completed build of '${componentName}'; ` +
+					`deploy it with deployment_id, or deploy again to build a new one`
+			);
+		}
+		// No completion marker: an abandoned build from a request delivered twice, or one this node crashed
+		// during. Nothing certified it, so nothing is lost by rebuilding over it.
+		await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+		await mkdir(deploymentDirPath, { mode: 0o700 });
+	}
+	const claimed = await lstat(deploymentDirPath);
+	if (!claimed.isDirectory() || claimed.isSymbolicLink()) {
+		throw new Error(`Component deploy staging path is not a directory: ${deploymentDirPath}`);
+	}
+	if (process.platform !== 'win32' && (claimed.mode & 0o777) !== 0o700) {
+		await chmod(deploymentDirPath, 0o700).catch((error) =>
+			logger.warn(
+				`Could not restrict component deploy staging permissions for ${deploymentDirPath}:`,
+				errorForLog(error)
+			)
 		);
 	}
 }
@@ -1604,7 +1805,11 @@ async function inProgressAsideRecords(asideStagingDir: string): Promise<string[]
  * pass refuses to restore against a surviving journal, but refusing is a stalled component; settling first
  * is what lets the deploy proceed.
  */
-async function settleStagingForComponent(componentsRootDirPath: string, componentName: string): Promise<void> {
+async function settleStagingForComponent(
+	componentsRootDirPath: string,
+	componentName: string,
+	pinnedDeploymentId?: string
+): Promise<void> {
 	const stagingRoot = join(componentsRootDirPath, DEPLOY_STAGING_DIR);
 	let deployments;
 	try {
@@ -1663,7 +1868,7 @@ async function settleStagingForComponent(componentsRootDirPath: string, componen
 		await settleInterruptedActivation(componentsRootDirPath, deploymentDirPath, journal);
 	}
 	const maxCount = getStagingRetentionMaxCount();
-	if (dormant.length > maxCount) await pruneDormantBuilds(componentName, dormant, maxCount);
+	if (dormant.length > maxCount) await pruneDormantBuilds(componentName, dormant, maxCount, pinnedDeploymentId);
 }
 
 /**
@@ -2375,14 +2580,34 @@ export async function markCandidateComplete(
 }
 
 /**
- * Make a built and validated candidate live, as one compensating transaction over two effects: the live tree
- * moves aside, then the candidate takes its place. Root config is NOT one of them — it is still published
- * before the build, unchanged, and making it transactional is tracked separately (#2315).
+ * Make the newly created ancestors of a deployment directory durable, child-first.
  *
- * The `complete` marker and the activation journal are written and fsynced BEFORE the first rename, so a
- * crash anywhere below is recoverable — see `settleInterruptedActivation` for the state matrix. The second
- * rename is the COMMIT POINT: nothing after it may compensate, because the live path holds the candidate and
- * renaming the aside back over it cannot succeed.
+ * Only a staged artifact needs this. A deploy's own candidate is transient — power loss just abandons a
+ * build nobody was told about — but a stage is ACKNOWLEDGED, and `writeControlFileDurably` flushes only the
+ * control file's immediate parent while `ensureSecureStagingDirectory` flushes none. Without this a stage
+ * can report success before the `.deploy-staging/<id>` entry exists on storage, and the automatic payload
+ * reclaim may already have dropped the tarball it could have been rebuilt from. Best-effort on Windows, like
+ * every other directory sync here.
+ */
+async function syncArtifactAncestors(deploymentDirPath: string): Promise<void> {
+	const stagingRoot = dirname(deploymentDirPath);
+	for (const directory of [deploymentDirPath, stagingRoot, dirname(stagingRoot)]) {
+		await syncDirectory(directory);
+	}
+}
+
+/**
+ * Make a built and validated candidate live, as one compensating transaction over two effects: the live tree
+ * moves aside, then the candidate takes its place. Root config is NOT one of them — for an immediate deploy
+ * it is still published before the build, unchanged, and making it transactional is tracked separately
+ * (#2315). A delayed activation publishes the entry its artifact recorded, immediately before calling this.
+ *
+ * The candidate must ALREADY be certified: `markCandidateComplete` is the caller's, so a delayed activation
+ * does not re-walk and re-fsync a whole dependency tree it certified when it was built. The activation
+ * journal is still written and fsynced BEFORE the first rename, so a crash anywhere below is recoverable —
+ * see `settleInterruptedActivation` for the state matrix. The second rename is the COMMIT POINT: nothing
+ * after it may compensate, because the live path holds the candidate and renaming the aside back over it
+ * cannot succeed.
  */
 export async function activateCandidateApplication(application: Application, deploymentId: string): Promise<void> {
 	const liveDirPath = application.dirPath;
@@ -2400,7 +2625,6 @@ export async function activateCandidateApplication(application: Application, dep
 		throw new Error(`Cannot activate ${application.name}: no candidate build at ${candidateDirPath}`);
 	}
 
-	await markCandidateComplete(liveDirPath, deploymentId, application.name);
 	const journalPath = activationJournalPath(liveDirPath, deploymentId);
 	try {
 		await writeControlFileDurably(
@@ -2416,56 +2640,101 @@ export async function activateCandidateApplication(application: Application, dep
 		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 	}
 
-	await ensureExtractionStagingDirectory(asideStagingDir);
-	const liveExists = await lstat(liveDirPath).then(
-		() => true,
-		(error) => {
-			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-			throw error;
-		}
-	);
-	application.isNewComponent = !liveExists;
-
 	// B1 — the live tree moves aside. It stays the rollback source until B4 retires it.
 	let asidePath: string | undefined;
 	let priorAbsentRecordPath: string | undefined;
 	// The swap below moves the previous tree back and forth around every wait, so a chosen aside path no
 	// longer implies the tree is at it — and compensation needs to know which.
 	let liveIsDisplaced = false;
-	if (liveExists) {
-		asidePath = join(asideStagingDir, `${IN_PROGRESS_ASIDE_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}`);
-		await renameThroughTransientHolder(liveDirPath, asidePath);
-		liveIsDisplaced = true;
-	} else {
-		priorAbsentRecordPath = join(
-			asideStagingDir,
-			`${IN_PROGRESS_ASIDE_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}${PRIOR_ABSENT_RECORD_SUFFIX}`
-		);
-		await writeFile(priorAbsentRecordPath, '', { flag: 'wx', mode: 0o600 });
-	}
 	const restoreLive = async () => {
 		if (liveIsDisplaced) {
 			await renameThroughTransientHolder(asidePath!, liveDirPath);
 			liveIsDisplaced = false;
 		} else if (priorAbsentRecordPath) await rm(priorAbsentRecordPath, { force: true });
-		await syncRenameParents(asidePath ?? priorAbsentRecordPath!, liveDirPath);
+		// Nothing was displaced and no record was written, so there is nothing to put back and no rename to
+		// flush — the failure happened before the first effect.
+		if (asidePath || priorAbsentRecordPath) {
+			await syncRenameParents(asidePath ?? priorAbsentRecordPath!, liveDirPath);
+		}
 	};
 
-	// Still BEFORE the commit point, so this is compensable — and must be compensated. Letting a storage
-	// failure escape here leaves live already moved aside, and the caller reads an uncompensated throw as an
-	// ordinary build failure and discards the candidate, its `.complete` marker and its journal: the
-	// component ends up with no version at all and nothing saying how to get one back.
-	try {
-		await syncRenameParents(liveDirPath, asidePath ?? priorAbsentRecordPath!);
-	} catch (error) {
-		await compensate(error, 'record the displaced component directory', restoreLive, application);
-		throw error;
-	}
+	/**
+	 * Put a compensated candidate back to DORMANT — complete, described, no journal — so it is a retryable
+	 * artifact rather than one the next preparation destroys.
+	 *
+	 * Without this, a failure that leaves the journal in place makes `settleStagingForComponent` read
+	 * live-plus-candidate as an activation that never got there and remove the whole deployment directory;
+	 * for a first deploy the restored state is live-ABSENT, and it rolls the candidate forward instead,
+	 * ahead of the caller's own verification. Both destroy an artifact whose whole purpose is to be
+	 * activated again.
+	 *
+	 * The unlink needs its own barrier: syncing the aside directories persists the rollback record's
+	 * disposal, not the journal's, so without this sync a power loss resurrects a journal the operator was
+	 * told had been rolled back. Best-effort by necessity — failing here must not replace the activation
+	 * failure the caller is reporting — so a failure says explicitly that the artifact is not retryable, and
+	 * the surviving journal is exactly what startup recovery settles.
+	 */
+	const returnToDormant = async () => {
+		try {
+			await rm(journalPath, { force: true });
+			await syncDirectory(deploymentDirPath);
+		} catch (error) {
+			application.logger.warn(
+				`Restored ${application.name} after a failed activation, but its staged build ${deploymentId} still ` +
+					`carries an activation journal and is not retryable until recovery settles it:`,
+				error
+			);
+		}
+	};
 
-	// B2 — the candidate becomes live. THE RENAME IS THE COMMIT POINT: nothing after it may compensate,
-	// because the live path now holds the candidate and renaming the aside back over it cannot succeed. A
-	// compensating step there fails its own rollback and reports a failure for a deploy that is live.
+	/**
+	 * One pre-commit failure boundary, opened as soon as the journal exists.
+	 *
+	 * Everything from here to the commit rename can fail — creating the aside staging directory, reading the
+	 * live path, the move-aside, writing the prior-absent record, flushing either parent. Each of those runs
+	 * AFTER the journal is published, so a failure that only rethrew would leave a journal behind: the next
+	 * settlement then deletes a certified artifact, or (first deploy, live absent) activates it with nobody
+	 * asking. So they share one catch that restores and then returns the artifact to dormant.
+	 *
+	 * Nothing below the commit rename may enter it — see B2.
+	 */
+	let pendingEffect = 'prepare the component staging directory';
 	try {
+		await ensureExtractionStagingDirectory(asideStagingDir);
+		pendingEffect = 'read the live component directory';
+		const liveExists = await lstat(liveDirPath).then(
+			() => true,
+			(error) => {
+				if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+				throw error;
+			}
+		);
+		application.isNewComponent = !liveExists;
+
+		pendingEffect = 'move the previous version aside';
+		if (liveExists) {
+			asidePath = join(asideStagingDir, `${IN_PROGRESS_ASIDE_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}`);
+			await renameThroughTransientHolder(liveDirPath, asidePath);
+			liveIsDisplaced = true;
+		} else {
+			priorAbsentRecordPath = join(
+				asideStagingDir,
+				`${IN_PROGRESS_ASIDE_PREFIX}${Date.now()}-${process.pid}-${randomUUID()}${PRIOR_ABSENT_RECORD_SUFFIX}`
+			);
+			await writeFile(priorAbsentRecordPath, '', { flag: 'wx', mode: 0o600 });
+		}
+
+		// Letting a storage failure escape here leaves live already moved aside, and the caller reads an
+		// uncompensated throw as an ordinary build failure and discards the candidate, its `.complete` marker
+		// and its journal: the component ends up with no version at all and nothing saying how to get one back.
+		pendingEffect = 'record the displaced component directory';
+		await syncRenameParents(liveDirPath, asidePath ?? priorAbsentRecordPath!);
+
+		// B2 — the candidate becomes live. THE RENAME IS THE COMMIT POINT: nothing after it may compensate,
+		// because the live path now holds the candidate and renaming the aside back over it cannot succeed. A
+		// compensating step there fails its own rollback and reports a failure for a deploy that is live. It is
+		// the LAST statement in this block for that reason.
+		pendingEffect = 'move the candidate into place';
 		await renameThroughTransientHolder(candidateDirPath, liveDirPath, {
 			// The previous version occupies the live path through the wait rather than the component being
 			// absent for the whole budget: a read of a component file, and any concurrent scan of the
@@ -2483,7 +2752,8 @@ export async function activateCandidateApplication(application: Application, dep
 			},
 		});
 	} catch (error) {
-		await compensate(error, 'move the candidate into place', restoreLive, application);
+		await compensate(error, pendingEffect, restoreLive, application);
+		await returnToDormant();
 		throw error;
 	}
 
@@ -2685,15 +2955,25 @@ async function discardCandidate(application: Application, deploymentId: string):
  * Failure needs no compensation, which is the whole point: nothing about the live component was modified,
  * so the abandoned candidate is simply removed and the error propagates.
  */
-export async function buildCandidateApplication(application: Application, deploymentId: string): Promise<string> {
+export async function buildCandidateApplication(
+	application: Application,
+	deploymentId: string,
+	options: { rejectLinkSource?: boolean } = {}
+): Promise<string> {
 	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, deploymentId);
 	const candidateDirPath = candidateApplicationPath(application.dirPath, deploymentId);
 	await ensureSecureStagingDirectory(dirname(deploymentDirPath));
-	await ensureSecureStagingDirectory(deploymentDirPath);
+	await claimDeploymentDirectory(deploymentDirPath, application.name);
 	try {
 		// Replaced, not extracted into: a prior attempt on this id may have left a partial tree.
 		await rm(candidateDirPath, { recursive: true, force: true });
 		const resolved = await resolveApplicationTarball(application);
+		if (resolved.kind === 'link' && options.rejectLinkSource) {
+			throw new Error(
+				`Cannot stage ${application.name} from ${application.packageIdentifier}: a 'file:' directory is linked ` +
+					`rather than copied, so the bytes activated later are not the bytes this build certified`
+			);
+		}
 		if (resolved.kind === 'link') {
 			// A `file:` directory becomes a symlink AT THE CANDIDATE PATH, so it is validated and swapped in
 			// like any other candidate instead of appearing at the live path unvalidated.
@@ -3725,10 +4005,36 @@ export type PrepareApplicationOptions = {
 	 * broken release.
 	 */
 	validateCandidate?: (candidateDirPath: string) => Promise<void>;
+	/**
+	 * Names `.deploy-staging/<artifactId>`. Deliberately NOT the deploy-lifecycle token: that token
+	 * de-duplicates overlapping deploys of one component and is released by the first matching end, so an
+	 * id shared by two activations of one artifact would resume watchers while the second is still
+	 * swapping. Defaults to the lifecycle token, which is unique per invocation and therefore also a
+	 * sound artifact name for a build nobody addresses later.
+	 */
+	artifactId?: string;
+	/**
+	 * `deploy` builds, certifies and activates. `stage` builds and certifies, then stops, leaving an
+	 * artifact a later `activate` can address by `artifactId`. `activate` verifies an existing artifact
+	 * and swaps it in, doing no resolution, no install and no network work at all.
+	 */
+	mode?: 'deploy' | 'stage' | 'activate';
+	/**
+	 * `stage` only: the build's declared intent, recorded with the artifact for whoever activates it.
+	 * A callback rather than a value because `beforePrepare` is what determines it, and that runs after
+	 * these options have been constructed.
+	 */
+	describeArtifact?: () => { rootConfig: Record<string, unknown> | null; isolated: boolean };
+	/** `activate` only: publish the artifact's recorded root-config entry, immediately before the swap. */
+	publishRootConfig?: (entry: Record<string, unknown>) => Promise<void>;
+	/** `activate` only: admit the artifact's isolation intent under the preparation lock, before the swap. */
+	admitIsolation?: (descriptor: ArtifactDescriptor) => Promise<void>;
 };
 
 export async function prepareApplication(application: Application, options: PrepareApplicationOptions = {}) {
-	const deploymentId = await broadcastDeployStart(application.name);
+	const lifecycleToken = await broadcastDeployStart(application.name);
+	const mode = options.mode ?? 'deploy';
+	const artifactId = options.artifactId ?? lifecycleToken;
 	try {
 		const commandTimeoutMs = application.install?.timeout ?? DEFAULT_COMMAND_TIMEOUT_MS;
 		await withComponentPreparationLock(
@@ -3745,7 +4051,12 @@ export async function prepareApplication(application: Application, options: Prep
 				}
 				// BEFORE the legacy pass. That pass refuses to restore while a journal survives, so skipping
 				// this would not lose data — it would just stall the deploy behind its own unsettled state.
-				await settleStagingForComponent(dirname(application.dirPath), application.name);
+				//
+				// The id this request names is pinned against the retention this runs. An activation would
+				// otherwise have its own artifact deleted by its own preamble; and a redelivered stage would
+				// have the artifact evicted out from under the exclusive claim below, which would then rebuild
+				// different bytes under an id that already named some.
+				await settleStagingForComponent(dirname(application.dirPath), application.name, artifactId);
 				if (recoveryPending) {
 					await ensureExtractionStagingDirectory(asideStagingDir);
 					await recoverOrCleanupStaleExtractionPaths(application, asideStagingDir);
@@ -3760,6 +4071,10 @@ export async function prepareApplication(application: Application, options: Prep
 						throw error;
 					}
 				));
+				if (mode === 'activate') {
+					await activateStagedArtifact(application, artifactId, previousPackageMetadata, options);
+					return;
+				}
 				try {
 					// Materialize the per-deploy `.npmrc` before the build so both `npm pack` and `npm install`
 					// authenticate against the private registry; always remove it afterward.
@@ -3770,7 +4085,9 @@ export async function prepareApplication(application: Application, options: Prep
 						// credential is already gone before any install script runs. This finally covers the paths
 						// that fail before it gets there.
 						await application.startGitCredentialSession();
-						candidateDirPath = await buildCandidateApplication(application, deploymentId);
+						candidateDirPath = await buildCandidateApplication(application, artifactId, {
+							rejectLinkSource: mode === 'stage',
+						});
 					} finally {
 						await application.cleanupGitCredentialSession();
 					}
@@ -3785,7 +4102,25 @@ export async function prepareApplication(application: Application, options: Prep
 								application.installationIsOpaque
 							);
 						}
-						await activateCandidateApplication(application, deploymentId);
+						if (mode === 'stage') {
+							await assertOwnedArtifactTree(candidateDirPath, application.name);
+							// The descriptor goes first so `.complete` vouches for it: after this pair the artifact
+							// is dormant, and a delayed activation reads its build's decisions from here because
+							// nothing on disk carries them otherwise.
+							const declared = options.describeArtifact?.() ?? { rootConfig: null, isolated: false };
+							await writeArtifactDescriptor(application.dirPath, artifactId, {
+								v: ARTIFACT_DESCRIPTOR_VERSION,
+								component: application.name,
+								rootConfig: declared.rootConfig,
+								installationIsOpaque: application.installationIsOpaque,
+								isolated: declared.isolated,
+							});
+							await markCandidateComplete(application.dirPath, artifactId, application.name);
+							await syncArtifactAncestors(candidateDeploymentDirPath(application.dirPath, artifactId));
+							return;
+						}
+						await markCandidateComplete(application.dirPath, artifactId, application.name);
+						await activateCandidateApplication(application, artifactId);
 					} catch (error) {
 						// The builder's own cleanup only covers a failed BUILD. A rejected validation, or an
 						// activation that was cleanly compensated, would otherwise leave a whole installed
@@ -3795,7 +4130,7 @@ export async function prepareApplication(application: Application, options: Prep
 						// path may be absent, and the candidate plus its `.complete` marker and journal are exactly
 						// what recovery needs to roll the validated deploy forward at the next start. Discarding
 						// them there trades a bounded disk cost for a component with no version at all.
-						if (!compensationIncomplete(error)) await discardCandidate(application, deploymentId);
+						if (!compensationIncomplete(error)) await discardCandidate(application, artifactId);
 						throw error;
 					}
 				} finally {
@@ -3824,8 +4159,64 @@ export async function prepareApplication(application: Application, options: Prep
 			}
 		);
 	} finally {
-		broadcastDeployEnd(application.name, deploymentId);
+		broadcastDeployEnd(application.name, lifecycleToken);
 	}
+}
+
+/**
+ * Swap an already-certified artifact into the live path. Called with the component's preparation lock held
+ * and after the same recovery preamble every build runs, so the state read here is settled.
+ *
+ * Nothing is resolved, fetched or installed: the bytes were certified when they were staged, which is the
+ * whole point of addressing one by id. Verification is therefore the only gate, and it is strict — this is
+ * activation input for a build this process did not make and may not have made on this node.
+ *
+ * A rejection here must NOT discard: the artifact belongs to whoever staged it, a wrong-component request
+ * must not delete another component's build, and a retry needs what a failed attempt left behind.
+ */
+async function activateStagedArtifact(
+	application: Application,
+	artifactId: string,
+	previousPackageMetadata: InstalledPackageMetadata,
+	options: PrepareApplicationOptions
+): Promise<void> {
+	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, artifactId);
+	const candidateDirPath = candidateApplicationPath(application.dirPath, artifactId);
+	const unavailable = (why: string) =>
+		new Error(`Cannot deploy ${application.name} from deployment ${artifactId}: ${why}`);
+
+	const owner = await candidateComponentName(deploymentDirPath);
+	if (owner === undefined) throw unavailable('there is no staged build with that id on this node');
+	if (owner !== application.name) throw unavailable(`that staged build belongs to '${owner}'`);
+	if (!(await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER)))) {
+		throw unavailable('its build never completed');
+	}
+	if (await presentOrAbsent(join(deploymentDirPath, UNSETTLED_MARKER))) {
+		throw unavailable('recovery could not settle it, so it is not safe to activate');
+	}
+	if (await presentOrAbsent(join(deploymentDirPath, ACTIVATION_JOURNAL))) {
+		throw unavailable('an activation of it is unsettled');
+	}
+	const candidateStat = await presentOrAbsent(candidateDirPath);
+	if (!candidateStat || !candidateStat.isDirectory()) {
+		// Unlike an immediate deploy, a symlink is refused: a `file:` directory is linked rather than
+		// copied, so what it points at now is not what was certified. Staging rejects the source for the
+		// same reason; this is the other end of the same rule, for an artifact staged by an older build.
+		throw unavailable('its build tree is missing or is a link rather than a copy');
+	}
+	const descriptor = await readArtifactDescriptor(deploymentDirPath, application.name);
+	if (!descriptor) throw unavailable('it does not record what its build decided');
+
+	await options.admitIsolation?.(descriptor);
+	if (descriptor.rootConfig) await options.publishRootConfig?.(descriptor.rootConfig);
+	if (!application.isNewComponent) {
+		application.packageMetadataChanged = installedRuntimeChanged(
+			previousPackageMetadata,
+			await readInstalledPackageMetadata(candidateDirPath),
+			descriptor.installationIsOpaque
+		);
+	}
+	await activateCandidateApplication(application, artifactId);
 }
 
 /**

@@ -29,6 +29,10 @@ const ENV_KEY_REGEX = /^[\w.-]+$/;
 const HOSTNAME_SCHEMA = Joi.string().hostname();
 const IPV6_SCHEMA = Joi.string().ip({ version: 'ipv6' });
 
+// A deployment id names both an hdb_deployment row and a staging directory, so it is held to the shape
+// the recorder mints (`randomUUID()`) rather than to whatever a filesystem would accept.
+const DEPLOYMENT_ID_REGEX = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 module.exports = {
 	getDropCustomFunctionValidator,
 	setCustomFunctionValidator,
@@ -492,7 +496,32 @@ function deployComponentValidator(req) {
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		package: Joi.string().optional(),
-		restart: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('rolling')).optional(),
+		// `activate: false` builds and certifies the component, then stops, leaving an artifact a later
+		// request activates by `deployment_id`. STRICT: `validateBySchema` throws away Joi's converted
+		// value, so a coercing boolean would let `activate: "false"` validate here and then read as truthy
+		// in the handler — deploying the very release the caller asked not to make live.
+		activate: Joi.boolean().strict().optional(),
+		// Activate a build staged earlier by `activate: false`. It becomes a path segment
+		// (`.deploy-staging/<id>/<component>`), so the charset is pinned as tightly as the value it names.
+		deployment_id: Joi.string().pattern(DEPLOYMENT_ID_REGEX).optional().messages({
+			'string.pattern.base': `'deployment_id' must be a UUID`,
+		}),
+		// Set by deployComponent from the origin's deployment row and carried to peers by replication.
+		// Validated because it is a path segment on EVERY deploy and unknown keys are admitted, so an
+		// operator-supplied one would otherwise reach the filesystem unchecked.
+		_deploymentId: Joi.string().pattern(DEPLOYMENT_ID_REGEX).optional().messages({
+			'string.pattern.base': `'_deploymentId' must be a UUID`,
+		}),
+		restart: Joi.alternatives()
+			.try(Joi.boolean(), Joi.string().valid('rolling'))
+			.optional()
+			// Nothing goes live, so there is nothing to restart into.
+			.when('activate', {
+				is: false,
+				then: Joi.forbidden().messages({
+					'any.unknown': `'restart' cannot be combined with 'activate: false': staging does not change the running component`,
+				}),
+			}),
 		install_command: Joi.string().optional(),
 		install_timeout: Joi.number().optional(),
 		install_allow_scripts: Joi.boolean().optional(),
@@ -576,7 +605,22 @@ function deployComponentValidator(req) {
 		}),
 	})
 		.with('urlPath', 'package')
-		.with('host', 'package');
+		.with('host', 'package')
+		// An activation has no build inputs and takes no routing or packaging opinions: the artifact's own
+		// descriptor is the authority for what it publishes, and silently ignoring these would hide that.
+		.without('deployment_id', [
+			'package',
+			'payload',
+			'activate',
+			'install_command',
+			'install_timeout',
+			'install_allow_scripts',
+			'credentials',
+			'urlPath',
+			'host',
+			'branchedDatabases',
+			'isolated',
+		]);
 
 	return validator.validateBySchema(req, deployProjSchema);
 }
