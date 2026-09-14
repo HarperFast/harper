@@ -2046,7 +2046,11 @@ export function makeTable(options) {
 				// tombstone is the live primary row.
 				const removeTombstonedCatalog = () => {
 					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
-					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
+					if (
+						!currentPrimary?.dropping ||
+						(currentPrimary.tableId != null && currentPrimary.tableId !== tableId) ||
+						currentPrimary.dropGeneration !== dropGeneration
+					)
 						return false;
 					for (const attribute of attributes) {
 						dbisDb.remove(TableResource.tableName + '/' + attribute.name);
