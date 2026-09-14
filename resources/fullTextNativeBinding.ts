@@ -17,6 +17,12 @@ export interface NativeFullTextIndexConfiguration {
 }
 
 export interface NativeFullTextModule {
+	runtimeInfo(): Promise<{
+		packageVersion: string;
+		tantivyVersion: string;
+		nativeAbiVersion: number;
+		storageBackends: ReadonlyArray<'native' | 'harper'>;
+	}>;
 	openNativeFullTextIndex(
 		options: NativeFullTextIndexConfiguration & {
 			path: string;
@@ -32,8 +38,34 @@ let bindingPromise: Promise<NativeFullTextModule> | undefined;
 export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule> {
 	if (!bindingPromise) {
 		const moduleName = '@harperfast/fulltext/native';
-		bindingPromise = import(moduleName) as Promise<NativeFullTextModule>;
+		bindingPromise = import(moduleName).then(validateFullTextNativeBinding);
 		bindingPromise.catch(() => (bindingPromise = undefined));
 	}
 	return bindingPromise;
+}
+
+export async function validateFullTextNativeBinding(module: unknown): Promise<NativeFullTextModule> {
+	if (
+		!module ||
+		typeof module !== 'object' ||
+		!('runtimeInfo' in module) ||
+		typeof module.runtimeInfo !== 'function' ||
+		!('openNativeFullTextIndex' in module) ||
+		typeof module.openNativeFullTextIndex !== 'function' ||
+		!('encodeMutationBatch' in module) ||
+		typeof module.encodeMutationBatch !== 'function'
+	)
+		throw new TypeError('@harperfast/fulltext/native does not implement the required Harper binding contract');
+	const binding = module as NativeFullTextModule;
+	const info = await binding.runtimeInfo();
+	if (
+		!info ||
+		typeof info.packageVersion !== 'string' ||
+		typeof info.tantivyVersion !== 'string' ||
+		!Number.isSafeInteger(info.nativeAbiVersion) ||
+		!Array.isArray(info.storageBackends) ||
+		!info.storageBackends.includes('native')
+	)
+		throw new TypeError('@harperfast/fulltext/native reported incompatible runtime capabilities');
+	return binding;
 }

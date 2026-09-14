@@ -131,14 +131,19 @@ rename selects the new cursorless generation, so recovery rebuilds it from Harpe
 deletes or modifies the selected generation first. Cleanup accepts only strict UUID child paths and
 runs after selection; the next open also sweeps non-selected generations, bounding crash leftovers.
 
-Missing `CURRENT` means first activation and creates a cursorless generation. Invalid selector
-metadata, a mismatched source identity, a missing selected directory, and Fulltext's
+Missing `CURRENT` is a rebuild signal; `open()` stays read-only and the existing condemn/reset path
+calls `replace()` once to create the first cursorless generation. Invalid selector metadata, a
+mismatched source identity, a missing selected directory, and Fulltext's
 `E_IDENTITY_MISMATCH`, `E_INCOMPLETE_CREATE`, or `E_SCHEMA_MISMATCH` errors condemn the generation and
 enter Harper's rebuild protocol without consuming transient acquisition retries. Lock contention,
 missing binaries, permission errors, and `E_STORAGE` remain non-destructive acquisition failures.
+Replacement repairs a malformed `STORE.json` written by Harper, but rejects a valid metadata file
+that names another store or a newer format.
 
 The encoder collaborator accepts the Harper mutation input and returns Fulltext's packed batch. The
 backend owns the mapping from `DerivedIndexBatch.records`; it never serializes the batch object.
+An oversized multi-record packed batch is split and retried without changing ordering. A transient
+encoder failure rolls back and replays accepted work; invalid single-record input fails closed.
 Only string and string-array projection fields are forwarded. Other values are omitted so one
 schema-drifted record cannot poison a batch; the later schema integration validates configured
 attributes at the projection boundary so Harper can count them as unindexable.
@@ -258,7 +263,9 @@ through the source log.
 - Shutdown/reset tests prove clean close, cursor clearing, reopen on a later owner epoch, atomic
   replacement without opening the retired generation, and an open cursorless replacement.
 - Lifecycle tests cover restart reuse, source-identity mismatch, bounded selector replacement,
-  traversal-safe cleanup, orphan reclamation, and persistent-versus-transient native error classes.
+  traversal-safe cleanup, orphan reclamation, malformed-metadata repair, native module validation,
+  and persistent-versus-transient native error classes. Child processes are killed before and after
+  selector publication for both first activation and replacement of an existing selected index.
 - The end-to-end route runs the production lifecycle and backend through a real
   `DerivedIndexRuntime`, authoritative Harper RocksDB table, and deterministic structural native
   module. The packed Fulltext artifact remains the final binary-integration gate.
