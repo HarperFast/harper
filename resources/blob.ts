@@ -4222,10 +4222,8 @@ export function cleanupUnusedBlobs(blobs: Blob[] | undefined, retainedFileIds?: 
 		// mint a reference to a file that is already condemned (issue #2062).
 		discardStorage(storageInfo);
 		const remove = () => deleteUnusedBlob(blob, storageInfo);
-		// A completed pre-save is the common commit/skip path. Queue it synchronously so the worker cannot
-		// report the losing write and recycle before its cleanup decision becomes durable. An open writer
-		// must still settle first: unlinking beneath it is unsafe on Windows and loses the final path on Unix.
 		if (storageInfo.saved) remove();
+		// Do not unlink beneath an open writer: Windows refuses it and Unix loses the final path.
 		else (storageInfo.saving ?? Promise.resolve()).then(remove, remove);
 	}
 	// idempotent: subsequent calls (e.g. from abort after commit-handler already cleaned up) are no-ops
@@ -4250,8 +4248,7 @@ function deleteUnusedBlob(blob: Blob, storageInfo: StorageInfo): void {
 			return;
 		}
 	} catch (error) {
-		// A closing or unavailable internal dbi must not turn best-effort transaction cleanup into an
-		// unhandled rejection. The local reclamation path still removes the file while this worker lives.
+		// Worker-local reclamation retries publication; a persistent dbi failure leaves the file to the sweep.
 		logger.debug?.(
 			'Could not durably queue an unused blob; falling back to local reclamation',
 			storageInfo.fileId,
