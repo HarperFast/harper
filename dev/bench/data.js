@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789377438892,
+  "lastUpdate": 1789377442834,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -21016,6 +21016,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 4331.6,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "eec839eec3a5f57b51d7ba630fa2a4337c8c78a7",
+          "message": "Merge pull request #2528 from HarperFast/fix/node-adapter-writable-response\n\nRebuild withNodeAdapter's response on a real Writable so Node middleware (Next.js, compression, send) runs against it",
+          "timestamp": "2026-09-14T04:19:07Z",
+          "url": "https://github.com/HarperFast/harper/commit/eec839eec3a5f57b51d7ba630fa2a4337c8c78a7"
+        },
+        "date": 1789377441644,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 5067.97,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 5067.97,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 504.1,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1981.5,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 3081.8,
             "unit": "ms"
           }
         ]
