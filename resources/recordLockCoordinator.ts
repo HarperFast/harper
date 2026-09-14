@@ -1391,6 +1391,16 @@ export function setLockCoordinatorResolver(
 	admittingResolver = resolveAdmitting;
 }
 
+/**
+ * Register harper-pro's transport for a database, on THIS thread.
+ *
+ * **It must be registered on every worker, not only the coordinating one**, and core cannot check
+ * that. `clusterRequiredDatabases` is module state, so a worker that never registers never latches —
+ * and a default-scoped `lock()` there takes the Phase 0 node lock alone while a peer runs the cluster
+ * protocol, which is two nodes admitting one key. The `ownsCoordination()` fail-closed path only
+ * reaches a worker that has a transport. Registering everywhere also makes that path the one a
+ * non-owner worker takes, which is what it exists for.
+ */
 export function registerClusterLockTransport(database: string, transport: ClusterLockTransport): void {
 	if (
 		typeof transport?.homeMap !== 'function' ||

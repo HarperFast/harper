@@ -739,6 +739,12 @@ Still owed by harper-pro — **the one thing that blocks enablement**:
   generation rather than one each node derives for itself, and a digest agreed across peers before
   grants are enabled — plus §4.3's one-shot activation record, which is what makes a generation change
   safe rather than merely announced.
+- **The transport registered on every worker thread, not only the coordinating one.** Core cannot check
+  it: the "this database is clustered" latch is per-thread module state, so a worker that never
+  registers never fails closed, and a default-scoped `lock()` there takes the Phase 0 node lock alone
+  while a peer runs the cluster protocol — two nodes admitting one key. Registering everywhere is also
+  what makes the `ownsCoordination()` 503 reachable, which is the path a non-owner worker is supposed
+  to take.
 - **`homeIncarnation` advanced per coordination incarnation, not per process** (§5.1). Core cannot mint
   it — it must be durable and monotonic — and cannot check it, which puts it in the same class as
   §4.3's activation record. It matters because coordinator state is per-thread: a replacement
