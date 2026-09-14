@@ -2285,9 +2285,9 @@ function abandonUnlinkRow(
 	if (error) logger.warn?.(`Abandoning the unlink intent for blob file ${storageInfo.fileId}`, error);
 	attemptCounts?.delete(storageInfo.fileId);
 	const removed = removeUnlinkQueueRow(queueDb, key);
-	// The row still records this incarnation's claim when removal fails. Keep the shared slot claimed
-	// so the next drain can settle that row and hand it back exactly once.
-	if (removed) releaseReclaimClaim(storageInfo);
+	// An ownerless row records this incarnation's claim, so it can carry the shared slot into the next
+	// drain when removal fails. An owned row does not; release its claim so the next drain takes a new one.
+	if (removed || storageInfo.owner) releaseReclaimClaim(storageInfo);
 	else scheduleBlobUnlinkDrain(storageInfo.store, UNLINK_RETRY_BASE_DELAY);
 	return removed;
 }

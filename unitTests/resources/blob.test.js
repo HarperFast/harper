@@ -2895,6 +2895,42 @@ describe('durable blob-unlink queue (#1832)', () => {
 		}
 	});
 
+	it('releases an owned reclaim claim when abandonment cannot remove its row', async () => {
+		setDeletionDelay(0);
+		const { fileId, filePath } = await fileBackedBlob('owned-abandon');
+		await QueueTest.put({ id: 'owned-abandon', blob: await createBlob(randomBytes(20000)) });
+		assert.ok(queueRow(fileId)?.owner, 'supersession must stage an owned intent');
+		unlinkSync(filePath);
+		mkdirSync(filePath);
+		writeFileSync(join(filePath, 'occupied'), 'x');
+		const state = getBlobHoldStateForTesting(rootStore(), fileId);
+		const db = queueDb();
+		const realRemoveSync = db.removeSync;
+		let rejectedRemoval = false;
+		db.removeSync = function (key) {
+			if (!rejectedRemoval && Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) {
+				rejectedRemoval = true;
+				throw new Error('queue removal unavailable');
+			}
+			return realRemoveSync.apply(this, arguments);
+		};
+		try {
+			await waitFor(
+				() => {
+					drainBlobUnlinkQueue(rootStore());
+					return queueRow(fileId) === undefined;
+				},
+				{ timeout: 30000, interval: 100, message: 'the owned row must eventually be abandoned' }
+			);
+		} finally {
+			db.removeSync = realRemoveSync;
+			if (existsSync(filePath)) rmSync(filePath, { recursive: true, force: true });
+		}
+
+		assert.equal(rejectedRemoval, true, 'the regression must exercise a failed row removal');
+		assert.equal(Atomics.load(state.table, state.slot), 0, 'the owned claim must be available to later files');
+	});
+
 	it('recovers stranded intents through the database-open hook, not just a direct drain', async () => {
 		// The hook is the only thing that reaches a prior process's rows; a refactor that drops it
 		// would otherwise leave every drain test still green.
