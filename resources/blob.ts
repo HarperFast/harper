@@ -1768,13 +1768,15 @@ function unlinkQueueRange(queueDb: any): any {
  * the encode prove there is nothing to read with atomic loads instead of a range scan — at ten
  * thousand open databases the scans alone were thousands of empty reads a second. A worker killed
  * between the two bumps leaves them apart for the life of the process; the cost is the read on every
- * encode and a range scan per backstop tick for that root, never a wrong answer. The third word is
- * the INCARNATION: a nonce this process's threads share, so a row can name the process whose
- * reclamation claimed its file — a pid cannot, being reused, and 1 on every container boot.
+ * encode and a range scan per backstop tick for that root, never a wrong answer. The last two words
+ * are the INCARNATION: a 52-bit nonce this process's threads share, so a row can name the process
+ * whose reclamation claimed its file — a pid cannot, being reused, and 1 on every container boot.
  */
 const STAGED = 0;
 const SETTLED = 1;
-const INCARNATION = 2;
+const INCARNATION_HIGH = 2;
+const INCARNATION_LOW = 3;
+const INCARNATION_WORD = 0x4000000; // 26 random bits per word keeps the pair exact in a double
 const unlinkEpochs = new WeakMap<any, Int32Array>();
 function unlinkEpoch(store: any): Int32Array | undefined {
 	let epoch = unlinkEpochs.get(store);
@@ -1793,16 +1795,19 @@ function bumpUnlinkEpoch(store: any, counter: typeof STAGED | typeof SETTLED): v
 	const epoch = unlinkEpoch(store);
 	if (epoch) Atomics.add(epoch, counter, 1);
 }
-/** This process's incarnation for the root; the first thread to ask settles it for every thread. */
+/** This process's incarnation for the root; the first thread to ask settles each word for every thread. */
 function unlinkIncarnation(store: any): number | undefined {
 	const epoch = unlinkEpoch(store);
 	if (!epoch) return undefined;
-	let incarnation = Atomics.load(epoch, INCARNATION);
-	if (incarnation === 0) {
-		const candidate = (Math.random() * 0x7fffffff) | 0 || 1;
-		incarnation = Atomics.compareExchange(epoch, INCARNATION, 0, candidate) || candidate;
-	}
-	return incarnation;
+	return (
+		settleIncarnationWord(epoch, INCARNATION_HIGH) * INCARNATION_WORD + settleIncarnationWord(epoch, INCARNATION_LOW)
+	);
+}
+function settleIncarnationWord(epoch: Int32Array, word: number): number {
+	const settled = Atomics.load(epoch, word);
+	if (settled !== 0) return settled;
+	const candidate = ((Math.random() * (INCARNATION_WORD - 1)) | 0) + 1;
+	return Atomics.compareExchange(epoch, word, 0, candidate) || candidate;
 }
 
 type StagedRow = [key: any, value: { due: number }];

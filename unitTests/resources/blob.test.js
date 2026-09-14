@@ -2612,12 +2612,15 @@ describe('durable blob-unlink queue (#1832)', () => {
 	const rootStore = () => QueueTest.primaryStore.rootStore;
 	const queueDb = () => rootStore().dbisDb;
 	const queueRow = (fileId) => queueDb().getSync([UNLINK_QUEUE_KEY, fileId]);
-	// The process incarnation reclamation stamps on a row it claimed: word 2 of the shared epoch buffer,
-	// settled by whichever thread first swaps it from zero.
+	// The process incarnation reclamation stamps on a row it claimed: words 2 and 3 of the shared epoch
+	// buffer, each settled by whichever thread first swaps it from zero.
 	const incarnation = () => {
 		const words = new Int32Array(rootStore().getUserSharedBuffer('blob-unlink-epochs', new ArrayBuffer(16)), 0, 4);
-		const candidate = (Math.random() * 0x7fffffff) | 0 || 1;
-		return Atomics.load(words, 2) || Atomics.compareExchange(words, 2, 0, candidate) || candidate;
+		const settle = (word) => {
+			const candidate = ((Math.random() * 0x3ffffff) | 0) + 1;
+			return Atomics.load(words, word) || Atomics.compareExchange(words, word, 0, candidate) || candidate;
+		};
+		return settle(2) * 0x4000000 + settle(3);
 	};
 	const stageUnlink = (fileId) =>
 		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0 });
