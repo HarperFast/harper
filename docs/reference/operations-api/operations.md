@@ -922,7 +922,9 @@ A few things worth knowing before you rely on it:
 - **`file:` directory sources cannot be staged.** A local-directory package is linked rather than copied, so the bytes could change between staging and activation. Deploy those normally.
 
 :::warning
-**Upgrade every node before staging.** A stage is replicated like any other deploy, and a node still running a version before v5.3.0 does not recognize `activate: false` — it performs an ordinary deploy and serves the release immediately. The origin cannot detect this in advance, so it checks afterward: any peer that does not confirm staging fails the operation with the node names, and you should check those nodes before activating. Pass `ignore_replication_errors: true` only if you have accepted that difference.
+**Upgrade every node before staging.** A stage is replicated like any other deploy. A node still running a version before v5.3.0 does not recognize `activate: false`. It performs an ordinary deploy and serves the release immediately.
+
+The origin cannot detect this in advance, so it checks afterward. Any peer that does not confirm staging fails the operation with the node names. Check those nodes before activating. Pass `ignore_replication_errors: true` only if you have accepted that difference.
 :::
 
 #### Deploy credentials (`credentials`)
@@ -1014,14 +1016,14 @@ Harper records every `deploy_component` call in the `system.hdb_deployment` tabl
 
 Returns a list of deployment records, newest first. All filter parameters are optional.
 
-| Parameter | Type   | Description                                                |
-| --------- | ------ | ---------------------------------------------------------- |
-| `project` | string | Filter to a specific component project                     |
-| `status`  | string | Filter by status: `pending`, `success`, `failed`, `staged` |
-| `since`   | number | Start of time range (Unix timestamp ms)                    |
-| `until`   | number | End of time range (Unix timestamp ms)                      |
-| `limit`   | number | Maximum number of results (default: 100)                   |
-| `offset`  | number | Pagination offset                                          |
+| Parameter | Type   | Description                                                         |
+| --------- | ------ | ------------------------------------------------------------------- |
+| `project` | string | Filter to a specific component project                              |
+| `status`  | string | Filter by status: `pending`, `success`, `failed`, `staged` (v5.3.0) |
+| `since`   | number | Start of time range (Unix timestamp ms)                             |
+| `until`   | number | End of time range (Unix timestamp ms)                               |
+| `limit`   | number | Maximum number of results (default: 100)                            |
+| `offset`  | number | Pagination offset                                                   |
 
 ```json
 {
@@ -1052,7 +1054,7 @@ The deployment record includes:
 | `deployment_id`      | Unique identifier (content hash)                                        |
 | `project`            | Component project name                                                  |
 | `package_identifier` | Package reference or `payload` for tar uploads                          |
-| `status`             | `pending`, `success`, `failed`, `staged`, or `rolled_back`              |
+| `status`             | `pending`, `success`, `failed`, `staged` (v5.3.0), or `rolled_back`     |
 | `phase`              | Current lifecycle phase: `prepare`, `load`, `replicate`, `restart`      |
 | `event_log`          | Bounded log of install output and phase transitions (up to 200 entries) |
 | `peer_results`       | Per-node outcome map for replicated deployments                         |
