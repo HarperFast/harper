@@ -156,7 +156,9 @@ export class NodeAdapterResponse extends PassThrough implements NodeServerRespon
 		if (typeof statusMessageOrHeaders === 'string') this.statusMessage = statusMessageOrHeaders;
 		else {
 			this.statusMessage ||= STATUS_CODES[statusCode] || 'unknown';
-			headers = statusMessageOrHeaders;
+			// `??=`, not `=`: writeHead(302, undefined, headers) is the three-argument form with no
+			// status message, and Node keeps those headers rather than letting the hole erase them.
+			headers ??= statusMessageOrHeaders;
 		}
 		if (headers) applyWriteHeadHeaders(this, headers);
 		this.#committedStatus = statusCode;

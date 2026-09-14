@@ -590,6 +590,18 @@ describe('Request class', function () {
 				assert.strictEqual(headers.get('x-first'), 'yes');
 			});
 
+			it('keeps the third-argument headers when the status message is omitted, as Node does', async function () {
+				const request = makeRequest();
+				const responsePromise = request.withNodeAdapter((req, res) => {
+					res.writeHead(302, undefined, { Location: '/login' });
+					res.end();
+				});
+
+				const { status, headers } = await responsePromise;
+				assert.strictEqual(status, 302);
+				assert.strictEqual(headers.get('location'), '/login');
+			});
+
 			it('accepts array-of-pairs header format', async function () {
 				const request = makeRequest();
 				const responsePromise = request.withNodeAdapter((req, res) => {
