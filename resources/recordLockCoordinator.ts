@@ -585,7 +585,13 @@ export class LockCoordinator {
 	 * ownership re-arms it for the same reason: something else was coordinating in between.
 	 */
 	#ownedSinceMono: number | undefined;
-	/** Set when the caller supplied an explicit horizon, which waives both halves of the quarantine. */
+	/**
+	 * Set when the caller supplied an explicit horizon. It waives both halves of the quarantine only
+	 * for this coordinator's FIRST ownership interval, and `#ownershipHorizon` clears it at the first
+	 * observed gap: the attestation behind it is "no previous incarnation of this process issued
+	 * anything", which is a claim about process start and not about a sibling thread that coordinated
+	 * while this one did not.
+	 */
 	#quarantineWaived: boolean;
 	/** Keys this node holds a delegation for. */
 	#delegations = new Map<unknown, Delegation>();
@@ -636,7 +642,12 @@ export class LockCoordinator {
 		// already coordinates has owned it since construction, and the construction horizon covers that.
 		// Leaving it unset until a grant would date ownership from the grant and re-quarantine a reload.
 		try {
-			if (options.transport.ownsCoordination()) this.#ownedSinceMono = this.#monotonic();
+			if (options.transport.ownsCoordination()) {
+				this.#ownedSinceMono = this.#monotonic();
+				// And tick from here, so losing ownership is observed even on a coordinator that never
+				// grants anything — see `#ownershipHorizon`.
+				this.#startTicking();
+			}
 		} catch {
 			// A transport that cannot answer yet is not owning yet; `#ownershipHorizon` will observe it.
 		}
@@ -955,7 +966,17 @@ export class LockCoordinator {
 	 * can no longer admit or commit. A recall for a token we no longer hold is a no-op, not an error.
 	 */
 	async onDelegationRecall(recall: DelegationRecall): Promise<void> {
+		// A close that was not a handoff expired and revoked every delegation first, so nothing here can
+		// admit on any token and resolving is honest. A handoff does not reach this: the table's getter
+		// answers the successor, which adopted them.
 		if (this.#closed) return;
+		// Ownership-gated like `onDelegationRequest`, and for the stronger reason: `acquire` refuses off
+		// the owner thread, so a delegation only ever lives on the coordinating one. A recall routed to
+		// any other thread finds no delegation and would resolve — which the home reads as a drained
+		// delegate — while the real delegate keeps admitting. Resolving has to mean nothing on THIS NODE
+		// can admit on that token, and only the owner can say so.
+		if (!this.transport.ownsCoordination())
+			throw new Error('Cluster record lock coordination is not owned by this worker thread');
 		const keyId = this.#keyIdOf(recall.key);
 		const delegation = this.#delegations.get(keyId);
 		if (!delegation || compareTokens(delegation.token, recall.token) !== 0) return;
@@ -984,6 +1005,10 @@ export class LockCoordinator {
 	/** Expire delegations and grants whose deadlines have passed. Bounded work per call. */
 	tick(): void {
 		const now = this.#monotonic();
+		// Poll ownership first: a non-owning interval has to be OBSERVED to re-arm the quarantine, and
+		// `#grant` sees only the instants a request lands on. Whatever coordinated during the gap needs
+		// a full lease of its own before it can grant, so tick granularity is enough to catch it.
+		this.#ownershipHorizon(now);
 		// The budget counts EXPIRIES, not entries examined. Spending it on live entries would let a
 		// table with more than a budget's worth of continuously renewed grants starve every expired
 		// one behind them, and an uncollected expired grant answers `contended` to every other node.
@@ -1010,7 +1035,10 @@ export class LockCoordinator {
 			budget--;
 			this.#clearGrant(keyId, grant);
 		}
-		if (this.#delegations.size === 0 && this.#grants.size === 0) tickingCoordinators.delete(this);
+		// Owning coordination keeps it ticking on its own: the tick after ownership is lost is the one
+		// that records the gap, and only then is there nothing left to watch.
+		if (this.#delegations.size === 0 && this.#grants.size === 0 && this.#ownedSinceMono === undefined)
+			tickingCoordinators.delete(this);
 	}
 
 	/**
@@ -1063,11 +1091,31 @@ export class LockCoordinator {
 	 * `#ownedSinceMono`. Not owning resets it, so regaining ownership starts a fresh interval.
 	 */
 	#ownershipHorizon(now: number): number {
-		if (!this.transport.ownsCoordination()) {
+		let owns: boolean;
+		try {
+			owns = this.transport.ownsCoordination();
+		} catch {
+			// A transport that cannot answer is not proof this thread kept coordinating, and the whole
+			// point of the horizon is what happened while it did not.
+			owns = false;
+		}
+		if (!owns) {
+			// The construction waiver ends with the first observed gap. `grantableAfterMono` attests that
+			// no previous INCARNATION OF THIS PROCESS had issued delegations — a cold start, a fresh
+			// database, a test. It says nothing about the thread that coordinated while this one did not,
+			// so a takeover is quarantined even under the waiver.
+			if (this.#ownedSinceMono !== undefined) this.#quarantineWaived = false;
 			this.#ownedSinceMono = undefined;
 			return Infinity;
 		}
-		if (this.#ownedSinceMono === undefined) this.#ownedSinceMono = now;
+		if (this.#ownedSinceMono === undefined) {
+			this.#ownedSinceMono = now;
+			// Ownership is what has to be polled, so a coordinator holding nothing still ticks while it
+			// owns: `#grant` alone observes only the instants it is called at, and a thread that regained
+			// coordination between two of them would date ownership from before the gap.
+			this.#startTicking();
+		}
+		if (this.#quarantineWaived) return -Infinity;
 		return this.#ownedSinceMono + DELEGATION_LEASE_MS + this.#skewMs;
 	}
 
@@ -1318,10 +1366,9 @@ export class LockCoordinator {
 
 	#grant(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number, requester: string): DelegationReply {
 		const now = this.#monotonic();
-		const quarantine =
-			(this.#quarantineWaived
-				? this.#grantableAfterMono
-				: Math.max(this.#grantableAfterMono, this.#ownershipHorizon(now))) - now;
+		// Consulted unconditionally — it is what observes a gap in ownership, and the waiver it applies
+		// to itself is the only part `grantableAfterMono` may switch off.
+		const quarantine = Math.max(this.#grantableAfterMono, this.#ownershipHorizon(now)) - now;
 		// NOT `contended`: the quarantine runs for a full delegation lease, and `MAX_LOCK_TIMEOUT_MS` is
 		// shorter than that, so retrying it would spend the caller's whole budget and then answer 423 —
 		// "held by someone else" — for a key nobody holds.

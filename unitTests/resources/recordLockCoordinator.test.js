@@ -930,6 +930,127 @@ describe('record lock delegations', () => {
 			coordinator.close();
 		});
 
+		it('re-arms the quarantine when ownership is lost and regained', async () => {
+			// The takeover anchor was only ever read from `#grant`, and `onDelegationRequest` answers
+			// `not-home` before reaching it while this thread does not own coordination — so a
+			// non-owning interval was never observed at all. Ownership moving A→B→A left A's anchor
+			// dated from before the gap, and A granted straight over the delegations B had issued.
+			let owns = true;
+			let mono = 1_000;
+			const coordinator = new LockCoordinator({
+				database: `regain${Date.now()}`,
+				table: 'OwnerRegain',
+				nodeId: 'alpha',
+				transport: {
+					homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+					ownsCoordination: () => owns,
+					requestDelegation: () => Promise.reject(new Error('single node')),
+					recallDelegation: () => Promise.resolve(),
+				},
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				autoTick: false,
+			});
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+			const warm = await coordinator.onDelegationRequest({
+				key: 'regained',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(warm.granted, true, 'an unbroken owner never leaves its own quarantine');
+
+			// The gap. `tick()` is the poll production runs on its own while a coordinator owns.
+			owns = false;
+			coordinator.tick();
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			owns = true;
+			const denied = await coordinator.onDelegationRequest({
+				key: 'regained',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a regained owner granted over the gap’s delegations');
+			assert.strictEqual(denied.reason, 'quarantine');
+
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			const granted = await coordinator.onDelegationRequest({
+				key: 'regained',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true, 'the re-armed quarantine never ended');
+			coordinator.close();
+		});
+
+		it('does not let a cold-start waiver cover a later takeover', async () => {
+			// `grantableAfterMono` attests that no previous INCARNATION OF THIS PROCESS issued anything —
+			// a fresh database, a first start, a test. It latched `#quarantineWaived` for the
+			// coordinator's whole life, so the same attestation also disabled the takeover quarantine,
+			// which it says nothing about.
+			let owns = true;
+			let mono = 1_000;
+			const coordinator = new LockCoordinator({
+				database: `waived${Date.now()}`,
+				table: 'WaivedTakeover',
+				nodeId: 'alpha',
+				transport: {
+					homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+					ownsCoordination: () => owns,
+					requestDelegation: () => Promise.reject(new Error('single node')),
+					recallDelegation: () => Promise.resolve(),
+				},
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			});
+			const cold = await coordinator.onDelegationRequest({
+				key: 'waived',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(cold.granted, true, 'the cold-start waiver did not apply');
+
+			owns = false;
+			coordinator.tick();
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			owns = true;
+			const denied = await coordinator.onDelegationRequest({
+				key: 'waived',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a fresh-database attestation waived a takeover too');
+			assert.strictEqual(denied.reason, 'quarantine');
+			coordinator.close();
+		});
+
+		it('fails a recall routed to a thread that does not own coordination', async () => {
+			// `acquire` refuses off the owner thread, so a delegation only ever lives on the coordinating
+			// one. A recall that lands anywhere else finds nothing, and resolving tells the home the
+			// delegate drained — it latches `recallConfirmed` and never re-sends — while the real
+			// delegate on the owner thread keeps admitting for the rest of its lease.
+			const cluster = new FakeCluster(['alpha', 'beta']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(round, 'alpha did not take the key');
+			alpha.owns = false;
+			await assert.rejects(
+				() => alpha.coordinator.onDelegationRecall({ key, token: round.token ?? [1, 1, 1] }),
+				/not owned by this worker thread/
+			);
+		});
+
 		it('leaves a grant recallable when a local recall fails', async () => {
 			// The home's own delegate goes through `#beginRecall`'s local branch, which used to assign
 			// `grant.recalling` and never clear it on a rejection — so one failed recall latched the grant
