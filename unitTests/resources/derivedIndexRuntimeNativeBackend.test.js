@@ -546,6 +546,24 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('admits writes while no owner can acquire a lagging backend', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const words = new Int32Array(
+			store.getUserSharedBuffer('derived-index:acquire-admission:readiness', new ArrayBuffer(READINESS_BYTES))
+		);
+		Atomics.store(words, 4, 1); // lag exceeded under the previous owner
+		const backend = new AcquiringBackend('acquire-admission', cursor(10), () => {
+			throw new Error('writer still closing');
+		});
+		const { runtime } = runtimeFor(store, new Map(), { rebuildBackoffMilliseconds: 100 });
+		runtime.register(registration(backend, { maxLagMilliseconds: 20 }));
+		assert(derivedIndexWriteRejection(store, 1));
+
+		await waitFor(() => backend.acquisitions.length === 1 && store.locks.size === 0);
+		assert.strictEqual(derivedIndexWriteRejection(store, 1), undefined);
+		await runtime.stop();
+	});
+
 	it('publishes unavailable after persistent backend acquisition failures', async () => {
 		const store = new FakeLogStore(new Map([[10, []]]));
 		const backend = new AcquiringBackend('acquire-unavailable', cursor(10), () => {
@@ -832,7 +850,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await stopped;
 		backend.shutdown = AsyncBackend.prototype.shutdown;
 		await waitFor(() => backend.host.isOwnerEpoch(firstEpoch) === false);
-		assert(backend.deliveries.every((batch) => batch.ownerEpoch === firstEpoch || batch.ownerEpoch > firstEpoch));
+		assert(backend.deliveries.every((batch) => batch.ownerEpoch >= firstEpoch));
 		await waitFor(() => second.getStatus('handoff').state === 'idle' && store.locks.size === 1);
 		await waitFor(() => backend.fenced >= 1, { timeout: 2000 });
 		assert.strictEqual(backend.applied.size, 0, 'the old owner apply must not publish into the new generation');
@@ -1539,7 +1557,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await waitFor(() => backend.deliveries.length > 0);
 		const states = backend.deliveries.flatMap((batch) => batch.records.map((record) => record.state));
 		assert.strictEqual(states.length, 40);
-		assert(states.every((state) => state.kind === 'unindexable' && /\(400\)$/.test(state.reason)));
+		assert(states.every((state) => state.kind === 'unindexable' && state.reason.endsWith('(400)')));
 		assert.strictEqual(runtime.getMetrics('all-rejected').unindexableRecords, 40);
 		await waitFor(() => backend.cursor.logs.local === 59);
 		assert.strictEqual(runtime.getStatus('all-rejected').state, 'idle');

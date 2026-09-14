@@ -8,6 +8,7 @@ import {
 	openSync,
 	readFileSync,
 	readdirSync,
+	rmSync,
 	writeFileSync,
 } from 'node:fs';
 import { rm } from 'node:fs/promises';
@@ -299,19 +300,29 @@ export class NativeFullTextDerivedIndexLifecycle {
 		const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
 		const descriptor = openSync(tempPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
 		try {
-			writeFileSync(descriptor, content, 'utf8');
-			fsyncSync(descriptor);
-		} finally {
-			closeSync(descriptor);
+			try {
+				writeFileSync(descriptor, content, 'utf8');
+				fsyncSync(descriptor);
+			} finally {
+				closeSync(descriptor);
+			}
+		} catch (error) {
+			removeControlTemp(tempPath);
+			throw error;
 		}
 		let published = false;
 		try {
-			renameWithRetry(tempPath, filePath, { maxRetries: 2, initialDelayMs: 5, maxDelayMs: 10 });
+			renameWithRetry(tempPath, filePath, {
+				retryBudgetMs: 15,
+				maxRetries: 2,
+				initialDelayMs: 5,
+				maxDelayMs: 10,
+			});
 			// A later fsync failure must not reclaim a generation the selector may already name.
 			published = true;
 			this.#syncDirectory(this.#rootPath);
 		} catch (error) {
-			void rm(tempPath, { force: true }).catch(() => undefined);
+			removeControlTemp(tempPath);
 			throw new ControlFilePublicationError('Full-text control file publication failed', published, error);
 		}
 	}
@@ -463,7 +474,16 @@ function validateNativeConfiguration(options: NativeFullTextDerivedIndexLifecycl
 		throw new RangeError('Full-text maxBatchBytes must not exceed maxQueuedBytes');
 }
 
+function removeControlTemp(path: string): void {
+	try {
+		rmSync(path, { force: true });
+	} catch {
+		// Preserve the publication failure rather than replacing it with cleanup noise.
+	}
+}
+
 function logWarning(message: string, error: unknown): void {
+	// Keep lifecycle-only child processes from eagerly loading Harper's full config graph.
 	void import('../utility/logging/logger.ts')
 		.then(({ loggerWithTag }) => loggerWithTag('fulltext-derived-index').warn?.(message, error))
 		.catch(() => undefined);

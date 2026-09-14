@@ -39,6 +39,7 @@ import {
 	RENAME_RETRY_MAX_ATTEMPTS,
 	RENAME_RETRY_MAX_DELAY_MILLISECONDS,
 	type RenameRetryOptions,
+	validateRenameRetryOptions,
 } from '../utility/renameWithRetry.ts';
 
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
@@ -150,6 +151,8 @@ export function atomicWriteFile(
 		skipIfUnchanged = false,
 	}: AtomicWriteOptions = {}
 ) {
+	// Validate before creating the temp file so invalid options cannot be masked by a storage error.
+	validateRenameRetryOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs });
 	// Opt-in: skipping means no mtime bump, so no watcher event. Only callers that re-derive the
 	// same file every boot want that.
 	if (skipIfUnchanged && matchesFileContent(filePath, content)) return false;

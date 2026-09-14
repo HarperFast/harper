@@ -1015,6 +1015,7 @@ class DerivedIndexRunner {
 			logger.warn?.(`Derived index '${this.id}' could not acquire its backend; retrying`, error);
 			this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
 			this.#publishReadiness('unknown', 'acquisition-failed');
+			this.#admitWrites();
 		}
 		this.#release();
 		if (this.status.state === 'unavailable') return;
