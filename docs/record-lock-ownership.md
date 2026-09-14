@@ -739,7 +739,8 @@ Still owed by harper-pro — **the one thing that blocks enablement**:
   generation rather than one each node derives for itself, and a digest agreed across peers before
   grants are enabled — plus §4.3's one-shot activation record, which is what makes a generation change
   safe rather than merely announced.
-- **The transport registered on every worker thread, not only the coordinating one.** Core cannot check
+- **The transport registered on every worker thread that can serve a `lock()`**, not only the
+  coordinating one, and including a dedicated application worker (harper#2524). Core cannot check
   it: the "this database is clustered" latch is per-thread module state, so a worker that never
   registers never fails closed, and a default-scoped `lock()` there takes the Phase 0 node lock alone
   while a peer runs the cluster protocol — two nodes admitting one key. Registering everywhere is also
