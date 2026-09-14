@@ -129,7 +129,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 	});
 
 	it('keeps transient control-file read failures out of the rebuild path', async function () {
-		if (process.platform === 'win32') this.skip();
+		if (process.platform === 'win32' || process.getuid?.() === 0) this.skip();
 		const binding = new FakeNativeModule();
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		const seeded = await lifecycle.replace(1n);
