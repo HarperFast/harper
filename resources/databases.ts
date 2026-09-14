@@ -2032,9 +2032,17 @@ function beginDropOfDatabase(dbPath: string, databaseName: string): RestoreLock 
 	} catch (error: any) {
 		if (error.lifecycleConflict === 'restore')
 			throw conflict(`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`);
-		if (error.statusCode === 409 && lifecycleMarkerKind(dbPath) === 'restore')
-			throw conflict(`Database '${databaseName}' is being restored; retry when the restore completes`);
-		throw error;
+		if (error.statusCode !== 409) throw error;
+		// the lock is held by the other operation, which names itself in its marker (none yet if it is
+		// between taking the lock and writing one); `acquireRestoreLock` words its own 409 as a restore
+		switch (lifecycleMarkerKind(dbPath)) {
+			case 'drop':
+				throw conflict(`Database '${databaseName}' is being dropped; retry when that completes`);
+			case 'restore':
+				throw conflict(`Database '${databaseName}' is being restored; retry when the restore completes`);
+			default:
+				throw conflict(`Database '${databaseName}' is being dropped or restored; retry when that completes`);
+		}
 	}
 }
 
@@ -2417,28 +2425,27 @@ function prepareIndexStore(dbi: any, dbiKey: string, rootStore: RootDatabaseKind
 }
 
 /**
- * Build the custom index for `attribute`'s current options without binding it, returning the step
- * that binds it onto the store and retires what the disabled options left behind. A reused store is
- * the *live* one — the table, and every other thread's reads through it, are on the binding it
- * already has — so a caller whose catalog write can still throw stages the candidate first and
- * commits only once that write has landed. Constructing it early is also where an illegal option
- * combination throws, which is before anything has been rebound.
+ * Resolve what `attribute`'s current options make of the store, without changing it: the record
+ * format (stamped on `attribute` for the caller to persist) and the custom index to drive it by.
+ * Returns the step that applies both. A reused store is the *live* one — the table, and every
+ * other thread's reads through it, are on the encoder and binding it already has — so a caller
+ * whose catalog write can still throw applies them only once that write has landed, or a failed
+ * write leaves this thread reading and writing under a definition nothing else agrees with.
+ * Constructing the custom index early is also where an illegal option combination throws, which is
+ * before anything has been rebound.
  */
 function stageIndexStore(dbi: any, dbiKey: string, rootStore: RootDatabaseKind, attribute: any): () => void {
 	const isCustomObjectIndex = !!(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
-	if (rootStore instanceof RocksDatabase) {
-		if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
-			armVersionedIndexEncoder(dbi, rootStore);
-		}
-	}
-	if (!attribute.indexed.type) return () => {};
-	const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
-	if (!CustomIndex) {
-		logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
-		return () => {};
-	}
-	const candidate = new CustomIndex(dbi, attribute.indexed);
+	const armEncoder =
+		rootStore instanceof RocksDatabase &&
+		isCustomObjectIndex &&
+		resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned';
+	const CustomIndex = attribute.indexed.type ? CUSTOM_INDEXES[attribute.indexed.type] : undefined;
+	if (attribute.indexed.type && !CustomIndex) logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
+	const candidate = CustomIndex ? new CustomIndex(dbi, attribute.indexed) : undefined;
 	return () => {
+		if (armEncoder) armVersionedIndexEncoder(dbi, rootStore);
+		if (!candidate) return;
 		dbi.customIndex = candidate;
 		// derived state whose maintaining option is now off must not linger to be adopted
 		// stale on a later re-enable
@@ -3065,18 +3072,18 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// and an open native handle nothing owns still counts against a later drop_database.
 				let previousIndexToRelease: any;
 				let replacementToReleaseOnFailure: any;
-				// A reused store is already live: rebinding its custom index (and unlinking the derived
-				// plane the new options disable) before the catalog write below — which can still throw —
-				// would leave this thread reading through the new definition while disk and every other
-				// thread keep the old one. The binding is built now and committed at the publication point.
-				let commitIndexBinding: (() => void) | undefined;
+				// A reused store is already live: rebinding its custom index (unlinking the derived plane the
+				// new options disable, arming the versioned encoder) before the catalog write below — which
+				// can still throw — would leave this thread reading and writing under a definition disk and
+				// every other thread reject. Those steps are collected here and run at the publication point.
+				const commitIndexBinding: (() => void)[] = [];
 				try {
 					if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
 						previousIndexToRelease = dbi;
 						dbi = openIndex(dbiKey, rootStore, attribute);
 						indexStoreIsNewlyOpened = true;
 					} else if (dbi) {
-						commitIndexBinding = stageIndexStore(dbi, dbiKey, rootStore, attribute);
+						commitIndexBinding.push(stageIndexStore(dbi, dbiKey, rootStore, attribute));
 					} else {
 						dbi = openIndex(dbiKey, rootStore, attribute);
 					}
@@ -3159,7 +3166,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 									attribute.lastIndexedKey === undefined
 								) {
 									attribute.indexFormat = 'versioned';
-									armVersionedIndexEncoder(dbi, rootStore);
+									commitIndexBinding.push(() => armVersionedIndexEncoder(dbi, rootStore));
 								}
 								attribute.indexingPID = process.pid;
 								// Persist the owning restart generation (see currentRestartGeneration above) so
@@ -3244,7 +3251,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// a branch's close list takes only handles this call opened, and only once they are
 				// published: a reused one is already on it, and one the catch above closed must not be
 				if (indexStoreIsNewlyOpened) target.adopt(dbi);
-				commitIndexBinding?.();
+				for (const commit of commitIndexBinding) commit();
 				indices[attribute.name] = dbi;
 				if (previousIndexToRelease) {
 					try {

@@ -18,10 +18,12 @@ const {
 	getDatabases,
 	closeDatabase,
 	closeLoadedDatabases,
+	databases,
 	openBranchDatabase,
 	closeBranchDatabases,
 } = require('#src/resources/databases');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
+const { waitFor } = require('../waitFor');
 
 describe('RocksDB handle release', function () {
 	before(function () {
@@ -44,9 +46,11 @@ describe('RocksDB handle release', function () {
 
 	// table() announces its schema change without awaiting the local ITC handler, whose rescan reopens
 	// every database. These tests await the close, so that rescan has to land first or it reopens the
-	// database underneath the assertion.
-	function settleSchemaRescan() {
-		return new Promise((resolve) => setTimeout(resolve, 300));
+	// database underneath the assertion. Nothing exposes "a rescan is pending", but its effect is
+	// observable: close first, then wait for the reopen that only that rescan can perform.
+	async function settleSchemaRescan(databaseName) {
+		await closeLoadedDatabases();
+		await waitFor(() => databases[databaseName], { message: `no schema rescan reopened ${databaseName}` });
 	}
 
 	it('closeDatabase releases all of a database’s native handles (refCount → 0)', async function () {
@@ -66,7 +70,7 @@ describe('RocksDB handle release', function () {
 		const a = openRocksDb('closerelease2a');
 		const b = openRocksDb('closerelease2b');
 		if (!(a instanceof RocksDatabase)) return this.skip();
-		await settleSchemaRescan();
+		await settleSchemaRescan('closerelease2b');
 		assert.ok(refCountFor(a.path) > 0 && refCountFor(b.path) > 0, 'both databases should be open');
 
 		await closeLoadedDatabases();
@@ -84,17 +88,19 @@ describe('RocksDB handle release', function () {
 		});
 		getDatabases();
 		if (!(T.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
-		const dbPath = T.primaryStore.rootStore.path;
-		await settleSchemaRescan();
+		await settleSchemaRescan('closerelease5');
+		// the rescan reopened the database, so the live class is the one it published
+		const Live = databases.closerelease5.pkg;
+		const dbPath = Live.primaryStore.rootStore.path;
 		// a table with a derived index closes its column families only once the runtime settles; an
 		// exiting job worker that returned before that would leak them into the process-global registry
 		let release;
-		T.derivedIndexRuntime = { close: () => new Promise((resolve) => (release = resolve)) };
+		Live.derivedIndexRuntime = { close: () => new Promise((resolve) => (release = resolve)) };
 
 		let settled = false;
 		const closed = closeLoadedDatabases().then(() => (settled = true));
 
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		await waitFor(() => release, { message: 'the derived runtime was never asked to release' });
 		assert.equal(settled, false, 'the close must not resolve while the runtime is still releasing');
 		assert.ok(refCountFor(dbPath) > 0, 'the table handles are still open while it is');
 		release();

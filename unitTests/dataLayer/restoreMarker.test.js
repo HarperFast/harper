@@ -297,6 +297,17 @@ describe('restoreMarker', function () {
 			completeDrop(resumed);
 		});
 
+		it('releases the lock when the marker cannot be read at all', function () {
+			// the read happens under the lock, so anything but ENOENT has to release it on the way out —
+			// a leaked flock is held for the life of the process and wedges every later drop and restore
+			mkdirSync(restoringMarkerPath(dbPath), { recursive: true });
+			assert.throws(
+				() => beginDrop(dbPath),
+				(error) => error.code === 'EISDIR' || error.code === 'EACCES' || error.code === 'EPERM'
+			);
+			releaseRestoreLock(acquireRestoreLock(dbPath));
+		});
+
 		it('ignores a marker whose key does not match the database it names', function () {
 			// a marker keyed for `somedb` that names another database is not evidence about either
 			mkdirSync(restoreMetaDir(dbPath), { recursive: true });

@@ -235,19 +235,24 @@ export function beginDrop(dbPath: string): RestoreLock {
 function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
 	const lock = acquireRestoreLock(dbPath);
-	// The marker is read under the lock, never before taking it: a restore that begins and abandons
-	// in the gap between an unlocked read and this acquisition leaves a marker the write below would
-	// truncate into a drop marker, erasing the recovery state that marker exists to preserve.
-	const existingKind = lifecycleMarkerKind(dbPath);
-	const preexisting = existingKind !== null;
-	if (kind === 'drop' && existingKind === 'restore') {
-		fileLockRelease(lock.token);
-		const error: any = new Error(`Database at ${dbPath} has an incomplete restore; rerun restore_backup to recover it`);
-		error.statusCode = 409;
-		error.lifecycleConflict = 'restore';
-		throw error;
-	}
+	let preexisting = false;
+	// Everything from here to the marker write runs inside the try: whatever fails, the lock this
+	// acquired must be released, or the file lock is held for the life of the process and every
+	// later drop or restore of the database 409s.
 	try {
+		// The marker is read under the lock, never before taking it: a restore that begins and abandons
+		// in the gap between an unlocked read and this acquisition leaves a marker the write below would
+		// truncate into a drop marker, erasing the recovery state that marker exists to preserve.
+		const existingKind = lifecycleMarkerKind(dbPath);
+		preexisting = existingKind !== null;
+		if (kind === 'drop' && existingKind === 'restore') {
+			const error: any = new Error(
+				`Database at ${dbPath} has an incomplete restore; rerun restore_backup to recover it`
+			);
+			error.statusCode = 409;
+			error.lifecycleConflict = 'restore';
+			throw error;
+		}
 		const fd = openSync(markerPath, 'w');
 		try {
 			writeSync(fd, markerContent(dbPath, kind));
