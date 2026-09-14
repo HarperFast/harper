@@ -2712,7 +2712,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (Table) {
 			refreshedLiveAttributes = true;
 			primaryKey = Table.primaryKey;
-			if (Table.primaryStore.rootStore.status === 'closed') {
+			// The root store is not the only handle this class reads and writes through: `dropTable`
+			// closes the table's own column families while the class is still published in `databases`
+			// and only then broadcasts the eviction, so a same-name create arriving before that rescan
+			// would otherwise reuse a class whose primary store is closed — reporting success and
+			// failing on the first write. The root stays open in that window, so it cannot stand in.
+			if (Table.primaryStore.rootStore.status === 'closed' || Table.primaryStore.status === 'closed') {
 				throw new Error(`Can not use a closed data store from ${tableName} class`);
 			}
 			// Reject moving the primary key to a different attribute on a table that already has records.

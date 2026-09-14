@@ -89,6 +89,28 @@ describe('index store wrapper follows the index kind across a live attribute cha
 		assert.notStrictEqual(reopened.status, 'closed');
 	});
 
+	it('refuses a published class whose primary store dropTable already closed', function () {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		// dropTable closes the primary column family alongside the indices and only then broadcasts the
+		// eviction. The root store stays open through that window, so the root check alone lets the
+		// class through: a same-name create would report success and fail on the first write.
+		const defineDropped = () =>
+			table({
+				table: 'IndexClosedPrimary',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'label', indexed: true, type: 'String' },
+				],
+			});
+		const Tbl = defineDropped();
+		assert.notStrictEqual(Tbl.primaryStore.rootStore.status, 'closed', 'only the table store is closed here');
+		Tbl.closeStores();
+
+		assert.throws(defineDropped, /closed data store/);
+	});
+
 	it('keeps the old handle serving reads when reopening the new wrapper fails', async function () {
 		this.timeout(30_000);
 		setupTestDBPath();
