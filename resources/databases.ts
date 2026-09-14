@@ -920,6 +920,21 @@ function databasesBlockedByLifecycle(databasePath: string): Set<string> {
 				`Incomplete restore of database '${dbName}' detected (a restore started but did not finish); not loading it — rerun the restore to recover`
 			);
 		} else {
+			// Finishing the drop deletes the directory, and a drop refuses (409) rather than destroying
+			// under a handle this process still holds. This has to obey the same rule: the refusal
+			// broadcasts a close, which runs this scan on every thread, so a recovery that ignored the
+			// registry would delete the database that refusal had just preserved — under the very handle
+			// it refused for. The marker stays, and the scan after the release finishes the drop.
+			const openHandles = openHandlesOn(join(databasePath, dbName));
+			if (openHandles !== null) {
+				if (!reportedDropRecoveryFailures.has(dbName)) {
+					reportedDropRecoveryFailures.add(dbName);
+					logger.warn(
+						`Not finishing the interrupted drop of database '${dbName}' while it is held open in this process; it stays unloaded until the handle is released: ${openHandles}`
+					);
+				}
+				continue;
+			}
 			try {
 				const outcome = recoverInterruptedDrop(databasePath, dbName, {
 					blobRoots: getBlobPathsForDatabaseName(dbName),
@@ -2002,6 +2017,13 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string, attempt =
 	if (kind === 'restore') {
 		throw conflict(`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`);
 	}
+	// same rule as the rescan's recovery above: the deletion below must not run under a handle
+	// another thread of this process holds, which is exactly the destroy-versus-open wedge
+	const openHandles = openHandlesOn(dbPath);
+	if (openHandles !== null)
+		throw conflict(
+			`Database '${databaseName}' has an interrupted drop that cannot be finished while it is held open in this process; retry once it is released. Still open: ${openHandles}`
+		);
 	const outcome = recoverInterruptedDrop(dirname(dbPath), basename(dbPath), {
 		blobRoots: getBlobPathsForDatabaseName(databaseName),
 	});
@@ -2071,16 +2093,20 @@ export async function waitForDatabaseClosedProcessWide(databaseDir: string): Pro
  * null once nothing does.
  */
 async function describeOpenHandles(databaseDir: string): Promise<string | null> {
-	const targetPath = resolve(databaseDir);
 	const deadline = Date.now() + DATABASE_CLOSE_WAIT_MS;
 	for (;;) {
-		const open = registryStatus().filter((instance) => resolve(instance.path) === targetPath && instance.refCount > 0);
-		if (open.length === 0) return null;
-		if (Date.now() >= deadline) {
-			return open.map((instance: any) => JSON.stringify(instance)).join('; ');
-		}
+		const open = openHandlesOn(databaseDir);
+		if (open === null) return null;
+		if (Date.now() >= deadline) return open;
 		await delay(DATABASE_CLOSE_POLL_INTERVAL_MS);
 	}
+}
+
+/** The same, read once with no grace period, for the synchronous scan paths. */
+function openHandlesOn(databaseDir: string): string | null {
+	const targetPath = resolve(databaseDir);
+	const open = registryStatus().filter((instance) => resolve(instance.path) === targetPath && instance.refCount > 0);
+	return open.length === 0 ? null : open.map((instance: any) => JSON.stringify(instance)).join('; ');
 }
 
 /**
