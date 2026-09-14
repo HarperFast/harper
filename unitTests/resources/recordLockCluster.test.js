@@ -175,6 +175,39 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			);
 		});
 
+		it('decodes a release payload through the TABLE decoder, not just msgpackr’s default', async function () {
+			if (isLMDB) return this.skip();
+			// The wire tests unpack with the default `msgpackr`, which is not the reader production uses:
+			// the entry comes back through `auditRecord.getValue`, whose decoder repurposes positive
+			// fixints 0x40..0x7f as structure ids. An integer record id in 64..127 is exactly that byte
+			// range, so if the payload reached that decoder as a bare fixint the whole entry would fail
+			// to decode and the release would be silently dropped — leaving the home holding its grant
+			// for a full delegation lease on a key nobody is using.
+			useSoloTransport();
+			const before = controlEntries().length;
+			const keys = [64, 100, 127, 63, 128, [64], 'record-64'];
+			for (const key of keys)
+				await ClusterLockTest.writeLockControlEntry({
+					type: 'lockRelease',
+					key,
+					requester: NODE_NAME,
+					token: [1, 1, 1],
+				});
+			const written = controlEntries().slice(before);
+			assert.strictEqual(written.length, keys.length, 'not every control entry landed');
+			written.forEach((entry, i) => {
+				// The value arrives already decoded, which is the point: the table's decoder read it, and it
+				// read the 0x40..0x7f ids as data rather than as a structure header.
+				assert.ok(
+					Array.isArray(entry.value),
+					`the table decoder did not decode the entry for ${JSON.stringify(keys[i])}`
+				);
+				const decoded = decodeLockControlPayload(entry.type, entry.value);
+				assert.ok(decoded, `the payload for key ${JSON.stringify(keys[i])} did not decode`);
+				assert.deepStrictEqual(decoded.key, keys[i]);
+			});
+		});
+
 		it('does not shadow the holder’s own audit entry at the same timestamp', async function () {
 			if (isLMDB) return this.skip();
 			const homes = [getThisNodeName(), 'peer-asking'];
