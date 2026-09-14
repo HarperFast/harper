@@ -153,6 +153,7 @@ test('framing is report-only for drafts, bots, and external contributors, but no
 test('framing fields in examples do not satisfy the receipt', () => {
 	for (const body of [
 		'```\nFraming-Verdict: chosen-approach-sound\n```',
+		'Example:\n\n    Framing-Verdict: chosen-approach-sound',
 		'> Framing-Verdict: chosen-approach-sound',
 		'<!-- Framing-Verdict: chosen-approach-sound -->',
 		'`Framing-Verdict: chosen-approach-sound`',

@@ -470,7 +470,7 @@ test('the enforcing workflow never runs from the PR checkout', () => {
 	assert.match(workflow, /ref: \$\{\{ github\.event\.pull_request\.base\.ref \}\}/);
 	assert.doesNotMatch(workflow, /ref: \$\{\{ github\.event\.pull_request\.head\./);
 	assert.match(workflow, /permissions:\n\s+contents: read\n\s+pull-requests: read/);
-	assert.doesNotMatch(workflow, /^\s+[\w-]+:\s*(?:write|write-all)\s*$/m);
+	assert.doesNotMatch(workflow, /^\s*[\w-]+:[ \t]*(?:write|write-all)\b/m);
 	assert.match(workflow, /mode: enforce/);
 });
 
@@ -537,5 +537,5 @@ test('Harper framing policy covers every production storage-binding importer', (
 		.map((file) => path.relative(root, file).replaceAll(path.sep, '/'));
 	const workflow = readFileSync(path.join(root, '.github/workflows/review-coverage.yml'), 'utf8');
 	for (const importer of importers)
-		assert.match(workflow, new RegExp(`^\\s+${importer.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}\\s*$`, 'm'));
+		assert.match(workflow, new RegExp(`^\\s+${importer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm'));
 });

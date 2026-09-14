@@ -3,9 +3,10 @@
 // dispatch/lib/reviewGate.mjs via ReviewApi). This check makes coverage REPORTING visible
 // on the PR itself at open/edit time. It deliberately cannot replicate the gate: CI never
 // sees the fleet review's verdict, so demanding coverage here is STRICTER than policy
-// (the gate waives coverage for clean reviews). Hence two modes:
+// (the gate waives coverage for clean reviews). Review coverage hence has two modes:
 //   report  (default) — always green; the check text and job summary carry the count
 //   enforce — red when a member-authored, AI-authored, non-trivial, non-draft PR reports <2
+// PR-format and framing-verdict policy are controlled independently by their own inputs.
 // Run from the JavaScript action in this directory, or locally:
 //   node .github/actions/review-coverage/ci-review-coverage.mjs --event <payload.json> [--mode enforce]
 
