@@ -33,8 +33,6 @@ function startFixtureWorker(options) {
 	});
 }
 
-// `shutdown` is emitted the moment a worker is told to go down and `exit` when it is gone, so the
-// difference is exactly the number of workers down at once — what the throttle is supposed to bound.
 function trackDowntime(worker, concurrency) {
 	worker.on('shutdown', () => {
 		concurrency.down++;

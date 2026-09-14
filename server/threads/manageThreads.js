@@ -546,9 +546,8 @@ function startWorker(path, options = {}) {
 		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
 	}
 
-	// Conditional because an ephemeral worker (a job) declares no topology, and must not erase the one
-	// restartWorkers sizes its throttle from.
-	if (options.threadCount !== undefined) workerCount = options.threadCount;
+	// Only a start that declares the serving topology may write it; see DESIGN.md on the two workerCounts.
+	if (typeof options.threadCount === 'number') workerCount = options.threadCount;
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
@@ -705,9 +704,7 @@ async function restartWorkers(
 		}
 
 		module.exports.restartNumber++;
-		// `NaN < 1` is false, so a NaN throttle slips past the ratio branch below and then makes every
-		// throttle comparison false — no throttle at all. `Infinity` is the deliberate "all at once" sentinel
-		// shutdownWorkers passes, and shutdownWorkersNow depends on it, so only NaN is clamped here.
+		// NaN only: `Infinity` is shutdownWorkers' "all at once" sentinel. See DESIGN.md on the two workerCounts.
 		if (Number.isNaN(maxWorkersDown)) {
 			maxWorkersDown = 1;
 		} else if (maxWorkersDown < 1) {
