@@ -2,6 +2,7 @@
 
 import * as search from './search.ts';
 import * as AWSConnector from '../utility/AWS/AWSConnector.js';
+import * as awsSdkLoader from '../utility/AWS/awsSdkLoader.js';
 import * as stream from 'stream';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as fs from 'fs-extra';
@@ -24,30 +25,10 @@ const LOCAL_CSV_EXPORT_MSG = 'Successfully exported CSV locally.';
 // Size is number of records
 const S3_JSON_EXPORT_CHUNK_SIZE = 1000;
 
-// `@aws-sdk/lib-storage` is an optional peerDependency (see package.json), so
-// exports that never target S3 don't pay its footprint. Required lazily on
-// first use; `Upload` stays a module-scope binding (rather than a return
-// value) so tests can stub it directly.
 let Upload: any;
 
 function loadUpload() {
-	if (!Upload) {
-		try {
-			({ Upload } = require('@aws-sdk/lib-storage'));
-		} catch (err) {
-			if (err?.code === 'MODULE_NOT_FOUND' && /@aws-sdk\/lib-storage/.test(String(err.message))) {
-				throw handleHDBError(
-					new Error(),
-					'S3 export/import requires the optional AWS SDK — npm install @aws-sdk/client-s3 @aws-sdk/lib-storage',
-					HTTP_STATUS_CODES.NOT_IMPLEMENTED,
-					undefined,
-					undefined,
-					true
-				);
-			}
-			throw err;
-		}
-	}
+	if (!Upload) ({ Upload } = awsSdkLoader.requireAwsSdk('@aws-sdk/lib-storage'));
 	return Upload;
 }
 
@@ -248,6 +229,13 @@ export async function export_to_s3(exportObject: any) {
 		`called export_to_s3 to bucket: ${exportObject.s3.bucket} and query ${exportObject.search_operation.sql}`
 	);
 
+	loadUpload();
+	let s3 = await AWSConnector.getS3AuthObj(
+		exportObject.s3.aws_access_key_id,
+		exportObject.s3.aws_secret_access_key,
+		exportObject.s3.region
+	);
+
 	let data;
 	try {
 		data = await getRecords(exportObject);
@@ -256,11 +244,6 @@ export async function export_to_s3(exportObject: any) {
 		throw err;
 	}
 
-	let s3 = await AWSConnector.getS3AuthObj(
-		exportObject.s3.aws_access_key_id,
-		exportObject.s3.aws_secret_access_key,
-		exportObject.s3.region
-	);
 	let s3Name;
 	let passThrough = new stream.PassThrough();
 

@@ -1,23 +1,11 @@
 'use strict';
 
-// `@aws-sdk/client-s3` is an optional peerDependency (see package.json) so
-// installs that never export/import S3 don't pay its ~18MB footprint.
-// Required lazily and cached here on first use.
+const { requireAwsSdk } = require('./awsSdkLoader.js');
+
 let s3Sdk;
 
 function loadClientS3() {
-	if (!s3Sdk) {
-		try {
-			s3Sdk = require('@aws-sdk/client-s3');
-		} catch (err) {
-			if (err && err.code === 'MODULE_NOT_FOUND' && /@aws-sdk\/client-s3/.test(String(err.message))) {
-				throw new Error(
-					'S3 export/import requires the optional AWS SDK — npm install @aws-sdk/client-s3 @aws-sdk/lib-storage'
-				);
-			}
-			throw err;
-		}
-	}
+	if (!s3Sdk) s3Sdk = requireAwsSdk('@aws-sdk/client-s3');
 	return s3Sdk;
 }
 
