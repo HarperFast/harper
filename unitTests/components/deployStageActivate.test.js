@@ -469,6 +469,26 @@ describe('an activation that fails before it commits', () => {
 	// The aside staging directory is pre-created for the same reason: absent, the preparation preamble skips
 	// its recovery branch and creates it later from inside the boundary; present as a regular FILE, the
 	// preamble's own `ensureExtractionStagingDirectory` throws first and the test proves nothing.
+	/**
+	 * Whether a read-only directory actually denies this process a write. Root ignores the mode bits, and
+	 * Windows does not model them this way, so on those the injection silently does nothing — and a test
+	 * whose injection does nothing is the failure mode this fixture already hit twice. Probing is what keeps
+	 * an ineffective environment SKIPPING rather than passing vacuously or failing spuriously.
+	 */
+	const readOnlyDirectoryDeniesWrites = async () => {
+		const probe = await fs.mkdtemp(path.join(os.tmpdir(), 'stage-activate-probe-'));
+		try {
+			await fs.chmod(probe, 0o500);
+			await fs.writeFile(path.join(probe, 'x'), '');
+			return false;
+		} catch {
+			return true;
+		} finally {
+			await fs.chmod(probe, 0o700).catch(() => {});
+			await fs.rm(probe, { recursive: true, force: true });
+		}
+	};
+
 	const failAfterJournal = async (root, component, id, options = {}) => {
 		await fs.mkdir(path.join(root, '.deploy-aside', component), { recursive: true, mode: 0o700 });
 		await fs.chmod(root, 0o500);
@@ -492,6 +512,7 @@ describe('an activation that fails before it commits', () => {
 
 	it('leaves an existing component live and its artifact dormant and retryable', async function () {
 		this.timeout(30000);
+		if (!(await readOnlyDirectoryDeniesWrites())) return this.skip();
 		const root = await newRoot('compensate-existing');
 		await writeLive(root, 'web', 'LIVE v1\n');
 		await stage(root, 'web', 'a1', 'STAGED v2\n');
@@ -514,6 +535,7 @@ describe('an activation that fails before it commits', () => {
 
 	it('leaves a first-ever component absent and its artifact dormant, not rolled forward', async function () {
 		this.timeout(30000);
+		if (!(await readOnlyDirectoryDeniesWrites())) return this.skip();
 		const root = await newRoot('compensate-first');
 		await fs.mkdir(root, { recursive: true });
 		await stage(root, 'web', 'a1', 'STAGED v1\n');
@@ -531,6 +553,7 @@ describe('an activation that fails before it commits', () => {
 
 	it('takes back the root-config entry it published, so config does not name a release that is not live', async function () {
 		this.timeout(30000);
+		if (!(await readOnlyDirectoryDeniesWrites())) return this.skip();
 		const root = await newRoot('compensate-config');
 		await writeLive(root, 'web', 'LIVE v1\n');
 		await stage(root, 'web', 'a1', 'STAGED v2\n', {

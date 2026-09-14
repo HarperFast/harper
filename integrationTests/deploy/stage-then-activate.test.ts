@@ -1,13 +1,7 @@
 /**
- * `deploy_component` can build and certify a release without making it live (`activate: false`), and a
- * later request can make that exact artifact live by deployment id (#2315 step 6).
- *
- * This is the end-to-end route for the step: real HTTP, a real Harper process, and a full process restart
- * between the stage and the activation — because the promise being made is that an operator can build now
- * and cut over later, across a restart, without the component ever rebuilding or resolving anything.
- *
- * It is also the first test in the tree that PRODUCES a dormant staged build rather than planting one;
- * `staging-retention.test.ts` had to plant them because nothing on `main` staged without activating.
+ * Staging a release and activating it later, over real HTTP and across a full Harper process restart
+ * (#2315 step 6) — the restart is the point, since the promise is that an operator can build now and cut
+ * over later without the component rebuilding or resolving anything in between.
  */
 import { suite, test, before, after } from 'node:test';
 import { deepStrictEqual, match, ok, strictEqual } from 'node:assert';
