@@ -416,6 +416,71 @@ describe('restoreMarker', function () {
 			assert.equal(checkRestoreState(dbPath), 'incomplete');
 		});
 
+		it('deletes the blob roots the drop recorded, not the ones configuration resolves to now', function () {
+			// the drift the manifest exists for: the operator repoints storage.blobPaths between the
+			// crash and the restart, so the roots this recovery is handed are a different directory
+			mkdirSync(dbPath, { recursive: true });
+			writeFileSync(join(dbPath, 'CURRENT'), 'MANIFEST-000001\n');
+			const droppedRoot = join(tempDir, 'blobs-a', 'somedb');
+			mkdirSync(droppedRoot, { recursive: true });
+			writeFileSync(join(droppedRoot, 'leftover.bin'), 'x');
+			const repointedRoot = join(tempDir, 'blobs-b', 'somedb');
+			mkdirSync(repointedRoot, { recursive: true });
+			writeFileSync(join(repointedRoot, 'someone-elses.bin'), 'x');
+
+			abandonDrop(beginDrop(dbPath, { database: dbPath, blobRoots: [droppedRoot] }));
+			assert.equal(recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [repointedRoot] }), 'recovered');
+
+			assert.ok(!existsSync(droppedRoot), 'the root the drop targeted is gone');
+			assert.ok(existsSync(repointedRoot), 'the root configuration now names is untouched');
+			assert.ok(!existsSync(dbPath));
+		});
+
+		it('falls back to the configured roots for a marker that carries no manifest', function () {
+			// what every marker written before manifests existed looks like
+			leaveInterruptedDrop();
+			assert.equal(recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [blobRoot] }), 'recovered');
+			assert.ok(!existsSync(blobRoot));
+			assert.ok(!existsSync(dbPath));
+		});
+
+		it('refuses a manifest it cannot read rather than guessing from configuration', function () {
+			for (const manifest of [
+				'targets 2 {"database":"x","blobRoots":[]}',
+				'targets 1 {not json',
+				'targets 1 {"database":"x"}',
+			]) {
+				leaveInterruptedDrop();
+				writeFileSync(restoringMarkerPath(dbPath), `somedb\ndrop started now\n${manifest}\n`);
+				assert.throws(() => recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [blobRoot] }), /Refusing/);
+				assert.ok(existsSync(dbPath), 'nothing is deleted on a manifest this build cannot read');
+			}
+		});
+
+		it("refuses a recorded blob root that is not this database's own directory", function () {
+			leaveInterruptedDrop();
+			const notOurs = join(tempDir, 'blobs', 'otherdb');
+			mkdirSync(notOurs, { recursive: true });
+			writeFileSync(
+				restoringMarkerPath(dbPath),
+				`somedb\ndrop started now\ntargets 1 ${JSON.stringify({ database: dbPath, blobRoots: [notOurs] })}\n`
+			);
+			assert.throws(() => recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [] }), /records a blob root/);
+			assert.ok(existsSync(notOurs), 'and it is still there');
+			assert.ok(existsSync(dbPath));
+		});
+
+		it('refuses a manifest whose database path no longer resolves here', function () {
+			leaveInterruptedDrop();
+			const elsewhere = join(tempDir, 'moved', 'somedb');
+			writeFileSync(
+				restoringMarkerPath(dbPath),
+				`somedb\ndrop started now\ntargets 1 ${JSON.stringify({ database: elsewhere, blobRoots: [] })}\n`
+			);
+			assert.throws(() => recoverInterruptedDrop(tempDir, 'somedb', { blobRoots: [] }), /no longer resolves/);
+			assert.ok(existsSync(dbPath));
+		});
+
 		it('refuses a name that is not a single directory name, without touching anything', function () {
 			leaveInterruptedDrop();
 			const illegal = ['../somedb', 'a/b', '..', '.', ''];

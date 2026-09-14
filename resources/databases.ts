@@ -2048,9 +2048,11 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string, attempt =
  * `beginDrop` makes both judgements while holding the lock — an unlocked pre-check could be overtaken
  * by a restore that starts and abandons in the gap — so this only names the database in its message.
  */
-function beginDropOfDatabase(dbPath: string, databaseName: string): RestoreLock {
+function beginDropOfDatabase(dbPath: string, databaseName: string, blobRoots: string[]): RestoreLock {
 	try {
-		return beginDrop(dbPath);
+		// the roots this call resolved, recorded in the marker: a recovery after a crash must delete what
+		// this drop targeted, not what `storage.blobPaths` resolves to whenever that recovery runs
+		return beginDrop(dbPath, { database: dbPath, blobRoots });
 	} catch (error: any) {
 		if (error.lifecycleConflict === 'restore')
 			throw conflict(`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`);
@@ -2155,7 +2157,7 @@ export async function dropDatabase(databaseName) {
 	// (with only a warning) for a store carrying no `databaseName` — the shape a tableless database's
 	// on-demand open produces — and the drop would then clear its marker over a surviving blob root
 	const blobRoots: string[] = getBlobPathsForDatabaseName(databaseName);
-	const lock = beginDropOfDatabase(path, databaseName);
+	const lock = beginDropOfDatabase(path, databaseName, blobRoots);
 	let lockSettled = false;
 	let destructionStarted = false;
 	try {

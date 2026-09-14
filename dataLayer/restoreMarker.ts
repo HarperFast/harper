@@ -96,10 +96,66 @@ export function restoringMarkerPath(dbPath: string): string {
 export type RestoreState = 'in-progress' | 'incomplete' | 'clear';
 export type LifecycleKind = 'restore' | 'drop';
 
-function markerContent(dbPath: string, kind: LifecycleKind): string {
+/**
+ * What a drop is deleting, recorded in its own marker so the recovery deletes what the drop
+ * targeted rather than what configuration resolves to later. `blobRoots` is the field that matters:
+ * a drop's roots come from `storage.blobPaths`, which an operator can repoint between the crash and
+ * the restart, and the recovery would then delete the NEW root and orphan the old one. `database`
+ * is recorded so a per-database `path` change is caught rather than acted on.
+ */
+export interface DropTargets {
+	database: string;
+	blobRoots: string[];
+}
+
+/** Bumped only when the manifest's shape changes; an unreadable version fails the recovery closed. */
+const DROP_TARGETS_VERSION = 1;
+const DROP_TARGETS_PREFIX = 'targets ';
+
+function markerContent(dbPath: string, kind: LifecycleKind, targets?: DropTargets): string {
 	// first line is the database directory name so the startup scan can map this marker back to
 	// the database it blocks without reversing the hashed key; the second names the operation
-	return `${basename(dbPath)}\n${kind} started ${new Date().toISOString()}\n`;
+	const header = `${basename(dbPath)}\n${kind} started ${new Date().toISOString()}\n`;
+	// a third line every earlier reader stops before: they split off lines 1 and 2 and never look
+	// further, so a marker carrying this stays readable by a build that predates it
+	if (!targets) return header;
+	return `${header}${DROP_TARGETS_PREFIX}${DROP_TARGETS_VERSION} ${JSON.stringify(targets)}\n`;
+}
+
+/**
+ * The deletion manifest of a drop marker: `null` when the marker carries none — an older build's
+ * marker, or a restore's — which is the caller's signal to fall back to configuration, exactly as
+ * it did before manifests existed. A manifest that IS there but cannot be read is not a fallback:
+ * something wrote a shape this build does not understand, and guessing from configuration is the
+ * very mistake the manifest exists to prevent, so it throws.
+ */
+function dropTargetsFromContent(content: string, dbName: string): DropTargets | null {
+	const line = content.split('\n')[2];
+	if (!line || !line.startsWith(DROP_TARGETS_PREFIX)) return null;
+	const rest = line.slice(DROP_TARGETS_PREFIX.length);
+	const space = rest.indexOf(' ');
+	const version = Number(rest.slice(0, space === -1 ? rest.length : space));
+	if (version !== DROP_TARGETS_VERSION) {
+		throw new Error(
+			`Refusing to recover the drop of '${dbName}': its marker records targets version ${rest.slice(0, 20)}, and this build writes ${DROP_TARGETS_VERSION}`
+		);
+	}
+	let parsed: any;
+	try {
+		parsed = JSON.parse(rest.slice(space + 1));
+	} catch (error: any) {
+		throw new Error(`Refusing to recover the drop of '${dbName}': its target manifest is unreadable: ${error.message}`);
+	}
+	if (
+		typeof parsed?.database !== 'string' ||
+		!Array.isArray(parsed.blobRoots) ||
+		parsed.blobRoots.some((root: unknown) => typeof root !== 'string')
+	) {
+		throw new Error(
+			`Refusing to recover the drop of '${dbName}': its target manifest is not a database path and a list of blob roots`
+		);
+	}
+	return { database: parsed.database, blobRoots: parsed.blobRoots };
 }
 
 /** Markers written before drops were typed carry only a restore line, and read as restores. */
@@ -255,11 +311,11 @@ export function beginRestore(dbPath: string): RestoreLock {
  * refuses the drop (409): the directory it guards may be half-purged and only a rerun of the restore
  * can recover it, so a drop must never overwrite that marker with its own.
  */
-export function beginDrop(dbPath: string): RestoreLock {
-	return beginLifecycle(dbPath, 'drop');
+export function beginDrop(dbPath: string, targets?: DropTargets): RestoreLock {
+	return beginLifecycle(dbPath, 'drop', targets);
 }
 
-function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
+function beginLifecycle(dbPath: string, kind: LifecycleKind, targets?: DropTargets): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
 	const lock = acquireRestoreLock(dbPath);
 	let preexisting = false;
@@ -296,7 +352,7 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
 			try {
 				// writeSync can report a short write without throwing, and renaming a truncated marker over
 				// the live one is the very thing staging it is here to prevent
-				const content = Buffer.from(markerContent(dbPath, kind));
+				const content = Buffer.from(markerContent(dbPath, kind, targets));
 				for (let written = 0; written < content.length;) {
 					const wrote = writeSync(fd, content, written);
 					// a write that reports no progress and does not throw would otherwise spin here holding
@@ -427,16 +483,44 @@ export function recoverInterruptedDrop(
 		if (content.split('\n', 1)[0] !== dbName) {
 			throw new Error(`Refusing to recover a drop of '${dbName}': its marker names a different database`);
 		}
-		assertDropTargetsRemovable(dbPath, options.blobRoots);
+		// What the drop itself recorded wins over what configuration resolves to now: `storage.blobPaths`
+		// can have been repointed between the crash and this recovery, and the config-derived roots
+		// would then be a different database's storage. A marker with no manifest is an older build's,
+		// and falls back to configuration as it always did.
+		const recorded = dropTargetsFromContent(content, dbName);
+		if (recorded && resolve(recorded.database) !== dbPath) {
+			throw new Error(
+				`Refusing to recover the drop of '${dbName}': its marker records the database at ${recorded.database}, which no longer resolves to ${dbPath}`
+			);
+		}
+		const blobRoots = recorded ? assertRecordedBlobRoots(recorded.blobRoots, dbName) : options.blobRoots;
+		assertDropTargetsRemovable(dbPath, blobRoots);
 		remove(dbPath);
-		for (const blobRoot of options.blobRoots) remove(blobRoot);
-		fsyncDropRemovals(dbPath, options.blobRoots);
+		for (const blobRoot of blobRoots) remove(blobRoot);
+		fsyncDropRemovals(dbPath, blobRoots);
 		unlinkSync(markerPath);
 		fsyncDir(restoreMetaDir(dbPath));
 		return 'recovered';
 	} finally {
 		fileLockRelease(token);
 	}
+}
+
+/**
+ * A blob root read back from a marker is on-disk state, not configuration, so it is checked before
+ * anything is deleted through it. It cannot be checked against `storage.blobPaths` — a root the
+ * current configuration no longer names is exactly the case the manifest exists to delete — but
+ * every root a drop can target is `join(<a configured blob path>, <database name>)`, so its own
+ * last segment must be the database. That holds however the configuration has moved.
+ */
+function assertRecordedBlobRoots(blobRoots: string[], dbName: string): string[] {
+	for (const blobRoot of blobRoots) {
+		const resolved = resolve(blobRoot);
+		if (basename(resolved) !== dbName || dirname(resolved) === resolved) {
+			throw new Error(`Refusing to recover the drop of '${dbName}': its marker records a blob root at ${blobRoot}`);
+		}
+	}
+	return blobRoots;
 }
 
 /** A database directory or blob root that is a symbolic link is not the database: refuse to delete through it. */
