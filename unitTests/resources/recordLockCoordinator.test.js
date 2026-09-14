@@ -111,8 +111,13 @@ class FakeCluster {
 			 * already expired and `joinClusterRound` silently returned false.
 			 */
 			mono: 0,
-			/** Bumped to simulate a restart of this node in its role as a home. */
-			incarnation: 1,
+			/**
+			 * Bumped to simulate a restart of this node in its role as a home. Settable at construction
+			 * because a coordinator that sees the incarnation CHANGE under it reads that as another
+			 * coordination incarnation having run and re-arms the §4.3 quarantine — which is the point,
+			 * but not what a test about a home that restarted BEFORE this coordinator existed is saying.
+			 */
+			incarnation: options.incarnations?.[name] ?? 1,
 			/** Set to make this node report no agreed home map — a generation change, or a digest mismatch. */
 			mapless: false,
 			written: [],
@@ -539,8 +544,7 @@ describe('record lock delegations', () => {
 			// new token ahead of the old one, which a random value could not do.
 			cluster.node('beta').incarnation = 2;
 			cluster.node('beta').coordinator.close();
-			const fresh = new FakeCluster(['alpha', 'beta', 'gamma']);
-			fresh.node('beta').incarnation = 2;
+			const fresh = new FakeCluster(['alpha', 'beta', 'gamma'], { incarnations: { beta: 2 } });
 			const key2 = fresh.keyHomedOn('beta');
 			const second = await fresh
 				.node('beta')
@@ -1049,6 +1053,65 @@ describe('record lock delegations', () => {
 				() => alpha.coordinator.onDelegationRecall({ key, token: round.token ?? [1, 1, 1] }),
 				/not owned by this worker thread/
 			);
+		});
+
+		it('re-arms the quarantine on an incarnation change the ownership poll never sampled', async () => {
+			// Sampling `ownsCoordination()` proves the answer at the instant it is read, never that
+			// ownership was unbroken between two reads — ownership alternating faster than the poll, with
+			// each sample landing inside this thread's own interval, aliases away completely. §5.1's
+			// incarnation is the statement about continuity that a boolean cannot make: a value this
+			// coordinator has not granted under says another coordination incarnation ran, whatever the
+			// boolean said in between.
+			let incarnation = 1;
+			let mono = 1_000;
+			const coordinator = new LockCoordinator({
+				database: `alias${Date.now()}`,
+				table: 'PollAlias',
+				nodeId: 'alpha',
+				transport: {
+					homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: incarnation }),
+					// Never observed false: every sample lands inside an interval this thread owns.
+					ownsCoordination: () => true,
+					requestDelegation: () => Promise.reject(new Error('single node')),
+					recallDelegation: () => Promise.resolve(),
+				},
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			});
+			const first = await coordinator.onDelegationRequest({
+				key: 'aliased',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(first.granted, true);
+
+			// Coordination went elsewhere and came back. Nothing sampled it; the incarnation says so.
+			incarnation = 2;
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			coordinator.tick();
+			const denied = await coordinator.onDelegationRequest({
+				key: 'aliased-2',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'an ownership change no poll saw did not re-arm the quarantine');
+			assert.strictEqual(denied.reason, 'quarantine');
+
+			mono += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+			const granted = await coordinator.onDelegationRequest({
+				key: 'aliased-2',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(granted.granted, true, 'the re-armed quarantine never ended');
+			coordinator.close();
 		});
 
 		it('does not waive the quarantine for a coordinator that was not owning when it was built', async () => {
