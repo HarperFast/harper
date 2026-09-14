@@ -391,10 +391,12 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		// itself what failed.
 		if (this.#applyEnvOnlyConfig()) {
 			if (!this.#readyEmitted) this.#emitReady(this.#scopedConfig);
-			return;
+		} else {
+			this.#resetConfig();
+			this.#emitReady(this.#scopedConfig);
 		}
-		this.#resetConfig();
-		this.#emitReady(this.#scopedConfig);
+		// Also on the env-only branch: the caller may be `#handleChange`'s merge-shape failure,
+		// whose error composing `undefined` never reproduces.
 		this.#reportEnvComposeFailure();
 	}
 
@@ -498,7 +500,6 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	 * their own reset semantics.
 	 */
 	#applyEnvOnlyConfig(): boolean {
-		this.#envComposeError = undefined;
 		if (!this.#isRootConfig) return false;
 		let composed: Config | undefined;
 		try {

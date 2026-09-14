@@ -179,6 +179,24 @@ describe('OptionsWatcher env-config overlay (#1618)', () => {
 		assert.strictEqual(watcher.get(['enabled']), false, 'the malformed overlay does not replace the last valid config');
 	});
 
+	// The env-only fallback composes the env layers over nothing, so a failure that only exists
+	// once the file is merged in does not reproduce there — and the scope then boots with the
+	// operator never told the file was unusable.
+	it('surfaces a compose failure the env-only fallback cannot reproduce', async () => {
+		const filePath = join(dir, 'harper-config.yaml');
+		// A YAML self-alias parses to a cyclic object; flattening it recurses without bound.
+		writeFileSync(filePath, 'root: &cycle\n  self: *cycle\n');
+		process.env.HARPER_SET_CONFIG = JSON.stringify({ [NAME]: { enabled: true } });
+
+		watcher = new OptionsWatcher(NAME, filePath);
+		const errors = [];
+		watcher.on('error', (error) => errors.push(error));
+
+		const [config] = await watcher.ready;
+		assert.strictEqual(config?.enabled, true, 'the env-only fallback still configures the scope');
+		assert.strictEqual(errors.length, 1, 'the compose failure must not be discarded by the fallback');
+	});
+
 	// `#handleUnlink` runs inside chokidar's own dispatch, and the env-only fallback merges — so a
 	// plugin's own `change` handler throwing would take the worker down on a config deletion the
 	// watcher had just decided to survive.
