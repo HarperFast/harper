@@ -2724,6 +2724,34 @@ describe('durable blob-unlink queue (#1832)', () => {
 		rmSync(filePath, { recursive: true, force: true });
 	});
 
+	it('releases an owned reclaim claim before retrying a transient unlink failure', async () => {
+		setDeletionDelay(0);
+		const { fileId, filePath } = await fileBackedBlob('owned-retry');
+		await QueueTest.put({ id: 'owned-retry', blob: await createBlob(randomBytes(20000)) });
+		assert.ok(queueRow(fileId)?.owner, 'supersession must stage an owned intent');
+		unlinkSync(filePath);
+		mkdirSync(filePath);
+		const state = getBlobHoldStateForTesting(rootStore(), fileId);
+		try {
+			drainBlobUnlinkQueue(rootStore());
+			await waitFor(() => queueRow(fileId)?.attempts === 1, {
+				timeout: 5000,
+				message: 'the failed unlink must retain its durable retry row',
+			});
+			assert.equal(Atomics.load(state.table, state.slot), 0, 'a retry must not strand the shared reclaim claim');
+			rmSync(filePath, { recursive: true, force: true });
+			await waitFor(
+				() => {
+					drainBlobUnlinkQueue(rootStore());
+					return queueRow(fileId) === undefined;
+				},
+				{ timeout: 5000, message: 'the released claim must allow the retry to settle the row' }
+			);
+		} finally {
+			if (existsSync(filePath)) rmSync(filePath, { recursive: true, force: true });
+		}
+	});
+
 	it('recovers stranded intents through the database-open hook, not just a direct drain', async () => {
 		// The hook is the only thing that reaches a prior process's rows; a refactor that drops it
 		// would otherwise leave every drain test still green.

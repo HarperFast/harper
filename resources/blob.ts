@@ -2102,6 +2102,7 @@ export function drainBlobUnlinkQueue(rootStore: any): boolean | undefined {
 			if (error && error.code !== 'ENOENT') {
 				inFlight.delete(fileId);
 				if (!recordUnlinkFailure(queueDb, key, value, storageInfo, attemptCounts, error)) {
+					if (value.owner) releaseReclaimClaim(storageInfo);
 					releaseReclaimLock(storageInfo);
 					settleOne(); // still queued; a later drain retries
 					return;
