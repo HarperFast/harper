@@ -95,7 +95,15 @@ export type LockControlType = 'lockRelease';
 export interface LockHomeMap {
 	/** Monotonic per database. Part of the fencing token, so it must never go backwards. */
 	generation: number;
-	/** The nodes that may home a key. Order is irrelevant — the ring hashes each name independently. */
+	/**
+	 * Every node that participates in cluster record locks for this database — not only the ones an
+	 * operator thinks of as arbiters. Order is irrelevant; the ring hashes each name independently.
+	 *
+	 * It is one set and not two because a home refuses a delegation to any node this list does not
+	 * name (that is what keeps a decommissioned node from taking one), so a node absent from it can
+	 * neither home a key nor lock one. Rendezvous hashing then makes every listed node the arbiter for
+	 * its share of the ring, which is the property that costs a second list nothing.
+	 */
 	homes: string[];
 	/**
 	 * This node's durably persisted, monotonic incarnation counter as a home (§5.1). A random value
@@ -150,11 +158,13 @@ export interface DelegationReply {
 	/** Granted only. How long the delegate may admit for, as a DURATION — never a remote clock reading. */
 	leaseMs?: number;
 	/**
-	 * Denied only. `contended` is retryable within the caller's own wait budget; `generation` means
-	 * refresh the home map; `quarantine` means the home is inside its §4.3 restart interval and cannot
-	 * be waited out by any legal caller, so it converts to 503 rather than burning the wait budget.
+	 * Denied only. `contended` is the one reason worth retrying inside the caller's own wait budget.
+	 * `generation` (the two sides hold different home maps), `unknown-node` (this node is not named in
+	 * the map at all) and `quarantine` (the home is inside its §4.3 restart interval) all describe a
+	 * condition no legal `lock()` timeout can outlast, so each converts to a retryable 503 rather than
+	 * spending the wait and then reporting 423 — "held by someone else" — for a key nobody holds.
 	 */
-	reason?: 'contended' | 'generation' | 'capacity' | 'not-home' | 'quarantine';
+	reason?: 'contended' | 'generation' | 'unknown-node' | 'capacity' | 'not-home' | 'quarantine';
 	/** Denied with `generation`, so a stale requester can re-derive the ring without another round trip. */
 	generation?: number;
 	retryAfterMs?: number;
@@ -756,6 +766,16 @@ export class LockCoordinator {
 				throw new LockUnavailableError(
 					`The home node for this key on ${this.database}.${this.table} restarted and cannot grant until the delegations its previous incarnation issued have expired`
 				);
+			// Neither of these can be waited out inside a `lock()` timeout, and retrying them spends the
+			// caller's whole budget holding the native key only to answer 423 for a key nobody holds.
+			if (reply.reason === 'generation')
+				throw new LockUnavailableError(
+					`The home node for this key on ${this.database}.${this.table} holds record lock home map generation ${reply.generation ?? 'unknown'} and this node holds ${homeMap.generation}; cluster record locks are unavailable until they agree`
+				);
+			if (reply.reason === 'unknown-node')
+				throw new LockUnavailableError(
+					`This node is not named in the record lock home map for ${this.database}, so it can neither home a key nor take a cluster lock on one`
+				);
 			if (reply.reason === 'not-home')
 				// The home disagrees about the ring. Re-reading the map on the next pass is the fix;
 				// if it is genuinely stale on our side we will converge, and if not we run out of wait.
@@ -870,11 +890,12 @@ export class LockCoordinator {
 		if (!homeMap || !this.#generationIsCurrent(homeMap.generation)) return { granted: false, reason: 'generation' };
 		if (homeMap.generation !== request.generation)
 			return { granted: false, reason: 'generation', generation: homeMap.generation };
-		// Membership before state: a node the current generation does not name has no claim on a key,
-		// and an authenticated replication identity outlives membership. Without this a decommissioned
-		// node takes delegations against live homes and recalls the legitimate delegate to get them.
-		if (!homeMap.homes.includes(request.requester))
-			return { granted: false, reason: 'generation', generation: homeMap.generation };
+		// Membership before state: a node the current map does not name has no claim on a key, and an
+		// authenticated replication identity outlives membership. Without this a decommissioned node
+		// takes delegations against live homes and recalls the legitimate delegate to get them. This is
+		// why `homes` has to name every node that takes a cluster lock, not only the arbiters — see
+		// `LockHomeMap.homes`.
+		if (!homeMap.homes.includes(request.requester)) return { granted: false, reason: 'unknown-node' };
 		// Both sides must agree we are the home, or two arbiters could issue for one key.
 		const keyId = this.#keyIdOf(request.key);
 		if (homeFor(this.#ringKey(keyId), homeMap.homes) !== this.nodeId) return { granted: false, reason: 'not-home' };

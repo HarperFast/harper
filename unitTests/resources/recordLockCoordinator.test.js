@@ -475,7 +475,7 @@ describe('record lock delegations', () => {
 			assert.strictEqual(reply.generation, 1);
 		});
 
-		it('denies a request from a node the generation does not name', async () => {
+		it('denies a request from a node the map does not name', async () => {
 			// An authenticated replication identity outlives membership, and the generation alone proves
 			// nothing about who is in it. Without this a decommissioned node takes delegations against
 			// live members — and recalls the legitimate delegate to get them.
@@ -484,7 +484,7 @@ describe('record lock delegations', () => {
 			const beta = cluster.node('beta').coordinator;
 			const reply = await beta.onDelegationRequest({ key, requester: 'retired', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(reply.granted, false);
-			assert.strictEqual(reply.reason, 'generation');
+			assert.strictEqual(reply.reason, 'unknown-node');
 			// And nothing was allocated for it: the next live member still gets the key.
 			assert.strictEqual(beta.stats.granted, 0, 'a refused non-member still consumed a grant');
 			const member = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
@@ -858,6 +858,40 @@ describe('record lock delegations', () => {
 				.coordinator.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(denied.granted, false, 'a home granted under a rolled-back generation');
 			assert.strictEqual(denied.reason, 'generation');
+		});
+
+		it('answers a generation mismatch and an unnamed node with 503, not a 423 after the full wait', async () => {
+			// The same defect class as the quarantine denial: neither condition can be waited out inside a
+			// `lock()` timeout, so retrying spends the caller's whole budget holding the native key and
+			// then reports 423 — "held by someone else" — on a key nobody holds. Raised on the PR by
+			// cb1kenobi against the head this landed on.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+
+			// The home is a generation ahead of the requester.
+			cluster.node('beta').coordinator.transport.homeMap = () => ({
+				generation: 2,
+				homes: [...cluster.homes],
+				homeIncarnation: 1,
+			});
+			await assert.rejects(
+				() => alpha.coordinator.acquire(key, LEASE, WAIT),
+				(error) => error.statusCode === 503 && /home map generation 2 and this node holds 1/.test(error.message)
+			);
+
+			// And a requester the map does not name at all.
+			const cluster2 = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key2 = cluster2.keyHomedOn('beta');
+			cluster2.node('beta').coordinator.transport.homeMap = () => ({
+				generation: 1,
+				homes: ['beta', 'gamma'],
+				homeIncarnation: 1,
+			});
+			await assert.rejects(
+				() => cluster2.node('alpha').coordinator.acquire(key2, LEASE, WAIT),
+				(error) => error.statusCode === 503 && /not named in the record lock home map/.test(error.message)
+			);
 		});
 
 		it('drops a delegation when the generation changes under it', async () => {

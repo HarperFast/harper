@@ -112,9 +112,14 @@ Per database, `(generation, homes[])`:
 - `generation` is a monotonic number. It is the high-order component of the fencing token (§5.1), so
   it must never go backwards, and a delegation minted under one generation is not honoured under
   another.
-- `homes[]` is the set of node names that may home a key. It is a **lock-home map, not a residency
-  directive** — it says who arbitrates a key, not where the record lives, and it is not derived from
-  `hdb_nodes`, which is LWW-replicated and therefore not agreed.
+- `homes[]` names **every node that participates in cluster record locks** for the database — not
+  only the ones an operator thinks of as arbiters. It is one set and not two because a home refuses a
+  delegation to any node the map does not name (§5), which is what keeps a decommissioned node from
+  taking one: a node absent from `homes[]` can therefore neither home a key nor lock one. Rendezvous
+  hashing then makes each listed node the arbiter for its own share of the ring, so the second list
+  would buy nothing. It is still a **lock-participation map, not a residency directive** — it says
+  who may arbitrate and lock, not where records live — and it is not derived from `hdb_nodes`, which
+  is LWW-replicated and therefore not agreed.
 
 Core fails closed when no map is available and never guesses a ring. `homeIncarnation` (§5.1) rides
 alongside as the one remaining durable per-node datum: a monotonic counter persisted by harper-pro

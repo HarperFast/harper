@@ -365,7 +365,9 @@ reason the arbitration rule is one node rather than a quorum:
 | home node  | derived, free         | core        | a hash over the map's `homes[]`       |
 | delegation | per key, bounded time | core        | 1 RTT cold, **zero** while it is live |
 
-`transport.homeMap(database)` hands core `(generation, homes[], homeIncarnation)`. The map is
+`transport.homeMap(database)` hands core `(generation, homes[], homeIncarnation)`, where `homes[]`
+names every node that participates in record locks — a home refuses a delegation to any node the map
+does not name, so a node absent from it can neither arbitrate nor lock. The map is
 **operator-agreed and immutable per generation**: an administrator publishes it, peers agree on its
 digest before the feature is enabled, and nothing a node observes — an unreachable peer, a restart,
 a partition — changes it. Core never computes topology, never advances a generation, and never
