@@ -14,11 +14,11 @@ import net from 'node:net';
 import http from 'node:http';
 import { encode as cborEncode } from 'cbor-x';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
-import { NO_FULL_WORKER_COVERAGE } from '../database/recordCachingWorkers.ts';
+import { NO_FULL_WORKER_COVERAGE } from './recordCachingWorkers.ts';
 // @ts-expect-error no type declarations
-import { createApiClient } from './utils/client.mjs';
+import { createApiClient } from '../apiTests/utils/client.mjs';
 // @ts-expect-error no type declarations
-import { waitFor } from './utils/operations.mjs';
+import { waitFor } from '../apiTests/utils/operations.mjs';
 
 const FIXTURE_PATH = resolve(import.meta.dirname, 'qa685-blob-upload-stall');
 const skipSuite = NO_FULL_WORKER_COVERAGE;
