@@ -2484,8 +2484,15 @@ function stageIndexStore(dbi: any, dbiKey: string, rootStore: RootDatabaseKind, 
 		if (!candidate) return;
 		dbi.customIndex = candidate;
 		// derived state whose maintaining option is now off must not linger to be adopted
-		// stale on a later re-enable
-		candidate.cleanupDisabledPlane?.();
+		// stale on a later re-enable. Best-effort by construction — cleanupDisabledPlane already
+		// absorbs its own I/O errors and falls back to marking the file stale — and this step runs
+		// after the catalog write has landed, so a throw from that fallback must not abort a
+		// declaration that is already persisted and leave its backfill unstarted
+		try {
+			candidate.cleanupDisabledPlane?.();
+		} catch (error) {
+			logger.warn(`Could not clean up the disabled derived plane of index ${attribute.name}:`, error);
+		}
 	};
 }
 

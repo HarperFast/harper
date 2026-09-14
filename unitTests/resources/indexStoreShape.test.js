@@ -261,4 +261,30 @@ describe('index store wrapper follows the index kind across a live attribute cha
 		assert.equal(Tbl.indices.vector, undefined, 'the failed first-time open must not have been published');
 		assert.equal(openRefCount(Tbl), baseline, 'the failed first-time open must not leave a net-new open handle');
 	});
+
+	it('publishes the new definition even when the disabled-plane cleanup throws after the catalog write', async function () {
+		this.timeout(30_000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		let Tbl = define(true);
+
+		// the derived-plane cleanup is the last step of the binding and runs after `attributesDbi.put`
+		// has already persisted the new descriptor. It is best-effort hygiene — it absorbs its own I/O
+		// errors and falls back to marking the file stale — so a throw out of that fallback must not
+		// abort a declaration the catalog already carries, whose rebuild would then never be queued.
+		const HNSW = CUSTOM_INDEXES.HNSW;
+		const originalCleanup = HNSW.prototype.cleanupDisabledPlane;
+		HNSW.prototype.cleanupDisabledPlane = () => {
+			throw new Error('injected disabled-plane cleanup failure');
+		};
+		try {
+			Tbl = define({ type: 'HNSW', M: 16 });
+		} finally {
+			HNSW.prototype.cleanupDisabledPlane = originalCleanup;
+		}
+
+		assert.ok(!(Tbl.indices.vector instanceof RocksIndexStore), 'the new wrapper is published');
+		assert.ok(Tbl.indexingOperation, 'and the change of kind still queued its rebuild');
+		await Tbl.indexingOperation;
+	});
 });
