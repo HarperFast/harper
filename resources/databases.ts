@@ -3073,9 +3073,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				let previousIndexToRelease: any;
 				let replacementToReleaseOnFailure: any;
 				// A reused store is already live: rebinding its custom index (unlinking the derived plane the
-				// new options disable, arming the versioned encoder) before the catalog write below — which
-				// can still throw — would leave this thread reading and writing under a definition disk and
-				// every other thread reject. Those steps are collected here and run at the publication point.
+				// new options disable, arming the versioned encoder, marking it rebuilding) before the
+				// catalog write below — which can still throw — would leave this thread reading and writing
+				// under a definition disk and every other thread reject, or waiting on a backfill that was
+				// never triggered. Those steps are collected here and run at the publication point.
 				const commitIndexBinding: (() => void)[] = [];
 				try {
 					if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
@@ -3178,7 +3179,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 									attribute.indexingIncarnation = manageThreads.processIncarnation;
 								attribute.indexingBuildId = randomBytes(8).toString('hex');
 								delete attribute.indexingFailed; // clear failure flag for the new run
-								dbi.isIndexing = true;
+								commitIndexBinding.push(() => (dbi.isIndexing = true));
 								Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
 								// Explainability: log which trigger fired so an unexpected rebuild is diagnosable. harper#1357
 								const reindexReasons: string[] = [];

@@ -173,6 +173,53 @@ describe('index store wrapper follows the index kind across a live attribute cha
 		await Tbl.indexingOperation;
 	});
 
+	it('leaves every deferred mutation off a reused store when the catalog write itself throws', async function () {
+		this.timeout(30_000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		// its own database, so the catalog store this test makes throw is not the one other suites share
+		const defineGraph = (indexed) =>
+			table({
+				table: 'IndexCatalogWrite',
+				database: 'idxcatalogwrite',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'vector', indexed, type: 'Array' },
+				],
+			});
+		let Tbl = defineGraph({ type: 'HNSW', M: 16 });
+		let last;
+		for (let i = 0; i < 8; i++) last = Tbl.put({ id: i, vector: [i % 2, i % 3, i % 4] });
+		await last;
+		await Tbl.indexingOperation;
+		const graph = Tbl.indices.vector;
+		const committed = graph.customIndex;
+		const wasIndexing = graph.isIndexing;
+
+		// the descriptor write is the commit point for a reindex: everything the new definition does to
+		// the live store — rebinding the custom index, arming the versioned encoder, marking it
+		// rebuilding — has to survive this throwing
+		const catalog = Tbl.primaryStore.rootStore.dbisDb;
+		const originalPut = catalog.put.bind(catalog);
+		catalog.put = () => {
+			throw new Error('injected failure: catalog write');
+		};
+		try {
+			assert.throws(() => defineGraph({ type: 'HNSW', M: 32 }), /injected failure/);
+		} finally {
+			catalog.put = originalPut;
+		}
+
+		assert.strictEqual(Tbl.indices.vector, graph);
+		assert.strictEqual(graph.customIndex, committed, 'the binding must not outlive a failed catalog write');
+		assert.equal(graph.customIndex.M, 16);
+		assert.equal(graph.isIndexing, wasIndexing, 'and the store must not be left waiting on a backfill');
+
+		Tbl = defineGraph({ type: 'HNSW', M: 32 });
+		assert.equal(Tbl.indices.vector.customIndex.M, 32);
+		await Tbl.indexingOperation;
+	});
+
 	it('closes a first-time index handle too when a later step throws before it is published', async function () {
 		this.timeout(30_000);
 		setupTestDBPath();
