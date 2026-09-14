@@ -2281,11 +2281,15 @@ function abandonUnlinkRow(
 	storageInfo: BlobFileInfo,
 	attemptCounts?: Map<string, number>,
 	error?: any
-): void {
+): boolean {
 	if (error) logger.warn?.(`Abandoning the unlink intent for blob file ${storageInfo.fileId}`, error);
 	attemptCounts?.delete(storageInfo.fileId);
-	removeUnlinkQueueRow(queueDb, key);
-	releaseReclaimClaim(storageInfo);
+	const removed = removeUnlinkQueueRow(queueDb, key);
+	// The row still records this incarnation's claim when removal fails. Keep the shared slot claimed
+	// so the next drain can settle that row and hand it back exactly once.
+	if (removed) releaseReclaimClaim(storageInfo);
+	else scheduleBlobUnlinkDrain(storageInfo.store, UNLINK_RETRY_BASE_DELAY);
+	return removed;
 }
 
 /**
@@ -2360,8 +2364,7 @@ function recordUnlinkFailure(
 		`Giving up on removing blob file ${fileId} after ${attempts} attempts; it is left for cleanup_orphan_blobs`,
 		error
 	);
-	abandonUnlinkRow(queueDb, key, storageInfo, attemptCounts);
-	return true;
+	return abandonUnlinkRow(queueDb, key, storageInfo, attemptCounts);
 }
 
 /**

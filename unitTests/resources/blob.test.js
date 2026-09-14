@@ -2833,17 +2833,32 @@ describe('durable blob-unlink queue (#1832)', () => {
 		const state = getBlobHoldStateForTesting(rootStore(), fileId);
 		Atomics.store(state.table, state.slot, RECLAIMING); // as reclamation leaves it when it enqueues
 		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0, claimedBy: incarnation() });
+		const db = queueDb();
+		const realRemoveSync = db.removeSync;
+		let rejectedRemoval = false;
+		db.removeSync = function (key) {
+			if (!rejectedRemoval && Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) {
+				rejectedRemoval = true;
+				throw new Error('queue removal unavailable');
+			}
+			return realRemoveSync.apply(this, arguments);
+		};
 
 		// Driven rather than slept through: the retries now back off, so a fixed number of fixed-length
 		// waits either races the unlink callback or has to be padded to the worst case.
-		await waitFor(
-			() => {
-				drainBlobUnlinkQueue(rootStore());
-				return queueRow(fileId) === undefined;
-			},
-			{ timeout: 30000, interval: 100, message: 'the row must be abandoned once the retry cap is reached' }
-		);
+		try {
+			await waitFor(
+				() => {
+					drainBlobUnlinkQueue(rootStore());
+					return queueRow(fileId) === undefined;
+				},
+				{ timeout: 30000, interval: 100, message: 'the row must be abandoned once the retry cap is reached' }
+			);
+		} finally {
+			db.removeSync = realRemoveSync;
+		}
 
+		assert.equal(rejectedRemoval, true, 'the regression must exercise a failed row removal');
 		assert.equal(
 			Atomics.load(state.table, state.slot),
 			0,
