@@ -3422,6 +3422,30 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 		Atomics.store(state.table, state.slot, 0);
 	});
 
+	it('refuses a write whose intent a drain executed between the read and the lock', async () => {
+		// The row was there when the write looked; by the time it holds the lock, a drain has unlinked
+		// the file and removed the row. Only the file can tell that apart from another write's withdrawal.
+		const { fileId, filePath, stored } = await fileBackedBlob('executed-under-read');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() + 600000, storageIndex: 0 });
+		drainBlobUnlinkQueue(rootStore()); // a non-empty read, so no drain's "empty" can stand in for the read
+		const db = queueDb();
+		const { removeSync } = db;
+		db.removeSync = function (key) {
+			// The drain's unlink and removal land in the gap before this write's own withdrawal.
+			if (isQueueKey(key) && key[1] === fileId && existsSync(filePath)) unlinkSync(filePath);
+			return removeSync.apply(this, arguments);
+		};
+		try {
+			await assert.rejects(
+				async () => Interlock.put({ id: 'executed-under-read', blob: stored }),
+				/reclaimed before this write/,
+				'a reference to bytes a drain has already removed must be refused'
+			);
+		} finally {
+			db.removeSync = removeSync;
+		}
+	});
+
 	it('does not answer an unreadable queue as an empty one', () => {
 		const db = queueDb();
 		const { getRange } = db;

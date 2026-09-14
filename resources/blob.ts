@@ -1501,6 +1501,14 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 					`Blob file ${storageInfo.fileId} still has an unlink intent that could not be withdrawn; refusing to reference it`
 				);
 			}
+			// Between the read above and the lock, a drain may have taken the lock, unlinked the file,
+			// removed the row and let go; from here that is indistinguishable from another write's
+			// withdrawal, and only the file can say which happened.
+			if (!existsSync(getFilePath(storageInfo))) {
+				throw new Error(
+					`Blob file ${storageInfo.fileId} was reclaimed before this write could withdraw its unlink intent; the data must be supplied again`
+				);
+			}
 		} finally {
 			releaseReclaimLock(storageInfo);
 		}
