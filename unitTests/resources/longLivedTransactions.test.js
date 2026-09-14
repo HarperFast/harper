@@ -581,13 +581,14 @@ describe('Long-lived transaction reporting (#2471)', () => {
 					timeout: 4000,
 					message: 'no shed line for this commit; an older outstanding commit may hold the oldest slot',
 				});
-				const probeUntil = Date.now() + PROBE_PAST_COOLDOWN_MS;
-				while (Date.now() < probeUntil) {
+				// performance.now(), because the cooldown this must outlast is measured on that clock too.
+				const probeUntil = performance.now() + PROBE_PAST_COOLDOWN_MS;
+				while (performance.now() < probeUntil) {
 					assert.ok(shedOnce(), 'the wedged commit must keep shedding while it is outstanding');
 					await delay(25);
 				}
-				// Unconditional, so a stall that swallows the whole loop still leaves one shed past the
-				// deadline rather than a probe that only ran inside the cooldown.
+				// A stall can swallow every remaining iteration, so the shed that lands past the deadline
+				// is this one rather than the loop's last.
 				assert.ok(shedOnce(), 'the wedged commit must keep shedding while it is outstanding');
 				assertShedOnce(errorLines, wedged.identity, 'a stuck commit must be reported once, not once per shed');
 				assertForeignLinesWereCaptured(errorLines, wedged.identity);
