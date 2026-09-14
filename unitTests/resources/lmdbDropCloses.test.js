@@ -55,3 +55,41 @@ describe('LMDB drop closes the environment before unlinking under it', () => {
 		assert.strictEqual(defineIndexed().indices.value, first.indices.value);
 	});
 });
+
+/**
+ * The drop also has to release what the open registered process-wide: a reclamation handler keyed
+ * by the environment's path outlives the environment itself and would keep querying a deleted file.
+ */
+describe('LMDB drop releases the reclamation handler its open registered', () => {
+	if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') return;
+
+	it('deregisters the storage-reclamation handler the dropped environment registered', async function () {
+		this.timeout(20_000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const { runReclamationHandlers, setAvailableSpaceRatioGetter } = require('#src/server/storageReclamation');
+		const queried = [];
+		setAvailableSpaceRatioGetter(async (path) => {
+			queried.push(path);
+			return 1;
+		});
+		try {
+			const Reclaim = table({
+				table: 'Reclaim',
+				database: 'lmdbreclaim',
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});
+			const rootPath = Reclaim.primaryStore.rootStore.path;
+			await runReclamationHandlers();
+			assert.ok(queried.includes(rootPath), 'opening a database registers a reclamation handler for its root path');
+
+			await dropDatabase('lmdbreclaim');
+			queried.length = 0;
+			await runReclamationHandlers();
+
+			assert.ok(!queried.includes(rootPath), 'dropDatabase must drop the handler pinning the dropped environment');
+		} finally {
+			setAvailableSpaceRatioGetter();
+		}
+	});
+});
