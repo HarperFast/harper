@@ -464,9 +464,8 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			assert.strictEqual(attributed.length, 1, `${message}; captured:\n  | ${describeCaptured(errorLines)}`);
 			return String(attributed[0][0]);
 		}
-		// Positive control for that attribution: shaped like the two intruders that actually reach a global
-		// logger hook — another commit's shed line, and a caller whose first argument is an Error
-		// (utility/lmdb/cleanLMDBMap.ts, server/jobs/jobProcess.ts).
+		// Positive control: the two intruder shapes that actually reach a global logger hook — another
+		// commit's shed line, and a caller whose first argument is an Error (cleanLMDBMap, jobProcess).
 		const FOREIGN_LINES = 2;
 		function injectForeignErrorLines() {
 			harperLogger.error(
@@ -496,7 +495,6 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			return { identity: `from table: data.${name} (transaction ${id})`, settle };
 		}
 
-		// Returns the 503 it raised, so a caller can require that shedding is still happening.
 		function shedOnce() {
 			try {
 				new DatabaseTransaction().checkOverloaded();
@@ -529,7 +527,10 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			try {
 				injectForeignErrorLines();
 				const wedged = trackAStuckCommit();
-				await waitFor(() => shedOnce() && shedLinesFor(wedged.identity, errorLines).length > 0, 4000);
+				await waitFor(() => shedOnce() && shedLinesFor(wedged.identity, errorLines).length > 0, {
+					timeout: 4000,
+					message: 'no shed line for this commit; an older outstanding commit may hold the oldest slot',
+				});
 				const line = assertShedOnce(errorLines, wedged.identity, 'the stuck commit must be logged once');
 				assertForeignLinesWereCaptured(errorLines, wedged.identity);
 				assert.ok(!line.includes('Live transaction handles'), 'a disabled threshold must silence this surface too');
@@ -547,7 +548,10 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			try {
 				injectForeignErrorLines();
 				const wedged = trackAStuckCommit();
-				await waitFor(() => shedOnce() && shedLinesFor(wedged.identity, errorLines).length > 0, 4000);
+				await waitFor(() => shedOnce() && shedLinesFor(wedged.identity, errorLines).length > 0, {
+					timeout: 4000,
+					message: 'no shed line for this commit; an older outstanding commit may hold the oldest slot',
+				});
 				const line = assertShedOnce(errorLines, wedged.identity, 'the stuck commit must be logged once');
 				assertForeignLinesWereCaptured(errorLines, wedged.identity);
 				assert.match(line, /Live transaction handles, any of which could hold the write intent/);
@@ -558,12 +562,9 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			}
 		});
 
-		// Two distinct promises at this log site: a stuck commit is reported once rather than once per
-		// rejected request (the harper#2001 flood), and a commit still stuck once the first settles
-		// becomes the new oldest and gets its own report. The first is only proved by shedding past the
-		// thread-wide cooldown with the same commit oldest, which is what PROBE_PAST_COOLDOWN_MS buys —
-		// and the second commit's line, granted as soon as it is asked for, is what proves the probe
-		// outlasted that cooldown instead of ending inside it.
+		// The per-node `logged` flag is only observable once the thread-wide cooldown has stopped
+		// suppressing a repeat on its own, so the probe has to outlast OVERLOAD_LOG_MIN_INTERVAL_MS
+		// (resources/DatabaseTransaction.ts) and shed again after it.
 		const PROBE_PAST_COOLDOWN_MS = 2500;
 		it('reports each stuck commit once, and the next-oldest on its own', async function () {
 			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
@@ -576,22 +577,26 @@ describe('Long-lived transaction reporting (#2471)', () => {
 				injectForeignErrorLines();
 				const wedged = trackAStuckCommit();
 				const next = trackAStuckCommit({ name: 'WedgedNext', id: 7 });
-				await waitFor(() => shedOnce() && shedLinesFor(wedged.identity, errorLines).length > 0, 4000);
+				await waitFor(() => shedOnce() && shedLinesFor(wedged.identity, errorLines).length > 0, {
+					timeout: 4000,
+					message: 'no shed line for this commit; an older outstanding commit may hold the oldest slot',
+				});
 				const probeUntil = Date.now() + PROBE_PAST_COOLDOWN_MS;
 				while (Date.now() < probeUntil) {
 					assert.ok(shedOnce(), 'the wedged commit must keep shedding while it is outstanding');
 					await delay(25);
 				}
+				// Unconditional, so a stall that swallows the whole loop still leaves one shed past the
+				// deadline rather than a probe that only ran inside the cooldown.
+				assert.ok(shedOnce(), 'the wedged commit must keep shedding while it is outstanding');
 				assertShedOnce(errorLines, wedged.identity, 'a stuck commit must be reported once, not once per shed');
 				assertForeignLinesWereCaptured(errorLines, wedged.identity);
 
 				wedged.settle();
-				const askedAt = Date.now();
-				await waitFor(() => shedOnce() && shedLinesFor(next.identity, errorLines).length > 0, 8000);
-				assert.ok(
-					Date.now() - askedAt < PROBE_PAST_COOLDOWN_MS,
-					'the next-oldest report was still waiting out the shed cooldown, so the probe above never crossed it'
-				);
+				await waitFor(() => shedOnce() && shedLinesFor(next.identity, errorLines).length > 0, {
+					timeout: 8000,
+					message: 'the next-oldest outstanding commit was never reported after the first one settled',
+				});
 				assertShedOnce(errorLines, wedged.identity, 'the settled commit must not be reported again');
 			} finally {
 				harperLogger.error = originalError;
@@ -612,10 +617,10 @@ describe('Long-lived transaction reporting (#2471)', () => {
 			try {
 				injectForeignErrorLines();
 				const wedged = trackAStuckCommit();
-				await waitFor(
-					() => shedOnce() && registryCalls > 0 && shedLinesFor(wedged.identity, errorLines).length > 0,
-					2000
-				);
+				await waitFor(() => shedOnce() && registryCalls > 0 && shedLinesFor(wedged.identity, errorLines).length > 0, {
+					timeout: 2000,
+					message: 'no shed line for this commit; an older outstanding commit may hold the oldest slot',
+				});
 				assert.strictEqual(registryCalls, 1, 'the suffix builder must run once');
 			} finally {
 				harperLogger.error = originalError;
