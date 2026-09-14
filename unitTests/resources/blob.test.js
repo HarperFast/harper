@@ -3337,6 +3337,36 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 		assert.ok(existsSync(filePath));
 	});
 
+	it('re-stages a row the awaited commit did not carry', async () => {
+		// The commit promise is a claim about a transaction; whether it was the row's own is read back.
+		const { fileId, stored } = await fileBackedBlob('missed-commit');
+		const priorVersion = Interlock.primaryStore.getEntry('missed-commit').version;
+		const db = queueDb();
+		const { put } = db;
+		let dropped = false;
+		db.put = function (key) {
+			// The batched write is lost, while the commit that is awaited succeeds.
+			if (isQueueKey(key) && key[1] === fileId && !dropped) {
+				dropped = true;
+				return Promise.resolve(true);
+			}
+			return put.apply(this, arguments);
+		};
+		const hadCommitted = 'committed' in db;
+		if (hadCommitted) db.committed = { then: (onFulfilled) => Promise.resolve().then(() => onFulfilled(true)) };
+		try {
+			deleteBlob(stored, { priorVersion, synchronous: false });
+			await waitFor(() => queueRow(fileId) !== undefined, {
+				timeout: 2000,
+				message: 'a row the commit did not land must be re-staged',
+			});
+		} finally {
+			db.put = put;
+			if (hadCommitted) delete db.committed;
+		}
+		assert.equal(queueRow(fileId).priorVersion, priorVersion);
+	});
+
 	it('does not answer an unreadable queue as an empty one', () => {
 		const db = queueDb();
 		const { getRange } = db;
