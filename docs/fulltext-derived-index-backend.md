@@ -2,21 +2,46 @@
 
 Storage direction updated September 14, 2026:
 [Native Tantivy storage and Harper derived indexes](https://github.com/HarperFast/fulltext/blob/codex/native-storage-design/docs/native-storage-integration.md).
-The structural backend below will use native Tantivy files. The real native lifecycle and publication
-adapter remain to be implemented; existing hosted-storage tests are historical diagnostics.
+The backend below uses native Tantivy files. Harper's RocksDB transaction log remains authoritative;
+the local full-text directory is a rebuildable, independently published projection.
 
 ## Objective
 
-Implement the package-independent Harper state machine that adapts an asynchronous Fulltext owner
-runtime to `DerivedIndexBackend`. This unit covers owner acquisition, bounded ordered delivery,
-barrier publication, durable-cursor recovery, owner fencing, shutdown, and reset. It does not wire a
-customer schema, query API, database lifecycle, or unpublished `@harperfast/fulltext` package.
+Implement the Harper state machine and native generation lifecycle that adapt an asynchronous
+Fulltext owner runtime to `DerivedIndexBackend`. This unit covers owner acquisition, bounded ordered
+delivery, barrier publication, durable-cursor recovery, crash-safe generation replacement, owner
+fencing, shutdown, and reset. It does not yet wire a customer schema or query API.
 
 The implementation is stacked on
 [Shared derived-index runtime for native backends #2567](https://github.com/HarperFast/harper/pull/2567)
-and keeps Fulltext behind structural engine, encoder, and generation-lifecycle interfaces. Unit
-tests run with a deterministic engine. A real Fulltext artifact remains an opt-in integration input
-until the package has a versioned prerelease with supported platform binaries.
+and keeps Fulltext behind structural engine, encoder, and generation-lifecycle interfaces. The
+production loader is present, while tests inject a structural module until Fulltext has a versioned
+prerelease with supported platform binaries. Harper will exact-pin that release as an optional
+dependency in the schema-integration unit.
+
+## Architecture
+
+```text
+authoritative Harper transaction
+              |
+              v
+    DerivedIndexRuntime (RocksDB cursor/election/replay protocol)
+              |
+              v
+ FullTextDerivedIndexBackend (bounded FIFO apply/publish state machine)
+              |
+              v
+ @harperfast/fulltext/native (one Tantivy writer for the owned index)
+              |
+              v
+ <store>/<index-hash>.fulltext/
+   CURRENT ---------------------> generations/<uuid>/  (selected native index)
+   STORE.json                    generations/<old-uuid>/ (retired, reclaimed)
+```
+
+RocksDB does not store Tantivy terms, postings, segments, or documents. Each source node and replica
+builds the same logical index from the authoritative records and transactions it receives. A native
+publication commits the searchable Tantivy generation and its Harper replay cursor together.
 
 ## Invariant
 
@@ -33,9 +58,9 @@ begins for an owner epoch, no command from that epoch may apply or publish.
   resolves. A later commit can reacquire the same registration without registering it again.
 - `deliver()` is synchronous. Accepted batches remain backend-owned until their cursor becomes
   durable or the backend reports `accepted-work-lost`.
-- The experimental Fulltext hosted runtime exposes asynchronous `apply`, `publish`, and `close`;
-  publication commits the payload and reloads the owner reader. This behavior must move to the
-  native facade using its existing engine implementation; the hosted storage provider is retired.
+- Fulltext's native runtime exposes asynchronous `apply`, `publish`, and `close`; publication commits
+  the payload and reloads the owner reader. Harper uses this native facade directly. The hosted
+  RocksDB storage provider is retired.
 
 ## Required shared-runtime correction
 
@@ -87,10 +112,30 @@ interface FullTextDerivedIndexLifecycle {
 }
 ```
 
-`open()` reopens the currently selected physical generation. `replace()` performs the externally
-coordinated generation replacement and returns the new open engine. The production implementation
-will own native index paths, physical-generation selection, and database lifecycle ordering. Harper
-uses the same native wrapper factory as standalone callers. This backend does not own byte storage.
+`open()` reopens the physical generation named by `CURRENT`. `replace()` creates a cursorless
+generation, durably switches `CURRENT`, returns the new open engine, and reclaims retired
+generations. Harper uses Fulltext's public native factory; this adapter does not implement Tantivy
+storage.
+
+`NativeFullTextDerivedIndexLifecycle` derives a fixed-length directory name from the logical store
+name, records the readable store name in `STORE.json`, and stores physical generations under random
+UUIDs. `CURRENT` is versioned JSON containing the physical UUID and a hash of Harper's source-table
+generation identity. Control files are created with mode `0600` inside `0700` directories. A selector
+is published as a temp-file write, file `fsync`, Harper's bounded rename retry, and parent-directory
+`fsync` where the platform supports directory handles. The rename retry is capped at 15 ms so index
+activation cannot park a worker for the general configuration writer's multi-second retry budget.
+
+Before selecting a new generation, the lifecycle syncs the native generation directory and its
+parent. A crash before the selector rename leaves the old generation selected. A crash after the
+rename selects the new cursorless generation, so recovery rebuilds it from Harper. Replacement never
+deletes or modifies the selected generation first. Cleanup accepts only strict UUID child paths and
+runs after selection; the next open also sweeps non-selected generations, bounding crash leftovers.
+
+Missing `CURRENT` means first activation and creates a cursorless generation. Invalid selector
+metadata, a mismatched source identity, a missing selected directory, and Fulltext's
+`E_IDENTITY_MISMATCH`, `E_INCOMPLETE_CREATE`, or `E_SCHEMA_MISMATCH` errors condemn the generation and
+enter Harper's rebuild protocol without consuming transient acquisition retries. Lock contention,
+missing binaries, permission errors, and `E_STORAGE` remain non-destructive acquisition failures.
 
 The encoder collaborator accepts the Harper mutation input and returns Fulltext's packed batch. The
 backend owns the mapping from `DerivedIndexBatch.records`; it never serializes the batch object.
@@ -176,28 +221,24 @@ barrier publishes the latest eligible cursor. If accepted work after that cursor
 published, close uses rollback and leaves the previous committed payload for replay. Shutdown clears
 the in-memory cursor only after native close proves that no task or callback can touch storage.
 
-`reset(newEpoch)` attempts to open the old generation, publishes a cursorless tombstone, and closes
-it before calling `replace(newEpoch)`. If the old generation is unopenable, replacement still
-proceeds: the lifecycle collaborator must durably select the new cursorless physical generation
-before it drops or mutates the old one. If an opened generation cannot publish its tombstone or
-prove close, reset stops before replacement. The returned replacement must have no committed
-cursor; otherwise reset fails closed. The replacement stays open for rebuild delivery under the new
-epoch.
-
-Physical generation naming, metadata, orphan cleanup, and native directory removal remain the lifecycle
-collaborator's responsibility and are implemented with the real package integration. Harper's
-shared runtime remains the only rebuild scanner and replay coordinator.
+`reset(newEpoch)` calls `replace(newEpoch)` only after the runtime has shut down the old owner and
+persisted its condemnation marker. The lifecycle creates and opens a new physical generation before
+atomically selecting it. It does not reopen, tombstone, or mutate the old generation. The returned
+replacement must have no committed cursor; otherwise reset fails closed. It stays open for rebuild
+delivery under the new epoch. Harper's shared runtime remains the only rebuild scanner and replay
+coordinator.
 
 ## Native publication and unrelated source traffic
 
-Native Tantivy publication no longer writes segment bytes through `RocksDerivedIndexStorage` and
-therefore does not create that hosted path's root-commit feedback. Unrelated authoritative writes
+Native Tantivy publication writes no segment bytes through Harper RocksDB and therefore creates no
+derived-storage root-commit feedback. Unrelated authoritative writes
 can still wake derived runners and advance cursor-only progress. Native commits and reader reloads
 for those boundaries still need measurement under the existing bounded flush policy.
 
-The existing hosted-storage notification test is experimental evidence, not an activation gate for
-native storage. Add a real native integration measurement before changing Harper's shared source
-notification behavior. Native storage does not justify a new source-log signal or RocksDB primitive.
+Native storage does not justify a new source-log signal or RocksDB primitive. The real-Rocks test
+uses Harper's authoritative table and audit log while a deterministic native module owns derived
+documents outside RocksDB; this proves the integration does not feed its own storage writes back
+through the source log.
 
 ## Verification
 
@@ -207,21 +248,20 @@ notification behavior. Native storage does not justify a new source-log signal o
   asynchronous cursor-install failures are contained, transient failures recover, and persistent
   failures become observable `unavailable` state at the configured cap.
 - Backend tests prove bounded asynchronous encoding, FIFO barrier horizons, repeated `through`
-  values, exact barrier snapshots, monotone cursors, cursor-only native bypass and bounded
-  publication coalescing, deferred wake-up, and fail-closed behavior.
+  values, exact barrier snapshots, physically ordered non-monotone timestamp values, cursor-only
+  native bypass and bounded publication coalescing, deferred wake-up, and fail-closed behavior.
 - Cursor tests cover decimal RocksDB audit positions, malformed and oversized payloads, restart
   recovery, and publication/readback ordering.
 - Failure tests cover one-channel reporting for synchronous failures, recoverable apply and ambiguous
   publish failures, reopen-before-notify, unreopenable generations, late opens after revocation, and
   retry after quiescence failure.
-- Shutdown/reset tests prove clean close, tombstone-before-replacement, cursor clearing, reopen on a
-  later owner epoch, replacement of an unopenable old generation, and an open cursorless replacement.
-- A RocksDB integration test pairs real `RocksDerivedIndexStorage` with a deterministic fake engine,
-  owns close ordering explicitly, and records root notification amplification. It does not represent
-  native callback or Tantivy coverage.
-- End-to-end route: the package-independent backend runs through a real `DerivedIndexRuntime` and
-  real Harper RocksDB storage with the deterministic engine. The optional packed-artifact harness
-  remains the only current Tantivy/host-callback route and must be reported separately.
+- Shutdown/reset tests prove clean close, cursor clearing, reopen on a later owner epoch, atomic
+  replacement without opening the retired generation, and an open cursorless replacement.
+- Lifecycle tests cover restart reuse, source-identity mismatch, bounded selector replacement,
+  traversal-safe cleanup, orphan reclamation, and persistent-versus-transient native error classes.
+- The end-to-end route runs the production lifecycle and backend through a real
+  `DerivedIndexRuntime`, authoritative Harper RocksDB table, and deterministic structural native
+  module. The packed Fulltext artifact remains the final binary-integration gate.
 
 ## Approaches considered
 

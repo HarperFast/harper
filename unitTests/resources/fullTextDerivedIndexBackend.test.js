@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const { writeKeyId } = require('#src/resources/DatabaseTransaction');
 const {
 	FullTextDerivedIndexBackend,
+	FullTextGenerationInvalidError,
 	decodeFullTextCursorPayload,
 	encodeFullTextCursorPayload,
 	toFullTextMutationBatch,
@@ -269,24 +270,10 @@ describe('FullTextDerivedIndexBackend', () => {
 	});
 
 	it('does not notify failures already returned or rejected to the runtime', async () => {
-		const invalidDeliveryEngine = new FakeEngine(encodeFullTextCursorPayload(cursor(20)));
-		const invalidDelivery = makeBackend(lifecycle([invalidDeliveryEngine])).backend;
-		const deliveryChanges = [];
-		invalidDelivery.onStateChange((change) => deliveryChanges.push(change));
-		await invalidDelivery.acquire(1n);
-		assert.strictEqual(invalidDelivery.deliver(batch(1n, [], cursor(10))), DERIVED_INDEX_FAILED);
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.deepStrictEqual(deliveryChanges, []);
-		await invalidDelivery.shutdown(1n);
-
-		const resetEngine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		resetEngine.publishAction = async () => {
-			throw new Error('tombstone failed');
-		};
-		const resetting = makeBackend(lifecycle([resetEngine], [new FakeEngine()])).backend;
+		const resetting = makeBackend(lifecycle([], [new Error('replace failed')])).backend;
 		const resetChanges = [];
 		resetting.onStateChange((change) => resetChanges.push(change));
-		await assert.rejects(resetting.reset(1n), /tombstone/);
+		await assert.rejects(resetting.reset(1n), /replace failed/);
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.deepStrictEqual(resetChanges, []);
 
@@ -333,7 +320,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
-	it('fails closed before accepting a cursor that moves backward', async () => {
+	it('preserves physical log order when later transactions have lower timestamp values', async () => {
 		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(20)));
 		const { backend } = makeBackend(lifecycle([engine]));
 		await backend.acquire(1n);
@@ -341,9 +328,11 @@ describe('FullTextDerivedIndexBackend', () => {
 			backend.deliver(
 				batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(10))
 			),
-			DERIVED_INDEX_FAILED
+			DERIVED_INDEX_ACCEPTED
 		);
-		assert.strictEqual(engine.applied.length, 0);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[0]).logs }, cursor(10).logs);
 		await backend.shutdown(1n);
 	});
 
@@ -604,18 +593,11 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(backend.getDurableCursor(), undefined);
 	});
 
-	it('publishes a tombstone before replacing a generation', async () => {
+	it('lets the lifecycle atomically replace a generation without opening the old one', async () => {
 		const events = [];
-		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const oldGeneration = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		oldGeneration.publishAction = async (payload) => {
-			events.push(['tombstone', decodeFullTextCursorPayload(payload)]);
-			oldGeneration.committedPayload = payload;
-			return 1n;
-		};
 		const replacement = new FakeEngine();
 		const lifecycleValue = lifecycle(
-			[first, oldGeneration],
+			[],
 			[
 				() => {
 					events.push(['replace']);
@@ -624,35 +606,41 @@ describe('FullTextDerivedIndexBackend', () => {
 			]
 		);
 		const context = makeBackend(lifecycleValue);
-		await context.backend.acquire(1n);
-		await context.backend.shutdown(1n);
-		context.setEpoch(2n);
-		await context.backend.reset(2n);
-		assert.deepStrictEqual(events, [['tombstone', undefined], ['replace']]);
+		await context.backend.reset(1n);
+		assert.deepStrictEqual(events, [['replace']]);
+		assert.deepStrictEqual(lifecycleValue.openCalls, []);
 		assert.strictEqual(context.backend.getDurableCursor(), undefined);
-		await context.backend.shutdown(2n);
+		await context.backend.shutdown(1n);
 	});
 
-	it('replaces an unopenable old generation instead of making reset terminal', async () => {
+	it('delegates replacement without requiring the retired generation to open', async () => {
 		const replacement = new FakeEngine();
-		const lifecycleValue = lifecycle([new Error('corrupt generation')], [replacement]);
+		const lifecycleValue = lifecycle([], [replacement]);
 		const { backend } = makeBackend(lifecycleValue);
 		await backend.reset(1n);
 		assert.deepStrictEqual(lifecycleValue.replaceCalls, [1n]);
+		assert.deepStrictEqual(lifecycleValue.openCalls, []);
 		await backend.shutdown(1n);
 	});
 
-	it('does not replace an old generation until its writer proves quiescent', async () => {
-		const oldGeneration = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		oldGeneration.closeError = new Error('writer still active');
-		const replacement = new FakeEngine();
-		const lifecycleValue = lifecycle([oldGeneration], [replacement]);
-		const { backend } = makeBackend(lifecycleValue);
+	it('returns a rebuild cursor immediately for a persistently invalid generation', async () => {
+		const lifecycleValue = lifecycle([
+			new FullTextGenerationInvalidError('invalid generation', new Error('schema mismatch')),
+		]);
+		const { backend } = makeBackend(lifecycleValue, { openAttempts: 3 });
+		assert.strictEqual(await backend.acquire(1n), undefined);
+		assert.strictEqual(lifecycleValue.openCalls.length, 1);
+	});
 
-		await assert.rejects(backend.reset(1n), /could not close before replacement/);
-		assert.deepStrictEqual(lifecycleValue.replaceCalls, []);
-		oldGeneration.closeError = undefined;
-		await backend.shutdown(1n);
+	it('recognizes a persistently invalid generation through an adapter error cause', async () => {
+		const lifecycleValue = lifecycle([
+			new Error('adapter open failed', {
+				cause: new FullTextGenerationInvalidError('invalid generation'),
+			}),
+		]);
+		const { backend } = makeBackend(lifecycleValue, { openAttempts: 3 });
+		assert.strictEqual(await backend.acquire(1n), undefined);
+		assert.strictEqual(lifecycleValue.openCalls.length, 1);
 	});
 
 	it('closes a rejected replacement generation before reset returns', async () => {

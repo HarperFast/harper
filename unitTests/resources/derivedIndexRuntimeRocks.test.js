@@ -1,24 +1,25 @@
 require('../testUtils');
 const assert = require('node:assert');
+const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const { LOCAL_ONLY } = require('#src/resources/auditStore');
 const { DERIVED_INDEX_ACCEPTED, DerivedIndexRuntime } = require('#src/resources/derivedIndexRuntime');
+const { decodeFullTextCursorPayload } = require('#src/resources/FullTextDerivedIndexBackend');
 const {
-	decodeFullTextCursorPayload,
-	encodeFullTextCursorPayload,
-	FullTextDerivedIndexBackend,
-} = require('#src/resources/FullTextDerivedIndexBackend');
-const { RocksDerivedIndexStorage } = require('#src/resources/RocksDerivedIndexStorage');
+	createNativeFullTextDerivedIndexBackend,
+	NativeFullTextDerivedIndexLifecycle,
+} = require('#src/resources/NativeFullTextDerivedIndexLifecycle');
 
 describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 
 	let runtime;
+	let testPath;
 	before(function () {
-		setupTestDBPath();
+		testPath = setupTestDBPath();
 		setMainIsWorker(true);
 	});
 
@@ -68,11 +69,22 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 				return () => (this.wake = undefined);
 			},
 		};
-		runtime = new DerivedIndexRuntime(Product.auditStore, (tableId, recordId) => {
-			if (tableId !== Product.tableId) throw new Error(`unknown table ${tableId}`);
-			const entry = Product.primaryStore.getEntry(recordId);
-			return entry?.value ? { version: entry.version, value: entry.value } : undefined;
-		});
+		runtime = new DerivedIndexRuntime(
+			Product.auditStore,
+			(tableId, recordId) => {
+				if (tableId !== Product.tableId) throw new Error(`unknown table ${tableId}`);
+				const entry = Product.primaryStore.getEntry(recordId);
+				return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+			},
+			{
+				scanRecords: () =>
+					Product.primaryStore.getRange({ versions: true }).map((entry) => ({
+						recordId: entry.key,
+						version: entry.version,
+						value: entry.value,
+					})),
+			}
+		);
 		const unregister = runtime.register({
 			backend,
 			projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
@@ -126,7 +138,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		runtime = undefined;
 	});
 
-	it('publishes a full-text cursor through Harper RocksDB without replaying its own storage writes', async () => {
+	it('publishes a native full-text cursor without feeding derived storage back into the source log', async () => {
 		const Product = table({
 			database: 'fulltext-derived-index-runtime-rocks',
 			table: 'Product',
@@ -137,143 +149,189 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		const anchor = [...Product.auditStore.getRange({ start: 1 })]
 			.filter((entry) => entry.tableId === Product.tableId && entry.recordId === 'anchor')
 			.at(-1).txnLogKey;
-		const rootStore = Product.primaryStore.rootStore;
-		const storeName = '__test_fulltext_runtime';
-		const cursorKey = Buffer.from('cursor');
-		const seed = new RocksDerivedIndexStorage(rootStore, storeName);
-		try {
-			seed.write(
-				[
-					{
-						type: 'put',
-						key: cursorKey,
-						value: Buffer.from(encodeFullTextCursorPayload({ format: 1, logs: { local: anchor } })),
-					},
-				],
-				'wal'
-			);
-		} finally {
-			seed.close();
-		}
-
-		const lifecycle = new RocksFakeFullTextLifecycle(rootStore, storeName, cursorKey);
-		const backend = new FullTextDerivedIndexBackend({
+		const binding = new FakeNativeFullTextModule();
+		const lifecycleOptions = {
+			storePath: path.join(testPath, 'fulltext-indexes'),
+			storeName: 'fulltext-derived-index-runtime-rocks.Product.title',
+			indexId: 'rocks-fulltext-products',
+			sourceGeneration: 'product-table-generation',
+			fields: [{ name: 'title' }],
+			analyzer: 'english@1',
+			limits: {
+				indexingThreads: 1,
+				searchThreads: 1,
+				writerMemoryBytes: 32 * 1024 * 1024,
+				maxQueuedCommands: 16,
+				maxQueuedBytes: 64 * 1024 * 1024,
+				maxBatchBytes: 8 * 1024 * 1024,
+			},
+			binding,
+		};
+		const backend = createNativeFullTextDerivedIndexBackend({
 			id: 'rocks-fulltext-products',
-			lifecycle,
-			encodeMutationBatch: (batch) => Buffer.from(JSON.stringify(batch)),
+			...lifecycleOptions,
 		});
-		runtime = new DerivedIndexRuntime(Product.auditStore, (tableId, recordId) => {
-			if (tableId !== Product.tableId) throw new Error(`unknown table ${tableId}`);
-			const entry = Product.primaryStore.getEntry(recordId);
-			return entry?.value ? { version: entry.version, value: entry.value } : undefined;
-		});
+		runtime = new DerivedIndexRuntime(
+			Product.auditStore,
+			(tableId, recordId) => {
+				if (tableId !== Product.tableId) throw new Error(`unknown table ${tableId}`);
+				const entry = Product.primaryStore.getEntry(recordId);
+				return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+			},
+			{
+				scanRecords: () =>
+					Product.primaryStore.getRange({ versions: true }).map((entry) => ({
+						recordId: entry.key,
+						version: entry.version,
+						value: entry.value,
+					})),
+			}
+		);
 		let unregister = runtime.register({
 			backend,
 			projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
 			options: { flushAfterMutations: 1, maxFlushAgeMilliseconds: 10 },
 		});
-		let committedEvents = 0;
-		const countCommit = () => committedEvents++;
-		rootStore.on('committed', countCommit);
 		try {
 			await Product.put('p1', { title: 'first product' });
 			const p1Cursor = [...Product.auditStore.getRange({ start: anchor })]
 				.filter((entry) => entry.tableId === Product.tableId && entry.recordId === 'p1')
 				.at(-1).txnLogKey;
-			await waitFor(() => lifecycle.engines.some((engine) => engine.publications === 1));
+			await waitFor(
+				() => binding.states.size > 0 && [...binding.states.values()].some((state) => state.publications === 1),
+				10_000
+			);
 			await new Promise((resolve) => setImmediate(resolve));
-			const engine = lifecycle.engines.at(-1);
-			assert.strictEqual(engine.applications, 1, 'derived storage writes add no source audit entries');
-			assert(committedEvents >= 5, 'one source write and at least four fake-engine writes notify the shared root');
 
 			await unregister();
 			unregister = undefined;
-			const stored = new RocksDerivedIndexStorage(rootStore, storeName);
-			try {
-				const documentId = `${Product.tableId}.${Buffer.from('p1').toString('base64url')}`;
-				assert.deepStrictEqual(JSON.parse(stored.read(Buffer.from(`document/${documentId}`)).toString()), {
-					id: documentId,
-					fields: { title: 'first product' },
-				});
-				const storedCursor = decodeFullTextCursorPayload(stored.read(cursorKey).toString());
-				assert.strictEqual(storedCursor.logs.local, p1Cursor);
-				assert(storedCursor.logs.local > anchor, 'the durable cursor advanced beyond the seeded anchor');
-				assert.strictEqual(stored.read(Buffer.from('segment')).toString(), '1');
-			} finally {
-				stored.close();
-			}
+			const reopened = await new NativeFullTextDerivedIndexLifecycle(lifecycleOptions).open(2n);
+			const state = binding.states.get(binding.opens.at(-1).generation);
+			const documentId = `${Product.tableId}.${Buffer.from('p1').toString('base64url')}`;
+			assert.deepStrictEqual(state.documents.get(documentId), {
+				id: documentId,
+				fields: { title: 'first product' },
+			});
+			const storedCursor = decodeFullTextCursorPayload(reopened.committedPayload);
+			assert.strictEqual(storedCursor.logs.local, p1Cursor);
+			assert(storedCursor.logs.local > anchor, 'the durable cursor advanced beyond the seeded anchor');
+			assert.strictEqual(state.applications, 1);
+			await reopened.close({ mode: 'require-clean' });
 		} finally {
-			rootStore.off('committed', countCommit);
 			if (unregister) await unregister();
+			await runtime.stop();
+			runtime = undefined;
+		}
+	});
+
+	it('rebuilds a persistently incompatible native generation from the authoritative table', async () => {
+		const Product = table({
+			database: 'fulltext-derived-index-invalid-generation',
+			table: 'Product',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+		});
+		await Product.put('p1', { title: 'recover me' });
+		const binding = new FakeNativeFullTextModule();
+		const lifecycleOptions = {
+			storePath: path.join(testPath, 'fulltext-indexes'),
+			storeName: 'fulltext-derived-index-invalid-generation.Product.title',
+			indexId: 'invalid-generation-products',
+			sourceGeneration: 'product-table-generation',
+			fields: [{ name: 'title' }],
+			analyzer: 'english@1',
+			limits: {
+				indexingThreads: 1,
+				searchThreads: 1,
+				writerMemoryBytes: 32 * 1024 * 1024,
+				maxQueuedCommands: 16,
+				maxQueuedBytes: 64 * 1024 * 1024,
+				maxBatchBytes: 8 * 1024 * 1024,
+			},
+			binding,
+		};
+		const seeded = await new NativeFullTextDerivedIndexLifecycle(lifecycleOptions).open(1n);
+		await seeded.close({ mode: 'rollback' });
+		const staleGeneration = binding.opens.at(-1).generation;
+		binding.failNextOpenCode = 'E_SCHEMA_MISMATCH';
+
+		const backend = createNativeFullTextDerivedIndexBackend({ id: 'invalid-generation-products', ...lifecycleOptions });
+		runtime = new DerivedIndexRuntime(
+			Product.auditStore,
+			(_tableId, recordId) => {
+				const entry = Product.primaryStore.getEntry(recordId);
+				return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+			},
+			{
+				scanRecords: () =>
+					Product.primaryStore.getRange({ versions: true }).map((entry) => ({
+						recordId: entry.key,
+						version: entry.version,
+						value: entry.value,
+					})),
+			}
+		);
+		const unregister = runtime.register({
+			backend,
+			projections: new Map([[Product.tableId, (record) => ({ title: record.title })]]),
+			options: { flushAfterMutations: 1, maxFlushAgeMilliseconds: 10, rebuildBackoffMilliseconds: 1 },
+		});
+		try {
+			await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 10_000 });
+			const selectedGeneration = binding.opens.at(-1).generation;
+			assert.notStrictEqual(selectedGeneration, staleGeneration);
+			const documentId = `${Product.tableId}.${Buffer.from('p1').toString('base64url')}`;
+			assert.deepStrictEqual(binding.states.get(selectedGeneration).documents.get(documentId), {
+				id: documentId,
+				fields: { title: 'recover me' },
+			});
+		} finally {
+			await unregister();
 			await runtime.stop();
 			runtime = undefined;
 		}
 	});
 });
 
-class RocksFakeFullTextLifecycle {
-	constructor(rootStore, storeName, cursorKey) {
-		this.rootStore = rootStore;
-		this.storeName = storeName;
-		this.cursorKey = cursorKey;
-		this.engines = [];
+class FakeNativeFullTextModule {
+	constructor() {
+		this.states = new Map();
+		this.opens = [];
 	}
 
-	async open() {
-		const engine = new RocksFakeFullTextEngine(this.rootStore, this.storeName, this.cursorKey);
-		this.engines.push(engine);
-		return engine;
+	encodeMutationBatch(batch) {
+		return Buffer.from(JSON.stringify(batch));
 	}
 
-	async replace() {
-		const old = new RocksDerivedIndexStorage(this.rootStore, this.storeName);
-		old.drop();
-		return this.open();
-	}
-}
-
-class RocksFakeFullTextEngine {
-	constructor(rootStore, storeName, cursorKey) {
-		this.storage = new RocksDerivedIndexStorage(rootStore, storeName);
-		this.cursorKey = cursorKey;
-		this.committedPayload = this.storage.read(cursorKey)?.toString();
-		this.applications = 0;
-		this.publications = 0;
-	}
-
-	async apply(packed) {
-		const batch = JSON.parse(Buffer.from(packed).toString());
-		for (const document of batch.upserts) {
-			this.storage.write(
-				[{ type: 'put', key: Buffer.from(`document/${document.id}`), value: Buffer.from(JSON.stringify(document)) }],
-				'wal'
-			);
-			this.storage.write(
-				[{ type: 'put', key: Buffer.from(`term/${document.id}`), value: Buffer.from(document.fields.title) }],
-				'wal'
-			);
+	async openNativeFullTextIndex(options) {
+		this.opens.push(options);
+		if (this.failNextOpenCode) {
+			const code = this.failNextOpenCode;
+			this.failNextOpenCode = undefined;
+			throw Object.assign(new Error(code), { code });
 		}
-		for (const id of batch.deletes) {
-			this.storage.write([{ type: 'delete', key: Buffer.from(`document/${id}`) }], 'wal');
-			this.storage.write([{ type: 'delete', key: Buffer.from(`term/${id}`) }], 'wal');
+		let state = this.states.get(options.generation);
+		if (!state) {
+			state = { documents: new Map(), applications: 0, publications: 0, committedPayload: undefined };
+			this.states.set(options.generation, state);
 		}
-		this.storage.write(
-			[{ type: 'put', key: Buffer.from('segment'), value: Buffer.from(String(++this.applications)) }],
-			'wal'
-		);
-		return batch.upserts.length + batch.deletes.length;
-	}
-
-	async publish(payload) {
-		this.storage.write([{ type: 'put', key: this.cursorKey, value: Buffer.from(payload) }], 'wal');
-		this.storage.sync();
-		this.committedPayload = payload;
-		this.publications++;
-		return BigInt(this.publications);
-	}
-
-	async close() {
-		this.storage.close();
+		return {
+			committedPayload: state.committedPayload,
+			async apply(packed) {
+				const batch = JSON.parse(Buffer.from(packed).toString());
+				for (const document of batch.upserts) state.documents.set(document.id, document);
+				for (const id of batch.deletes) state.documents.delete(id);
+				state.applications++;
+				return batch.upserts.length + batch.deletes.length;
+			},
+			async publish(payload) {
+				state.committedPayload = payload;
+				state.publications++;
+				this.committedPayload = payload;
+				return BigInt(state.publications);
+			},
+			async close() {},
+		};
 	}
 }
 
