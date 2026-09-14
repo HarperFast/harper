@@ -118,6 +118,9 @@ class FakeCluster {
 			 * but not what a test about a home that restarted BEFORE this coordinator existed is saying.
 			 */
 			incarnation: options.incarnations?.[name] ?? 1,
+			/** Set by a test to make this node's control-entry writer throw synchronously. */
+			writerThrows: false,
+			writerCalls: 0,
 			/** Set to make this node report no agreed home map — a generation change, or a digest mismatch. */
 			mapless: false,
 			written: [],
@@ -166,6 +169,12 @@ class FakeCluster {
 	writeControlFor(name) {
 		return (entry) => {
 			const node = this.node(name);
+			// A test sets this to fail the WRITER itself, which is a different containment path from a
+			// dead node: `#writeControlSafely` must swallow it, not the transport.
+			if (node?.writerThrows) {
+				node.writerCalls++;
+				throw new Error('transaction log is not accepting control entries');
+			}
 			if (!node?.alive) return Promise.resolve();
 			node.written.push(entry);
 			this.#broadcastRelease(name, entry);
@@ -1890,16 +1899,44 @@ describe('record lock delegations', () => {
 			assert.strictEqual(beta.coordinator.stats.droppedOffOwner, 1);
 		});
 
-		it('contains a throw from a failing writer rather than surfacing it', async () => {
+		it('contains a malformed entry rather than surfacing it to the apply loop', async () => {
+			// A malformed entry must not reach the replicated apply loop, which would drop the whole
+			// enclosing transaction and stall replication for the database.
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('gamma');
 			const alpha = cluster.node('alpha');
-			await alpha.coordinator.acquire(key, LEASE, WAIT);
-			alpha.coordinator.applyEntry(null, 'alpha');
-			alpha.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: [1, 1, 1] }, null);
-			// A malformed entry must not reach the replicated apply loop, which would drop the whole
-			// enclosing transaction and stall replication for the database.
-			assert.ok(true);
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			const before = alpha.coordinator.stats.delegations;
+			assert.doesNotThrow(() => alpha.coordinator.applyEntry(null, 'alpha'));
+			assert.doesNotThrow(() =>
+				alpha.coordinator.applyEntry({ type: 'lockRelease', key, requester: 'alpha', token: [1, 1, 1] }, null)
+			);
+			// And neither one moved any state: a malformed entry is dropped, not half-applied.
+			assert.strictEqual(alpha.coordinator.stats.delegations, before, 'a malformed entry changed the delegation table');
+			alpha.coordinator.release(key, round.admissionId);
+		});
+
+		it('contains a throw from a failing writer rather than surfacing it', async () => {
+			// What the name says, which the previous version of this test did not do — it injected
+			// malformed apply entries and then asserted `ok(true)`. Here the WRITER throws:
+			// `#writeControlSafely` has to swallow that, because the home outwaits this delegate either
+			// way and an escaping rejection would take down whatever drove the surrender.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha');
+			const round = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(alpha.coordinator.stats.delegations, 1);
+
+			alpha.writerThrows = true;
+			alpha.coordinator.release(key, round.admissionId);
+			// Gamma contends, so the home recalls alpha; alpha surrenders and writes the release, which
+			// throws. Neither that throw nor an unhandled rejection may reach this caller.
+			await cluster
+				.node('gamma')
+				.coordinator.acquire(key, LEASE, 500)
+				.catch(() => {});
+			assert.ok(alpha.writerCalls > 0, 'the failing writer was never reached');
+			assert.strictEqual(alpha.coordinator.stats.delegations, 0, 'a throwing writer left the delegation held');
 		});
 	});
 });
