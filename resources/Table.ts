@@ -2875,6 +2875,9 @@ export function makeTable(options) {
 					},
 					(error) => {
 						clearTimeout(followerTimer);
+						// 423 here, unlike the cluster paths below: a follower only waits because another caller
+						// in this process holds or is acquiring the same key, which is the contention the status
+						// describes. The leader reports the accurate reason for its own failure.
 						if (error === followerTimedOut) throw new ClientError(`Record is locked and was not released in time`, 423);
 						return retryOnRemainingBudget();
 					}
@@ -2914,8 +2917,11 @@ export function makeTable(options) {
 				}
 				if (coordinator) {
 					try {
-						const remaining = resolved.timeout - (performance.now() - clusterStart);
-						if (remaining <= 0) throw new ClientError('Record is locked and was not released in time', 423);
+						// Not a 423 when the budget is gone, and not a skip either: the native wait can consume
+						// the whole timeout, and `acquire` with no wait left still admits from a live delegation
+						// or a local grant without sending anything. Only if it cannot does the caller learn the
+						// guarantee was unavailable — which is not the same as the key being held.
+						const remaining = Math.max(0, resolved.timeout - (performance.now() - clusterStart));
 						const round = await coordinator.acquire(id, resolved.lease, remaining);
 						// Resolved through the getter rather than captured, so a transport swap between
 						// acquisition and release reaches the coordinator that now owns the delegation.
@@ -2934,7 +2940,12 @@ export function makeTable(options) {
 							Promise.resolve()
 								.then(() => TableResource.admittingCoordinator?.release(id, round.admissionId))
 								.catch(noop);
-							throw new ClientError('Record lock was granted after its lease had elapsed', 423);
+							// 503, not 423: the home granted this key to US and the lease elapsed before the handle
+							// could take it, so nobody ever held it. The coordinator classifies the same thing the
+							// same way — see its `timeout` denial.
+							throw new LockUnavailableError(
+								`A cluster record lock on ${databaseName}.${tableName} was granted after its lease had elapsed`
+							);
 						}
 						// A recall must be able to fence a write this handle staged and then unlocked, so
 						// the coordinator needs a way to revoke it — see LockCoordinator.registerAdmission.

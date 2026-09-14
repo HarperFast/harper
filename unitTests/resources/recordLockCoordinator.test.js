@@ -857,6 +857,31 @@ describe('record lock delegations', () => {
 			assert.strictEqual(recallsSent, 1, `the confirmed recall was re-sent ${recallsSent} times`);
 		});
 
+		it('admits from a live delegation with no wait budget left', async () => {
+			// `Table.lock()` reaches the cluster step only after the native key lock, and that wait can
+			// consume the caller's whole timeout. It used to throw 423 there rather than call `acquire` at
+			// all — but a live delegation admits with zero messages and needs no budget, so the amortized
+			// path was being skipped and the caller told a key nobody holds was held. Raised by the
+			// round-24 outside lens against the 423/503 contract drawn one layer down.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, first.admissionId);
+			const requestsBefore = cluster.requests.length;
+
+			const admitted = await alpha.acquire(key, LEASE, 0);
+			assert.ok(admitted, 'the amortized path needs no wait budget');
+			assert.strictEqual(cluster.requests.length, requestsBefore, 'it sent a message it did not need to');
+			alpha.release(key, admitted.admissionId);
+
+			// The home's own key is the same: granting locally is synchronous.
+			const localKey = cluster.keyHomedOn('alpha');
+			const local = await alpha.acquire(localKey, LEASE, 0);
+			assert.ok(local, 'a local grant needs no wait budget either');
+			alpha.release(localKey, local.admissionId);
+		});
+
 		it('does not renew a delegate that already confirmed a recall', async () => {
 			// The hole the confirmed-recall guard opened, found on the next round. The delegate can confirm
 			// and re-ask before its release reaches the home — the production writer is an async log commit
