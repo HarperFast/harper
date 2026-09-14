@@ -5836,10 +5836,6 @@ export function makeTable(options) {
 			).then(() => undefined);
 		}
 		/**
-		 * This table's cluster lock coordinator, created on first use and only while a transport is
-		 * registered for the database. Nothing is allocated on the Phase 0 path.
-		 */
-		/**
 		 * The coordinator that holds this node's admissions, transport or not. Releasing and registering
 		 * go here rather than through `lockCoordinator`, which answers undefined while a transport is
 		 * momentarily unregistered — and a release dropped on that answer leaves the key's home holding
@@ -5849,6 +5845,10 @@ export function makeTable(options) {
 			return lockCoordinator;
 		}
 
+		/**
+		 * This table's cluster lock coordinator, created on first use and only while a transport is
+		 * registered for the database. Nothing is allocated on the Phase 0 path.
+		 */
 		static get lockCoordinator(): LockCoordinator | undefined {
 			const transport = getClusterLockTransport(databaseName);
 			if (!transport) {

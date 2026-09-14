@@ -1051,6 +1051,93 @@ describe('record lock delegations', () => {
 			);
 		});
 
+		it('does not waive the quarantine for a coordinator that was not owning when it was built', async () => {
+			// `Table.lockCoordinator` constructs unconditionally, so every 503 `lock()` on a non-owning
+			// worker builds one. Clearing the waiver only on an OBSERVED gap never fired for those: they
+			// had no ownership to lose, so the takeover kept the waiver and granted immediately over the
+			// delegations the outgoing owner thread was still admitting on.
+			let owns = false;
+			let mono = 1_000;
+			const coordinator = new LockCoordinator({
+				database: `unowned${Date.now()}`,
+				table: 'BuiltUnowned',
+				nodeId: 'alpha',
+				transport: {
+					homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+					ownsCoordination: () => owns,
+					requestDelegation: () => Promise.reject(new Error('single node')),
+					recallDelegation: () => Promise.resolve(),
+				},
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			});
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			owns = true;
+			const denied = await coordinator.onDelegationRequest({
+				key: 'unowned',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a coordinator built off the owner thread kept the waiver');
+			assert.strictEqual(denied.reason, 'quarantine');
+			coordinator.close();
+		});
+
+		it('does not let a transport reload re-waive a quarantine the predecessor lost', async () => {
+			// `handOffTo` carries the horizon and the ownership clock, but the successor reads
+			// `grantableAfterMono` off the NEW transport and re-latched the waiver from it — so a
+			// component reload after a takeover put the node back to granting immediately.
+			let owns = true;
+			let mono = 1_000;
+			const transport = {
+				homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+				ownsCoordination: () => owns,
+				requestDelegation: () => Promise.reject(new Error('single node')),
+				recallDelegation: () => Promise.resolve(),
+			};
+			const options = {
+				database: `reload${Date.now()}`,
+				table: 'WaiverReload',
+				nodeId: 'alpha',
+				transport,
+				writeControl: () => {},
+				keyIdOf: (key) => String(key),
+				nextTimestamp: () => 1,
+				monotonic: () => mono,
+				grantableAfterMono: -Infinity,
+				autoTick: false,
+			};
+			const predecessor = new LockCoordinator(options);
+			// The gap, then the takeover: the predecessor loses the waiver here.
+			owns = false;
+			predecessor.tick();
+			mono += 10 * (DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS);
+			owns = true;
+			const afterTakeover = await predecessor.onDelegationRequest({
+				key: 'reloaded',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(afterTakeover.reason, 'quarantine', 'the takeover did not re-arm the quarantine');
+
+			const successor = new LockCoordinator({ ...options, adopt: predecessor });
+			const denied = await successor.onDelegationRequest({
+				key: 'reloaded',
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(denied.granted, false, 'a reload re-waived the quarantine the takeover armed');
+			assert.strictEqual(denied.reason, 'quarantine');
+			successor.close();
+		});
+
 		it('leaves a grant recallable when a local recall fails', async () => {
 			// The home's own delegate goes through `#beginRecall`'s local branch, which used to assign
 			// `grant.recalling` and never clear it on a rejection — so one failed recall latched the grant
@@ -1063,25 +1150,30 @@ describe('record lock delegations', () => {
 			assert.ok(own, 'beta did not take the key it homes');
 
 			let recalls = 0;
+			let lastRecall;
 			beta.onDelegationRecall = () => {
 				recalls++;
-				return Promise.reject(new Error('the drain failed'));
+				// Awaited rather than slept past: `#beginRecall` attaches its handlers to this promise
+				// inside the request below, so a handler the test attaches afterwards runs strictly after
+				// the bookkeeping being asserted.
+				return (lastRecall = Promise.reject(new Error('the drain failed')));
 			};
+			const settled = () => lastRecall.catch(() => {});
 			const first = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(first.granted, false, 'alpha was granted over a live local delegation');
-			await delayMs(5);
+			await settled();
 			assert.strictEqual(recalls, 1, 'the contender did not prompt a recall');
 
 			// Only on the retry interval, not on the contender's 25 ms poll.
 			const tooSoon = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(tooSoon.granted, false);
-			await delayMs(5);
+			await settled();
 			assert.strictEqual(recalls, 1, 'a failed recall was re-sent on the contender’s poll interval');
 
 			cluster.advance('beta', RECALL_RETRY_MS + 100);
 			const retried = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
 			assert.strictEqual(retried.granted, false);
-			await delayMs(5);
+			await settled();
 			assert.strictEqual(recalls, 2, `a failed local recall was never retried (${recalls} sent)`);
 		});
 

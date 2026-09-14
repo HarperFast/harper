@@ -70,6 +70,14 @@ export const DELEGATION_LEASE_MS = MAX_LOCK_LEASE_MS + 60_000;
  */
 const ADMISSION_SWEEP_FLOOR = 64;
 const TICK_INTERVAL_MS = 100;
+/**
+ * How often `tick()` asks the transport whether this thread still coordinates. Far coarser than the
+ * tick because the answer only has to be sampled faster than a gap can matter, and it cannot matter
+ * below a full delegation lease: whatever coordinated during the gap is inside its own quarantine
+ * until then. At the tick rate an idle coordinating table would call the transport 10 times a second
+ * for the life of the process.
+ */
+const OWNERSHIP_POLL_MS = 1_000;
 const WARN_INTERVAL_MS = 60_000;
 /**
  * Bounds the grants ONE TABLE's coordinator can accumulate — a home may never forget a delegation
@@ -585,6 +593,8 @@ export class LockCoordinator {
 	 * ownership re-arms it for the same reason: something else was coordinating in between.
 	 */
 	#ownedSinceMono: number | undefined;
+	/** Rate-limits `tick()`'s ownership poll to `OWNERSHIP_POLL_MS`. */
+	#lastOwnershipPollMono = -Infinity;
 	/**
 	 * Set when the caller supplied an explicit horizon. It waives both halves of the quarantine only
 	 * for this coordinator's FIRST ownership interval, and `#ownershipHorizon` clears it at the first
@@ -693,8 +703,12 @@ export class LockCoordinator {
 		// an unseen predecessor incarnation.
 		successor.#grantableAfterMono = this.#grantableAfterMono;
 		// And the ownership clock: a transport reload does not change which thread coordinates, so the
-		// successor inherits how long this one has owned it rather than starting a fresh interval.
+		// successor inherits how long this one has owned it rather than starting a fresh interval. The
+		// waiver rides along for the same reason and in the same direction: the successor reads
+		// `grantableAfterMono` off the new transport and would otherwise re-waive a horizon this
+		// coordinator had already lost to a takeover.
 		successor.#ownedSinceMono = this.#ownedSinceMono;
+		successor.#quarantineWaived = this.#quarantineWaived;
 		this.#delegations.clear();
 		this.#grants.clear();
 		this.#grantsByRequester.clear();
@@ -1006,9 +1020,11 @@ export class LockCoordinator {
 	tick(): void {
 		const now = this.#monotonic();
 		// Poll ownership first: a non-owning interval has to be OBSERVED to re-arm the quarantine, and
-		// `#grant` sees only the instants a request lands on. Whatever coordinated during the gap needs
-		// a full lease of its own before it can grant, so tick granularity is enough to catch it.
-		this.#ownershipHorizon(now);
+		// `#grant` sees only the instants a request lands on.
+		if (now - this.#lastOwnershipPollMono >= OWNERSHIP_POLL_MS) {
+			this.#lastOwnershipPollMono = now;
+			this.#ownershipHorizon(now);
+		}
 		// The budget counts EXPIRIES, not entries examined. Spending it on live entries would let a
 		// table with more than a budget's worth of continuously renewed grants starve every expired
 		// one behind them, and an uncollected expired grant answers `contended` to every other node.
@@ -1100,15 +1116,17 @@ export class LockCoordinator {
 			owns = false;
 		}
 		if (!owns) {
-			// The construction waiver ends with the first observed gap. `grantableAfterMono` attests that
-			// no previous INCARNATION OF THIS PROCESS had issued delegations — a cold start, a fresh
-			// database, a test. It says nothing about the thread that coordinated while this one did not,
-			// so a takeover is quarantined even under the waiver.
-			if (this.#ownedSinceMono !== undefined) this.#quarantineWaived = false;
 			this.#ownedSinceMono = undefined;
 			return Infinity;
 		}
 		if (this.#ownedSinceMono === undefined) {
+			// Ownership STARTED here, which is the one thing the waiver cannot cover. `grantableAfterMono`
+			// attests that no previous INCARNATION OF THIS PROCESS had issued delegations — a cold start,
+			// a fresh database, a test — and says nothing about the sibling thread that was coordinating
+			// until this instant. The constructor sets `#ownedSinceMono` directly, so a coordinator that
+			// has owned since it was built never reaches this and keeps the waiver; a coordinator built on
+			// a non-owning worker, or one that lost ownership and regained it, lands here and loses it.
+			this.#quarantineWaived = false;
 			this.#ownedSinceMono = now;
 			// Ownership is what has to be polled, so a coordinator holding nothing still ticks while it
 			// owns: `#grant` alone observes only the instants it is called at, and a thread that regained

@@ -388,13 +388,14 @@ fail closed, not silently pass.
 ### 7.2 Recovery paths, and where the guarantee is explicitly weaker
 
 The home holds the dependency set in memory, so a home restart, a generation change, or a delegate
-crash with no clean release loses it. `verify:` whether a durable copy is recoverable from the log within
-retention — if it is, that is a cheaper recovery than the barrier below and should be preferred.
+crash with no clean release loses it. **Open against harper-pro:** whether a durable copy is
+recoverable from the log within retention. If it is, that is a cheaper recovery than the barrier
+below and should be preferred.
 
 Without it, the first grant for a key carries no set, and the acquirer must instead **drain its
 inbound replication streams from every reachable member to the position each held at grant time**
-before admitting (`verify:` the per-connection received position in
-harper-pro `replication/subscriptionManager.ts` is exposed at this granularity).
+before admitting (**open against harper-pro:** whether the per-connection received position in
+`replication/subscriptionManager.ts` is exposed at this granularity).
 
 That barrier is the strongest condition available without synchronous replication, and it is
 explicitly weaker in two ways that must be documented rather than implied: an unreachable member's
