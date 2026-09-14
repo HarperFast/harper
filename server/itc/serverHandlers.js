@@ -64,8 +64,16 @@ async function schemaHandler(event) {
 		// having released the database, so it has to outlast the closes a table with a derived index
 		// only finishes once its runtime has settled
 		const closing = [];
-		closeDatabase(event.message.schema, closing);
-		await Promise.all(closing);
+		try {
+			closeDatabase(event.message.schema, closing);
+			await Promise.all(closing);
+		} catch (error) {
+			// signalSchemaChange awaits this handler alongside the broadcast and documents that neither
+			// leg rejects; a store close that does reject must not skip the rescan below or surface as an
+			// unhandled rejection on the worker. The destructive step is gated on the process-wide
+			// registry, never on this ack, so a failed release refuses the drop rather than passing it.
+			hdbLogger.error(`Error releasing database ${event.message.schema} for ${event.message.operation}:`, error);
+		}
 	}
 	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);

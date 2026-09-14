@@ -198,6 +198,42 @@ describe('RocksDB handle release', function () {
 		}
 	});
 
+	it('the acknowledgement still lands when a store close rejects', async function () {
+		this.timeout(30000);
+		// signalSchemaChange awaits this handler alongside the broadcast and documents that neither leg
+		// rejects. closeStore catches a synchronous throw from close() but pushes an asynchronous close
+		// — an LMDB environment's — into `closing` unwrapped, so a rejection there would skip the rescan
+		// after it, drop the acknowledgement, and reject into notifyMessageListeners, which neither
+		// catches it nor handles the promise it returns.
+		const { schemaHandler } = require('#js/server/itc/serverHandlers');
+		const T = table({
+			table: 'pkg',
+			database: 'closerelease9',
+			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
+		});
+		getDatabases();
+		if (!(T.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		await settleSchemaRescan('closerelease9');
+		const rootStore = databases.closerelease9.pkg.primaryStore.rootStore;
+		const dbPath = rootStore.path;
+		// an own property shadowing the prototype's close: deleted rather than reassigned, so later
+		// suites see the prototype method again
+		const hadOwnClose = Object.prototype.hasOwnProperty.call(rootStore, 'close');
+		const realClose = rootStore.close;
+		rootStore.close = () => Promise.reject(new Error('the environment close failed'));
+
+		const lock = beginDrop(dbPath);
+		try {
+			// the assertion is that this resolves at all
+			await schemaHandler(closeBroadcast('closerelease9'));
+		} finally {
+			if (hadOwnClose) rootStore.close = realClose;
+			else delete rootStore.close;
+			rootStore.close();
+			completeDrop(lock);
+		}
+	});
+
 	it('closeLoadedDatabases releases a branch database (invisible to the databases map it walks)', async function () {
 		this.timeout(30000);
 		const rootStore = openRocksDb('closerelease4');

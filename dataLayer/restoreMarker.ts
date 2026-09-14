@@ -120,7 +120,10 @@ function markerForDatabase(dbPath: string): LifecycleKind | null {
 	return markerKindFromContent(content);
 }
 
-/** The kind of the lifecycle marker on `dbPath`, or null when there is none. */
+/**
+ * The same, without `markerForDatabase`'s name check: for a caller that has already established
+ * which database the marker belongs to and only needs to know whether it is a drop or a restore.
+ */
 export function lifecycleMarkerKind(dbPath: string): LifecycleKind | null {
 	const content = readMarker(dbPath);
 	return content === null ? null : markerKindFromContent(content);

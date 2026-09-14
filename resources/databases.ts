@@ -2398,8 +2398,14 @@ function indexUsesObjectStore(attribute: any): boolean {
 	);
 }
 
-/** Whether an open index store is the wrapper `openIndex` would choose for the attribute as it is now defined. */
+/**
+ * Whether an open index store is the wrapper `openIndex` would choose for the attribute as it is now
+ * defined. A store that has been closed is never one to reuse: `dropTable` closes this table's column
+ * families while the class is still published, so a same-name create arriving before the rescan evicts
+ * it would otherwise rebind and reindex through a closed handle.
+ */
 function indexStoreMatches(dbi: any, rootStore: RootDatabaseKind, attribute: any): boolean {
+	if (dbi.status === 'closed') return false;
 	const objectStorage = indexUsesObjectStore(attribute);
 	if (rootStore instanceof RocksDatabase) return dbi instanceof RocksIndexStore === !objectStorage;
 	return Boolean(dbi.dupSort) === !objectStorage;

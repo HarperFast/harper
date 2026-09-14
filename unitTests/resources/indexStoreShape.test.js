@@ -62,6 +62,33 @@ describe('index store wrapper follows the index kind across a live attribute cha
 		assert.strictEqual(define(true).indices.vector, reverted, 'a same-kind redefinition keeps the handle');
 	});
 
+	it('replaces a closed index store rather than rebinding through it', async function () {
+		this.timeout(30_000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		// dropTable closes this table's column families while the class is still published in
+		// `databases`, and only then broadcasts the schema change that evicts it. A same-name create
+		// arriving in that window reaches the reuse path below with a closed handle; reusing it would
+		// stage the new definition on it and reindex through a store nothing can write to.
+		const defineClosable = (indexed) =>
+			table({
+				table: 'IndexClosed',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'label', indexed, type: 'String' },
+				],
+			});
+		const Tbl = defineClosable(true);
+		const closed = Tbl.indices.label;
+		closed.close();
+		assert.strictEqual(closed.status, 'closed');
+
+		const reopened = defineClosable(true).indices.label;
+		assert.notStrictEqual(reopened, closed, 'a closed store is not the wrapper to reuse');
+		assert.notStrictEqual(reopened.status, 'closed');
+	});
+
 	it('keeps the old handle serving reads when reopening the new wrapper fails', async function () {
 		this.timeout(30_000);
 		setupTestDBPath();
