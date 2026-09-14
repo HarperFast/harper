@@ -1098,7 +1098,9 @@ async function dormantBuildAt(deploymentDirPath: string, owner: string): Promise
  *
  * `pinnedDeploymentId` is never evicted. A delayed activation runs this preamble under the same lock it is
  * about to activate under, so without the pin retention would delete the artifact the request named —
- * immediately, when the knob is `0`. It still occupies a slot, so the bound holds.
+ * immediately, when the knob is `0`. The pin is applied after the kept set is chosen, so a pinned build in
+ * the eviction tail leaves `maxCount + 1` on disk for the life of the request; the next preamble that does
+ * not pin it brings the count back down.
  */
 export async function pruneDormantBuilds(
 	componentName: string,
@@ -1597,11 +1599,10 @@ async function ensureSecureStagingDirectory(stagingDir: string): Promise<void> {
 }
 
 /**
- * Claim a deployment directory for this build, EXCLUSIVELY. The id used to be a fresh UUID nothing else
- * could name, so tolerating an existing directory was harmless; it is now the public deployment id, which
- * an operator can repeat and a redelivered replication can repeat for them. Tolerating it there would let a
- * replayed stage rewrite the bytes under an existing `.complete` and descriptor — and a crash mid-rebuild
- * would leave a partial tree that still reads as certified.
+ * Claim a deployment directory for this build, EXCLUSIVELY. The id is the public deployment id, which an
+ * operator can repeat and a redelivered replication can repeat for them, so tolerating an existing
+ * directory would let a replayed stage rewrite the bytes under an existing `.complete` and descriptor —
+ * and a crash mid-rebuild would leave a partial tree that still reads as certified.
  *
  * The caller holds the component's preparation lock, which is what makes the EEXIST verdicts sound: no
  * other preparation of THIS component is running, and a directory belonging to another component is not
@@ -2689,16 +2690,10 @@ export async function activateCandidateApplication(application: Application, dep
 	};
 
 	/**
-	 * One pre-commit failure boundary, and the journal write is INSIDE it.
-	 *
-	 * Everything from the journal write to the commit rename can fail — a durable write that lands the file
-	 * and then fails its parent flush, creating the aside staging directory, reading the live path, the
-	 * move-aside, writing the prior-absent record, flushing either parent. Any of those leaves a journal
-	 * behind if it only rethrows, and the next settlement then deletes a certified artifact, or (first
-	 * deploy, live absent) activates it with nobody asking. So they share one catch that restores and then
-	 * returns the artifact to dormant.
-	 *
-	 * Nothing below the commit rename may enter it — see B2.
+	 * One pre-commit failure boundary, with the journal write inside it: every step from there to the commit
+	 * rename leaves a journal behind if it only rethrows, and the next settlement then deletes a certified
+	 * artifact, or (first deploy, live absent) activates it with nobody asking. Nothing below the commit
+	 * rename may enter this catch — see B2.
 	 */
 	let pendingEffect = 'record the activation';
 	try {

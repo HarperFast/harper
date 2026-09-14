@@ -717,10 +717,9 @@ async function deployComponent(req) {
 		// from the persisted blob. When `system` replicates, the blob becomes the channel
 		// peers read from; when it doesn't, the blob stays local for audit and rollback.
 		if (isActivation) {
-			// Deliberately none of the below. An activation's bytes are already on disk, and a replicated
-			// activation has exactly the shape the peer-side blob branch keys on — neither `package` nor
-			// `payload` — so without this branch every peer would wait out `deployment_timeout` for a
-			// payload its row never had while the origin swapped successfully.
+			// A replicated activation has exactly the shape the peer-side blob branch below keys on — neither
+			// `package` nor `payload` — so without this branch every peer would wait out `deployment_timeout`
+			// for a payload its row never had while the origin swapped successfully.
 			extractionPayload = undefined;
 		} else if (recorder && req.payload != null) {
 			await recorder.ingestPayload(req.payload);

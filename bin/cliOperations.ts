@@ -573,12 +573,15 @@ export function prepareDeployByRef(req: any): void {
 const PREPARE_OPERATION: any = {
 	deploy_component: async (req) => {
 		if (req.deployment_id) {
-			// Activating a staged build: the bytes are already on the server. `by_ref`/`ref` are consumed
-			// here and never transmitted, so the server's validator cannot see the conflict — it has to be
-			// rejected on this side or it would be silently ignored.
+			// `by_ref`/`ref` are consumed here and never transmitted, so the server's validator cannot see
+			// this conflict.
 			if (req.by_ref || req.ref) {
 				throw new Error('deploy deployment_id: cannot be combined with by_ref/ref — the build already exists.');
 			}
+			// Nothing is packaged, but `project` is still defaulted from the working directory the way every
+			// other deploy path defaults it — omitting it would make `harper deploy deployment_id=<id>` the one
+			// form that demands an explicit project.
+			if (!req.project) req.project = directoryProjectName(process.cwd());
 			return;
 		}
 		if (req.package) {

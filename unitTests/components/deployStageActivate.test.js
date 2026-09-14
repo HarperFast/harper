@@ -459,28 +459,34 @@ describe('an activation that fails before it commits', () => {
 	// The live tree is restored by compensation, but the artifact also has to come back to DORMANT — no
 	// journal — or the next preparation reads live-plus-candidate as an abandoned activation and deletes the
 	// very artifact the operator staged.
-	// The failure has to land AFTER the journal is written, or none of the above is exercised. Putting a
-	// regular file where the aside staging directory belongs does exactly that: verification passes, the
-	// journal is published, and `ensureExtractionStagingDirectory` then refuses a path that is not a
-	// directory — the first step inside the boundary. Permission games cannot reach the same window, because
-	// the directory that has to be unwritable for the swap to fail is the one the journal lives in.
-	const blockAsideStaging = async (root, component) => {
-		const asideDir = path.join(root, '.deploy-aside', component);
-		await fs.mkdir(path.dirname(asideDir), { recursive: true, mode: 0o700 });
-		await fs.rm(asideDir, { recursive: true, force: true });
-		await fs.writeFile(asideDir, '');
-		return () => fs.rm(asideDir, { force: true });
-	};
-
-	const failActivation = async (root, component, id, options = {}) => {
-		const unblock = await blockAsideStaging(root, component);
+	// The failure has to land after verification, after `publishRootConfig`, and after the journal is
+	// written, or none of that is exercised. Only ONE injection reaches that window: make the components
+	// ROOT read-only, so the rename that moves the live tree aside (or, for a first deploy, the rename that
+	// moves the candidate in) fails for want of write permission on its parent, while every directory the
+	// earlier steps write into — the deployment directory, the lock root, the aside staging directory —
+	// stays writable.
+	//
+	// The aside staging directory is pre-created for the same reason: absent, the preparation preamble skips
+	// its recovery branch and creates it later from inside the boundary; present as a regular FILE, the
+	// preamble's own `ensureExtractionStagingDirectory` throws first and the test proves nothing.
+	const failAfterJournal = async (root, component, id, options = {}) => {
+		await fs.mkdir(path.join(root, '.deploy-aside', component), { recursive: true, mode: 0o700 });
+		await fs.chmod(root, 0o500);
 		try {
 			await assert.rejects(
 				() => prepareApplication(applicationAt(root, component), { mode: 'activate', artifactId: id, ...options }),
-				/EEXIST|not a directory/
+				(error) => {
+					// The window is proven by WHICH failure arrives. A read-only root cannot fail verification
+					// (those are reads, and they throw our own "Cannot deploy" message) and cannot fail the
+					// journal write (the deployment directory stays writable), so a permission error here can
+					// only have come from a rename whose parent is the root — B1 or B2, both past the journal.
+					assert.match(String(error.message), /EACCES|EPERM/);
+					assert.doesNotMatch(String(error.message), /Cannot deploy|EEXIST/);
+					return true;
+				}
 			);
 		} finally {
-			await unblock();
+			await fs.chmod(root, 0o700);
 		}
 	};
 
@@ -490,7 +496,7 @@ describe('an activation that fails before it commits', () => {
 		await writeLive(root, 'web', 'LIVE v1\n');
 		await stage(root, 'web', 'a1', 'STAGED v2\n');
 
-		await failActivation(root, 'web', 'a1');
+		await failAfterJournal(root, 'web', 'a1');
 
 		assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n', 'the previous version is back');
 		assert.strictEqual(
@@ -512,7 +518,7 @@ describe('an activation that fails before it commits', () => {
 		await fs.mkdir(root, { recursive: true });
 		await stage(root, 'web', 'a1', 'STAGED v1\n');
 
-		await failActivation(root, 'web', 'a1');
+		await failAfterJournal(root, 'web', 'a1');
 
 		assert.strictEqual(existsSync(path.join(root, 'web')), false, 'a first deploy that failed is still not live');
 		assert.strictEqual(
@@ -532,7 +538,7 @@ describe('an activation that fails before it commits', () => {
 		});
 
 		const published = [];
-		await failActivation(root, 'web', 'a1', {
+		await failAfterJournal(root, 'web', 'a1', {
 			publishRootConfig: async (entry) => {
 				published.push(entry);
 				return async () => published.pop();
