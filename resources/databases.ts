@@ -42,7 +42,7 @@ const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
-import { databasePaths, deleteRootBlobPathsForDB, getBlobPathsForDatabaseName, getRootBlobPathsForDB } from './blob.ts';
+import { databasePaths, deleteRootBlobPathsForDB, getBlobPathsForDatabaseName } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
@@ -2150,7 +2150,11 @@ export async function dropDatabase(databaseName) {
 	}
 
 	const path = rootStore.path;
-	const blobRoots: string[] = getRootBlobPathsForDB(rootStore as any) ?? [];
+	// derived by name, the same source the interrupted-drop recovery uses, so the two halves of the
+	// protocol cannot disagree about what to delete: `getRootBlobPathsForDB` returns an empty list
+	// (with only a warning) for a store carrying no `databaseName` — the shape a tableless database's
+	// on-demand open produces — and the drop would then clear its marker over a surviving blob root
+	const blobRoots: string[] = getBlobPathsForDatabaseName(databaseName);
 	const lock = beginDropOfDatabase(path, databaseName);
 	let lockSettled = false;
 	let destructionStarted = false;
