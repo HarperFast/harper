@@ -198,6 +198,46 @@ describe('RocksDB handle release', function () {
 		}
 	});
 
+	it('releases the class timers even when the derived runtime throws synchronously', async function () {
+		this.timeout(30000);
+		// derivedIndexRuntime.close() belongs to another component. A synchronous throw from it used to
+		// skip every release after it — notably the record-expiration interval, which holds the event
+		// loop open on a job worker trying to exit. closeDatabase's own catch covers the stores; nothing
+		// covered the timers.
+		const T = table({
+			table: 'pkg',
+			database: 'closerelease10',
+			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
+		});
+		getDatabases();
+		if (!(T.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		await settleSchemaRescan('closerelease10');
+		const Live = databases.closerelease10.pkg;
+		Live.derivedIndexRuntime = {
+			close() {
+				throw new Error('the runtime could not start its release');
+			},
+		};
+		// Table.cleanup() is this function's only caller, so a call is proof the synchronous releases
+		// ran; it sits last among them, after the timers and the delete callback
+		const storageReclamation = require('#src/server/storageReclamation');
+		const released = [];
+		const originalRemoveHandler = storageReclamation.removeStorageReclamationHandler;
+		storageReclamation.removeStorageReclamationHandler = function (path, handler) {
+			released.push(path);
+			return originalRemoveHandler.call(this, path, handler);
+		};
+		try {
+			assert.throws(() => Live.cleanup(), /could not start its release/);
+		} finally {
+			storageReclamation.removeStorageReclamationHandler = originalRemoveHandler;
+		}
+		assert.deepStrictEqual(released, [Live.primaryStore.path], 'the releases ran before the runtime was asked');
+
+		// nothing reaches them through `databases` any more, so this test owns their release
+		Live.closeStores();
+	});
+
 	it('the acknowledgement still lands when a store close rejects', async function () {
 		this.timeout(30000);
 		// signalSchemaChange awaits this handler alongside the broadcast and documents that neither leg

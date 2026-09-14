@@ -6369,12 +6369,15 @@ export function makeTable(options) {
 		 */
 		static cleanup(closing?: Promise<unknown>[]) {
 			disposed = true;
-			const released = TableResource.derivedIndexRuntime?.close();
+			// every synchronous release first: `derivedIndexRuntime.close()` is another component's
+			// method and a synchronous throw from it would otherwise skip all of them, leaving this
+			// class's interval holding the event loop open on a worker that is trying to exit
 			clearTimeout(cleanupTimer);
 			settlePendingCleanup();
 			clearInterval(recordExpirationInterval);
 			deleteCallbackHandle?.remove();
 			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
+			const released = TableResource.derivedIndexRuntime?.close();
 			// a table that left the catalog (dropped elsewhere, or never finished loading) must not keep
 			// its column-family handles open on this thread; see dropTable
 			if (!released) {
