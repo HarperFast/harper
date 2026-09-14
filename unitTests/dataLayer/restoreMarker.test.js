@@ -418,11 +418,27 @@ describe('restoreMarker', function () {
 
 		it('refuses a name that is not a single directory name, without touching anything', function () {
 			leaveInterruptedDrop();
-			for (const name of ['../somedb', 'a/b', '..', '.', 'a\\b', '']) {
+			const illegal = ['../somedb', 'a/b', '..', '.', ''];
+			// a backslash is a separator only on Windows; `schemaRegex` lets the API create `a\\b`, so on
+			// POSIX its interrupted drop has to stay recoverable rather than throwing here forever
+			if (process.platform === 'win32') illegal.push('a\\b');
+			for (const name of illegal) {
 				assert.throws(() => recoverInterruptedDrop(tempDir, name, { blobRoots: [] }), /Refusing/);
 			}
 			assert.ok(existsSync(dbPath));
 			assert.equal(checkRestoreState(dbPath), 'incomplete');
+		});
+
+		it('recovers a drop of a POSIX-legal name containing a backslash', function () {
+			if (process.platform === 'win32') return this.skip();
+			// `schemaRegex` (validation/common_validators.ts) forbids `/` and a backtick but not `\\`,
+			// so this is a database the API will create; a rule that rejected the name here would leave
+			// its interrupted drop unrecoverable and the database unloaded for good.
+			const oddPath = join(tempDir, 'sales\\2026');
+			mkdirSync(oddPath, { recursive: true });
+			abandonDrop(beginDrop(oddPath));
+			assert.equal(recoverInterruptedDrop(tempDir, 'sales\\2026', { blobRoots: [] }), 'recovered');
+			assert.ok(!existsSync(oddPath));
 		});
 
 		it('refuses a marker that names a different database, keeping the marker', function () {

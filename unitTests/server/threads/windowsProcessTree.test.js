@@ -7,6 +7,7 @@ const {
 	confirmWindowsProcessTreeGone,
 	parseProcessTable,
 	queryWindowsProcessTable,
+	runTaskkill,
 	selectWindowsProcessTree,
 	taskkillInvocation,
 } = require('#src/server/threads/windowsProcessTree');
@@ -480,6 +481,24 @@ describe('confirmWindowsProcessTreeGone', () => {
 describe('queryWindowsProcessTable', function () {
 	before(function () {
 		if (process.platform !== 'win32') this.skip();
+	});
+
+	// The confirmation loop is deliberately deadline-free (harper#2076), but that is a policy about
+	// the decision, not about one syscall: a Get-CimInstance or taskkill that never returns parks the
+	// loop before it can even warn. Each invocation is bounded so a hang becomes the unknown state the
+	// loop already handles — it keeps waiting, and it says so every 60 s.
+	it('gives up on a query that outlives its bound, reporting unknown rather than hanging', async function () {
+		this.timeout(60_000);
+		const started = Date.now();
+		assert.strictEqual(await queryWindowsProcessTable(1), null, 'an abandoned query is unknown, not an empty table');
+		assert.ok(Date.now() - started < 30_000, 'it must not wait out the default bound');
+	});
+
+	it('gives up on a taskkill that outlives its bound', async function () {
+		this.timeout(60_000);
+		const started = Date.now();
+		await runTaskkill(['/F', '/pid', '999999'], 1);
+		assert.ok(Date.now() - started < 30_000, 'the next round reissues it; the wait must not park here');
 	});
 
 	it('lists a spawned child with a creation time bracketed by the spawn, and the tree confirms gone once killed', async function () {

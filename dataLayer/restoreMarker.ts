@@ -371,7 +371,13 @@ export const abandonDrop = abandonRestore;
 
 export type DropRecoveryOutcome = 'recovered' | 'in-progress' | 'not-a-drop';
 
-const LEGAL_DIRECTORY_NAME = /^(?!\.\.?$)[^\\/\0]+$/;
+// The API's own name rule (`schemaRegex`, validation/common_validators.ts) forbids `/` and a
+// backtick but permits `\`, so on POSIX `sales\2026` is a legal database whose directory name
+// contains a backslash. Forbidding both separators everywhere would leave such a database's
+// interrupted drop permanently unrecoverable — every scan would throw here and the marker would
+// keep it unloaded forever. Only the host's own separators are rejected; what actually enforces
+// "a single directory under the databases root" is the resolved-parent check at the call site.
+const LEGAL_DIRECTORY_NAME = process.platform === 'win32' ? /^(?!\.\.?$)[^\\/\0]+$/ : /^(?!\.\.?$)[^/\0]+$/;
 
 function isSymbolicLink(path: string): boolean {
 	try {

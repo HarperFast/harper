@@ -78,6 +78,13 @@ export const WINDOWS_TREE_POLL_MS = 25;
 const WINDOWS_TREE_POLL_MAX_MS = 5_000;
 const WINDOWS_TREE_WARNING_MS = 5_000;
 const WINDOWS_TREE_WARNING_INTERVAL_MS = 60_000;
+// Neither helper below is allowed to suspend the confirmation loop indefinitely. The loop itself is
+// deliberately deadline-free (harper#2076: the preparation lock is never released on an unconfirmed
+// tree), but that policy is about the DECISION, not about a single syscall: a `Get-CimInstance` or
+// `taskkill` that never returns parks the loop before it can warn, so an operator sees a silent
+// wedge instead of the 60 s "could not be queried" message the unknown state already produces.
+// Bounding each invocation converts a hung helper into that same unknown, which keeps waiting.
+const WINDOWS_TREE_HELPER_TIMEOUT_MS = 30_000;
 
 // Exit 0 means the query ran and produced a table (possibly empty — an empty table is still a
 // positive result, not "unknown"); exit 2 means the query itself failed (e.g. Get-CimInstance
@@ -92,7 +99,9 @@ const PROCESS_TABLE_SCRIPT =
 	'[Console]::Out.Write((ConvertTo-Json -Compress -InputObject $rows)); exit 0 ' +
 	'} catch { exit 2 }';
 
-export function queryWindowsProcessTable(): Promise<WindowsProcessRecord[] | null> {
+export function queryWindowsProcessTable(
+	timeoutMs: number = WINDOWS_TREE_HELPER_TIMEOUT_MS
+): Promise<WindowsProcessRecord[] | null> {
 	return new Promise((resolve) => {
 		const query = spawn(
 			'powershell.exe',
@@ -109,8 +118,17 @@ export function queryWindowsProcessTable(): Promise<WindowsProcessRecord[] | nul
 		query.stdout.on('data', (chunk) => {
 			output += chunk;
 		});
-		query.once('close', (code) => resolve(code === 0 ? parseProcessTable(output) : null));
-		query.once('error', () => resolve(null));
+		const abandon = setTimeout(() => {
+			query.kill();
+			resolve(null); // unknown, exactly as an unreadable table: the caller keeps waiting
+		}, timeoutMs);
+		abandon.unref?.();
+		const settle = (value: WindowsProcessRecord[] | null) => {
+			clearTimeout(abandon);
+			resolve(value);
+		};
+		query.once('close', (code) => settle(code === 0 ? parseProcessTable(output) : null));
+		query.once('error', () => settle(null));
 	});
 }
 
@@ -258,11 +276,20 @@ export function taskkillInvocation(members: WindowsProcessRecord[], rootPid: num
 	return invocations;
 }
 
-function runTaskkill(args: string[]): Promise<void> {
+export function runTaskkill(args: string[], timeoutMs: number = WINDOWS_TREE_HELPER_TIMEOUT_MS): Promise<void> {
 	return new Promise((resolve) => {
 		const taskkill = spawn('taskkill', args, { stdio: 'ignore', windowsHide: true });
-		taskkill.once('close', () => resolve());
-		taskkill.once('error', () => resolve());
+		const abandon = setTimeout(() => {
+			taskkill.kill();
+			resolve(); // the next round reissues it; nothing here reads a kill as proof of anything
+		}, timeoutMs);
+		abandon.unref?.();
+		const settle = () => {
+			clearTimeout(abandon);
+			resolve();
+		};
+		taskkill.once('close', settle);
+		taskkill.once('error', settle);
 	});
 }
 
