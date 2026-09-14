@@ -351,6 +351,18 @@ describe('restoreMarker', function () {
 			}
 		});
 
+		it('reports an unreadable superseded manifest as a conflict', function () {
+			mkdirSync(dbPath, { recursive: true });
+			abandonDrop(beginDrop(dbPath, { database: dbPath, blobRoots: [] }));
+			writeFileSync(restoringMarkerPath(dbPath), 'somedb\ndrop started now\ntargets 2 {}\n');
+
+			assert.throws(
+				() => beginDrop(dbPath, { database: dbPath, blobRoots: [] }),
+				(error) => error.statusCode === 409 && error.lifecycleConflict === 'drop-manifest'
+			);
+			releaseRestoreLock(acquireRestoreLock(dbPath));
+		});
+
 		it('removes a marker it published when the step after publication fails', function () {
 			// the marker is live from the rename on, and a drop marker is what the next scan finishes by
 			// deleting the database — so a failure after it (the metadata-directory fsync is the only

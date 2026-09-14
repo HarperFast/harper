@@ -186,8 +186,6 @@ module.exports = {
 	notifyThreadExit,
 	registerProcessGroup,
 	unregisterProcessGroup,
-	// the owner- and generation-keyed pair behind the two above: a group id is a reusable PID, so
-	// which exact registration asks decides whether the state is theirs to clear
 	addProcessGroup,
 	removeProcessGroup,
 	terminateProcessGroupsForThread,
@@ -1624,8 +1622,10 @@ function processGroupIsAlive(processGroupId) {
 	return isProcessGroupAlive(processGroupId);
 }
 
-async function waitForProcessGroupExit(processGroupId) {
-	while (processGroupIsAlive(processGroupId)) await delay(PROCESS_GROUP_TERMINATION_POLL_MS);
+async function waitForProcessGroupExit(processGroupId, registration) {
+	while (processGroupSpawnedAt.get(processGroupId) === registration && processGroupIsAlive(processGroupId)) {
+		await delay(PROCESS_GROUP_TERMINATION_POLL_MS);
+	}
 }
 
 // The initial taskkill in terminateProcessGroupsForThread is fired synchronously (required so
@@ -1651,6 +1651,14 @@ function waitForWindowsGroupExit(processGroupId, spawn, killedAt) {
 
 function addProcessGroup(ownerThreadId, processGroupId, spawnedAt, spawnStartedAt, registrationGeneration) {
 	if (!Number.isInteger(processGroupId) || processGroupId <= 0) return;
+	const previousRegistration = processGroupSpawnedAt.get(processGroupId);
+	if (
+		previousRegistration &&
+		(previousRegistration.ownerThreadId !== ownerThreadId ||
+			previousRegistration.registrationGeneration !== registrationGeneration)
+	) {
+		clearProcessGroupLivenessState(processGroupId);
+	}
 	let processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) processGroupsByThread.set(ownerThreadId, (processGroups = new Set()));
 	processGroups.add(processGroupId);
@@ -1690,15 +1698,11 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	const processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) return pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
 	processGroupsByThread.delete(ownerThreadId);
-	// Only the groups whose creation stamp still names this owner. Membership is not proof: a PID this
-	// thread registered is reusable the instant its process exits, and an owner torn down before its
-	// unregister landed still lists a PID another thread's child now holds. Killing on membership
-	// alone is the harper#2273 unrelated-process kill — and waiting on such a PID would block this
-	// termination until a stranger's process exits. A group with no stamp is not provably ours either.
+	// Membership is not ownership: a PID is reusable the moment its process exits.
 	const groupIds = [...processGroups].filter((processGroupId) => {
 		if (processGroupSpawnedAt.get(processGroupId)?.ownerThreadId === ownerThreadId) return true;
 		harperLogger.warn(
-			`Not terminating process group ${processGroupId} for thread ${ownerThreadId}: the id now belongs to another owner`
+			`Not terminating process group ${processGroupId} for thread ${ownerThreadId}: it is no longer registered to this thread`
 		);
 		return false;
 	});
@@ -1720,12 +1724,16 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	}
 	const termination = Promise.all(
 		groupIds.map((processGroupId) => {
-			// every id here passed the ownership filter above, so the stamp is this owner's to consume
-			const spawn = processGroupSpawnedAt.get(processGroupId);
-			processGroupSpawnedAt.delete(processGroupId);
-			return process.platform === 'win32'
-				? waitForWindowsGroupExit(processGroupId, spawn, killedAt.get(processGroupId))
-				: waitForProcessGroupExit(processGroupId);
+			const registration = processGroupSpawnedAt.get(processGroupId);
+			const wait =
+				process.platform === 'win32'
+					? waitForWindowsGroupExit(processGroupId, registration, killedAt.get(processGroupId))
+					: waitForProcessGroupExit(processGroupId, registration);
+			return wait.finally(() => {
+				if (processGroupSpawnedAt.get(processGroupId) === registration) {
+					processGroupSpawnedAt.delete(processGroupId);
+				}
+			});
 		})
 	).finally(() => {
 		if (pendingProcessGroupTerminations.get(ownerThreadId) === termination) {

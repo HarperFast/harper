@@ -2066,6 +2066,7 @@ function beginDropOfDatabase(dbPath: string, databaseName: string, blobRoots: st
 	} catch (error: any) {
 		if (error.lifecycleConflict === 'restore')
 			throw conflict(`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`);
+		if (error.lifecycleConflict === 'drop-manifest') throw error;
 		if (error.statusCode !== 409) throw error;
 		// the lock is held by the other operation, which names itself in its marker (none yet if it is
 		// between taking the lock and writing one); `acquireRestoreLock` words its own 409 as a restore
@@ -3624,15 +3625,27 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 	let hadIndexingErrors = false;
 	const attributeErrorReported = {};
 	const rootStore = Table.primaryStore.rootStore;
-	const tableStoreIsClosed = () => rootStore.status === 'closed' || Table.primaryStore.status === 'closed';
+	const indexingWasInterrupted = () => {
+		if (rootStore.status === 'closed' || Table.primaryStore.status === 'closed' || Table.dbisDB.status === 'closed') {
+			return true;
+		}
+		try {
+			const tableDescriptor = Table.dbisDB.getSync(Table.tableName + '/');
+			return !tableDescriptor || tableDescriptor.dropping;
+		} catch {
+			return false;
+		}
+	};
 	const persistOwnedAttributes = (phase, update) => {
 		const persist = () => {
 			let persisted = 0;
 			for (const attribute of attributes) {
+				const buildId = attribute.indexingBuildId;
 				const descriptor = Table.dbisDB.getSync(attribute.key);
-				if (!descriptor || descriptor.dropping || descriptor.indexingBuildId !== attribute.indexingBuildId) continue;
-				update(attribute);
-				Table.dbisDB.putSync(attribute.key, attribute);
+				if (!descriptor || descriptor.dropping || buildId == null || descriptor.indexingBuildId !== buildId) continue;
+				const updatedDescriptor = { ...descriptor };
+				update(updatedDescriptor, attribute);
+				Table.dbisDB.putSync(attribute.key, updatedDescriptor);
 				persisted++;
 			}
 			return persisted;
@@ -3646,7 +3659,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		hadIndexingErrors = true;
 		if (attributeErrorReported[property]) return;
 		attributeErrorReported[property] = true;
-		if (tableStoreIsClosed()) logger.debug(`Indexing attribute ${property} interrupted by store shutdown`, error);
+		if (indexingWasInterrupted()) logger.debug(`Indexing attribute ${property} interrupted by table removal`, error);
 		else logger.error(`Error indexing attribute ${property}`, error);
 	};
 	const putRejectionHandlers = attributes.map((attribute) => (error) => onIndexPutRejected(attribute.name, error));
@@ -3724,10 +3737,10 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 					const failed = await drainMutations();
 					if (failed) return;
 					await flushIndexStores(rootStore);
-					persistOwnedAttributes('checkpoint', (attribute) => {
-						attribute.lastIndexedKey = key;
-						attribute.checkpointCertified = key;
-						attribute.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
+					persistOwnedAttributes('checkpoint', (descriptor) => {
+						descriptor.lastIndexedKey = key;
+						descriptor.checkpointCertified = key;
+						descriptor.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
 					});
 				} catch (error) {
 					logger.warn(`Could not persist the indexing checkpoint for ${Table.tableName}`, error);
@@ -3781,8 +3794,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 								// a benign interruption (the next generation re-runs the backfill), so don't log
 								// it as an error — the outer catch returns quietly once the iterator also throws.
 								attributeErrorReported[property] = true;
-								if (tableStoreIsClosed())
-									logger.debug(`Indexing attribute ${property} interrupted by store shutdown`, error);
+								if (indexingWasInterrupted())
+									logger.debug(`Indexing attribute ${property} interrupted by table removal`, error);
 								else logger.error(`Error indexing attribute ${property}`, error);
 							}
 						}
@@ -3830,8 +3843,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			// rather than silently returning partial results. This is the key fix for the
 			// serent-canopy issue #135 fingerprint: a completed migration with transient errors
 			// (e.g. ERR_BUSY from RocksDB under load) leaving gaps while appearing successful.
-			persistOwnedAttributes('failure', (attribute) => {
-				attribute.indexingFailed = true;
+			persistOwnedAttributes('failure', (descriptor, attribute) => {
+				descriptor.indexingFailed = true;
 				// Keep isIndexing = true on both the attribute.dbi and the currently-active dbi
 				// in Table.indices (which may differ if resetDatabases() ran during this pass).
 				attribute.dbi.isIndexing = true;
@@ -3845,17 +3858,17 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 			);
 		} else {
 			// update the attributes to indicate that we are finished
-			persistOwnedAttributes('completion', (attribute) => {
-				delete attribute.lastIndexedKey;
-				delete attribute.checkpointCertified;
+			persistOwnedAttributes('completion', (descriptor, attribute) => {
+				delete descriptor.lastIndexedKey;
+				delete descriptor.checkpointCertified;
 				// Survives completion, unlike the checkpoint fields: without it an index built here is
 				// indistinguishable from one a release that could skip a failed record declared complete.
-				attribute.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
-				delete attribute.indexingPID;
-				delete attribute.indexingFailed;
-				delete attribute.restartNumber;
-				delete attribute.indexingIncarnation;
-				delete attribute.indexingBuildId;
+				descriptor.checkpointAlgorithm = CHECKPOINT_ALGORITHM;
+				delete descriptor.indexingPID;
+				delete descriptor.indexingFailed;
+				delete descriptor.restartNumber;
+				delete descriptor.indexingIncarnation;
+				delete descriptor.indexingBuildId;
 				attribute.dbi.isIndexing = false;
 				// Also clear isIndexing on the currently-active dbi in Table.indices, which may
 				// differ from attribute.dbi if a resetDatabases() call during this migration
@@ -3877,9 +3890,9 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		// the crash-recovery trigger (indexingPID / restartNumber mismatch), and persisting
 		// indexingFailed here would fail anyway against the closed store. Treat it as a benign
 		// interruption instead of logging a misleading error and a "failed to persist" warning.
-		if (tableStoreIsClosed()) {
+		if (indexingWasInterrupted()) {
 			logger.debug(
-				`Indexing of ${Table.tableName} interrupted by store shutdown; recovery resumes on the next worker generation`,
+				`Indexing of ${Table.tableName} interrupted by table removal or store shutdown; recovery resumes on the next worker generation`,
 				error
 			);
 			return;
@@ -3891,8 +3904,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		// but indexingFailed is never set, leaving isIndexing stuck with no recovery
 		// signal. Mirrors the hadIndexingErrors path. harper#843
 		try {
-			persistOwnedAttributes('failure', (attribute) => {
-				attribute.indexingFailed = true;
+			persistOwnedAttributes('failure', (descriptor, attribute) => {
+				descriptor.indexingFailed = true;
 				attribute.dbi.isIndexing = true;
 				const activeDbi = Table.indices[attribute.name];
 				if (activeDbi) activeDbi.isIndexing = true;

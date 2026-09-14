@@ -347,16 +347,22 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind, targets?: DropTarge
 		}
 		let preserveExistingMarker = false;
 		if (kind === 'drop' && existing === 'drop') {
-			const recorded = dropTargetsFromContent(existingContent, basename(dbPath));
-			if (recorded) {
-				if (resolve(recorded.database) !== resolve(dbPath)) {
-					throw new Error(
-						`Refusing to resume the drop of '${basename(dbPath)}': its marker records the database at ${recorded.database}, which no longer resolves to ${resolve(dbPath)}`
-					);
+			try {
+				const recorded = dropTargetsFromContent(existingContent, basename(dbPath));
+				if (recorded) {
+					if (resolve(recorded.database) !== resolve(dbPath)) {
+						throw new Error(
+							`Refusing to resume the drop of '${basename(dbPath)}': its marker records the database at ${recorded.database}, which no longer resolves to ${resolve(dbPath)}`
+						);
+					}
+					assertRecordedBlobRoots(recorded.blobRoots, basename(dbPath));
+					effectiveTargets = recorded;
+					preserveExistingMarker = true;
 				}
-				assertRecordedBlobRoots(recorded.blobRoots, basename(dbPath));
-				effectiveTargets = recorded;
-				preserveExistingMarker = true;
+			} catch (error: any) {
+				error.statusCode = 409;
+				error.lifecycleConflict = 'drop-manifest';
+				throw error;
 			}
 		}
 		// Write beside the marker and rename over it, rather than truncating it and writing in place:
@@ -663,8 +669,9 @@ export function scanLifecycleMarkers(databasesRoot: string): LifecycleMarkerEntr
 		let content: string;
 		try {
 			content = readFileSync(join(metaDir, entry.name), 'utf8');
-		} catch {
-			continue; // marker removed concurrently
+		} catch (error: any) {
+			if (error.code === 'ENOENT') continue;
+			throw error;
 		}
 		const dbName = content.split('\n', 1)[0];
 		if (!dbName) continue;

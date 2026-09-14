@@ -432,6 +432,32 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 		assert.strictEqual(scanCount, 6);
 	});
 
+	it('clears cached liveness when a PID is registered to a new generation', () => {
+		let scanCount = 0;
+		let childState = 'S';
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => {
+				scanCount++;
+				return ['568'];
+			},
+			readStat: (path) => {
+				if (path === '/proc/568/stat') return `568 (installer child) ${childState} 1 567 567`;
+				throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+			},
+			now: () => 0,
+		};
+
+		addProcessGroup(7, 567, 100, 90, 1);
+		assert.strictEqual(isProcessGroupAlive(567, options), true);
+		childState = 'Z';
+		addProcessGroup(7, 567, 500, 490, 2);
+		assert.strictEqual(isProcessGroupAlive(567, options), false);
+		assert.strictEqual(scanCount, 3);
+		removeProcessGroup(7, 567, 2);
+	});
+
 	it('ignores an unregister from a thread that does not own the group id', () => {
 		// A group id is a PID, and the OS reuses it the moment the process exits. Thread A's
 		// UNREGISTER_PROCESS_GROUP can arrive after A already released the PID and thread B registered
