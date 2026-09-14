@@ -1470,20 +1470,22 @@ function isBlobHeld(storageInfo: BlobFileInfo | undefined, claim = false): boole
 function cancelBlobReclamation(storageInfo: StorageInfo): void {
 	if (!storageInfo?.fileId || !storageInfo.store) return;
 	if (hasUnlinkIntent(storageInfo)) {
-		// Withdraw the intent durably and BEFORE testing the lock. A drain takes the lock and then
-		// re-reads the row, so the two orderings are the only ones possible and both are safe: if the
-		// drain got the lock first this write fails, and if it did not, its re-read finds the row gone.
+		// The row is withdrawn under the same lock a drain re-reads it under, so whichever side holds
+		// the lock decides: a drain that has it finishes the unlink and this write is refused; a write
+		// that has it withdraws the row and the drain's re-read finds it gone. Refused rather than
+		// withdrawn-then-refused, so a write that loses the race does not also cancel the unlink of a
+		// file it is not going to reference.
 		//
 		// Fail-closed throughout, unlike every other queue access here: this one is on the write path,
 		// and a withdrawal that did not land leaves a row that a later drain executes against bytes
 		// this record is about to commit a reference to. Refusing the write is the recoverable half.
-		removeUnlinkIntent(storageInfo);
 		if (!takeReclaimLock(storageInfo)) {
 			throw new Error(
 				`Blob file ${storageInfo.fileId} is being reclaimed and can no longer be referenced; the data must be supplied again`
 			);
 		}
 		try {
+			removeUnlinkIntent(storageInfo);
 			if (hasUnlinkIntent(storageInfo)) {
 				throw new Error(
 					`Blob file ${storageInfo.fileId} still has an unlink intent that could not be withdrawn; refusing to reference it`
@@ -1568,7 +1570,7 @@ function queueIsEmpty(store: any): boolean {
 
 /**
  * Withdraw the durable intent for a file a record is referencing again. Synchronous, because the
- * interlock below depends on the removal being visible to a drain that takes the lock afterwards.
+ * interlock depends on the removal being visible to a drain that takes the lock afterwards.
  */
 function removeUnlinkIntent(storageInfo: BlobFileInfo): void {
 	const queueDb = unlinkQueueDb(storageInfo.store);
@@ -1823,8 +1825,17 @@ function stageDurableUnlink(
 			// so it commits in that batch or an earlier one — never later. That is the ordering the
 			// synchronous commit buys on the other engine, obtained here for free.
 			const written = queueDb.put(key, value);
-			if (written?.then) {
-				written.then(
+			// Inside a batch — every LMDB record write is one, a conditional `ifVersion` — the put's own
+			// promise is already resolved when it is returned; what the row lands with is the batch's
+			// commit, known only once the batch has closed at the end of this turn.
+			const landed = written?.then
+				? queueDb.committed
+					? new Promise((resolve) => setImmediate(resolve)).then(() => queueDb.committed)
+					: written
+				: undefined;
+			if (landed !== written) written?.then?.(undefined, () => {}); // the commit carries the failure
+			if (landed) {
+				landed.then(
 					() => {
 						bumpUnlinkEpoch(fileInfo.store, SETTLED);
 						// The drain armed at supersede time can fire before this batch commits, and would
@@ -1981,9 +1992,7 @@ export function drainBlobUnlinkQueue(rootStore: any): boolean | undefined {
 		} else if (!takeReclaimLock(storageInfo) || !intentStillQueued(queueDb, key, storageInfo)) {
 			// An ownerless row's conditions were validated before it was written, so they are not
 			// re-checked here — but the row can still have been withdrawn since, and a withdrawal is
-			// visible only in the row. A cancelling write removes it and then tests the lock, so a
-			// cancellation that took the lock first and handed it back would otherwise be followed by
-			// this drain unlinking the file that write is committing a reference to.
+			// visible only in the row, under the lock.
 			deferTo(now + Math.max(getReclamationDelay(), HELD_RECHECK_INTERVAL));
 			continue;
 		}
@@ -2008,9 +2017,9 @@ export function drainBlobUnlinkQueue(rootStore: any): boolean | undefined {
 			continue;
 		}
 		unlink(filePath, (error) => {
-			// The row is settled before the lock is handed back. A cancelling write withdraws the row
-			// and then tests the lock, so a row still present after the lock is free would let it
-			// withdraw, take the lock, and commit a reference to bytes that are already gone.
+			// The row is settled before the lock is handed back: a cancelling write withdraws the row
+			// under the lock, so one still present once the lock is free would let that write take the
+			// lock, withdraw it, and commit a reference to bytes that are already gone.
 			if (error && error.code !== 'ENOENT') {
 				inFlight.delete(fileId);
 				if (!recordUnlinkFailure(queueDb, key, value, storageInfo, attemptCounts, error)) {
@@ -2111,8 +2120,8 @@ function readyToUnlink(
 		return false;
 	}
 	// Last: shut out a write that is referencing this file again right now. Taking the lock before
-	// re-reading the row is what makes the interlock exact — a canceling write removes the row and
-	// then tests this lock, so whichever of the two gets the lock first, the other sees its evidence.
+	// re-reading the row is what makes the interlock exact — a canceling write withdraws the row under
+	// the same lock, so whichever of the two gets it first, the other sees its evidence.
 	if (!takeReclaimLock(storageInfo) || !intentStillQueued(queueDb, key, storageInfo)) {
 		if (!expired) releaseReclaimClaim(storageInfo);
 		return false;
@@ -2122,9 +2131,9 @@ function readyToUnlink(
 
 /**
  * Confirm under the reclaim lock that the intent is still queued, releasing the lock when it is not.
- * A cancelling write withdraws the row before it tests the lock, so a row still present here cannot
- * belong to a write that was allowed to proceed. An unreadable row counts as withdrawn: the file
- * stays, which is the recoverable answer.
+ * A cancelling write withdraws the row under this lock, so a row still present here cannot belong to
+ * a write that was allowed to proceed. An unreadable row counts as withdrawn: the file stays, which
+ * is the recoverable answer.
  */
 function intentStillQueued(queueDb: any, key: any, storageInfo: BlobFileInfo): boolean {
 	let current: any;
@@ -2206,14 +2215,20 @@ function prunePendingReclamation(now: number): void {
 /**
  * The file paths every outstanding unlink intent for this root resolves to. Throws rather than
  * returning a partial set: the only caller uses it to decide what a destructive sweep may NOT
- * delete, and a silently short list there deletes a file whose drain still holds the claim.
+ * delete, and a silently short list there deletes a file whose drain still holds the claim. A row
+ * that resolves to no path protects no file, so it is skipped rather than failing the sweep — the
+ * drain abandons exactly that row on its next pass.
  */
 function queuedUnlinkPaths(rootStore: any): string[] {
 	const queueDb = unlinkQueueDb(rootStore);
 	if (!queueDb) return [];
 	const paths: string[] = [];
 	for (const { key, value } of unlinkQueueRange(queueDb)) {
-		paths.push(getFilePath({ storageIndex: value?.storageIndex ?? 0, fileId: key[1], store: rootStore }));
+		try {
+			paths.push(getFilePath({ storageIndex: value?.storageIndex ?? 0, fileId: key[1], store: rootStore }));
+		} catch (error) {
+			logger.debug?.('Skipping an unlink intent that resolves to no path', key[1], error);
+		}
 	}
 	return paths;
 }
@@ -2275,9 +2290,9 @@ function removeUnlinkQueueRow(queueDb: any, key: any): boolean {
 /**
  * Settle the row of a file that is now gone, then hand back the claim and the lock. A row that
  * cannot be removed keeps the lock: released, it would let a write withdraw the stale row and
- * commit a reference to bytes that no longer exist. The removal is retried on a backoff, and if it
- * never lands the lock stays held for the life of this process — a restart frees it, and the next
- * drain finishes the row with an ENOENT. The claim is hash-shared and cannot be held that long.
+ * commit a reference to bytes that no longer exist. The removal is retried on a backoff for as long
+ * as the store is open, and the lock is held until it lands. The claim is hash-shared and is handed
+ * back once the retries pass the attempt cap.
  */
 function finishUnlinkedRow(
 	queueDb: any,
@@ -2286,17 +2301,18 @@ function finishUnlinkedRow(
 	inFlight: Set<string>,
 	attempt = 0
 ): void {
-	const removed = removeUnlinkQueueRow(queueDb, key);
-	if (removed || attempt >= MAX_UNLINK_ATTEMPTS) {
+	if (removeUnlinkQueueRow(queueDb, key)) {
 		inFlight.delete(storageInfo.fileId);
 		releaseReclaimClaim(storageInfo);
-		if (removed) releaseReclaimLock(storageInfo);
-		else {
-			logger.warn?.(
-				`Blob file ${storageInfo.fileId} was removed but its unlink intent could not be; the file stays locked against re-reference until restart`
-			);
-		}
+		releaseReclaimLock(storageInfo);
 		return;
+	}
+	if (queueDb.status === 'closed' || storageInfo.store?.status === 'closed') return;
+	if (attempt + 1 === MAX_UNLINK_ATTEMPTS) {
+		releaseReclaimClaim(storageInfo);
+		logger.warn?.(
+			`Blob file ${storageInfo.fileId} was removed but its unlink intent could not be; the file stays locked against re-reference until it can`
+		);
 	}
 	const timer = setTimeout(
 		() => finishUnlinkedRow(queueDb, key, storageInfo, inFlight, attempt + 1),
@@ -2451,10 +2467,9 @@ export function deleteBlob(blob: Blob, supersession?: BlobSupersession): void {
 	// explicit discard — is not a statement that the owning record gave the file up, so it cannot be
 	// re-validated against that record and keeps the in-memory path it has always had.
 	//
-	// Re-staged on every supersession of the same file rather than once. On LMDB the row is written
-	// into the record's own write transaction, so a write that aborts and retries takes the row with
-	// it — which is exactly right, and only works if the retry writes it again. The put is idempotent
-	// (same key, and the deadline is measured from the first supersession either way).
+	// Re-staged on every supersession of the same file rather than once: on LMDB the row can share the
+	// record write's batch and roll back with it, so a retry has to write it again. The put is
+	// idempotent (same key, and the deadline is measured from the first supersession either way).
 	if (supersession) {
 		const supersededAt = pending.durable ? pending.supersededAt : now;
 		if (stageDurableUnlink(pending.fileInfo, supersededAt, supersession.priorVersion, supersession.synchronous)) {
@@ -2469,9 +2484,11 @@ export function deleteBlob(blob: Blob, supersession?: BlobSupersession): void {
 	}
 	if (pending.durable) return; // the row already carries this deletion, with its own deadline
 	// Counted like a staged intent, though nothing is written: the counters stand for files condemned,
-	// and an allocated instance stored again after this must consult its reclamation too.
+	// and an allocated instance stored again after this must consult its reclamation too. The drain
+	// that follows finds the range as it was and re-establishes the encode's free path.
 	bumpUnlinkEpoch(pending.fileInfo.store, STAGED);
 	bumpUnlinkEpoch(pending.fileInfo.store, SETTLED);
+	scheduleBlobUnlinkDrain(pending.fileInfo.store);
 	scheduleReclamation(enqueue(filePath, pending, Math.max(pending.deadline, now + getReclamationDelay())));
 }
 

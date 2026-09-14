@@ -3058,12 +3058,8 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 	}
 
 	it('reads the queue for a row that landed after a drain found it empty', async () => {
-		// A drain samples the epoch and then reads the range. One that runs between a stage beginning
-		// and its row landing sees an empty range; if it could record that as "empty at this epoch",
-		// every later encode would skip the queue read on the strength of it, and the row it never
-		// saw would be executed against a record that took the file back. The write that takes it
-		// back supersedes nothing itself (the record dropped the attribute), so nothing else moves the
-		// epoch before its encode.
+		// The write that takes the file back supersedes nothing itself (the record had dropped the
+		// attribute), so nothing but the drain's cache stands between it and the queue read.
 		const { fileId, filePath, stored } = await fileBackedBlob('raced-stage');
 		assert.strictEqual(drainBlobUnlinkQueue(rootStore()), false, 'the queue starts empty');
 		const db = queueDb();
@@ -3099,9 +3095,6 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 	});
 
 	it('refuses a write that reaches the lock while the unlink is in flight', async () => {
-		// The lock is what makes the interlock exact: a cancelling write withdraws the row and then
-		// tests it. Handing the lock back before the row is removed opens a gap in which the write
-		// finds the row, withdraws it, takes the lock, and commits a reference to bytes already gone.
 		const { fileId, filePath, stored } = await fileBackedBlob('lock-race');
 		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0 });
 		const db = queueDb();
@@ -3140,10 +3133,6 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 	});
 
 	it('consults the queue for a file the same instance stored before an intervening supersession', async () => {
-		// Being allocated by this process is a property of the instance for its whole life; being
-		// unsuperseded is not. Storing the instance again after another write replaced its file must
-		// withdraw that write's intent, or a drain between the two writes takes the file out from
-		// under the record that just re-referenced it.
 		const { fileId, filePath, allocated } = await fileBackedBlob('held-instance');
 		await Interlock.put({ id: 'held-instance', blob: createBlob(randomBytes(20000)) });
 		assert.ok(queueRow(fileId), 'the supersession staged an intent for the first file');
@@ -3155,8 +3144,6 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 	});
 
 	it('refuses a write when the queue cannot be read', async () => {
-		// Unknown is not absent: a row this write could not see is one a drain executes against the
-		// bytes it is about to reference.
 		const { fileId, stored } = await fileBackedBlob('unreadable-queue');
 		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() + 600000, storageIndex: 0 });
 		drainBlobUnlinkQueue(rootStore()); // a non-empty read, so no drain's "empty" can stand in for the read
@@ -3174,8 +3161,6 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 	});
 
 	it('keeps the lock while the row of a removed file cannot be settled', async () => {
-		// A row that outlives its file must not be withdrawable: with the lock free, a write finds the
-		// row, withdraws it, takes the lock, and commits a reference to bytes that are gone.
 		const { fileId, filePath, stored } = await fileBackedBlob('stuck-row');
 		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0 });
 		const db = queueDb();
@@ -3219,8 +3204,6 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 	});
 
 	it('stages the intent synchronously when the batched write is rejected', async () => {
-		// Whether the record write shared the rejected batch is not knowable here; a durable row is
-		// safe either way, because the drain re-reads the owner before it acts on one.
 		const { fileId, stored } = await fileBackedBlob('rejected-batch');
 		const priorVersion = Interlock.primaryStore.getEntry('rejected-batch').version;
 		const db = queueDb();
@@ -3230,10 +3213,16 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 			// Only the batched write is rejected; lmdb-js routes putSync through put as well.
 			if (isQueueKey(key) && key[1] === fileId && !rejected) {
 				rejected = true;
-				return Promise.reject(new Error('batch rejected'));
+				const failure = Promise.reject(new Error('batch rejected'));
+				failure.catch(() => {});
+				return failure;
 			}
 			return put.apply(this, arguments);
 		};
+		// On LMDB the row lands with the batch, so the batch's commit is what fails.
+		const hadCommitted = 'committed' in db;
+		if (hadCommitted)
+			db.committed = { then: (_, onRejected) => Promise.resolve().then(() => onRejected(new Error('batch rejected'))) };
 		try {
 			deleteBlob(stored, { priorVersion, synchronous: false });
 			await waitFor(() => queueRow(fileId) !== undefined, {
@@ -3242,13 +3231,12 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 			});
 		} finally {
 			db.put = put;
+			if (hadCommitted) delete db.committed;
 		}
 		assert.deepEqual(queueRow(fileId).owner, ['BlobInterlockTest', 'rejected-batch']);
 	});
 
 	it('consults the in-memory reclamation for an allocated instance deleted without a supersession', async () => {
-		// The in-memory path writes no row, but it condemns the file all the same; the allocating
-		// instance stored again afterwards must find and cancel it.
 		setDeletionDelay(100);
 		const blob = createBlob(randomBytes(20000));
 		await Interlock.put({ id: 'bare-delete', blob });
@@ -3259,6 +3247,94 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 
 		await delay(600);
 		assert.ok(existsSync(filePath), 'the record references the file again; its reclamation must have been cancelled');
+	});
+
+	it('lets the drain finish the unlink a losing write raced', async () => {
+		// A write that loses the lock race is refused; it must not also have withdrawn the row, or the
+		// drain stands down and a file nobody references is left for the sweep.
+		const { fileId, filePath, stored } = await fileBackedBlob('losing-write');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() + 600000, storageIndex: 0 });
+		drainBlobUnlinkQueue(rootStore()); // a non-empty read, so no drain's "empty" can stand in for the read
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0 });
+		const db = queueDb();
+		const { getSync } = db;
+		let refused;
+		let raced = false;
+		db.getSync = function (key) {
+			// The write lands while the drain re-reads the row under the lock.
+			if (isQueueKey(key) && key[1] === fileId && !raced) {
+				raced = true;
+				try {
+					encodeBlobsWithFilePath(
+						() => Interlock.primaryStore.encoder.encode({ id: 'losing-write', blob: stored }),
+						'losing-write',
+						rootStore(),
+						'BlobInterlockTest'
+					);
+				} catch (error) {
+					refused = error;
+				}
+			}
+			return getSync.apply(this, arguments);
+		};
+		try {
+			drainBlobUnlinkQueue(rootStore());
+			await waitFor(() => !existsSync(filePath), { timeout: 5000, message: 'the drain must still unlink the file' });
+		} finally {
+			db.getSync = getSync;
+		}
+		assert.match(refused?.message ?? 'the write was allowed', /being reclaimed/);
+		await waitFor(() => queueRow(fileId) === undefined, { timeout: 5000, message: 'the row must be removed' });
+	});
+
+	it('sweeps around an intent that resolves to no path', async () => {
+		// The drain abandons such a row on its next pass; until then it protects nothing, and the
+		// sweep that is the fallback for every abandoned file must not fail on it.
+		const { filePath } = await fileBackedBlob('sweep-around');
+		queueDb().putSync([UNLINK_QUEUE_KEY, 'no-such-file'], { due: Date.now() + 600000, storageIndex: 99 });
+
+		await cleanupOrphans(getDatabases().blobinterlock, 'blobinterlock');
+
+		assert.ok(existsSync(filePath), 'a referenced file is never swept');
+	});
+
+	it('does not let a drain between a batched stage and its commit retire the queue read', async () => {
+		// An LMDB record write is a batch, and a put inside one returns an already-settled promise; the
+		// row lands only when the batch commits, a turn or more later. A drain in that gap must not be
+		// able to record the queue as empty for the count the row lands under.
+		const { fileId, filePath, stored } = await fileBackedBlob('batched-stage');
+		assert.strictEqual(drainBlobUnlinkQueue(rootStore()), false, 'the queue starts empty');
+		const db = queueDb();
+		const { put, putSync } = db;
+		let drains = 0;
+		const drainAfterThisTurn = (key) => {
+			if (isQueueKey(key) && drains === 0) {
+				drains++;
+				setImmediate(() => drainBlobUnlinkQueue(rootStore()));
+			}
+		};
+		db.put = function (key) {
+			drainAfterThisTurn(key);
+			return put.apply(this, arguments);
+		};
+		db.putSync = function (key) {
+			drainAfterThisTurn(key);
+			return putSync.apply(this, arguments);
+		};
+		try {
+			await Interlock.put({ id: 'batched-stage' });
+		} finally {
+			db.put = put;
+			db.putSync = putSync;
+		}
+		assert.equal(drains, 1);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.ok(queueRow(fileId), 'the supersession staged an intent for the dropped file');
+
+		await Interlock.put({ id: 'batched-stage', blob: stored });
+
+		assert.strictEqual(queueRow(fileId), undefined, 'the intent must be withdrawn');
+		assert.ok(existsSync(filePath));
 	});
 
 	it('does not answer an unreadable queue as an empty one', () => {
