@@ -509,10 +509,12 @@ test('Harper framing policy covers every production storage-binding importer', (
 		'resources',
 		'security',
 		'server',
+		'sqlEngine',
 		'sqlTranslator',
 		'upgrade',
 		'utility',
 		'validation',
+		'launchServiceScripts',
 	];
 	const files = [];
 	const visit = (directory) => {
@@ -523,7 +525,8 @@ test('Harper framing policy covers every production storage-binding importer', (
 		}
 	};
 	for (const sourceRoot of sourceRoots) visit(path.join(root, sourceRoot));
-	const bindingImport = /(?:from\s+)?['"](?:lmdb|@harperfast\/rocksdb-js)(?:\/[^'"]*)?['"]/;
+	const bindingImport =
+		/(?:\bfrom\s+|\bimport\s*\(|\brequire\s*\()\s*['"](?:lmdb|@harperfast\/rocksdb-js)(?:\/[^'"]*)?['"]/;
 	const importers = files
 		.filter((file) => bindingImport.test(readFileSync(file, 'utf8')))
 		.map((file) => path.relative(root, file).replaceAll(path.sep, '/'));

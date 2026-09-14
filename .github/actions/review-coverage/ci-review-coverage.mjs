@@ -56,7 +56,13 @@ function main(mode, formatMode, framingMode) {
 		maxFiles: boundInt('easy-max-files', 'INPUT_EASY_MAX_FILES', EASY_MAX_FILES),
 	};
 	const r = evaluateCiCoverage(pr, { mode, required, easy });
-	const framingPaths = parseFramingPaths(arg('framing-paths', process.env.INPUT_FRAMING_PATHS || ''));
+	let framingPaths = [];
+	let framingConfigurationProblem = '';
+	try {
+		framingPaths = parseFramingPaths(arg('framing-paths', process.env.INPUT_FRAMING_PATHS || ''));
+	} catch (error) {
+		framingConfigurationProblem = `invalid framing configuration (${error instanceof Error ? error.message : String(error)})`;
+	}
 	const superseded = arg('pr-files-superseded', process.env.INPUT_PR_FILES_SUPERSEDED || '').toLowerCase() === 'true';
 	let prFiles = null;
 	let evidenceProblem = '';
@@ -75,13 +81,20 @@ function main(mode, formatMode, framingMode) {
 		evidenceProblem,
 		superseded,
 	});
-	const framing = evaluateFramingVerdict(pr, {
-		mode: framingMode,
-		paths: framingPaths,
-		prFiles,
-		evidenceProblem,
-		superseded,
-	});
+	const framing = framingConfigurationProblem
+		? {
+				pass: framingMode !== 'enforce',
+				compliant: false,
+				exempt: '',
+				detail: framingConfigurationProblem,
+			}
+		: evaluateFramingVerdict(pr, {
+				mode: framingMode,
+				paths: framingPaths,
+				prFiles,
+				evidenceProblem,
+				superseded,
+			});
 
 	const lines = [
 		`### Cross-model review coverage — ${r.pass ? (r.exempt ? '✅ exempt' : r.compliant ? '✅' : '⚠️ report-only') : '❌'}`,
@@ -108,7 +121,7 @@ function main(mode, formatMode, framingMode) {
 			'See `.github/actions/review-coverage/README.md` for the format and remediation.'
 		);
 	}
-	if (framingPaths.length > 0) {
+	if (framingPaths.length > 0 || framingConfigurationProblem) {
 		lines.push(
 			'',
 			`### Framing verdict — ${framing.exempt ? '✅ exempt' : framing.compliant ? '✅' : framingMode === 'enforce' ? '❌' : '⚠️ report-only'}`,
@@ -130,7 +143,7 @@ function main(mode, formatMode, framingMode) {
 		console.log(
 			`pr-format [${formatMode}]: ${format.exempt ? `exempt: ${format.exempt}` : format.compliant ? 'compliant' : format.problems.join('; ')}`
 		);
-	if (framingPaths.length > 0)
+	if (framingPaths.length > 0 || framingConfigurationProblem)
 		console.log(`framing-verdict [${framingMode}]: ${framing.exempt ? `exempt: ${framing.exempt}` : framing.detail}`);
 	if (r.pass && !r.exempt && !r.compliant)
 		console.error(

@@ -45,24 +45,43 @@ test('framing fails a governed protected-path PR without a verdict', () => {
 });
 
 test('framing accepts chosen-approach-sound on a protected path', () => {
-	const result = evaluateFramingVerdict(
-		human({ body: 'Summary\n\nFraming-Verdict: chosen-approach-sound' }),
-		framingOptions()
-	);
-	assert.strictEqual(result.pass, true);
-	assert.strictEqual(result.compliant, true);
+	for (const field of [
+		'Framing-Verdict: chosen-approach-sound',
+		'Framing-Verdict: chosen-approach-sound (a1b2c3d4e5f6)',
+		'Framing-Verdict: chosen-approach-sound (round roll-up)',
+		'<sub>Framing-Verdict: chosen-approach-sound</sub>',
+		'framing-verdict: CHOSEN-APPROACH-SOUND',
+	]) {
+		const result = evaluateFramingVerdict(human({ body: `Summary\n\n${field}` }), framingOptions());
+		assert.strictEqual(result.pass, true, field);
+		assert.strictEqual(result.compliant, true, field);
+	}
+	for (const field of [
+		'Framing-Verdict: chosen-approach-sound is expected',
+		'Framing-Verdict: chosen-approach-sound (not-a-nonce)',
+	])
+		assert.strictEqual(evaluateFramingVerdict(human({ body: field }), framingOptions()).pass, false, field);
 });
 
 test('framing accepts a non-clearing verdict only with the reviewer section', () => {
 	for (const verdict of ['better-alternative-exists', 'option-set-too-narrow']) {
 		const missing = evaluateFramingVerdict(human({ body: `Framing-Verdict: ${verdict}` }), framingOptions());
 		assert.strictEqual(missing.pass, false, `${verdict} must not pass alone`);
-		assert.match(missing.detail, /without ## For the human reviewer/);
+		assert.match(missing.detail, /inside ## For the human reviewer/);
 		const recorded = evaluateFramingVerdict(
 			human({ body: `## For the human reviewer\n\nDecision recorded.\n\nFraming-Verdict: ${verdict}` }),
 			framingOptions()
 		);
 		assert.strictEqual(recorded.pass, true, `${verdict} must pass with the reviewer section`);
+		for (const body of [
+			`## For the human reviewer\n\nFraming-Verdict: ${verdict}`,
+			`## For the human reviewer\n\nUnrelated note.\n\n## Verification\n\nFraming-Verdict: ${verdict}`,
+		])
+			assert.strictEqual(
+				evaluateFramingVerdict(human({ body }), framingOptions()).pass,
+				false,
+				`${verdict} needs an explanation in its reviewer section`
+			);
 	}
 });
 
@@ -80,6 +99,7 @@ test('framing path parsing supports exact paths and directory prefixes only', ()
 		'resources/Table.ts',
 		'replication/**',
 	]);
+	assert.deepStrictEqual(parseFramingPaths('app/[slug]/route.ts'), ['app/[slug]/route.ts']);
 	for (const path of ['/resources/Table.ts', '../Table.ts', 'resources/*.ts', './resources/Table.ts'])
 		assert.throws(() => parseFramingPaths(path), /invalid framing path/);
 	const nested = evaluateFramingVerdict(
@@ -97,6 +117,11 @@ test('framing matches a renamed path and fails closed on incomplete evidence', (
 	const incomplete = evaluateFramingVerdict(human(), framingOptions({ prFiles: framingFiles(['README.md'], false) }));
 	assert.strictEqual(incomplete.pass, false);
 	assert.match(incomplete.detail, /evidence is incomplete/);
+	const incompleteMatch = evaluateFramingVerdict(
+		human({ body: 'Framing-Verdict: chosen-approach-sound' }),
+		framingOptions({ prFiles: framingFiles(['resources/Table.ts'], false) })
+	);
+	assert.strictEqual(incompleteMatch.pass, true, 'a known governed match does not need the rest of the file list');
 	assert.strictEqual(
 		evaluateFramingVerdict(human(), framingOptions({ mode: 'report', prFiles: null })).pass,
 		true,
@@ -520,6 +545,35 @@ test('the action enforces framing inputs through the real entrypoint', () => {
 		const accepted = execute('Summary\n\nFraming-Verdict: chosen-approach-sound');
 		assert.strictEqual(accepted.status, 0);
 		assert.match(accepted.stdout, /framing-verdict \[enforce\].*accepted framing verdict/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('invalid framing configuration does not suppress orthogonal reporting', () => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'rc-framing-config-'));
+	const event = path.join(dir, 'event.json');
+	const summary = path.join(dir, 'summary.md');
+	writeFileSync(event, JSON.stringify({ pull_request: human({ body: 'Summary' }) }));
+	const execute = (mode) =>
+		spawnSync(process.execPath, [SCRIPT], {
+			encoding: 'utf8',
+			env: {
+				...CLEAN_ENV,
+				GITHUB_EVENT_PATH: event,
+				GITHUB_STEP_SUMMARY: summary,
+				INPUT_FRAMING_MODE: mode,
+				INPUT_FRAMING_PATHS: '/resources/Table.ts',
+			},
+		});
+	try {
+		const report = execute('report');
+		assert.strictEqual(report.status, 0);
+		assert.match(readFileSync(summary, 'utf8'), /### Cross-model review coverage/);
+		assert.match(readFileSync(summary, 'utf8'), /### Framing verdict — ⚠️ report-only/);
+		const enforce = execute('enforce');
+		assert.strictEqual(enforce.status, 1);
+		assert.match(enforce.stderr, /::error::Framing verdict: invalid framing configuration/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
