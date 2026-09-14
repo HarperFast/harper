@@ -2,6 +2,7 @@ require('../testUtils');
 const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
+const { registerDerivedIndexTables } = require('#src/resources/derivedIndexRegistry');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // Regression for #1287 (RocksDB leg). The cleanup scan's batcher retries ERR_BUSY, but the two
@@ -29,6 +30,7 @@ describe('evict() swallows a commit conflict instead of rejecting (#1287)', () =
 		const originalCommit = Transaction.prototype.commit;
 		await BusyTable.put('b1', { id: 'b1' });
 		const entry = BusyTable.primaryStore.getEntry('b1');
+		const unregister = registerDerivedIndexTables(BusyTable.auditStore, [BusyTable.tableId]);
 
 		let injected = false;
 		// Arm a single ERR_BUSY into the next commit — the eviction commit issued synchronously by evict().
@@ -48,8 +50,17 @@ describe('evict() swallows a commit conflict instead of rejecting (#1287)', () =
 			// Must resolve, not reject: a rejection here is the unhandledRejection that crashed [main/0].
 			await resolution;
 			assert.ok(injected, 'the injected ERR_BUSY conflict should have fired on the eviction commit');
+			assert.ok(BusyTable.primaryStore.getEntry('b1'), 'the failed transaction must leave the resident record intact');
+			assert.strictEqual(
+				[...BusyTable.auditStore.getRange({ start: 1 })].some(
+					(record) => record.type === 'evict' && record.recordId === 'b1'
+				),
+				false,
+				'the failed transaction must not commit an eviction marker'
+			);
 		} finally {
 			Transaction.prototype.commit = originalCommit;
+			unregister();
 		}
 	});
 });

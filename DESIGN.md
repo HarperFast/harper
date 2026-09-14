@@ -115,6 +115,12 @@ Opt-in deflate compression for file-backed blobs (harper#2443) has three load-be
 
 **A commit's conflict retries have their own deadline, separate from the open-transaction limit** (issue #2450). rocksdb-js ≥2.8 wakes a commit parked on another transaction's write intent after `ROCKSDB_JS_PARK_TIMEOUT_MS` (5s) and returns `RETRY_NOW_VALUE` even when the holder never releases, so a wedged intent presents as a stream of transient conflicts rather than one hung commit — and the `MAX_RETRIES` cap alone then keeps the request pending for ~40 park timeouts, minutes past the configured queue limit. `DatabaseTransaction.commitStartedAt` is stamped on the **chain root** at its first native submission and read at both retry decisions (the coordinated `RETRY_NOW_VALUE` resolve path and the `ERR_BUSY`/`ERR_TRY_AGAIN` rejection path); past `Math.max(STORAGE_MAXTRANSACTIONQUEUETIME, timeoutBudget)` the commit takes the existing `abortChainAfterRetries()` cleanup and throws a 503 `TransactionCommitConflictTimeoutError`. One clock per _logical_ commit, deliberately not per attempt: the per-attempt clock is `trackOutstandingCommit()`'s, which measures native liveness and drives `checkOverloaded()`'s thread-wide shedding, so back-dating it would let one uncapped `sourceApply` retry shed every unrelated request on the thread. The clock is released through the promise `commit()` returns (which settles only after the chained stores' commits), so a reused transaction's next batch starts fresh. `retryable` is true only on a chain root that has not rotated through a mid-scope commit — anywhere else an earlier store already wrote durable audit entries and ran its hooks that a replayed request would repeat. `sourceApply` is exempt, as it is from the attempt cap, for the harper-pro#348 divergence reason above.
 
+## RocksDB range activity and snapshot expiration
+
+`PrimaryRocksDatabase.getRange` and `RocksIndexStore.getRange` pass native ranges through `trackReadRange`. The native transaction's owner is captured once when constructing the range; each `next()` records activity before native access, including entries later discarded by filters. The transaction monitor consumes that activity at its existing cadence and applies the same read-only idle policy as point reads. It never renews a pending write holder merely because a scan advances. Iterator references still own the original snapshot; the wrapper does not reopen or rotate it. When a handle with no outstanding reader references is handed to the native commit/retry loop, its read-owner association is removed: retry handlers can construct new synchronous ranges on that still-live write handle without being mistaken for expired readers. Existing wrapped ranges retain their captured owner and cannot resume after their read ownership ends.
+
+RocksDB 2.9.0 binds ranges to their supplied transaction and invalidates them when that transaction ends. An abandoned range is still bounded by the idle monitor. Resuming after its snapshot has been released throws an `ReadSnapshotExpiredError` (503) before accessing the native iterator; retry only the read, without replaying previously committed writes. A poisoned write-bearing transaction retains its existing 422 error and rollback behavior. Early iterator return remains a cleanup operation, including after expiration.
+
 ## Repeat writes to the same key in one transaction carry their state forward (`DatabaseTransaction`/`Table`)
 
 A transaction can hold more than one write to the same record key — two `patch()` calls inside one `transaction()`, or a replicated transaction carrying two updates to a record. Each write captures `operation.entry` (its idea of the current record) when it is staged, and **neither engine can refresh that from a read**: LMDB queues staged puts and applies them only in the commit batch, so a `getEntry` inside that loop still returns the pre-transaction record (the exclusive `store.transaction()` fallback is no better), and RocksDB read-your-writes only sees writes already staged into the native transaction — which the source-apply path, staging its whole batch before `commit()`, hasn't done yet.
@@ -131,7 +137,9 @@ Before this (harper#1968), every write diffed against the pre-transaction record
 
 The chain only describes reality if **staging order is also execution order**, and on RocksDB two things used to break that. `addWrite` runs a write's commit handler immediately unless the write sets `deferSave`; `_writeUpdate` does set it and depends on `resource.save()` to run the write, and the source/replication apply path calls `_writeUpdate` directly and never calls `save()` (`replayLogs` does, explicitly). So an apply-path put executes in the commit loop while a delete executes at staging time, whichever was staged first. And the apply loop itself dispatches each record's `writeUpdate()` without awaiting; that function suspends on an async record load (RocksDB `get` is synchronous only on a block-cache hit), so within one transaction a warm key can reach `addWrite` before a cold key that arrived earlier. A leader's `delete K; put K` then staged as `put K; delete K` and executed as `delete K; put K` with neither write chained to the other — both diffed against the pre-transaction record, the delete removed **every** index entry for the record and the put, whose indexed values matched that same record, did no index work at all and re-stored the record. Live record, no index entries, permanent (harper#2211).
 
-Both orders are now pinned. `addWrite` defers a write whose earlier same-key write has not run yet, but **only for writes that both consume `priorStagedWrite()` and publish `stagedEntry`** — marked `chainsStagedState`, today just the delete write. `_writeInvalidate`/`_writeRelocate`/`_writePublish` do neither, so reordering them past a staged put would hand them a pre-transaction basis they have no way to correct; they keep their eager save. And the apply loop's `stageWrite` chains the writes to any one key through a per-transaction map so staging order is arrival order, dropping settled entries (a bulk transaction retains one entry per in-flight write, not per record) and short-circuiting successors when a predecessor rejects. LMDB was never exposed: `LMDBTransaction.addWrite` defers every write and has always executed them in `this.writes` order.
+Both orders are now pinned. `addWrite` defers a write whose earlier same-key write has not run yet, but **only for writes that both consume `priorStagedWrite()` and publish `stagedEntry`** — marked `chainsStagedState`, today the update and delete writes. `DatabaseTransaction.save()` applies the same rule when an explicit `resource.save()` bypasses `addWrite`: it drains that operation's unsaved predecessor chain oldest-first into the same native transaction before saving the requested write. `_writeInvalidate`/`_writeRelocate`/`_writePublish` consume and publish neither staged record state, so reordering them past a staged put would hand them a pre-transaction basis they have no way to correct; they keep their eager save. And the apply loop's `stageWrite` chains the writes to any one key through a per-transaction map so staging order is arrival order, dropping settled entries (a bulk transaction retains one entry per in-flight write, not per record) and short-circuiting successors when a predecessor rejects. LMDB was never exposed to the storage-order inversion: `LMDBTransaction.addWrite` defers every write and has always executed them in `this.writes` order.
+
+An ordinary tracked update instance represents one staged write at a time. Once its write is selected for saving — explicitly, as an explicit save's predecessor, or by transaction commit — its direct and lazily tracked nested mutation surfaces throw 409 until `update()` stages a fresh write. Reads remain valid. Record-lock instances retain their separate lifecycle because scoped and held locks deliberately reuse the same instance and lock handle across explicit update/save cycles.
 
 Two consequences of that scoping are worth knowing, both pre-existing and neither closed by the ordering fix. `_writeRelocate` still saves eagerly, so a replicated `put K; relocate K` where the residency list excludes this host strips K to its indexed-attribute stub first and then re-stores the **full record** — content retained on a node the residency policy excludes; `_writeInvalidate` has the milder form (a lost invalidation, so stale reads until TTL). Closing those means teaching both handlers `priorStagedWrite()`/`stagedEntry` and then flagging them, not simply deferring them. Separately, the apply loop's per-key chain narrows but does not close the cross-key escape: in `{put A, delete B}` where A's resource load rejects and B's is slow, the abort lands at `end_txn` and B's continuation then reaches `addWrite` on a CLOSED transaction, where `save()` commits it alone.
 
@@ -287,9 +295,9 @@ Consequences that shape the code:
   hooks by the same trust model as any in-process `Table.update(id)` + set/save sequence.
 
 Not in Phase 0, by design: replication of lock transitions, distributed grant, lease renewal,
-subscription events for lock/unlock, and lock() on LMDB. Phase 1 direction: replicate lock request/
-grant/release as control transaction-log entries with Ricart–Agrawala-style (timestamp, nodeId)
-tiebreaking; once every node participates in the grant protocol, lock() becomes a cluster-wide verb.
+subscription events for lock/unlock, and lock() on LMDB. Phase 1 adds the distributed grant — see
+"Phase 1: cluster-wide `lock()` over replicated control entries" below. Lease renewal, subscription
+events for lock/unlock, and lock() on LMDB remain out of scope.
 
 **Acquisition timestamp and mixed transactions.** In an `ImmediateTransaction` context (no explicit
 `transaction()` scope) every save — hold or scoped — is stamped by `handle.nextHolderVersion()` so
@@ -323,6 +331,205 @@ JS thread:
 - _Abort during the `acquireRecordKey` await window._ The async gap between `tryLock` failing and the
   `onUnlocked` callback is short in practice, and injecting an abort during that window requires two
   concurrent threads.
+
+### Phase 1: cluster-wide `lock()` over amortized per-record ownership (`recordLockCoordinator`)
+
+> **Phase 1 contract: exclusion-only.** A cluster `lock()` guarantees exclusive _admission_ of a
+> critical section, and successor freshness after a clean handoff while the key's home still holds
+> that handoff's dependency set. It adds no fencing generation and does not confirm locked writes to a
+> quorum, so **it changes nothing about how two conflicting writes resolve** and it does not promise
+> freshness once that dependency set is gone. Neither limitation is crash-only and both are reachable
+> on a clean handoff.
+>
+> **§10 of [`docs/record-lock-ownership.md`](docs/record-lock-ownership.md) is the normative
+> wording**: the routes into each limitation, why there is no caller-side mitigation, and the rule
+> that none of it may be softened in the API docs. Read it before writing anything user-facing about
+> `lock()`.
+>
+> One consequence bears on the code here rather than on the API: **the Phase 0 contract's relationship
+> with ordinary writes is unchanged by Phase 1** — plain writes are still never gated and still
+> resolve by last-write-wins, with no field added to them — which is the main thing the fenced arm
+> would have given up. The fenced and quorum-confirmed alternatives are deferred, with their costs, to
+> harper#2540.
+
+Phase 1 keeps every Phase 0 mechanism and adds a cluster step on top of it. Nothing in core registers
+a `ClusterLockTransport`, so in a core-only build the machinery is inert and `lock()` behaves exactly
+as it did in Phase 0 — the whole feature is gated on harper-pro registering a transport.
+
+**Three levels at three very different rates.** This is the shape the design note argues for, and the
+reason the arbitration rule is one node rather than a quorum:
+
+| level      | rate                  | who owns it | what it costs                         |
+| ---------- | --------------------- | ----------- | ------------------------------------- |
+| home map   | operator reconfigures | harper-pro  | published out of band, never per lock |
+| home node  | derived, free         | core        | a hash over the map's `homes[]`       |
+| delegation | per key, bounded time | core        | 1 RTT cold, **zero** while it is live |
+
+`transport.homeMap(database)` hands core `(generation, homes[], homeIncarnation)`, where `homes[]`
+names every node that participates in record locks — a home refuses a delegation to any node the map
+does not name, so a node absent from it can neither arbitrate nor lock. The map is
+**operator-agreed and immutable per generation**: an administrator publishes it, peers agree on its
+digest before the feature is enabled, and nothing a node observes — an unreachable peer, a restart,
+a partition — changes it. Core never computes topology, never advances a generation, and never
+proceeds without a map: no map means no agreed ring, and a ring guessed from whoever looks reachable
+is exactly the asymmetric-partition failure a single arbiter exists to remove. A key's **home** is
+the rendezvous-hash winner over `homes[]` — chosen over a modulo because a generation change then
+re-homes only the departing node's keys, and every re-homed key pays the recovery path on its next
+lock.
+
+**No consensus runs at any rate**, which is the point of the shape. An earlier revision agreed
+`members[]` by single-decree consensus so an unreachable node could be rehomed automatically; that
+was replaced on 2026-09-13 because the decision it automated — is this node briefly down, or gone? —
+has a human authority who can simply state it. The price is stated rather than hidden: an
+unavailable home's keys stay unavailable until an operator publishes a new generation. §4 of the
+design note carries the reasoning and §9 records the rejected alternative.
+
+A node that wants to lock `K` asks `K`'s home for a **delegation**: the exclusive right to admit
+critical sections on `K` for a bounded time. While one is live, `lock()`/`unlock()` are pure Phase 0
+— the local rocksdb key lock, no cluster message. **Releasing the application lock does not release
+the delegation**, which is the whole amortization: a node writing the same record repeatedly pays one
+round and then nothing, and the delegate is in practice the last writer. When another node wants the
+key, its home recalls the delegation; the delegate stops admitting, drains what is in flight, and
+writes the release.
+
+**One control entry, not three.** `LOCK_RELEASE = 12` is the only lock action nibble in
+`auditStore.ts`. `LOCK_REQUEST = 9` and `LOCK_GRANT = 10` belonged to the Ricart–Agrawala rule the
+design note replaces; that rule never shipped enabled, so those nibbles were **retired rather than
+migrated** — and 9 has since been taken by eviction, which is why a migration was never an option.
+Delegation request/grant/recall are unicast over the transport. Only the release stays on the
+replicated log, because it is what orders a handoff behind the delegate's own data writes.
+
+The entry is written in its own transaction, with no primary-store write, and — unlike the `reload`
+marker it is otherwise modeled on — **not** `LOCAL_ONLY`, because replicating it IS the send. Its
+payload is `[key, requesterName, generation, homeIncarnation, counter]`, validated on exact tuple
+length: a future version that grows it must bump the type rather than widen this one, since a
+partially-understood release would clear a delegation on terms the sender did not intend.
+
+**`recordId` is null and the key rides in the payload.** A control entry carrying the locked key as
+its record id answers `_writeUpdate`'s keyed dedup lookup at exactly the holder's stamp, and
+`RocksTransactionLogStore.getSync` returns it ahead of the record's own audit entry — silently
+dropping the holder's first write. That is why the key is in the payload.
+
+**Fencing tokens are ordered, not merely unique.** A delegation carries
+`(generation, homeIncarnation, counter)`, compared lexicographically. `homeIncarnation` is durably
+persisted and monotonic, supplied by harper-pro, and advanced once per **coordination incarnation** —
+a process start or a coordinating-worker restart. Coordinator state including the delegation counter
+is per-thread, so a replacement coordinating worker that kept the same incarnation would re-mint
+tokens its predecessor issued. A random incarnation would make a stale reply
+identifiable but not _orderable_: a home that restarts and re-issues counter 1 after having issued
+counter 50 would let a delayed counter-50 reply defeat its successor.
+
+**The home always outwaits its delegate.** A grant's deadline on the home is the delegate's lease plus
+`LOCK_LEASE_SKEW_MS`, and both sides measure on their own monotonic clock — no remote timestamp is
+ever compared against a local one. So the delegate stops admitting first, and the home cannot re-grant
+a key its previous delegate still believes it holds. The eviction rule is deliberately **asymmetric**,
+and that asymmetry is the safety argument: a delegate may drop a delegation early, a **home may never
+forget one before its expiry**.
+
+**A coordinator never grants over live authority it cannot see.** Two different mechanisms, because
+the two cases are different:
+
+- **In-process transport swap** (a component reload re-registering a transport). The successor
+  **adopts** the predecessor's delegations and grants in its constructor, before the predecessor is
+  closed. The transport object changed; this node's delegations and the handles they admitted did not.
+- **Cold start** (nothing to adopt: a process restart, or a worker taking coordination over from one
+  that died). A previous incarnation may have delegations still admitting, and it left no record.
+  Nothing external bounds them — the map is immutable, so its generation does not advance merely
+  because a process or a worker restarted — so **core enforces this one itself**:
+  `#grantableAfterMono` refuses to grant as a home until `DELEGATION_LEASE_MS + skew` after **that
+  coordinator was constructed**. Not process start: `performance.now()` and `timeOrigin` are
+  process-wide inside a worker too, so a process-anchored horizon reads as long elapsed in a
+  replacement coordinating worker — and not thread start either, since a thread can take coordination
+  ownership long after it booted. It costs availability on this node's own share of the ring and
+  nothing elsewhere; an adopted successor inherits the predecessor's horizon rather than starting a
+  new one, so a transport reload is free. A deployment that can prove a previous incarnation issued
+  nothing overrides it through `ClusterLockTransport.grantableAfterMono`.
+
+`Table.lockCoordinator` also does **not** close the coordinator when the transport merely goes away:
+harper-pro unregisters without a standalone claim during a reconnect, and closing there would discard
+this node's record of what it has granted. Only an explicit standalone claim clears it.
+
+**A delegation is authority within one generation.** `#liveDelegation` compares the delegation
+token's generation against the current one and drops it on a mismatch, because a generation change
+may have re-homed the key to a node that knows nothing of this token. Bounding the window between a
+delegate noticing a new generation and the new home granting is the design note's §4.3 drain —
+operator-sequenced, and harper-pro's to hold, not core's.
+
+**Recall revokes capability, not just admission.** Waiting for live admissions is not enough on its
+own: a caller that staged a write and then called `unlock()` leaves nothing for a drain to wait on,
+but its write is still uncommitted and would land after the successor was admitted. So a delegation
+retains a revoker for every handle it admitted (`registerAdmission`), and surrender, expiry and
+`close()` all call them. The admission carries its delegation's **token**, and `release()` and
+`registerAdmission()` both take it back: a key's delegation can be replaced while a handle is still
+open, and an untokened release from a superseded handle would decrement the successor's admission
+count and let it be surrendered while its own callers were still inside — `handle.revokeLease()` expires the handle ahead of its lease, and the
+commit-time fence in `DatabaseTransaction` then rejects the staged write immediately before the native
+commit submits. That fence runs only when the transaction actually holds a lease-protected write
+(`hasLeaseProtectedWrite`, reset by `clearWrites()`), so a bulk transaction of plain writes in a
+core-only deployment pays nothing for it.
+
+**A delegation outlives any one lock, and that is the amortization.** `DELEGATION_LEASE_MS` is
+deliberately longer than the longest lock lease it will admit. A delegation sized to the caller's own
+lease has no room left for the next lock, so every repeat `lock()` would renew and pay a round trip —
+which is precisely the cost this design exists to remove. A delegate's deadline is also anchored at
+the moment it SENT the request, not at the moment the reply arrived, so a delayed reply cannot give it
+more time than the home is holding the key for; a reply that outlived its own delegation is discarded
+rather than installed.
+
+**`ts_R` is chosen before the write and lives only in the payload.** The writer takes the store's
+monotonic timestamp for the holder's stamp and lets the control entry commit at its own fresh time, so
+an entry can never land behind a peer's replication cursor.
+
+**An entry's identity is bound to the node that wrote it.** `applyEntry` takes the author from the
+audit header, never from the payload, and ignores a release whose payload names anyone else. Without
+that, a peer could write a release naming another node and clear a delegation it does not hold. A
+release also carries the **whole fencing token**, not just the counter, and is matched against the live
+grant on all three components: a home that restarts begins counting again, so a counter-only match
+would let a delayed release from a previous incarnation clear a live grant while its delegate is
+still admitting.
+
+**Bounded state.** Delegations are capped per database and per requester, and expiry work is bounded
+per tick, so a scan locking millions of distinct keys cannot make a home retain millions of grants and
+a single peer cannot exhaust the table on its own.
+
+**Membership is fail-closed.** No agreed home map, no named homes, an unreachable home, a closed
+coordinator, or a call on a thread that does not own coordination all reject with a retryable 503
+rather than downgrading to a node-local lock — which would hand two nodes one key. An unreachable node
+blocks only the keys it homes, which is the availability property the whole redesign exists for.
+
+**`{ scope: 'node' }`** opts out of the cluster step and keeps exact Phase 0 semantics, which by
+design permits simultaneous holders on different nodes. An **explicit** `{ scope: 'cluster' }` with no
+transport rejects 503 rather than silently returning the weaker lock, and a transaction that already
+holds a key node-scoped cannot take a cluster lock on it (409) — including through the concurrent-lock
+coalescing path, where a follower would otherwise inherit the leader's weaker handle.
+
+**Routing and exclusion from record surfaces.** The replicated-event consumer in `Table.ts` dispatches
+the release entry to the table's `LockCoordinator` before it resolves a resource, so it never reaches
+`_writeUpdate`, and `stageWrite` keeps it off the per-key write chain. Every surface that reports
+audit entries as record activity filters it through `isLockControlType`: the subscriber listener
+(ahead of the `rawEvents` branch, which otherwise forwards every type verbatim), the
+`subscribe({ startTime })` replay, the `previousCount` backfill, and `getHistory()`.
+`getHistoryOfRecord()` excludes it already by matching on record id.
+
+**Rolling upgrade.** Unlike the reload marker this entry is modeled on, the lock nibble is not
+`LOCAL_ONLY`, so a peer that does not understand it must not be sent it. harper-pro gates the send
+path on a **versioned** `recordLocks` capability: the versions are mutually exclusive and a node
+advertises exactly one, because a cluster running both arbitration rules would have two independent
+arbiters for one key.
+
+**Audit-log surface.** The release entry appears in `read_audit_log` with a null record id and type
+`lockRelease`. That is deliberate — it is protocol traffic on the table's own log — and it is what
+makes control-entry volume per lock a thing the measurement gate (harper-pro#824) has to report.
+
+**Dual-clock (harper#2412 / rocksdb-js#811).** Phase 1 keeps Phase 0's stamping — the pinned
+acquisition clock, the handle's version floor, and the mixed-transaction rules — unchanged. Nothing in
+the delegation path assigns a record version.
+
+**Not implemented here, deliberately.** The successor-freshness fence of the design note's §7 — the
+inherited `(origin → position)` dependency set on the release entry and the recovery barrier — is
+harper#2542, and harper-pro's operator-agreed home map is harper-pro#825. Until both land, a handoff carries
+exclusion but not the clean-handoff freshness the note's §2 states, which is another reason nothing is
+enabled by default.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 
@@ -405,7 +612,8 @@ When `table()` is called with an attribute newly marked `indexed: true` (or with
 **In-flight state tracking (persisted to `attributesDbi`):**
 
 - `attribute.indexingPID = process.pid` — set at migration start; cleared on clean completion. On restart with a different PID, `indexingPID !== process.pid` triggers a re-migration.
-- `attribute.lastIndexedKey` — updated every 100 records as a resumable checkpoint. Cleared on clean completion; preserved on error so a retry starts from this key.
+- `attribute.lastIndexedKey` — a resumable checkpoint, written at most once per checkpoint period and never before the record floor (`setIndexingCheckpointPeriod`), and only once the index writes it covers have settled and flushed. Cleared on clean completion; preserved on error so a retry starts from this key.
+- `attribute.checkpointCertified` / `attribute.checkpointAlgorithm` — the key the checkpoint was stamped with, and the version of the algorithm that stamped it. A checkpoint resumes only when both match; anything else is rebuilt from scratch, because earlier releases could advance `lastIndexedKey` past a record whose index write failed. The algorithm stamp is also kept on a completed index, so a build made under a version that could skip a record stays distinguishable from one that could not.
 - `attribute.indexingFailed = true` — set if any record's `index.put` errors during the backfill. `table()` checks this flag: a fresh call in the same or a new process re-triggers the backfill from `lastIndexedKey`.
 - `dbi.isIndexing = true` — in-memory flag on the index dbi. Prevents `searchByIndex` from serving partial results (returns 503 "not indexed yet" instead). Cleared only when backfill completes cleanly.
 
@@ -415,8 +623,8 @@ When `signalSchemaChange('schema-change')` fires at the start of `runIndexing`, 
 **Error handling:**
 
 - Per-record sync errors: caught by the inner try-catch. Set `hadIndexingErrors = true`.
-- Per-record async rejections (`index.put` returning a rejected Promise): caught by the `when()` error handler. Set `hadIndexingErrors = true`.
-- The final `await lastResolution` is wrapped in its own try-catch because if the very last put in the loop was rejected, an unguarded `await lastResolution` would throw past the `hadIndexingErrors` check to the outer catch, silently bypassing the error path.
+- Per-record async rejections (`index.put` returning a rejected Promise): every index mutation the build issues — each value's put, the drops for removed indexes, and the LMDB `clearAsync` — is registered in a per-build set that absorbs its own rejection and sets `hadIndexingErrors = true`. A record fans out into one put per indexed value, so tracking only the last one left the earlier puts' failures visible only if they happened to settle in time.
+- A checkpoint drains that set before flushing and refuses to certify if any mutation it covers failed; completion drains it too, so "no errors" means every write settled rather than none had failed yet. The set also bounds how many writes stay in flight (`MAX_OUTSTANDING_INDEXING`).
 - On any error: `indexingFailed = true` is persisted; `indexingPID`, `isIndexing`, and `lastIndexedKey` are kept. This leaves the index in 503 "incomplete" state rather than silently serving partial results.
 
 **`Object.defineProperty(attribute, 'dbi', ...)` must use `configurable: true`:**
@@ -566,6 +774,28 @@ load validation against _that_ tree, and only then activates it. Activation is o
 transaction over two effects: the live tree moves into `.deploy-aside`, then the candidate is renamed
 into the live path.
 
+**Both renames wait out a holder, and the wait happens with the previous version in place.** Windows
+refuses a rename outright (`EPERM`) while anything holds a handle in the source tree, which is what
+`deploy_component` hit on the Windows nightly, on the swap itself. The holder was never identified —
+every Harper-held handle on the candidate is closed before the swap, so it is something outside the
+process, but that is inference, not evidence. `renameThroughTransientHolder` retries every rename in
+the activation transaction and its recovery with capped exponential backoff against a five-second
+deadline. The deadline is per top-level rename, not per activation: a redeploy held up the whole way
+spends up to five seconds each on the move-aside, the swap, and the compensating restore. A rename
+performed from inside a backoff shares its caller's deadline rather than opening a fourth.
+
+The swap's backoff is not a plain sleep: it renames the aside back to the live path, waits there, and
+displaces it again for the next attempt, so the component is missing for one rename rather than for the
+budget. Note what that does and does not buy. Watchers are NOT the beneficiary — `Scope` pauses every
+`EntryHandler` for the duration of a deploy, so an absent tree is never reported as `unlinkDir`, and
+the post-deploy resume diffs against the finished tree. What the put-back protects is everything that
+reads the live path directly: a component reading its own files, a lazily imported module, a concurrent
+scan of the components root, and any thread whose pause the best-effort deploy broadcast did not reach.
+
+The retry set is `EPERM`/`EACCES`/`EBUSY` only: a destination that exists is structural state nothing
+here clears between attempts, and `settleInterruptedActivation` already fails that case closed rather
+than guessing which tree is current.
+
 The ordering is the design. Two things used to be wrong in a way each other hid:
 
 - **The live tree was moved aside first**, so the component was broken for the whole extract +
@@ -657,6 +887,36 @@ briefly absent (in-memory resources are unaffected, but a component that opens i
 request can still see a gap); validation does not run on the main-thread deploy path; and config
 publication is not yet an effect of this transaction, as above.
 
+### Retention of dormant staged builds
+
+A journal-less deployment directory holding `.complete` and the owner's tree is a **dormant build**: built
+and validated, activated by nobody. Recovery used to remove every owned journal-less directory; it now keeps
+dormant builds and bounds them per component to `deployment_stagingRetention_maxCount` (default 5, 0 keeps
+none), newest by `.complete` mtime, ties broken by deployment id so concurrent passes pick the same victims.
+Everything else journal-less — a partial tree, a directory whose tree already moved live, a stale
+`.unsettled` — is still residue and still removed. Nothing here produces a dormant build yet beyond the crash
+window between `.complete` and the journal; #2315 step 6 (deploy from an existing aside) is the producer this
+bound exists for.
+
+Removal is decided **only under the owner's preparation lock**: activation writes `.complete` moments
+before its journal while holding that lock, so an unlocked read of "complete, no journal" is a candidate, not
+a verdict. Boot recovery catalogues dormant builds unlocked, then reconciles each owner once: if any
+catalogued directory has acquired a journal since the scan, or the owner is over its bound, it takes the lock
+and re-reads only that owner's catalogued directories — never the whole staging root, which sibling threads
+are probing — settling any journal that appeared (a deploy that published one and died mid-swap would
+otherwise leave the component unloadable until the next start) and bounding what is still dormant. The
+residue branch re-classifies under its lock too, since the `.complete` a deploy wrote before dying can land
+while the scan waits for the lock. A build created after the scan waits for the next pass. It used to take the lock per journal-less directory, which was one-shot because the directory was
+removed — doing that for retained builds on every pass made a healthy component lose the 250 ms probe to its
+sibling threads at boot and be deferred with nothing in progress. A lock a live deploy holds is still recorded as
+that same deferral: "do not delete" is not "safe to load". The deploy path prunes inside the settlement scan
+it already runs under the lock, before building, so a deploy pays one traversal of the staging root.
+`dropComponentDirectory` reclaims the dropped component's dormant builds, since no later deploy of that
+name will. Only ENOENT is absence; any other read error keeps the entry and moves on. Pruning is disk
+hygiene: it never fails a component closed and never replaces a deploy's own error, so the bound is
+best-effort under filesystem failure and is not a storage quota — journaled, unsettled and unowned
+directories are preserved by design and can still fill a volume.
+
 ## Component preparation is serialized across worker threads
 
 `prepareApplication()` performs one transaction per component: build the replacement, validate it, then swap it in (see "A deploy builds off to the side" below). Deploy operations can execute on worker threads as well as main, so a module-local promise queue is insufficient—each worker has its own module registry. `withComponentPreparationLock()` (`components/componentPreparationLock.ts`) instead acquires an atomic filesystem lock keyed by the absolute component path. The deprecated `install_node_modules` operation uses the same lock, so it cannot run npm concurrently with a deploy.
@@ -718,12 +978,20 @@ Every npm install Harper invokes directly — automatic component installation a
 `install_node_modules` operation alike — composes its arguments in `packageManagerInstallArguments()`,
 which is production-only and adds `--omit=dev --no-audit --no-fund`. `--no-audit` is load-bearing, not
 hygiene: npm 10 puts even a `file:` link into its audit bulk request, and the registry's answer to that
-is unbounded from Harper's side.
+is unbounded from Harper's side. The operation accepts the established `install_allow_scripts`
+spelling (and `allowInstallScripts` for compatibility), defaulting to its historical `true`; false
+reaches the shared builder and adds `--ignore-scripts`.
 `installApplication()` skips the package-manager child entirely when the root manifest declares no
 production dependencies, non-empty workspaces, or enabled install lifecycle. An explicitly selected
 non-npm manager still runs so it can discover workspace configuration outside `package.json`, and it
 retains its own install defaults. A configured `install_command` remains the explicit escape hatch for
-build-time tooling. `readInstalledPackageMetadata()` must use the same automatic-work predicate so a
+build-time tooling, but not for lifecycle-script policy: unless `install_allow_scripts` is true, its
+spawn gets `npm_config_ignore_scripts=true`, which covers npm nested anywhere in the command without
+adding an argument that could break non-npm tooling. The setting uses npm's configuration namespace;
+other package managers that consume `npm_config_*` options can honor it too. When the policy is
+omitted, Harper warns that package lifecycle scripts—including `npm run` pre/post hooks—are suppressed
+and names both the operations-API and root-config opt-ins.
+`readInstalledPackageMetadata()` must use the same automatic-work predicate so a
 dev-only npm manifest does not force a restart on every redeploy for lacking a lockfile while an
 explicit non-npm workspace install still does. Absolute local archives are classified before
 package-protocol detection: a Windows drive letter's colon is path syntax, not an npm protocol. File
@@ -1082,6 +1350,196 @@ replicability metadata is deferred to the cluster-level-config work (CORE-3018),
 schema. Per-peer failures never reject: they come back as `{status: 'failed', reason, node}` entries
 in `response.replicated[]`, and `message` still reads as success (same contract as drop_schema), so
 operators must inspect the array for per-node outcomes.
+
+## Root config watchers must read synchronously (`config/readConfigFileSync.ts`)
+
+`atomicWriteFile()` swaps the config file in with `renameSync` and, on Windows, retries the
+`EPERM`/`EACCES`/`EBUSY` a still-open destination handle produces — blocking the calling thread in
+`Atomics.wait`. The handle that blocks it belongs to the _process_, not to the thread that opened
+it: measured on `windows-latest`/Node 24 (harper#2313), a single Node **read** descriptor on the
+destination fails the rename, while `fs.watch` and chokidar's own handles do not.
+`set_configuration` reaches that loop from a live request thread, and every worker runs root config
+watchers over the same file, so an **async** read in a watcher is unsatisfiable by construction:
+libuv opens the descriptor on the threadpool but closes it from JS, which cannot run while the same
+thread is blocked in the retry loop. The worker then deadlocks against its own
+watcher and burns the entire budget before failing (harper#2191, reproduced by the Windows
+integration job). Both root watchers — `RootConfigWatcher.handleChange` and an `OptionsWatcher`
+explicitly identified as a root-config watcher — therefore go through `readConfigFileSync()`, which
+holds no descriptor across a yield. A component's own config remains asynchronous even if the
+component names it `harper-config.yaml` or `harperdb-config.yaml`. Do not "modernize" root-config
+reads back to `fsPromises.readFile`.
+
+Three constraints follow from it. The reader gates its retry to win32 (`isSharingViolation`); the
+writer does not (`configUtils`' `isRetryableRenameError`, same three codes, any platform). That
+asymmetry is deliberate: a misclassified read falls through to the timer ladder below and still
+recovers, a rename has nothing to fall through to, and `process.platform` does not answer the
+question that matters — whether this filesystem can replace an open file. A Linux worker whose
+rootPath sits on WSL drvfs, a CIFS/SMB mount, or a Docker Desktop bind mount reports `linux` and
+still returns these codes transiently.
+
+The reader's 500ms budget is one deadline **per path shared by all callers on the thread**, not per
+call — a worker holds one `OptionsWatcher` per root-declared plugin (10+ on a stock install,
+`TRUSTED_RESOURCE_PLUGINS`) over the same file, all reacting to a single change event, so a per-call
+budget would serialize into N x 500ms of blocked event loop whenever a writer's lock outlives it.
+
+Both watchers parse through `parseConfigFile()` (`config/parseConfigFile.ts`) rather than calling
+`yaml.parse` directly: yaml's `prettyErrors` frames the offending source lines into the error's
+`message`, and the root config holds credentials, so a parse failure would otherwise ship that
+frame to the component log (`OptionsWatcher` → `Scope`) or the config log.
+
+And a lock that outlives even that emits no new watcher event when it clears, so both watchers hand
+the failure to `ConfigReadRetry` (`config/configReadRetry.ts`) rather than going stale: retrying from
+a timer holds no descriptor either, so it cannot re-enter the deadlock. A ladder rung passes
+`waitForLock: false` — the ladder already owns the retry, and letting each rung re-enter the
+blocking budget would multiply one lock incident into a stall per rung. The ladder is bounded by
+wall clock and its backoff is derived from elapsed time rather than from how many times it was
+armed, because watcher callbacks and timer callbacks share one entry point: a rename burst delivers
+several chokidar events in milliseconds and would otherwise both spend the ladder and push the next
+rung out to the maximum before the writer has let go.
+
+A deletion supersedes the reads already in flight, so `OptionsWatcher.#handleUnlink` claims the
+current read sequence rather than only cancelling the ladder: an asynchronous rung completing after
+it would otherwise put the removed file's options back, or find ENOENT and report the same deletion
+a second time as a `remove` asking `Scope` to restart a scope that deletion just settled. That
+ordering cannot be staged from a real deletion — every technique that holds a `readFile` open past
+chokidar's `unlink` (threadpool saturation, a FIFO) holds the `unlink` behind it too, because
+chokidar's own event delivery needs the same threadpool; measured here, a saturated pool produced no
+`unlink` for at least 3 seconds. The regression therefore delivers the deletion through
+`_simulateUnlinkForTests`.
+
+### An empty read is a writer mid-write, not an empty config
+
+A non-atomic writer — an operator's editor, a shell redirect, anything that is not
+`atomicWriteFile()`'s temp-file-and-rename — truncates the config before it writes it, and the
+synchronous read is fast enough to land in that window where the async read never was. chokidar
+throttles change events per path for 50ms and _drops_ the throttled ones, so the event carrying the
+content is routinely discarded as a duplicate of the truncate's: an empty read that is discarded is
+the last read that config gets, and the thread holds the pre-truncate value indefinitely
+(`RootConfigWatcher`) or reports the scope as removed (`OptionsWatcher`). Both therefore hand an
+empty read to `ConfigReadRetry`, the same ladder a lock takes and for the same reason — there is no
+further event to re-read on. `OptionsWatcher` applies it on both read paths, not only the
+synchronous one: the asynchronous read is far less likely to land in a truncate window, but the
+consequence there is a spurious `remove` that tears the scope down.
+
+A read that _parses_ to nothing is the same event and takes the same ladder: a truncated document,
+a lone `\n` and a file of nothing but comments all yield `null` from the parser rather than
+throwing. `OptionsWatcher` judges that on the file's own parse, **before** `overlayRootEnvConfig`,
+which returns a non-null object whenever a config env var is set — the norm in containers — and
+would otherwise launder a half-written file into a valid-looking env-only config and wipe the
+file's own options.
+
+Past the ladder the emptiness is believed, and what that costs depends on whether the scope has
+settled: a worker still booting starts on the defaults, while one already running keeps the config
+it has and only warns. The asymmetry is deliberate in both halves — a running worker must not let a
+truncate window that outlived the ladder reset every scope, and a booting one must not hold
+`Scope.ready` open waiting for a file that is genuinely empty — but it does mean an operator who
+empties `harper-config.yaml` at runtime gets divergence between workers until the next restart.
+
+### `ready` means the watcher is armed
+
+`RootConfigWatcher.ready` is a startup barrier — `harper_logger`'s `updateLogSettings()` attaches
+its `change` listener only after awaiting it — so it has to mean "watching", not merely "the first
+read landed". The synchronous read would otherwise emit `ready` from inside chokidar's initial `add`
+dispatch, and on darwin FSEvents has not armed its stream at that point: a write in that window is
+dropped with no later event to recover it (the async read used to defer past it by a threadpool
+round-trip, which is why this surfaced only when the read went synchronous). Measured on the
+harper#2191 review head, writing that far after `ready`: 0ms is lost, 5ms and beyond is delivered.
+
+So `ready` is gated on chokidar's own `ready` — its initial scan has established the native
+watches by then — plus a darwin-only grace over that measurement for the kernel-side warm-up
+chokidar cannot observe. Neither half is sufficient alone: chokidar's event still lands inside the
+warm-up, and a bare timer could elapse before the scan has created any watch. Config read before
+that gate opens is staged into `#config`, re-read once the gate opens — a write that landed while
+the watch was unarmed produced no event, so nothing else would ever deliver it — and then handed to
+`ready` itself rather than to a `change` that would precede it.
+
+`OptionsWatcher` shares the gate (`ArmGate`, `config/watcherArming.ts`) because it has the same
+unarmed window and, for the root config, many more of them: `componentLoader` gives every
+`TRUSTED_RESOURCE_PLUGINS` entry its own root-config `OptionsWatcher`, and those read synchronously.
+It shares the arming **re-read**, which is what recovers the otherwise-undeliverable write, but not
+the barrier: its `ready` still goes out on the first read, so it means "the config has been read",
+not "armed". The difference is only ordering, because unlike `harper_logger` its consumer (`Scope`)
+attaches `change`/`remove`/`ready` listeners in its constructor, before any read — so a write made
+in the unarmed window reaches the scope as a post-`ready` `change` (and, for a plugin that doesn't
+handle its own options, a restart) rather than being lost. Holding `OptionsWatcher.ready` behind
+arming as well would need every terminal outcome to open a second barrier, per scope, with a boot
+hang as the failure mode; the ordering is not worth that.
+
+Whether a scope is configured is tracked separately from its value, because neither truthiness nor
+`!== undefined` can answer it: `myPlugin:` with no body is a configured scope whose value is `null`,
+and a boot that found no config of its own holds `DEFAULT_CONFIG[name]` — a value the watcher gave
+itself. Reading either as "the file supplied this" costs a restart: for the six scopes
+`DEFAULT_CONFIG` names, the next read of an unchanged file looks like the block being deleted, and
+filling in an empty block looks like the unconfigured → configured transition `Scope` answers by
+restarting rather than the `change` it is.
+
+What the arming re-read must _not_ do is report a deletion. Its job is the write no event carried;
+a file that is gone is chokidar's `unlink` to report, and answering the re-read's `ENOENT` with
+`remove` announces it ahead of the event that would confirm it — where there is a grace, ahead of
+chokidar having finished tearing the watch down, so a config recreated on the strength of that
+early `remove` lands in a window where its `add` is not observed at all and the scope keeps the
+defaults with nothing further coming. Settling a barrier that has nothing applied yet is still the
+arming re-read's job: an absent file at boot is the install window, not a deletion.
+
+### Every terminal read outcome settles the barrier
+
+Both barriers — `RootConfigWatcher.ready` and, through `Scope`, `OptionsWatcher.ready` — are
+awaited with no timeout, so a read that ends without a config must still settle them or the worker
+hangs at boot rather than failing. Every terminal outcome therefore boots on defaults and logs what
+failed: a read the ladder could not complete, a file still empty when the ladder is spent, and a
+file that will not parse. Only a config that parses is a config; the alternative, failing the boot
+closed on an unreadable file, is a different policy than the one `OptionsWatcher` already applies to
+its ENOENT and read-failure paths, and the two watchers must not disagree about it. A file that
+becomes readable later still arrives, as a `change`.
+
+A missing file is not one of those outcomes to wait on: `ENOENT` is not a sharing violation, so
+neither watcher takes the retry ladder for it. `OptionsWatcher` has always settled it at once as
+the install window, and `RootConfigWatcher` does the same rather than spending the whole read
+budget inside `harper_logger.start()` on every boot that has no config file — an env-var-only
+deployment, or a rootPath mounted empty. Neither is a deletion an outcome to wait on. `OptionsWatcher.#handleUnlink` cancels the ladder —
+the deletion settles what a pending read was retrying — so when that read had not produced a config
+yet, the ladder it cancels was the only thing left to settle `ready`. Before the first `ready` there
+is also nothing to remove and nothing to hear it: `Scope` is still inside `await scope.ready`, so a
+`remove` there asks for a restart of a component that never booted. A deletion in the boot window
+therefore settles the barrier on the defaults, exactly as the ENOENT read path does; only a deletion
+after `ready` reports `remove`. A watcher error is terminal for the barrier too, and
+settling it is what removes the `error` listener `once(this, 'ready')` attached — so reporting the
+failure afterwards has to check for a listener rather than assume one, or an unlistened `error`
+throws out of chokidar's dispatch and takes the worker down over a fault it just decided to survive.
+
+An env-compose failure rides that settle rather than preceding it: `#envComposeError` is reported
+only after the barrier has settled, because an `error` emitted first rejects `once(this, 'ready')`
+instead of settling it. It is set and reported inside one synchronous call chain, the arming path
+included: that path defers an absence check rather than reporting a removal, and it drops the
+failure before deferring rather than reporting it there. Reporting would duplicate — every
+resolution of the deferral recomposes and reports the env state it finds — and holding it would
+carry a failure that may no longer be true onto whatever event reports next. So the early returns
+taken when the env-only overlay _succeeded_ cannot be carrying one, and hoisting the report ahead of
+them for symmetry would put it back before the settle on the paths this ordering exists for.
+
+What a scope does about a config that arrives late is the other half of settling early.
+`OptionsWatcher.ready` is not once-per-watcher: it fires whenever a scope goes from having no
+config of its own to having one, which is both the recreated-config-file path and a scope that
+booted while the file was unreadable. Nothing downstream re-runs on it — `componentLoader` is long
+past its `await scope.ready` — so `Scope` answers a repeat `ready` the same way it answers `remove`,
+by requesting a restart. Without that, one worker keeps serving the defaults while every worker
+that read the file cleanly serves the operator's config.
+
+Arming is a terminal outcome of its own: chokidar reports a scan that found no file by emitting
+`ready` and nothing else, so `RootConfigWatcher` always re-reads when the gate opens rather than
+publishing what an earlier read staged — a missing config file takes the ladder and settles on the
+defaults instead of holding the barrier open. That fallback must also discard the staged value:
+the arming re-read is authoritative precisely because a write in the unarmed window may have
+superseded it, including by replacing the file with an unusable or missing one. A watcher scan error
+also settles the barrier, but preserves a successfully staged value because no read superseded it.
+`close()` settles the barrier as well.
+
+What settles the barrier is not the same as what the settled value may be _used_ as. A read that
+carried no config settles it carrying nothing — not `{}`, which is a configuration that a consumer
+cannot tell apart from one the file really held, and `updateLogger` reads an absent `rotation` as
+rotation off and an absent `console` as console off. `updateLogSettings()` therefore keeps what
+`initLogSettings()` established until a real config arrives, rather than silently turning logging
+off on the very boot that could not read its configuration.
 
 ## Config is composed and memoized before any component runs (`config/configUtils.ts`)
 
@@ -1844,30 +2302,6 @@ paths are relative to `cwd` and reads stay on the configured `component.director
 that degrades to polling stays there for its lifetime, so a caller with no polling story of its own
 (`resources/blob.ts`) needs one — there it polls `readMore` on the existing no-progress deadline.
 
-## No descriptor on the root config may outlive a turn (`config/configUtils.ts`, `config/RootConfigWatcher.ts`, `components/OptionsWatcher.ts`)
-
-`atomicWriteFile` replaces `harper-config.yaml` by rename-over and retries `EPERM`/`EACCES` with a
-synchronous `Atomics.wait`. On Windows a rename over an open destination fails, and a descriptor
-belongs to the process, not the thread — measured on `windows-latest`/Node 24: a single Node read
-descriptor on the destination blocks it, while `fs.watch` and chokidar handles do not.
-
-That makes the retry unable to outlast a holder on the _calling_ thread, because the sleep blocks
-the event loop whose turn would close it: the holder's lifetime becomes exactly the retry budget
-and every attempt fails. This is why widening the budget (#1714, #2036) never fixed the
-`set_configuration` 500s it was aimed at, and why both root-config watchers read with
-`readFileSync`. Any future `fsPromises.readFile` of this file reintroduces harper#2313 — the rule
-is unenforced by anything but this note and the comment on `atomicWriteFile`.
-
-The synchronous read then sees writers mid-write, which promise-based reads mostly skipped. A read
-that is unusable — empty, or parsing to anything but an object — is retried by `PartialReadRetry`
-(`utility/watcherFallback.ts`) rather than adopted, because chokidar may emit nothing further for
-that write. Completeness is judged on the file's own parse, _before_ `overlayRootEnvConfig`, which
-returns a non-null object whenever a config env var is set and would otherwise launder a
-half-written file into a valid-looking env-only config. Its three outcomes are distinct and each
-one matters: a usable read withdraws the file's give-up report and restores the budget; giving up
-restores the budget (the write that repairs the file can itself be read mid-write) but leaves the
-report standing, since it is shared with every other watcher of that file; closing is terminal.
-
 ## Query-plan range estimation blends statistical estimates by confidence (`search.ts`)
 
 `estimateCondition` estimates range comparators (`starts_with`/`prefix`, the `between` family,
@@ -1916,10 +2350,10 @@ the table first), and who owns the column-family wrappers the declaration opens.
 An application that declared `branchedDatabases` declares through `scopedTableFactory(branches)`, which
 routes each declaration by database name — to the branch of that name, or to `table()` itself. GraphQL
 `@table` (`graphql.ts`), `scope.ensureTable` (`components/Scope.ts`, `componentLoader.ts`) and
-`defineTable` (`defineTableUsing`, through `security/jsLoader.ts`) all go through it. **An unbranched
-application gets `table` and `defineTable` by identity** — `scopedTableFactory(undefined) === table` —
-so the request path of every application that does not branch is untouched; only a branched
-application pays for the routing, and only at declaration time.
+`defineTable` (`defineTableUsing`, through `security/jsLoader.ts`) all go through it. **An unbranched,
+shared application gets `table` and `defineTable` by identity** — `scopedTableFactory(undefined) ===
+table`. An isolated application gets a declaration-only wrapper even without branches, so its own
+schema can claim maintenance that no pool worker configured; hydrated tables remain pool-owned.
 
 Consequences to preserve:
 
@@ -1942,3 +2376,401 @@ Consequences to preserve:
   a branch reloads only itself, and the relationships that reload queues are hydrated through the
   application's own branch set (`branch.relatedBranches`, stamped by `prepareBranches`), never the
   global map.
+
+## `chooseOperation` authorizes the invoked operation against the authenticated principal (`server/serverHelpers/serverUtilities.ts`)
+
+`verifyPerms` takes a request-shaped object and reads _both_ halves of the permission question off it: the principal from `hdb_user`, and the tables from `schema`/`database`/`table`/`records`. `chooseOperation` used to hand it `json.search_operation` — a caller-supplied field — which made both halves body-controlled. Fixing one half and not the other is not a fix: with an empty `search_operation` the table map is empty, and `hasPermissions` iterating nothing authorizes everything. Regression cover: `integrationTests/security/choose-operation-authz.test.ts`.
+
+Four rules hold this together, and all four are load-bearing:
+
+**The principal comes from authentication.** Authentication sets only the _top-level_ `hdb_user`, and `validateRequestBodyProperties` inspects only top-level keys, so a nested `hdb_user` must be overwritten, never backfilled `if (!...)`. All four callers of `chooseOperation` (`serverHandlers`, `serverUtilities.operation`, `registeredOperations` worker forwarding, MCP) set the top-level principal before dispatch, which is why this belongs here rather than only at the HTTP boundary.
+
+**`search_operation` is the permission subject only for the operations that consume it.** `dataLayer/export.ts` is its sole consumer (`export_local`, `export_to_s3`); for any other operation the substitution checks the nested tables while the handler runs against the top-level ones, so it is gated on the operation name. It must also be an object naming one of export's supported operations (`search_by_value`/`search_by_hash`/`search_by_conditions`/`sql`) — a primitive, `{}`, or an unsupported operation is a request-time 400, not a wrapped 500 or an asynchronously-failed job.
+
+**One check cannot authorize both the outer export and its nested query.** The outer op's own `verifyPerms` returns before any table check — `export_local`/`export_to_s3` are `requires_su`, and a role that lists the operation in `operations` is granted at gate 2 (an explicit listing of an SU-only operation is a deliberate grant). The job worker then runs `search_operation` through `searchByValue`/`searchByHash`/`searchByConditions`, none of which check permissions. So the outer invocation is authorized first, and then the nested search is authorized additively against its _real_ search handler (`getOperationFunction(search_operation)`) and the authenticated principal — otherwise a role granted `export_local` could export a table it holds no grant on. A nested `sql` search takes the SQL branch instead, but the same two-part shape holds: the outer export op runs through `verifyPerms` (so its `requires_su` gate, the `operations` allowlist, and the export token scope all apply, exactly as on the non-SQL path — SQL must not be a way around the requires_su gate), the statement must be a `SELECT` because export is read-only, and `checkASTPermissions` then covers the statement's tables. A direct `sql` call has no outer job op, so there the `operations` allowlist alone is the operation-invocation check.
+
+**`parsed_sql_object` is dispatch state, never client input.** The export worker re-reads it off the same caller-supplied nested object (`evaluateSQL`), and it carries `permissions_checked`, so a body-supplied one runs an AST no check ever saw. It is deleted from the nested object at dispatch, and stripped from the top-level object before this dispatch's own parse is assigned. Only the direct-SQL path consumes the top-level `parsed_sql_object`; a job re-parses off `search_operation`, so setting it for a job would be inert. The bypass/`apiOperation` decision is carried on async-context state (`getOperationAuthorizationState`), not on the request body, and `processAST` honors the denial `checkASTPermissions` computes — a `PermissionResponseObject` has no `length`, so the guard tests the object itself rather than `.length` (which always refused nothing).
+
+The SQL and job paths are additive rather than exclusive: `verifyPermsAST` validates only the statement's tables and attributes, never the `operations` allowlist or `requires_su`, and a table-free statement gives it nothing to validate — so the allowlist check and the AST check both run for a SQL-carrying request, and the nested-search check runs alongside the outer export check for a job.
+
+## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
+
+A derived index (the native HNSW plane, a future Tantivy full-text index) is a materialized view
+that lives outside the record transaction: its apply is native, costs 0.2–1.4 ms per mutation, and
+its durability barrier is an `msync` or a segment publish, none of which belong on the commit path.
+The runtime is the one Harper-side implementation of the delivery protocol in harper#2489: **the
+transaction log is the durable fact, a commit only wakes a runner, and every backend resumes from an
+exact cursor into that log.** There is deliberately no second delivery fact — no transactional
+dirty-key outbox, no `aftercommit` staging — because a second durable write per indexed mutation, a
+cleanup protocol for it, and a new column family for every audited table would still not let an
+engine-specific native file commit atomically with RocksDB, so the cursor protocol would be needed
+anyway.
+
+### Invariants
+
+1. Only committed entries are delivered; the runtime never reads uncommitted log entries.
+2. One worker runs a given backend at a time (a process-wide `tryLock` per backend). The owner
+   merges every physical log into one serial stream and keeps a cursor per log.
+3. A cursor is `{ format: 1, logs: { <log name>: <completed transaction timestamp> } }`. It advances
+   only at `endTxn` and only after the backend's durability barrier covers the whole transaction.
+4. Live delivery and restart use the same cursor validation, iterator and dispatch code. A lost wake
+   or a full backend queue delays indexing; it cannot skip durable log work.
+5. Resume proves every saved log position with `exactStart`. A missing, incomplete or duplicate
+   boundary condemns the generation; approximate resume is not permitted.
+6. The runtime resolves the current primary entry once per changed record and projects only the
+   registered attributes. Backends never see the log entry's body: a conflict retry can re-resolve a
+   record after its log payload was staged, so the entry is identity and version evidence, not state.
+7. No exception from log iteration, primary reads, projection, backend calls or unlock callbacks
+   escapes the scheduled drain or interferes with subscriptions and replication.
+8. Registration adds nothing to the commit path except a local-only eviction marker for registered
+   caching tables (below). No `aftercommit` listener, no retained `AuditRecord`s, no awaited work.
+
+### Ownership and wake-up
+
+Each worker holds one `DerivedIndexRuntime` per RocksDB root store, with the same schema-derived
+registrations on every worker; the drain is lock-elected, registration is not. The runtime listens
+to the root store's `committed` event and coalesces wakes through `setImmediate`. The winner keeps a
+reusable aggregate iterator (`RocksTransactionLogStore.getRange` with `startByLog`, `exactStart`,
+`resumeAfterExactStart`, `includeLogName`) and drains for bounded count, bytes and wall time per
+turn. Ownership is sticky: the lock is not one record writers take, so holding it across turns
+delays no commit, and it is released only after an idle grace period once durable progress equals
+offered progress. The intended wake for a waiting runner is the lock's own unlock callback
+(`tryLock(key, onUnlocked)`): one primitive, and a holder that dies releases natively and wakes the
+waiters the same way. **Temporarily** the lock is taken without one: the pinned rocksdb-js queues
+that callback as a thread-safe function of the caller's env, and on Node 22 one left behind by a
+worker that was `terminate()`d aborts the process when another thread unlocks (Harper's thread
+manager terminates workers on restart). Until the pin includes the fix (HarperFast/rocksdb-js#849),
+successors are woken by the releasing owner's `notify()` on the readiness buffer and, for an owner
+that died without releasing, by a retry timer (`lockRetryMilliseconds`, 5 s by default); the
+releasing runner ignores the one notification it caused, and a runner already parked on that timer
+does not re-probe the lock on commit wakes. This is a workaround with a tracked revert — the callback
+path is simpler and picks up a dead owner immediately.
+
+Transaction timestamps are unique per physical log but **not monotone in physical order**
+(`TransactionLogStore::writeBatch` only advances `latestTimestamp` when the batch's is greater), so
+the runtime never compares timestamps to decide progress or retention. Resume is exact-start: find
+the transaction, iterate after it. Repeat detection is a per-log set of completed timestamps
+retained since the durable cursor. A log the cursor does not name is read from its beginning only
+if it still retains it — `fileCount === 0 || oldestSequenceNumber === 1`; rocksdb-js reports
+`oldestSequenceNumber: 0` for a log that has never written a file — otherwise the generation is
+condemned.
+
+### Offered versus durable progress
+
+A native backend accepts several batches before its next barrier, so the owner tracks **offered**
+progress (cursor vectors of accepted batches, in memory, under the lock) separately from the
+backend's **durable** cursor. Every acquisition mints an owner epoch from a process-wide atomic
+counter and stamps it on each batch; a new epoch — including after a worker restart — resets offered
+progress to the durable cursor before opening its iterator, because replaying work that survived
+in a native queue is safe and trusting a dead worker's non-durable position is not. A reported
+durable cursor must equal one offered vector exactly; validating logs independently would let a
+backend assemble a cursor from different batch boundaries and hide work. Accepted-not-durable
+progress is capped (`maxAcceptedBatchesAhead`, 64); at the cap the owner keeps the lock, stops
+reading (`waiting-durable`) and resumes on a backend state-change wake, not on commit wakes.
+
+### Authoritative record resolution and the eviction marker
+
+The log decides what must be revisited; the primary store decides what is in the index now. A
+present entry yields its current version and projection; a missing, deleted, evicted or
+invalidated entry yields `absent`, which is sound only because every removal now has a durable
+fact: `delete`, `invalidate`, `relocate`, or the local-only `evict` marker that `Table.evict()` and
+`createEvictionBatcher().stageInto()` stage into the same RocksDB transaction as the row removal for
+tables with a registered derived index (`hasDerivedIndexRegistration`). The marker is `LOCAL_ONLY`,
+a no-op in boot replay, filtered from customer history and subscriptions, and rejected by
+replication. `message`, `publish` and structure entries advance progress without becoming
+documents; a `reload` marker (replica base copy) condemns the generation because its rows have no
+per-record entries. A projection that throws a 4xx `ClientError` yields
+`{ kind: 'unindexable', reason: '<class> (<status>)' }` — the backend removes any entry and counts
+it; the message never reaches shared memory or the backend because validation messages quote
+record values. Any other projection or primary-read failure is fail-closed.
+
+### Backend contract
+
+```ts
+interface DerivedIndexBackend {
+	readonly id: string;
+	attach(host: { isOwnerEpoch(epoch: bigint): boolean; getReadiness(): DerivedIndexReadiness }): void;
+	getDurableCursor(): DerivedIndexCursor | undefined;
+	deliver(batch: DerivedIndexBatch): DERIVED_INDEX_ACCEPTED | DERIVED_INDEX_DEFERRED | DERIVED_INDEX_FAILED;
+	flush(reason: 'age' | 'threshold' | 'shutdown'): void | Promise<void>; // barrier request
+	shutdown(ownerEpoch: bigint): void | Promise<void>; // quiescence: nothing further applies or publishes for the epoch
+	onStateChange(wake: (change?: 'changed' | 'accepted-work-lost' | 'failed') => void): () => void;
+	reset?(ownerEpoch: bigint): void | Promise<void>; // destroy state and cursor; first durable action invalidates the cursor
+}
+type DerivedIndexBatch = {
+	ownerEpoch: bigint;
+	transactions: { logName; timestamp; mutations }[];
+	records: DerivedIndexMutation[]; // last-write-wins per (tableId, writeKeyId(recordId)); non-enumerable
+	through?: DerivedIndexCursor; // absent on a rebuild scan chunk and while a transaction is still open
+	bytes: number; // estimate; non-enumerable
+	rebuild?: true;
+};
+```
+
+There is one contract and every hook is required. What an ownership handoff has to fence is work
+that survives a method return — a queued apply, a barrier that completes later, a cursor that
+trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
+handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
+bounded by the runner's turn budget (the runtime cannot bound work it does not perform): the
+expected shape is enqueue, return `accepted`, apply in the backend's own time slices, advance the
+durable cursor at its barrier, return `deferred` when its queue is full. `accepted` means the backend
+owns the batch, not that the cursor may advance. `deferred` holds the batch until a state-change
+wake. `accepted-work-lost` makes the owner rebuild its iterator from the durable cursor; `failed` or
+`DERIVED_INDEX_FAILED` condemns the generation. `reset` is optional — without it `needs-rebuild` is
+terminal — and a backend that implements it owns its crash safety: it must invalidate the cursor
+before anything destructive, because shared readiness is process memory and is no evidence after a
+restart. The runtime also writes a condemnation marker to the root store
+(`Symbol.for('derived-index:<id>:condemned')`) before any reset and clears it at the first durable
+`ready`, so a restart between condemning a cursor and destroying it still rebuilds; a marker that
+cannot be written issues no reset. The cursor's atomic durability mechanism is the backend's
+(Tantivy publishes it with segment state; HNSW writes it after the plane barrier), which is why the
+cursor is backend-owned and validation is Harper's.
+
+### Bounded delivery
+
+A drain turn **collects** identities from the iterator — `(tableId, recordId, logVersion)` per
+eligible entry, no primary read — under `maxTransactionsPerTurn`, `maxBytesPerTurn`,
+`maxMillisecondsPerTurn` and `maxChunkRecords` distinct keys, then **resolves** each key once after
+its last collected occurrence, under `maxChunkBytes` and the same wall budget, carrying the
+remainder to the next turn. Resolving after the last occurrence, not on first encounter, is what
+keeps a writer committing between two occurrences of a key from having its later state certified by
+the cursor while the earlier state stayed indexed. An oversized transaction is delivered across
+chunks with `through` withheld until the chunk that contains its `endTxn`; nothing marks such a
+chunk because a backend can do nothing with the distinction, and query-visible atomicity of one
+transaction across chunks is not promised. `bytes` is an estimate from stored record sizes (or the
+log entry size), never a serialization; `maxChunkRecords` is the hard bound. All bounds are settable
+per registration.
+
+### Durability cadence
+
+`maxAcceptedBatchesAhead` is a ceiling; the runtime, which already tracks accepted-not-durable work,
+is the scheduler. It requests `flush('age')` when the first accepted batch since the last request is
+`maxFlushAgeMilliseconds` old (1 s), `flush('threshold')` at `flushAfterMutations` (4096) or
+`flushAfterBytes` (8 MiB), and `flush('shutdown')` at release. The backend runs the barrier
+asynchronously, coalesces requests that arrive mid-barrier, and publishes `through` atomically with
+what the barrier made durable. Reaching the end of the log requests no extra barrier — arrivals
+spaced just beyond drain completion would otherwise pay one per write; the age timer is idle
+completion.
+
+### Rebuild
+
+When the backend has `reset` and the runtime was built with `scanRecords`, `needs-rebuild` is a
+phase, not an end state: publish `rebuilding`; `shutdown(previousEpoch)`; mint a new epoch and
+republish; `reset(newEpoch)` (afterwards `getDurableCursor()` must be `undefined`); capture the
+**committed tail** of every log; scan every registered table (tombstones and symbol keys skipped),
+project, deliver bounded chunks with `through` absent; deliver a final chunk with `through` = tail;
+install the tail as offered progress and replay through the ordinary drain; publish `ready` at the
+first durable advance past the tail or the first idle pass with durable == offered.
+
+The tail is safe because a committed read is a contiguous physical prefix: rocksdb-js keeps the
+physically-written-but-uncommitted start offsets in a sorted set and `commitFinished()` advances
+`lastCommittedPosition` to the earliest of them (`TransactionLogStore::commitFinished`,
+`uncommittedTransactionPositions.front()`), so a transaction that wrote at offset 200 and committed
+before one pending at 100 stays invisible until 100 commits. Everything committed before the
+capture is in the scan; everything after it is replayed; a reload marker is therefore met exactly
+once, with no capture-time bookkeeping. A log that cannot be read to its tail fails the attempt
+closed — corruption inside the committed prefix cannot be replayed from any anchor. Attempts retry
+with backoff (`rebuildBackoffMilliseconds` 1 s doubling to 5 min) up to `maxRebuildAttempts` (8),
+then publish `unavailable` and release; the attempt count travels in shared memory so a peer
+honours an exhausted budget. `requestRebuild()` from any worker sets a request word the owner
+consumes at its next wake.
+
+### Handoff fencing
+
+Release drops ownership, calls `flush('shutdown')` then `shutdown(epoch)`, and unlocks only when
+that settles; a rejected `shutdown` **keeps the lock** and publishes `unavailable`, because a backend
+that cannot prove its queue quiescent must not hand the index to another owner. `stop()` and the
+unregister function return one cached promise that resolves after every backend settled and rejects
+if any shutdown failed, so a caller cannot close storage while a backend is still draining into it.
+`isOwnerEpoch(epoch)` is an `Atomics.load` of the shared counter; a backend checks it before each
+apply, after each await and in barrier completions, and drops work for a superseded epoch. The
+runner tracks a generation that changes on every acquisition, discard, reset and release and
+ignores continuations from an earlier one.
+
+### Shared readiness
+
+`indexStore.isIndexing` is per worker, so the owner publishes into one `getUserSharedBuffer`
+allocation per backend (`derived-index:<id>:readiness`, `READINESS_BYTES`): `Int32` words for state
+(`unknown | ready | rebuilding | needs-rebuild | unavailable`), a `DerivedIndexReadinessReason` code,
+attempt count, rebuild request and lag-exceeded flag, then the `BigInt64` owner-epoch counter. Each
+word is read with a plain `Atomics.load`; nothing needs two of them atomically, so there is no
+sequence lock — the owner stores reason and attempts before state. The shared reason is a code,
+never a message. `readDerivedIndexReadiness(logStore, id)` reads it on any worker without a runtime;
+a query path uses it to choose between a 503 and an answer. `Atomics` over rocksdb-js's external
+`ArrayBuffer` wrappers is the same dependency primary-key allocation (`Table.ts`), blob holds
+(`blob.ts`) and HNSW node ids already carry; wakes use the binding's `notify()`, never
+`Atomics.wait`. A successor publishes `ready` on acquisition one `setImmediate` before its lazy
+`exactStart` validation can condemn the inherited cursor; readers see the previous, self-consistent
+generation for that turn.
+
+### Lag policy
+
+Opt-in per registration (`maxLagMilliseconds`; 0 = none; raised to two flush ages since catch-up is
+only proven at a barrier). The owner takes the longest of: cursor distance behind what it has read,
+time parked on backpressure or the ceiling, time since the oldest commit it may not have read
+(bounded by how far its newest read trails the clock), and the age of the oldest accepted work not
+yet durable. Past the budget it sets the shared flag; every worker's `derivedIndexWriteRejection`
+(`resources/derivedIndexRegistry.ts`, one `WeakMap` miss for tables without a derived index) then
+fails local user writes to the index's tables with `DerivedIndexLagError` — 503,
+`DERIVED_INDEX_LAGGING`, `retryable: true` — at the staging layer (`_writeUpdate`, `_writeDelete`,
+`_writeInvalidate`, `_writeRelocate`), never canonical-source applies (`transaction.sourceApply`),
+crash-recovery replay or replication notifications, since a rejected canonical write would advance
+the source cursor past a write that never landed. The flag is owned by the lock holder: it clears
+with hysteresis once the owner has proven catch-up (a durable advance and the end of the log both
+reached since acquiring, lag below half the budget), and on every transition out of "behind and
+still reading" — entering a rebuild (no cursor to guard; readers act on `rebuilding`), `unavailable`,
+a `needs-rebuild` the runtime cannot leave, a condemnation marker it could not write (its retry
+needs a commit wake, and commits were what was being shed), and a held lock. An ordinary handoff
+preserves it. The policy sheds writes; it does not pin retention — rocksdb-js has no protected
+position registration — so a budget belongs well inside the effective retention window, and it must
+be enabled only once every worker runs a runtime with the admission check.
+
+### Failure flow
+
+```mermaid
+flowchart TD
+    A[load backend cursor] --> B{all saved logs and boundaries exact?}
+    B -->|no| X{backend has reset and runtime has scanRecords?}
+    B -->|yes| C[open aggregate iterator after anchors]
+    C --> D[bounded drain: collect, resolve, deliver]
+    D -->|accepted| E[record offered cursor vector]
+    D -->|deferred| F[park until backend wake]
+    D -->|failed or threw| X
+    E -->|backend barrier| G[durable cursor equals one offered vector]
+    E -->|accepted batches at cap| W[waiting-durable]
+    G --> T[publish ready]
+    X -->|no| Z[terminal: release lock, index unavailable]
+    X -->|yes| Y[publish rebuilding, shutdown old epoch, reset, scan, tail, replay]
+    Y -->|ready after final barrier| T
+    Y -->|failure| K{attempts below cap?}
+    K -->|yes, after backoff| Y
+    K -->|no| U[publish unavailable, release lock]
+```
+
+## Native HNSW plane: a file-primary mmap graph on the derived-index runtime (`resources/indexes/HierarchicalNavigableSmallWorld.ts`, `resources/indexes/hnswDerivedIndex.ts`, `resources/indexes/hnswPlaneBinding.ts`)
+
+`@indexed(type: "HNSW", nativePlane: true)` replaces the RocksDB graph with a memory-mapped
+fixed-slot file owned by the native package `@harperfast/hnsw` (Rust, napi-rs, exact-pinned optional
+dependency; crate at HarperFast/hnsw). The file **is the index**: graph nodes, adjacency, the entry
+point, the id allocator and the freelist exist only there. RocksDB keeps the primary records, the
+`pk ↔ nodeId` mappings and the one durable replay cursor. Ordinary HNSW indexes are untouched.
+
+Why the whole search loop is native and not just the distance kernel: at 5M nodes / ef 512, ~85% of
+a warm JS visit is object bookkeeping (candidate heap, visited `Set`, property access, GC), the int8
+cosine is 10%, and a warm RocksDB `Get` per visit (~1–2 µs) is 20–40× the SIMD distance it feeds. A
+native loop over direct-addressed slots (`base + id × slot_size`, ~100–200 ns) with one NAPI crossing
+per query is the only shape that reaches the ceiling; measured 7.2 ms → 0.75 ms p50 at 1M × 768-d,
+recall@10 0.997 → 0.999.
+
+### File format
+
+One file per index, `<index store path>/<store name>.hnsw`, created sparse at `nativePlaneMaxNodes`
+slots (16M default; a structural, create-time header field — exhausting it makes the index
+unavailable until the value is raised and the index rebuilt). Header page: magic + format version
+(mismatch → rebuild, by contract), dims, quantization mode, `slot_size`/`layer0_cap`/`upper_cap`
+(derived from M/optimizeRouting at creation), entry point, atomic `id_high_water`, tag-guarded
+freelist head, a transaction watermark advanced only after an `msync` barrier, and a clean-shutdown
+flag. Layer-0 slot: seqlock word, flags + level, `scale`/`invMag`, degree, int8 vector padded to a
+4-byte boundary, `u32` neighbour ids — 1,344 B at 768-d with cap 128. Upper layers (~6% of nodes)
+live in a fixed-entry region in the same file (format v2), per-entry seqlocked. Per-edge cached
+distances are dropped: recomputing costs ~50 ns natively, storing costs 8 B and ~40% of a node.
+
+Degree cap is **128** for int8 (Kris, 2026-08-31, after measurement): cap 64 saved only 23.5% of
+the slot (the 768 B vector dominates) and lost 2.2 pts recall at 1M. It is a header field, so
+revising it is a rebuild, not a format change; a binary-code v2 slot reopens the question.
+
+### Concurrency
+
+Per-slot lock word: bit 31 locked, low bits the owner's pid; unlocked values are generations that
+readers validate seqlock-style. A lock unchanged for 20 ms whose owner pid is dead is taken over and
+the slot sanitized (marked invalid — a dead writer's payload is half-written; invisible until
+rewritten, never spliced-but-valid). Elapsed time alone never robs a live writer. There is no
+cross-slot atomicity: an insert writes its slot plus ~M neighbours' back-edges independently, and a
+traversal may see a half-linked state — a missing edge or a just-deleted neighbour is skipped. That
+relaxed adherence is safe _here_ because the read path loads the record and rescores exactly, which
+rejects a wrong candidate; it is not a general storage pattern. Fields a reader acts on are read
+through aligned `read_volatile`; the stored vector is an ordinary load so the int8 kernel keeps
+autovectorizing, and a torn vector only perturbs a distance the generation check discards.
+
+### Durability
+
+`msync` on a cadence, not per commit; the header watermark advances after a completed barrier. The
+graph therefore has bounded-lag durability with deterministic catch-up, while the source of truth
+(records, mappings, cursor) stays transactional. Backup treats the file as node-local derived state:
+include it after a barrier, or rebuild on restore. A file whose format or checksum does not validate
+is rebuilt from records. macOS `msync` is a weaker barrier than Linux (an `F_FULLFSYNC` pass is a
+known follow-up); Windows is supported through the prebuild; performance is a Linux target.
+
+### Search
+
+One crossing per query: `plane.search(query, k, ef, filter?)` runs on the module's thread pool with
+an epoch-stamped visited array and a fixed-capacity heap, asymmetric int8 distance with SIMD
+(AVX2/VNNI, NEON) and a scalar fallback. Filtering has two paths: a bitset over node ids for
+allow-lists and companion-condition candidate sets (zero callbacks), and a pipelined
+`ThreadsafeFunction` batch path for arbitrary JS predicates that keeps expanding in distance order
+while verdicts are in flight, bounded by the same `filterExpansion` visit budget as the JS path.
+Traversal never blocks on the event loop. A plane-backed `customIndex.search()` returns a
+promise-backed, async-only iterable (`resources/search.ts` wraps it); a synchronous consumer throws.
+Auto-ef reads the node count from `id_high_water` minus the freelist, which fixes the lifetime
+high-water inflation of the RocksDB graph (harper#2182). Every vector reaching the plane — a
+committed projection or a query target — passes one invariant (`assertPlaneVector`): array-like of
+positive length, every component a finite f32, a magnitude representable in f32, and the plane's
+`dims` once known. What fails it is the client's 400, never a plane failure; a query the plane
+cannot accept must not be read as corruption and cost a rebuild.
+
+### Delivery: a backend on the shared runtime
+
+Maintenance is off the record transaction. The commit path (`prepareCommitted`) only validates a
+changed projection; the derived-index runtime (§ above) reads the committed log and delivers batches
+to `HnswDerivedIndexBackend`:
+
+- `deliver()` enqueues and returns `accepted` (or `deferred` at 64 MiB queued); an applier drains
+  in 5 ms `setImmediate` slices. Each `records` entry (last-write-wins per key) becomes one
+  `applyDerivedValue(pk, vector | undefined, version)`: the stored mapping's signature short-circuits
+  an unchanged vector, an older observation is discarded, otherwise the old node is removed and the
+  new vector inserted with the mapping written **pending**, hidden from search.
+- `flush()` runs when the queue is empty: `plane.flushAsync()`, then pending mappings are published,
+  then the batch's `through` vector is written as the cursor under `Symbol.for('derived-index-cursor')`.
+  Application pauses while a barrier is in flight so the barrier publishes exactly the mappings it
+  covers. That order is the crash contract: a crash before the barrier leaves pending mappings that
+  replay re-derives; after it, a cursor that replays idempotently; never a published mapping to a
+  node the file did not durably get, and never a cursor over uncovered state.
+- `reset(epoch)` removes the cursor first, then the file (invalidated in-band and via a `.stale`
+  sidecar so no peer adopts a stale inode or an undeletable Windows file), then the mappings.
+- A vector the plane cannot hold at apply time (a dimensionality mismatch only the plane-holding
+  worker can see) is skipped and counted, never a rebuild.
+
+Readiness is the runtime's shared record on every worker, not `indexStore.isIndexing`: a search on
+a non-`ready` index is a 503 (`unavailable` after the rebuild budget); a `ready` index with no file
+and no surviving node mapping answers no results; one whose file is gone while mappings survive
+asks its owner for a rebuild. A search failure detaches this process from the plane and requests a
+rebuild — only the owner's `reset` destroys state, so a failure observed after a peer has already
+replaced the file cannot take out the replacement. Writer backpressure is the runtime's lag policy
+(`maxLagMilliseconds`, 30 s default on a `nativePlane` attribute), required because accepting
+unique-key load above native insert throughput and then rebuilding at that same throughput cannot
+converge.
+
+### What `nativePlane: true` requires, and what it does not promise
+
+| requirement                                                                                                                                                                                     | enforcement                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Explicit `audit: true` on the table — the transaction log is the recovery source, and a vector-index option must not silently widen the audit-readable surface by inheriting the global setting | `ClientError` from `table()` and `attachDerivedIndexes()`; enabling logs once that the audit API retains full record history for the retention window |
+| RocksDB; `M=16`, `efConstruction=200`, `mL=1/ln(16)`, `optimizeRouting=0.5`, int8 cosine (the package's standalone `insert` fixes this geometry)                                                | `ClientError` at index construction — never a silent rebuild under native defaults                                                                    |
+| `@harperfast/hnsw` loads on the platform                                                                                                                                                        | absence is 503, not degraded: there is no JS graph to fall back to                                                                                    |
+| The log retains entries back to the cursor                                                                                                                                                      | a cursor the log cannot resolve rebuilds from records; 503 for the rebuild's duration                                                                 |
+
+Not promised: a single total order across concurrent CRDT/source-resolution arrivals (both delivery
+and replay re-read the authoritative record, so the index converges on what the primary store
+resolved; divergence is bounded by candidate selection, which the exact rescore filters), byte-identical
+graphs across nodes or rebuilds, or in-place format upgrades. Rebuild rate falls with graph size
+(≈4,700 inserts/s at 100k, 1,242/s at 1M measured), so a 16M rebuild is hours of 503; a native batch
+insert is the phase-3 follow-up.
+
+## `withNodeAdapter()`'s response is the body `PassThrough` it resolves with (`server/serverHelpers/NodeAdapterResponse.ts`)
+
+`Request.withNodeAdapter(handler)` gives third-party Node middleware an `IncomingMessage`/`ServerResponse` pair and resolves `{ status, headers, body }` once headers are committed. The response is `NodeAdapterResponse extends PassThrough`, and that same stream is the resolved `body`: `write()`'s return value, `'drain'`, `'finish'`, `'close'`, `writableEnded`/`writableFinished` and destroy propagation are Node's own rather than events forwarded from a second stream, which is what `Readable.pipe`, `compression`'s buffered `res.on('drain')` and Next.js's response writer depend on past the high-water mark (#2527). Invariants that middleware exercises and the unit test `unitTests/server/serverHelpers/nodeAdapterMiddleware.test.js` pins against the real `compression` (1.8 and the 1.7.4 Next.js vendors), `send`, `on-finished` and `on-headers`:
+
+- **Headers commit exactly once, through `this.writeHead`.** `write()`, `end()`, `flushHeaders()` and `_implicitHeader()` all reach `this.writeHead(this.statusCode)` by property lookup, so a `writeHead` that `on-headers` replaced on the instance runs its listeners (the ones that set `Content-Encoding` and remove `Content-Length`) before the promise resolves. After commit, `setHeader`/`appendHeader`/`removeHeader` and a second `writeHead` throw `ERR_HTTP_HEADERS_SENT` as Node's do; `_header` (which `compression` ≤ 1.7 tests instead of `headersSent`) and `finished` (which `on-finished` tests) derive from that state.
+- **The adapter owns the `'error'` listener.** A `destroy(err)` right after `writeHead()` emits before the awaiting caller can attach one; the error stays in the stream's `errored` state for `pipeline()`, `finished()` or async iteration. Client disconnect (`Request.signal`) destroys the response without an error after headers (a plain premature close, which `pipeBodyToResponse` treats as routine) and rejects the promise with the abort reason before them; a handler that throws or rejects before ending the response destroys it, and one that fails after `end()` is logged at warn.
+- **Header names are case-insensitive on removal too.** `Headers.delete` lowercases like `set`/`get`/`has`; the inherited `Map.delete` silently left `send`'s `Content-Length` on a gzip body (truncated transfers).
+- **Express is not a target.** `express`'s `app.handle()` replaces the response's prototype with one rooted at `http.ServerResponse.prototype`, which no Writable-derived response survives, and would do the same to the request `Proxy`'s target, Harper's real `IncomingMessage`. Middleware that duck-types the response (Next.js, `compression`, `send`, `serve-static`, `finalhandler`, h3, fastify) is the supported surface.

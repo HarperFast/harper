@@ -222,6 +222,15 @@ suite(`QA-179 TTL eviction sweep vs secondary index [${ENGINE}]`, { skip: skipSu
 	});
 
 	// ---- Q1: mid-eviction snapshot — index/base consistent WHILE rows are being evicted -----
+	test('a progressing scan survives monitor ticks during the eviction window', async () => {
+		const response = await fetch(`${httpURL}/PacedDumpP/`, { headers: client.headers });
+		const body = await response.text();
+		strictEqual(response.status, 200, body);
+		const ids = JSON.parse(body);
+		strictEqual(ids.length, ROWS_PERMANENT);
+		strictEqual(new Set(ids).size, ROWS_PERMANENT);
+	});
+
 	test('Q1 mid-eviction: index/base stay consistent during the sweep', { timeout: 60_000 }, async () => {
 		// expiration:4s, scanInterval:2s. Rows become evictable at ~t=4s after load; the sweep
 		// fires every ~2s. Sample partway through the sweep (some evicted, some not) so a split

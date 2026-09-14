@@ -1,12 +1,18 @@
-# PR-description checks (report mode: informational, never blocks).
-# Read-only permissions and report-only mode are load-bearing while PR code executes here;
-# enforcement requires a later trusted-host workflow.
+# PR-description checks.
+#
+# Runs on pull_request_target and checks out the BASE BRANCH, never the PR head: the coverage
+# check gates the PR, so a PR must not be able to edit it. `base.ref` rather than `base.sha` —
+# the workflow file already comes from the base branch tip, and pinning the action to the sha the
+# PR forked from runs a stale copy on any long-lived branch. No PR code is executed here — the
+# coverage evaluation reads the event payload, and the file-hunk collection reads the API — so
+# the usual pull_request_target hazard does not apply. Permissions stay read-only regardless.
 name: review-coverage
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, edited, synchronize, reopened, ready_for_review]
 permissions:
   contents: read
+  pull-requests: read
 concurrency:
   group: review-coverage-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -17,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.base.ref }}
           persist-credentials: false
           sparse-checkout: .github/actions/review-coverage
       - name: Collect current PR file hunks
@@ -56,6 +63,7 @@ jobs:
           echo "ready=true" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/review-coverage
         with:
+          mode: enforce
           format_mode: report
           pr_files: ${{ steps.pr-files.outputs.path }}
           pr_files_ready: ${{ steps.pr-files.outputs.ready }}

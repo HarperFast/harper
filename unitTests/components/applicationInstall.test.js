@@ -24,6 +24,21 @@ async function createApplication(root, name, packageJSON, install) {
 	return application;
 }
 
+async function createLifecycleDependency(root, name, markerPath) {
+	const dependencyName = `${name}-dependency`;
+	const directory = join(root, dependencyName);
+	await mkdir(directory);
+	await writeFile(
+		join(directory, 'install.cjs'),
+		`require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran');\n`
+	);
+	await writeFile(
+		join(directory, 'package.json'),
+		JSON.stringify({ name: dependencyName, version: '1.0.0', scripts: { install: 'node install.cjs' } })
+	);
+	return { dependencyName, directory };
+}
+
 async function configureInstallCapture(application, root, name) {
 	const capturePath = join(root, `${name}-args.json`);
 	const captureScript = join(root, `${name}-capture.cjs`);
@@ -163,14 +178,63 @@ describe('automatic application installation', () => {
 		const customMarker = join(application.dirPath, 'custom-command-ran');
 		await writeFile(
 			join(application.dirPath, 'custom-install.cjs'),
-			`require('node:fs').writeFileSync(${JSON.stringify(customMarker)}, 'yes');\n`
+			`require('node:fs').writeFileSync(${JSON.stringify(customMarker)}, JSON.stringify(process.argv.slice(2)));\n`
 		);
 
 		await installApplication(application);
 
-		assert.equal(await readFile(customMarker, 'utf8'), 'yes');
+		assert.deepEqual(JSON.parse(await readFile(customMarker, 'utf8')), []);
 		await assert.rejects(access(automaticCapture), (error) => error.code === 'ENOENT');
 		assert.equal(application.installationIsOpaque, true);
+	});
+
+	it('applies the lifecycle-script policy to custom install commands', async function () {
+		this.timeout(60_000);
+		const inheritedPolicies = Object.entries(process.env).filter(
+			([key]) => key.toLowerCase() === 'npm_config_ignore_scripts'
+		);
+		for (const [key] of inheritedPolicies) delete process.env[key];
+		process.env.npm_config_ignore_scripts = 'false';
+		try {
+			for (const allowInstallScripts of [undefined, false, true]) {
+				const name =
+					allowInstallScripts === undefined
+						? 'custom-scripts-default'
+						: allowInstallScripts
+							? 'custom-scripts-allowed'
+							: 'custom-scripts-blocked';
+				const markerPath = join(this.root, `${name}-marker`);
+				const dependency = await createLifecycleDependency(this.root, name, markerPath);
+				const install = { command: 'npm install --no-audit --no-fund && node -e "process.exit(0)"' };
+				if (allowInstallScripts !== undefined) install.allowInstallScripts = allowInstallScripts;
+				const application = await createApplication(
+					this.root,
+					name,
+					{ dependencies: { [dependency.dependencyName]: `file:${dependency.directory}` } },
+					install
+				);
+				const warnings = [];
+				application.logger.warn = (message) => warnings.push(message);
+
+				await installApplication(application);
+
+				await access(join(application.dirPath, 'node_modules', dependency.dependencyName, 'package.json'));
+				assert.equal(
+					await access(markerPath).then(
+						() => true,
+						() => false
+					),
+					allowInstallScripts === true
+				);
+				assert.equal(warnings.length, allowInstallScripts === undefined ? 1 : 0);
+				if (warnings.length) assert.match(warnings[0], /install\.allowInstallScripts/);
+			}
+		} finally {
+			for (const key of Object.keys(process.env)) {
+				if (key.toLowerCase() === 'npm_config_ignore_scripts') delete process.env[key];
+			}
+			Object.assign(process.env, Object.fromEntries(inheritedPolicies));
+		}
 	});
 
 	it('materializes runtime dependencies while omitting development dependencies', async function () {

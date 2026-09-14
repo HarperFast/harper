@@ -10,7 +10,13 @@ const { Readable } = require('node:stream');
 const testUtils = require('../testUtils.js');
 testUtils.preTestPrep();
 
-const { streamPackagedDirectory, packageDirectory, findDanglingSymlinks } = require('#src/components/packageComponent');
+const {
+	streamPackagedDirectory,
+	packageDirectory,
+	findDanglingSymlinks,
+	scanPackageDirectory,
+} = require('#src/components/packageComponent');
+const { PACKAGE_ROOT } = require('#src/utility/packageUtils');
 const { buildMultipartBody } = require('#src/bin/multipartBuilder');
 const { parseMultipartRequest } = require('#src/server/serverHelpers/multipartParser');
 const gunzip = require('gunzip-maybe');
@@ -170,6 +176,54 @@ describe('streamPackagedDirectory round-trip', () => {
 		} finally {
 			await fs.rm(sourceDir, { recursive: true, force: true });
 			await fs.rm(extractDir, { recursive: true, force: true });
+		}
+	});
+
+	it('never packages node_modules/harper, but leaves a component-owned harperdb alone', async function () {
+		this.timeout(30000);
+		for (const options of [{}, { skip_symlinks: true }, { skip_node_modules: true }]) {
+			const label = JSON.stringify(options);
+			const sourceDir = await makeFixture({ 'index.js': 'x\n', 'src/a.js': 'a\n' });
+			const extractDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-harper-link-'));
+			await fs.mkdir(path.join(sourceDir, 'node_modules', 'keep-me'), { recursive: true });
+			await fs.writeFile(path.join(sourceDir, 'node_modules', 'keep-me', 'index.js'), 'keep\n');
+			await fs.symlink(PACKAGE_ROOT, path.join(sourceDir, 'node_modules', 'harper'), 'dir');
+			// A legacy component's REAL harperdb dependency. The loader only repairs that path when it
+			// already exists, so this content is the component's — and stripping it would not be reinstalled
+			// on the target, because `installApplication` skips installing when node_modules exists.
+			await fs.mkdir(path.join(sourceDir, 'node_modules', 'harperdb'), { recursive: true });
+			await fs.writeFile(path.join(sourceDir, 'node_modules', 'harperdb', 'index.js'), 'legacy\n');
+
+			try {
+				const scan = await scanPackageDirectory(sourceDir, options);
+				assert.ok(scan.totalSize < 100_000, `${label}: estimate walked the install (${scan.totalSize} bytes)`);
+
+				await pipeline(streamPackagedDirectory(sourceDir, options), gunzip(), tar.extract(extractDir));
+				const extracted = await readDirTree(extractDir);
+				assert.strictEqual(extracted['index.js'], 'x\n', `${label}: real files survive`);
+				// Segment-exact, not a prefix test: `node_modules/harper` is a prefix of
+				// `node_modules/harperdb`, so a `startsWith` here would flag the legacy dependency below.
+				const harperPrefix = path.join('node_modules', 'harper') + path.sep;
+				assert.ok(
+					!Object.keys(extracted).some((k) => k.startsWith(harperPrefix)),
+					`${label}: packed the install: ${Object.keys(extracted).slice(0, 5).join(', ')}`
+				);
+				if (!options.skip_node_modules) {
+					assert.strictEqual(
+						extracted[path.join('node_modules', 'keep-me', 'index.js')],
+						'keep\n',
+						`${label}: the component's own dependencies still ship`
+					);
+					assert.strictEqual(
+						extracted[path.join('node_modules', 'harperdb', 'index.js')],
+						'legacy\n',
+						`${label}: a component-owned harperdb must not be stripped`
+					);
+				}
+			} finally {
+				await fs.rm(sourceDir, { recursive: true, force: true });
+				await fs.rm(extractDir, { recursive: true, force: true });
+			}
 		}
 	});
 

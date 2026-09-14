@@ -279,12 +279,7 @@ export function searchByIndex(
 	transaction: any,
 	reverse: boolean,
 	Table: any,
-	{
-		allowFullScan,
-		filtered,
-		context,
-		minResults,
-	}: {
+	options: {
 		allowFullScan?: boolean;
 		filtered?: any;
 		context?: any;
@@ -294,6 +289,11 @@ export function searchByIndex(
 		minResults?: number;
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
+	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
+	// fail loud rather than silently reading every option as undefined.
+	if (typeof options !== 'object' || options === null)
+		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
+	const { allowFullScan, filtered, context, minResults } = options;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -552,28 +552,64 @@ export function searchByIndex(
 			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
-			const loaded = index.customIndex
-				.search(searchCondition, context, { filter: recordFilter, minResults })
-				.map((entry) => {
-					// if the custom index returns an entry with metadata, merge it with the loaded entry
-					if (typeof entry === 'object' && entry) {
-						const { key, ...otherProps } = entry;
-						if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
-						const loadedEntry = Table.primaryStore.getEntry(key, {
-							transaction: context && Table._readTxnForContext(context),
-						});
-						if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
-						freezeRecord(loadedEntry?.value);
-						recordRead(loadedEntry);
-						return { ...otherProps, ...loadedEntry };
+			const searched = index.customIndex.search(searchCondition, context, { filter: recordFilter, minResults });
+			const processEntries = (entries: any[]) => {
+				const loaded = entries
+					.map((entry) => {
+						// if the custom index returns an entry with metadata, merge it with the loaded entry
+						if (typeof entry === 'object' && entry) {
+							const { key, ...otherProps } = entry;
+							if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
+							const loadedEntry = Table.primaryStore.getEntry(key, {
+								transaction: context && Table._readTxnForContext(context),
+							});
+							if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
+							freezeRecord(loadedEntry?.value);
+							recordRead(loadedEntry);
+							return { ...otherProps, ...loadedEntry };
+						}
+						return entry;
+					})
+					.filter((entry) => entry !== SKIP);
+				if (index.customIndex.rescoreResults) {
+					const rescored = index.customIndex.rescoreResults(loaded, searchCondition, comparator, attribute_name);
+					if (rescored != null) return rescored as any;
+				}
+				return loaded;
+			};
+			if (typeof (searched as any)?.then === 'function') {
+				const pending = (searched as Promise<any[]>).then(processEntries);
+				// A consumer may abandon this lazy iterable without calling next().
+				pending.catch(() => {});
+				const results: any = new ExtendedIterable();
+				results.iterate = (options?: { async?: boolean }) => {
+					if (!options?.async) {
+						throw new Error(
+							'This index resolves search results asynchronously; the results must be consumed with async iteration'
+						);
 					}
-					return entry;
-				});
-			if (index.customIndex.rescoreResults) {
-				const rescored = index.customIndex.rescoreResults(loaded, searchCondition, comparator, attribute_name);
-				if (rescored != null) return rescored as any;
+					// Overlapping next() calls share one cursor and cannot duplicate its first entry.
+					const iteratorPromise = pending.then((entries) => entries[Symbol.iterator]());
+					iteratorPromise.catch(() => {});
+					let closed = false;
+					return {
+						next() {
+							if (closed) return Promise.resolve({ done: true, value: undefined });
+							return iteratorPromise.then((inner) => (closed ? { done: true, value: undefined } : inner.next()));
+						},
+						return(value?: any) {
+							closed = true;
+							iteratorPromise.then(
+								(inner) => (inner as any).return?.(value),
+								() => {}
+							);
+							return Promise.resolve({ done: true, value });
+						},
+					};
+				};
+				return results;
 			}
-			return loaded;
+			return processEntries(searched);
 		}
 		const scanned = index.getRange(rangeOptions).map(
 			filter

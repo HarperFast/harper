@@ -1,3 +1,4 @@
+import { trackReadRange } from './DatabaseTransaction.ts';
 import { RocksDatabase, type RocksDatabaseOptions, constants, type Store, Transaction } from '@harperfast/rocksdb-js';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
@@ -190,7 +191,7 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 	}
 
 	getRange(options?: any): any {
-		const iterable = super.getRange(options);
+		const iterable = trackReadRange(options?.transaction, () => super.getRange(options));
 		if (options?.valuesForKey) return iterable.map((v: any) => v?.value);
 		if (options?.values === false || options?.onlyCount) return iterable;
 		if (!this.#enc.isRocksDB) return iterable;

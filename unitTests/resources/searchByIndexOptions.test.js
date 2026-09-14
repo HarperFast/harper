@@ -43,6 +43,14 @@ describe('searchByIndex options object (#2165)', () => {
 		);
 	});
 
+	it('throws on the stale positional form instead of silently full-scanning', () => {
+		assert.throws(
+			() => searchByIndex({ attribute: 'unindexedName', value: 'x' }, undefined, false, T, false),
+			(error) => error instanceof TypeError && /options object \(#2165\)/.test(error.message),
+			'a positional allowFullScan must fail loud, not be read as an absent options object'
+		);
+	});
+
 	it('keeps the permissive defaults when the options object is omitted entirely', async () => {
 		const ids = [];
 		for await (const entry of searchByIndex({ attribute: 'unindexedName', value: 'x' }, undefined, false, T)) {

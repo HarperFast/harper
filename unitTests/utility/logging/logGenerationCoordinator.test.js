@@ -1,0 +1,348 @@
+'use strict';
+
+const assert = require('node:assert');
+const fs = require('fs-extra');
+const path = require('node:path');
+const { Worker } = require('node:worker_threads');
+const coordinator = require('#src/utility/logging/logGenerationCoordinator');
+const {
+	isArchivePendingQuiescence,
+	publishArchivedGeneration,
+	retryPendingGenerations,
+	rotateLogFileSync,
+} = require('#src/utility/logging/logRotation');
+
+const TEST_ROOT = path.join(__dirname, 'generationCoordinatorLogs');
+
+// Stands in for the thread mesh manageThreads injects, so the acknowledgement protocol can be driven
+// deterministically instead of by real worker timing.
+function fakeTransport({ peers = [1, 2], autoRespond = true, quiescenceTimeout = 50 } = {}) {
+	const handlers = new Map();
+	const transport = {
+		threadId: 0,
+		quiescenceTimeout,
+		broadcasts: [],
+		broadcast(message) {
+			transport.broadcasts.push(message);
+			if (!autoRespond) return;
+			for (const peer of peers) transport.respond(peer, message.request);
+		},
+		sendToThread() {},
+		onMessage(type, handler) {
+			handlers.set(type, handler);
+		},
+		onThreadExit(handler) {
+			transport.exitHandler = handler;
+		},
+		peerThreadIds() {
+			return peers;
+		},
+		respond(threadId, request) {
+			handlers.get(coordinator.LOG_GENERATION_CLOSED)({
+				type: coordinator.LOG_GENERATION_CLOSED,
+				request,
+				threadId,
+				logPaths: ['/a/component/own.log'],
+			});
+		},
+		deliverRotation(message) {
+			handlers.get(coordinator.LOG_GENERATION_ROTATED)(message);
+		},
+	};
+	coordinator.setRotationTransport(transport);
+	return transport;
+}
+
+describe('Test log generation coordinator (#1877)', () => {
+	let caseNumber = 0;
+
+	before(() => fs.mkdirpSync(TEST_ROOT));
+	after(() => {
+		// The coordinator's transport is module state; a fake left installed would follow every later
+		// suite in the same mocha process.
+		coordinator.setRotationTransport(undefined);
+		try {
+			fs.removeSync(TEST_ROOT);
+		} catch {}
+	});
+
+	function newGeneration(contents = 'archived generation contents\n') {
+		const dir = path.join(TEST_ROOT, `case${caseNumber++}`);
+		const rotatedDir = path.join(dir, 'rotated');
+		fs.mkdirpSync(rotatedDir);
+		const logPath = path.join(dir, 'hdb.log');
+		fs.writeFileSync(logPath, contents);
+		return { generation: rotateLogFileSync(logPath, rotatedDir, () => {}), logPath, rotatedDir };
+	}
+
+	it('publishes the compressed archive once every peer has acknowledged', async () => {
+		fakeTransport();
+		const { generation } = newGeneration();
+		const published = await publishArchivedGeneration(generation, true);
+		assert.ok(published.endsWith('.gz'), `expected a compressed archive, got ${published}`);
+		assert.ok(fs.pathExistsSync(published), 'expected the .gz to exist');
+		assert.ok(!fs.pathExistsSync(generation.archivePath), 'expected the plain archive to be removed');
+		assert.ok(!fs.readdirSync(path.dirname(published)).some((name) => name.endsWith('.tmp')));
+	});
+
+	it('keeps the plain archive when a peer never acknowledges', async () => {
+		fakeTransport({ autoRespond: false });
+		const { generation } = newGeneration();
+		const published = await publishArchivedGeneration(generation, true);
+		assert.strictEqual(published, generation.archivePath, 'expected the plain archive to stay authoritative');
+		assert.ok(fs.pathExistsSync(generation.archivePath), 'expected the plain archive to survive');
+		assert.ok(!fs.pathExistsSync(`${generation.archivePath}.gz`), 'expected no .gz to be published');
+	});
+
+	it('keeps a worker archive plain until its thread transport is installed', async () => {
+		const dir = path.join(TEST_ROOT, `workerWithoutTransport${caseNumber++}`);
+		const logPath = path.join(dir, 'hdb.log');
+		const rotatedDir = path.join(dir, 'rotated');
+		const worker = new Worker(path.join(__dirname, 'rotation-worker-for-tests.js'), {
+			workerData: { withoutTransport: true, logPath, rotatedDir },
+		});
+		const result = await new Promise((resolve, reject) => {
+			worker.once('message', resolve);
+			worker.once('error', reject);
+		});
+		await worker.terminate();
+		assert.ifError(result.error);
+		assert.strictEqual(result.released, false, 'a worker without a mesh cannot prove peer release');
+		assert.strictEqual(result.pending, true, 'the unproven generation must be held back from destruction');
+		assert.strictEqual(result.plainExists, true, 'the plain archive must remain authoritative');
+		assert.strictEqual(result.compressedExists, false, 'no compressed replacement may be published');
+		assert.strictEqual(result.published.endsWith('.log'), true);
+	});
+
+	it('keeps a worker archive plain even when its local peer release succeeds', async () => {
+		const dir = path.join(TEST_ROOT, `workerWithTransport${caseNumber++}`);
+		const logPath = path.join(dir, 'hdb.log');
+		const rotatedDir = path.join(dir, 'rotated');
+		const worker = new Worker(path.join(__dirname, 'rotation-worker-for-tests.js'), {
+			workerData: { withTransport: true, logPath, rotatedDir },
+		});
+		const result = await new Promise((resolve, reject) => {
+			worker.once('message', resolve);
+			worker.once('error', reject);
+		});
+		await worker.terminate();
+		assert.ifError(result.error);
+		assert.strictEqual(result.released, true, 'expected the worker-local release proof to succeed');
+		assert.strictEqual(result.pending, false, 'a successful release should need no local retry');
+		assert.strictEqual(result.plainExists, true, 'the main-thread audit must remain the destructive publisher');
+		assert.strictEqual(result.compressedExists, false, 'the worker must not publish a compressed replacement');
+		assert.strictEqual(result.published.endsWith('.log'), true);
+	});
+
+	it('treats a peer that exits as having released the generation', async () => {
+		const transport = fakeTransport({ peers: [1, 2], autoRespond: false });
+		const { generation } = newGeneration();
+		const published = publishArchivedGeneration(generation, true);
+		transport.respond(1, generation.generation);
+		transport.exitHandler(2);
+		assert.ok((await published).endsWith('.gz'), 'expected worker exit to count as a release');
+	});
+
+	it('holds an uncompressed archive back from retention too, not just a compressed one', async () => {
+		fakeTransport({ autoRespond: false });
+		const { generation } = newGeneration();
+		const published = await publishArchivedGeneration(generation, false);
+		assert.strictEqual(published, generation.archivePath);
+		assert.ok(fs.pathExistsSync(generation.archivePath));
+		// Compression is not the only destructive path — retention unlinks archives as well.
+		assert.ok(isArchivePendingQuiescence(generation.archivePath));
+	});
+
+	it('closes a descriptor that still points at the announced generation', () => {
+		const transport = fakeTransport();
+		const dir = path.join(TEST_ROOT, `sink${caseNumber++}`);
+		fs.mkdirpSync(dir);
+		const logPath = path.join(dir, 'hdb.log');
+		fs.writeFileSync(logPath, 'held\n');
+		const held = fs.statSync(logPath);
+		let closed = 0;
+		coordinator.registerLogSink(logPath, {
+			identity: () => ({ ino: held.ino, dev: held.dev }),
+			close: () => closed++,
+		});
+		transport.deliverRotation({ logPath, request: 'g', ino: held.ino, dev: held.dev, originator: 0 });
+		assert.strictEqual(closed, 1, 'expected the sink to be asked to close its descriptor');
+		// A generation this sink never held must not close anything.
+		transport.deliverRotation({ logPath, request: 'g2', ino: held.ino + 1, dev: held.dev, originator: 0 });
+		assert.strictEqual(closed, 1, 'expected a foreign generation to leave the descriptor alone');
+		coordinator.unregisterLogSink(logPath);
+
+		// The per-generation release needs the same fail-closed treatment as the stale sweep below.
+		coordinator.registerLogSink(logPath, { identity: () => ({ ino: 0, dev: 0 }), close: () => closed++ });
+		transport.deliverRotation({ logPath, request: 'g3', ino: held.ino, dev: held.dev, originator: 0 });
+		assert.strictEqual(closed, 2, 'expected an indistinguishable announced generation to be released');
+		coordinator.unregisterLogSink(logPath);
+		coordinator.registerLogSink(logPath, {
+			identity: () => ({ ino: held.ino, dev: held.dev }),
+			close: () => closed++,
+		});
+
+		// The batched form retention uses is the inverse, and each sink judges its own path: release
+		// every descriptor that is not on the live generation of the file it is writing.
+		transport.deliverRotation({ request: 'r1', stale: true });
+		assert.strictEqual(closed, 2, 'expected the live generation to be kept');
+		coordinator.unregisterLogSink(logPath);
+		coordinator.registerLogSink(logPath, {
+			identity: () => ({ ino: held.ino + 1, dev: held.dev }),
+			close: () => closed++,
+		});
+		transport.deliverRotation({ request: 'r2', stale: true });
+		assert.strictEqual(closed, 3, 'expected a descriptor on an older generation to be released');
+		coordinator.unregisterLogSink(logPath);
+
+		// A filesystem that reports ino 0 cannot prove a descriptor is on the live generation, and
+		// answering "released" without releasing is what lets an archive be destroyed under a peer.
+		coordinator.registerLogSink(logPath, { identity: () => ({ ino: 0, dev: 0 }), close: () => closed++ });
+		transport.deliverRotation({ request: 'r3', stale: true });
+		assert.strictEqual(closed, 4, 'expected an indistinguishable descriptor to be released');
+		coordinator.unregisterLogSink(logPath);
+
+		// A log whose file is gone can only be holding an archived inode.
+		fs.removeSync(logPath);
+		coordinator.registerLogSink(logPath, { identity: () => ({ ino: held.ino, dev: held.dev }), close: () => closed++ });
+		transport.deliverRotation({ request: 'r4', stale: true });
+		assert.strictEqual(closed, 5, 'expected a descriptor on a vanished path to be released');
+		coordinator.unregisterLogSink(logPath);
+	});
+
+	it('releases stale descriptors for every log it writes, in one request', () => {
+		// The archive directory holds the archives of every component and external log sharing it, so a
+		// request scoped to one path would leave the others' archives destroyable under a live peer.
+		const transport = fakeTransport();
+		const dir = path.join(TEST_ROOT, `multiSink${caseNumber++}`);
+		fs.mkdirpSync(dir);
+		const closed = [];
+		const held = {};
+		for (const name of ['hdb.log', 'component.log', 'external.log']) {
+			const logPath = path.join(dir, name);
+			fs.writeFileSync(logPath, `${name} contents\n`);
+			held[name] = fs.statSync(logPath);
+			coordinator.registerLogSink(logPath, {
+				// hdb.log is on its live generation; the other two hold an older inode.
+				identity: () => (name === 'hdb.log' ? held[name] : { ino: held[name].ino + 1000, dev: held[name].dev }),
+				close: () => closed.push(name),
+			});
+		}
+
+		transport.deliverRotation({ request: 'multi', stale: true });
+
+		assert.deepStrictEqual(closed.sort(), ['component.log', 'external.log']);
+		for (const name of ['hdb.log', 'component.log', 'external.log']) {
+			coordinator.unregisterLogSink(path.join(dir, name));
+		}
+	});
+
+	it('closes a descriptor whose identity it cannot read rather than answering for it', () => {
+		// openLogFile() leaves the descriptor open when its fstat fails, so a null identity means "open,
+		// generation unknown" — the one state in which answering "released" without releasing lets an
+		// archive be unlinked under this sink.
+		const transport = fakeTransport();
+		const dir = path.join(TEST_ROOT, `unknownIdentity${caseNumber++}`);
+		fs.mkdirpSync(dir);
+		const logPath = path.join(dir, 'hdb.log');
+		fs.writeFileSync(logPath, 'contents\n');
+		let closed = false;
+		coordinator.registerLogSink(logPath, { identity: () => null, close: () => (closed = true) });
+
+		transport.deliverRotation({ request: 'unknown', stale: true });
+
+		assert.ok(closed, 'a sink with an unreadable identity must be closed, not skipped');
+		coordinator.unregisterLogSink(logPath);
+	});
+
+	it('closes every sink holding one file, not just the last one registered for it', () => {
+		// harper_logger caches its file loggers by the raw configured path, so two spellings of one
+		// file are two sinks with two descriptors on it. Keying the release map by the resolved path
+		// makes them collide; only closing one leaves an open descriptor outside every release request
+		// while the answer still says "released".
+		const transport = fakeTransport();
+		const dir = path.join(TEST_ROOT, `sameFileTwice${caseNumber++}`);
+		fs.mkdirpSync(dir);
+		const logPath = path.join(dir, 'hdb.log');
+		fs.writeFileSync(logPath, 'contents\n');
+		const held = fs.statSync(logPath);
+		const stale = { ino: held.ino + 1000, dev: held.dev };
+		const closed = [];
+		const first = { identity: () => stale, close: () => closed.push('first') };
+		const second = { identity: () => stale, close: () => closed.push('second') };
+		coordinator.registerLogSink(logPath, first);
+		// Built by concatenation, not path.join: join normalizes the dot segment away, and the point
+		// is two different raw strings that resolve to one file.
+		coordinator.registerLogSink(`${dir}${path.sep}.${path.sep}hdb.log`, second);
+
+		transport.deliverRotation({ request: 'sameFile', stale: true });
+
+		assert.deepStrictEqual(closed.sort(), ['first', 'second']);
+		coordinator.unregisterLogSink(logPath);
+	});
+
+	it('is not required to wait for a sink registered after the announcement', async () => {
+		const transport = fakeTransport({ peers: [], autoRespond: false });
+		const { generation } = newGeneration();
+		assert.strictEqual(transport.peerThreadIds().length, 0);
+		assert.ok((await publishArchivedGeneration(generation, true)).endsWith('.gz'));
+	});
+
+	it('holds an unproven archive back from retention until a later pass proves it', async () => {
+		fakeTransport({ autoRespond: false });
+		const { generation } = newGeneration();
+		await publishArchivedGeneration(generation, true);
+		assert.ok(
+			isArchivePendingQuiescence(generation.archivePath),
+			'expected retention to be told to leave the unproven archive alone'
+		);
+
+		// A later pass, with the peer answering again, is what clears it.
+		fakeTransport();
+		await retryPendingGenerations();
+		assert.ok(!isArchivePendingQuiescence(generation.archivePath), 'expected the retry to clear the archive');
+		assert.ok(fs.pathExistsSync(`${generation.archivePath}.gz`), 'expected the retry to compress it');
+		assert.ok(!fs.pathExistsSync(generation.archivePath), 'expected the plain archive to be removed');
+	});
+
+	it('lets retention proceed only when every peer has released its stale descriptors', async () => {
+		const stalled = fakeTransport({ autoRespond: false });
+		const unproven = await coordinator.requestStaleDescriptorRelease();
+		assert.strictEqual(unproven.released, false);
+		assert.strictEqual(stalled.broadcasts.at(-1).stale, true);
+
+		fakeTransport();
+		const proven = await coordinator.requestStaleDescriptorRelease();
+		assert.strictEqual(proven.released, true);
+		// A peer's own registered log paths come back with its answer: a component loads in a worker,
+		// so the thread that runs retention only learns about that log this way.
+		assert.ok(proven.liveLogPaths.has('/a/component/own.log'), 'expected a peer-reported live log path');
+	});
+
+	it('does not shorten a peer release proof to fit an exhausted audit budget', async () => {
+		const transport = fakeTransport({ autoRespond: false, quiescenceTimeout: 50 });
+		const result = await coordinator.requestStaleDescriptorRelease(Date.now() + 10);
+		assert.strictEqual(result.released, false);
+		assert.strictEqual(transport.broadcasts.length, 0, 'a proof must not start when its full timeout cannot fit');
+	});
+
+	it('bounds generation release requests while a peer is unresponsive', async () => {
+		const transport = fakeTransport({ autoRespond: false, quiescenceTimeout: 25 });
+		const releases = Array.from({ length: 65 }, () => coordinator.requestStaleDescriptorRelease());
+		await new Promise(setImmediate);
+		assert.strictEqual(transport.broadcasts.length, 64, 'overflow must wait for the audit sweep without broadcasting');
+		const results = await Promise.all(releases);
+		assert.ok(results.every(({ released }) => !released));
+	});
+
+	it('leaves the plain archive authoritative when compression fails', async () => {
+		fakeTransport();
+		const { generation } = newGeneration();
+		fs.removeSync(generation.archivePath);
+		let reported;
+		const published = await publishArchivedGeneration(generation, true, (error) => (reported = error));
+		assert.strictEqual(published, generation.archivePath);
+		assert.ok(reported, 'compression failure must be reported without making rotation fail');
+		assert.ok(!fs.pathExistsSync(`${generation.archivePath}.gz`), 'expected no partial .gz to be published');
+	});
+});

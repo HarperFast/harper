@@ -1,5 +1,6 @@
 'use strict';
 
+const assert = require('node:assert');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
@@ -624,6 +625,21 @@ describe('Test configValidator module', () => {
 			expect(result).to.equal(
 				"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'"
 			);
+		});
+
+		it('rejects sizes that cannot be a byte limit, and keeps the ones that can (#1877)', () => {
+			// parseInt accepted all of these; on the write path a 0, negative or NaN limit is checked
+			// per flush rather than once a minute, so they are now refused where operators see it.
+			for (const value of ['0K', '-1K', '1xK']) {
+				const config_obj = testUtils.deepClone(FAKE_CONFIG);
+				config_obj.logging.rotation.maxSize = value;
+				assert.ok(configValidator(config_obj).error, `${value} must be rejected`);
+			}
+			for (const value of ['64M', '3G', '1e3K', '0.1K']) {
+				const config_obj = testUtils.deepClone(FAKE_CONFIG);
+				config_obj.logging.rotation.maxSize = value;
+				assert.strictEqual(configValidator(config_obj).error, undefined, `${value} must be accepted`);
+			}
 		});
 	});
 

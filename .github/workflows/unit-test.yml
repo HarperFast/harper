@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (41 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
+    # sum (44 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -71,6 +71,7 @@ jobs:
         run: node --test .github/actions/review-coverage/*.test.mjs
 
       - name: Setup Harper
+        id: setup-harper
         timeout-minutes: 3
         env:
           DEFAULTS_MODE: 'dev'
@@ -82,11 +83,32 @@ jobs:
 
         run: node --enable-source-maps ./dist/bin/harper.js install
 
-      # `.mocharc.json` sets `timeout: 0`, so nothing inside the run can time out on its own —
-      # this cap is the only thing that turns a wedged suite into a reported failure.
-      - name: Run tests
-        timeout-minutes: 15
-        run: npm run test:unit:all
+      # `.mocharc.json` sets `timeout: 0`, so nothing inside a suite can time out on its own —
+      # each step's own cap is what turns a wedged suite into a reported failure, so one bad
+      # top-level suite no longer hides the rest (harper#2587, harper#2017) — `test:unit:lmdb`
+      # still chains its own resources/apitests/bin runs with `&&`, so a failure there stops
+      # at the first of those three. Per-step budgets are sized off measured Node 22 durations
+      # (the slowest leg): main ~2m15-2m30, apitests ~20-25s, resources ~4m30-5m25,
+      # lmdb ~1m55-2m05.
+      - name: 'Unit tests: main'
+        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
+        timeout-minutes: 4
+        run: npm run test:unit:main
+
+      - name: 'Unit tests: apitests'
+        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
+        timeout-minutes: 3
+        run: npm run test:unit:apitests
+
+      - name: 'Unit tests: resources'
+        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
+        timeout-minutes: 7
+        run: npm run test:unit:resources
+
+      - name: 'Unit tests: lmdb'
+        if: "!cancelled() && steps.setup-harper.outcome == 'success'"
+        timeout-minutes: 4
+        run: npm run test:unit:lmdb
 
   # Windows had no unit-level coverage at all before this job: every job above pins
   # ubuntu-latest, and integration-tests.yml was the only workflow touching Windows.
@@ -133,3 +155,47 @@ jobs:
       - name: Run unit tests
         timeout-minutes: 30
         run: npm run test:unit:windows
+
+  # The vectorIndexPlane suite self-skips when the optional native package is absent, so the
+  # load probe below is what keeps that skip from reading as a green run. The crate's own
+  # tests belong to HarperFast/hnsw's CI, not here: this job runs the published prebuild, so
+  # testing the crate source would grade something other than the binary under test.
+  hnsw-plane:
+    name: HNSW native plane (Node.js v24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      # strict here, unlike the other jobs: the plane suite runs against dist/, so a tolerated
+      # build failure would grade a stale dist and still report green
+      - name: Build
+        run: npm run build
+
+      - name: Verify the published native binding loads
+        run: node -e "if (typeof require('@harperfast/hnsw').Plane?.open !== 'function') throw new Error('@harperfast/hnsw loaded without a Plane constructor');"
+
+      - name: Setup Harper
+        env:
+          DEFAULTS_MODE: 'dev'
+          HDB_ADMIN_USERNAME: 'admin'
+          HDB_ADMIN_PASSWORD: 'password'
+          ROOTPATH: '/tmp/hdb'
+          NODE_HOSTNAME: 'localhost'
+          LOGGING_LEVEL: 'info'
+        run: node --enable-source-maps ./dist/bin/harper.js install
+
+      - name: File-primary native plane tests
+        env:
+          HNSW_NATIVE_REBUILD_BENCHMARK: '1'
+        run: npx mocha unitTests/resources/vectorIndexPlane.test.js

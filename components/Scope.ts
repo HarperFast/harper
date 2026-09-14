@@ -20,6 +20,7 @@ import {
 } from './componentSecrets.ts';
 import type { SecretsView } from './componentSecrets.ts';
 import { deployLifecycle } from './deployLifecycle.ts';
+import { thisThreadOwnsApplication } from '../server/threads/isolatedApplications.ts';
 
 export class MissingDefaultFilesOptionError extends Error {
 	constructor() {
@@ -68,6 +69,7 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 	#deployEndHandler: (name: string) => void;
 	#deployInFlight: boolean = false;
 	#restartRequestedDuringDeploy: boolean = false;
+	#optionsReady: boolean = false;
 	applicationScope?: ApplicationScope;
 
 	options: OptionsWatcher;
@@ -241,7 +243,10 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 
 	ensureTable<TableResourceType = unknown>(options: any): TableResourceType {
 		options.origin = this.#origin;
-		return scopedTableFactory(this.applicationScope?.branches)<TableResourceType>(options);
+		return scopedTableFactory(
+			this.applicationScope?.branches,
+			thisThreadOwnsApplication(this.applicationScope?.name)
+		)<TableResourceType>(options);
 	}
 
 	#handleOptionsWatcherReady(): void {
@@ -251,7 +256,21 @@ export class Scope extends EventEmitter<ScopeEventsMap> {
 		// We could make the user call `await scope.ready()` in their `handleApplication` function, but that could lead to the same issue and it'd
 		// be harder for the user to understand why.
 
+		// A second `ready` means the scope had no config of its own and now does — a config file
+		// that was unreadable when this worker booted, or one recreated after deletion. Re-emitting
+		// reaches nobody: componentLoader is long past its `await scope.ready`, so the component is
+		// running on the defaults until something restarts it. Same recovery as the `remove`
+		// listener, and the same convention — a plugin with its own `ready` handler owns it.
+		const started = this.#optionsReady;
+		this.#optionsReady = true;
+		const restartNeeded = started && this.listenerCount('ready') === 0;
+
 		this.emit('ready');
+
+		if (restartNeeded) {
+			this.#logger.debug?.('Options arrived after the scope started, requesting restart');
+			this.requestRestart();
+		}
 	}
 
 	#handleError(error: unknown): void {

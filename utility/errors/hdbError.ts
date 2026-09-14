@@ -67,6 +67,22 @@ export class ServerError extends Error {
 }
 
 /**
+ * Thrown when a write targets a table whose derived index has fallen further behind than its
+ * registration allows. A distinct, retryable 503 so writers back off before the index's cursor is
+ * lost to transaction-log retention, rather than reading a generic 503 as a permanent failure.
+ */
+export class DerivedIndexLagError extends ServerError {
+	code: string;
+	retryable: boolean;
+	constructor(message: string) {
+		super(message, 503);
+		this.name = 'DerivedIndexLagError';
+		this.code = 'DERIVED_INDEX_LAGGING';
+		this.retryable = true;
+	}
+}
+
+/**
  * Thrown when a query targets an attribute whose secondary index is still being (re)built. It is a
  * distinct, retryable 503 so callers can tell a transient "index rebuilding" condition apart from a
  * permanent failure and retry, rather than mis-handling the generic 503 (e.g. as a "no result").
@@ -110,6 +126,22 @@ export class UpdateAttributesLockTimeoutError extends ServerError {
 		super(message, 503);
 		this.name = 'UpdateAttributesLockTimeoutError';
 		this.code = 'UPDATE_ATTRIBUTES_LOCK_TIMEOUT';
+		this.retryable = true;
+	}
+}
+
+/**
+ * A cluster-scoped `lock()` could not establish the guarantee it promises — a peer cannot
+ * participate, the participant set is unknown, or this worker does not own lock coordination.
+ * Fail-closed: never downgrade silently to a node-local lock, which would hand two nodes one key.
+ */
+export class LockUnavailableError extends ServerError {
+	code: string;
+	retryable: boolean;
+	constructor(message: string) {
+		super(message, 503);
+		this.name = 'LockUnavailableError';
+		this.code = 'LOCK_UNAVAILABLE';
 		this.retryable = true;
 	}
 }

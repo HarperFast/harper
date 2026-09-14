@@ -26,6 +26,7 @@ import {
 } from './longLivedTransactions.ts';
 
 const trackedTxns = new Set<DatabaseTransaction>();
+const readTransactionOwners = new WeakMap<ReadTransaction, DatabaseTransaction>();
 // Read options for a rotated generation's native transactions; shared because they never vary.
 const SNAPSHOT_FREE = Object.freeze({ disableSnapshot: true });
 // Logical transactions the monitor supervises for their WRITES, kept apart from trackedTxns because the
@@ -292,6 +293,76 @@ export function transactionOpenTooLongError(): ServerError {
 	);
 }
 
+class ReadSnapshotExpiredError extends ServerError {
+	constructor() {
+		super('Read scan snapshot expired; retry the read without replaying previously committed writes', 503);
+		this.name = 'ReadSnapshotExpiredError';
+	}
+}
+
+export function trackReadRange(transaction: ReadTransaction, createRange: () => any): any {
+	const owner = readTransactionOwners.get(transaction);
+	if (!owner) return createRange();
+	function checkActive() {
+		if (owner.timedOut) throw transactionOpenTooLongError();
+		if (owner.transaction !== transaction) {
+			throw new ReadSnapshotExpiredError();
+		}
+	}
+	checkActive();
+	const range = createRange();
+	const iterate = range.iterate;
+	range.iterate = function (options) {
+		const iterator = iterate.call(this, options);
+		let done = false;
+		// Closing the underlying iterator is the one step here that can throw for a reason the caller
+		// must not see: `next()` only reaches it once the snapshot is already gone, which is the
+		// likeliest moment for the native layer to object, and an error from cleanup would replace the
+		// named 503 with exactly the raw iterator error this wrapper exists to stop surfacing. The
+		// closure reference rather than `this` so a destructured `next` still cleans up.
+		const wrapper = {
+			[Symbol.iterator]() {
+				return this;
+			},
+			next() {
+				if (done) return { done: true, value: undefined };
+				try {
+					checkActive();
+					owner.rangeReadActive = true;
+					const result = iterator.next();
+					done = result.done === true;
+					return result;
+				} catch (error) {
+					closeQuietly();
+					throw error;
+				}
+			},
+			return(value?: any) {
+				if (!done) {
+					done = true;
+					iterator.return?.(value);
+				}
+				return { done: true, value };
+			},
+			throw(error) {
+				// Not delegated to `iterator.throw`: it closes and rethrows the same error anyway, and
+				// delegating after the close below would run it against an iterator already closed.
+				closeQuietly();
+				throw error;
+			},
+		};
+		function closeQuietly() {
+			try {
+				wrapper.return();
+			} catch {
+				// the error being propagated is the actionable one
+			}
+		}
+		return wrapper;
+	};
+	return range;
+}
+
 type MaybePromise<T> = T | Promise<T>;
 
 export type CommitOptions = {
@@ -307,6 +378,11 @@ type ReadTransaction = (LMDBTransaction | RocksTransaction) & {
 	retryRisk?: number;
 	isDone?: boolean;
 	isCommitted?: boolean;
+};
+
+export type WriteGeneration = {
+	closed: boolean;
+	internalWrites: number;
 };
 
 export type TransactionWrite = {
@@ -384,7 +460,26 @@ export type TransactionWrite = {
 	// the commit derives stored state (folds, index diffs, residency) from its base entry, so
 	// save() must reload that base through the committing transaction's snapshot
 	reloadCommitBase?: boolean;
+	writeGeneration?: WriteGeneration;
+	instanceClosed?: boolean;
 };
+
+export function closeWriteInstance(operation: TransactionWrite | null | undefined): void {
+	if (operation && !operation.instanceClosed) {
+		operation.instanceClosed = true;
+		if (operation.writeGeneration) operation.writeGeneration.closed = true;
+	}
+}
+
+export function validateWrite(operation: TransactionWrite, txnTime: number, transaction: DatabaseTransaction): any {
+	const generation = operation.writeGeneration;
+	if (generation) generation.internalWrites++;
+	try {
+		return operation.validate?.(txnTime, transaction);
+	} finally {
+		if (generation) generation.internalWrites--;
+	}
+}
 
 export function getAppliedWriteVersion(recordVersion: number | undefined, txnLogKey: number): number {
 	return recordVersion == null ? txnLogKey : Math.min(recordVersion, txnLogKey);
@@ -434,6 +529,7 @@ export class DatabaseTransaction implements Transaction {
 		this.#scopeOwned = options?.scopeOwned === true;
 	}
 	writes: TransactionWrite[] = []; // the set of writes to commit if the conditions are met
+	ownedWrites?: WeakSet<TransactionWrite>;
 	// the last staged write per store and key, used to chain repeat writes to the same key (linkWrite)
 	declare writesByKey?: Map<any, Map<unknown, TransactionWrite>>;
 	completions: Promise<void>[] = []; // the set of outstanding async operations to complete
@@ -524,6 +620,15 @@ export class DatabaseTransaction implements Transaction {
 	declare commitChainHead?: DatabaseTransaction;
 	// O(1) lookup in recordLockFor; only lock() handles are registered here (no gate handles).
 	declare recordLocks?: Map<any, Map<unknown, RecordLockHandle>>;
+	/**
+	 * Whether any staged write was made through a record lock handle. The commit-time lease fence
+	 * below is skipped entirely when this is false, which is every transaction in a core-only
+	 * deployment: without it a bulk transaction of 100,000 plain writes pays 100,000 property checks
+	 * before submission, on a path that is supposed to be untouched when no lock is involved. It
+	 * latches rather than tracking a count, because a write whose handle was released or expired after
+	 * staging is exactly what the fence exists to catch.
+	 */
+	declare hasLeaseProtectedWrite?: boolean;
 	// Tracks in-flight acquireRecordKey calls so concurrent lock() calls for the same key in one
 	// link (e.g. Promise.all([T.lock(id), T.lock(id)])) can coalesce rather than self-block.
 	declare pendingLocks?: Map<any, Map<unknown, Promise<RecordLockHandle>>>;
@@ -537,8 +642,9 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
-	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
-		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
+	rangeReadActive = false;
+
+	renewReadTimeout(): void {
 		// The limit is an IDLE limit. Writes always re-arm it (see addWrite), but reads only do so
 		// while no uncommitted writes are held: staged writes hold write intents that other writers'
 		// coordinated-retry commits park on, so a handler that wrote once and then only reads — an
@@ -551,6 +657,11 @@ export class DatabaseTransaction implements Transaction {
 		if ((this.writes.length === 0 && !this.next) || this.open !== TRANSACTION_STATE.OPEN || !this.hasPendingWrites()) {
 			this.timeout = Math.max(txnExpiration, this.timeoutBudget);
 		}
+	}
+
+	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
+		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
+		this.renewReadTimeout();
 		if (this.transaction) {
 			if ((this.transaction as any).openTimer) (this.transaction as any).openTimer = 0;
 			return this.transaction;
@@ -585,6 +696,8 @@ export class DatabaseTransaction implements Transaction {
 	// Monitor state is not ownership state: it stays with `trackedTxns.add` in getReadTxn().
 	private attachOwnedTransaction(transaction: RocksTransactionWithRetry): void {
 		this.transaction = transaction;
+		readTransactionOwners.set(transaction, this);
+		this.rangeReadActive = false;
 		this.readTxnsUsed = 1;
 		this.baseReadRefConsumed = false;
 		this.handleOpenedAt = performance.now();
@@ -626,6 +739,7 @@ export class DatabaseTransaction implements Transaction {
 		trackedTxns.delete(this);
 		this.endWriteSupervision();
 		this.transaction = null;
+		this.rangeReadActive = false;
 		this.readTxnsUsed = 0;
 		this.readTxnRefCount = 0;
 		this.handleOpenedAt = 0;
@@ -724,6 +838,7 @@ export class DatabaseTransaction implements Transaction {
 	detachWrite(operation: TransactionWrite): void {
 		const index = this.writes.indexOf(operation);
 		if (index > -1) this.writes[index] = null;
+		this.ownedWrites?.delete(operation);
 		if (operation.key === undefined) return;
 		const writesForStore = this.writesByKey?.get(operation.store);
 		if (!writesForStore) return;
@@ -731,7 +846,7 @@ export class DatabaseTransaction implements Transaction {
 		// Membership, not `stagedIn`, which every commit handler clears and so cannot tell a takeover from a
 		// write done in place; a prior already taken over must not become this transaction's basis again.
 		let prior = operation.priorWrite;
-		while (prior && !this.writes.includes(prior)) prior = prior.priorWrite;
+		while (prior && !this.ownedWrites?.has(prior)) prior = prior.priorWrite;
 		const tail = writesForStore.get(keyId);
 		if (tail === operation) {
 			if (prior) writesForStore.set(keyId, prior);
@@ -760,9 +875,9 @@ export class DatabaseTransaction implements Transaction {
 		if (!storeMap) return undefined;
 		const h = storeMap.get(keyId);
 		if (!h) return undefined;
-		if (!h.released) return h;
-		// Prune released handles so they don't accumulate; an expired handle checking re-entrancy
-		// would otherwise be seen as the holder and incorrectly granted access.
+		if (!h.isExpired()) return h;
+		// Prune released/expired handles so they don't accumulate; a handle past its deadline checking
+		// re-entrancy would otherwise be seen as the holder and incorrectly granted access.
 		storeMap.delete(keyId);
 		return undefined;
 	}
@@ -821,9 +936,16 @@ export class DatabaseTransaction implements Transaction {
 		// fire after a commit or abort, and routing it back here would revive a write this transaction
 		// already rolled back — whose blobs abort() has reclaimed. Cleared here, save() resolves the
 		// context's current transaction as it did before `stagedIn` existed.
-		for (const write of this.writes) if (write?.stagedIn === this) write.stagedIn = undefined;
+		for (const write of this.writes) {
+			if (write?.stagedIn === this) write.stagedIn = undefined;
+			if (write) this.ownedWrites?.delete(write);
+		}
 		this.writes = [];
 		this.writesByKey = undefined;
+		// The commit-fence latch belongs to the discarded batch. A reused transaction that once staged
+		// a locked write would otherwise re-scan every write of every later unlocked batch. Assigned
+		// only when it was set, so an ordinary transaction never gains the property at all.
+		if (this.hasLeaseProtectedWrite) this.hasLeaseProtectedWrite = false;
 	}
 
 	/**
@@ -959,6 +1081,7 @@ export class DatabaseTransaction implements Transaction {
 		this.writeTick = monitorTick;
 		this.linkWrite(operation);
 		this.writes.push(operation);
+		(this.ownedWrites ??= new WeakSet()).add(operation);
 		operation.stagedIn = this;
 		// Hold this write back while any earlier same-key write has not run — out of staging order both
 		// diff against the pre-transaction record (harper#2211, DESIGN.md). The whole chain, not just the
@@ -990,15 +1113,26 @@ export class DatabaseTransaction implements Transaction {
 		const lockHandle = operation.lockHandle;
 		// Guard: a write staged through an expired or released lock handle must not land.
 		// The handle's lease timer already unlocked the native key; another holder may have taken it.
-		if (lockHandle && (lockHandle.expired || lockHandle.released)) {
-			// Remove the operation from the staged set so subsequent writes on this context do not
-			// re-throw 409 due to a stale null-saved entry sitting in this.writes.
-			const failedIdx = this.writes.indexOf(operation);
-			if (failedIdx > -1) this.writes[failedIdx] = null;
+		// isExpired() re-evaluates the deadline here rather than trusting the timer to have run: a
+		// holder whose event loop stalled past its lease would otherwise commit in the window between
+		// the deadline and its own timer callback, after peers had already granted the key onward.
+		//
+		// A RE-save is judged by the lease alone. `released` belongs to the first stage — a caller that
+		// unlocked and then saved is writing through a handle it gave back — but an operation already
+		// staged was staged while the lock was held, and an `unlock()` inside the lease leaves it valid
+		// (the same rule the pre-submit fence applies below). Without the distinction,
+		// `lock(); save(); unlock(); commit()` succeeded normally and threw 409 only when a conflict
+		// retry or an open read iterator forced the replay to re-save it.
+		if (operation.saved ? lockHandle?.isLeaseExpired() : lockHandle?.isExpired()) {
+			// Through `detachWrite`, which also repairs the per-key chain: dropping it from `writes` alone
+			// leaves `writesByKey` pointing at a write that was refused, so a caller that catches this 409
+			// and stages the same key again would take the rejected operation as its merge basis.
+			this.detachWrite(operation);
 			throw lockNotHeldError(lockHandle);
 		}
 		// Lock-write timestamp rules.
 		if (lockHandle) {
+			this.hasLeaseProtectedWrite = true;
 			if (this.open === TRANSACTION_STATE.CLOSED || this.saveCommits) {
 				// CLOSED path (second+ write per ImmediateTransaction cycle) OR the first write in
 				// an ImmediateTransaction (open=OPEN until commit sets it CLOSED, but saveCommits
@@ -1057,6 +1191,16 @@ export class DatabaseTransaction implements Transaction {
 			(transaction as RocksTransactionWithRetry).isRetry = true;
 		}
 		if (!txnTime) txnTime = this.timestamp = transaction.getTimestamp();
+		if (!operation.saved && operation.pendingPriorWrite) {
+			const pendingWrites = [];
+			for (let pending = operation.pendingPriorWrite; pending;) {
+				if (!pending.saved && this.ownedWrites?.has(pending)) pendingWrites.push(pending);
+				pending = pending.pendingPriorWrite !== undefined ? pending.pendingPriorWrite : pending.priorWrite;
+			}
+			for (let index = pendingWrites.length - 1; index >= 0; index--)
+				this.save(pendingWrites[index], transaction, false, options);
+			operation.pendingPriorWrite = null;
+		}
 		// `txnTime` is this transaction's timestamp — the key its entries take in the per-origin log.
 		// A write applied from elsewhere carries the origin's record version too, and that is what the
 		// record is stored at; the two coincide for every locally-originated write. Gated on the apply
@@ -1076,12 +1220,15 @@ export class DatabaseTransaction implements Transaction {
 			operation.entry = operation.store.getEntry(operation.key, { transaction, uncachedRead });
 		}
 		if (!operation.saved) {
-			operation.saved = true;
 			// immediately execute in this transaction
-			if ((operation.validate?.(writeVersion, this) as any) === false) {
+			const validated = validateWrite(operation, writeVersion, this);
+			if ((validated as any) === false) {
+				operation.saved = true;
 				operation.commit = () => {}; // noop if we try again
+				closeWriteInstance(operation);
 				return;
 			}
+			operation.saved = true;
 			let result: Promise<void> = operation.before?.() as Promise<void>;
 			if (result?.then) this.stageCompletion(result);
 			result = operation.beforeIntermediate?.() as Promise<void>;
@@ -1089,7 +1236,12 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (lockHandle || this.recordLocks) operation.trackRecordVersion = true;
 		if (operation.trackRecordVersion) operation.recordVersionApplied = false;
-		const completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		let completion: Promise<void>;
+		try {
+			completion = operation.commit(writeVersion, operation.entry, this.retries > 0, transaction) as Promise<void>;
+		} finally {
+			closeWriteInstance(operation);
+		}
 		if (operation.trackRecordVersion)
 			operation.appliedRecordVersion = operation.recordVersionApplied ? writeVersion : undefined;
 		if (typeof completion?.then === 'function') this.stageCompletion(completion);
@@ -1246,6 +1398,30 @@ export class DatabaseTransaction implements Transaction {
 					if (transaction) {
 						this.writes = this.writes.filter((write) => write); // filter out removed entries
 						if (this.writes.length > 0) {
+							// Commit retries can construct fresh ranges on this live handle after read ownership ends.
+							readTransactionOwners.delete(transaction);
+							// Re-fence before submitting: the loop above skips operations already marked saved, so
+							// save()'s own check cannot see a holder that stalled between staging and commit. The
+							// retry/replay path re-saves every operation and is fenced there instead. Lease expiry
+							// only: an unlock() inside the lease leaves the staged write valid, an elapsed lease
+							// does not, whether or not the caller also unlocked.
+							for (let i = 0; this.hasLeaseProtectedWrite && i < this.writes.length; i++) {
+								const lapsed = this.writes[i].lockHandle;
+								if (!lapsed?.isLeaseExpired()) continue;
+								try {
+									transaction.abort();
+								} catch {}
+								// Every other terminal exit from commit() runs the logical cleanup too. Throwing
+								// straight out would strand the OTHER locks this transaction holds, its staged
+								// blobs, and the context's back-reference to a CLOSED transaction — and
+								// transaction()'s onComplete has no rejection path to run it later.
+								try {
+									this.abort();
+								} catch (error) {
+									harperLogger.debug?.('cleaning up a transaction whose record lock lapsed', error);
+								}
+								throw lockNotHeldError(lapsed);
+							}
 							// The transaction was created with coordinatedRetry:true (see
 							// getReadTxn), so commit() can resolve to RETRY_NOW_VALUE. That
 							// sentinel (a number) is why commitResolution is typed
@@ -2044,6 +2220,10 @@ function startMonitoringTxns() {
 		reportNow: number,
 		reportBudget: LongLivedHolderReportBudget
 	) {
+		if (txn.rangeReadActive) {
+			txn.rangeReadActive = false;
+			txn.renewReadTimeout();
+		}
 		reportIfLongLived(txn, reportThresholdMs, reportNow, reportBudget);
 		{
 			const commitChainHead = txn.commitChainHead ?? txn;

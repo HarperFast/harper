@@ -12,6 +12,11 @@ import * as env from '../utility/environment/environmentManager.ts';
 import * as terms from '../utility/hdbTerms.ts';
 import { getConfigPath } from '../config/configUtils.ts';
 import { getTicketKeys, getWorkerIndex } from './threads/manageThreads.js';
+import {
+	applicationSocketName,
+	isolatedApplicationRoute,
+	thisThreadsIsolatedApplication,
+} from './threads/isolatedApplications.ts';
 import { createTLSSelector, getEffectiveTlsCiphers } from '../security/keys.ts';
 import { createSecureServer, createServer as createH2CServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
@@ -196,10 +201,21 @@ export function writeUdsMetadata(
 	port: number | string,
 	secureServer: any,
 	protocol?: string,
-	mtlsForwarding = true
+	mtlsForwarding = true,
+	route: { application: string; hosts: string[] } | undefined = isolatedApplicationRoute()
 ) {
 	const contexts = secureServer.secureContexts;
 	let yaml = `pid: ${process.pid}\ntid: ${currentThreadId()}\nport: ${port}\n`;
+	// Routing identity, separate from certificate coverage: a proxy sends this application's hosts to
+	// this socket alone, whatever hostnames the (shared, possibly wildcard) certificates carry.
+	if (route) {
+		yaml += `application: ${JSON.stringify(route.application)}\n`;
+		if (route.hosts.length === 0) yaml += `applicationHosts: []\n`;
+		else {
+			yaml += `applicationHosts:\n`;
+			for (const host of route.hosts) yaml += `  - ${JSON.stringify(host)}\n`;
+		}
+	}
 	// Which application protocol this socket speaks (absent = http/1.1, the historical
 	// default) — lets a fronting proxy route by negotiated ALPN.
 	if (protocol) yaml += `protocol: ${protocol}\n`;
@@ -260,6 +276,19 @@ export function cleanupSocketsDirectory() {
 	const socketsDir = join(env.getHdbBasePath(), 'sockets');
 	try {
 		for (const file of readdirSync(socketsDir)) {
+			try {
+				unlinkSync(join(socketsDir, file));
+			} catch {}
+		}
+	} catch {}
+}
+
+export function cleanupApplicationSockets(application: string) {
+	const socketsDir = join(env.getHdbBasePath(), 'sockets');
+	const prefix = applicationSocketName(application, '');
+	try {
+		for (const file of readdirSync(socketsDir)) {
+			if (!file.startsWith(prefix) || (!file.endsWith('.sock') && !file.endsWith('.yaml'))) continue;
 			try {
 				unlinkSync(join(socketsDir, file));
 			} catch {}
@@ -875,7 +904,10 @@ function getHTTPServer(port: number, secure: boolean, options: ServerOptions) {
 		if (secure && env.get(terms.CONFIG_PARAMS.TLS_UNIXDOMAINSOCKETS)) {
 			const socketsDir = join(env.getHdbBasePath(), 'sockets');
 			mkdirSync(socketsDir, { recursive: true });
-			const socketName = `${getWorkerIndex()}-${port}`;
+			const isolatedApplication = thisThreadsIsolatedApplication();
+			const socketName = isolatedApplication
+				? applicationSocketName(isolatedApplication, port)
+				: `${getWorkerIndex()}-${port}`;
 			const udsPath = join(socketsDir, `${socketName}.sock`);
 			const yamlPath = join(socketsDir, `${socketName}.yaml`);
 

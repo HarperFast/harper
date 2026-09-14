@@ -12477,7 +12477,21 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 		                                    from northnwd.shippers`,
 					},
 				})
-				.expect(200);
+				.expect((r) =>
+					assert.equal(
+						r.body.error,
+						'This operation is not authorized due to role restrictions and/or invalid database items',
+						r.text
+					)
+				)
+				.expect((r) =>
+					assert.equal(
+						r.body.unauthorized_access[0],
+						"Operation 'export_local' is restricted to 'super_user' roles",
+						r.text
+					)
+				)
+				.expect(403);
 		});
 
 		test('Jobs Test Export To Local using SQL on RESTRICTED table as test_user', async () => {
@@ -12494,16 +12508,20 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 		                                    from northnwd.suppliers`,
 					},
 				})
-				.expect((r) => {
+				.expect((r) =>
 					assert.equal(
 						r.body.error,
 						'This operation is not authorized due to role restrictions and/or invalid database items',
 						r.text
-					);
-					assert.equal(r.body.invalid_schema_items.length, 1, r.text);
-					assert.equal(r.body.invalid_schema_items[0], "Table 'northnwd.suppliers' does not exist", r.text);
-					assert.equal(r.body.unauthorized_access.length, 0, r.text);
-				})
+					)
+				)
+				.expect((r) =>
+					assert.equal(
+						r.body.unauthorized_access[0],
+						"Operation 'export_local' is restricted to 'super_user' roles",
+						r.text
+					)
+				)
 				.expect(403);
 		});
 
@@ -12521,7 +12539,21 @@ suite('Northwind operations', { skip: skipSuite }, (ctx) => {
 		                                    from northnwd.region`,
 					},
 				})
-				.expect(200);
+				.expect((r) =>
+					assert.equal(
+						r.body.error,
+						'This operation is not authorized due to role restrictions and/or invalid database items',
+						r.text
+					)
+				)
+				.expect((r) =>
+					assert.equal(
+						r.body.unauthorized_access[0],
+						"Operation 'export_local' is restricted to 'super_user' roles",
+						r.text
+					)
+				)
+				.expect(403);
 		});
 
 		test('Jobs Test Export To Local using NoSQL as test_user', async () => {

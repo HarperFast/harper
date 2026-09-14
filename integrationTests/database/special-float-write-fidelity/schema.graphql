@@ -1,0 +1,16 @@
+# QA-432 — content-negotiation WRITE-path fidelity for special floats.
+
+type Doc @table @export {
+	id: ID @primaryKey
+}
+
+# Every special-float attribute is declared here, so writes reach Table.ts's per-type
+# validation instead of the open-attribute path Doc takes.
+type TypedDoc @table @export {
+	id: ID @primaryKey
+	nan: Float
+	posInf: Float
+	negInf: Float
+	negZero: Float
+	normal: Float
+}
