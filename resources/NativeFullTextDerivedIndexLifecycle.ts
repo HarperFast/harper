@@ -324,7 +324,14 @@ export class NativeFullTextDerivedIndexLifecycle {
 	}
 
 	#assertDirectory(path: string, label: string): void {
-		const stat = lstatSync(path);
+		let stat;
+		try {
+			stat = lstatSync(path);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+				throw new FullTextGenerationInvalidError(`${label} is missing`, error);
+			throw error;
+		}
 		if (!stat.isDirectory() || stat.isSymbolicLink()) throw new FullTextGenerationInvalidError(`${label} is invalid`);
 	}
 

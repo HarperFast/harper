@@ -112,6 +112,22 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.strictEqual(binding.opens.length, 0);
 	});
 
+	it('treats a missing selected generation as rebuildable', async () => {
+		const binding = new FakeNativeModule();
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		const seeded = await lifecycle.replace(1n);
+		await seeded.close({ mode: 'rollback' });
+		const selector = JSON.parse(fs.readFileSync(path.join(lifecycle.path, 'CURRENT')));
+		fs.rmSync(path.join(lifecycle.path, 'generations', selector.generationId), { recursive: true });
+
+		await assert.rejects(
+			lifecycle.open(2n),
+			(error) => error instanceof FullTextGenerationInvalidError && error.cause?.code === 'ENOENT'
+		);
+		const replacement = await lifecycle.replace(2n);
+		await replacement.close({ mode: 'rollback' });
+	});
+
 	it('closes an opened writer when post-open cleanup fails', async () => {
 		const binding = new FakeNativeModule();
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
