@@ -90,9 +90,8 @@ async function syncSchemaMetadata(msg) {
 			return;
 		}
 		if (msg.operation === hdbTerms.OPERATIONS_ENUM.DROP_TABLE && msg.table) {
-			// The dropper retires the table's stores only after this ack, so anything this thread still
-			// applies to them must have settled here, not merely been scheduled; the rescan then
-			// unloads the tombstoned table without racing the dropper to complete it.
+			// the ack is the dropper's barrier: derived-index delivery must have settled, not merely been
+			// scheduled, and the rescan unloads the tombstoned table without racing the dropper
 			const dropped = databases[msg.schema]?.[msg.table];
 			if (dropped) {
 				const derivedIndexRuntime = dropped.derivedIndexRuntime;

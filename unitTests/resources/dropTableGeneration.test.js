@@ -6,7 +6,8 @@ const fs = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const { waitFor } = require('../waitFor');
 const { table, database, databases, resetDatabases, openRocksDatabase } = require('#src/resources/databases');
-const { createBlob } = require('#src/resources/blob');
+const { createBlob, getFilePathForBlob } = require('#src/resources/blob');
+const { logger } = require('#src/utility/logging/logger');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { derivedIndexReadiness } = require('#src/resources/indexes/hnswDerivedIndex');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -43,9 +44,27 @@ function catalogRows(name) {
 	return [...dbisDb().getRange({ start: `${name}/`, end: `${name}0` })].map(({ key }) => key);
 }
 
+const REQUIRES_DEFERRED_RECLAMATION =
+	'the drop path no longer drains in-flight writes and needs a @harperfast/rocksdb-js that defers physical column-family drops behind admitted commits (rocksdb-js#850); bump the pin';
 /** The binding defers a physical drop behind admitted commits (rocksdb-js#850); older bindings drop inline. */
 function hasDeferredReclamation() {
 	return 'columnFamily.pendingReclaims' in (rootStore().getStats?.() ?? {});
+}
+
+/** Captures logger.warn calls for the duration of `run`; the sweep after a drop reports leaks there. */
+async function capturingWarnings(run) {
+	const warnings = [];
+	const originalWarn = logger.warn;
+	logger.warn = (...args) => {
+		warnings.push(args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(' '));
+		return originalWarn?.apply(logger, args);
+	};
+	try {
+		await run();
+	} finally {
+		logger.warn = originalWarn;
+	}
+	return warnings;
 }
 
 async function fromAsync(iterable) {
@@ -105,6 +124,24 @@ describe('dropTable generation-distinct stores', function () {
 		await Second.dropTable();
 	});
 
+	it('releases the blob files of a dropped RocksDB table', async function () {
+		if (IS_LMDB) return this.skip();
+		const Blobby = defineTable('GenBlobs', [{ name: 'blob', type: 'Blob' }]);
+		const blob = await createBlob(Buffer.alloc(50_000, 2));
+		await Blobby.put({ id: 1, str: 'x', blob });
+		const blobPath = getFilePathForBlob((await Blobby.get(1)).blob);
+		assert.ok(fs.existsSync(blobPath), 'the blob file exists while the table lives');
+		const warnings = await capturingWarnings(async () => {
+			await Blobby.dropTable();
+			await waitFor(() => !fs.existsSync(blobPath), { timeout: 15_000, message: 'the blob file was not released' });
+		});
+		assert.deepStrictEqual(
+			warnings.filter((message) => /Could not sweep|still pending/.test(message)),
+			[],
+			'the sweep must read the retired generation'
+		);
+	});
+
 	it('refuses new operations through a retained class after the drop', async function () {
 		const Retained = defineTable('GenRetained');
 		await Retained.put({ id: 1, str: 'x' });
@@ -118,19 +155,34 @@ describe('dropTable generation-distinct stores', function () {
 	});
 
 	it('does not wait on, or fail for, a source-fill write still landing when the drop starts', async function () {
-		if (IS_LMDB || !hasDeferredReclamation()) return this.skip();
+		if (IS_LMDB) return this.skip();
+		assert.ok(hasDeferredReclamation(), REQUIRES_DEFERRED_RECLAMATION);
 		const Cached = defineTable('GenSourceFill', [{ name: 'blob', type: 'Blob' }]);
 		// a blob defers the cache write's native commit until the blob file has been written, which is
 		// what lets the drop start while the commit is still in flight (the case the old drain waited for)
+		let sourceBlob;
 		Cached.sourcedFrom({
-			get: async (id) => ({ id, str: 'from source', blob: await createBlob(Buffer.alloc(100_000, 1)) }),
+			get: async (id) => ({ id, str: 'from source', blob: (sourceBlob = await createBlob(Buffer.alloc(100_000, 1))) }),
 			available: () => true,
 		});
 		const resolved = await Cached.get(7, {});
 		assert.equal(resolved.str, 'from source');
+		const blobPath = getFilePathForBlob(sourceBlob);
 		const started = Date.now();
-		await Cached.dropTable();
-		assert.ok(Date.now() - started < 5_000, 'the drop must not run a drain timeout');
+		const warnings = await capturingWarnings(async () => {
+			await Cached.dropTable();
+			assert.ok(Date.now() - started < 5_000, 'the drop must not run a drain timeout');
+			// the racing commit either landed (and its blob is swept) or was refused (and the blob was
+			// discarded with the aborted write): the file is gone either way
+			await waitFor(() => !fs.existsSync(blobPath), {
+				timeout: 15_000,
+				message: 'the blob of the write that raced the drop was not released',
+			});
+		});
+		assert.deepStrictEqual(
+			warnings.filter((message) => /Could not sweep|still pending/.test(message)),
+			[]
+		);
 		assert.deepStrictEqual(catalogRows('GenSourceFill'), []);
 		// the storage environment is not poisoned by the racing commit
 		const Probe = defineTable('GenSourceFillProbe');

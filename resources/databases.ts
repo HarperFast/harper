@@ -492,13 +492,13 @@ function isAbandonedIndexBuild(descriptor: any, currentRestartGeneration: number
 // unbounded retry turns one broken table into a per-reload log flood in every
 // worker thread.
 const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
-// A RocksDB table's physical column families carry the generation minted when it was created, so a
-// same-name recreate never binds to a family a dropped generation still occupies on disk while its
-// physical drop is deferred (rocksdb-js retires the name first and drops behind admitted commits).
-// LMDB keeps catalog-key names: its drop is awaited and its named sub-databases are reused by design.
+// RocksDB store names carry the generation minted at create, so a same-name recreate never binds to a
+// family a dropped generation still occupies on disk; LMDB keeps catalog-key names (its drop is awaited).
 const GENERATION_ROW_PREFIX = '/generation/';
 const GENERATION_ROW_END = '/generation0';
-type GenerationRow = { table: string; generation: string; phase: 'creating' | 'retired' };
+// `stores` names the retired families explicitly (a legacy table's are its catalog keys); a `creating`
+// row predates its families, which are found by the `@<generation>` suffix instead.
+type GenerationRow = { table: string; generation: string; phase: 'creating' | 'retired'; stores?: string[] };
 export function storeNameFor(catalogKey: string, generation: string | undefined): string {
 	return generation ? `${catalogKey}@${generation}` : catalogKey;
 }
@@ -507,10 +507,9 @@ function generationRowKey(generation: string): string {
 }
 const dropsInProgress = new Map<string, number>();
 /**
- * While a drop is in flight (here or on another worker), a schema rescan that meets its tombstone only
- * stops serving the table; completing the drop is the dropper's job, not a race every worker joins.
- * Keyed by the tombstone's dropGeneration, which the drop broadcast carries: database names alias
- * one directory and a table name recurs across generations, so neither identifies the drop.
+ * A rescan that meets the tombstone of a drop in flight only unloads the table; completing it is the
+ * dropper's job. Keyed by dropGeneration (carried by the drop broadcast): database names alias one
+ * directory and a table name recurs across generations, so neither identifies the drop.
  */
 export function markDropInProgress(dropGeneration: string): () => void {
 	dropsInProgress.set(dropGeneration, (dropsInProgress.get(dropGeneration) ?? 0) + 1);
@@ -520,8 +519,17 @@ export function markDropInProgress(dropGeneration: string): () => void {
 		else dropsInProgress.delete(dropGeneration);
 	};
 }
-export function recordRetiredGeneration(attributesDbi, tableName: string, generation: string): void {
-	attributesDbi.put(generationRowKey(generation), { table: tableName, generation, phase: 'retired' });
+/** Durable before any family is retired: the sweep reclaims by this row whatever state the drop died in. */
+export function recordRetiredGeneration(attributesDbi, tableName: string, generation: string, stores: string[]): void {
+	attributesDbi.putSync(generationRowKey(generation), { table: tableName, generation, phase: 'retired', stores });
+}
+/** The physical names of a table's stores, from its catalog rows (the tombstoned rows of a table being dropped). */
+export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
+	const names: string[] = [];
+	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+		names.push(storeNameFor(key, generation));
+	}
+	return names;
 }
 // physical store path + table -> drop generation -> consecutive failed
 // completion attempts in this thread. Keyed by the physical store path
@@ -2717,10 +2725,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
-				// The journal row lands before the first family exists, so a create that dies here leaves
-				// nothing a later load cannot name and reclaim (reclaimGenerations).
+				// durable before the first family exists, so a create that dies here leaves nothing a
+				// later load cannot name and reclaim (reclaimGenerations)
 				generation = randomUUID();
-				attributesDbi.put(generationRowKey(generation), { table: tableName, generation, phase: 'creating' });
+				attributesDbi.putSync(generationRowKey(generation), { table: tableName, generation, phase: 'creating' });
 				primaryStore = openRocksDatabase(rootStore.path, {
 					...dbiInit,
 					name: storeNameFor(dbiName, generation),
@@ -3654,7 +3662,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 }
 
 /** Drops one column family by name and removes its HNSW plane file; tolerates an already-dropped family. */
-function dropColumnFamily(rootStore: RocksDatabase, columnName: string) {
+export function dropColumnFamily(rootStore: RocksDatabase, columnName: string) {
 	const columnStore = openRocksDatabase(rootStore.path, { name: columnName });
 	try {
 		columnStore.dropSync();
@@ -3710,8 +3718,9 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 					continue;
 				}
 				const suffix = '@' + value.generation;
+				const retired = value.stores ? new Set(value.stores) : undefined;
 				for (const columnName of (rootStore as any).columns) {
-					if (columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
+					if (retired ? retired.has(columnName) : columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
 				}
 				if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) continue;
 				attributesDbi.remove(key);
@@ -3747,10 +3756,12 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 	if (rootStore instanceof RocksDatabase) {
 		// Explicit names, never a `tableName + '/'` prefix: a live same-name recreate carries its own
 		// generation next to the retired one and must survive this sweep.
-		const generation = attributesDbi.getSync(tableName + '/')?.generation;
+		const primaryRow = attributesDbi.getSync(tableName + '/');
+		const stores = storeNamesFor(attributesDbi, tableName, primaryRow?.generation);
+		if (primaryRow?.dropGeneration)
+			recordRetiredGeneration(attributesDbi, tableName, primaryRow.dropGeneration, stores);
 		const columns = new Set<string>((rootStore as any).columns);
-		for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
-			const columnName = storeNameFor(key, generation);
+		for (const columnName of stores) {
 			if (columns.has(columnName)) dropColumnFamily(rootStore, columnName);
 		}
 	} else {
