@@ -151,27 +151,28 @@ describe('Table.getRecordCount', () => {
 			});
 		}
 		try {
-			// Positive control for the attribution, in the shape of the analytics sweep. This immediate is
-			// queued before the scan's first `await rest()`, so it runs while the scan is suspended. The
-			// spy counts before delegating, so a store that throws here still proves the control; letting
-			// it escape an immediate would abort the run instead of failing this test.
+			// Positive control for the attribution, in the shape of the analytics sweep: queued before the
+			// scan's first `await rest()`, so it runs while the scan is suspended. Contained and reported
+			// here rather than left to escape the immediate, which would abort the run.
+			let foreignError;
 			setImmediate(() => {
 				try {
 					store.getStats();
-				} catch {
-					// intentionally ignored — see above
+				} catch (error) {
+					foreignError = error;
 				}
 			});
 			const completed = await underTest.run(true, () =>
 				RecordCountTable.getRecordCount({ timeLimit: WITHIN_BUDGET_TIME_LIMIT })
 			);
+			assert.equal(foreignError, undefined, 'the interleaved foreign call must not throw');
 			assert.equal(completed.recordCount, 30);
 			assert.equal(completed.estimatedRange, undefined);
 			assert.ok(foreignCalls >= 1, 'the interleaved foreign call must reach the spy, or it proves nothing');
 			assert.equal(calls, 0, 'entry-count source should not be consulted when the scan finishes within budget');
 
 			calls = 0;
-			// force timeout -> escape to the exact count
+			// a negative budget is exhausted on the first iteration, which is what consults the entry count
 			await underTest.run(true, () => RecordCountTable.getRecordCount({ timeLimit: -1 }));
 			assert.ok(calls >= 1, 'entry-count source should be consulted once the scan exceeds the budget');
 		} finally {
