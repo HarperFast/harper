@@ -3,6 +3,12 @@
  * blob-file counts unchanged during one and four concurrent stalls and after client abort. Latency
  * is diagnostic only. Skips platforms without reliable full-worker HTTP distribution.
  *
+ * These oracles hold by construction today: the REST layer buffers the whole request body before
+ * decoding (server/serverHelpers/contentTypes.ts, streamToBuffer(stream).then(deserialize)), so a
+ * partial CBOR body never reaches the decoder, the table, or saveBlob. A green run is therefore not
+ * evidence that a stall was survived — it is a guard against a future streaming-decode or
+ * synchronous-body-read change that would make one possible.
+ *
  * https://github.com/HarperFast/harper/issues/1862
  */
 import { suite, test, before, after } from 'node:test';
@@ -395,19 +401,19 @@ suite(
 			'sanity: complete CBOR blob PUT creates a real file (validates blobDir + route + harness)',
 			{ timeout: 30_000 },
 			async () => {
-				const before = await diskUsage(blobDir);
+				const beforeDisk = await diskUsage(blobDir);
 				const payload = Buffer.alloc(BLOB_PAYLOAD_LEN, 0xab);
 				const body = Buffer.from(
 					cborEncode({ id: 'qa685-sanity', data: payload, contentType: 'image/jpeg', filename: 'sanity.jpg' })
 				);
 				const r = await putCompleteCbor(host, port, '/MediaAsset/qa685-sanity', auth, body, 20_000);
-				const after = await diskUsage(blobDir);
+				const afterDisk = await diskUsage(blobDir);
 				log(
-					`SANITY complete CBOR blob PUT: status=${r.status}, blobDir files ${before.files} -> ${after.files} (bytes ${before.bytes} -> ${after.bytes})`
+					`SANITY complete CBOR blob PUT: status=${r.status}, blobDir files ${beforeDisk.files} -> ${afterDisk.files} (bytes ${beforeDisk.bytes} -> ${afterDisk.bytes})`
 				);
 				ok(r.status === 200 || r.status === 204, `sanity blob PUT failed: status=${r.status} body=${r.raw}`);
 				ok(
-					after.files > before.files,
+					afterDisk.files > beforeDisk.files,
 					`SANITY FAILED: a completed ${BLOB_PAYLOAD_LEN}-byte blob write created no file under ${blobDir}`
 				);
 			}
