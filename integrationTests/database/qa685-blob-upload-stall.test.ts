@@ -9,6 +9,11 @@
  * evidence that a stall was survived — it is a guard against a future streaming-decode or
  * synchronous-body-read change that would make one possible.
  *
+ * The two HTTP servers differ on whether a stalled body survives the measurement window: the uWS
+ * server reaps it after roughly ten seconds, the Node one holds it open. Only the pre-burst check
+ * demands the socket still be in flight; after the burst a reap is accepted and logged, because it
+ * is the safer of the two behaviours and not the property under test.
+ *
  * https://github.com/HarperFast/harper/issues/1862
  */
 import { suite, test, before, after } from 'node:test';
@@ -51,8 +56,11 @@ interface StalledUpload {
 	declaredBytes: number;
 	sentBytes: number;
 	responseBytes: number;
+	responseHead: string;
 	closed: boolean;
 	errored: Error | null;
+	startedAt: number;
+	endedAt: number | null;
 }
 
 function startStalledUpload(
@@ -72,17 +80,27 @@ function startStalledUpload(
 			declaredBytes: fullBody.length,
 			sentBytes: sentLen,
 			responseBytes: 0,
+			responseHead: '',
 			closed: false,
 			errored: null,
+			startedAt: Date.now(),
+			endedAt: null,
+		};
+		const markEnded = () => {
+			if (state.endedAt === null) state.endedAt = Date.now();
 		};
 		socket.on('data', (d) => {
 			state.responseBytes += d.length;
+			if (state.responseHead.length < 256) state.responseHead += d.toString('latin1').slice(0, 256);
+			markEnded();
 		});
 		socket.on('close', () => {
 			state.closed = true;
+			markEnded();
 		});
 		socket.on('error', (e) => {
 			state.errored = e;
+			markEnded();
 			if (!connected) rejectUpload(e);
 		});
 		socket.connect(port, host, () => {
@@ -329,32 +347,69 @@ suite(
 			}));
 		}
 
-		async function assertUploadsPending(
+		function isPending(upload: StalledUpload) {
+			return (
+				upload.declaredBytes > upload.sentBytes &&
+				upload.responseBytes === 0 &&
+				!upload.closed &&
+				!upload.errored &&
+				upload.endedAt === null
+			);
+		}
+
+		function reapSummary(uploads: StalledUpload[]) {
+			return uploads
+				.filter((upload) => !isPending(upload))
+				.map(
+					(upload) =>
+						`${upload.key} after ${upload.endedAt === null ? '?' : upload.endedAt - upload.startedAt}ms` +
+						` (${upload.responseHead.split('\r\n')[0] || 'no response'})`
+				)
+				.join('; ');
+		}
+
+		/**
+		 * The oracles that must hold whenever a partial body is outstanding: the key stays an exact
+		 * 404, no blob file appears, and no partial upload is ever answered with a 2xx. `requirePending`
+		 * additionally demands every socket still be in flight — true for the pre-burst check, because a
+		 * measurement window that starts with nothing stalled is measuring nothing. It is false after the
+		 * burst: whether the server reaps a stalled body mid-window is server-implementation detail (the
+		 * uWS HTTP server does, the Node one does not), and reaping is the safer behaviour of the two.
+		 */
+		async function assertStalledUploadsInert(
 			uploads: StalledUpload[],
 			blobBaseline: { files: number; bytes: number },
-			label: string
+			label: string,
+			requirePending: boolean
 		) {
 			const statuses = await Promise.all(
 				uploads.map(async (upload) => (await client.reqRest(`/MediaAsset/${upload.key}`).timeout(3_000)).status)
 			);
 			const currentDisk = await diskUsage(blobDir);
-			const socketsPending = uploads.every(
-				(upload) =>
-					upload.declaredBytes > upload.sentBytes && upload.responseBytes === 0 && !upload.closed && !upload.errored
-			);
+			const pendingCount = uploads.filter(isPending).length;
+			const reaped = reapSummary(uploads);
 			log(
-				`${label}: statuses=${statuses.join(',')} socketsPending=${socketsPending} ` +
-					`blobFiles=${blobBaseline.files}->${currentDisk.files}`
+				`${label}: statuses=${statuses.join(',')} pending=${pendingCount}/${uploads.length} ` +
+					`blobFiles=${blobBaseline.files}->${currentDisk.files}${reaped ? ` reaped=[${reaped}]` : ''}`
 			);
 			ok(
 				statuses.every((status) => status === 404),
 				`${label}: incomplete upload did not remain an exact 404`
 			);
-			ok(socketsPending, `${label}: an incomplete upload responded, closed, or errored during measurement`);
+			const accepted = uploads.filter((upload) => /^HTTP\/1\.[01] 2\d\d/.test(upload.responseHead));
+			ok(
+				accepted.length === 0,
+				`${label}: a partial body was answered with success: ${accepted.map((upload) => `${upload.key} -> ${upload.responseHead.split('\r\n')[0]}`).join(', ')}`
+			);
 			ok(
 				currentDisk.files === blobBaseline.files,
 				`${label}: incomplete uploads created ${currentDisk.files - blobBaseline.files} blob file(s)`
 			);
+			if (requirePending)
+				ok(
+					pendingCount === uploads.length,
+					`${label}: an incomplete upload responded, closed, or errored before the measurement window opened`
+				);
 		}
 
 		before(async () => {
@@ -437,12 +492,12 @@ suite(
 			log(`single stall started: declared=${fullBody.length}B sent=${SENT_LEN}B`);
 
 			await sleep(1_000);
-			await assertUploadsPending([upload], blobBaseline, 'single stall precondition');
+			await assertStalledUploadsInert([upload], blobBaseline, 'single stall precondition', true);
 
 			const duringStats = await runControlBurst(DURING_SINGLE_MS, 'during-single');
 			log(`during single stall (${DURING_SINGLE_MS}ms): ${statsSummary(duringStats)}`);
 			assertControlAvailability(duringStats, 'single stall');
-			await assertUploadsPending([upload], blobBaseline, 'single stall after control burst');
+			await assertStalledUploadsInert([upload], blobBaseline, 'single stall after control burst', false);
 			duringSingleStats = duringStats;
 			blobBaselineForSingle = blobBaseline;
 
@@ -479,12 +534,12 @@ suite(
 			);
 
 			await sleep(1_000);
-			await assertUploadsPending(uploads, blobBaseline, 'concurrent-stall precondition');
+			await assertStalledUploadsInert(uploads, blobBaseline, 'concurrent-stall precondition', true);
 
 			const duringQuadStats = await runControlBurst(DURING_QUAD_MS, 'during-quad');
 			log(`during 4x stall (${DURING_QUAD_MS}ms): ${statsSummary(duringQuadStats)}`);
 			assertControlAvailability(duringQuadStats, 'four concurrent stalls');
-			await assertUploadsPending(uploads, blobBaseline, 'concurrent stalls after control burst');
+			await assertStalledUploadsInert(uploads, blobBaseline, 'concurrent stalls after control burst', false);
 
 			for (const upload of uploads) upload.socket.destroy();
 
