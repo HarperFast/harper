@@ -13,6 +13,8 @@ describe('Table.getRecordCount', () => {
 	// Comfortably above MIN_ESTIMATOR_SAMPLE (1000) and more than twice it, so the halfway test can
 	// fire and drop the scan into the sampling path.
 	const LIVE_ROWS = 3000;
+	// mirrors MIN_ESTIMATOR_SAMPLE in resources/Table.ts
+	const MIN_ESTIMATOR_SAMPLE = 1000;
 
 	let RecordCountTable;
 	let EstimatorTable;
@@ -203,6 +205,43 @@ describe('Table.getRecordCount', () => {
 				`${name}: range [${lower}, ${upper}] must contain the ${LIVE_ROWS} live records`
 			);
 		}
+	});
+
+	it('does not collapse the range when both sampled ends are deletion entries', async function () {
+		this.timeout(120000);
+		// Deleted records stay in the range as null-valued entries, so a table trimmed at both ends -- an
+		// ordinary shape for a time-keyed table with old rows removed -- can present the sampler with two
+		// all-deleted samples and a live middle. The sampled rate is then 0, and an upper end derived from
+		// that rate collapses to near zero while thousands of live rows sit between the samples.
+		const Trimmed = table({
+			table: 'RecordCountTrimmedEnds',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		const TOTAL = 5000;
+		const LIVE = 2000;
+		let last;
+		for (let i = 0; i < TOTAL; i++) last = Trimmed.put({ id: rowId(i), name: 'name-' + i });
+		await last;
+		for (let i = 0; i < 1500; i++) last = Trimmed.delete(rowId(i));
+		for (let i = 3500; i < TOTAL; i++) last = Trimmed.delete(rowId(i));
+		await last;
+		Trimmed.primaryStore.flushSync?.();
+
+		let nullValued = 0;
+		for (const { value } of Trimmed.primaryStore.getRange({ start: true, lazy: true, snapshot: false })) {
+			if (value == null) nullValued++;
+		}
+		if (nullValued < MIN_ESTIMATOR_SAMPLE) {
+			return this.skip(); // the engine reclaimed the deletion entries, so the sampler never sees them
+		}
+
+		const result = await Trimmed.getRecordCount({ timeLimit: -1 });
+		const [lower, upper] = result.estimatedRange ?? [result.recordCount, result.recordCount];
+		assert.ok(
+			lower <= LIVE && LIVE <= upper,
+			`range [${lower}, ${upper}] must contain the ${LIVE} live records between the deleted ends`
+		);
 	});
 
 	it('stops scanning when the base keeps saying the scan is past halfway', async function () {

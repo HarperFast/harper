@@ -5956,7 +5956,11 @@ export function makeTable(options) {
 				// Wilson score interval or Agresti-Coull interval (I think the latter is a little easier to calculate/implement).
 				const rateSd = Math.sqrt(variance);
 				const lowerCiLimit = Math.max((recordRate - 1.96 * rateSd) * baseMin, recordCount + firstRecordCount);
-				const upperCiLimit = Math.min((recordRate + 1.96 * rateSd) * baseMax, baseMax);
+				// Every unsampled entry could be live, and the sampled rate is evidence about the ends only.
+				// Narrowing this below `baseMax` would have narrowed it exactly when the ends are least
+				// representative of the middle: sampled ends that are entirely deletion entries give a rate
+				// of 0, which collapses a statistical upper end to ~0 while live rows sit in between.
+				const upperCiLimit = baseMax;
 				const spread = Math.max((upperCiLimit - lowerCiLimit) / 2, 1);
 				let significantUnit = Math.pow(10, Math.round(Math.log10(spread)));
 				if (significantUnit > estimatedRecordCount) significantUnit = significantUnit / 10;
