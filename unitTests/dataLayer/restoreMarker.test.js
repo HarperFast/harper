@@ -317,6 +317,19 @@ describe('restoreMarker', function () {
 			completeDrop(resumed);
 		});
 
+		it('beginRestore refuses a crashed drop rather than discarding its target manifest', function () {
+			const droppedRoot = join(tempDir, 'old-blobs', 'somedb');
+			abandonDrop(beginDrop(dbPath, { database: dbPath, blobRoots: [droppedRoot] }));
+			const marker = readFileSync(restoringMarkerPath(dbPath), 'utf8');
+
+			assert.throws(
+				() => beginRestore(dbPath),
+				(error) => error.statusCode === 409 && error.lifecycleConflict === 'drop'
+			);
+			assert.equal(readFileSync(restoringMarkerPath(dbPath), 'utf8'), marker);
+			assert.equal(checkRestoreState(dbPath), 'incomplete', 'the refusal must release the lifecycle lock');
+		});
+
 		it('supersedes a marker that names no database, rather than reading it as a restore', function () {
 			// a marker truncated by `beginLifecycle`'s open whose write then failed (ENOSPC) carries no
 			// name; `markerKindFromContent` would call it an untyped restore and wedge every later drop

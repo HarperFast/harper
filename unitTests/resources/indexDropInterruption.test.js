@@ -4,7 +4,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { indexingWasInterrupted, table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 describe('index backfill interrupted by table drop', function () {
@@ -74,5 +74,22 @@ describe('index backfill interrupted by table drop', function () {
 		const completed = Rebuilding.dbisDB.getSync(descriptorKey);
 		assert.strictEqual(completed.concurrentMetadata, 'preserved');
 		assert.strictEqual(completed.indexingBuildId, undefined);
+	});
+
+	it('does not classify a live primary-descriptor catalog as a dropped table', function () {
+		const descriptors = new Map([['IndexLegacyPrimaryDescriptor/id', { primary: true }]]);
+		const open = { status: 'open' };
+		const Table = {
+			tableName: 'IndexLegacyPrimaryDescriptor',
+			primaryKey: 'id',
+			primaryStore: { status: 'open', rootStore: open },
+			dbisDB: { status: 'open', getSync: (key) => descriptors.get(key) },
+		};
+
+		assert.equal(indexingWasInterrupted(Table), false);
+		descriptors.set('IndexLegacyPrimaryDescriptor/', { dropping: true });
+		assert.equal(indexingWasInterrupted(Table), true);
+		descriptors.clear();
+		assert.equal(indexingWasInterrupted(Table), true);
 	});
 });

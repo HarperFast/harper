@@ -345,6 +345,14 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind, targets?: DropTarge
 			error.lifecycleConflict = 'restore';
 			throw error;
 		}
+		if (kind === 'restore' && existing === 'drop') {
+			const error: any = new Error(
+				`Database at ${dbPath} has an incomplete drop; let drop recovery complete before restoring it`
+			);
+			error.statusCode = 409;
+			error.lifecycleConflict = 'drop';
+			throw error;
+		}
 		let preserveExistingMarker = false;
 		if (kind === 'drop' && existing === 'drop') {
 			try {

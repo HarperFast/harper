@@ -3515,11 +3515,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (Table) discard('callbacks', () => Table.cleanup());
 		// an LMDB store is a per-environment handle slot shared with every thread and still inside this
 		// create's write transaction; only RocksDB column-family handles hold native state to release
-		if (rootStore instanceof RocksDatabase) {
-			for (const indexName in Table?.indices ?? {})
-				discard(`index ${indexName}`, () => Table.indices[indexName].close());
+		if (rootStore instanceof RocksDatabase && !Table && unpublishedPrimaryStore)
 			discard('primary store', () => unpublishedPrimaryStore.close());
-		}
 	}
 	// Acquire an exclusive lock for attribute updates
 	function exclusiveLock() {
@@ -3670,22 +3667,26 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 		}
 	}
 }
+export function indexingWasInterrupted(Table): boolean {
+	const rootStore = Table.primaryStore.rootStore;
+	if (rootStore.status === 'closed' || Table.primaryStore.status === 'closed' || Table.dbisDB.status === 'closed') {
+		return true;
+	}
+	try {
+		const bareDescriptor = Table.dbisDB.getSync(Table.tableName + '/');
+		const primaryDescriptor = Table.primaryKey
+			? Table.dbisDB.getSync(Table.tableName + '/' + Table.primaryKey)
+			: undefined;
+		return bareDescriptor?.dropping || primaryDescriptor?.dropping || (!bareDescriptor && !primaryDescriptor);
+	} catch {
+		return false;
+	}
+}
 async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
 	let checkpointing;
 	let hadIndexingErrors = false;
 	const attributeErrorReported = {};
 	const rootStore = Table.primaryStore.rootStore;
-	const indexingWasInterrupted = () => {
-		if (rootStore.status === 'closed' || Table.primaryStore.status === 'closed' || Table.dbisDB.status === 'closed') {
-			return true;
-		}
-		try {
-			const tableDescriptor = Table.dbisDB.getSync(Table.tableName + '/');
-			return !tableDescriptor || tableDescriptor.dropping;
-		} catch {
-			return false;
-		}
-	};
 	const persistOwnedAttributes = (phase, update) => {
 		const persist = () => {
 			let persisted = 0;
@@ -3709,7 +3710,8 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		hadIndexingErrors = true;
 		if (attributeErrorReported[property]) return;
 		attributeErrorReported[property] = true;
-		if (indexingWasInterrupted()) logger.debug(`Indexing attribute ${property} interrupted by table removal`, error);
+		if (indexingWasInterrupted(Table))
+			logger.debug(`Indexing attribute ${property} interrupted by table removal`, error);
 		else logger.error(`Error indexing attribute ${property}`, error);
 	};
 	const putRejectionHandlers = attributes.map((attribute) => (error) => onIndexPutRejected(attribute.name, error));
@@ -3844,7 +3846,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 								// a benign interruption (the next generation re-runs the backfill), so don't log
 								// it as an error — the outer catch returns quietly once the iterator also throws.
 								attributeErrorReported[property] = true;
-								if (indexingWasInterrupted())
+								if (indexingWasInterrupted(Table))
 									logger.debug(`Indexing attribute ${property} interrupted by table removal`, error);
 								else logger.error(`Error indexing attribute ${property}`, error);
 							}
@@ -3940,7 +3942,7 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 		// the crash-recovery trigger (indexingPID / restartNumber mismatch), and persisting
 		// indexingFailed here would fail anyway against the closed store. Treat it as a benign
 		// interruption instead of logging a misleading error and a "failed to persist" warning.
-		if (indexingWasInterrupted()) {
+		if (indexingWasInterrupted(Table)) {
 			logger.debug(
 				`Indexing of ${Table.tableName} interrupted by table removal or store shutdown; recovery resumes on the next worker generation`,
 				error
