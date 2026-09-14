@@ -142,6 +142,21 @@ describe('dropTable generation-distinct stores', function () {
 		);
 	});
 
+	it('keeps the retirement journal complete under a redundant concurrent drop', async function () {
+		if (IS_LMDB) return this.skip();
+		const Twice = defineTable('GenDoubleDrop');
+		await Twice.put({ id: 1, str: 'x' });
+		const { generation } = dbisDb().getSync('GenDoubleDrop/');
+		const family = Twice.primaryStore.name;
+		await Promise.all([Twice.dropTable(), Twice.dropTable()]);
+		assert.deepStrictEqual(catalogRows('GenDoubleDrop'), []);
+		const journal = dbisDb().getSync(`${GENERATION_ROW_PREFIX}${generation}`);
+		if (journal) assert.ok(journal.stores.includes(family), 'the second drop must not narrow the store list');
+		resetDatabases();
+		assert.ok(!rootStore().columns.includes(family));
+		assert.deepStrictEqual(generationRows(), []);
+	});
+
 	it('refuses new operations through a retained class after the drop', async function () {
 		const Retained = defineTable('GenRetained');
 		await Retained.put({ id: 1, str: 'x' });

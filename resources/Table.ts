@@ -592,7 +592,6 @@ export function makeTable(options) {
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;
 	let lastEvictionCompletion: Promise<void> = Promise.resolve();
-	// gates new source-fill cache writes once a drop has started (getFromSource resolves before its write lands)
 	let droppingTable = false;
 	let createdTimeProperty: Attribute | undefined,
 		updatedTimeProperty: Attribute | undefined,
@@ -1809,7 +1808,6 @@ export function makeTable(options) {
 			delete databases[databaseName][tableName];
 			TableResource.cleanup();
 			if (databaseName === databasePath && rootStore instanceof RocksDatabase) {
-				// no catalog row: a concurrent drop already completed and retired the stores
 				if (dropGeneration) await retireRocksStores(storeGeneration, dropGeneration);
 				return;
 			}
@@ -1859,19 +1857,15 @@ export function makeTable(options) {
 				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName)
 			);
 
-			/** Every worker unloads before a family is retired; the binding drops it behind admitted commits (harper#1381). */
 			async function retireRocksStores(generation: string | undefined, dropGeneration: string) {
 				const releaseDropMark = markDropInProgress(dropGeneration);
 				try {
 					const message: any = new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName);
 					message.dropGeneration = dropGeneration;
 					await signalling.signalSchemaChange(message);
-					// Journal, retire, then remove the catalog rows: a drop failure leaves the tombstoned rows
-					// for the reconcile, and the rows go only if this drop's tombstone is still the live primary
-					// row (a concurrent same-name create may have written fresh ones).
+					// the catalog rows go only if this drop's tombstone is still the live primary row (a
+					// concurrent same-name create may have written fresh ones)
 					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
-						// from the catalog, not this worker's attribute list, which can trail an index another
-						// worker added
 						const stores = storeNamesFor(dbisDb, tableName, generation);
 						recordRetiredGeneration(dbisDb, tableName, dropGeneration, stores);
 						const columns = new Set<string>((rootStore as any).columns);
@@ -1899,8 +1893,7 @@ export function makeTable(options) {
 						return true;
 					});
 					if (removed) await dbisDb.committed;
-					// the retired generation stays readable through this handle, so a write that raced the
-					// drop still gets its blobs released
+					// the retired generation stays readable through this handle
 					await settlePhysicalDrops(rootStore, `${databaseName}.${tableName}`);
 					try {
 						for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {

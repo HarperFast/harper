@@ -493,11 +493,9 @@ function isAbandonedIndexBuild(descriptor: any, currentRestartGeneration: number
 // worker thread.
 const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
 // RocksDB store names carry the generation minted at create, so a same-name recreate never binds to a
-// family a dropped generation still occupies on disk; LMDB keeps catalog-key names (its drop is awaited).
+// family a dropped generation still occupies on disk; LMDB keeps catalog-key names.
 const GENERATION_ROW_PREFIX = '/generation/';
 const GENERATION_ROW_END = '/generation0';
-// `stores` names the retired families explicitly (a legacy table's are its catalog keys); a `creating`
-// row predates its families, which are found by the `@<generation>` suffix instead.
 type GenerationRow = { table: string; generation: string; phase: 'creating' | 'retired'; stores?: string[] };
 export function storeNameFor(catalogKey: string, generation: string | undefined): string {
 	return generation ? `${catalogKey}@${generation}` : catalogKey;
@@ -519,11 +517,17 @@ export function markDropInProgress(dropGeneration: string): () => void {
 		else dropsInProgress.delete(dropGeneration);
 	};
 }
-/** Durable before any family is retired: the sweep reclaims by this row whatever state the drop died in. */
+/**
+ * Written before any family is retired. A row already present keeps every name it has: a redundant
+ * concurrent drop reaches here after the first removed the catalog rows and must not narrow the list.
+ */
 export function recordRetiredGeneration(attributesDbi, tableName: string, generation: string, stores: string[]): void {
-	attributesDbi.putSync(generationRowKey(generation), { table: tableName, generation, phase: 'retired', stores });
+	const key = generationRowKey(generation);
+	const existing: GenerationRow | undefined = attributesDbi.getSync(key);
+	const merged = [...new Set([...(existing?.stores ?? []), ...stores])];
+	if (existing?.phase === 'retired' && merged.length === existing.stores?.length) return;
+	attributesDbi.putSync(key, { table: tableName, generation, phase: 'retired', stores: merged });
 }
-/** The physical names of a table's stores, from its catalog rows (the tombstoned rows of a table being dropped). */
 export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
 	const names: string[] = [];
 	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
@@ -2725,8 +2729,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
-				// durable before the first family exists, so a create that dies here leaves nothing a
-				// later load cannot name and reclaim (reclaimGenerations)
 				generation = randomUUID();
 				attributesDbi.putSync(generationRowKey(generation), { table: tableName, generation, phase: 'creating' });
 				primaryStore = openRocksDatabase(rootStore.path, {
@@ -3717,10 +3719,12 @@ function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseNam
 					attributesDbi.remove(key);
 					continue;
 				}
+				// by explicit name and by suffix: a family opened for an index whose catalog row never
+				// committed carries the generation without being named
 				const suffix = '@' + value.generation;
-				const retired = value.stores ? new Set(value.stores) : undefined;
+				const retired = new Set(value.stores ?? []);
 				for (const columnName of (rootStore as any).columns) {
-					if (retired ? retired.has(columnName) : columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
+					if (retired.has(columnName) || columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
 				}
 				if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) continue;
 				attributesDbi.remove(key);
@@ -3758,8 +3762,8 @@ function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string,
 		// generation next to the retired one and must survive this sweep.
 		const primaryRow = attributesDbi.getSync(tableName + '/');
 		const stores = storeNamesFor(attributesDbi, tableName, primaryRow?.generation);
-		if (primaryRow?.dropGeneration)
-			recordRetiredGeneration(attributesDbi, tableName, primaryRow.dropGeneration, stores);
+		// a tombstone from before dropGeneration existed gets an obligation of its own
+		recordRetiredGeneration(attributesDbi, tableName, primaryRow?.dropGeneration ?? randomUUID(), stores);
 		const columns = new Set<string>((rootStore as any).columns);
 		for (const columnName of stores) {
 			if (columns.has(columnName)) dropColumnFamily(rootStore, columnName);

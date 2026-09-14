@@ -90,16 +90,20 @@ async function syncSchemaMetadata(msg) {
 			return;
 		}
 		if (msg.operation === hdbTerms.OPERATIONS_ENUM.DROP_TABLE && msg.table) {
-			// the ack is the dropper's barrier: derived-index delivery must have settled, not merely been
-			// scheduled, and the rescan unloads the tombstoned table without racing the dropper
-			const dropped = databases[msg.schema]?.[msg.table];
-			if (dropped) {
-				const derivedIndexRuntime = dropped.derivedIndexRuntime;
-				dropped.derivedIndexRuntime = undefined;
-				await derivedIndexRuntime?.close();
-			}
+			// the ack is the dropper's barrier: the unload must happen whatever the derived-index
+			// shutdown does, and no rescan during that await may complete the drop
 			const releaseDropMark = msg.dropGeneration ? markDropInProgress(msg.dropGeneration) : undefined;
 			try {
+				const dropped = databases[msg.schema]?.[msg.table];
+				if (dropped) {
+					const derivedIndexRuntime = dropped.derivedIndexRuntime;
+					dropped.derivedIndexRuntime = undefined;
+					try {
+						await derivedIndexRuntime?.close();
+					} catch (error) {
+						hdbLogger.warn(`Derived index shutdown failed for dropped table ${msg.schema}.${msg.table}`, error);
+					}
+				}
 				resetDatabases();
 			} finally {
 				releaseDropMark?.();
