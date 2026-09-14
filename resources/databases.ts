@@ -2238,7 +2238,11 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 	// still counts against the drop or restore that is waiting for every thread to let go of it.
 	const cachedRoot = rocksdbDatabaseEnvs.get(resolveDatabasePath(databaseName));
 	if (cachedRoot) rootStores.add(cachedRoot);
-	// Retire audit cleanup before closing any table store.
+	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
+	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
+	// plus the fact that a RocksDB pass is one synchronous purgeLogs() call with nothing suspended
+	// mid-removal, and the one caller whose pass is asynchronous — the LMDB drop — awaits the drain
+	// itself before calling in.
 	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
 	if (!dbTables && rootStores.size === 0) return false;
 	for (const tableName in dbTables ?? {}) {
@@ -2820,8 +2824,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				dbiInit.randomAccessStructure = primaryKeyAttribute.randomAccessFields;
 			const dbiName = tableName + '/';
 
-			// reuse the catalog store this thread already holds: a fresh handle here would replace it
-			// without closing it, and that leaked handle alone keeps the database open process-wide
+			// a fresh handle here would replace the catalog store this thread already holds without
+			// closing it, and that leaked handle alone keeps the database open process-wide
 			const hadCatalogStore = !!(rootStore as any).dbisDb;
 			if (rootStore instanceof RocksDatabase) {
 				attributesDbi = (rootStore as any).dbisDb ??= openRocksDatabase(rootStore.path, {
