@@ -212,7 +212,9 @@ export function openAuditStore(rootStore) {
 	let cleanupPriority = 0;
 	auditStore.auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
 	let cleanupStopped = false;
-	let latestStopBarrier: Promise<void> | undefined;
+	let stopGeneration = 0;
+	let latestStopGeneration = 0;
+	const stopBarrierGenerations = new WeakMap<Promise<void>, number>();
 	// a last-removed marker whose write failed, retried on later passes: dropping it would leave
 	// getLastRemoved() reporting a boundary the entries behind it have already been deleted past
 	let pendingLastRemoved: number | undefined;
@@ -406,11 +408,19 @@ export function openAuditStore(rootStore) {
 		pendingCleanup = null;
 		pendingCleanupResolve?.();
 		pendingCleanupResolve = null;
-		return (latestStopBarrier = lastCleanupResolution ?? Promise.resolve());
+		// Every stop is a distinct generation even when several stops drain the same in-flight pass.
+		// Returning lastCleanupResolution directly would give those callers one shared identity, so an
+		// older failed close could resume the loop after a newer close had stopped it again.
+		const stopBarrier = (lastCleanupResolution ?? Promise.resolve()).then(() => undefined);
+		latestStopGeneration = ++stopGeneration;
+		stopBarrierGenerations.set(stopBarrier, latestStopGeneration);
+		return stopBarrier;
 	};
 	auditStore.resumeAuditCleanup = async function (stopBarrier: Promise<void>): Promise<boolean> {
+		const generation = stopBarrierGenerations.get(stopBarrier);
 		await stopBarrier;
-		if (latestStopBarrier !== stopBarrier || !cleanupStopped || storeClosing()) return false;
+		if (generation === undefined || generation !== latestStopGeneration || !cleanupStopped || storeClosing())
+			return false;
 		cleanupStopped = false;
 		if (ownsStoreMaintenance(rootStore.path)) scheduleAuditCleanup();
 		return true;
