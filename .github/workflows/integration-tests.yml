@@ -81,11 +81,10 @@ jobs:
           check-latest: ${{ matrix.node-version == '26' }}
 
       - name: Install dependencies
-        timeout-minutes: 8
+        timeout-minutes: 4
         env:
           NPM_CONFIG_FETCH_RETRIES: '5'
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '30000'
-          NPM_CONFIG_FETCH_TIMEOUT: '60000'
         run: npm install --ignore-scripts
 
       - name: Build
@@ -133,14 +132,26 @@ jobs:
           name: harper-build-artifacts-node-${{ matrix.node-version }}
 
       - name: Relink bin scripts
+        timeout-minutes: 3
+        env:
+          NPM_CONFIG_FETCH_RETRIES: '5'
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '30000'
         run: npm install --ignore-scripts
 
       - name: Install harperdb@4 for legacy tests
+        timeout-minutes: 3
+        env:
+          NPM_CONFIG_FETCH_RETRIES: '5'
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '30000'
         run: |
           mkdir -p /tmp/harperdb-legacy
           npm install --ignore-scripts --prefix /tmp/harperdb-legacy harperdb@4
 
       - name: Install harper@5.1.22 for cross-version upgrade tests
+        timeout-minutes: 3
+        env:
+          NPM_CONFIG_FETCH_RETRIES: '5'
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '30000'
         run: |
           mkdir -p /tmp/harper-legacy-51
           npm install --ignore-scripts --prefix /tmp/harper-legacy-51 harper@5.1.22
@@ -183,11 +194,10 @@ jobs:
           package-manager-cache: false
 
       - name: Install dependencies
-        timeout-minutes: 8
+        timeout-minutes: 4
         env:
           NPM_CONFIG_FETCH_RETRIES: '5'
           NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '30000'
-          NPM_CONFIG_FETCH_TIMEOUT: '60000'
         run: npm install --ignore-scripts
 
       - name: Build
@@ -231,9 +241,17 @@ jobs:
           name: harper-build-artifacts-windows
 
       - name: Relink bin scripts
+        timeout-minutes: 3
+        env:
+          NPM_CONFIG_FETCH_RETRIES: '5'
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '30000'
         run: npm install --ignore-scripts
 
       - name: Install harperdb@4 for legacy tests
+        timeout-minutes: 3
+        env:
+          NPM_CONFIG_FETCH_RETRIES: '5'
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '30000'
         run: npm install --ignore-scripts --prefix "${{ runner.temp }}/harperdb-legacy" harperdb@4
 
       - name: Run Integration Test Shard ${{ matrix.shard }}
@@ -284,6 +302,10 @@ jobs:
           name: harper-build-artifacts-node-24
 
       - name: Relink bin scripts
+        timeout-minutes: 3
+        env:
+          NPM_CONFIG_FETCH_RETRIES: '5'
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '30000'
         run: npm install --ignore-scripts
 
       - name: Run Integration Test Shard ${{ matrix.shard }}
@@ -330,14 +352,26 @@ jobs:
           name: harper-build-artifacts-node-24
 
       - name: Relink bin scripts
+        timeout-minutes: 3
+        env:
+          NPM_CONFIG_FETCH_RETRIES: '5'
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '30000'
         run: npm install --ignore-scripts
 
       - name: Install harperdb@4 for legacy tests
+        timeout-minutes: 3
+        env:
+          NPM_CONFIG_FETCH_RETRIES: '5'
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '30000'
         run: |
           mkdir -p /tmp/harperdb-legacy
           npm install --ignore-scripts --prefix /tmp/harperdb-legacy harperdb@4
 
       - name: Install harper@5.1.22 for cross-version upgrade tests
+        timeout-minutes: 3
+        env:
+          NPM_CONFIG_FETCH_RETRIES: '5'
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: '30000'
         run: |
           mkdir -p /tmp/harper-legacy-51
           npm install --ignore-scripts --prefix /tmp/harper-legacy-51 harper@5.1.22
