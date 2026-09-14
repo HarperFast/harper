@@ -53,8 +53,6 @@ const GROUPS = [
 	'unitTests/validation/**/*test.*js',
 	// Individually verified files from directories not yet covered wholesale.
 	'unitTests/resources/blob.test.js',
-	'unitTests/resources/fullTextDerivedIndexBackend.test.js',
-	'unitTests/resources/nativeFullTextDerivedIndexLifecycle.test.js',
 ];
 
 const EXCLUDED = [
