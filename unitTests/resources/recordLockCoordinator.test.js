@@ -815,7 +815,12 @@ describe('record lock delegations', () => {
 				cluster.advance('alpha', DELEGATION_LEASE_MS + 1);
 				return reply;
 			};
-			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 200), /not released in time/);
+			// 503, not 423: the home granted the key to US and the reply merely arrived too late to use, so
+			// nobody ever held it. 423 would send the caller to retry a contention that did not happen.
+			await assert.rejects(
+				() => alpha.coordinator.acquire(key, LEASE, 200),
+				(error) => error.statusCode === 503 && /arrived too late to use/.test(error.message)
+			);
 			assert.strictEqual(alpha.coordinator.stats.delegations, 0, 'a dead reply must not install a delegation');
 			// And the home must not be left holding a grant nobody will use: every retry renews it in
 			// place, so without the handback the key answers `contended` to every other node until the
@@ -891,6 +896,37 @@ describe('record lock delegations', () => {
 			await assert.rejects(
 				() => cluster2.node('alpha').coordinator.acquire(key2, LEASE, WAIT),
 				(error) => error.statusCode === 503 && /not named in the record lock home map/.test(error.message)
+			);
+		});
+
+		it('reports 423 only for real contention, and 503 for a ring the map never agrees on', async () => {
+			// The third case in the same round-9 finding as the quarantine and generation denials, and the
+			// reason this is a class fix rather than a fourth branch: `not-home` IS worth retrying, because
+			// a stale map on our side converges. What is wrong is the terminal answer — two maps under one
+			// generation number never converge, and 423 tells the caller a key nobody holds is held.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			// The home agrees on the generation but derives a different ring, so it answers `not-home`
+			// forever rather than for a pass or two.
+			cluster.node('beta').coordinator.transport.homeMap = () => ({
+				generation: 1,
+				homes: ['alpha', 'gamma'],
+				homeIncarnation: 1,
+			});
+			await assert.rejects(
+				() => cluster.node('alpha').coordinator.acquire(key, LEASE, 200),
+				(error) => error.statusCode === 503 && /home answered not-home/.test(error.message)
+			);
+
+			// And genuine contention still ends as a 423: the key is held by another node's delegation.
+			const contended = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key2 = contended.keyHomedOn('beta');
+			const gamma = await contended.node('gamma').coordinator.acquire(key2, LEASE, WAIT);
+			assert.ok(gamma, 'gamma did not take the key');
+			contended.node('beta').coordinator.transport.recallDelegation = () => new Promise(() => {});
+			await assert.rejects(
+				() => contended.node('alpha').coordinator.acquire(key2, LEASE, 200),
+				(error) => error.statusCode === 423
 			);
 		});
 

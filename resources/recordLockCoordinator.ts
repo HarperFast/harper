@@ -777,12 +777,22 @@ export class LockCoordinator {
 					`This node is not named in the record lock home map for ${this.database}, so it can neither home a key nor take a cluster lock on one`
 				);
 			if (reply.reason === 'not-home')
-				// The home disagrees about the ring. Re-reading the map on the next pass is the fix;
-				// if it is genuinely stale on our side we will converge, and if not we run out of wait.
+				// The home disagrees about the ring. Re-reading the map on the next pass is the fix, and it
+				// converges if our copy is the stale one — so unlike the denials above this one is worth
+				// retrying. If it is NOT stale (two maps under one generation number) it never converges,
+				// which the terminal answer below is what handles.
 				warnOnce('record lock home disagreed about the ring', { database: this.database, table: this.table });
 
 			const remaining = deadlineMono - this.#monotonic();
-			if (remaining <= 0) throw new ClientError('Record is locked and was not released in time', 423);
+			if (remaining <= 0) {
+				// 423 says "someone else holds this key", so only a denial that actually means that may end
+				// as one. Every other reason ran out the clock without the key ever being held, and reporting
+				// contention for it sends the caller to retry a condition no timeout can outlast.
+				if (reply.reason === 'contended') throw new ClientError('Record is locked and was not released in time', 423);
+				throw new LockUnavailableError(
+					`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: the key's home answered ${reply.reason ?? (reply.granted ? 'grants that arrived too late to use' : 'nothing usable')}`
+				);
+			}
 			await delay(Math.min(reply.retryAfterMs ?? 25, remaining)).promise;
 			if (this.#closed) {
 				// Same swap, landing in the backoff instead. Carry the remaining wait so the deadline the
