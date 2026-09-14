@@ -1,5 +1,10 @@
 # Full-text derived-index backend
 
+Storage direction updated September 14, 2026:
+[Native Tantivy storage and Harper derived indexes](https://github.com/HarperFast/fulltext/blob/codex/native-storage-design/docs/native-storage-integration.md).
+The structural backend below will use native Tantivy files. The real native lifecycle and publication
+adapter remain to be implemented; existing hosted-storage tests are historical diagnostics.
+
 ## Objective
 
 Implement the package-independent Harper state machine that adapts an asynchronous Fulltext owner
@@ -28,11 +33,9 @@ begins for an owner epoch, no command from that epoch may apply or publish.
   resolves. A later commit can reacquire the same registration without registering it again.
 - `deliver()` is synchronous. Accepted batches remain backend-owned until their cursor becomes
   durable or the backend reports `accepted-work-lost`.
-- `RocksDerivedIndexStorage.write()` uses the existing root transaction and therefore raises the
-  same process-wide `committed` notification as other RocksDB transactions.
-- Fulltext's Harper runtime exposes asynchronous `apply`, `publish`, and `close`; `publish` commits
-  the payload and reloads the owner reader before resolving. Its package is not present in the npm
-  registry as of 2026-09-11.
+- The experimental Fulltext hosted runtime exposes asynchronous `apply`, `publish`, and `close`;
+  publication commits the payload and reloads the owner reader. This behavior must move to the
+  native facade using its existing engine implementation; the hosted storage provider is retired.
 
 ## Required shared-runtime correction
 
@@ -86,8 +89,8 @@ interface FullTextDerivedIndexLifecycle {
 
 `open()` reopens the currently selected physical generation. `replace()` performs the externally
 coordinated generation replacement and returns the new open engine. The production implementation
-will own `RocksDerivedIndexStorage`, physical-generation metadata, and database lifecycle ordering;
-this unit neither opens a column family nor adds a global close hook.
+will own native index paths, physical-generation selection, and database lifecycle ordering. Harper
+uses the same native wrapper factory as standalone callers. This backend does not own byte storage.
 
 The encoder collaborator accepts the Harper mutation input and returns Fulltext's packed batch. The
 backend owns the mapping from `DerivedIndexBatch.records`; it never serializes the batch object.
@@ -181,23 +184,20 @@ prove close, reset stops before replacement. The returned replacement must have 
 cursor; otherwise reset fails closed. The replacement stays open for rebuild delivery under the new
 epoch.
 
-Physical generation naming, metadata, orphan cleanup, and column-family drop remain the lifecycle
+Physical generation naming, metadata, orphan cleanup, and native directory removal remain the lifecycle
 collaborator's responsibility and are implemented with the real package integration. Harper's
 shared runtime remains the only rebuild scanner and replay coordinator.
 
-## RocksDB committed-notification amplification
+## Native publication and unrelated source traffic
 
-The hosted-storage benchmark records total root `committed` events, but the current runtime cannot
-identify which event advanced a source transaction log. Derived Fulltext writes can consequently
-wake every registered runner. This unit adds a real `RocksDerivedIndexStorage` plus fake-engine test
-that measures the behavior; it does not conceal the notification or claim production readiness.
+Native Tantivy publication no longer writes segment bytes through `RocksDerivedIndexStorage` and
+therefore does not create that hosted path's root-commit feedback. Unrelated authoritative writes
+can still wake derived runners and advance cursor-only progress. Native commits and reader reloads
+for those boundaries still need measurement under the existing bounded flush policy.
 
-Before schema activation, the backend-integration benchmark must measure empty drains per
-publication window. If the architecture gate is exceeded, the chosen mitigation is a generic
-source-log commit signal owned by `RocksTransactionLogStore`, not a Fulltext special case: one
-post-commit shared notification per transaction that actually appended source log entries. That
-change requires its own hot-path measurement because it touches every audited commit. A new
-rocksdb-js primitive and per-publication polling are not assumed.
+The existing hosted-storage notification test is experimental evidence, not an activation gate for
+native storage. Add a real native integration measurement before changing Harper's shared source
+notification behavior. Native storage does not justify a new source-log signal or RocksDB primitive.
 
 ## Verification
 
