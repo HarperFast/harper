@@ -1,5 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -126,24 +127,48 @@ describe('Table.getRecordCount', () => {
 		// a within-budget scan returns the exact count directly and must not pay for it. The source is
 		// engine-dependent -- getKeysCount() (a full key scan) on RocksDB, getStats().entryCount on LMDB
 		// (the resources suite runs under both) -- so spy on whichever the store exposes.
+		// `primaryStore` is shared, and the scan yields (`await rest()`) once per entry, so an absolute
+		// call count is not a count of what this call did: the analytics aggregation timer sweeps every
+		// table's getStats() every half aggregate period (resources/analytics/write.ts:686 on RocksDB,
+		// Table.getSize() via storeTableSizeMetrics on LMDB) and lands inside the window at random.
+		// Attribute each invocation to the async context of the call under test instead.
 		const store = RecordCountTable.primaryStore;
+		const underTest = new AsyncLocalStorage();
 		let calls = 0;
-		const origKeys = typeof store.getKeysCount === 'function' ? store.getKeysCount.bind(store) : undefined;
-		const origStats = typeof store.getStats === 'function' ? store.getStats.bind(store) : undefined;
-		if (origKeys) store.getKeysCount = (...args) => (calls++, origKeys(...args));
-		if (origStats) store.getStats = (...args) => (calls++, origStats(...args));
+		let foreignCalls = 0;
+		const restore = [];
+		for (const name of ['getKeysCount', 'getStats']) {
+			if (typeof store[name] !== 'function') continue;
+			const original = store[name];
+			const owned = Object.hasOwn(store, name);
+			store[name] = function (...args) {
+				if (underTest.getStore()) calls++;
+				else foreignCalls++;
+				return original.apply(this, args);
+			};
+			restore.push(() => {
+				if (owned) store[name] = original;
+				else delete store[name];
+			});
+		}
 		try {
-			const completed = await RecordCountTable.getRecordCount({ timeLimit: WITHIN_BUDGET_TIME_LIMIT });
+			// Positive control for the attribution, in the shape of the analytics sweep. This immediate is
+			// queued before the scan's first `await rest()`, so it runs while the scan is suspended.
+			setImmediate(() => store.getStats());
+			const completed = await underTest.run(true, () =>
+				RecordCountTable.getRecordCount({ timeLimit: WITHIN_BUDGET_TIME_LIMIT })
+			);
 			assert.equal(completed.recordCount, 30);
 			assert.equal(completed.estimatedRange, undefined);
+			assert.ok(foreignCalls >= 1, 'the interleaved foreign call must reach the spy, or it proves nothing');
 			assert.equal(calls, 0, 'entry-count source should not be consulted when the scan finishes within budget');
 
 			calls = 0;
-			await RecordCountTable.getRecordCount({ timeLimit: -1 }); // force timeout -> escape to the exact count
+			// force timeout -> escape to the exact count
+			await underTest.run(true, () => RecordCountTable.getRecordCount({ timeLimit: -1 }));
 			assert.ok(calls >= 1, 'entry-count source should be consulted once the scan exceeds the budget');
 		} finally {
-			if (origKeys) store.getKeysCount = origKeys;
-			if (origStats) store.getStats = origStats;
+			for (const undo of restore) undo();
 		}
 	});
 });
