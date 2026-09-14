@@ -2124,7 +2124,11 @@ export async function dropDatabase(databaseName) {
 		assertDropTargetsRemovable(path, blobRoots);
 		for (const tableName in dbTables) databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 		databaseEventsEmitter.emit('dropDatabase', databaseName);
-		closeDatabase(databaseName);
+		// a table with a derived index releases its runtime before its handles, so the registry check
+		// below would otherwise see stores this thread is still on its way to closing
+		const releasing: Promise<unknown>[] = [];
+		closeDatabase(databaseName, releasing);
+		await Promise.all(releasing);
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, ITC_SCHEMA_OPERATIONS.CLOSE_DATABASE, databaseName)
 		);
@@ -2197,7 +2201,7 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 		if (!table?.primaryStore) continue;
 		if (typeof table.cleanup === 'function') {
 			try {
-				table.cleanup();
+				table.cleanup(closing);
 			} catch (error) {
 				logger.warn(`Error releasing table ${tableName} while closing database ${databaseName}:`, error);
 				try {
@@ -2745,6 +2749,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 
 			// reuse the catalog store this thread already holds: a fresh handle here would replace it
 			// without closing it, and that leaked handle alone keeps the database open process-wide
+			const hadCatalogStore = !!(rootStore as any).dbisDb;
 			if (rootStore instanceof RocksDatabase) {
 				attributesDbi = (rootStore as any).dbisDb ??= openRocksDatabase(rootStore.path, {
 					...internalDbiInit,
@@ -2757,7 +2762,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					internalDbiInit as any
 				);
 			}
-			target.adopt(attributesDbi);
+			if (!hadCatalogStore) target.adopt(attributesDbi);
 			markInternalDbiNonVersioned(attributesDbi);
 
 			exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
@@ -2842,6 +2847,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (!attributesDbi) {
 			// same reuse as the create path above: replacing the thread's catalog store handle here leaked
 			// the previous one on every attribute change
+			const hadCatalogStore = !!(rootStore as any).dbisDb;
 			if (rootStore instanceof RocksDatabase) {
 				(rootStore as any).dbisDb ??= openRocksDatabase(rootStore.path, {
 					...internalDbiInit,
@@ -2851,7 +2857,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			} else {
 				(rootStore as any).dbisDb ??= (rootStore as any).openDB(INTERNAL_DBIS_NAME, internalDbiInit as any);
 			}
-			target.adopt((rootStore as any).dbisDb);
+			if (!hadCatalogStore) target.adopt((rootStore as any).dbisDb);
 			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 		}
 		Table.dbisDB = attributesDbi;
@@ -3025,8 +3031,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// keeps a database open long after every table released it — unless the index changed kind,
 				// when the store must be reopened as the other wrapper (the structural change below rebuilds it)
 				let dbi = indices[attribute.name];
-				// only a handle this call opened joins the branch's close list: a reused one was adopted
-				// when it was opened, and a second entry would close the same column family twice
 				let indexStoreIsNewlyOpened = !dbi;
 				// The old handle is closed only once `indices[attribute.name] = dbi` below has actually
 				// run: every other caller of table() for this table (including a concurrent one) reads
@@ -3209,8 +3213,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					}
 					throw error;
 				}
-				// adopted at the publication point, never inside the try: a handle the catch above closes
-				// must not be left on the branch's close list for a second close at teardown
+				// a branch's close list takes only handles this call opened, and only once they are
+				// published: a reused one is already on it, and one the catch above closed must not be
 				if (indexStoreIsNewlyOpened) target.adopt(dbi);
 				indices[attribute.name] = dbi;
 				if (previousIndexToRelease) {

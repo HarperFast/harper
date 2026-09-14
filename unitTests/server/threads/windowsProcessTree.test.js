@@ -177,6 +177,29 @@ describe('selectWindowsProcessTree', () => {
 		);
 	});
 
+	it("does not extend a replacement's bound by the clock skew, which would adopt its earliest children", () => {
+		// the replacement's creation time and its children's come from the same WMI clock, so it bounds
+		// them exactly: a child it spawns 20ms later is inside CLOCK_SKEW_MS but is never ours
+		const replacement = row(4100, 1, SPAWNED_AT + 1_000, 'other.exe');
+		const strangersChild = row(4300, 4100, SPAWNED_AT + 1_020);
+		const ours = row(4200, 4100, SPAWNED_AT + 900);
+		const identity = {
+			rootPid: ROOT,
+			rootKnownAt: SPAWNED_AT,
+			rootExitedAt: EXITED_AT,
+			descendants: new Map([[4100, { created: SPAWNED_AT + 200 }]]),
+		};
+		assert.deepEqual(
+			pids(selectWindowsProcessTree([replacement, strangersChild, ours], identity, SPAWNED_AT + 2_000)),
+			[4200]
+		);
+		// and the same for the root's own frontier
+		const rootIdentity = { rootPid: ROOT, rootKnownAt: SPAWNED_AT };
+		const rootImpostor = row(ROOT, 900, SPAWNED_AT + 1_000, 'WmiPrvSE.exe');
+		const impostorsChild = row(5100, ROOT, SPAWNED_AT + 1_020);
+		assert.deepEqual(selectWindowsProcessTree([rootImpostor, impostorsChild], rootIdentity, SPAWNED_AT + 2_000), []);
+	});
+
 	it("bounds the root's own children by a visibly recycled root PID, on the very scan that first misses it", () => {
 		// this is the scan `confirmWindowsProcessTreeGone` uses to decide whether to stamp rootExitedAt
 		// afterward — rootExitedAt is not yet set, so notAfter cannot fall back to it here

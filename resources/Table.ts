@@ -6362,10 +6362,14 @@ export function makeTable(options) {
 			}
 			return Promise.all(promises);
 		}
-		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
-		static cleanup() {
+		/**
+		 * Release everything makeTable() registered process-wide; the class must not be used afterwards.
+		 * Returns a promise when a derived-index runtime has to be released first; a caller that needs
+		 * the handles actually closed (drop_database's process-wide check) collects it through `closing`.
+		 */
+		static cleanup(closing?: Promise<unknown>[]) {
 			disposed = true;
-			void TableResource.derivedIndexRuntime?.close();
+			const released = TableResource.derivedIndexRuntime?.close();
 			clearTimeout(cleanupTimer);
 			settlePendingCleanup();
 			clearInterval(recordExpirationInterval);
@@ -6373,7 +6377,24 @@ export function makeTable(options) {
 			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
 			// a table that left the catalog (dropped elsewhere, or never finished loading) must not keep
 			// its column-family handles open on this thread; see dropTable
-			TableResource.closeStores();
+			if (!released) {
+				TableResource.closeStores();
+				return;
+			}
+			// the runtime resolves its close only once nothing can still write through these stores, and
+			// rejects when it could not prove that (derivedIndexRuntime.stop()) — a pending HNSW flush
+			// republishing through its index store is exactly what must not find the store closed
+			const closed = released.then(
+				() => TableResource.closeStores(),
+				(error) => {
+					harperLogger.warn?.(
+						`Derived index teardown for ${databaseName}.${tableName} did not settle; leaving its stores open`,
+						error
+					);
+				}
+			);
+			closing?.push(closed);
+			return closed;
 		}
 		/** Release this thread's handles on the table's RocksDB column families; LMDB sub-databases stay open with their environment. */
 		static closeStores() {

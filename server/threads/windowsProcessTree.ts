@@ -185,11 +185,13 @@ export function selectWindowsProcessTree(
 				(rootCreatedAt === undefined || rootCreatedAt === null
 					? identity.rootKnownAt - (identity.rootStartedWithinMs ?? ROOT_SPAWN_ALLOWANCE_MS)
 					: rootCreatedAt) - CLOCK_SKEW_MS,
-			notAfter:
-				Math.min(
-					identity.rootExitedAt ?? now,
-					impostorCreatedAt(identity.rootPid, rootCreatedAt ?? identity.rootKnownAt + CLOCK_SKEW_MS) ?? Infinity
-				) + CLOCK_SKEW_MS,
+			notAfter: Math.min(
+				// this bound is our own clock against WMI's, so it carries the skew allowance
+				(identity.rootExitedAt ?? now) + CLOCK_SKEW_MS,
+				// this one is WMI's clock against itself: the replacement's creation time is exactly when
+				// the PID stopped being ours, so anything it went on to create is a stranger's, not ours
+				(impostorCreatedAt(identity.rootPid, rootCreatedAt ?? identity.rootKnownAt + CLOCK_SKEW_MS) ?? Infinity) - 1
+			),
 		},
 	];
 	// A member an earlier scan found is still one — by PID and creation time — after the parent
@@ -206,7 +208,10 @@ export function selectWindowsProcessTree(
 			frontier.push({
 				pid,
 				notBefore: known.created - CLOCK_SKEW_MS,
-				notAfter: Math.min(known.exitedAt ?? now, impostorCreatedAt(pid, known.created) ?? Infinity) + CLOCK_SKEW_MS,
+				notAfter: Math.min(
+					(known.exitedAt ?? now) + CLOCK_SKEW_MS,
+					(impostorCreatedAt(pid, known.created) ?? Infinity) - 1
+				),
 			});
 		}
 	}
