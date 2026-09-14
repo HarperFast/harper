@@ -90,6 +90,13 @@ export class FullTextDerivedIndexError extends Error {
 	}
 }
 
+export class FullTextGenerationInvalidError extends FullTextDerivedIndexError {
+	constructor(message: string, cause?: unknown) {
+		super(message, cause);
+		this.name = 'FullTextGenerationInvalidError';
+	}
+}
+
 export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	readonly id: string;
 	#lifecycle: FullTextDerivedIndexLifecycle;
@@ -184,7 +191,16 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			throw new FullTextDerivedIndexError('Full-text derived index backend is not quiescent at acquisition');
 		this.#shutdown = undefined;
 		this.#failed = false;
-		const engine = await this.#open(ownerEpoch);
+		let engine: FullTextDerivedIndexEngine;
+		try {
+			engine = await this.#open(ownerEpoch);
+		} catch (error) {
+			if (invalidGenerationError(error)) {
+				logger.warn?.(`Full-text derived index '${this.id}' has an invalid generation; rebuilding`, error);
+				return;
+			}
+			throw error;
+		}
 		let cursor: DerivedIndexCursor | undefined;
 		let payloadError: unknown;
 		try {
@@ -227,8 +243,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		let through: DerivedIndexCursor | undefined;
 		try {
 			through = batch.through && normalizedCursor(batch.through);
-			if (through && !cursorAtOrAfter(through, this.#lastAcceptedCursor ?? this.#durableCursor))
-				throw new FullTextDerivedIndexError('Full-text derived index cursor moved backward');
 		} catch (error) {
 			this.#markFailed(error);
 			return DERIVED_INDEX_FAILED;
@@ -285,7 +299,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#failed = false;
 		let replacement: FullTextDerivedIndexEngine | undefined;
 		try {
-			await this.#invalidateOldGeneration(ownerEpoch);
 			replacement = await this.#lifecycle.replace(ownerEpoch);
 			this.#assertSharedEpoch(ownerEpoch);
 			const cursor = decodeFullTextCursorPayload(replacement.committedPayload, this.#maxCursorPayloadBytes);
@@ -476,40 +489,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		}
 	}
 
-	async #invalidateOldGeneration(ownerEpoch: bigint): Promise<void> {
-		let engine: FullTextDerivedIndexEngine | undefined;
-		let tombstonePublished = false;
-		try {
-			engine = await this.#open(ownerEpoch);
-		} catch {
-			this.#assertSharedEpoch(ownerEpoch);
-			return;
-		}
-		try {
-			this.#assertSharedEpoch(ownerEpoch);
-			await engine.publish(encodeFullTextCursorPayload(undefined, this.#maxCursorPayloadBytes));
-			tombstonePublished = true;
-			this.#assertSharedEpoch(ownerEpoch);
-			await engine.close({ mode: 'require-clean' });
-		} catch (error) {
-			try {
-				await engine.close({ mode: 'rollback' });
-			} catch (closeError) {
-				this.#engine = engine;
-				this.#activeEpoch = ownerEpoch;
-				throw new FullTextDerivedIndexError('Old full-text generation could not close before replacement', closeError);
-			}
-			this.#assertSharedEpoch(ownerEpoch);
-			throw new FullTextDerivedIndexError(
-				tombstonePublished
-					? 'Old full-text generation could not close after publishing its cursor tombstone'
-					: 'Old full-text generation could not publish its cursor tombstone',
-				error
-			);
-		}
-		this.#assertSharedEpoch(ownerEpoch);
-	}
-
 	async #open(ownerEpoch: bigint): Promise<FullTextDerivedIndexEngine> {
 		let lastError: unknown;
 		for (let attempt = 1; attempt <= this.#openAttempts; attempt++) {
@@ -517,6 +496,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			try {
 				return await this.#lifecycle.open(ownerEpoch);
 			} catch (error) {
+				if (invalidGenerationError(error)) throw error;
 				lastError = error;
 				if (attempt < this.#openAttempts && this.#openRetryMilliseconds > 0) await delay(this.#openRetryMilliseconds);
 			}
@@ -707,19 +687,20 @@ function normalizedCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
 	return Object.freeze({ format: 1, logs });
 }
 
-function cursorAtOrAfter(cursor: DerivedIndexCursor, previous: DerivedIndexCursor | undefined): boolean {
-	if (!previous) return true;
-	for (const name in previous.logs) {
-		if (!Object.hasOwn(previous.logs, name)) continue;
-		if (!Object.hasOwn(cursor.logs, name) || cursor.logs[name] < previous.logs[name]) return false;
-	}
-	return true;
-}
-
 function plainObject(value: unknown): value is Record<string, any> {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const prototype = Object.getPrototypeOf(value);
 	return prototype === Object.prototype || prototype === null;
+}
+
+function invalidGenerationError(error: unknown): boolean {
+	const seen = new Set<unknown>();
+	while (error && typeof error === 'object' && !seen.has(error)) {
+		if (error instanceof FullTextGenerationInvalidError) return true;
+		seen.add(error);
+		error = 'cause' in error ? error.cause : undefined;
+	}
+	return false;
 }
 
 function positiveInteger(value: number, name: string): number {
