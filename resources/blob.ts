@@ -1776,6 +1776,59 @@ function bumpUnlinkEpoch(store: any, counter: typeof STAGED | typeof SETTLED): v
 	if (epoch) Atomics.add(epoch, counter, 1);
 }
 
+type StagedRow = [key: any, value: { due: number }];
+// Rows staged in the current turn, per root, awaiting the commit of the batch they were queued into.
+const unsettledStages = new WeakMap<any, StagedRow[]>();
+
+/**
+ * Settle a row on the commit of the batch it joined. Everything queued in one turn of the event loop
+ * lands in one lmdb-js transaction, and `committed` names that transaction's promise from the end of
+ * the turn until it commits — so it is read in a microtask, once per root per turn, on behalf of
+ * every row staged in the turn. One microtask and one array entry per row, rather than a promise
+ * chain each: a table drop stages every record's rows in a single turn.
+ */
+function settleWithBatch(store: any, queueDb: any, key: any, value: { due: number }): void {
+	let rows = unsettledStages.get(store);
+	if (!rows) {
+		unsettledStages.set(store, (rows = []));
+		queueMicrotask(() => {
+			unsettledStages.delete(store);
+			queueDb.committed.then(
+				() => settleStagedRows(store, queueDb, rows),
+				(error: any) => settleStagedRows(store, queueDb, rows, error)
+			);
+		});
+	}
+	rows.push([key, value]);
+}
+
+/**
+ * The rows' batch has committed, or failed. Whether the record writes landed with it is not knowable
+ * from here — they may have shared a rejected batch, or (a removal, a drop) have committed before the
+ * rows were queued — so a failed row is re-staged synchronously and the drain's owner re-read settles
+ * which it was; only a second failure hands the file to cleanup_orphan_blobs.
+ */
+function settleStagedRows(store: any, queueDb: any, rows: StagedRow[], error?: any): void {
+	let wakeAt = Infinity;
+	for (const [key, value] of rows) {
+		try {
+			if (error) queueDb.putSync(key, value);
+			if (value.due < wakeAt) wakeAt = value.due;
+		} catch (retryError) {
+			logger.warn?.(
+				`The unlink intent for blob file ${key[1]} could not be recorded; the file is left for cleanup_orphan_blobs`,
+				retryError,
+				error
+			);
+		} finally {
+			bumpUnlinkEpoch(store, SETTLED);
+		}
+	}
+	// The drain armed at supersede time can fire before the batch commits, and would then find nothing
+	// and arm no successor. This is the wakeup certain to see the rows.
+	if (wakeAt < Infinity) scheduleBlobUnlinkDrain(store, wakeAt - Date.now());
+}
+
 /**
  * Record a durable intent to unlink this blob's file at supersession, before the retention window
  * rather than after it. That window is exactly the interval #1832 is about: a worker recycled inside
@@ -1825,41 +1878,16 @@ function stageDurableUnlink(
 			// so it commits in that batch or an earlier one — never later. That is the ordering the
 			// synchronous commit buys on the other engine, obtained here for free.
 			const written = queueDb.put(key, value);
-			// Inside a batch — every LMDB record write is one, a conditional `ifVersion` — the put's own
-			// promise is already resolved when it is returned; what the row lands with is the batch's
-			// commit, known only once the batch has closed at the end of this turn.
-			const landed = written?.then
-				? queueDb.committed
-					? new Promise((resolve) => setImmediate(resolve)).then(() => queueDb.committed)
-					: written
-				: undefined;
-			if (landed !== written) written?.then?.(undefined, () => {}); // the commit carries the failure
-			if (landed) {
-				landed.then(
-					() => {
-						bumpUnlinkEpoch(fileInfo.store, SETTLED);
-						// The drain armed at supersede time can fire before this batch commits, and would
-						// then find nothing and arm no successor. This is the wakeup certain to see the row.
-						scheduleBlobUnlinkDrain(fileInfo.store, value.due - Date.now());
-					},
-					// Whether the record write landed is not knowable from here — it may have shared the
-					// rejected batch, or (a removal, a drop) have committed before this row was queued. The
-					// row is re-staged synchronously, and the drain's owner re-read settles which it was;
-					// only a second failure hands the file to cleanup_orphan_blobs.
-					(error: any) => {
-						try {
-							queueDb.putSync(key, value);
-							scheduleBlobUnlinkDrain(fileInfo.store, value.due - Date.now());
-						} catch (retryError) {
-							logger.warn?.(
-								`The unlink intent for blob file ${fileInfo.fileId} could not be recorded; the file is left for cleanup_orphan_blobs`,
-								retryError,
-								error
-							);
-						} finally {
-							bumpUnlinkEpoch(fileInfo.store, SETTLED);
-						}
-					}
+			if (queueDb.committed) {
+				// Inside a batch — every LMDB record write is one, a conditional `ifVersion` — the put's
+				// own promise is already resolved when it is returned; the row lands with the batch's
+				// commit, which `committed` names once the batch has closed.
+				written?.then?.(undefined, () => {});
+				settleWithBatch(fileInfo.store, queueDb, key, value);
+			} else if (written?.then) {
+				written.then(
+					() => settleStagedRows(fileInfo.store, queueDb, [[key, value]]),
+					(error: any) => settleStagedRows(fileInfo.store, queueDb, [[key, value]], error)
 				);
 			} else bumpUnlinkEpoch(fileInfo.store, SETTLED);
 		}
