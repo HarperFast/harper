@@ -199,10 +199,11 @@ const MAX_COUNT_PAGE = 10_000;
 // How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
 // check). Keeps a large scan from monopolizing the event loop without adding a yield per row.
 const COUNT_YIELD_INTERVAL = 2_048;
-// Smallest forward sample `getRecordCount` will extrapolate a record rate from. Below it the scan runs
-// to completion and reports an exact count -- cheap at this size, and it keeps the estimated-base path
-// off the small, heavily rewritten tables whose physical key statistics are least trustworthy.
+// Smallest forward sample `getRecordCount` will extrapolate a record rate from; below it the scan runs
+// to completion and reports an exact count.
 const MIN_ESTIMATOR_SAMPLE = 1_000;
+// Budget intervals the forward scan may spend before it must estimate rather than keep scanning.
+const MAX_ESTIMATE_CHECKPOINTS = 20;
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -5831,13 +5832,11 @@ export function makeTable(options) {
 			const exactCount = options?.exactCount;
 			const TIME_LIMIT = options?.timeLimit ?? 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
 			const start = performance.now();
-			// `entryCount` (the extrapolation base) is only needed once the scan blows the time budget, so
-			// tables that finish within budget and `exact_count` requests probe nothing. On RocksDB it comes
-			// from a CountEstimator rather than an exact key count: the escape exists because the scan is
-			// already too slow, and an exact `getKeysCount()` is a second scan of the same key space.
 			let entryCount = 0;
 			let remainderPhysical = 0;
 			let estimator;
+			let estimatorFailed = false;
+			let checkpoints = 0;
 			let checkpointedEntries = 0;
 			let recordCount = 0;
 			let entriesScanned = 0;
@@ -5856,24 +5855,39 @@ export function makeTable(options) {
 				const now = performance.now();
 				if (now <= nextCheckAt) continue;
 				nextCheckAt = now + TIME_LIMIT;
-				if (isRocksDB) {
-					estimator ??= primaryStore.createCountEstimator({ start: true });
-					// `advance` is incremental, so each checkpoint reports only the entries since the last one
-					estimator.advance(lastKey, entriesScanned - checkpointedEntries);
-					checkpointedEntries = entriesScanned;
-					entryCount = estimator.estimate().count;
-				} else entryCount = primaryStore.getStats().entryCount;
-				// Re-decided every interval instead of latched: an underestimated base must not be able to
-				// commit the scan to running to completion. Breaking only below the halfway point keeps the
-				// forward and reverse samples disjoint against the base actually used to extrapolate.
-				if (entriesScanned < Math.floor(entryCount / 2)) {
-					// Uncalibrated physical bound on the region the scan will not reach, captured before the
-					// break because it is what the reported interval's upper end is built from. Widened by the
-					// estimate's own reported untrustworthiness: it is block-granular and can land below the
-					// live count it is meant to bound.
-					if (estimator) {
+				checkpoints++;
+				if (isRocksDB && !estimatorFailed) {
+					try {
+						estimator ??= primaryStore.createCountEstimator({ start: true });
+						estimator.advance(lastKey, entriesScanned - checkpointedEntries);
+						checkpointedEntries = entriesScanned;
+						const estimate = estimator.estimate();
+						entryCount = Number.isFinite(estimate?.count) ? estimate.count : 0;
+					} catch (error) {
+						// DESIGN.md's invariant for this API: a store answering differently -- or closing
+						// concurrently, which `drop_table` can do while this scan is parked in a yield --
+						// degrades to the exact scan rather than poisoning the count with NaN.
+						logger.debug?.('Count estimator unavailable, falling back to an exact scan', error);
+						estimatorFailed = true;
+						estimator = undefined;
+						entryCount = 0;
+					}
+				} else if (!isRocksDB) entryCount = primaryStore.getStats().entryCount;
+				// A base that keeps undershooting would hold `entriesScanned < halfway` false forever and
+				// walk the whole table -- the unbounded describe scan this path exists to avoid. The
+				// checkpoint ceiling bounds the forward scan whatever the estimate says; the reverse sample
+				// is bounded by `limit` in turn, so the whole call stays within twice the scan at break time.
+				if (estimator && (checkpoints >= MAX_ESTIMATE_CHECKPOINTS || entriesScanned < Math.floor(entryCount / 2))) {
+					try {
 						const remaining = primaryStore.estimateCount({ start: lastKey, exclusiveStart: true });
-						remainderPhysical = remaining.count * (2 - remaining.confidence);
+						// Widened by the estimate's own reported untrustworthiness: it is block-granular and
+						// can land below the live count it is meant to bound.
+						remainderPhysical =
+							Number.isFinite(remaining?.count) && remaining.confidence >= 0 && remaining.confidence <= 1
+								? remaining.count * (2 - remaining.confidence)
+								: 0;
+					} catch {
+						remainderPhysical = 0;
 					}
 					limit = entriesScanned;
 					break;
@@ -5883,25 +5897,36 @@ export function makeTable(options) {
 				// in this case we are going to make an estimate of the table count using the first thousand
 				// entries and last thousand entries
 				const firstRecordCount = recordCount;
+				const firstKey = lastKey;
 				recordCount = 0;
 				// Bound the reverse scan explicitly. The getRange `limit` option is honored by lmdb-js but
 				// ignored by rocksdb-js; without this break the scan reads the whole table, so `recordRate`
 				// blows up to ~entryCount/(2*limit) and the estimate scales with entryCount^2 -- the source
 				// of the wildly inflated `record_count` (e.g. 20,000,000 for ~105k rows) on large RocksDB
-				// tables. The early-exit above guarantees limit < entryCount/2, so the two samples stay disjoint.
+				// tables.
 				let reverseScanned = 0;
-				for (const { value } of primaryStore.getRange({
-					start: '\uffff',
+				// Disjointness is enforced against the forward scan's own last key rather than inferred from
+				// the base: the base is an estimate now, and an estimate that overshoots by 2x would other-
+				// wise have the two samples count the same records twice.
+				let sampledWholeTable = false;
+				for (const { key, value } of primaryStore.getRange({
+					start: '￿',
 					reverse: true,
 					lazy: true,
 					limit,
 					snapshot: false,
 				})) {
+					if (compareKeys(key, firstKey) <= 0) {
+						sampledWholeTable = true;
+						break;
+					}
 					if (value != null) recordCount++;
 					reverseScanned++;
 					await rest();
 					if (reverseScanned >= limit) break;
 				}
+				// The two samples met, so between them they covered every entry and the count is exact.
+				if (sampledWholeTable) return { recordCount: recordCount + firstRecordCount };
 				// Use the actual entries sampled, not limit*2: the reverse scan can yield fewer than `limit`
 				// (concurrent deletions under snapshot:false, or an overestimated entryCount), and counting
 				// those un-scanned slots would inflate the denominator and underestimate the rate.
@@ -5910,29 +5935,39 @@ export function makeTable(options) {
 				const variance =
 					Math.pow((recordCount - firstRecordCount + 1) / limit / 2, 2) + // variance between samples
 					(recordRate * (1 - recordRate)) / sampleSize;
-				const estimatedRecordCount = Math.round(recordRate * entryCount);
+
 				// Bounds on the extrapolation base. An estimated base cannot see the untraversed region, so
 				// the interval spans both ways it can be wrong: every remaining entry superseded (only what
 				// was scanned is live) through every remaining entry live (the uncalibrated physical count).
 				// Churn concentrated outside the scanned prefix calibrates to nothing -- prefix density says
 				// the remainder is clean -- so an interval derived from the estimator's confidence would sit
 				// narrowly around the wrong number instead of containing the true one.
-				const baseMin = estimator ? entriesScanned + reverseScanned : entryCount;
-				const baseMax = estimator ? entriesScanned + remainderPhysical : entryCount;
+				const baseMin = entriesScanned + reverseScanned;
+				// `entryCount` is a floor as well as a summand: a block-granular remainder that undershoots
+				// must not clamp the interval below the base the point estimate itself was extrapolated from.
+				const baseMax = Math.max(entriesScanned + remainderPhysical, entryCount, baseMin);
+				// What both samples actually counted is a floor on the base too: a calibration that undershoots
+				// must not extrapolate below the entries already observed.
+				const estimatedRecordCount = Math.round(recordRate * Math.max(entryCount, baseMin));
 				// TODO: This uses a normal/Wald interval, but a binomial confidence interval is probably better calculated using
 				// Wilson score interval or Agresti-Coull interval (I think the latter is a little easier to calculate/implement).
-				const sd = Math.max(Math.sqrt(variance) * entryCount, 1);
-				const lowerCiLimit = Math.max(recordRate * baseMin - 1.96 * sd, recordCount + firstRecordCount);
-				const upperCiLimit = Math.min(recordRate * baseMax + 1.96 * sd, baseMax);
-				// Round to the precision the interval actually supports, so a wide base range can't be
-				// reported as a precise-looking record count.
+				const rateSd = Math.sqrt(variance);
+				// the rate's uncertainty scales with the base it is applied to, so each end uses its own
+				const lowerCiLimit = Math.max((recordRate - 1.96 * rateSd) * baseMin, recordCount + firstRecordCount);
+				const upperCiLimit = Math.min((recordRate + 1.96 * rateSd) * baseMax, baseMax);
 				const spread = Math.max((upperCiLimit - lowerCiLimit) / 2, 1);
 				let significantUnit = Math.pow(10, Math.round(Math.log10(spread)));
 				if (significantUnit > estimatedRecordCount) significantUnit = significantUnit / 10;
-				recordCount = Math.round(estimatedRecordCount / significantUnit) * significantUnit;
+				const lower = Math.round(lowerCiLimit);
+				const upper = Math.round(upperCiLimit);
+				// rounding to the significant unit must not push the count outside the interval beside it
+				recordCount = Math.min(
+					Math.max(Math.round(estimatedRecordCount / significantUnit) * significantUnit, lower),
+					upper
+				);
 				return {
 					recordCount,
-					estimatedRange: [Math.round(lowerCiLimit), Math.round(upperCiLimit)],
+					estimatedRange: [lower, upper],
 				};
 			}
 			return {

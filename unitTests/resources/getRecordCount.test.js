@@ -147,6 +147,83 @@ describe('Table.getRecordCount', () => {
 		assert.equal(result.estimatedRange, undefined, 'a table this size must not reach the sampling path');
 	});
 
+	it('keeps the reported count inside its own range across churn distributions', async function () {
+		this.timeout(300000);
+		// `record_count` and `estimated_record_range` are published side by side, so a count outside its own
+		// interval is self-contradictory whatever the base did. Head-concentrated churn is the case that
+		// produces it: the inflated prefix calibrates the base *below* what the two samples already counted.
+		const shapes = [
+			['RecordCountHeadChurn', { churnRounds: 30, churnFrom: 0, churnTo: 1000 }],
+			['RecordCountTailChurn', { churnRounds: 30, churnFrom: 2000, churnTo: 3000 }],
+		];
+		for (const [name, shape] of shapes) {
+			const built = await buildTable(name, LIVE_ROWS, shape);
+			const result = await built.getRecordCount({ timeLimit: -1 });
+			const [lower, upper] = result.estimatedRange ?? [result.recordCount, result.recordCount];
+			assert.ok(lower <= upper, `${name}: range [${lower}, ${upper}] must not be inverted`);
+			assert.ok(
+				lower <= result.recordCount && result.recordCount <= upper,
+				`${name}: reported count ${result.recordCount} must lie within its own range [${lower}, ${upper}]`
+			);
+			assert.ok(
+				lower <= LIVE_ROWS && LIVE_ROWS <= upper,
+				`${name}: range [${lower}, ${upper}] must contain the ${LIVE_ROWS} live records`
+			);
+		}
+	});
+
+	it('stops scanning when the base keeps saying the scan is past halfway', async function () {
+		this.timeout(120000);
+		// A base that undershoots holds `entriesScanned < floor(entryCount/2)` false at every checkpoint, so
+		// the escape never fires and describe walks the whole table -- the unbounded scan this path exists to
+		// avoid, reached through a working estimator rather than the old NaN `halfway`. The checkpoint ceiling
+		// is what bounds it; without one this returns an exact count because the scan ran to the end.
+		const store = EstimatorTable.primaryStore;
+		if (typeof store.createCountEstimator !== 'function') return this.skip();
+		const original = store.createCountEstimator;
+		const owned = Object.hasOwn(store, 'createCountEstimator');
+		let traversed = 0;
+		store.createCountEstimator = () => ({
+			advance(lastKey, count) {
+				traversed += count;
+			},
+			// always reports the scan as having reached the end, so the halfway test can never fire
+			estimate: () => ({ count: traversed, confidence: 0.5 }),
+		});
+		try {
+			const result = await EstimatorTable.getRecordCount({ timeLimit: -1 });
+			assert.ok(
+				Array.isArray(result.estimatedRange),
+				'expected the checkpoint ceiling to force the sampling path rather than scanning the whole table'
+			);
+			assert.ok(traversed < LIVE_ROWS, `scan should have stopped early, but traversed ${traversed} of ${LIVE_ROWS}`);
+		} finally {
+			if (owned) store.createCountEstimator = original;
+			else delete store.createCountEstimator;
+		}
+	});
+
+	it('falls back to an exact count when the estimator is unusable', async function () {
+		this.timeout(120000);
+		// DESIGN.md's invariant for this API: a store that answers differently, or one closing concurrently,
+		// degrades to the historical behavior instead of NaN-poisoning the count.
+		const store = EstimatorTable.primaryStore;
+		if (typeof store.createCountEstimator !== 'function') return this.skip();
+		const original = store.createCountEstimator;
+		const owned = Object.hasOwn(store, 'createCountEstimator');
+		store.createCountEstimator = () => {
+			throw new Error('native estimator unavailable');
+		};
+		try {
+			const result = await EstimatorTable.getRecordCount({ timeLimit: -1 });
+			assert.equal(result.recordCount, LIVE_ROWS);
+			assert.equal(result.estimatedRange, undefined);
+		} finally {
+			if (owned) store.createCountEstimator = original;
+			else delete store.createCountEstimator;
+		}
+	});
+
 	it('never takes an exact key count on the estimated path', async function () {
 		this.timeout(120000);
 		// The whole point of the change: the escape fires because the value scan is already too slow, so
