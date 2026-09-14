@@ -594,7 +594,10 @@ export function getDatabases(): Databases {
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dbPath = join(databasePath, databaseEntry.name);
-			if (blockedByLifecycle.databaseNames.has(dbName) || blockedByLifecycle.markerKeys.has(restoreMetaKey(dbPath)))
+			if (
+				blockedByLifecycle.databaseNames.has(dbName) ||
+				(blockedByLifecycle.markerKeys.size > 0 && blockedByLifecycle.markerKeys.has(restoreMetaKey(dbPath)))
+			)
 				continue;
 			if (isOpenBranchPath(dbPath)) continue;
 
@@ -663,7 +666,7 @@ export function getDatabases(): Databases {
 					const dbPath = join(databasePath, databaseEntry.name);
 					if (
 						blockedByLifecycle.databaseNames.has(discoveredName) ||
-						blockedByLifecycle.markerKeys.has(restoreMetaKey(dbPath))
+						(blockedByLifecycle.markerKeys.size > 0 && blockedByLifecycle.markerKeys.has(restoreMetaKey(dbPath)))
 					)
 						continue;
 					if (isOpenBranchPath(dbPath)) continue;
