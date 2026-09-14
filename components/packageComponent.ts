@@ -1,4 +1,4 @@
-import { join, relative, sep } from 'node:path';
+import { basename, join, relative, sep } from 'node:path';
 import { stat, readdir } from 'node:fs/promises';
 import { Readable, pipeline } from 'node:stream';
 import tar from 'tar-fs';
@@ -14,6 +14,27 @@ const DEFAULT_OPTIONS: PackageOptions = { skip_node_modules: false, skip_symlink
 const WEBPACK_CACHE_SEGMENT = join('cache', 'webpack');
 
 /**
+ * `node_modules/harper` is Harper's, whatever is on disk there.
+ *
+ * Every non-root component load runs `symlinkHarperModule`, which does `rmSync(harperModule, {
+ * recursive: true, force: true })` and then links the running install (`components/componentLoader.ts`).
+ * It does that whether or not the path already existed, so component content there survives no load and
+ * packaging it cannot be preserving component source — while packaging it walks the whole install, since
+ * the packer dereferences symlinks and recurses into linked directories.
+ *
+ * `harperdb` is deliberately NOT here, and the asymmetry is the reason: the loader only *repairs*
+ * `node_modules/harperdb` when that path already exists. A legacy component shipping a real
+ * npm-installed `harperdb` that has never been loaded on this host therefore owns it — and excluding it
+ * would strip it from the tarball, after which `installApplication` skips installing (it returns early
+ * when `node_modules` exists), the loader's present-gate never fires, and `import from 'harperdb'`
+ * fails on the target — and that holds whether the path is skipped by name or by resolved identity,
+ * because an archive that simply OMITS it cannot restore it. So a `harperdb` link to the install is
+ * still followed. Closing that means packing a placeholder at the path so the loader's present-gate can
+ * fire on the target, not skipping it; tracked in harper#2577.
+ */
+const INSTALL_OWNED_PATH = join('node_modules', 'harper');
+
+/**
  * Whether `fullPath` (an absolute path under `directory`) should be excluded from the package when
  * `skip_node_modules` is set. The path is first made relative to `directory`, so packaging a component
  * that itself lives under a `node_modules/` path — i.e. any npm-installed component — does not match
@@ -21,6 +42,9 @@ const WEBPACK_CACHE_SEGMENT = join('cache', 'webpack');
  * excluded the whole tree. Shared by the stream packer and the directory walk so they cannot diverge.
  */
 function isExcluded(directory: string, fullPath: string, options: PackageOptions): boolean {
+	// Unconditional, including under `skip_symlinks`: packed literally, the link ships an absolute path to
+	// the packaging host's install root, which arrives dangling.
+	if (basename(fullPath) === 'harper' && relative(directory, fullPath) === INSTALL_OWNED_PATH) return true;
 	if (!options.skip_node_modules) return false;
 	const rel = relative(directory, fullPath);
 	return rel.split(sep).includes('node_modules') || rel.includes(WEBPACK_CACHE_SEGMENT);
