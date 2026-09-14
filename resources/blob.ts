@@ -1444,7 +1444,7 @@ function releaseReclaimClaim(storageInfo: BlobFileInfo | undefined): void {
 	const fileId = storageInfo.fileId;
 	if (!store || !fileId) return;
 	const state = blobHoldState(store, fileId);
-	if (state) Atomics.compareExchange(state.table, state.slot + HOLDS, RECLAIMING, 0);
+	if (state) Atomics.sub(state.table, state.slot + HOLDS, RECLAIMING);
 }
 
 /**
