@@ -197,7 +197,8 @@ export interface ClusterLockTransport {
 	/**
 	 * Overrides core's cold-start grant quarantine (§4.3). Set it only where a previous incarnation
 	 * of this process provably issued nothing — a fresh database, a first start, or a test. Omitted
-	 * means core enforces the full `DELEGATION_LEASE_MS + skew` from process start.
+	 * means core enforces the full `DELEGATION_LEASE_MS + skew` from that coordinator's construction —
+	 * see `#grantableAfterMono` for why neither process start nor thread start is a sound anchor.
 	 */
 	grantableAfterMono?: number;
 	/**
@@ -448,7 +449,7 @@ export interface LockCoordinatorOptions {
 	/**
 	 * Overrides the cold-start grant quarantine (§4.3). Pass `-Infinity` only where a previous
 	 * incarnation provably issued nothing — a fresh database, or a test. Required when `monotonic` is
-	 * an injected clock whose readings do not count from process start. See `#grantableAfterMono`.
+	 * an injected clock the test drives itself. See `#grantableAfterMono`.
 	 */
 	grantableAfterMono?: number;
 	/** False in tests, which drive `tick()` themselves. */
