@@ -9,6 +9,7 @@ import {
 	openSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	unlinkSync,
 	writeSync,
@@ -57,6 +58,10 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
 export const RESTORE_META_DIR = '`restore`';
 export const RESTORE_LOCK_SUFFIX = '.lock';
 export const RESTORING_MARKER_SUFFIX = '.restoring';
+// Where a marker is written before it replaces the live one. Derived from the marker's own path so
+// two writers of the same database cannot collide on it — they hold the same lock anyway — and it
+// does not end in RESTORING_MARKER_SUFFIX, so no scan ever reads a half-written marker.
+const STAGED_MARKER_SUFFIX = '.staged';
 
 /**
  * Directory holding the restore metadata for a database — the reserved `` `restore` `` sibling of
@@ -275,13 +280,20 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
 			error.lifecycleConflict = 'restore';
 			throw error;
 		}
-		const fd = openSync(markerPath, 'w');
+		// Write beside the marker and rename over it, rather than truncating it and writing in place:
+		// this call can be superseding a crashed drop's marker, and a write that fails between the
+		// truncation and the content (ENOSPC) would leave a marker with no database name — which the
+		// startup scan skips, so a partially deleted database would load as healthy. The rename is
+		// atomic within the directory, so the marker is either the old one or the new one.
+		const stagedPath = markerPath + STAGED_MARKER_SUFFIX;
+		const fd = openSync(stagedPath, 'w');
 		try {
 			writeSync(fd, markerContent(dbPath, kind));
 			fsyncSync(fd);
 		} finally {
 			closeSync(fd);
 		}
+		renameSync(stagedPath, markerPath);
 		// fsync the metadata directory so the marker's directory entry is durable — without this a
 		// power loss can lose the entry, and a half-purged database would load as healthy
 		fsyncDir(restoreMetaDir(dbPath));

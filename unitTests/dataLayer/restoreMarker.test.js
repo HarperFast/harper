@@ -312,6 +312,26 @@ describe('restoreMarker', function () {
 			assert.equal(lifecycleMarkerKind(dbPath), null);
 		});
 
+		it('keeps the marker it is superseding when the replacement cannot be written', function () {
+			// a crashed drop's marker, which the next drop supersedes: if that rewrite is not atomic, a
+			// write that fails after truncating leaves a marker naming no database, which the startup
+			// scan skips — and the partially deleted database loads as healthy
+			abandonDrop(beginDrop(dbPath));
+			const superseded = readFileSync(restoringMarkerPath(dbPath), 'utf8');
+			// a directory where the staged marker is written: the open below cannot create its file
+			mkdirSync(restoringMarkerPath(dbPath) + '.staged');
+			try {
+				assert.throws(
+					() => beginDrop(dbPath),
+					(error) => error.code === 'EISDIR' || error.code === 'EPERM' || error.code === 'EACCES'
+				);
+				assert.equal(readFileSync(restoringMarkerPath(dbPath), 'utf8'), superseded);
+			} finally {
+				rmSync(restoringMarkerPath(dbPath) + '.staged', { recursive: true, force: true });
+			}
+			releaseRestoreLock(acquireRestoreLock(dbPath));
+		});
+
 		it('releases the lock when the marker cannot be read at all', function () {
 			// the read happens under the lock, so anything but ENOENT has to release it on the way out —
 			// a leaked flock is held for the life of the process and wedges every later drop and restore
