@@ -137,7 +137,8 @@ describe('RocksDB handle release', function () {
 		if (!(T.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
 		await settleSchemaRescan('closerelease6');
 		const Live = databases.closerelease6.pkg;
-		const dbPath = Live.primaryStore.rootStore.path;
+		const rootStore = Live.primaryStore.rootStore;
+		const dbPath = rootStore.path;
 		let release;
 		Live.derivedIndexRuntime = { close: () => new Promise((resolve) => (release = resolve)) };
 
@@ -156,11 +157,13 @@ describe('RocksDB handle release', function () {
 			await sleep(50);
 			assert.equal(acknowledged, false, 'the acknowledgement must not fire while the runtime is releasing');
 			assert.ok(refCountFor(dbPath) > 0, 'the table handles are still open while it is');
+			assert.notStrictEqual(rootStore.status, 'closed', 'the root must outlive its column-family handles');
 
 			release();
 			await handled;
 
 			assert.strictEqual(refCountFor(dbPath), 0, 'and gone by the time drop_database reads the acknowledgement');
+			assert.strictEqual(rootStore.status, 'closed');
 		} finally {
 			completeDrop(lock);
 		}

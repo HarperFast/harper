@@ -2251,10 +2251,11 @@ export async function dropDatabase(databaseName) {
 export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]): boolean {
 	const dbTables = databases[databaseName];
 	const rootStores = new Set<any>();
-	const closeStore = (store: any, description: string) => {
+	const tableClosures: Promise<unknown>[] = [];
+	const closeStore = (store: any, description: string, pending: Promise<unknown>[]) => {
 		try {
 			const result = store?.close?.();
-			if (closing && typeof result?.then === 'function') closing.push(result);
+			if (typeof result?.then === 'function') pending.push(result);
 		} catch (error) {
 			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
 		}
@@ -2286,7 +2287,7 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 		if (!table?.primaryStore) continue;
 		if (typeof table.cleanup === 'function') {
 			try {
-				table.cleanup(closing);
+				table.cleanup(tableClosures);
 			} catch (error) {
 				logger.warn(`Error releasing table ${tableName} while closing database ${databaseName}:`, error);
 				try {
@@ -2296,19 +2297,28 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
 		}
 		if (table.primaryStore instanceof RocksDatabase) continue;
 		for (const indexName in table.indices || {}) {
-			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`);
+			closeStore(table.indices[indexName], `index ${tableName}.${indexName}`, tableClosures);
 		}
-		closeStore(table.primaryStore, `table ${tableName}`);
+		closeStore(table.primaryStore, `table ${tableName}`, tableClosures);
 	}
-	for (const rootStore of rootStores) {
-		removeStorageReclamation(rootStore.path);
-		closeStore(rootStore.dbisDb, 'attributes store');
-		closeStore(rootStore, 'root store');
-		lmdbDatabaseEnvs.delete(rootStore.path);
-		rocksdbDatabaseEnvs.delete(rootStore.path);
+	const closeRoots = () => {
+		const rootClosures: Promise<unknown>[] = [];
+		for (const rootStore of rootStores) {
+			removeStorageReclamation(rootStore.path);
+			closeStore(rootStore.dbisDb, 'attributes store', rootClosures);
+			closeStore(rootStore, 'root store', rootClosures);
+			lmdbDatabaseEnvs.delete(rootStore.path);
+			rocksdbDatabaseEnvs.delete(rootStore.path);
+		}
+		const definedDatabase = definedDatabases?.get(databaseName);
+		if (definedDatabase) (definedDatabase as any).rootStore = undefined;
+		if (rootClosures.length > 0) return Promise.all(rootClosures);
+	};
+	const closed = tableClosures.length > 0 ? Promise.all(tableClosures).then(closeRoots) : closeRoots();
+	if (closed) {
+		if (closing) closing.push(closed);
+		else closed.catch((error) => logger.warn(`Error finishing close of database ${databaseName}:`, error));
 	}
-	const definedDatabase = definedDatabases?.get(databaseName);
-	if (definedDatabase) (definedDatabase as any).rootStore = undefined;
 	if (databaseName === 'data') {
 		for (const tableName in tables) {
 			delete tables[tableName];
