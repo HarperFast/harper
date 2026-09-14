@@ -5,7 +5,7 @@ const VERDICT_VALUES = new Set(['chosen-approach-sound', 'better-alternative-exi
 const VERDICT_FIELD =
 	/^[ \t]*(?:<sub>[ \t]*)?Framing-Verdict[ \t]*:[ \t]*(chosen-approach-sound|better-alternative-exists|option-set-too-narrow)(?:[ \t]+\((?:[0-9a-f]{12}|round roll-up)\))?[ \t]*(?:<\/sub>)?[ \t]*$/gim;
 const REVIEWER_SECTION = /^##[ \t]+For the human reviewer[ \t]*$/i;
-const H2_HEADING = /^##[ \t]+.*$/gm;
+const SECTION_BOUNDARY = /^#{1,2}[ \t]+.*$/gm;
 
 export function parseFramingPaths(value) {
 	const paths = [];
@@ -58,7 +58,7 @@ function framingExemption(pr) {
 }
 
 function reviewerSections(prose) {
-	const headings = [...prose.matchAll(H2_HEADING)];
+	const headings = [...prose.matchAll(SECTION_BOUNDARY)];
 	return headings
 		.map((heading, index) => ({
 			heading: heading[0],
@@ -70,17 +70,16 @@ function reviewerSections(prose) {
 }
 
 function disagreementProblem(prose, verdictMatches) {
+	if (!verdictMatches.some((match) => match[1].toLowerCase() !== 'chosen-approach-sound')) return '';
 	const sections = reviewerSections(prose);
-	for (const verdict of verdictMatches.filter((match) => match[1].toLowerCase() !== 'chosen-approach-sound')) {
-		const value = verdict[1].toLowerCase();
-		const section = sections.find(({ start, end }) => verdict.index >= start && verdict.index < end);
-		if (!section) return `${value} must be recorded inside ## For the human reviewer`;
-		const explanation = stripCodePlaceholders(section.content.replace(VERDICT_FIELD, ''))
-			.replace(/<[^>]+>/g, '')
-			.trim();
-		if (!explanation) return `## For the human reviewer needs an explanation for ${value}`;
-	}
-	return '';
+	if (sections.length === 0) return 'a non-clearing verdict without ## For the human reviewer';
+	const explained = sections.some(
+		({ content }) =>
+			stripCodePlaceholders(content.replace(VERDICT_FIELD, ''))
+				.replace(/<[^>]+>/g, '')
+				.trim() !== ''
+	);
+	return explained ? '' : 'a non-clearing verdict without an explanation in ## For the human reviewer';
 }
 
 export function evaluateFramingVerdict(

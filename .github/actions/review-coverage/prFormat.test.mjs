@@ -495,7 +495,12 @@ test('the report workflow keeps the existing check identity and gates PR-files c
 		'utility/lmdb/writeUtility.ts',
 	])
 		assert.match(workflow, new RegExp(`^\\s+${framingPath.replaceAll('*', '\\*')}\\s*$`, 'm'));
-	assert.strictEqual(workflow.match(/live_head=\$\(gh api/g)?.length, 2, 'head is checked before and after collection');
+	assert.strictEqual(
+		workflow.match(/api_with_retry "\$head_response"/g)?.length,
+		2,
+		'head is checked before and after collection'
+	);
+	assert.match(workflow, /for attempt in 1 2 3/);
 	assert.match(workflow, /pr_files_superseded:/);
 });
 

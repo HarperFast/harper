@@ -67,7 +67,7 @@ test('framing accepts a non-clearing verdict only with the reviewer section', ()
 	for (const verdict of ['better-alternative-exists', 'option-set-too-narrow']) {
 		const missing = evaluateFramingVerdict(human({ body: `Framing-Verdict: ${verdict}` }), framingOptions());
 		assert.strictEqual(missing.pass, false, `${verdict} must not pass alone`);
-		assert.match(missing.detail, /inside ## For the human reviewer/);
+		assert.match(missing.detail, /without ## For the human reviewer/);
 		const recorded = evaluateFramingVerdict(
 			human({ body: `## For the human reviewer\n\nDecision recorded.\n\nFraming-Verdict: ${verdict}` }),
 			framingOptions()
@@ -75,13 +75,20 @@ test('framing accepts a non-clearing verdict only with the reviewer section', ()
 		assert.strictEqual(recorded.pass, true, `${verdict} must pass with the reviewer section`);
 		for (const body of [
 			`## For the human reviewer\n\nFraming-Verdict: ${verdict}`,
-			`## For the human reviewer\n\nUnrelated note.\n\n## Verification\n\nFraming-Verdict: ${verdict}`,
+			`## For the human reviewer\n\n# Verification\n\nExecuted evidence.\n\nFraming-Verdict: ${verdict}`,
 		])
 			assert.strictEqual(
 				evaluateFramingVerdict(human({ body }), framingOptions()).pass,
 				false,
 				`${verdict} needs an explanation in its reviewer section`
 			);
+		const footer = evaluateFramingVerdict(
+			human({
+				body: `## For the human reviewer\n\nDecision recorded.\n\n## Verification\n\nExecuted evidence.\n\n<sub>Framing-Verdict: ${verdict} (round roll-up)</sub>`,
+			}),
+			framingOptions()
+		);
+		assert.strictEqual(footer.pass, true, `${verdict} may be materialized as a footer`);
 	}
 });
 

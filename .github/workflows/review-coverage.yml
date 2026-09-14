@@ -43,15 +43,30 @@ jobs:
           [[ "$GH_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
           [[ "$EVENT_HEAD" =~ ^[0-9a-f]{40}$ ]]
-          live_head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          api_with_retry() {
+            local output=$1
+            shift
+            for attempt in 1 2 3; do
+              if gh api "$@" > "$output"; then
+                return 0
+              fi
+              (( attempt == 3 )) && return 1
+              sleep "$attempt"
+            done
+          }
+          head_response="$RUNNER_TEMP/pr-head.txt"
+          api_with_retry "$head_response" "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.sha'
+          live_head=$(<"$head_response")
           if [[ "$live_head" != "$EVENT_HEAD" ]]; then
             echo "superseded=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           output="$RUNNER_TEMP/pr-files.json"
-          gh api --paginate --slurp "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" |
-            node .github/actions/review-coverage/collectPrFiles.mjs "$output"
-          live_head=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          files_response="$RUNNER_TEMP/pr-files-response.json"
+          api_with_retry "$files_response" --paginate --slurp "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100"
+          node .github/actions/review-coverage/collectPrFiles.mjs "$output" < "$files_response"
+          api_with_retry "$head_response" "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.sha'
+          live_head=$(<"$head_response")
           if [[ "$live_head" != "$EVENT_HEAD" ]]; then
             echo "superseded=true" >> "$GITHUB_OUTPUT"
             exit 0
