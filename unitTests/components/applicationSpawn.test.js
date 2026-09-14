@@ -30,6 +30,7 @@ const {
 	unregisterProcessGroup,
 	addProcessGroup,
 	removeProcessGroup,
+	terminateProcessGroupsForThread,
 } = require('#src/server/threads/manageThreads');
 
 // Write `script` to a temp .js file and return its path; auto-removed in `after`.
@@ -472,6 +473,45 @@ describe('nonInteractiveSpawn onLine line buffering', () => {
 
 		removeProcessGroup(11, 4242); // B's own unregister does clear it
 		assert.strictEqual(isProcessGroupAlive(4242, options), false);
+	});
+
+	it('does not terminate a group id a recycled PID has handed to another thread', async () => {
+		// The dead-owner sweep runs over the thread's own set, and that set still lists a PID whose
+		// process exited and whose id another thread's child now holds. Killing on membership alone is
+		// the harper#2273 unrelated-process kill, and waiting on it would block this termination until
+		// a stranger's process exits.
+		let now = 0;
+		let scanCount = 0;
+		let childState = 'S';
+		const options = {
+			platform: 'linux',
+			processGroupExists: () => true,
+			readDirectory: () => {
+				scanCount++;
+				return ['5151'];
+			},
+			readStat: (path) => {
+				if (path === '/proc/5151/stat') return `5151 (installer child) ${childState} 1 5150 5150`;
+				throw Object.assign(new Error('leader reaped'), { code: 'ENOENT' });
+			},
+			now: () => now,
+		};
+
+		addProcessGroup(21, 5150, 100, 90); // thread A registers it
+		addProcessGroup(22, 5150, 500, 400); // A's process exits, the OS hands the PID to B's child
+		assert.strictEqual(isProcessGroupAlive(5150, options), true);
+		const scansBefore = scanCount;
+
+		await terminateProcessGroupsForThread(21); // A is torn down before its unregister lands
+
+		childState = 'Z';
+		now = 1;
+		// a sweep that had cleared B's state would drop the throttle and rescan, reporting B's group gone
+		assert.strictEqual(isProcessGroupAlive(5150, options), true, "B's group must survive A's sweep");
+		assert.strictEqual(scanCount, scansBefore, 'and its cached liveness must be untouched');
+		// the stamp is still B's: removeProcessGroup only clears state whose stamp names the caller
+		removeProcessGroup(22, 5150);
+		assert.strictEqual(isProcessGroupAlive(5150, options), false);
 	});
 
 	it('terminates a detached process tree when its owning worker is force-terminated', async () => {

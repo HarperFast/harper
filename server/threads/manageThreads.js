@@ -191,6 +191,7 @@ module.exports = {
 	// whether the state is theirs to clear
 	addProcessGroup,
 	removeProcessGroup,
+	terminateProcessGroupsForThread,
 	isProcessGroupAlive,
 	isThreadRunning,
 	restartNumber: workerData?.restartNumber || 1,
@@ -1689,7 +1690,18 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	const processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) return pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
 	processGroupsByThread.delete(ownerThreadId);
-	const groupIds = [...processGroups];
+	// Only the groups whose creation stamp still names this owner. Membership is not proof: a PID this
+	// thread registered is reusable the instant its process exits, and an owner torn down before its
+	// unregister landed still lists a PID another thread's child now holds. Killing on membership
+	// alone is the harper#2273 unrelated-process kill — and waiting on such a PID would block this
+	// termination until a stranger's process exits. A group with no stamp is not provably ours either.
+	const groupIds = [...processGroups].filter((processGroupId) => {
+		if (processGroupSpawnedAt.get(processGroupId)?.ownerThreadId === ownerThreadId) return true;
+		harperLogger.warn(
+			`Not terminating process group ${processGroupId} for thread ${ownerThreadId}: the id now belongs to another owner`
+		);
+		return false;
+	});
 	const killedAt = new Map();
 	for (const processGroupId of groupIds) {
 		try {
@@ -1708,11 +1720,9 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	}
 	const termination = Promise.all(
 		groupIds.map((processGroupId) => {
-			// same rule as removeProcessGroup: an entry a recycled PID has already handed to another
-			// thread's child is not this termination's to read or to consume
-			const stamped = processGroupSpawnedAt.get(processGroupId);
-			const spawn = stamped?.ownerThreadId === ownerThreadId ? stamped : undefined;
-			if (spawn) processGroupSpawnedAt.delete(processGroupId);
+			// every id here passed the ownership filter above, so the stamp is this owner's to consume
+			const spawn = processGroupSpawnedAt.get(processGroupId);
+			processGroupSpawnedAt.delete(processGroupId);
 			return process.platform === 'win32'
 				? waitForWindowsGroupExit(processGroupId, spawn, killedAt.get(processGroupId))
 				: waitForProcessGroupExit(processGroupId);
