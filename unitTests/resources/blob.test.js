@@ -3023,6 +3023,7 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 	// Each case hooks the internal dbi at the operation its race sits on. Its own database: the
 	// epoch cache is per root, and the queue has to start provably empty.
 	const UNLINK_QUEUE_KEY = Symbol.for('blob_unlink_queue');
+	const RECLAIMING = -1 << 20;
 	let Interlock;
 	before(() => {
 		setupTestDBPath();
@@ -3349,6 +3350,26 @@ describe('durable blob-unlink queue interlock (#1832)', () => {
 		assert.ok(row, 'the intent must be committed by the time the removal has resolved');
 		assert.deepEqual(row.owner, ['BlobInterlockTest', 'removed']);
 		assert.ok(existsSync(filePath), 'the file itself waits for the drain');
+	});
+
+	it('leaves the shared reclaim slot alone when withdrawing an owned intent', async () => {
+		// An owned row's claim is only ever taken by a drain, which hands it back itself; the slot is
+		// shared by hash, so a release here could free a colliding file's claim under its drain.
+		const { fileId, stored } = await fileBackedBlob('owned-withdrawal');
+		await Interlock.put({ id: 'owned-withdrawal', blob: createBlob(randomBytes(20000)) });
+		assert.ok(queueRow(fileId)?.owner, 'the supersession staged an owned intent');
+		const state = getBlobHoldStateForTesting(rootStore(), fileId);
+		Atomics.store(state.table, state.slot, RECLAIMING); // a colliding file's drain holds the slot
+
+		await Interlock.put({ id: 'owned-withdrawal', blob: stored });
+
+		assert.strictEqual(queueRow(fileId), undefined, 'the intent is withdrawn');
+		assert.equal(
+			Atomics.load(state.table, state.slot),
+			RECLAIMING,
+			"the claim in the shared slot is not this write's to release"
+		);
+		Atomics.store(state.table, state.slot, 0);
 	});
 
 	it('does not answer an unreadable queue as an empty one', () => {

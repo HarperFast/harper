@@ -1469,7 +1469,8 @@ function isBlobHeld(storageInfo: BlobFileInfo | undefined, claim = false): boole
  */
 function cancelBlobReclamation(storageInfo: StorageInfo): void {
 	if (!storageInfo?.fileId || !storageInfo.store) return;
-	if (hasUnlinkIntent(storageInfo)) {
+	const intent = getUnlinkIntent(storageInfo);
+	if (intent) {
 		// The row is withdrawn under the same lock a drain re-reads it under, so whichever side holds
 		// the lock decides: a drain that has it finishes the unlink and this write is refused; a write
 		// that has it withdraws the row and the drain's re-read finds it gone. Refused rather than
@@ -1486,7 +1487,7 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 		}
 		try {
 			removeUnlinkIntent(storageInfo);
-			if (hasUnlinkIntent(storageInfo)) {
+			if (getUnlinkIntent(storageInfo)) {
 				throw new Error(
 					`Blob file ${storageInfo.fileId} still has an unlink intent that could not be withdrawn; refusing to reference it`
 				);
@@ -1494,9 +1495,12 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 		} finally {
 			releaseReclaimLock(storageInfo);
 		}
-		// The intent is withdrawn, so the reclaim claim taken for it must go back — the slot is shared
-		// by hash, and one left claimed reads as "already reclaimed" to every colliding file.
-		releaseReclaimClaim(storageInfo);
+		// An ownerless row was written by reclamation with the claim already taken, and that claim goes
+		// back with the row: the slot is shared by hash, and one left claimed reads as "already
+		// reclaimed" to every colliding file. An owned row's claim is only ever taken by a drain, which
+		// hands it back itself on every path that does not unlink — released here as well, the same
+		// shared slot could be a colliding file's claim, freed under a drain that is still using it.
+		if (!intent.owner) releaseReclaimClaim(storageInfo);
 	}
 	// Also recorded in shared memory for the in-memory reclamation path, whose queue lives on whichever
 	// worker superseded the file and may not be this one.
@@ -1534,18 +1538,18 @@ function allocatedAndNeverSuperseded(storageInfo: StorageInfo): boolean {
 }
 
 /**
- * Whether a durable unlink intent exists for exactly this file. Exact, unlike the hashed hold slot.
+ * The durable unlink intent for exactly this file, if any. Exact, unlike the hashed hold slot.
  *
  * Reached from the encode of every stored blob, so the common answer has to be free. It is: a drain
- * that walked the whole range and found nothing records that, and the shared epoch says whether
- * anything has been staged since — one atomic load to prove there is nothing to read.
+ * that walked the whole range and found nothing records that, and the shared counters say whether
+ * anything has been staged since — two atomic loads to prove there is nothing to read.
  */
-function hasUnlinkIntent(storageInfo: BlobFileInfo): boolean {
+function getUnlinkIntent(storageInfo: BlobFileInfo): any {
 	const queueDb = unlinkQueueDb(storageInfo.store);
-	if (!queueDb) return false;
-	if (queueIsEmpty(storageInfo.store)) return false;
+	if (!queueDb) return undefined;
+	if (queueIsEmpty(storageInfo.store)) return undefined;
 	try {
-		return queueDb.getSync([UNLINK_QUEUE_KEY, storageInfo.fileId]) !== undefined;
+		return queueDb.getSync([UNLINK_QUEUE_KEY, storageInfo.fileId]);
 	} catch (error) {
 		// Unknown is refused, not read as absent: a row this write could not see is one a drain executes
 		// against the bytes it is about to reference.
