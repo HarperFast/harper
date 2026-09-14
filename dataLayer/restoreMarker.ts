@@ -224,7 +224,9 @@ export function beginRestore(dbPath: string): RestoreLock {
 /**
  * Acquire the per-database lock and write a drop marker. From here until `completeDrop`, every
  * thread's rescan skips the database and an on-demand open of it is refused; a crash leaves the
- * marker for `recoverInterruptedDrop` to finish the deletion.
+ * marker for `recoverInterruptedDrop` to finish the deletion. A marker left by a crashed *restore*
+ * refuses the drop (409): the directory it guards may be half-purged and only a rerun of the restore
+ * can recover it, so a drop must never overwrite that marker with its own.
  */
 export function beginDrop(dbPath: string): RestoreLock {
 	return beginLifecycle(dbPath, 'drop');
@@ -232,8 +234,19 @@ export function beginDrop(dbPath: string): RestoreLock {
 
 function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
-	const preexisting = existsSync(markerPath);
 	const lock = acquireRestoreLock(dbPath);
+	// The marker is read under the lock, never before taking it: a restore that begins and abandons
+	// in the gap between an unlocked read and this acquisition leaves a marker the write below would
+	// truncate into a drop marker, erasing the recovery state that marker exists to preserve.
+	const existingKind = lifecycleMarkerKind(dbPath);
+	const preexisting = existingKind !== null;
+	if (kind === 'drop' && existingKind === 'restore') {
+		fileLockRelease(lock.token);
+		const error: any = new Error(`Database at ${dbPath} has an incomplete restore; rerun restore_backup to recover it`);
+		error.statusCode = 409;
+		error.lifecycleConflict = 'restore';
+		throw error;
+	}
 	try {
 		const fd = openSync(markerPath, 'w');
 		try {

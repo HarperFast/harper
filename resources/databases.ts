@@ -2023,18 +2023,19 @@ function throwIfBlockedByRestore(dbPath: string, databaseName: string, attempt =
  * Take the per-database lifecycle lock for a drop and write its marker, refusing (409) while a
  * restore holds the lock or a crashed restore left its marker (the directory may still need
  * recovery). A marker from a crashed *drop* is simply superseded: this drop finishes what it started.
+ * `beginDrop` makes both judgements while holding the lock — an unlocked pre-check could be overtaken
+ * by a restore that starts and abandons in the gap — so this only names the database in its message.
  */
 function beginDropOfDatabase(dbPath: string, databaseName: string): RestoreLock {
-	if (lifecycleMarkerKind(dbPath) === 'restore') {
-		const state = checkRestoreState(dbPath);
-		if (state === 'clear') return beginDrop(dbPath);
-		throw conflict(
-			state === 'in-progress'
-				? `Database '${databaseName}' is being restored; retry when the restore completes`
-				: `Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`
-		);
+	try {
+		return beginDrop(dbPath);
+	} catch (error: any) {
+		if (error.lifecycleConflict === 'restore')
+			throw conflict(`Database '${databaseName}' has an incomplete restore; rerun restore_backup to recover it`);
+		if (error.statusCode === 409 && lifecycleMarkerKind(dbPath) === 'restore')
+			throw conflict(`Database '${databaseName}' is being restored; retry when the restore completes`);
+		throw error;
 	}
-	return beginDrop(dbPath); // 409 while a restore (or another drop) holds the lock
 }
 
 // After the close broadcast is acknowledged, every worker thread has released its Harper-managed

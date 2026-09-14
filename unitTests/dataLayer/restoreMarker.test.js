@@ -275,6 +275,28 @@ describe('restoreMarker', function () {
 			assert.deepEqual(scanLifecycleMarkers(tempDir), [{ dbName: 'somedb', state: 'incomplete', kind: 'restore' }]);
 		});
 
+		it('beginDrop refuses a crashed restore rather than overwriting its marker', function () {
+			// the marker is read under the lock, so a restore that begins and abandons between a caller's
+			// check and this call still refuses: truncating it into a drop marker would erase the only
+			// record that the directory needs a restore rerun, and the drop would then delete it
+			abandonRestore(beginRestore(dbPath));
+			assert.equal(checkRestoreState(dbPath), 'incomplete');
+			assert.throws(
+				() => beginDrop(dbPath),
+				(error) => error.statusCode === 409 && error.lifecycleConflict === 'restore'
+			);
+			assert.equal(lifecycleMarkerKind(dbPath), 'restore', 'the restore marker must survive the refusal');
+			// and the refusal releases the lock it took to read the marker
+			assert.equal(checkRestoreState(dbPath), 'incomplete');
+			// a drop marker from a crashed drop is still superseded: that drop is the one being finished
+			clearRestoreMarker(acquireRestoreLock(dbPath));
+			abandonDrop(beginDrop(dbPath));
+			const resumed = beginDrop(dbPath);
+			assert.equal(lifecycleMarkerKind(dbPath), 'drop');
+			assert.ok(resumed.preexisting);
+			completeDrop(resumed);
+		});
+
 		it('ignores a marker whose key does not match the database it names', function () {
 			// a marker keyed for `somedb` that names another database is not evidence about either
 			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
