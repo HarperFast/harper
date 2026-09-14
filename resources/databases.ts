@@ -2250,9 +2250,15 @@ export function closeDatabase(databaseName: string, closing?: Promise<unknown>[]
  *
  * Branches are invisible to the loop below but hold handles from the same registry, so this — the
  * thread's one teardown entry point — closes them too.
+ *
+ * Awaiting the returned promise is what makes the handles actually closed: a table with a derived
+ * index releases its runtime first and closes its column families only once that settles, so a
+ * caller that returns before it (an exiting job worker) would leave exactly the process-wide leak
+ * this exists to prevent.
  */
-export function closeLoadedDatabases(): void {
+export async function closeLoadedDatabases(): Promise<void> {
 	closeBranchDatabases();
+	const closing: Promise<unknown>[] = [];
 	// snapshot the names first: closeDatabase() deletes from `databases` as it goes
 	for (const databaseName of Object.keys(databases)) {
 		const dbTables = databases[databaseName];
@@ -2269,8 +2275,9 @@ export function closeLoadedDatabases(): void {
 		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) {
 			isRocks = true;
 		}
-		if (isRocks) closeDatabase(databaseName);
+		if (isRocks) closeDatabase(databaseName, closing);
 	}
+	await Promise.all(closing);
 }
 // HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than
 // versioned. process.env values are strings, so a bare truthiness check would treat "0"/"false"
