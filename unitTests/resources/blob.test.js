@@ -3019,6 +3019,158 @@ describe('durable blob-unlink queue (#1832)', () => {
 	});
 });
 
+describe('durable blob-unlink queue interlock (#1832)', () => {
+	// Each case pins one interleaving of the queue protocol by hooking the internal dbi at the exact
+	// operation the race sits on, so a competing drain or write runs inside that operation rather
+	// than on a timer. Its own database: the epoch cache these depend on is per root, and the
+	// queue has to start provably empty.
+	const UNLINK_QUEUE_KEY = Symbol.for('blob_unlink_queue');
+	let Interlock;
+	before(() => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		Interlock = table({
+			table: 'BlobInterlockTest',
+			database: 'blobinterlock',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'blob', type: 'Blob' },
+			],
+		});
+	});
+	const rootStore = () => Interlock.primaryStore.rootStore;
+	const queueDb = () => rootStore().dbisDb;
+	const queueRow = (fileId) => queueDb().getSync([UNLINK_QUEUE_KEY, fileId]);
+	const isQueueKey = (key) => Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY;
+	beforeEach(() => {
+		setDeletionDelay(600000); // nothing here may be reclaimed by a timer; every drain is driven
+		for (const { key } of queueDb().getRange({ start: [UNLINK_QUEUE_KEY], end: [UNLINK_QUEUE_KEY, '\uffff'] })) {
+			queueDb().removeSync(key);
+		}
+	});
+	afterEach(() => setDeletionDelay(500));
+
+	async function fileBackedBlob(id) {
+		const blob = createBlob(randomBytes(20000));
+		await Interlock.put({ id, blob });
+		const record = await Interlock.get(id);
+		const filePath = getFilePathForBlob(record.blob);
+		assert.ok(filePath && existsSync(filePath), 'expected a file-backed blob on disk');
+		return { fileId: getFileId(record.blob), filePath, stored: record.blob, allocated: blob };
+	}
+
+	it('reads the queue for a row that landed after a drain found it empty', async () => {
+		// A drain samples the epoch and then reads the range. One that runs between a stage beginning
+		// and its row landing sees an empty range; if it could record that as "empty at this epoch",
+		// every later encode would skip the queue read on the strength of it, and the row it never
+		// saw would be executed against a record that took the file back. The write that takes it
+		// back supersedes nothing itself (the record dropped the attribute), so nothing else moves the
+		// epoch before its encode.
+		const { fileId, filePath, stored } = await fileBackedBlob('raced-stage');
+		assert.strictEqual(drainBlobUnlinkQueue(rootStore()), false, 'the queue starts empty');
+		const db = queueDb();
+		const { put, putSync } = db;
+		let drainsInsideStage = 0;
+		const drainBeforeWriting = (key) => {
+			if (isQueueKey(key) && drainsInsideStage === 0) {
+				drainsInsideStage++;
+				drainBlobUnlinkQueue(rootStore());
+			}
+		};
+		db.putSync = function (key) {
+			drainBeforeWriting(key);
+			return putSync.apply(this, arguments);
+		};
+		db.put = function (key) {
+			drainBeforeWriting(key);
+			return put.apply(this, arguments);
+		};
+		try {
+			await Interlock.put({ id: 'raced-stage' });
+		} finally {
+			db.put = put;
+			db.putSync = putSync;
+		}
+		assert.equal(drainsInsideStage, 1, 'the competing drain must have run inside the stage');
+		assert.ok(queueRow(fileId), 'the supersession staged an intent for the replaced file');
+
+		await Interlock.put({ id: 'raced-stage', blob: stored });
+
+		assert.strictEqual(queueRow(fileId), undefined, 'a drain that raced the stage cannot vouch for the row it missed');
+		assert.ok(existsSync(filePath));
+	});
+
+	it('refuses a write that reaches the lock while the unlink is in flight', async () => {
+		// The lock is what makes the interlock exact: a cancelling write withdraws the row and then
+		// tests it. Handing the lock back before the row is removed opens a gap in which the write
+		// finds the row, withdraws it, takes the lock, and commits a reference to bytes already gone.
+		const { fileId, filePath, stored } = await fileBackedBlob('lock-race');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], { due: Date.now() - 1, storageIndex: 0 });
+		const db = queueDb();
+		const { removeSync } = db;
+		let attempted = 0;
+		let refused;
+		db.removeSync = function (key) {
+			// The competing write lands at the moment the drain settles the row.
+			if (isQueueKey(key) && key[1] === fileId && attempted++ === 0) {
+				try {
+					encodeBlobsWithFilePath(
+						() => Interlock.primaryStore.encoder.encode({ id: 'lock-race', blob: stored }),
+						'lock-race',
+						rootStore(),
+						'BlobInterlockTest'
+					);
+				} catch (error) {
+					refused = error;
+				}
+			}
+			return removeSync.apply(this, arguments);
+		};
+		try {
+			drainBlobUnlinkQueue(rootStore());
+			await waitFor(() => !existsSync(filePath), { timeout: 5000, message: 'the drain must unlink the file' });
+			await waitFor(() => attempted > 0, { timeout: 5000, message: 'the drain must settle the row' });
+		} finally {
+			db.removeSync = removeSync;
+		}
+		assert.match(
+			refused?.message ?? 'the write was allowed',
+			/being reclaimed/,
+			'a write racing the unlink must be refused, never allowed to reference the removed bytes'
+		);
+		await waitFor(() => queueRow(fileId) === undefined, { timeout: 5000, message: 'the row must be removed' });
+	});
+
+	it('consults the queue for a file the same instance stored before an intervening supersession', async () => {
+		// Being allocated by this process is a property of the instance for its whole life; being
+		// unsuperseded is not. Storing the instance again after another write replaced its file must
+		// withdraw that write's intent, or a drain between the two writes takes the file out from
+		// under the record that just re-referenced it.
+		const { fileId, filePath, allocated } = await fileBackedBlob('held-instance');
+		await Interlock.put({ id: 'held-instance', blob: createBlob(randomBytes(20000)) });
+		assert.ok(queueRow(fileId), 'the supersession staged an intent for the first file');
+
+		await Interlock.put({ id: 'held-instance', blob: allocated });
+
+		assert.strictEqual(queueRow(fileId), undefined, 'storing the allocating instance again must withdraw the intent');
+		assert.ok(existsSync(filePath));
+	});
+
+	it('does not answer an unreadable queue as an empty one', () => {
+		const db = queueDb();
+		const { getRange } = db;
+		db.getRange = () => {
+			throw new Error('queue unreadable');
+		};
+		try {
+			assert.strictEqual(drainBlobUnlinkQueue(rootStore()), undefined, 'unreadable is unknown, not empty');
+		} finally {
+			db.getRange = getRange;
+		}
+		assert.strictEqual(drainBlobUnlinkQueue(rootStore()), false, 'a readable empty queue is empty');
+	});
+});
+
 describe('blob file ownership (#1832)', () => {
 	let Owned, Sibling, Composite;
 	before(() => {

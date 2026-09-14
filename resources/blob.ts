@@ -73,6 +73,8 @@ type StorageInfo = {
 	// makes ownership stampable: a reference read back from storage never becomes owned, because
 	// nothing here can prove some other legacy record does not reference the same file.
 	allocated?: boolean;
+	// The unlink epoch at the first encode of an allocated file; see allocatedAndNeverSuperseded.
+	encodedAtEpoch?: number;
 	contentBuffer?: Buffer;
 	source?: Readable;
 	compress?: boolean;
@@ -1513,6 +1515,25 @@ function cancelBlobReclamation(storageInfo: StorageInfo): void {
 }
 
 /**
+ * Whether the queue can go unread for this file: this process allocated it, and no unlink intent —
+ * for it or for anything else in the database — has been staged since it was first encoded. A file
+ * cannot be superseded before it has been stored, so its first encode is the earliest point a
+ * supersession can follow, and every supersession moves the epoch. `allocated` alone does not say
+ * this: it holds for the life of the instance, and the same instance can be stored again long after
+ * an intervening write superseded the file.
+ */
+function allocatedAndNeverSuperseded(storageInfo: StorageInfo): boolean {
+	if (!storageInfo.allocated) return false;
+	const epoch = unlinkEpoch(storageInfo.store);
+	const current = epoch ? Atomics.load(epoch, STAGED) : NaN;
+	if (storageInfo.encodedAtEpoch === undefined) {
+		storageInfo.encodedAtEpoch = current;
+		return true;
+	}
+	return storageInfo.encodedAtEpoch === current;
+}
+
+/**
  * Whether a durable unlink intent exists for exactly this file. Exact, unlike the hashed hold slot.
  *
  * Reached from the encode of every stored blob, so the common answer has to be free. It is: a drain
@@ -1538,7 +1559,7 @@ function queueIsEmpty(store: any): boolean {
 	const seen = queueEmptyAt.get(store);
 	if (seen === undefined) return false;
 	const epoch = unlinkEpoch(store);
-	return !!epoch && Atomics.load(epoch, 0) === seen;
+	return !!epoch && Atomics.load(epoch, STAGED) === seen && Atomics.load(epoch, SETTLED) === seen;
 }
 
 /**
@@ -1720,17 +1741,21 @@ function unlinkQueueRange(queueDb: any): any {
 }
 
 /**
- * A cross-thread counter of unlink intents staged for this root, in the store's shared buffer. It
- * exists so the main-thread backstop can tell an idle database from a busy one with an atomic load
- * instead of a range scan: at ten thousand open databases the scans alone were thousands of empty
- * reads a second, all of them to discover there was nothing to do.
+ * Two cross-thread counters for this root, in the store's shared buffer: intents STAGED (bumped
+ * before the row is written) and intents SETTLED (bumped once the write has landed or failed). A
+ * stage is in flight while they differ. They exist so the main-thread backstop can tell an idle
+ * database from a busy one with an atomic load instead of a range scan — at ten thousand open
+ * databases the scans alone were thousands of empty reads a second — and so an encode can prove
+ * there is no row to read the same way.
  */
+const STAGED = 0;
+const SETTLED = 1;
 const unlinkEpochs = new WeakMap<any, Int32Array>();
 function unlinkEpoch(store: any): Int32Array | undefined {
 	let epoch = unlinkEpochs.get(store);
 	if (!epoch) {
 		try {
-			epoch = new Int32Array(store.getUserSharedBuffer('blob-unlink-epoch', new ArrayBuffer(4)), 0, 1);
+			epoch = new Int32Array(store.getUserSharedBuffer('blob-unlink-epochs', new ArrayBuffer(8)), 0, 2);
 		} catch (error) {
 			logger.debug?.('Could not get the shared blob unlink epoch', error);
 			return undefined;
@@ -1739,9 +1764,9 @@ function unlinkEpoch(store: any): Int32Array | undefined {
 	}
 	return epoch;
 }
-function bumpUnlinkEpoch(store: any): void {
+function bumpUnlinkEpoch(store: any, counter: typeof STAGED | typeof SETTLED): void {
 	const epoch = unlinkEpoch(store);
-	if (epoch) Atomics.add(epoch, 0, 1);
+	if (epoch) Atomics.add(epoch, counter, 1);
 }
 
 /**
@@ -1772,10 +1797,6 @@ function stageDurableUnlink(
 	if (!fileInfo.owner || fileInfo.owner[0] == null || !fileInfo.fileId) return false;
 	const queueDb = unlinkQueueDb(fileInfo.store);
 	if (!queueDb) return false;
-	// Bumped BEFORE the row lands, so "the epoch has not moved since a drain found the range empty"
-	// cannot be observed while a row is mid-write. That ordering is what lets the encode skip the
-	// queue read entirely on the common path.
-	bumpUnlinkEpoch(fileInfo.store);
 	const key = [UNLINK_QUEUE_KEY, fileInfo.fileId];
 	const value = {
 		due: supersededAt + getReclamationDelay(),
@@ -1784,28 +1805,44 @@ function stageDurableUnlink(
 		supersededAt,
 		priorVersion,
 	};
+	// Counted on both sides of the write. STAGED ahead of it, for the encode: from the moment a stage
+	// begins, no write may skip the queue read on the strength of a count a drain saw earlier. SETTLED
+	// behind it, for the drain: a pass that read the range while the row was in flight would otherwise
+	// record the queue as empty at the very count the row lands under, and every encode after it
+	// would take that at its word.
+	bumpUnlinkEpoch(fileInfo.store, STAGED);
 	try {
-		if (synchronous) queueDb.putSync(key, value);
-		else {
+		if (synchronous) {
+			queueDb.putSync(key, value);
+			bumpUnlinkEpoch(fileInfo.store, SETTLED);
+		} else {
 			// The record write is batched, and this row is queued into the same environment ahead of it,
 			// so it commits in that batch or an earlier one — never later. That is the ordering the
 			// synchronous commit buys on the other engine, obtained here for free.
 			const written = queueDb.put(key, value);
 			if (written?.then) {
 				written.then(
-					// The drain armed at supersede time can fire before this batch commits, and would then
-					// find nothing and arm no successor. This is the wakeup that is certain to see the row.
-					() => scheduleBlobUnlinkDrain(fileInfo.store, value.due - Date.now()),
-					(error: any) =>
-						logger.debug?.(
-							'Could not stage a blob unlink intent; the file is left for the sweep',
-							fileInfo.fileId,
+					() => {
+						bumpUnlinkEpoch(fileInfo.store, SETTLED);
+						// The drain armed at supersede time can fire before this batch commits, and would
+						// then find nothing and arm no successor. This is the wakeup certain to see the row.
+						scheduleBlobUnlinkDrain(fileInfo.store, value.due - Date.now());
+					},
+					// A rejected batch took the record write queued behind this row with it, so the file is
+					// still referenced and nothing here may delete it. Handed to cleanup_orphan_blobs, whose
+					// reference scan can prove what this entry no longer can.
+					(error: any) => {
+						bumpUnlinkEpoch(fileInfo.store, SETTLED);
+						logger.warn?.(
+							`The unlink intent for blob file ${fileInfo.fileId} could not be recorded; the file is left for cleanup_orphan_blobs`,
 							error
-						)
+						);
+					}
 				);
-			}
+			} else bumpUnlinkEpoch(fileInfo.store, SETTLED);
 		}
 	} catch (error) {
+		bumpUnlinkEpoch(fileInfo.store, SETTLED);
 		logger.debug?.('Could not stage a durable blob unlink', fileInfo.fileId, error);
 		return false;
 	}
@@ -1824,8 +1861,12 @@ function enqueueBlobUnlink(storageInfo: BlobFileInfo): boolean {
 	if (!queueDb) return false;
 	const key = [UNLINK_QUEUE_KEY, storageInfo.fileId];
 	const value = { due: Date.now(), storageIndex: storageInfo.storageIndex };
-	bumpUnlinkEpoch(storageInfo.store);
-	queueDb.putSync(key, value);
+	bumpUnlinkEpoch(storageInfo.store, STAGED);
+	try {
+		queueDb.putSync(key, value);
+	} finally {
+		bumpUnlinkEpoch(storageInfo.store, SETTLED);
+	}
 	return true;
 }
 
@@ -1840,19 +1881,26 @@ function enqueueBlobUnlink(storageInfo: BlobFileInfo): boolean {
  * recovering a prior life's rows) \u2014 a fresh process has no claim and no pendingReclamation
  * entry to clear.
  */
-export function drainBlobUnlinkQueue(rootStore: any): boolean {
+export function drainBlobUnlinkQueue(rootStore: any): boolean | undefined {
 	const queueDb = unlinkQueueDb(rootStore);
 	if (!queueDb) return false;
 	const now = Date.now();
-	// Sampled before the range is read, so a row staged during the pass cannot be recorded as absent.
+	// The range must be read from a snapshot no older than the epoch sample, or a row committed
+	// between the two is recorded as absent at an epoch that already counts it. lmdb-js shares one
+	// read transaction across a turn of the event loop; RocksDB opens a fresh iterator per range.
+	queueDb.resetReadTxn?.();
+	// Sampled before the range is read, so a row staged during the pass cannot be recorded as absent;
+	// and a stage already in flight at the sample cannot be vouched for either way.
 	const epoch = unlinkEpoch(rootStore);
-	const epochAtStart = epoch ? Atomics.load(epoch, 0) : undefined;
+	const stagedAtStart = epoch ? Atomics.load(epoch, STAGED) : undefined;
+	const settledAtStart = epoch ? Atomics.load(epoch, SETTLED) : undefined;
 	let entries;
 	try {
 		entries = unlinkQueueRange(queueDb);
 	} catch (error) {
+		// Unknown, which is not the same answer as empty: nothing may be recorded as idle on it.
 		logger.debug?.('Unable to read blob unlink queue', error);
-		return false;
+		return undefined;
 	}
 	let inFlight = inFlightUnlinks.get(rootStore);
 	if (!inFlight) inFlightUnlinks.set(rootStore, (inFlight = new Set()));
@@ -1950,9 +1998,12 @@ export function drainBlobUnlinkQueue(rootStore: any): boolean {
 		}
 		unlink(filePath, (error) => {
 			inFlight.delete(fileId);
-			releaseReclaimLock(storageInfo);
+			// The row is settled before the lock is handed back. A cancelling write withdraws the row
+			// and then tests the lock, so a row still present after the lock is free would let it
+			// withdraw, take the lock, and commit a reference to bytes that are already gone.
 			if (error && error.code !== 'ENOENT') {
 				if (!recordUnlinkFailure(queueDb, key, value, storageInfo, attemptCounts, error)) {
+					releaseReclaimLock(storageInfo);
 					settleOne(); // still queued; a later drain retries
 					return;
 				}
@@ -1963,6 +2014,7 @@ export function drainBlobUnlinkQueue(rootStore: any): boolean {
 				removeUnlinkQueueRow(queueDb, key);
 				releaseReclaimClaim(storageInfo);
 			}
+			releaseReclaimLock(storageInfo);
 			pendingReclamation.delete(filePath);
 			if (pendingReclamation.size === 0) queueTailDeadline = 0;
 			settleOne();
@@ -1973,8 +2025,9 @@ export function drainBlobUnlinkQueue(rootStore: any): boolean {
 	if (started === 0 && batchTruncated) scheduleBlobUnlinkDrain(rootStore, UNLINK_QUEUE_DRAIN_DELAY);
 	if (wakeAt < Infinity) scheduleBlobUnlinkDrain(rootStore, Math.max(0, wakeAt - now));
 	prunePendingReclamation(now);
-	if (queued) queueEmptyAt.delete(rootStore);
-	else if (epochAtStart !== undefined) queueEmptyAt.set(rootStore, epochAtStart);
+	if (!queued && stagedAtStart !== undefined && stagedAtStart === settledAtStart) {
+		queueEmptyAt.set(rootStore, stagedAtStart);
+	} else queueEmptyAt.delete(rootStore);
 	return queued;
 }
 
@@ -2263,7 +2316,7 @@ export function initBlobUnlinkQueue(rootStore: any): void {
 // thousands of empty reads a second to discover there is nothing to do.
 const mainSafetyDrains = new WeakSet<any>(); // roots already registered with the backstop
 const safetyRoots = new Set<WeakRef<any>>();
-const safetyState = new WeakMap<any, { epoch: number; idle: boolean }>();
+const safetyIdleAtEpoch = new WeakMap<any, number>(); // the epoch a pass last read the queue empty at
 let safetyTimer: ReturnType<typeof setInterval> | undefined;
 
 function armUnlinkSafetyTimer(): void {
@@ -2281,17 +2334,20 @@ function runUnlinkSafetyPass(): void {
 			continue;
 		}
 		const epoch = unlinkEpoch(store);
-		const staged = epoch ? Atomics.load(epoch, 0) : undefined;
-		const state = safetyState.get(store);
+		const staged = epoch ? Atomics.load(epoch, STAGED) : undefined;
+		const inFlight = !epoch || Atomics.load(epoch, SETTLED) !== staged;
 		// Nothing has been staged since a pass that found the queue empty: there is provably no work.
-		if (state?.idle && staged === state.epoch) continue;
-		let queued = false;
+		if (staged !== undefined && safetyIdleAtEpoch.get(store) === staged) continue;
+		let queued: boolean | undefined;
 		try {
 			queued = drainBlobUnlinkQueue(store);
 		} catch (error) {
 			logger.debug?.('Blob unlink safety drain failed', error);
 		}
-		safetyState.set(store, { epoch: staged, idle: !queued });
+		// Only a pass that read the whole range and found nothing retires the backstop for this root;
+		// a queue that could not be read is not an empty one.
+		if (queued === false && !inFlight) safetyIdleAtEpoch.set(store, staged);
+		else safetyIdleAtEpoch.delete(store);
 	}
 	if (safetyRoots.size === 0) {
 		clearInterval(safetyTimer);
@@ -4112,8 +4168,8 @@ addExtension({
 			// A record version being written now references this file, so any reclamation queued by an
 			// earlier supersession is void — the retain-on-update check in RecordEncoder only covers the
 			// write that supersedes, not a file already awaiting reclamation from a previous one. A file
-			// this write allocated cannot have one, so the queue is not consulted for it.
-			if (!storageInfo.allocated) cancelBlobReclamation(storageInfo);
+			// allocated here and never superseded cannot have one, so the queue is not consulted for it.
+			if (!allocatedAndNeverSuperseded(storageInfo)) cancelBlobReclamation(storageInfo);
 			// Ownerless references stay three elements wide, which is also what an older reader sees
 			// here — a missing owner is the conservative state, never a wrong one.
 			return storageInfo.owner?.[0] == null
