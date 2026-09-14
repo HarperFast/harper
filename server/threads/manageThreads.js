@@ -546,6 +546,10 @@ function startWorker(path, options = {}) {
 		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
 	}
 
+	// `workerCount` is the serving topology, read by restartWorkers to size its throttle. Only a start
+	// that declares a thread count describes that topology; an ephemeral worker (a job) must not erase it.
+	if (options.threadCount !== undefined) workerCount = options.threadCount;
+
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
 			maxOldGenerationSizeMb: maxOldMemory,
@@ -560,7 +564,7 @@ function startWorker(path, options = {}) {
 			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
 			addPortIsJobWorkers: channelsToConnect.map((channel) => channel.existingPort.isJobWorker === true),
 			workerIndex: options.workerIndex,
-			workerCount: (workerCount = options.threadCount),
+			workerCount: options.threadCount,
 			name: options.name,
 			isolatedApplication: options.application,
 			restartNumber: module.exports.restartNumber,
@@ -701,7 +705,12 @@ async function restartWorkers(
 		}
 
 		module.exports.restartNumber++;
-		if (maxWorkersDown < 1) {
+		// `NaN < 1` is false, so a NaN throttle slips past the ratio branch below and then makes every
+		// throttle comparison false — no throttle at all. `Infinity` is the deliberate "all at once" sentinel
+		// shutdownWorkers passes, and shutdownWorkersNow depends on it, so only NaN is clamped here.
+		if (Number.isNaN(maxWorkersDown)) {
+			maxWorkersDown = 1;
+		} else if (maxWorkersDown < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of
 			// threads
 			maxWorkersDown = maxWorkersDown * workers.length;

@@ -2409,3 +2409,25 @@ insert is the phase-3 follow-up.
 - **The adapter owns the `'error'` listener.** A `destroy(err)` right after `writeHead()` emits before the awaiting caller can attach one; the error stays in the stream's `errored` state for `pipeline()`, `finished()` or async iteration. Client disconnect (`Request.signal`) destroys the response without an error after headers (a plain premature close, which `pipeBodyToResponse` treats as routine) and rejects the promise with the abort reason before them; a handler that throws or rejects before ending the response destroys it, and one that fails after `end()` is logged at warn.
 - **Header names are case-insensitive on removal too.** `Headers.delete` lowercases like `set`/`get`/`has`; the inherited `Map.delete` silently left `send`'s `Content-Length` on a gzip body (truncated transfers).
 - **Express is not a target.** `express`'s `app.handle()` replaces the response's prototype with one rooted at `http.ServerResponse.prototype`, which no Writable-derived response survives, and would do the same to the request `Proxy`'s target, Harper's real `IncomingMessage`. Middleware that duck-types the response (Next.js, `compression`, `send`, `serve-static`, `finalhandler`, h3, fastify) is the supported surface.
+
+## `manageThreads` has two different `workerCount`s (`server/threads/manageThreads.js`)
+
+The module-global `let workerCount` and the per-worker `workerData.workerCount` share a name and
+nothing else. `getWorkerCount()` (and therefore the `server.workerCount` a component reads) resolves
+only `workerData.workerCount`, frozen at spawn — it never reads the global; on the main thread it
+answers `isMainWorker ? 1 : undefined`. The global's one and only reader is `restartWorkers`' default
+`maxWorkersDown = Math.max(Math.floor(workerCount / 8), 1)`, so it is the _serving topology_ the
+rolling-restart throttle is sized from, nothing more.
+
+That makes the global writable only by a start that declares the topology. It used to be assigned
+unconditionally from `options.threadCount` inside the `workerData` literal, so every job worker — which
+passes no `threadCount` — set it to `undefined`, and the next rolling restart computed `NaN` (harper#2491).
+`NaN` defeats the guard below it (`NaN < 1` is false) _and_ every throttle comparison, so the restart
+took the whole pool down at once. The fix is the conditional write plus a NaN clamp at the consumer — NaN only: `Infinity` is the
+deliberate "all at once" sentinel `shutdownWorkers` passes, and `shutdownWorkersNow` depends on it to
+mark every worker synchronously before the first await.
+
+`workerData.workerCount` must stay exactly what it is for each start, `undefined` for job workers
+included: an earlier attempt to give job workers the serving count instead broke the Windows
+integration shard with ECONNREFUSED across the job tests. A job worker that believes it is part of the
+pool behaves differently.
