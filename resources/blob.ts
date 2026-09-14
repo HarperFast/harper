@@ -2607,11 +2607,14 @@ export function getBlobPathsForDatabaseName(databaseName: string): string[] {
 	}
 	return [join(getHdbBasePath(), 'blobs', databaseName)];
 }
-export async function deleteRootBlobPathsForDB(store: RootDatabase): Promise<void> {
-	const paths = getRootBlobPathsForDB(store);
-	if (paths) {
-		await Promise.all(paths.map((path) => rimrafSteadily(path)));
-	}
+/**
+ * Remove every blob root of a database, resolved by name rather than through its store: a drop knows
+ * the name, and `getRootBlobPathsForDB` answers `[]` behind a warning for a store the name was never
+ * stamped on — the shape a tableless on-demand open produces — which would narrow the removal to
+ * nothing while the rest of the drop reported success.
+ */
+export async function deleteBlobPathsForDatabaseName(databaseName: string): Promise<void> {
+	await Promise.all(getBlobPathsForDatabaseName(databaseName).map((path) => rimrafSteadily(path)));
 }
 
 /**

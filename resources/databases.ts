@@ -42,7 +42,7 @@ const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, readAuditEntry, createAuditEntry, type AuditRecord } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
-import { databasePaths, deleteRootBlobPathsForDB, getBlobPathsForDatabaseName } from './blob.ts';
+import { databasePaths, deleteBlobPathsForDatabaseName, getBlobPathsForDatabaseName } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
@@ -2145,7 +2145,7 @@ export async function dropDatabase(databaseName) {
 		closeDatabase(databaseName, closing);
 		await Promise.all(closing);
 		await unlink(rootStore.path);
-		await deleteRootBlobPathsForDB(rootStore);
+		await deleteBlobPathsForDatabaseName(databaseName);
 		return;
 	}
 

@@ -266,25 +266,27 @@ describe('index store wrapper follows the index kind across a live attribute cha
 		this.timeout(30_000);
 		setupTestDBPath();
 		setMainIsWorker(true);
-		let Tbl = define(true);
+		let Tbl = define({ type: 'HNSW', M: 16 });
+		await Tbl.indexingOperation;
 
-		// the derived-plane cleanup is the last step of the binding and runs after `attributesDbi.put`
-		// has already persisted the new descriptor. It is best-effort hygiene — it absorbs its own I/O
-		// errors and falls back to marking the file stale — so a throw out of that fallback must not
-		// abort a declaration the catalog already carries, whose rebuild would then never be queued.
+		// an options-only change of the same kind, so the store is reused and its rebinding is deferred
+		// to the publication point — after `attributesDbi.put` has already persisted the descriptor.
+		// The derived-plane cleanup that ends that rebinding is best-effort hygiene (it absorbs its own
+		// I/O errors and falls back to marking the plane file stale), so a throw out of that fallback
+		// must not abort a declaration the catalog already carries, whose rebuild would never be queued.
 		const HNSW = CUSTOM_INDEXES.HNSW;
 		const originalCleanup = HNSW.prototype.cleanupDisabledPlane;
 		HNSW.prototype.cleanupDisabledPlane = () => {
 			throw new Error('injected disabled-plane cleanup failure');
 		};
 		try {
-			Tbl = define({ type: 'HNSW', M: 16 });
+			Tbl = define({ type: 'HNSW', M: 32 });
 		} finally {
 			HNSW.prototype.cleanupDisabledPlane = originalCleanup;
 		}
 
-		assert.ok(!(Tbl.indices.vector instanceof RocksIndexStore), 'the new wrapper is published');
-		assert.ok(Tbl.indexingOperation, 'and the change of kind still queued its rebuild');
+		assert.ok(!(Tbl.indices.vector instanceof RocksIndexStore), 'still an object store');
+		assert.equal(Tbl.indices.vector.customIndex.M, 32, 'and the reused store is on the new definition');
 		await Tbl.indexingOperation;
 	});
 });
