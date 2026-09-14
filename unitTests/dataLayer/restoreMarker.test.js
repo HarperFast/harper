@@ -332,6 +332,25 @@ describe('restoreMarker', function () {
 			releaseRestoreLock(acquireRestoreLock(dbPath));
 		});
 
+		it('keeps a superseded drop manifest bound to its original targets', function () {
+			const originalRoot = join(tempDir, 'blobs-a', 'somedb');
+			const repointedRoot = join(tempDir, 'blobs-b', 'somedb');
+			mkdirSync(dbPath, { recursive: true });
+			mkdirSync(originalRoot, { recursive: true });
+			mkdirSync(repointedRoot, { recursive: true });
+			const originalTargets = { database: dbPath, blobRoots: [originalRoot] };
+			abandonDrop(beginDrop(dbPath, originalTargets));
+			const originalMarker = readFileSync(restoringMarkerPath(dbPath), 'utf8');
+
+			const resumed = beginDrop(dbPath, { database: dbPath, blobRoots: [repointedRoot] });
+			try {
+				assert.deepEqual(resumed.dropTargets, originalTargets);
+				assert.equal(readFileSync(restoringMarkerPath(dbPath), 'utf8'), originalMarker);
+			} finally {
+				abandonDrop(resumed);
+			}
+		});
+
 		it('removes a marker it published when the step after publication fails', function () {
 			// the marker is live from the rename on, and a drop marker is what the next scan finishes by
 			// deleting the database — so a failure after it (the metadata-directory fsync is the only

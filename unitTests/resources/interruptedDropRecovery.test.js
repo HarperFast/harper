@@ -7,11 +7,22 @@
 
 require('../testUtils');
 const assert = require('node:assert');
-const { existsSync } = require('node:fs');
+const { existsSync, mkdirSync, rmSync, writeFileSync } = require('node:fs');
+const { dirname, join } = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
-const { table, database, getDatabases, resetDatabases, closeDatabase, databases } = require('#src/resources/databases');
+const {
+	table,
+	database,
+	dropDatabase,
+	getDatabases,
+	resetDatabases,
+	closeDatabase,
+	databases,
+} = require('#src/resources/databases');
 const { beginDrop, abandonDrop, restoringMarkerPath } = require('#src/dataLayer/restoreMarker');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
+const environment = require('#src/utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('#src/utility/hdbTerms');
 
 describe('interrupted drop recovery', function () {
 	before(function () {
@@ -78,6 +89,44 @@ describe('interrupted drop recovery', function () {
 			unmanaged.close();
 			// nothing holds it now, so this finishes the drop and leaves the name clean
 			resetDatabases();
+		}
+	});
+
+	it('uses a pre-existing marker manifest when an online drop resumes after blob-path drift', async function () {
+		this.timeout(30000);
+		const DB = 'interrupteddropmanifest';
+		const configuredBefore = environment.get(CONFIG_PARAMS.STORAGE_BLOBPATHS);
+		const firstVolume = join(dirname(setupTestDBPath()), 'drop-manifest-volume-a');
+		const secondVolume = join(dirname(setupTestDBPath()), 'drop-manifest-volume-b');
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [firstVolume]);
+		const T = table({
+			table: 'rows',
+			database: DB,
+			attributes: [{ attribute: 'id', isPrimaryKey: true }],
+		});
+		const rootStore = T.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) {
+			environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, configuredBefore);
+			return this.skip();
+		}
+		const originalRoot = join(firstVolume, DB);
+		const repointedRoot = join(secondVolume, DB);
+		mkdirSync(originalRoot, { recursive: true });
+		mkdirSync(repointedRoot, { recursive: true });
+		writeFileSync(join(originalRoot, 'old-blob'), 'old');
+		writeFileSync(join(repointedRoot, 'new-blob'), 'new');
+		abandonDrop(beginDrop(rootStore.path, { database: rootStore.path, blobRoots: [originalRoot] }));
+		environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, [secondVolume]);
+
+		try {
+			await dropDatabase(DB);
+			assert.ok(!existsSync(originalRoot), 'the original drop target is removed');
+			assert.ok(existsSync(repointedRoot), 'the newly configured root is untouched');
+		} finally {
+			environment.setProperty(CONFIG_PARAMS.STORAGE_BLOBPATHS, configuredBefore);
+			closeDatabase(DB);
+			rmSync(firstVolume, { recursive: true, force: true });
+			rmSync(secondVolume, { recursive: true, force: true });
 		}
 	});
 });
