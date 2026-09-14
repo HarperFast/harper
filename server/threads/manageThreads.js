@@ -546,8 +546,8 @@ function startWorker(path, options = {}) {
 		for (const requirePath of getRequireModules()) execArgv.push('--require', requirePath);
 	}
 
-	// `workerCount` is the serving topology, read by restartWorkers to size its throttle. Only a start
-	// that declares a thread count describes that topology; an ephemeral worker (a job) must not erase it.
+	// Conditional because an ephemeral worker (a job) declares no topology, and must not erase the one
+	// restartWorkers sizes its throttle from.
 	if (options.threadCount !== undefined) workerCount = options.threadCount;
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
