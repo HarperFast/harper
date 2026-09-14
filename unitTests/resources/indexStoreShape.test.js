@@ -128,6 +128,51 @@ describe('index store wrapper follows the index kind across a live attribute cha
 		assert.equal(openRefCount(Tbl), baseline, 'the reopen attempt must not leave a net-new open handle');
 	});
 
+	it('leaves a reused store on its committed index definition when the catalog write throws', async function () {
+		this.timeout(30_000);
+		setupTestDBPath();
+		setMainIsWorker(true);
+		const defineGraph = (indexed) =>
+			table({
+				table: 'IndexRebind',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'vector', indexed, type: 'Array' },
+				],
+			});
+		let Tbl = defineGraph({ type: 'HNSW', M: 16 });
+		let last;
+		for (let i = 0; i < 8; i++) last = Tbl.put({ id: i, vector: [i % 2, i % 3, i % 4] });
+		await last;
+		await Tbl.indexingOperation;
+		const graph = Tbl.indices.vector;
+		const committed = graph.customIndex;
+		assert.equal(committed.M, 16);
+
+		// an options change of the SAME kind reuses the live handle, so binding the new definition to it
+		// before the descriptor write commits would leave this thread indexing under options no other
+		// thread and no reload would agree with
+		const originalGetRange = Tbl.primaryStore.getRange.bind(Tbl.primaryStore);
+		Tbl.primaryStore.getRange = () => {
+			throw new Error('injected failure: scanning for existing data');
+		};
+		try {
+			assert.throws(() => defineGraph({ type: 'HNSW', M: 32 }), /injected failure/);
+		} finally {
+			Tbl.primaryStore.getRange = originalGetRange;
+		}
+
+		assert.strictEqual(Tbl.indices.vector, graph, 'the reused handle is still the published one');
+		assert.strictEqual(graph.customIndex, committed, 'and still carries the definition that committed');
+		assert.equal(graph.customIndex.M, 16);
+
+		// the same change, allowed to complete, does rebind
+		Tbl = defineGraph({ type: 'HNSW', M: 32 });
+		assert.equal(Tbl.indices.vector.customIndex.M, 32);
+		await Tbl.indexingOperation;
+	});
+
 	it('closes a first-time index handle too when a later step throws before it is published', async function () {
 		this.timeout(30_000);
 		setupTestDBPath();

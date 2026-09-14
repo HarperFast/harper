@@ -2405,23 +2405,38 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
  * re-resolving the format and rebinding the custom index that call may have changed.
  */
 function prepareIndexStore(dbi: any, dbiKey: string, rootStore: RootDatabaseKind, attribute: any) {
+	stageIndexStore(dbi, dbiKey, rootStore, attribute)();
+	return dbi;
+}
+
+/**
+ * Build the custom index for `attribute`'s current options without binding it, returning the step
+ * that binds it onto the store and retires what the disabled options left behind. A reused store is
+ * the *live* one — the table, and every other thread's reads through it, are on the binding it
+ * already has — so a caller whose catalog write can still throw stages the candidate first and
+ * commits only once that write has landed. Constructing it early is also where an illegal option
+ * combination throws, which is before anything has been rebound.
+ */
+function stageIndexStore(dbi: any, dbiKey: string, rootStore: RootDatabaseKind, attribute: any): () => void {
 	const isCustomObjectIndex = !!(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
 	if (rootStore instanceof RocksDatabase) {
 		if (isCustomObjectIndex && resolveIndexFormat(dbiKey, rootStore, dbi, attribute) === 'versioned') {
 			armVersionedIndexEncoder(dbi, rootStore);
 		}
 	}
-	if (!attribute.indexed.type) return dbi;
+	if (!attribute.indexed.type) return () => {};
 	const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
-	if (CustomIndex) {
-		dbi.customIndex = new CustomIndex(dbi, attribute.indexed);
+	if (!CustomIndex) {
+		logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
+		return () => {};
+	}
+	const candidate = new CustomIndex(dbi, attribute.indexed);
+	return () => {
+		dbi.customIndex = candidate;
 		// derived state whose maintaining option is now off must not linger to be adopted
 		// stale on a later re-enable
-		dbi.customIndex.cleanupDisabledPlane?.();
-	} else {
-		logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
-	}
-	return dbi;
+		candidate.cleanupDisabledPlane?.();
+	};
 }
 
 /**
@@ -3043,13 +3058,18 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// and an open native handle nothing owns still counts against a later drop_database.
 				let previousIndexToRelease: any;
 				let replacementToReleaseOnFailure: any;
+				// A reused store is already live: rebinding its custom index (and unlinking the derived
+				// plane the new options disable) before the catalog write below — which can still throw —
+				// would leave this thread reading through the new definition while disk and every other
+				// thread keep the old one. The binding is built now and committed at the publication point.
+				let commitIndexBinding: (() => void) | undefined;
 				try {
 					if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
 						previousIndexToRelease = dbi;
 						dbi = openIndex(dbiKey, rootStore, attribute);
 						indexStoreIsNewlyOpened = true;
 					} else if (dbi) {
-						dbi = prepareIndexStore(dbi, dbiKey, rootStore, attribute);
+						commitIndexBinding = stageIndexStore(dbi, dbiKey, rootStore, attribute);
 					} else {
 						dbi = openIndex(dbiKey, rootStore, attribute);
 					}
@@ -3217,6 +3237,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// a branch's close list takes only handles this call opened, and only once they are
 				// published: a reused one is already on it, and one the catch above closed must not be
 				if (indexStoreIsNewlyOpened) target.adopt(dbi);
+				commitIndexBinding?.();
 				indices[attribute.name] = dbi;
 				if (previousIndexToRelease) {
 					try {
