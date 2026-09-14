@@ -137,14 +137,47 @@ describe('Table.getRecordCount', () => {
 
 	it('completes exactly just above the sample floor', async function () {
 		this.timeout(120000);
-		// Above MIN_ESTIMATOR_SAMPLE but below twice it, so every checkpoint finds the scan already past
-		// the halfway point and the loop runs to an exact count. This is the guard for the checkpoint
-		// contract: `CountEstimator.advance` is incremental, so reporting the cumulative scanned total at
-		// each checkpoint would inflate the base until the halfway test flipped and forced a bogus estimate.
+		// Above MIN_ESTIMATOR_SAMPLE but below twice it, so no checkpoint finds the scan below halfway and
+		// the count comes back exact -- either from the loop completing or from the two samples meeting.
 		const JustAbove = await buildTable('RecordCountJustAboveFloor', 1500);
 		const result = await JustAbove.getRecordCount({ timeLimit: -1 });
 		assert.equal(result.recordCount, 1500);
 		assert.equal(result.estimatedRange, undefined, 'a table this size must not reach the sampling path');
+	});
+
+	it('reports checkpoint deltas, not the cumulative scanned total', async function () {
+		this.timeout(120000);
+		// `CountEstimator.advance` is incremental. Reporting the running total at each checkpoint compounds
+		// it quadratically -- twenty checkpoints past the floor would claim over 20,000 entries traversed on
+		// a 3,000-row table -- taking the base, the halfway decision and the extrapolation with it. Asserting
+		// on the reported total is what discriminates this; the returned count alone does not, because the
+		// two samples meet and report exactly either way. The fixture has to be a table the halfway test
+		// never releases, so checkpoints accumulate -- on a table that escapes at the first checkpoint there
+		// is only one advance() and the two contracts are indistinguishable.
+		const Accumulating = await buildTable('RecordCountCheckpointDeltas', 1500);
+		const store = Accumulating.primaryStore;
+		if (typeof store.createCountEstimator !== 'function') return this.skip();
+		const original = store.createCountEstimator;
+		const owned = Object.hasOwn(store, 'createCountEstimator');
+		let advanced = 0;
+		store.createCountEstimator = function (...args) {
+			const estimator = original.apply(this, args);
+			return {
+				advance(lastKey, count) {
+					advanced += count;
+					return estimator.advance(lastKey, count);
+				},
+				estimate: () => estimator.estimate(),
+			};
+		};
+		try {
+			await Accumulating.getRecordCount({ timeLimit: -1 });
+			assert.ok(advanced > 0, 'the estimator must have been checkpointed at all');
+			assert.ok(advanced <= 1500, `reported ${advanced} entries traversed, more than the 1500 the table holds`);
+		} finally {
+			if (owned) store.createCountEstimator = original;
+			else delete store.createCountEstimator;
+		}
 	});
 
 	it('keeps the reported count inside its own range across churn distributions', async function () {

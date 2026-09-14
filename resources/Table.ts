@@ -204,6 +204,13 @@ const COUNT_YIELD_INTERVAL = 2_048;
 const MIN_ESTIMATOR_SAMPLE = 1_000;
 // Budget intervals the forward scan may spend before it must estimate rather than keep scanning.
 const MAX_ESTIMATE_CHECKPOINTS = 20;
+// A store estimate's `count`, or 0 when the store answered with a shape that cannot be trusted --
+// DESIGN.md's invariant for this API family is that such an answer degrades rather than poisons.
+function usableCount(estimate: any): number {
+	return Number.isFinite(estimate?.count) && estimate.count >= 0 && estimate.confidence >= 0 && estimate.confidence <= 1
+		? estimate.count
+		: 0;
+}
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -5835,6 +5842,9 @@ export function makeTable(options) {
 			let entryCount = 0;
 			let remainderPhysical = 0;
 			let estimator;
+			// feature-detected per DESIGN.md's invariant for this API family; LMDB stores do not implement it
+			const canEstimate =
+				typeof primaryStore.createCountEstimator === 'function' && typeof primaryStore.estimateCount === 'function';
 			let estimatorFailed = false;
 			let checkpoints = 0;
 			let checkpointedEntries = 0;
@@ -5848,44 +5858,40 @@ export function makeTable(options) {
 				entriesScanned++;
 				lastKey = key;
 				await rest();
-				// A rate extrapolated from a handful of entries is noise whatever the base is, and a table
-				// too small to reach the floor is small enough to finish exactly -- which is also what keeps
-				// a small, heavily rewritten table off an estimated base altogether.
+				// a table too small to reach the floor is small enough to finish exactly
 				if (exactCount || entriesScanned < MIN_ESTIMATOR_SAMPLE) continue;
 				const now = performance.now();
 				if (now <= nextCheckAt) continue;
 				nextCheckAt = now + TIME_LIMIT;
 				checkpoints++;
-				if (isRocksDB && !estimatorFailed) {
+				if (canEstimate && !estimatorFailed) {
 					try {
 						estimator ??= primaryStore.createCountEstimator({ start: true });
+						// advance() is incremental
 						estimator.advance(lastKey, entriesScanned - checkpointedEntries);
 						checkpointedEntries = entriesScanned;
-						const estimate = estimator.estimate();
-						entryCount = Number.isFinite(estimate?.count) ? estimate.count : 0;
+						entryCount = usableCount(estimator.estimate());
 					} catch (error) {
-						// DESIGN.md's invariant for this API: a store answering differently -- or closing
-						// concurrently, which `drop_table` can do while this scan is parked in a yield --
-						// degrades to the exact scan rather than poisoning the count with NaN.
+						// a store closing concurrently -- drop_table can, while this scan is parked in a yield
 						logger.debug?.('Count estimator unavailable, falling back to an exact scan', error);
 						estimatorFailed = true;
 						estimator = undefined;
 						entryCount = 0;
 					}
-				} else if (!isRocksDB) entryCount = primaryStore.getStats().entryCount;
-				// A base that keeps undershooting would hold `entriesScanned < halfway` false forever and
-				// walk the whole table -- the unbounded describe scan this path exists to avoid. The
-				// checkpoint ceiling bounds the forward scan whatever the estimate says; the reverse sample
-				// is bounded by `limit` in turn, so the whole call stays within twice the scan at break time.
-				if (estimator && (checkpoints >= MAX_ESTIMATE_CHECKPOINTS || entriesScanned < Math.floor(entryCount / 2))) {
+				} else if (!canEstimate) entryCount = primaryStore.getStats().entryCount;
+				// Zero is "no usable base": degrade to the exact scan. The checkpoint ceiling is what stops a
+				// base that keeps undershooting from holding the halfway test false forever and walking the
+				// whole table; the reverse sample is bounded by `limit` in turn.
+				if (
+					entryCount > 0 &&
+					(checkpoints >= MAX_ESTIMATE_CHECKPOINTS || entriesScanned < Math.floor(entryCount / 2))
+				) {
 					try {
 						const remaining = primaryStore.estimateCount({ start: lastKey, exclusiveStart: true });
-						// Widened by the estimate's own reported untrustworthiness: it is block-granular and
-						// can land below the live count it is meant to bound.
-						remainderPhysical =
-							Number.isFinite(remaining?.count) && remaining.confidence >= 0 && remaining.confidence <= 1
-								? remaining.count * (2 - remaining.confidence)
-								: 0;
+						// widened by its own reported untrustworthiness: block-granular, so it can land below
+						// the live count it is meant to bound
+						const remainingCount = usableCount(remaining);
+						remainderPhysical = remainingCount > 0 ? remainingCount * (2 - remaining.confidence) : 0;
 					} catch {
 						remainderPhysical = 0;
 					}
@@ -5906,8 +5912,7 @@ export function makeTable(options) {
 				// tables.
 				let reverseScanned = 0;
 				// Disjointness is enforced against the forward scan's own last key rather than inferred from
-				// the base: the base is an estimate now, and an estimate that overshoots by 2x would other-
-				// wise have the two samples count the same records twice.
+				// the base, which is an estimate that can overshoot by more than 2x.
 				let sampledWholeTable = false;
 				for (const { key, value } of primaryStore.getRange({
 					start: '￿',
@@ -5936,15 +5941,14 @@ export function makeTable(options) {
 					Math.pow((recordCount - firstRecordCount + 1) / limit / 2, 2) + // variance between samples
 					(recordRate * (1 - recordRate)) / sampleSize;
 
-				// Bounds on the extrapolation base. An estimated base cannot see the untraversed region, so
-				// the interval spans both ways it can be wrong: every remaining entry superseded (only what
-				// was scanned is live) through every remaining entry live (the uncalibrated physical count).
-				// Churn concentrated outside the scanned prefix calibrates to nothing -- prefix density says
-				// the remainder is clean -- so an interval derived from the estimator's confidence would sit
-				// narrowly around the wrong number instead of containing the true one.
+				// Endpoints for the extrapolation base, spanning both ways an estimated base can be wrong:
+				// every remaining entry superseded (only what was sampled is live) through every remaining
+				// entry live (the uncalibrated physical count). Churn concentrated outside the sampled ends
+				// calibrates to nothing, so an interval derived from the estimator's confidence would sit
+				// narrowly around the wrong number. Both endpoints are themselves estimates on RocksDB, so
+				// this is a widened heuristic interval, not a guaranteed bound on the live count.
 				const baseMin = entriesScanned + reverseScanned;
-				// `entryCount` is a floor as well as a summand: a block-granular remainder that undershoots
-				// must not clamp the interval below the base the point estimate itself was extrapolated from.
+				// a block-granular remainder that undershoots must not clamp the interval below the base
 				const baseMax = Math.max(entriesScanned + remainderPhysical, entryCount, baseMin);
 				// What both samples actually counted is a floor on the base too: a calibration that undershoots
 				// must not extrapolate below the entries already observed.
