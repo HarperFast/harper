@@ -2550,7 +2550,12 @@ record values. Any other projection or primary-read failure is fail-closed.
 ```ts
 interface DerivedIndexBackend {
 	readonly id: string;
-	attach(host: { isOwnerEpoch(epoch: bigint): boolean; getReadiness(): DerivedIndexReadiness }): void;
+	attach(host: {
+		isOwnerEpoch(epoch: bigint): boolean;
+		getReadiness(): DerivedIndexReadiness;
+		noteUnindexable(reason: string): void;
+	}): void;
+	acquire?(ownerEpoch: bigint): DerivedIndexCursor | undefined | Promise<DerivedIndexCursor | undefined>;
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	deliver(batch: DerivedIndexBatch): DERIVED_INDEX_ACCEPTED | DERIVED_INDEX_DEFERRED | DERIVED_INDEX_FAILED;
 	flush(reason: 'age' | 'threshold' | 'shutdown'): void | Promise<void>; // barrier request
@@ -2566,9 +2571,20 @@ type DerivedIndexBatch = {
 	bytes: number; // estimate; non-enumerable
 	rebuild?: true;
 };
+type DerivedIndexMutation = {
+	tableId: number;
+	recordId: Id;
+	recordKey: string; // canonical writeKeyId(recordId)
+	logVersion: number;
+	state: DerivedIndexState;
+};
 ```
 
-There is one contract and every hook is required. What an ownership handoff has to fence is work
+There is one contract; only `acquire` and `reset` are optional. The runtime calls `acquire` after
+minting the owner epoch and before reading the durable cursor. A transient acquisition failure
+publishes `unknown` with reason `acquisition-failed`, admits source writes, releases the lock, and
+retries up to `maxAcquisitionAttempts`; exhausting that local budget publishes `unavailable`.
+What an ownership handoff has to fence is work
 that survives a method return — a queued apply, a barrier that completes later, a cursor that
 trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
 handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
@@ -2618,7 +2634,8 @@ completion.
 When the backend has `reset` and the runtime was built with `scanRecords`, `needs-rebuild` is a
 phase, not an end state: publish `rebuilding`; `shutdown(previousEpoch)`; mint a new epoch and
 republish; `reset(newEpoch)` (afterwards `getDurableCursor()` must be `undefined`); capture the
-**committed tail** of every log; scan every registered table (tombstones and symbol keys skipped),
+**committed tail** of every log; scan every registered table (tombstones and records whose canonical
+`writeKeyId()` is not a string skipped),
 project, deliver bounded chunks with `through` absent; deliver a final chunk with `through` = tail;
 install the tail as offered progress and replay through the ordinary drain; publish `ready` at the
 first durable advance past the tail or the first idle pass with durable == offered.
@@ -2690,7 +2707,11 @@ be enabled only once every worker runs a runtime with the admission check.
 
 ```mermaid
 flowchart TD
-    A[load backend cursor] --> B{all saved logs and boundaries exact?}
+    A0[acquire owner-only backend state] -->|opened| A[load backend cursor]
+    A0 -->|transient failure below cap| R[admit writes, release, back off]
+    R --> A0
+    A0 -->|acquisition attempt cap| U
+    A --> B{all saved logs and boundaries exact?}
     B -->|no| X{backend has reset and runtime has scanRecords?}
     B -->|yes| C[open aggregate iterator after anchors]
     C --> D[bounded drain: collect, resolve, deliver]

@@ -668,6 +668,7 @@ function logError(message: string, error: unknown): void {
 }
 
 function log(level: 'warn' | 'error', message: string, error: unknown): void {
+	// Keep the optional binding path from eagerly loading Harper's full config graph.
 	void import('../utility/logging/logger.ts')
 		.then(({ loggerWithTag }) => loggerWithTag('fulltext-derived-index')[level]?.(message, error))
 		.catch(() => undefined);
