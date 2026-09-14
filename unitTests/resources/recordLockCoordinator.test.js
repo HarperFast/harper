@@ -65,6 +65,7 @@ function coldCoordinator(monotonic, options = {}) {
 // The invariant under test throughout: for one key, at most one node may admit a critical section at
 // any instant, and a delegate stops admitting before its home will re-grant.
 
+const delayMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const LEASE = 30_000;
 const WAIT = 30_000;
 
@@ -725,7 +726,7 @@ describe('record lock delegations', () => {
 				new Promise((resolve) => {
 					deliverFirst = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
 				});
-			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /not released in time/);
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /home answered timeout/);
 			alpha.coordinator.transport.requestDelegation = realRequest;
 			await alpha.coordinator.acquire(key, LEASE, WAIT);
 
@@ -854,6 +855,30 @@ describe('record lock delegations', () => {
 				() => true
 			);
 			assert.strictEqual(recallsSent, 1, `the confirmed recall was re-sent ${recallsSent} times`);
+		});
+
+		it('does not renew a delegate that already confirmed a recall', async () => {
+			// The hole the confirmed-recall guard opened, found on the next round. The delegate can confirm
+			// and re-ask before its release reaches the home — the production writer is an async log commit
+			// plus replication — and renewing then mints a token the pending release no longer matches,
+			// leaves a grant `#beginRecall` will never recall again, and starves the contender for the rest
+			// of the lease.
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('beta');
+			const beta = cluster.node('beta').coordinator;
+			const first = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(first.granted, true);
+
+			// Gamma contends, so the home recalls alpha; alpha confirms but its release has not landed.
+			cluster.node('beta').coordinator.transport.recallDelegation = async () => {};
+			const contended = await beta.onDelegationRequest({ key, requester: 'gamma', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(contended.granted, false, 'gamma was granted over a live delegation');
+			await delayMs(5);
+
+			// Alpha's amortized next lock must NOT be renewed in place while that recall stands.
+			const renewal = await beta.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(renewal.granted, false, 'the home renewed a delegate it had just recalled');
+			assert.strictEqual(renewal.reason, 'contended');
 		});
 
 		it('does not latch a generation it never minted under', async () => {
@@ -1266,7 +1291,7 @@ describe('record lock delegations', () => {
 				new Promise((resolve) => {
 					deliverFirst = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
 				});
-			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /not released in time/);
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /home answered timeout/);
 			alpha.coordinator.transport.requestDelegation = realRequest;
 			await alpha.coordinator.acquire(key, LEASE, WAIT);
 			assert.strictEqual(alpha.coordinator.stats.delegations, 1);
@@ -1290,7 +1315,7 @@ describe('record lock delegations', () => {
 				new Promise((resolve) => {
 					resolveReply = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
 				});
-			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /not released in time/);
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /home answered timeout/);
 			// The home grants only now, to a caller that has already given up. Nothing would ever claim
 			// or release it, so the home would deny every other node for the whole delegation.
 			await resolveReply();

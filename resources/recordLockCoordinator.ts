@@ -166,13 +166,14 @@ export interface DelegationReply {
 	/** Granted only. How long the delegate may admit for, as a DURATION — never a remote clock reading. */
 	leaseMs?: number;
 	/**
-	 * Denied only. `contended` is the one reason worth retrying inside the caller's own wait budget.
-	 * `generation` (the two sides hold different home maps), `unknown-node` (this node is not named in
-	 * the map at all) and `quarantine` (the home is inside its §4.3 restart interval) all describe a
-	 * condition no legal `lock()` timeout can outlast, so each converts to a retryable 503 rather than
-	 * spending the wait and then reporting 423 — "held by someone else" — for a key nobody holds.
+	 * Denied only. `contended` is the one reason that means another node holds the key, and so the only
+	 * one a timeout may report as 423. `generation` (the two sides hold different home maps),
+	 * `unknown-node` (this node is not named in the map), `quarantine` (the home is inside its §4.3
+	 * restart interval) and `timeout` (the home never answered) all describe something other than
+	 * contention, so each ends as a retryable 503 rather than telling the caller a key nobody holds is
+	 * held.
 	 */
-	reason?: 'contended' | 'generation' | 'unknown-node' | 'capacity' | 'not-home' | 'quarantine';
+	reason?: 'contended' | 'generation' | 'unknown-node' | 'capacity' | 'not-home' | 'quarantine' | 'timeout';
 	/** Denied with `generation`, so a stale requester can re-derive the ring without another round trip. */
 	generation?: number;
 	retryAfterMs?: number;
@@ -1244,7 +1245,9 @@ export class LockCoordinator {
 				requested,
 				timeout.promise.then(() => {
 					raced = true;
-					return { granted: false, reason: 'contended', retryAfterMs: 0 } as DelegationReply;
+					// `timeout`, not `contended`: the home never answered, so nobody was shown to hold the
+					// key. Retried the same way, but a wait that ends here is 503 rather than 423.
+					return { granted: false, reason: 'timeout', retryAfterMs: 0 } as DelegationReply;
 				}),
 			]);
 		} catch (error) {
@@ -1288,9 +1291,12 @@ export class LockCoordinator {
 			// An expired grant is not a live one. Collecting it here rather than trusting `tick()` is
 			// what keeps a table whose expiry budget is saturated from answering `contended` forever.
 			if (existing.expiresMono <= now) this.#clearGrant(keyId, existing);
-			else if (existing.recalling)
-				// A recall is in flight. Renewing now — even for the node being recalled — would mint a
-				// token its own release no longer matches, and the contender would never get the key.
+			else if (existing.recalling || existing.recallConfirmed)
+				// A recall is in flight, or the delegate has already confirmed one. Renewing now — even for
+				// the node being recalled — would mint a token its own release no longer matches, and the
+				// contender would never get the key. `recallConfirmed` has to be here as well as in
+				// `#beginRecall`: the delegate can confirm and re-ask before its release reaches the home,
+				// and renewing then would leave a grant nothing will recall again and nothing can release.
 				return { granted: false, reason: 'contended', retryAfterMs: 25 };
 			else if (existing.delegate === requester) {
 				// Renewal for the node that already holds it: extend rather than recall itself.
