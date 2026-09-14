@@ -705,8 +705,8 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		this.#handleError(error);
 	}
 
-	// Test-only: a real unlink cannot be ordered against a read already in flight — chokidar's
-	// event delivery needs the libuv threadpool, so holding a read open holds the unlink behind it.
+	// Test-only: a real unlink cannot be ordered against a read already in flight — see DESIGN.md,
+	// "Root config watchers must read synchronously".
 	_simulateUnlinkForTests(path: string): void {
 		this.#handleUnlink(path);
 	}

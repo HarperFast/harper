@@ -1198,6 +1198,16 @@ armed, because watcher callbacks and timer callbacks share one entry point: a re
 several chokidar events in milliseconds and would otherwise both spend the ladder and push the next
 rung out to the maximum before the writer has let go.
 
+A deletion supersedes the reads already in flight, so `OptionsWatcher.#handleUnlink` claims the
+current read sequence rather than only cancelling the ladder: an asynchronous rung completing after
+it would otherwise put the removed file's options back, or find ENOENT and report the same deletion
+a second time as a `remove` asking `Scope` to restart a scope that deletion just settled. That
+ordering cannot be staged from a real deletion — every technique that holds a `readFile` open past
+chokidar's `unlink` (threadpool saturation, a FIFO) holds the `unlink` behind it too, because
+chokidar's own event delivery needs the same threadpool; measured here, a saturated pool produced no
+`unlink` for at least 3 seconds. The regression therefore delivers the deletion through
+`_simulateUnlinkForTests`.
+
 ### An empty read is a writer mid-write, not an empty config
 
 A non-atomic writer — an operator's editor, a shell redirect, anything that is not
