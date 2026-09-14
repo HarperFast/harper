@@ -27,7 +27,7 @@ export function renameWithRetry(
 		rename = renameSync,
 	}: RenameRetryOptions = {}
 ): void {
-	validateOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs });
+	validateRenameRetryOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs });
 	let retries = maxRetries;
 	let delayMilliseconds = initialDelayMs;
 	let retryDeadline: number | undefined;
@@ -48,8 +48,8 @@ export function renameWithRetry(
 				if (remainingBudgetMilliseconds > 0) {
 					const sleepMilliseconds = Math.min(delayMilliseconds, remainingBudgetMilliseconds);
 					finalAttempt = sleepMilliseconds === remainingBudgetMilliseconds;
-					// All callers are synchronous. Atomics.wait yields to the OS instead of spinning,
-					// which keeps the multi-second worst-case retry budget CPU-idle.
+					// This blocks the calling thread, but Atomics.wait yields to the OS instead of
+					// spinning, which keeps a multi-second retry budget CPU-idle.
 					if (sleepMilliseconds > 0) Atomics.wait(retrySleepBuffer, 0, 0, sleepMilliseconds);
 					delayMilliseconds = Math.min(
 						Math.max(delayMilliseconds * 2, RENAME_RETRY_INITIAL_DELAY_MILLISECONDS),
@@ -73,7 +73,12 @@ function retryable(code: string | undefined): boolean {
 	return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
 }
 
-function validateOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs }: RequiredRetryOptions): void {
+export function validateRenameRetryOptions({
+	retryBudgetMs = RENAME_RETRY_BUDGET_MILLISECONDS,
+	maxRetries = RENAME_RETRY_MAX_ATTEMPTS,
+	initialDelayMs = RENAME_RETRY_INITIAL_DELAY_MILLISECONDS,
+	maxDelayMs = RENAME_RETRY_MAX_DELAY_MILLISECONDS,
+}: RenameRetryOptions = {}): void {
 	if (
 		!Number.isFinite(retryBudgetMs) ||
 		retryBudgetMs < 0 ||
@@ -86,7 +91,3 @@ function validateOptions({ retryBudgetMs, maxRetries, initialDelayMs, maxDelayMs
 	)
 		throw new RangeError('rename retry options must be non-negative numbers');
 }
-
-type RequiredRetryOptions = Required<
-	Pick<RenameRetryOptions, 'retryBudgetMs' | 'maxRetries' | 'initialDelayMs' | 'maxDelayMs'>
->;
