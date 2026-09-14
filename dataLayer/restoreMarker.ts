@@ -101,10 +101,28 @@ function markerKindFromContent(content: string): LifecycleKind {
 	return content.split('\n', 2)[1]?.startsWith('drop ') ? 'drop' : 'restore';
 }
 
+/**
+ * The marker on `dbPath` only when it is one this database wrote — its first line is the database
+ * directory name, the same trust rule `scanLifecycleMarkers` applies, and the name is what a
+ * recovery would act on. Debris that names something else, or a marker truncated by a write that
+ * then failed (which carries no name at all and would otherwise read as an untyped restore), is
+ * not evidence about this database and must not be allowed to stand in for one.
+ */
+function markerForDatabase(dbPath: string): LifecycleKind | null {
+	const content = readMarker(dbPath);
+	if (content === null || content.split('\n', 1)[0] !== basename(dbPath)) return null;
+	return markerKindFromContent(content);
+}
+
 /** The kind of the lifecycle marker on `dbPath`, or null when there is none. */
 export function lifecycleMarkerKind(dbPath: string): LifecycleKind | null {
+	const content = readMarker(dbPath);
+	return content === null ? null : markerKindFromContent(content);
+}
+
+function readMarker(dbPath: string): string | null {
 	try {
-		return markerKindFromContent(readFileSync(restoringMarkerPath(dbPath), 'utf8'));
+		return readFileSync(restoringMarkerPath(dbPath), 'utf8');
 	} catch (error: any) {
 		if (error.code === 'ENOENT') return null;
 		throw error;
@@ -243,9 +261,8 @@ function beginLifecycle(dbPath: string, kind: LifecycleKind): RestoreLock {
 		// The marker is read under the lock, never before taking it: a restore that begins and abandons
 		// in the gap between an unlocked read and this acquisition leaves a marker the write below would
 		// truncate into a drop marker, erasing the recovery state that marker exists to preserve.
-		const existingKind = lifecycleMarkerKind(dbPath);
-		preexisting = existingKind !== null;
-		if (kind === 'drop' && existingKind === 'restore') {
+		preexisting = existsSync(markerPath);
+		if (kind === 'drop' && markerForDatabase(dbPath) === 'restore') {
 			const error: any = new Error(
 				`Database at ${dbPath} has an incomplete restore; rerun restore_backup to recover it`
 			);

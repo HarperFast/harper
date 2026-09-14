@@ -297,6 +297,20 @@ describe('restoreMarker', function () {
 			completeDrop(resumed);
 		});
 
+		it('supersedes a marker that names no database, rather than reading it as a restore', function () {
+			// a marker truncated by `beginLifecycle`'s open whose write then failed (ENOSPC) carries no
+			// name; `markerKindFromContent` would call it an untyped restore and wedge every later drop
+			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+			writeFileSync(restoringMarkerPath(dbPath), '');
+			const lock = beginDrop(dbPath);
+			assert.equal(lifecycleMarkerKind(dbPath), 'drop');
+			completeDrop(lock);
+			// and a marker that names another database is not evidence about this one either
+			writeFileSync(restoringMarkerPath(dbPath), 'otherdb\nrestore started now\n');
+			completeDrop(beginDrop(dbPath));
+			assert.equal(lifecycleMarkerKind(dbPath), null);
+		});
+
 		it('releases the lock when the marker cannot be read at all', function () {
 			// the read happens under the lock, so anything but ENOENT has to release it on the way out —
 			// a leaked flock is held for the life of the process and wedges every later drop and restore

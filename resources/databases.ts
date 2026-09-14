@@ -3076,15 +3076,17 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// new options disable, arming the versioned encoder, marking it rebuilding) before the
 				// catalog write below — which can still throw — would leave this thread reading and writing
 				// under a definition disk and every other thread reject, or waiting on a backfill that was
-				// never triggered. Those steps are collected here and run at the publication point.
-				const commitIndexBinding: (() => void)[] = [];
+				// never triggered. Those steps are collected here and applied once the catalog agrees,
+				// still inside the try, so a failure among them rolls back like any other.
+				const armStoreForNewDefinition: (() => void)[] = [];
+				let bindNewCustomIndex: (() => void) | undefined;
 				try {
 					if (dbi && !indexStoreMatches(dbi, rootStore, attribute)) {
 						previousIndexToRelease = dbi;
 						dbi = openIndex(dbiKey, rootStore, attribute);
 						indexStoreIsNewlyOpened = true;
 					} else if (dbi) {
-						commitIndexBinding.push(stageIndexStore(dbi, dbiKey, rootStore, attribute));
+						bindNewCustomIndex = stageIndexStore(dbi, dbiKey, rootStore, attribute);
 					} else {
 						dbi = openIndex(dbiKey, rootStore, attribute);
 					}
@@ -3167,7 +3169,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 									attribute.lastIndexedKey === undefined
 								) {
 									attribute.indexFormat = 'versioned';
-									commitIndexBinding.push(() => armVersionedIndexEncoder(dbi, rootStore));
+									armStoreForNewDefinition.push(() => armVersionedIndexEncoder(dbi, rootStore));
 								}
 								attribute.indexingPID = process.pid;
 								// Persist the owning restart generation (see currentRestartGeneration above) so
@@ -3179,7 +3181,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 									attribute.indexingIncarnation = manageThreads.processIncarnation;
 								attribute.indexingBuildId = randomBytes(8).toString('hex');
 								delete attribute.indexingFailed; // clear failure flag for the new run
-								commitIndexBinding.push(() => (dbi.isIndexing = true));
+								armStoreForNewDefinition.push(() => (dbi.isIndexing = true));
 								Object.defineProperty(attribute, 'dbi', { value: dbi, configurable: true, enumerable: false });
 								// Explainability: log which trigger fired so an unexpected rebuild is diagnosable. harper#1357
 								const reindexReasons: string[] = [];
@@ -3236,6 +3238,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					if (attributeDescriptor?.indexingPID) dbi.isIndexing = true;
 					if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
 					dbi.indexNulls = attribute.indexNulls;
+					// the catalog now carries the new definition, so the live store may follow it: the plain
+					// assignments first, then the binding, whose derived-plane cleanup is the one step here
+					// that touches the filesystem and can therefore fail with the others already applied
+					for (const arm of armStoreForNewDefinition) arm();
+					bindNewCustomIndex?.();
 				} catch (error) {
 					if (replacementToReleaseOnFailure) {
 						try {
@@ -3252,7 +3259,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// a branch's close list takes only handles this call opened, and only once they are
 				// published: a reused one is already on it, and one the catch above closed must not be
 				if (indexStoreIsNewlyOpened) target.adopt(dbi);
-				for (const commit of commitIndexBinding) commit();
 				indices[attribute.name] = dbi;
 				if (previousIndexToRelease) {
 					try {
