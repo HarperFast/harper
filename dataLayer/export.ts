@@ -13,7 +13,6 @@ import { handleHDBError } from '../utility/errors/hdbError.ts';
 import { HDB_ERROR_MSGS, HTTP_STATUS_CODES } from '../utility/errors/commonErrors.ts';
 
 import { streamAsJSON } from '../server/serverHelpers/JSONStream.ts';
-let { Upload } = require('@aws-sdk/lib-storage');
 import { toCsvStream } from '../server/serverHelpers/contentTypes.ts';
 
 const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql', 'search_by_conditions'];
@@ -24,6 +23,33 @@ const LOCAL_JSON_EXPORT_MSG = 'Successfully exported JSON locally.';
 const LOCAL_CSV_EXPORT_MSG = 'Successfully exported CSV locally.';
 // Size is number of records
 const S3_JSON_EXPORT_CHUNK_SIZE = 1000;
+
+// `@aws-sdk/lib-storage` is an optional peerDependency (see package.json), so
+// exports that never target S3 don't pay its footprint. Required lazily on
+// first use; `Upload` stays a module-scope binding (rather than a return
+// value) so tests can stub it directly.
+let Upload: any;
+
+function loadUpload() {
+	if (!Upload) {
+		try {
+			({ Upload } = require('@aws-sdk/lib-storage'));
+		} catch (err) {
+			if (err?.code === 'MODULE_NOT_FOUND' && /@aws-sdk\/lib-storage/.test(String(err.message))) {
+				throw handleHDBError(
+					new Error(),
+					'S3 export/import requires the optional AWS SDK — npm install @aws-sdk/client-s3 @aws-sdk/lib-storage',
+					HTTP_STATUS_CODES.NOT_IMPLEMENTED,
+					undefined,
+					undefined,
+					true
+				);
+			}
+			throw err;
+		}
+	}
+	return Upload;
+}
 
 // Promisified function
 const pSearchByHash = search.searchByHash;
@@ -287,7 +313,8 @@ export async function export_to_s3(exportObject: any) {
 
 	// Multipart upload to S3
 	// https://github.com/aws/aws-sdk-js-v3/tree/main/lib/lib-storage
-	const parallelUpload = new Upload({
+	const UploadCtor = loadUpload();
+	const parallelUpload = new UploadCtor({
 		client: s3,
 		params: { Bucket: exportObject.s3.bucket, Key: s3Name, Body: passThrough },
 	});
