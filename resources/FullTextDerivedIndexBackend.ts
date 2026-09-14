@@ -25,6 +25,7 @@ const RESERVED_LOG_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 
 export interface FullTextDerivedIndexEngine {
 	readonly committedPayload?: string;
+	/** Resolves to the number of mutation commands accepted; deleting an absent document still counts. */
 	apply(batch: Uint8Array): Promise<number>;
 	/** Success proves the cursor payload and every preceding mutation are durably ordered together. */
 	publish(payload: string): Promise<bigint>;

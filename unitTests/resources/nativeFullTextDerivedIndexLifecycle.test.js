@@ -128,6 +128,34 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await replacement.close({ mode: 'rollback' });
 	});
 
+	it('keeps transient control-file read failures out of the rebuild path', async function () {
+		if (process.platform === 'win32') this.skip();
+		const binding = new FakeNativeModule();
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		const seeded = await lifecycle.replace(1n);
+		await seeded.close({ mode: 'rollback' });
+		const transientReadFailure = (error) =>
+			error?.code === 'EACCES' && !(error instanceof FullTextGenerationInvalidError);
+
+		const metadataPath = path.join(lifecycle.path, 'STORE.json');
+		fs.chmodSync(metadataPath, 0o000);
+		try {
+			await assert.rejects(lifecycle.replace(2n), transientReadFailure);
+		} finally {
+			fs.chmodSync(metadataPath, 0o600);
+		}
+		assert.strictEqual(binding.opens.length, 1);
+
+		const selectorPath = path.join(lifecycle.path, 'CURRENT');
+		fs.chmodSync(selectorPath, 0o000);
+		try {
+			await assert.rejects(lifecycle.open(2n), transientReadFailure);
+		} finally {
+			fs.chmodSync(selectorPath, 0o600);
+		}
+		assert.strictEqual(binding.opens.length, 1);
+	});
+
 	it('closes an opened writer when post-open cleanup fails', async () => {
 		const binding = new FakeNativeModule();
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
