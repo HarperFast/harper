@@ -2439,7 +2439,15 @@ function scheduleBlobUnlinkDrain(rootStore: any, delay = UNLINK_QUEUE_DRAIN_DELA
  */
 export function initBlobUnlinkQueue(rootStore: any): void {
 	if (!unlinkQueueDb(rootStore)) return;
-	scheduleBlobUnlinkDrain(rootStore); // startup drain; prior-life rows are all due already
+	// The startup drain: a prior life's rows are all due and long since durable, so it needs none of
+	// the debounce a fresh row does, and a database opening arms no timer of its own for it.
+	setImmediate(() => {
+		try {
+			drainBlobUnlinkQueue(rootStore);
+		} catch (error) {
+			logger.debug?.('Blob unlink startup drain failed', error);
+		}
+	}).unref?.();
 	if (isMainThread && !mainSafetyDrains.has(rootStore)) {
 		mainSafetyDrains.add(rootStore);
 		// Held weakly: a store dropped without an explicit close (an ephemeral database, a dropped
