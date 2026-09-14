@@ -709,6 +709,7 @@ async function deployComponent(req) {
 	// Bounded ring buffer of install stdout/stderr so a non-SSE caller sees the tail
 	// in the thrown error. SSE callers still stream every line live.
 	const installCapture = createInstallCapture();
+	let stagedOnOrigin = false;
 	try {
 		// On the origin, tee the tarball (Buffer or Readable from the multipart parser)
 		// through a hash-and-size tap into the row's payload_blob, then re-source extraction
@@ -869,6 +870,9 @@ async function deployComponent(req) {
 				await validateComponentLoads(candidateDirPath, emit);
 			},
 		});
+		// The build is certified on disk from here on, so every later failure — a peer result, or a rejection
+		// thrown by the replication layer itself — still leaves an artifact this id can activate.
+		if (mode === 'stage') stagedOnOrigin = true;
 		const rollingRestart = req.restart === 'rolling';
 		// if doing a rolling restart set restart to false so that other nodes don't also restart.
 		req.restart = rollingRestart ? false : req.restart;
@@ -990,8 +994,6 @@ async function deployComponent(req) {
 						`node(s): ${detail}. See deployment ${recorder.deploymentId} (get_deployment) for details, or ` +
 						`pass ignore_replication_errors: true to treat replication failures as non-fatal.`
 				);
-				// The origin's artifact is on disk, certified and activatable by this id whatever the peers did.
-				if (mode === 'stage') replicationError.stagedOnOrigin = true;
 				throw replicationError;
 			}
 
@@ -1015,10 +1017,6 @@ async function deployComponent(req) {
 							`release is already serving there. Check those nodes before activating deployment ` +
 							`${recorder.deploymentId}, or pass ignore_replication_errors: true to accept the difference.`
 					);
-					// The origin's own artifact IS staged and activatable, and the error text tells the operator
-					// to activate it — so the row must say `staged`, or `list_deployments status=staged` would
-					// not list the very deployment the error names.
-					unconfirmedError.stagedOnOrigin = true;
 					throw unconfirmedError;
 				}
 			}
@@ -1096,7 +1094,7 @@ async function deployComponent(req) {
 		// install output, and failed_peers the caller needs.
 		if (recorder) {
 			try {
-				await recorder.finish(err?.stagedOnOrigin ? 'staged' : 'failed', err);
+				await recorder.finish(stagedOnOrigin ? 'staged' : 'failed', err);
 			} catch (finishErr) {
 				log.warn('Failed to record deployment failure row', finishErr);
 			}

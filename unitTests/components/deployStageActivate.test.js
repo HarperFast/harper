@@ -282,7 +282,7 @@ describe('activating a staged artifact', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	it('publishes the root-config entry the build recorded, immediately before the swap', async function () {
+	it('publishes the root-config entry the build recorded, in the window recovery rolls forward from', async function () {
 		this.timeout(20000);
 		const root = await newRoot('activate-config');
 		await writeLive(root, 'web', 'LIVE v1\n');
@@ -295,12 +295,20 @@ describe('activating a staged artifact', () => {
 			mode: 'activate',
 			artifactId: 'a1',
 			publishRootConfig: async (entry) => {
-				published.push({ entry, liveAtPublication: await readLive(root, 'web') });
+				published.push({
+					entry,
+					liveDisplaced: !existsSync(path.join(root, 'web')),
+					journalPresent: existsSync(path.join(deploymentDir(root, 'a1'), '.activation.json')),
+				});
 			},
 		});
 
 		assert.deepStrictEqual(published[0].entry, { package: 'npm:web', isolated: false });
-		assert.strictEqual(published[0].liveAtPublication, 'LIVE v1\n', 'config is published before the swap, not after');
+		// Both true is what makes a crash here roll FORWARD to the certified artifact. Published any earlier
+		// — live still present, no rollback record — settlement reads it as an activation that never started,
+		// deletes the artifact, and the next boot rebuilds the published package from the registry instead.
+		assert.strictEqual(published[0].journalPresent, true, 'the journal is already on disk');
+		assert.strictEqual(published[0].liveDisplaced, true, 'and the previous version is already displaced');
 		assert.strictEqual(await readLive(root, 'web'), 'STAGED v2\n');
 		await fs.rm(root, { recursive: true, force: true });
 	});

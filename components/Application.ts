@@ -1387,7 +1387,6 @@ const LOADER_OWNED_LINKS = new Set(['harper', 'harperdb']);
  * between the stage and the activation. An immediate deploy is not exposed to this, because certification
  * and activation happen within one call; the delay is what makes it reachable.
  *
- * Only staging pays this walk, and it walks the same tree certification is about to walk anyway.
  */
 async function assertOwnedArtifactTree(candidateDirPath: string, componentName: string): Promise<void> {
 	const ownedRoot = await realpath(candidateDirPath);
@@ -1397,6 +1396,7 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 	const loaderOwnedDir = join(candidateDirPath, 'node_modules');
 	const walk = async (dirPath: string): Promise<void> => {
 		const entries = await readdir(dirPath, { withFileTypes: true });
+		const isUnderNodeModules = dirPath === loaderOwnedDir || dirPath.startsWith(loaderOwnedDir + sep);
 		for (const entry of entries) {
 			const entryPath = join(dirPath, entry.name);
 			if (entry.isDirectory()) {
@@ -1416,10 +1416,11 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 				);
 			}
 			// Inside the build, but named ABSOLUTELY — so it names `.deploy-staging/<id>/…`, a path activation
-			// renames away. `repairRelocatedDependencyLinks` re-points only what lives under `node_modules`, so
-			// anything else would dangle in the release this stage certified. A relative link to the same
-			// target survives the rename untouched.
-			if (isAbsolute(await readlink(entryPath))) {
+			// renames away. `repairRelocatedDependencyLinks` re-points exactly what lives under `node_modules`
+			// (npm writes absolute junctions there on Windows for a `file:`/workspace dependency), so only a
+			// link OUTSIDE that subtree would dangle in the release this stage certified. A relative link
+			// survives the rename untouched wherever it sits.
+			if (!isUnderNodeModules && isAbsolute(await readlink(entryPath))) {
 				throw new Error(
 					`Cannot stage ${componentName}: ${entryPath} names its target inside the build by absolute path, ` +
 						`which activation moves — link it relatively so it survives the swap`
@@ -2699,14 +2700,23 @@ export async function activateCandidateApplication(
 	const returnToDormant = async () => {
 		try {
 			await rm(journalPath, { force: true });
-			await syncDirectory(deploymentDirPath);
 		} catch (error) {
 			application.logger.warn(
 				`Restored ${application.name} after a failed activation, but its staged build ${deploymentId} still ` +
 					`carries an activation journal and is not retryable until recovery settles it:`,
 				error
 			);
+			return;
 		}
+		// The journal is gone in this process, so the artifact IS retryable now; what is uncertain is whether
+		// its removal reached storage. Said separately because it is the opposite situation to the one above.
+		await syncDirectory(deploymentDirPath).catch((error) =>
+			application.logger.warn(
+				`Restored ${application.name} and returned its staged build ${deploymentId} to a retryable state, but ` +
+					`could not flush that to storage; a power loss could resurrect its activation journal:`,
+				error
+			)
+		);
 	};
 
 	/**
@@ -2730,11 +2740,6 @@ export async function activateCandidateApplication(
 			// An existing journal is a retry of this same activation, not a conflict.
 			if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 		}
-
-		// Inside the boundary, and after the journal: a failure here is compensated and returned to dormant,
-		// and a CRASH here is a roll-forward rather than a config pointing at a release nothing activated.
-		pendingEffect = 'publish the root configuration';
-		await options.afterJournal?.();
 
 		pendingEffect = 'prepare the component staging directory';
 		await ensureExtractionStagingDirectory(asideStagingDir);
@@ -2766,6 +2771,21 @@ export async function activateCandidateApplication(
 		// and its journal: the component ends up with no version at all and nothing saying how to get one back.
 		pendingEffect = 'record the displaced component directory';
 		await syncRenameParents(liveDirPath, asidePath ?? priorAbsentRecordPath!);
+
+		// Config is published HERE — after B1, before the commit — because this is the only point where the
+		// on-disk state recovery would find rolls FORWARD to the certified artifact: live is displaced, the
+		// candidate is complete, and the rollback record exists. Publishing before B1 (with or without the
+		// journal) leaves live present and the candidate present with no rollback record, which settlement
+		// reads as an activation that never started: it deletes the deployment directory, and the next boot
+		// re-resolves the published package identifier from the registry instead — the substitution this step
+		// exists to prevent.
+		//
+		// A crash in the remaining window — after the roll-forward state exists but before this publish — is
+		// the inverse and smaller hazard: the certified artifact goes live while config still names the
+		// PREVIOUS release. Closing that needs config to be an effect of the journal itself, which is #2315
+		// step 3.
+		pendingEffect = 'publish the root configuration';
+		await options.afterJournal?.();
 
 		// B2 — the candidate becomes live. THE RENAME IS THE COMMIT POINT: nothing after it may compensate,
 		// because the live path now holds the candidate and renaming the aside back over it cannot succeed. A
@@ -4043,11 +4063,10 @@ export type PrepareApplicationOptions = {
 	 */
 	validateCandidate?: (candidateDirPath: string) => Promise<void>;
 	/**
-	 * Names `.deploy-staging/<artifactId>`. Deliberately NOT the deploy-lifecycle token: that token
-	 * de-duplicates overlapping deploys of one component and is released by the first matching end, so an
-	 * id shared by two activations of one artifact would resume watchers while the second is still
-	 * swapping. Defaults to the lifecycle token, which is unique per invocation and therefore also a
-	 * sound artifact name for a build nobody addresses later.
+	 * Names `.deploy-staging/<artifactId>`, and is not the deploy-lifecycle token: that token de-duplicates
+	 * overlapping deploys of one component and is released by the first matching end, so two activations of
+	 * one artifact sharing it would resume watchers while the second is still swapping. Defaults to the
+	 * lifecycle token, which is unique per invocation.
 	 */
 	artifactId?: string;
 	/**
