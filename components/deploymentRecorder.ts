@@ -55,7 +55,11 @@ type DeploymentStatus =
 	| 'restarting'
 	| 'success'
 	| 'failed'
-	| 'rolled_back';
+	| 'rolled_back'
+	// Terminal: the build is complete and certified on disk but was not activated. Terminal rather than
+	// in-flight because nothing further happens to THIS deployment — activating its artifact is a separate
+	// operator action with a row of its own.
+	| 'staged';
 
 interface CreateOptions {
 	project?: string;
@@ -63,6 +67,8 @@ interface CreateOptions {
 	user?: string;
 	restart_mode?: 'immediate' | 'rolling' | null;
 	rollback_of?: string | null;
+	/** The staged deployment whose artifact this deployment activated. */
+	activated_from?: string | null;
 	// Deploy credentials in reference form (`{ registry, secret, scope? }` / `{ host, secret,
 	// username? }`) — never a literal token. Kept so a rollback can re-resolve the credential from
 	// hdb_secret without the operator re-supplying it. Null when the deploy used no credentials or a
@@ -141,6 +147,7 @@ export class DeploymentRecorder {
 			completed_at: null,
 			user: options.user ?? null,
 			rollback_of: options.rollback_of ?? null,
+			activated_from: options.activated_from ?? null,
 			credentials: options.credentials ?? null,
 			error: null,
 		};
@@ -465,7 +472,7 @@ export class DeploymentRecorder {
 		this.sealed = true;
 	}
 
-	async finish(status: 'success' | 'failed' | 'rolled_back', error?: unknown): Promise<void> {
+	async finish(status: 'success' | 'failed' | 'rolled_back' | 'staged', error?: unknown): Promise<void> {
 		if (this.finished) return;
 		// Send a terminal sentinel through the emitter (if any) BEFORE we unsubscribe and
 		// remove it from the registry, so any SSE tail subscribers can resolve their wait

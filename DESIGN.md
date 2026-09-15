@@ -822,9 +822,65 @@ The ordering is the design. Two things used to be wrong in a way each other hid:
   do not share the publication lock). It is tracked as its own step so the tree half can land on its own
   evidence.
 
+### Staging a build now and activating it later
+
+`deploy_component { activate: false }` stops after certification, leaving a dormant artifact; a later
+`deploy_component { project, deployment_id }` swaps that artifact in without resolving, fetching or
+installing anything. Four things make the delay safe, and each of them exists because the immediate deploy
+did not need it:
+
+- **The artifact directory is named by the PUBLIC deployment id**, not by the deploy-lifecycle token. The
+  two are separate on purpose: `DeployLifecycle` de-duplicates starts by the id a start announces and
+  releases watcher suppression on the first matching end, so two overlapping activations of one artifact
+  sharing that id would count as one owner. `prepareApplication` therefore takes `artifactId` and lets
+  `broadcastDeployStart` keep minting a fresh token per invocation.
+- **`.artifact.json` is mandatory and versioned**, written before `.complete` so the marker vouches for it.
+  It carries the root-config entry the build would have published (explicitly `null` for a payload deploy,
+  which owns none), `installationIsOpaque`, and the isolation intent that was admitted — everything a later
+  activation cannot re-derive. An _optional_ record could not distinguish a payload build from a package
+  build whose record was lost, so a missing, malformed or wrong-version one is refused rather than defaulted.
+- **Claiming an id is exclusive.** `buildCandidateApplication` used to tolerate an existing deployment
+  directory because a fresh UUID could not collide; a public id can be repeated by an operator or by a
+  redelivered replication, so a claim now rejects another component's directory and any directory carrying
+  `.complete`, and rebuilds only over an uncertified partial of its _own_ component. Ownership is published
+  as part of the claim — the `.component` sidecar is written right after the exclusive `mkdir`, not at
+  certification — because `buildCandidateApplication` can spend minutes resolving and packing before any
+  tree exists to infer an owner from. For that whole window the directory answered to nobody, and an empty
+  `readdir` is indistinguishable from an abandoned claim, so a second component could delete a build that
+  was still running. **Emptiness is not a verdict:** an unattributed directory is refused, never reclaimed,
+  which is the same reading recovery already gives it. The id this request names is also pinned
+  through the preparation preamble, so retention cannot evict the artifact the request is about to use —
+  which it otherwise would, immediately, at `deployment_stagingRetention_maxCount: 0`. The contract is
+  bounded: an id names one artifact _while that artifact exists_. Activation consumes it (the swap is a
+  rename) and retention can prune it, after which the id is free again.
+- **Staging owns its bytes.** A `file:<directory>` source is refused, and so is any symlink in the built
+  tree resolving outside it (bar the `node_modules/harper`/`harperdb` links the loader owns and repairs).
+  Certification fsyncs the tree but follows no links, and the post-swap relocation repair leaves external
+  targets alone — so a link out of the build is a hole in "activate exactly the bytes that were certified"
+  that only a delay makes reachable. **`.complete` is a durability marker over the bytes, not a seal on
+  them:** nothing stops a dormant artifact being edited while it waits, so the link rule and the load
+  validation are both re-run at activation rather than trusted from the marker. Content tampering is still
+  not detected — that needs a manifest the marker is bound to, and the load validation that would catch a
+  broken entry point is a no-op on the main thread until #2315 step 2.
+
+Certification moved out of `activateCandidateApplication` and up into `prepareApplication` for the same
+reason: `markCandidateComplete` fsyncs the whole candidate tree, and a delayed activation must not re-walk
+a `node_modules` it certified at build time while holding the preparation lock. The swap primitive's
+contract is now "the candidate is already certified", and its direct callers — including tests — certify
+first.
+
+**Mixed-version clusters are a known, accepted hazard.** A stage replicates as an ordinary
+`deploy_component`, and a peer running a build without this change ignores the unknown `activate: false`
+and deploys immediately, so it serves a release the operator asked only to stage. Nothing in core or in
+harper-pro's replicator carries a peer version or capability, so the origin cannot refuse in advance; a
+node that staged returns `staged: true` in its response instead, and the origin fails the stage naming any
+peer that did not confirm. That is detection after the fact, not prevention — the accepted trade is
+recorded on #2315, and the documented prerequisite is to upgrade every node before staging.
+
 ### Recovering an interrupted activation
 
-Every control file is dot-prefixed — `.activation.json`, `.component`, `.complete`, `.unsettled` — because
+Every control file is dot-prefixed — `.activation.json`, `.artifact.json`, `.component`, `.complete`,
+`.unsettled` — because
 a deployment directory holds the candidate tree under the _component's_ own name beside them, and
 `isJoinableComponentName` rejects a leading dot. An undotted control file shares that namespace: a component
 named `activation.json` would put its tree on the journal path and activate with no journal at all, and one
@@ -844,6 +900,35 @@ settle a crash at any boundary. Both go to a temp name, are fsynced, then linked
 name never exists with partial contents; the candidate's own contents are fsynced before `.complete` is
 written, since `.complete` is what vouches for them. Recovery runs before `installApplications()`, which
 installs whatever the root config names and would otherwise reinstall over a half-swapped candidate.
+
+**Every settlement outcome clears an earlier failed recovery's `.unsettled`, including the one that returns a
+staged artifact to dormant.** That branch returns before the settled tail, so it has to clear the verdict
+itself: an artifact left carrying a stale marker is refused by `deployment_id` and then deleted by the next
+retention pass as a stale unsettled build, which is the opposite of returning it to dormant. It also needs a
+durability barrier the tail does not, because the tail removes the whole deployment directory afterwards and
+this branch keeps it: with both unlinks flushed by one sync at the end, a crash can persist the journal's
+removal and not the marker's, leaving a verdict no settlement will ever revisit — settlement keys on the
+journal. The marker's removal is therefore flushed before the journal's — and because Windows cannot fsync a
+directory, the ordering cannot be the only defence: the residue pass treats a DESCRIBED artifact carrying a
+verdict but no journal as settled rather than disposable, clears the marker, and retains it. `fail()` only
+ever writes `.unsettled` beside a journal it keeps, so a marker without one says settlement finished and only
+the marker's own removal was lost. An undescribed build in that state stays disposable, which is the rule
+that predates staging.
+
+**Keeping the activation journal after a failed root-config undo only changes the outcome for a first-ever
+deploy.** Compensation has already put an existing component's tree back and taken its rollback record with
+it, so the next settle reads live-plus-candidate-with-no-record and returns the artifact to dormant whatever
+the journal says — holding it there defers the same verdict to the next start and leaves the artifact
+unusable until then. Only a first deploy leaves the live path absent, which recovery reads as a roll forward.
+Config is stranded either way for an existing component; that is the durable-config window #2315 step 3
+closes, not something the journal can cover.
+
+**The same window costs isolation, not just a version string.** A staged artifact records the isolation the
+build admitted in its `.artifact.json`, and an activation publishes that with the rest of its root-config
+entry between B1 and the commit. `rollForward()` publishes nothing, so a crash after the roll-forward state
+exists but before that publish brings the certified artifact up under the previous release's config — and a
+component staged to run isolated comes back NON-ISOLATED, with nothing in the operation reporting it.
+Isolation is a containment boundary, so weigh that window by this rather than by the version mismatch.
 
 The journal is consulted **first**, and the legacy in-place extraction recovery enforces that itself: it
 refuses to restore a rollback record while an unsettled journal is attributable to that component — by its
