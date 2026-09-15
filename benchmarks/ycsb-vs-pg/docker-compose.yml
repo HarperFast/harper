@@ -35,7 +35,10 @@ services:
   redis:
     image: redis:7-alpine
     network_mode: host
-    # Cache role: no persistence, LRU eviction, generous memory.
+    # Cache role: no persistence, LRU eviction. maxmemory is a knob, not a constant:
+    # at the default the whole ~220MB dataset fits and every read is a hit, which
+    # measures Fastify+Redis with Postgres idle. Shrink it (YCSB_REDIS_MAXMEMORY=64mb)
+    # to evict under LRU and get a partial hit rate that actually exercises Postgres.
     command:
       - redis-server
       - --port
@@ -45,6 +48,6 @@ services:
       - --appendonly
       - 'no'
       - --maxmemory
-      - 8gb
+      - ${YCSB_REDIS_MAXMEMORY:-8gb}
       - --maxmemory-policy
       - allkeys-lru

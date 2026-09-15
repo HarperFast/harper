@@ -26,6 +26,7 @@ import { WORKLOADS } from '../ycsb/workload.mts';
 import type { DistributionName, LatencyStats, PhaseResult } from '../ycsb/workload.mts';
 import { startDriver } from './shardedDriver.mts';
 import { startPgStack, dataDir } from './pgStack.mts';
+import { sampleResources, diffResources, type ResourceTargets, type ResourceDelta } from './resources.mts';
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..');
 const HARPER_BIN = join(REPO_ROOT, 'dist', 'bin', 'harper.js');
@@ -44,7 +45,14 @@ const TARGET_LABELS: Record<TargetName, string> = {
 interface TargetResult {
 	target: TargetName;
 	load: PhaseResult;
-	workloads: { name: string; description: string; shards: number; result: PhaseResult; reps: number[] }[];
+	workloads: {
+		name: string;
+		description: string;
+		shards: number;
+		result: PhaseResult;
+		reps: number[];
+		resources: ResourceDelta;
+	}[];
 	meanBusyCores: number;
 }
 
@@ -71,7 +79,10 @@ async function cpuBusyTicks(): Promise<number> {
 
 type Options = ReturnType<typeof parseOptions>;
 
-async function withHarper<T>(options: Options, body: (baseUrl: string) => Promise<T>): Promise<T> {
+async function withHarper<T>(
+	options: Options,
+	body: (baseUrl: string, targets: ResourceTargets) => Promise<T>
+): Promise<T> {
 	const ctx = createHarperContext('ycsb-vs-pg-harper');
 	console.log(`\n=== harper: starting (threads.count=${options.threads}, engine=${options.engine}) ===`);
 	await setupHarperWithFixture(ctx, HARPER_APP_DIR, {
@@ -88,7 +99,8 @@ async function withHarper<T>(options: Options, body: (baseUrl: string) => Promis
 		const { httpURL } = ctx.harper;
 		await waitForRoute(`${httpURL}/${options.config.table}/`, 30_000);
 		console.log(`harper ready at ${httpURL}`);
-		return await body(httpURL);
+		// Harper is one process; its worker threads are counted with it.
+		return await body(httpURL, { processes: { harper: 'dist/bin/harper.js' }, cgroups: {} });
 	} finally {
 		await teardownHarper(ctx);
 	}
@@ -97,7 +109,7 @@ async function withHarper<T>(options: Options, body: (baseUrl: string) => Promis
 async function withPgStack<T>(
 	options: Options,
 	target: 'pg-redis' | 'pg-only',
-	body: (baseUrl: string) => Promise<T>
+	body: (baseUrl: string, targets: ResourceTargets) => Promise<T>
 ): Promise<T> {
 	const useCache = target === 'pg-redis';
 	console.log(`\n=== ${target}: starting (fastify workers=${options.threads}, cache=${useCache}) ===`);
@@ -110,7 +122,11 @@ async function withPgStack<T>(
 	try {
 		await waitForRoute(`${stack.baseUrl}/${options.config.table}/`, 30_000);
 		console.log(`${target} ready at ${stack.baseUrl}`);
-		return await body(stack.baseUrl);
+		return await body(stack.baseUrl, {
+			processes: { fastify: 'pg-app/server.mjs' },
+			cgroups: stack.cgroups,
+			redisExec: useCache ? stack.redisExec : undefined,
+		});
 	} finally {
 		await stack.stop();
 	}
@@ -132,13 +148,20 @@ async function benchmarkWorkload(
 	workload: string,
 	options: Options,
 	shards: number
-): Promise<{ load: PhaseResult; result: PhaseResult; shards: number; reps: number[]; meanBusyCores: number }> {
+): Promise<{
+	load: PhaseResult;
+	result: PhaseResult;
+	shards: number;
+	reps: number[];
+	resources: ResourceDelta;
+	meanBusyCores: number;
+}> {
 	const { config } = options;
 	const keyWidth = Math.max(10, String(config.records + config.reps * config.opsPerWorkload).length);
 	const spec = WORKLOADS[workload];
 	const distribution = (config.distribution ?? spec.distribution) as DistributionName;
 
-	const body = async (baseUrl: string) => {
+	const body = async (baseUrl: string, resourceTargets: ResourceTargets) => {
 		const driver = await startDriver({
 			baseUrl,
 			table: config.table,
@@ -160,18 +183,30 @@ async function benchmarkWorkload(
 				console.log(`  [warmup] ${warmupOps.toLocaleString()} uniform read ops (discarded)`);
 				await driver.runWorkload('C', 'uniform', warmupOps);
 			}
-			const reps: PhaseResult[] = [];
+			// Resources are sampled around the timed reps only — the load and warmup
+			// phases would otherwise charge each workload for setup it doesn't measure.
+			const reps: { result: PhaseResult; resources: ResourceDelta }[] = [];
 			for (let rep = 0; rep < config.reps; rep++) {
+				const before = await sampleResources(resourceTargets);
 				const result = await driver.runWorkload(workload, distribution);
-				console.log(`  [${workload} rep ${rep + 1}/${config.reps}] ${result.throughput.toFixed(0)} ops/sec, ${result.errors} errors`);
-				reps.push(result);
+				const resources = diffResources(before, await sampleResources(resourceTargets));
+				const perCore = result.ops / Math.max(resources.totalCpuSeconds, 1e-9);
+				const cacheTotal = resources.redisHits + resources.redisMisses;
+				const hitRate = cacheTotal > 0 ? ` cache-hit ${((resources.redisHits / cacheTotal) * 100).toFixed(1)}%` : '';
+				console.log(
+					`  [${workload} rep ${rep + 1}/${config.reps}] ${result.throughput.toFixed(0)} ops/sec, ` +
+						`${resources.totalCpuSeconds.toFixed(1)} server cpu-s, ${perCore.toFixed(0)} ops/core-s${hitRate}`
+				);
+				reps.push({ result, resources });
 			}
-			const sorted = [...reps].sort((a, b) => a.throughput - b.throughput);
+			const sorted = [...reps].sort((a, b) => a.result.throughput - b.result.throughput);
+			const median = sorted[Math.floor((sorted.length - 1) / 2)];
 			return {
 				load: driver.load,
-				result: sorted[Math.floor((sorted.length - 1) / 2)],
+				result: median.result,
 				shards: driver.shardsUsed(workload),
-				reps: reps.map((r) => r.throughput),
+				reps: reps.map((r) => r.result.throughput),
+				resources: median.resources,
 			};
 		} finally {
 			driver.close();
@@ -203,6 +238,7 @@ async function benchmarkTarget(target: TargetName, options: Options, shards: num
 			shards: measured.shards,
 			result: measured.result,
 			reps: measured.reps,
+			resources: measured.resources,
 		});
 	}
 	// Every workload reloaded the dataset, so report the median load throughput.
@@ -255,9 +291,53 @@ function printComparison(results: TargetResult[]): void {
 	}
 
 	out.push('');
-	out.push('mean busy CPU cores, whole run incl. load generator (machine has ' + `${cpuCount()} cores)`);
+	out.push('efficiency — ops per server CPU-second (load generator excluded), higher is better');
 	out.push('-'.repeat(width));
-	for (const r of results) out.push(`  ${r.target.padEnd(12)} ${r.meanBusyCores.toFixed(1)}`);
+	const effRow = (label: string, pick: (r: TargetResult) => number) => {
+		const values = results.map(pick);
+		const cells = [label.slice(0, 30).padEnd(30), ...values.map((v) => v.toFixed(0).padStart(14))];
+		for (let i = 1; i < values.length; i++) cells.push(`${(values[0] / values[i]).toFixed(2)}x`.padStart(22));
+		out.push(cells.join(''));
+	};
+	for (const wl of baseline.workloads) {
+		effRow(wl.name, (r) => {
+			const w = r.workloads.find((x) => x.name === wl.name)!;
+			return w.result.ops / Math.max(w.resources.totalCpuSeconds, 1e-9);
+		});
+	}
+
+	out.push('');
+	out.push('server CPU-seconds per workload, split by component');
+	out.push('-'.repeat(width));
+	for (const r of results) {
+		for (const wl of r.workloads) {
+			const parts = Object.entries(wl.resources.byComponent)
+				.filter(([, v]) => v > 0.01)
+				.map(([k, v]) => `${k} ${v.toFixed(1)}`)
+				.join('  ');
+			out.push(`  ${`${r.target}/${wl.name}`.padEnd(20)} total ${wl.resources.totalCpuSeconds.toFixed(1).padStart(7)}   ${parts}`);
+		}
+	}
+
+	const withCache = results.filter((r) =>
+		r.workloads.some((w) => w.resources.redisHits + w.resources.redisMisses > 0)
+	);
+	if (withCache.length > 0) {
+		out.push('');
+		out.push('Redis cache hit rate (look-aside, behind Fastify) — what fraction never reached Postgres');
+		out.push('-'.repeat(width));
+		for (const r of withCache) {
+			for (const wl of r.workloads) {
+				const total = wl.resources.redisHits + wl.resources.redisMisses;
+				if (total === 0) continue;
+				const pct = (wl.resources.redisHits / total) * 100;
+				out.push(
+					`  ${`${r.target}/${wl.name}`.padEnd(20)} ${pct.toFixed(1).padStart(6)}%   ` +
+						`hits ${wl.resources.redisHits.toLocaleString()}  misses ${wl.resources.redisMisses.toLocaleString()}`
+				);
+			}
+		}
+	}
 	out.push('='.repeat(width));
 	process.stdout.write(out.join('\n') + '\n');
 }
