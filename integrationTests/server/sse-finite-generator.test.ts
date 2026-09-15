@@ -162,8 +162,8 @@ suite(
 					`[QA-537][5] ThrowGen: status=${r.status} events=${r.events.length} terminatedBy=${r.terminatedBy} aborted=${r.aborted} errored=${r.errored?.message ?? null} elapsedMs=${r.elapsedMs}`
 				);
 
-				// #2614's terminal `harper-error` frame ends the stream cleanly, so the delivered prefix is
-				// exact rather than a truncation race.
+				// The terminal `harper-error` frame ends the stream cleanly, so the prefix is exact rather
+				// than a truncation race.
 				ok(!r.aborted, `must not hit the AbortController timeout — the response never terminated. raw:\n${r.raw}`);
 				strictEqual(
 					r.terminatedBy,
@@ -176,8 +176,7 @@ suite(
 					`expected the 2 events yielded before the throw plus one error event, got ${r.events.length}. raw:\n${r.raw}`
 				);
 				deepStrictEqual(eventNumbers(r).slice(0, 2), [0, 1]);
-				// parseEvents keeps only `data: ` lines, so the frame's `event:` name and its terminal position
-				// are observable only on the raw bytes.
+				// `r.events` drops the `event:` name, so name and terminal position need the raw bytes.
 				ok(
 					r.raw.endsWith(
 						'event: harper-error\ndata: {"error":"Error","message":"QA537-intentional-throw-partway"}\n\n'

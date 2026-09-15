@@ -466,9 +466,6 @@ suite(
 					200,
 					`expected streaming to have started (status 200) before the mid-stream throw, got ${r.status}. raw:\n${r.raw}`
 				);
-				// Assert the whole frame sequence, not a count in range: a count alone would also accept a
-				// duplicated {"n":0}, a corrupted {"n":1}, a frame from after the throw silently replacing one
-				// before it, or #2614's error record arriving unnamed or out of terminal position.
 				const blocks = parseSseBlocks(r.raw);
 				strictEqual(blocks.length, 3, `expected the 2 pre-throw frames plus one error frame. raw:\n${r.raw}`);
 				deepStrictEqual(
@@ -481,8 +478,8 @@ suite(
 					error: 'Error',
 					message: 'QA702-intentional-throw-partway',
 				});
-				// Node and uWS used to close this differently (QA-886/F-272); #2614 carries the truncation
-				// signal in the error frame instead, so both now end cleanly and one shape is pinned.
+				// One shape for both servers: the truncation signal is the error frame above, not the close
+				// shape they used to disagree on (QA-886/F-272).
 				ok(
 					r.ended,
 					`expected a clean end after the terminal error frame, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
