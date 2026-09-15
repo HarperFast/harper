@@ -420,6 +420,29 @@ describe('Table.getRecordCount', () => {
 		}
 	});
 
+	it('degrades to the exact scan on a store with no estimator and no entry statistics', async function () {
+		this.timeout(120000);
+		// `canEstimate` false is not the same as "LMDB". A RocksDB store whose native module predates the
+		// estimator API lands on the statistics branch too, and that branch must degrade the way every other
+		// store call on this path does rather than throwing out of describe_table.
+		const store = EstimatorTable.primaryStore;
+		const saved = {};
+		for (const name of ['createCountEstimator', 'estimateCount', 'getStats']) {
+			saved[name] = { fn: store[name], owned: Object.hasOwn(store, name) };
+			store[name] = undefined;
+		}
+		try {
+			const result = await EstimatorTable.getRecordCount({ timeLimit: -1 });
+			assert.equal(result.recordCount, LIVE_ROWS);
+			assert.equal(result.estimatedRange, undefined, 'with no usable base the scan must complete exactly');
+		} finally {
+			for (const [name, { fn, owned }] of Object.entries(saved)) {
+				if (owned) store[name] = fn;
+				else delete store[name];
+			}
+		}
+	});
+
 	it('stops scanning when the base keeps saying the scan is past halfway', async function () {
 		this.timeout(120000);
 		// A base that undershoots holds `entriesScanned < floor(entryCount/2)` false at every checkpoint, so

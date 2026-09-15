@@ -6188,7 +6188,16 @@ export function makeTable(options) {
 						estimator = undefined;
 						entryCount = 0;
 					}
-				} else if (!canEstimate) entryCount = primaryStore.getStats().entryCount;
+				} else if (!canEstimate) {
+					// `canEstimate` false is not the same as "LMDB": a RocksDB store whose native module predates
+					// the estimator API lands here too, and `RocksDatabase.getStats()` carries no `entryCount`.
+					try {
+						const stats = primaryStore.getStats?.();
+						entryCount = Number.isFinite(stats?.entryCount) && stats.entryCount > 0 ? stats.entryCount : 0;
+					} catch {
+						entryCount = 0;
+					}
+				}
 				if (!entryCount && canEstimate && !estimatorFailed) {
 					// Range estimates are block-granular and can report 0 for a store whose entries are still
 					// in the memtable. Without a base the escape cannot fire at all, so fall back to the
