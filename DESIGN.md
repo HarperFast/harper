@@ -121,6 +121,43 @@ Opt-in deflate compression for file-backed blobs (harper#2443) has three load-be
 
 RocksDB 2.9.0 binds ranges to their supplied transaction and invalidates them when that transaction ends. An abandoned range is still bounded by the idle monitor. Resuming after its snapshot has been released throws an `ReadSnapshotExpiredError` (503) before accessing the native iterator; retry only the read, without replaying previously committed writes. A poisoned write-bearing transaction retains its existing 422 error and rollback behavior. Early iterator return remains a cleanup operation, including after expiration.
 
+## Replicated apply failure listeners (`resources/replicatedApplyFailure.ts`)
+
+`registerReplicatedApplyFailureListener(database, listener)` and
+`unregisterReplicatedApplyFailureListener(database, listener)` are exported from `harper`.
+They register one callback per database on the current worker; registering the same callback
+again is idempotent, unregistering removes only that callback, and database removal clears all
+of that database's listeners. A replication transport must register on every worker that runs
+its source apply loop, before delivering events. Registration does not replay earlier failures.
+
+The listener receives `{ database, table?, nodeId, position, localTime?, error }`. `nodeId` is
+the audit header's translated origin id, not the immediate relay; `position` is the failed
+event's original `timestamp` (the origin transaction-log key), never its record `version` or
+peer resume `localTime`. Events without numeric origin and log coordinates cannot be attributed
+and are not reported. A transaction commit failure uses its saved begin event, including when
+an `end_txn` marker lacks an origin or a new `beginTxn` belongs to a different origin.
+
+**No event is pulled from a replicated source after a terminal apply failure until every
+registered listener for the database has been awaited with that failure's origin and position.**
+Consecutive `beginTxn` events require pulling the new begin marker to close the preceding
+transaction; the preceding failure's notification completes before staging that new marker's
+write. The listener set is captured when notification starts, and callbacks run in registration
+order outside the source transaction's async context. A listener may therefore persist a hole
+in its own transaction. It must resolve only after that state is durable and be idempotent for
+`(nodeId, position)`: a crash before the later cursor update can replay the same failure.
+
+The hook covers terminal commit/staging failures, malformed transaction envelopes, unknown
+operations, valueless puts, and explicitly discarded lock-control entries. These last cases also drain their
+notifications before the next source pull, even inside an open transaction. A successful commit
+followed by a failing `onCommit` callback or resume-cursor write is logged as before but does not
+report a missing write. Conflict retries and successful no-op conflict/dedup resolution are
+unchanged. The outer subscription-error handler terminates iteration and is not a skip.
+
+Listener throws and rejections are logged individually and do not stop later listeners or change
+continue-on-failure behavior. Core has no timeout or durable fallback for listeners: a hung
+listener backpressures the source, and a rejected persistence operation cannot establish durable
+hole state. The transport owns recovery and fail-closed behavior for those cases.
+
 ## Repeat writes to the same key in one transaction carry their state forward (`DatabaseTransaction`/`Table`)
 
 A transaction can hold more than one write to the same record key — two `patch()` calls inside one `transaction()`, or a replicated transaction carrying two updates to a record. Each write captures `operation.entry` (its idea of the current record) when it is staged, and **neither engine can refresh that from a read**: LMDB queues staged puts and applies them only in the commit batch, so a `getEntry` inside that loop still returns the pre-transaction record (the exclusive `store.transaction()` fallback is no better), and RocksDB read-your-writes only sees writes already staged into the native transaction — which the source-apply path, staging its whole batch before `commit()`, hasn't done yet.
