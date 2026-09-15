@@ -136,7 +136,13 @@ import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
-import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
+import {
+	Blob,
+	deleteBlobsInObject,
+	findBlobsInObject,
+	registerBlobOwnerTable,
+	startPreCommitBlobsForRecord,
+} from './blob.ts';
 import {
 	onStorageReclamation,
 	removeStorageReclamation,
@@ -600,7 +606,10 @@ export function makeTable(options) {
 		options;
 	if (!attributes) attributes = [];
 	if (!properties) properties = projectAttributesToProperties(attributes);
-	const updateRecord = recordUpdater(primaryStore, tableId, auditStore);
+	const updateRecord = recordUpdater(primaryStore, tableId, auditStore, tableName);
+	// The blob unlink drain resolves the owner recorded in a blob reference through this registry; a
+	// row staged by another process names a table, and nothing else can turn that name into a store.
+	registerBlobOwnerTable(primaryStore.rootStore, tableName, primaryStore);
 	// Created on first cluster-scoped lock() or first arriving control entry, and only while a
 	// transport is registered for this database.
 	let lockCoordinator: LockCoordinator | undefined;
@@ -1895,7 +1904,13 @@ export function makeTable(options) {
 			}
 			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
 				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
-					deleteBlobsInObject(entry.value);
+					// A supersession like any other: the drop makes these records unreachable, and staging the
+					// intents durably is what keeps them from being lost if the process dies mid-drop.
+					// Batched, unlike a record write's supersession: this runs once per record over the
+					// whole table, and a synchronous commit each would block the loop for the length of it.
+					// A death mid-drop can then lose intents the batch had not flushed, which leaves those
+					// files to the orphan sweep — a leak, against blocking the thread for minutes.
+					deleteBlobsInObject(entry.value, undefined, { priorVersion: entry.version, synchronous: false });
 				}
 			}
 			if (databaseName === databasePath) {
@@ -2515,6 +2530,7 @@ export function makeTable(options) {
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
 							transaction,
+							blobOwnerWriteToken: write.blobOwnerWriteToken,
 							tableToTrack: tableName,
 							recordVersion: txnTime,
 							additionalAuditRefs:
@@ -3996,6 +4012,7 @@ export function makeTable(options) {
 								viaNodeId: options?.viaNodeId,
 								originatingOperation: (context as any)?.originatingOperation,
 								transaction,
+								blobOwnerWriteToken: write.blobOwnerWriteToken,
 								// no per-row db-write analytics for a bulk copy; system tables never track
 								tableToTrack: isCopyApply || databaseName === 'system' ? null : options?.replay ? null : tableName,
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
@@ -5741,6 +5758,7 @@ export function makeTable(options) {
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
 							transaction,
+							blobOwnerWriteToken: write.blobOwnerWriteToken,
 							tableToTrack: tableName,
 						},
 						'message',
@@ -7635,6 +7653,7 @@ export function makeTable(options) {
 									expiresAt: sourceContext.expiresAt,
 									residencyId,
 									transaction,
+									blobOwnerWriteToken: sourceWrite.blobOwnerWriteToken,
 									tableToTrack: tableName,
 									additionalAuditRefs:
 										writeAudit && txnLogKey !== recordVersion ? [{ version: txnLogKey, nodeId: 0 }] : undefined,
@@ -8069,6 +8088,7 @@ export function makeTable(options) {
 	): any {
 		const preCommit = startPreCommitBlobsForRecord(record, primaryStore.rootStore, saveInRecord, trackPersistedBlobs);
 		if (preCommit) {
+			write.blobOwnerWriteToken ??= preCommit.blobs;
 			// track the blobs on the write so abort/skip paths can clean up the files if the commit doesn't reference them
 			write.savedBlobs = preCommit.blobs;
 			// if there are blobs that we have started saving, they need to be saved and completed before we commit, so we need to wait for
