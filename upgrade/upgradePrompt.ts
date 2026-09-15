@@ -1,6 +1,6 @@
 'use strict';
 
-import { prompts } from '../utility/interactivePrompts.ts';
+import { promptYesNo } from '../utility/interactivePrompts.ts';
 import chalk from 'chalk';
 import * as os from 'os';
 import assignCMDENVVariables from '../utility/assignCmdEnvVariables.ts';
@@ -22,10 +22,8 @@ function answerFromOverride(value: string | undefined): boolean | undefined {
  */
 export async function forceDowngradePrompt(upgradeObj: any) {
 	const override = assignCMDENVVariables(['CONFIRM_DOWNGRADE']);
-	// Without a terminal, prompt.get() blocks on stdin forever (systemd, containers, CI) — and an
-	// override value the prompt library rejects (its pattern is lowercase-only) is deleted and
-	// falls through to that same blocking read. So with no TTY, resolve the answer here and never
-	// reach the prompt (#2046).
+	// Without a terminal, an interactive prompt blocks on stdin forever (systemd, containers, CI) —
+	// so with no TTY, resolve the answer from the override here and never reach the prompt (#2046).
 	if (!process.stdin.isTTY) {
 		if (override.CONFIRM_DOWNGRADE === undefined) {
 			throw new Error(
@@ -55,7 +53,7 @@ export async function forceDowngradePrompt(upgradeObj: any) {
 		);
 	console.error(downgradeMessage);
 
-	return prompts.confirm({
+	return promptYesNo({
 		message: chalk.magenta(
 			'[CONFIRM_DOWNGRADE] Do you want to proceed with using your downgraded HDB instance now? (yes/no)'
 		),
@@ -77,7 +75,7 @@ export async function upgradeCertsPrompt() {
 		);
 	console.error(upgradeCertMessage);
 
-	return prompts.confirm({
+	return promptYesNo({
 		message: chalk.magenta('[GENERATE_CERTS] Do you want Harper to generate all new certificates? (yes/no)'),
 		default: true,
 	});

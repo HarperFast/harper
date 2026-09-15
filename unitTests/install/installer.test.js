@@ -152,23 +152,6 @@ describe.skip('Test installer module', () => {
 		version_stub.restore();
 	});
 
-	it('Test termsAgreement doesnt prompt if override value passed', async () => {
-		const termsAgreement = installer.__get__('termsAgreement');
-		await termsAgreement({ TC_AGREEMENT: 'no' });
-		expect(hdb_log_error_stub.called).to.be.false;
-	});
-
-	it('Test termsAgreement logs and exits if answer not yes', async () => {
-		const termsAgreement = installer.__get__('termsAgreement');
-		const inquirer_stub = sandbox.stub(prompts, 'confirm').resolves(false);
-		const process_exit_stub = sandbox.stub(process, 'exit');
-		await termsAgreement({});
-		process_exit_stub.restore();
-		inquirer_stub.restore();
-		expect(console_log_stub.called).to.be.true;
-		expect(process_exit_stub.called).to.be.true;
-	});
-
 	it('Test createBootPropertiesFile calls all the things to make file then sets env props', async () => {
 		installer.__set__('hdbRoot', 'user/hdb-test/');
 		sandbox.stub(hdb_utils, 'getHomeDir').returns('homedir/test');
