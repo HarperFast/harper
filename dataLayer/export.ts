@@ -2,7 +2,7 @@
 
 import * as search from './search.ts';
 import * as AWSConnector from '../utility/AWS/AWSConnector.js';
-import * as awsSdkLoader from '../utility/AWS/awsSdkLoader.js';
+import * as awsSdkLoader from '../utility/AWS/awsSdkLoader.ts';
 import * as stream from 'stream';
 import * as hdbUtils from '../utility/common_utils.ts';
 import * as fs from 'fs-extra';

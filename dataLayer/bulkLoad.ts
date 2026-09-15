@@ -18,7 +18,7 @@ import { finished } from 'stream';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as opFuncCaller from '../utility/OperationFunctionCaller.ts';
 import * as AWSConnector from '../utility/AWS/AWSConnector.js';
-import { MissingAwsSdkError } from '../utility/AWS/awsSdkLoader.js';
+import { MissingAwsSdkError } from '../utility/AWS/awsSdkLoader.ts';
 import { BulkLoadFileObject, BulkLoadDataObject } from './dataObjects/BulkLoadObjects.js';
 import PermissionResponseObject from '../security/data_objects/PermissionResponseObject.ts';
 import { verifyBulkLoadAttributePerms } from '../utility/operation_authorization.ts';

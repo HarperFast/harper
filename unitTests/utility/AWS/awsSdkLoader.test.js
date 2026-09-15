@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { requireAwsSdk, MissingAwsSdkError } = require('#js/utility/AWS/awsSdkLoader');
+const { requireAwsSdk, MissingAwsSdkError } = require('#src/utility/AWS/awsSdkLoader');
 
 const MISSING_SDK_MESSAGE =
 	'S3 export/import requires the optional AWS SDK — npm install @aws-sdk/client-s3 @aws-sdk/lib-storage in the Harper instance root, or alongside Harper globally';
