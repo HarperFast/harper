@@ -12,7 +12,13 @@ const harperBridge =
 	require('../../dataLayer/harperBridge/harperBridge.ts');
 const process = require('process');
 const { isMainThread, threadId, workerData } = require('node:worker_threads');
-const { resetDatabases, closeDatabase, reloadBranchAt } = require('../../resources/databases.ts');
+const {
+	databases,
+	resetDatabases,
+	closeDatabase,
+	reloadBranchAt,
+	markDropInProgress,
+} = require('../../resources/databases.ts');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -83,11 +89,34 @@ async function syncSchemaMetadata(msg) {
 			reloadBranchAt(msg.branchPath);
 			return;
 		}
+		if (msg.operation === hdbTerms.OPERATIONS_ENUM.DROP_TABLE && msg.table) {
+			// the ack is the dropper's barrier: the unload must happen whatever the derived-index
+			// shutdown does, and no rescan during that await may complete the drop
+			const releaseDropMark = msg.dropGeneration ? markDropInProgress(msg.dropGeneration) : undefined;
+			try {
+				const dropped = databases[msg.schema]?.[msg.table];
+				if (dropped) {
+					const derivedIndexRuntime = dropped.derivedIndexRuntime;
+					dropped.derivedIndexRuntime = undefined;
+					delete databases[msg.schema][msg.table];
+					dropped.cleanup?.();
+					try {
+						await derivedIndexRuntime?.close();
+					} catch (error) {
+						hdbLogger.warn(`Derived index shutdown failed for dropped table ${msg.schema}.${msg.table}`, error);
+					}
+				}
+				resetDatabases();
+			} finally {
+				releaseDropMark?.();
+			}
+			return;
+		}
 		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
-		let databases = resetDatabases();
+		const rescanned = resetDatabases();
 		if (msg.table && msg.database)
 			// wait for a write to finish to ensure all writes have been written
-			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
+			await rescanned[msg.database][msg.table].put(Symbol.for('write-verify'), null);
 	} catch (e) {
 		hdbLogger.error(e);
 	}

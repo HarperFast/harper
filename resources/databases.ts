@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.ts';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.ts';
 import { open, compareKeys, type Database, type RootDatabase } from 'lmdb';
@@ -19,7 +19,13 @@ import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
-import { makeTable, ignoreAlreadyDropped, acquireUpdateAttributesLock, releaseUpdateAttributesLock } from './Table.ts';
+import {
+	makeTable,
+	ignoreAlreadyDropped,
+	acquireUpdateAttributesLock,
+	releaseUpdateAttributesLock,
+	tryUpdateAttributesLock,
+} from './Table.ts';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.ts';
 import {
 	CONFIG_PARAMS,
@@ -368,7 +374,7 @@ export function toRocksCompression(compression: unknown): unknown {
 	return compression;
 }
 
-function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
+export function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSort?: boolean }) {
 	options.disableWAL ??= true;
 	const legacyOptions = options as { compression?: unknown };
 	// A configured codec applies to every column family, overriding whatever per-table metadata
@@ -486,6 +492,49 @@ function isAbandonedIndexBuild(descriptor: any, currentRestartGeneration: number
 // unbounded retry turns one broken table into a per-reload log flood in every
 // worker thread.
 const MAX_INTERRUPTED_DROP_ATTEMPTS = 3;
+// RocksDB store names carry the generation minted at create, so a same-name recreate never binds to a
+// family a dropped generation still occupies on disk; LMDB keeps catalog-key names.
+const GENERATION_ROW_PREFIX = '/generation/';
+const GENERATION_ROW_END = '/generation0';
+type GenerationRow = { table: string; generation: string; phase: 'creating' | 'retired'; stores?: string[] };
+export function storeNameFor(catalogKey: string, generation: string | undefined): string {
+	return generation ? `${catalogKey}@${generation}` : catalogKey;
+}
+function generationRowKey(generation: string): string {
+	return GENERATION_ROW_PREFIX + generation;
+}
+const dropsInProgress = new Map<string, number>();
+/**
+ * A rescan that meets the tombstone of a drop in flight only unloads the table; completing it is the
+ * dropper's job. Keyed by dropGeneration (carried by the drop broadcast): database names alias one
+ * directory and a table name recurs across generations, so neither identifies the drop.
+ */
+export function markDropInProgress(dropGeneration: string): () => void {
+	dropsInProgress.set(dropGeneration, (dropsInProgress.get(dropGeneration) ?? 0) + 1);
+	return () => {
+		const remaining = (dropsInProgress.get(dropGeneration) ?? 1) - 1;
+		if (remaining > 0) dropsInProgress.set(dropGeneration, remaining);
+		else dropsInProgress.delete(dropGeneration);
+	};
+}
+/**
+ * Written before any family is retired. A row already present keeps every name it has: a redundant
+ * concurrent drop reaches here after the first removed the catalog rows and must not narrow the list.
+ */
+export function recordRetiredGeneration(attributesDbi, tableName: string, generation: string, stores: string[]): void {
+	const key = generationRowKey(generation);
+	const existing: GenerationRow | undefined = attributesDbi.getSync(key);
+	const merged = [...new Set([...(existing?.stores ?? []), ...stores])];
+	if (existing?.phase === 'retired' && merged.length === existing.stores?.length) return;
+	attributesDbi.putSync(key, { table: tableName, generation, phase: 'retired', stores: merged });
+}
+export function storeNamesFor(attributesDbi, tableName: string, generation: string | undefined): string[] {
+	const names: string[] = [];
+	for (const key of attributesDbi.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+		names.push(storeNameFor(key, generation));
+	}
+	return names;
+}
 // physical store path + table -> drop generation -> consecutive failed
 // completion attempts in this thread. Keyed by the physical store path
 // rather than the database alias name: multiple database names can point at
@@ -1067,6 +1116,7 @@ function initStores(
 	for (const result of attributesDbi.getRange({ start: false })) {
 		const { key, value } = result as { key: string; value: any };
 		if (value == null) continue;
+		if (typeof key === 'string' && key.startsWith(GENERATION_ROW_PREFIX)) continue;
 		let [tableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') {
 			// primary key
@@ -1111,7 +1161,20 @@ function initStores(
 			continue;
 		}
 		const generation = tableDef.primary?.dropGeneration;
+		if (generation && dropsInProgress.has(generation)) {
+			definedTables?.delete(tableName);
+			tablesToLoad.delete(tableName);
+			continue;
+		}
 		const failedAttempts = getInterruptedDropAttempts(path, tableName, generation);
+		// a holder of the lock (a create, or a drop whose broadcast this thread already acked) completes
+		// the drop itself; a contended attempt is not a failed one
+		const locked = !(rootStore instanceof RocksDatabase) || tryUpdateAttributesLock(rootStore);
+		if (!locked) {
+			definedTables?.delete(tableName);
+			tablesToLoad.delete(tableName);
+			continue;
+		}
 		if (failedAttempts < MAX_INTERRUPTED_DROP_ATTEMPTS) {
 			try {
 				completeInterruptedDrop(rootStore, attributesDbi, databaseName, tableName);
@@ -1142,9 +1205,11 @@ function initStores(
 				}
 			}
 		}
+		if (rootStore instanceof RocksDatabase) releaseUpdateAttributesLock(rootStore);
 		// whether or not cleanup succeeded, never load a table that was being dropped
 		tablesToLoad.delete(tableName);
 	}
+	if (rootStore instanceof RocksDatabase) reclaimGenerations(rootStore, attributesDbi, databaseName);
 
 	for (const [tableName, tableDef] of tablesToLoad) {
 		let { attributes, primary: primaryAttribute } = tableDef;
@@ -1222,7 +1287,11 @@ function initStores(
 			// the only list a failed open can release it from
 			const opened =
 				rootStore instanceof RocksDatabase
-					? openRocksDatabase(rootStore.path, { ...dbiInit, name: primaryAttribute.key, cache: true } as any)
+					? openRocksDatabase(rootStore.path, {
+							...dbiInit,
+							name: storeNameFor(primaryAttribute.key, primaryAttribute.generation),
+							cache: true,
+						} as any)
 					: (rootStore as any).openDB(primaryAttribute.key, dbiInit as any);
 			openedStores?.push(opened);
 			primaryStore = handleLocalTimeForGets(opened, rootStore);
@@ -1235,7 +1304,7 @@ function initStores(
 				// now load the non-primary keys, opening the dbs as necessary for indices
 				if (!attribute.isPrimaryKey && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 					if (!indices[attribute.name]) {
-						const dbi = openIndex(attribute.key, rootStore, attribute);
+						const dbi = openIndex(attribute.key, rootStore, attribute, primaryAttribute.generation);
 						openedStores?.push(dbi);
 						indices[attribute.name] = dbi;
 						indices[attribute.name].indexNulls = attribute.indexNulls;
@@ -2231,7 +2300,7 @@ function armVersionedIndexEncoder(dbi: any, rootStore: any) {
 }
 
 // opens an index, consulting with custom indexes that may use alternate store configuration
-function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) {
+function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any, generation?: string) {
 	const objectStorage =
 		attribute.isPrimaryKey || (attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
 	const dbiInit = createOpenDBIObject(!objectStorage, objectStorage);
@@ -2258,7 +2327,7 @@ function openIndex(dbiKey: string, rootStore: RootDatabaseKind, attribute: any) 
 		// for cached traversal; legacy stores pay a small per-write cache.delete() overhead only.
 		dbi = openRocksDatabase(rootStore.path, {
 			...dbiInit,
-			name: dbiKey,
+			name: storeNameFor(dbiKey, generation),
 			cache: isCustomObjectIndex,
 		} as any) as any;
 		(dbi as any).rootStore = rootStore;
@@ -2497,6 +2566,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let refreshRelationshipAttributes = false;
 	let refreshedLiveAttributes = false;
 	let deferredPrimaryRow: any;
+	let generation: string | undefined;
 	let unpublishedPrimaryStore: any;
 	let published = false;
 	let releaseExclusiveLock: (() => void) | undefined;
@@ -2668,11 +2738,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				clearInterruptedDropEntries(rootStore.path, tableName);
 			}
 			if (rootStore instanceof RocksDatabase) {
-				// Usually a genuinely new column family (existingTableMeta above found no catalog
-				// entry), but an interrupted drop just completed above can leave the physical CF
-				// behind under its old codec even though the catalog entry is gone — same fallback
-				// as the reconcile paths covers that remnant case too.
-				primaryStore = openRocksDatabase(rootStore.path, { ...dbiInit, name: dbiName, cache: true } as any);
+				generation = randomUUID();
+				attributesDbi.putSync(generationRowKey(generation), { table: tableName, generation, phase: 'creating' });
+				primaryStore = openRocksDatabase(rootStore.path, {
+					...dbiInit,
+					name: storeNameFor(dbiName, generation),
+					cache: true,
+				} as any);
 			} else {
 				primaryStore = (rootStore as any).openDB(dbiName, dbiInit as any);
 			}
@@ -2688,6 +2760,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
 
 			primaryKeyAttribute.tableId = primaryStore.tableId;
+			if (generation) primaryKeyAttribute.generation = generation;
 			Table = makeTable({
 				isBranch: Boolean(target.branch),
 				primaryStore,
@@ -2732,6 +2805,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
 		}
 		Table.dbisDB = attributesDbi;
+		generation ??= attributesDbi.getSync(tableName + '/')?.generation;
 		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
 		// reconciliation is reserved for local schema authoring; on a create the rows can only be aborted state.
 		const reconcileRemovals = origin !== 'cluster' || Boolean(deferredPrimaryRow);
@@ -2833,7 +2907,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					applyDurableDeclaration(attribute, attributesDbi.getSync(dbiKey) ?? attributeDescriptor);
 				} else {
 					if (attribute.indexed) {
-						const dbi = openIndex(dbiKey, rootStore, attribute);
+						const dbi = openIndex(dbiKey, rootStore, attribute, generation);
 						target.adopt(dbi);
 						// Persisting the indexFormat openIndex just resolved adds a field the descriptor lacks
 						// rather than rewriting one it has. Without it an empty index resolves 'versioned', writes
@@ -2897,7 +2971,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// crash-recovery, leaving the index stuck. Falls back to manageThreads.restartNumber
 				// on the main thread, where workerData is undefined (and it is initialized to 1).
 				const currentRestartGeneration = workerData?.restartNumber ?? manageThreads.restartNumber;
-				const dbi = openIndex(dbiKey, rootStore, attribute);
+				const dbi = openIndex(dbiKey, rootStore, attribute, generation);
 				target.adopt(dbi);
 				if (deferredPrimaryRow) indices[attribute.name] = dbi; // private until published; lets the rollback close it
 				// openIndex resolves and stamps attribute.indexFormat for a versioned-capable (RocksDB
@@ -3052,6 +3126,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		// below is a no-op for a create — a table is never published with an incomplete relationship list.
 		if (deferredPrimaryRow) {
 			attributesDbi.put(tableName + '/', deferredPrimaryRow);
+			if (generation) attributesDbi.remove(generationRowKey(generation));
 			// That write, not the registration below, is the publish point: it is durable from here
 			// (on LMDB releaseLock()'s finally commits this create's write transaction even while an
 			// error unwinds), so any later throw must leave the catalog alone. Rolling back past it
@@ -3597,6 +3672,83 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 	}
 }
 
+/** Drops one column family by name and removes its HNSW plane file; tolerates an already-dropped family. */
+export function dropColumnFamily(rootStore: RocksDatabase, columnName: string) {
+	const columnStore = openRocksDatabase(rootStore.path, { name: columnName });
+	try {
+		columnStore.dropSync();
+	} catch (error) {
+		ignoreAlreadyDropped(error);
+	} finally {
+		columnStore.close();
+	}
+	// derived HNSW plane files live next to the store; the normal drop path removes
+	// them through the custom index, but this recovery path drops raw column stores,
+	// and a same-name recreate must never open a stale plane over a fresh CF
+	try {
+		unlinkSync(planeFilePathFor(rootStore.path, columnName));
+	} catch (error: any) {
+		// a stale plane left behind (e.g. Windows EBUSY while still mapped) would be
+		// opened over a fresh same-name CF, resolving another graph's node ids
+		// against it — tombstone it so no attach ever adopts it
+		if (error?.code !== 'ENOENT') {
+			logger.warn(`could not delete the HNSW plane file for ${columnName}; tombstoning it as stale`, error);
+			try {
+				closeSync(openSync(planeStalePathFor(planeFilePathFor(rootStore.path, columnName)), 'w'));
+			} catch (tombstoneError) {
+				logger.warn(`could not tombstone the stale HNSW plane file for ${columnName}`, tombstoneError);
+			}
+		}
+	}
+}
+
+/**
+ * Reclaims the column families of generations the lifecycle journal names: a `creating` row whose
+ * table never published (the create died or rolled back), or a `retired` row a drop wrote before it
+ * removed the catalog rows. A row is removed only once no family of its generation is registered and
+ * the binding reports no physical drop still pending, because a retired name leaves `columns` before
+ * its bytes leave the disk; deleting the row inside that window would turn a crash into a permanent
+ * orphan. Skips when a create on another thread holds the lock; a row that fails stays for the next
+ * load. Never throws: one bad generation must not stop a database from loading.
+ */
+function reclaimGenerations(rootStore: RocksDatabase, attributesDbi, databaseName: string) {
+	const rows = Array.from(attributesDbi.getRange({ start: GENERATION_ROW_PREFIX, end: GENERATION_ROW_END }));
+	if (rows.length === 0) return;
+	if (!tryUpdateAttributesLock(rootStore)) return;
+	try {
+		for (const { key, value } of rows as Array<{ key: string; value: GenerationRow }>) {
+			try {
+				if (!value?.generation || !value.table) {
+					logger.warn(`Removing a malformed generation journal row ${String(key)} in ${databaseName}`);
+					attributesDbi.remove(key);
+					continue;
+				}
+				const live = attributesDbi.getSync(value.table + '/');
+				if (value.phase === 'creating' && live?.generation === value.generation && !live.dropping) {
+					attributesDbi.remove(key);
+					continue;
+				}
+				// by explicit name and by suffix: a family opened for an index whose catalog row never
+				// committed carries the generation without being named
+				const suffix = '@' + value.generation;
+				const retired = new Set(value.stores ?? []);
+				for (const columnName of (rootStore as any).columns) {
+					if (retired.has(columnName) || columnName.endsWith(suffix)) dropColumnFamily(rootStore, columnName);
+				}
+				if ((rootStore.getStats?.()?.['columnFamily.pendingReclaims'] ?? 0) > 0) continue;
+				attributesDbi.remove(key);
+			} catch (error) {
+				logger.warn(
+					`Could not reclaim the stores of generation ${value?.generation} of table ${databaseName}.${value?.table}; will retry on the next load`,
+					error
+				);
+			}
+		}
+	} finally {
+		releaseUpdateAttributesLock(rootStore);
+	}
+}
+
 /**
  * Completes a table drop that was interrupted after its `dropping` tombstone
  * was written: drops any surviving table stores and removes the table's
@@ -3615,35 +3767,19 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 function completeInterruptedDrop(rootStore, attributesDbi, databaseName: string, tableName: string) {
 	logger.debug(`Completing interrupted drop of table ${databaseName}.${tableName}`);
 	if (rootStore instanceof RocksDatabase) {
-		for (const columnName of (rootStore as any).columns) {
-			if (columnName.startsWith(tableName + '/')) {
-				const columnStore = openRocksDatabase(rootStore.path, { name: columnName });
-				try {
-					columnStore.dropSync();
-				} catch (error) {
-					ignoreAlreadyDropped(error);
-				} finally {
-					columnStore.close();
-				}
-				// derived HNSW plane files live next to the store; the normal drop path removes
-				// them through the custom index, but this recovery path drops raw column stores,
-				// and a same-name recreate must never open a stale plane over a fresh CF
-				try {
-					unlinkSync(planeFilePathFor(rootStore.path, columnName));
-				} catch (error: any) {
-					// a stale plane left behind (e.g. Windows EBUSY while still mapped) would be
-					// opened over a fresh same-name CF, resolving another graph's node ids
-					// against it — tombstone it so no attach ever adopts it
-					if (error?.code !== 'ENOENT') {
-						logger.warn(`could not delete the HNSW plane file for ${columnName}; tombstoning it as stale`, error);
-						try {
-							closeSync(openSync(planeStalePathFor(planeFilePathFor(rootStore.path, columnName)), 'w'));
-						} catch (tombstoneError) {
-							logger.warn(`could not tombstone the stale HNSW plane file for ${columnName}`, tombstoneError);
-						}
-					}
-				}
-			}
+		// Explicit names, never a `tableName + '/'` prefix: a live same-name recreate carries its own
+		// generation next to the retired one and must survive this sweep.
+		const primaryRow = attributesDbi.getSync(tableName + '/');
+		const stores = storeNamesFor(attributesDbi, tableName, primaryRow?.generation);
+		if (primaryRow && !primaryRow.dropGeneration) {
+			// a tombstone from before dropGeneration existed: give it one, durably, so retries share it
+			primaryRow.dropGeneration = randomUUID();
+			attributesDbi.putSync(tableName + '/', primaryRow);
+		}
+		if (primaryRow) recordRetiredGeneration(attributesDbi, tableName, primaryRow.dropGeneration, stores);
+		const columns = new Set<string>((rootStore as any).columns);
+		for (const columnName of stores) {
+			if (columns.has(columnName)) dropColumnFamily(rootStore, columnName);
 		}
 	} else {
 		// LMDB reuses an existing named sub-database on open, so the stores must
