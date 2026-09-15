@@ -830,7 +830,12 @@ async function deployComponent(req) {
 				return async () => {
 					// Only what this activation published is this activation's to take back. The preparation lock
 					// does not serialize root-config writers, so a `set_configuration` acknowledged while the swap
-					// was retrying would otherwise be overwritten by a snapshot taken before it.
+					// was retrying would otherwise be overwritten by a snapshot taken before it. Re-read from
+					// disk first: `set_configuration` writes the file without refreshing this process's config
+					// object, so comparing the cache would compare against a value that predates it and conclude
+					// nothing had changed. This narrows the window rather than closing it — serializing config
+					// publication is #2315 step 3.
+					env.initSync(true);
 					if (!isDeepStrictEqual(configUtils.getConfigObj()?.[req.project], published)) return;
 					if (previous === undefined) configUtils.deleteConfigFromFile([req.project]);
 					else await configUtils.addConfig(req.project, previous);

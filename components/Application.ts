@@ -2502,7 +2502,18 @@ async function settleInterruptedActivation(
 			// next retention pass deletes the build.
 			await clearUnsettledVerdict(deploymentDirPath, journal.component);
 			await rm(journalPath, { force: true });
-			await syncDirectory(deploymentDirPath);
+			// NOTHING MAY THROW PAST THE JOURNAL REMOVAL, the same rule the settled tail follows. The caller
+			// records a failure by writing `.unsettled`, so a throw here would leave the artifact marked
+			// unsettled with no journal left to settle it — unactivatable, and deleted by the next retention
+			// pass. An unflushed removal is the safe direction instead: a power loss resurrects the journal,
+			// and settling again is idempotent.
+			await syncDirectory(deploymentDirPath).catch((error) =>
+				logger.warn(
+					`Returned the staged build ${basename(deploymentDirPath)} of ${journal.component} to dormant but ` +
+						`could not flush that to storage; a power loss could resurrect its activation journal:`,
+					errorForLog(error)
+				)
+			);
 			logger.info?.(
 				`Returned the staged build ${basename(deploymentDirPath)} of ${journal.component} to dormant after an ` +
 					`activation that never moved its live tree aside`
