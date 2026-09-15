@@ -55,7 +55,7 @@ import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import { replayLogs } from './replayLogs.ts';
-import { attachDerivedIndexes } from './indexes/hnswDerivedIndex.ts';
+import { assertFullTextActivationSupported, attachDerivedIndexes } from './derivedIndexes.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
@@ -64,6 +64,8 @@ import {
 	compileFullTextDefinition,
 	compileFullTextDefinitions,
 	compileValidFullTextDefinitions,
+	fullTextStorageDefinition,
+	fullTextStorageKey,
 	sortFullTextDefinitions,
 	type FullTextDefinition,
 } from './fullTextSchema.ts';
@@ -440,6 +442,15 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
 
+// A quarantined table can be loaded synchronously, without attaching derived indexes, only while a
+// local schema declaration repairs it. The declaration then runs through the ordinary locked update
+// path and attaches a fresh runtime before yielding back to the event loop.
+const fullTextActivationRepairs = new Set<string>();
+
+function fullTextActivationRepairKey(path: string, tableName: string): string {
+	return `${path}\0${tableName}`;
+}
+
 // set the following in both global and exports
 _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
@@ -462,8 +473,8 @@ const PEER_REDEFINABLE_FIELDS = [
 	'computedFromExpression',
 	'hidden',
 ];
-// `indexNulls` is derived from the durable descriptor, never sent by a peer, so naming it in the
-// discard warn would blame the peer for a field it did not write.
+// Internal fields are derived from the durable descriptor, never sent by a peer, so naming them in
+// the discard warn would blame the peer for fields it did not write.
 const PEER_DECLARABLE_FIELDS = PEER_REDEFINABLE_FIELDS.filter((field) => field !== 'indexNulls');
 
 function compilePersistedFullTextDefinitions(
@@ -1182,6 +1193,107 @@ function initStores(
 		tablesToLoad.delete(tableName);
 	}
 
+	const assertCatalogFullTextActivation = (tableName: string, tableDef: any) => {
+		const fullTextAttributes = tableDef.attributes.filter((attribute) => attribute.fullText);
+		if (fullTextAttributes.length === 0) return fullTextAttributes;
+		const primaryAttribute = tableDef.primary || tableDef.attributes.find((attribute) => attribute.isPrimaryKey);
+		if (!primaryAttribute) return fullTextAttributes;
+		const audit =
+			typeof primaryAttribute.audit === 'boolean' ? primaryAttribute.audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
+		if (audit !== true)
+			throw new ClientError(
+				`Table '${databaseName}.${tableName}' must enable audit logging before using a post-commit derived index`
+			);
+		assertFullTextActivationSupported(rootStore, databaseName, tableName, tableDef.attributes, fullTextAttributes);
+		return fullTextAttributes;
+	};
+	const readPersistedTableDefinition = (wantedTableName: string) => {
+		const current = { attributes: [] } as any;
+		for (const { key, value: persistedValue } of attributesDbi.getRange({ start: false })) {
+			if (persistedValue == null) continue;
+			const value = persistedValue as any;
+			let [persistedTableName, attributeName] = key.toString().split('/');
+			if (attributeName === '') attributeName = value.name;
+			else if (!attributeName) {
+				attributeName = persistedTableName;
+				persistedTableName = defaultTable;
+				if (!value.name) {
+					value.name = attributeName;
+					value.indexed = !value.isPrimaryKey;
+				}
+			}
+			if (persistedTableName !== wantedTableName) continue;
+			if (attributeName == null || value.isPrimaryKey) current.primary = value;
+			if (attributeName != null) current.attributes.push(value);
+			Object.defineProperty(value, 'key', { value: key, configurable: true });
+		}
+		return current;
+	};
+
+	for (const [tableName, tableDef] of tablesToLoad) {
+		if (fullTextActivationRepairs.has(fullTextActivationRepairKey(path, tableName))) continue;
+		let fullTextAttributes;
+		try {
+			fullTextAttributes = assertCatalogFullTextActivation(tableName, tableDef);
+			if (fullTextAttributes.length === 0) continue;
+		} catch (error) {
+			let invalidError = error;
+			let generationInvalidated = false;
+			let repairedWhileWaiting = false;
+			if (rootStore instanceof RocksDatabase) {
+				try {
+					acquireUpdateAttributesLock(
+						rootStore,
+						`invalid full-text recovery contract on '${databaseName}.${tableName}'`
+					);
+					try {
+						const currentTableDef = readPersistedTableDefinition(tableName);
+						try {
+							assertCatalogFullTextActivation(tableName, currentTableDef);
+							tablesToLoad.set(tableName, currentTableDef);
+							repairedWhileWaiting = true;
+						} catch (currentError) {
+							invalidError = currentError;
+							fullTextAttributes = currentTableDef.attributes.filter((attribute) => attribute.fullText);
+							for (const attribute of fullTextAttributes) {
+								const descriptor = (attributesDbi as any).getSync(attribute.key);
+								if (descriptor?.fullText && !String(descriptor.fullTextGeneration ?? '').startsWith('invalid:')) {
+									const fullTextGeneration = `invalid:${randomBytes(16).toString('hex')}`;
+									(attributesDbi as any).putSync(attribute.key, { ...descriptor, fullTextGeneration });
+									attribute.fullTextGeneration = fullTextGeneration;
+									generationInvalidated = true;
+								}
+							}
+						}
+					} finally {
+						releaseUpdateAttributesLock(rootStore);
+					}
+				} catch (invalidationError) {
+					logger.error(
+						`Unable to invalidate the native generation for quarantined table ${databaseName}.${tableName}; a schema repair will still force replacement`,
+						invalidationError
+					);
+				}
+			}
+			if (repairedWhileWaiting) continue;
+			if (generationInvalidated && !destination)
+				signalling.signalSchemaChange(
+					new SchemaEventMsg(process.pid, 'schema-change', databaseName, tableName, undefined)
+				);
+			logger.error(
+				`Skipping table ${databaseName}.${tableName}: its persisted full-text declaration cannot activate`,
+				invalidError
+			);
+			const existingTable = tables[tableName];
+			if (existingTable) {
+				existingTable.cleanup?.();
+				delete tables[tableName];
+			}
+			tablesToLoad.delete(tableName);
+			definedTables?.delete(tableName);
+		}
+	}
+
 	for (const [tableName, tableDef] of tablesToLoad) {
 		let { attributes, primary: primaryAttribute } = tableDef;
 		if (!primaryAttribute) {
@@ -1387,10 +1499,13 @@ function initStores(
 				})
 			);
 			table.schemaVersion = 1;
-			if (!destination) databaseEventsEmitter.emit('updateTable', table);
+			if (!destination && !fullTextActivationRepairs.has(fullTextActivationRepairKey(path, tableName)))
+				databaseEventsEmitter.emit('updateTable', table);
 		}
 		void table.derivedIndexRuntime?.close();
-		table.derivedIndexRuntime = attachDerivedIndexes(table);
+		table.derivedIndexRuntime = fullTextActivationRepairs.has(fullTextActivationRepairKey(path, tableName))
+			? undefined
+			: attachDerivedIndexes(table);
 		if (Array.isArray(primaryAttribute.relationships)) {
 			relationshipsToHydrate.push({ table, databaseName, tableName, definitions: primaryAttribute.relationships });
 		} else if (primaryAttribute.relationships !== undefined) {
@@ -2569,6 +2684,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const tables = target.tables(databaseName);
 	logger.trace(`Defining ${tableName} in ${databaseName}`);
 	let Table = tables?.[tableName];
+	const previousFullTextStorageKey = Table && fullTextStorageKey(Table.attributes);
+	const previousHasNativeHnsw = Table?.attributes.some(
+		(attribute) => Table.indices[attribute.name]?.customIndex?.postCommit
+	);
 	if (rootStore.status === 'closed') {
 		throw new Error(`Can not use a closed data store for ${tableName}`);
 	}
@@ -2581,8 +2700,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	const fullTextIndexesExplicit = tableDefinition.fullTextIndexes !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
+	const hasFullText = attributes.some((attribute) => attribute.fullText);
 	if (
-		attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) &&
+		(attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) ||
+			hasFullText) &&
 		audit !== true &&
 		// An explicit false must fail here even for an already-audited Table. Nothing clears the
 		// static, so the runtime would stay attached while the descriptor persists audit: false,
@@ -2590,9 +2711,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		(audit === false || Table?.audit !== true)
 	) {
 		throw new ClientError(
-			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using nativePlane because its transaction log is the derived-index recovery source`
+			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using a derived index because its transaction log is the recovery source`
 		);
 	}
+	if (hasFullText) assertFullTextActivationSupported(rootStore, databaseName, tableName, attributes);
 	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
 
@@ -2937,7 +3059,31 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// before the recursive reload
 				releaseLock();
 				target.reload(databaseName);
-				return declareTable(target, tableDefinition);
+				if (target.tables(databaseName)?.[tableName]) return declareTable(target, tableDefinition);
+
+				// A persisted table whose full-text recovery contract is invalid is intentionally absent
+				// after reload. Admit it for this synchronous repair only, without attaching the invalid
+				// runtime; the ordinary existing-table path below then updates the catalog under its lock.
+				const repairKey = fullTextActivationRepairKey(rootStore.path, tableName);
+				fullTextActivationRepairs.add(repairKey);
+				let repairTable;
+				try {
+					target.reload(databaseName);
+					repairTable = target.tables(databaseName)?.[tableName];
+					if (!repairTable)
+						throw new ClientError(
+							`Table '${databaseName}.${tableName}' could not be loaded for full-text schema repair`
+						);
+					return declareTable(target, tableDefinition);
+				} catch (error) {
+					const publishedRepairTable = repairTable ?? target.tables(databaseName)?.[tableName];
+					publishedRepairTable?.cleanup?.();
+					if (target.tables(databaseName)?.[tableName] === publishedRepairTable)
+						delete target.tables(databaseName)[tableName];
+					throw error;
+				} finally {
+					fullTextActivationRepairs.delete(repairKey);
+				}
 			}
 
 			let primaryStore;
@@ -3064,6 +3210,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			let dbiKey = tableName + '/' + (attribute.name || '');
 			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
+			if (attribute.fullText) {
+				attribute.fullTextGeneration =
+					!fullTextActivationRepairs.has(fullTextActivationRepairKey(rootStore.path, tableName)) &&
+					attributeDescriptor?.fullText &&
+					JSON.stringify(fullTextStorageDefinition(attributeDescriptor.fullText)) ===
+						JSON.stringify(fullTextStorageDefinition(attribute.fullText)) &&
+					attributeDescriptor?.fullTextGeneration
+						? attributeDescriptor.fullTextGeneration
+						: randomBytes(16).toString('hex');
+			}
 			if (attribute.isPrimaryKey) {
 				if (deferredPrimaryRow) continue;
 				attributeDescriptor = attributeDescriptor || attributesDbi.getSync((dbiKey = tableName + '/')) || {};
@@ -3426,8 +3582,17 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			schemaChangeOperation
 		).then(markSettled, markSettled);
 	}
-	void Table.derivedIndexRuntime?.close();
-	Table.derivedIndexRuntime = attachDerivedIndexes(Table);
+	const canReuseFullTextRuntime =
+		Table.derivedIndexRuntime &&
+		!previousHasNativeHnsw &&
+		!Table.attributes.some((attribute) => Table.indices[attribute.name]?.customIndex?.postCommit) &&
+		previousFullTextStorageKey === fullTextStorageKey(Table.attributes);
+	// Query behavior is read from the live schema and does not require a second writer for the same generation.
+	// HNSW keeps the existing replacement path because its registration also captures computed resolvers.
+	if (!canReuseFullTextRuntime) {
+		void Table.derivedIndexRuntime?.close();
+		Table.derivedIndexRuntime = attachDerivedIndexes(Table);
+	}
 
 	Table.origin = origin;
 	// scope-private: replication and other global subscribers must not learn of a branch class

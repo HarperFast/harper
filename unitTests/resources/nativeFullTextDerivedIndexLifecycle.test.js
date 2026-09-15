@@ -246,6 +246,14 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
 	});
 
+	it('rejects a native module that advertises another storage backend', async () => {
+		const binding = new FakeNativeModule();
+		const runtimeInfo = binding.runtimeInfo.bind(binding);
+		binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), storageBackends: ['native', 'harper'] });
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
+	});
+
 	it('rejects an unknown mutation-batch API version', async () => {
 		const binding = new FakeNativeModule();
 		const runtimeInfo = binding.runtimeInfo.bind(binding);

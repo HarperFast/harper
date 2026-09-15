@@ -2541,7 +2541,7 @@ The SQL and job paths are additive rather than exclusive: `verifyPermsAST` valid
 
 ## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
 
-A derived index (the native HNSW plane, a future Tantivy full-text index) is a materialized view
+A derived index (the native HNSW plane or a Tantivy full-text index) is a materialized view
 that lives outside the record transaction: its apply is native, costs 0.2–1.4 ms per mutation, and
 its durability barrier is an `msync` or a segment publish, none of which belong on the commit path.
 The runtime is the one Harper-side implementation of the delivery protocol in harper#2489: **the
@@ -2680,6 +2680,53 @@ restart. The runtime also writes a condemnation marker to the root store
 cannot be written issues no reset. The cursor's atomic durability mechanism is the backend's
 (Tantivy publishes it with segment state; HNSW writes it after the plane barrier), which is why the
 cursor is backend-owned and validation is Harper's.
+
+### Schema activation
+
+`resources/derivedIndexes.ts` is the single schema-to-runtime registry for both HNSW and full text.
+Every worker registers the same stable logical backend ids against its database audit store; the
+runtime's existing lock elects the only writer. A table redefinition marks its previous installation
+closing before installing replacements, while asynchronous shutdown remains fenced behind the same
+backend lock. This also prevents a catalog rescan from leaving duplicate writers when the prior
+`Table` class is no longer reachable.
+
+Full-text activation reserves the table in `derivedIndexRegistry` before awaiting the native
+binding. That provisional registration makes cache eviction write its local-only audit marker even
+during startup or a failed native setup; the runner adds its own reference after activation, and
+both references are released with the table installation. Without the provisional reference, a
+reused native index could retain a document evicted while no runner was registered.
+If native activation fails before a runner exists, Harper publishes terminal `unavailable` readiness
+instead of leaving `unknown` or a stale `ready` value. A table drop clears its installation only
+after shutdown proves quiescence; a rejected shutdown keeps the installation and ownership lock
+reachable so a retry must re-prove quiescence before destructive storage work begins.
+
+An `@fullText` target creates no RocksDB column family. Its native directory is rooted inside the
+database directory and selected by the lifecycle's hash of `<table>/<target>`. RocksDB remains the
+source of truth and its transaction logs remain the recovery stream; RocksDB managed backups do not
+copy Tantivy segments. The source generation combines the persisted table id with a per-target token.
+Dropping and recreating a table, removing and re-adding a target, or changing its native storage
+definition therefore forces replacement even when the table and target names are reused. Query-only
+synonym, highlighting, and per-field highlight settings persist without rebuilding Tantivy segments.
+
+Activation requires explicit table auditing and RocksDB. String and string-array sources are
+projected directly from the stored current record. Computed sources are rejected at activation
+until resolver semantics have a stable version that can participate in generation compatibility;
+otherwise a resolver change could reuse documents produced by the prior function. Blob remains an
+accepted schema source, but activation rejects it until the derived pipeline has the bounded
+asynchronous extraction lane that can read file-backed Blob content without blocking or indexing a
+placeholder. `Table.clear()` is rejected for a table with a full-text index until the lifecycle has
+a crash-safe, durable whole-table invalidation protocol; audited per-record deletes and whole-record
+cache evictions remain supported. Full-text indexing is eventually consistent by default: lag
+changes readiness and metrics but does not reject authoritative Harper writes. Missing, corrupt, or
+incompatible native state enters the rebuild path without taking the source table offline. A
+persisted table declaration that cannot supply the recovery contract itself—auditing, RocksDB, or a
+supported projection—is quarantined during catalog load because Harper cannot safely preserve replay
+coverage. Quarantine durably condemns the target generation, removes any live class, and leaves other
+tables in the database available. A valid local schema re-declaration loads the table only for the
+synchronous repair, rotates the generation again, and rebuilds before full-text becomes ready.
+Operational writer, queue, and search limits are Harper-owned constants for this integration slice,
+not schema options; the Fulltext process-wide resource governor must replace them before release
+qualification.
 
 ### Bounded delivery
 

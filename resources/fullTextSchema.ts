@@ -45,6 +45,34 @@ export type FullTextDefinition = {
 	highlighting?: FullTextHighlighting;
 };
 
+export type FullTextStorageDefinition = Pick<
+	FullTextDefinition,
+	'analyzer' | 'stopWords' | 'positions' | 'surfaceTerms'
+> & {
+	fields: Array<Pick<FullTextSource, 'name' | 'weight'>>;
+};
+
+/** The declaration fields that determine native index compatibility rather than query behavior. */
+export function fullTextStorageDefinition(definition: FullTextDefinition): FullTextStorageDefinition {
+	return {
+		fields: definition.fields.map(({ name, weight }) => ({ name, weight })),
+		analyzer: definition.analyzer,
+		stopWords: definition.stopWords,
+		positions: definition.positions,
+		surfaceTerms: definition.surfaceTerms,
+	};
+}
+
+/** Identity of the native full-text runtimes represented by a table declaration. */
+export function fullTextStorageKey(definitions: readonly FullTextDefinition[]): string {
+	return JSON.stringify(
+		definitions.map((definition) => ({
+			name: definition.name,
+			definition: fullTextStorageDefinition(definition),
+		}))
+	);
+}
+
 type SchemaAttribute = {
 	name: string;
 	type?: string;

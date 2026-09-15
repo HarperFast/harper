@@ -6899,6 +6899,11 @@ export function makeTable(options) {
 			return history.reverse();
 		}
 		static clear() {
+			if (attributes.some((attribute) => attribute.fullText))
+				throw new ClientError(
+					`Table.clear() is not supported on full-text table '${databaseName}.${tableName}' until whole-table invalidation is crash-safe`,
+					501
+				);
 			// clear the primary store and every secondary index dbi (same pattern used by
 			// runIndexing when rebuilding from scratch), so clear() doesn't leave stale
 			// index entries pointing at records that no longer exist.

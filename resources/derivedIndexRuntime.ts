@@ -326,6 +326,8 @@ export class DerivedIndexRuntime {
 		}
 		runner.wake(true);
 		return () => {
+			const held = this.#heldRunners.get(registration.backend.id);
+			if (held?.runner === runner) return this.#retryHeldRelease(registration.backend.id, held);
 			if (this.#runners.get(registration.backend.id) === runner) {
 				this.#runners.delete(registration.backend.id);
 				this.#stopListeningIfIdle();
@@ -2235,6 +2237,18 @@ export function readDerivedIndexReadiness(
 	let views = byBackend.get(backendId);
 	if (!views) byBackend.set(backendId, (views = sharedViewsOf(readinessBuffer(logStore, backendId))));
 	return readReadiness(views);
+}
+
+/** Publish a terminal activation failure before a backend runner exists to own shared readiness. */
+export function publishDerivedIndexUnavailable(
+	logStore: RocksTransactionLogStore,
+	backendId: string,
+	reason: DerivedIndexReadinessReason = 'backend-failed'
+): void {
+	const { words } = sharedViewsOf(readinessBuffer(logStore, backendId));
+	Atomics.store(words, READINESS_REASON, READINESS_REASONS.indexOf(reason));
+	Atomics.store(words, READINESS_ATTEMPTS, 0);
+	Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf('unavailable'));
 }
 
 function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is DerivedIndexCursor {
