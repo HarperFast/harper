@@ -355,22 +355,24 @@ an active handle or an unsettled write.
 
 ### 7.1 Clean handoff: an inherited dependency set, not a version number
 
-The current branch gets successor freshness free, because a grant rides the grantor's own replication
-stream behind that grantor's data writes. Unicast delegation messages lose that, so it is
+The prior Ricart–Agrawala branch got successor freshness free, because a grant rode the grantor's own
+replication stream behind that grantor's data writes. Unicast delegation messages lose that, so it is
 re-established explicitly.
 
 After draining, the delegate writes a **`LOCK_RELEASE` control entry** to the table's transaction log
-— the same non-`LOCAL_ONLY` control entry the branch already builds — carrying a **dependency set**:
-`{(originNodeName → position)}`, one entry per origin that has written `K` since the last quiesce,
-bounded by `|members|`. The entry is ordered behind the delegate's own data writes on its own stream.
+— the same non-`LOCAL_ONLY` control entry the branch already builds — carrying its inherited
+**dependency set** `{(originNodeName → position)}`. The home merges the release's trusted author at
+the release entry's own position, which is ordered behind that delegate's completed data writes and
+cannot trail the stream cursor. Advancing every releasing holder is conservative when it made no
+write, preserves transitivity without touching the commit hot path, and remains bounded by
+`|members|`.
 
 A scalar record version is **not** an applied-history fence, and neither is a single predecessor
 position:
 
 - `A` writes `K`; `B` acquires, never writes, releases; `C` has applied `B` but not `A`. A
-  `B`-position check passes and `C` reads stale — so the set is **inherited**: a delegate that did not
-  write `K` passes it through unchanged, a delegate that did write merges its own `(origin, position)`
-  in.
+  `B`-position check passes and `C` reads stale — so the set is **inherited**. B releases `{A:R_A}`;
+  the home retains `{A:R_A, B:R_B}`, and C must satisfy both.
 - Core breaks equal-`version` conflicts by node name (`resources/Table.ts:6785`), so `C` can hold a
   _losing_ value at the same timestamp as the winner and pass a `version ≥ V` test. A version scalar
   therefore cannot be the fence even for the simple case.
@@ -392,10 +394,10 @@ crash with no clean release loses it. **Open against harper-pro:** whether a dur
 recoverable from the log within retention. If it is, that is a cheaper recovery than the barrier
 below and should be preferred.
 
-Without it, the first grant for a key carries no set, and the acquirer must instead **drain its
+Without it, the first grant for a key carries a recovery marker, and the acquirer must instead **drain its
 inbound replication streams from every reachable member to the position each held at grant time**
-before admitting (**open against harper-pro:** whether the per-connection received position in
-`replication/subscriptionManager.ts` is exposed at this granularity).
+before admitting. `ClusterLockTransport.establishLockFreshness()` owns this operation, prefers a
+durable release when one remains available, and coalesces concurrent recovery snapshots across keys.
 
 That barrier is the strongest condition available without synchronous replication, and it is
 explicitly weaker in two ways that must be documented rather than implied: an unreachable member's
@@ -722,8 +724,9 @@ Added — **core's half is done on this branch**:
 - The home ring (§4.4), the delegation table, recall-and-drain (§6), ordered fencing tokens (§5.1)
   and §8's aggregate caps, in `resources/recordLockCoordinator.ts`.
 - The transport interface core needs from harper-pro: `homeMap(database)`,
-  `requestDelegation(...)` and `recallDelegation(...)`, plus the inbound handlers core exposes so a
-  transport can route a peer's request or recall to the right coordinator.
+  `requestDelegation(...)`, `recallDelegation(...)`, and `establishLockFreshness(...)`, plus the
+  inbound handlers core exposes so a transport can route a peer's request, recall, or positioned
+  release to the right coordinator.
 
 Added — **harper-pro's delegation server, on harper-pro#822**:
 
@@ -774,10 +777,11 @@ The existing `recordLocks` capability does not distinguish Ricart–Agrawala fro
 cluster running both would have two independent arbiters for one key. The capability is therefore
 **versioned**, the versions are mutually exclusive, and a node advertises exactly one. Since RA never
 shipped enabled, nibbles 9/10 are retired rather than migrated, and the `LOCK_RELEASE` payload —
-today a fixed five-field tuple `[key, requester, generation, homeIncarnation, counter]` validated on
-exact length (`resources/recordLockCoordinator.ts:258`) — grows a leading version field plus §7.1's
-dependency set. A historical entry replayed from the log must still decode safely after its producer
-is gone, and a delayed old release must not clear a newer delegation.
+historically a fixed five-field tuple `[key, requester, generation, homeIncarnation, counter]` — is
+now `[1, key, requester, generation, homeIncarnation, counter, dependencies]`. The decoder accepts
+the historical tuple as unknown lineage (therefore recovery), ignores unknown future versions, and
+still requires an exact fencing-token match before any release can clear a live grant. Harper-pro
+must advertise a new mutually exclusive capability level for this wire/API contract.
 
 **Merging the substrate is itself gated:** nothing that still wires RA arbitration may be reachable
 as the new protocol.
@@ -831,9 +835,10 @@ as the new protocol.
 harper#2498 stays a draft and does not ship Ricart–Agrawala as the arbitration rule. The substrate in
 §11 lands (reusable under every option considered, and already reviewed); the arbitration **is
 replaced on the branch**. harper-pro#822 keeps its capability, participant-set, ownership and switch
-work, and its transport implementation is replaced — the delegation wire is in place there. Neither is enabled by default at any point, and with
-harper#2542 and harper-pro#825 outstanding the branch cannot be enabled even deliberately: core fails
-closed without an agreed home map, and no core build supplies one.
+work, and its transport implementation is replaced — the delegation wire is in place there. Neither
+is enabled by default at any point, and with harper-pro's freshness transport plus harper-pro#825
+outstanding the branch cannot be enabled even deliberately: core fails closed without either
+`establishLockFreshness()` or an agreed home map, and no core build supplies them.
 
 ## 14. Planning record, and what still blocks implementation
 
@@ -889,7 +894,7 @@ change runbook, which is what remains of that issue after the round-7 adoption),
 ring, delegations, drain and caps, §§5/6/8, plus the three inherited substrate defects in §11) and
 harper#2542 (successor freshness, §7).
 
-**Status.** harper#2541's core half is implemented on this branch: the Ricart–Agrawala state machine
+**Status.** harper#2541 and harper#2542's core halves are implemented on this branch: the Ricart–Agrawala state machine
 is gone, and the home ring, the delegation table, recall with §6 steps 1, 2 and 4, ordered fencing
 tokens, the caps, the §4.3 restart quarantine, the generation monotonicity floor and the
 transport-swap grant fence are in place, with all three inherited defects fixed. **§6 step 3 — settlement — is not implemented**: a recall revokes capability and then writes
@@ -898,8 +903,8 @@ limitation (2)'s third route in §10, which the contract already states, so the 
 rather than hidden — but §6 must not be read as fully implemented. Closing it means hanging the
 release hook off logical-transaction settlement rather than off the last admission unlocking. What is not here, and is what keeps the feature unusable rather than merely disabled:
 harper-pro#825's operator-agreed home map — core fails closed without one and no core build supplies
-one — and harper#2542's freshness fence, without which a handoff carries exclusion but not the
-clean-handoff freshness §2 states. **The measurement gate (harper-pro#824) still has not run**, and the decision to
+one — and harper-pro's `establishLockFreshness()` implementation and positioned release relay. **The
+measurement gate (harper-pro#824) still has not run**, and the decision to
 implement ahead of it was the human's, recorded here so the sequence is not mistaken for the one this
 note recommends.
 

@@ -488,9 +488,11 @@ grant on all three components: a home that restarts begins counting again, so a 
 would let a delayed release from a previous incarnation clear a live grant while its delegate is
 still admitting.
 
-**Bounded state.** Delegations are capped per database and per requester, and expiry work is bounded
-per tick, so a scan locking millions of distinct keys cannot make a home retain millions of grants and
-a single peer cannot exhaust the table on its own.
+**Bounded state.** Delegations are capped per database and per requester, expiry work is bounded per
+tick, and clean-handoff dependency sets have a separate, larger LRU cap. A fixed add-only Bloom
+filter distinguishes a truly virgin key from an evicted dependency set while this coordinator has
+observed the whole generation; after a cold start, ownership gap, or generation change, every
+unremembered key conservatively takes recovery.
 
 **Membership is fail-closed.** No agreed home map, no named homes, an unreachable home, a closed
 coordinator, or a call on a thread that does not own coordination all reject with a retryable 503
@@ -525,11 +527,14 @@ makes control-entry volume per lock a thing the measurement gate (harper-pro#824
 acquisition clock, the handle's version floor, and the mixed-transaction rules — unchanged. Nothing in
 the delegation path assigns a record version.
 
-**Not implemented here, deliberately.** The successor-freshness fence of the design note's §7 — the
-inherited `(origin → position)` dependency set on the release entry and the recovery barrier — is
-harper#2542, and harper-pro's operator-agreed home map is harper-pro#825. Until both land, a handoff carries
-exclusion but not the clean-handoff freshness the note's §2 states, which is another reason nothing is
-enabled by default.
+**Successor freshness.** A clean release carries the delegation's inherited `(origin → position)`
+set. The home merges the trusted release origin at the release entry's own log position, retains the
+result after clearing the grant, and sends it with the successor grant. The successor remains pending
+and recallable until `ClusterLockTransport.establishLockFreshness()` has made every dependency applied
+and visible. Missing lineage selects that transport's weaker reachable-member recovery barrier;
+failure or timeout returns 503 and hands the grant back without discarding retained lineage. The
+cached-delegation branch does none of this work. Harper-pro's operator-agreed home map and transport
+implementation remain the enablement boundary (harper-pro#825 / companion work on #822).
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 

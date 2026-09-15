@@ -40,11 +40,10 @@ import { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS } from './recordLock.ts';
  * ids on different nodes and any ordering built on them would order the same pair differently on two
  * nodes.
  *
- * What this file does NOT yet implement, deliberately: the successor-freshness fence of §7 — the
- * inherited `(origin → position)` dependency set on the release entry, and the recovery barrier.
- * That is harper#2542. Until it lands, a delegation handoff carries exclusion but not the
- * clean-handoff freshness §2 states, which is why the feature stays gated off (`replication.recordLocks`)
- * and why no core build registers a transport.
+ * Successor freshness follows §7: a clean release carries inherited origin-log dependencies, the
+ * home advances the releasing origin to that entry's own position, and the next delegate cannot
+ * admit until its transport has made the set visible. Missing lineage takes the weaker recovery
+ * barrier and fails closed if that barrier cannot be established.
  */
 
 /**
@@ -91,6 +90,9 @@ const MAX_DELEGATIONS_PER_REQUESTER = 2_000;
 /** Bounds expiry work per tick, so a burst of expiries cannot stall the event loop. */
 const MAX_EXPIRIES_PER_TICK = 256;
 const MAX_NODE_NAME_LENGTH = 255;
+const MAX_LOCK_DEPENDENCIES = 1_024;
+const MAX_DEPENDENCY_SETS_PER_TABLE = 20_000;
+const DELEGATED_KEY_FILTER_WORDS = 2_048;
 /** A node whose identity resolved to one of these is not distinctive enough to be a ring member. */
 const NON_DISTINCTIVE_NODE_NAMES = new Set(['127.0.0.1', '::1', 'localhost', '0.0.0.0']);
 
@@ -141,9 +143,19 @@ export interface LockHomeMap {
  * is all that is needed: a key has exactly one home per generation.
  */
 export type FencingToken = readonly [generation: number, homeIncarnation: number, counter: number];
+export type LockDependency = readonly [origin: string, position: number];
+export type LockDependencySet = readonly LockDependency[];
 
 export function compareTokens(a: FencingToken, b: FencingToken): number {
 	return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+function isFencingToken(value: unknown): value is FencingToken {
+	return (
+		Array.isArray(value) &&
+		value.length === 3 &&
+		value.every((part) => typeof part === 'number' && Number.isFinite(part))
+	);
 }
 
 export interface LockControlEntry {
@@ -159,6 +171,8 @@ export interface LockControlEntry {
 	 * delegate is still admitting.
 	 */
 	token: FencingToken;
+	/** Inherited clean-handoff lineage; null preserves retained lineage, absent means legacy/unknown. */
+	dependencies?: LockDependencySet | null;
 }
 
 /**
@@ -173,6 +187,8 @@ export interface DelegationReply {
 	token?: FencingToken;
 	/** Granted only. How long the delegate may admit for, as a DURATION — never a remote clock reading. */
 	leaseMs?: number;
+	/** Granted only. Null selects the recovery barrier; an array is the exact clean-handoff fence. */
+	dependencies?: LockDependencySet | null;
 	/**
 	 * Denied only. `contended` is the one reason that means another node holds the key, and so the only
 	 * one a timeout may report as 423. `generation` (the two sides hold different home maps),
@@ -243,13 +259,24 @@ export interface ClusterLockTransport {
 	): Promise<DelegationReply>;
 	/** Home → delegate. Resolves once the delegate has drained and stopped admitting. */
 	recallDelegation(node: string, database: string, table: string, recall: DelegationRecall): Promise<void>;
-	/** Emit a control entry. Optional: core writes it to the table's transaction log when omitted. */
-	writeControl?(table: string, entry: LockControlEntry): Promise<void> | void;
 	/**
-	 * Assigned at registration so a transport can push a received entry in directly. `author` is the
-	 * node the entry was written by, established by the transport, not read from the payload.
+	 * Establish an exact clean-handoff dependency set, or recover the strongest reachable-member
+	 * barrier when `dependencies` is null. Recovery returns the captured positions that were made
+	 * visible; clean waits may return void. Concurrent recovery snapshots should be coalesced.
 	 */
-	onControlEntry?(database: string, table: string, entry: LockControlEntry, author: string): void;
+	establishLockFreshness(
+		database: string,
+		table: string,
+		key: any,
+		dependencies: LockDependencySet | null
+	): Promise<LockDependencySet | void>;
+	/** Emit a control entry and return the committed entry's local origin-log position when available. */
+	writeControl?(table: string, entry: LockControlEntry): Promise<number | void> | number | void;
+	/**
+	 * Assigned at registration so a transport can push a received entry in directly. `author` and
+	 * `position` come from the authenticated origin-log header, never from the payload.
+	 */
+	onControlEntry?(database: string, table: string, entry: LockControlEntry, author: string, position: number): void;
 	/** Assigned at registration. Inbound delegation request from a peer, for a key this node homes. */
 	onDelegationRequest?(database: string, table: string, request: DelegationRequest): Promise<DelegationReply>;
 	/** Assigned at registration. Inbound recall from a key's home. */
@@ -267,7 +294,9 @@ let controlPackr = new Packr({ structures: controlStructures });
 
 export function encodeLockControlPayload(entry: LockControlEntry): Uint8Array {
 	const [generation, homeIncarnation, counter] = entry.token;
-	return controlPackr.pack([entry.key, entry.requester, generation, homeIncarnation, counter]);
+	if (entry.dependencies === undefined)
+		return controlPackr.pack([entry.key, entry.requester, generation, homeIncarnation, counter]);
+	return controlPackr.pack([1, entry.key, entry.requester, generation, homeIncarnation, counter, entry.dependencies]);
 }
 
 function isNodeName(value: unknown): value is string {
@@ -306,7 +335,7 @@ export function decodeLockControlPayload(type: unknown, value: unknown): LockCon
 	} catch {
 		return undefined;
 	}
-	if (!Array.isArray(tuple) || tuple.length !== 5) return undefined;
+	if (!Array.isArray(tuple) || (tuple.length !== 5 && tuple.length !== 7)) return undefined;
 	try {
 		return decodeTuple(tuple);
 	} catch {
@@ -317,16 +346,90 @@ export function decodeLockControlPayload(type: unknown, value: unknown): LockCon
 }
 
 function decodeTuple(tuple: unknown[]): LockControlEntry | undefined {
-	const [key, requester, generation, homeIncarnation, counter] = tuple as [unknown, unknown, unknown, unknown, unknown];
+	const versioned = tuple.length === 7;
+	if (versioned && tuple[0] !== 1) return undefined;
+	const offset = versioned ? 1 : 0;
+	const [key, requester, generation, homeIncarnation, counter] = tuple.slice(offset, offset + 5);
 	if (!isEncodableKey(key) || !isNodeName(requester)) return undefined;
 	for (const part of [generation, homeIncarnation, counter])
 		if (typeof part !== 'number' || !Number.isFinite(part)) return undefined;
-	return {
+	let dependencies: LockDependencySet | null | undefined;
+	if (versioned) {
+		const rawDependencies = tuple[6];
+		if (rawDependencies === null) dependencies = null;
+		else {
+			const normalized = normalizeDependencies(rawDependencies);
+			if (!normalized) return undefined;
+			dependencies = normalized;
+		}
+	}
+	const entry: LockControlEntry = {
 		type: 'lockRelease',
 		key,
 		requester,
 		token: [generation, homeIncarnation, counter] as FencingToken,
 	};
+	if (versioned) entry.dependencies = dependencies;
+	return entry;
+}
+
+function normalizeDependencies(value: unknown, homes?: readonly string[]): LockDependencySet | undefined {
+	if (!Array.isArray(value) || value.length > MAX_LOCK_DEPENDENCIES) return undefined;
+	const positions = new Map<string, number>();
+	for (const dependency of value) {
+		if (!Array.isArray(dependency) || dependency.length !== 2) return undefined;
+		const [origin, position] = dependency;
+		if (!isNodeName(origin) || typeof position !== 'number' || !Number.isFinite(position) || position < 0)
+			return undefined;
+		if (homes && !homes.includes(origin)) return undefined;
+		if (positions.has(origin)) return undefined;
+		positions.set(origin, position);
+	}
+	return [...positions].sort(([a], [b]) => a.localeCompare(b));
+}
+
+class DelegatedKeyFilter {
+	#bits = new Uint32Array(DELEGATED_KEY_FILTER_WORDS);
+
+	add(key: unknown): void {
+		const [first, second] = this.#hashes(key);
+		for (let index = 0; index < 4; index++) this.#set((first + Math.imul(index, second)) >>> 0);
+	}
+
+	has(key: unknown): boolean {
+		const [first, second] = this.#hashes(key);
+		for (let index = 0; index < 4; index++) if (!this.#get((first + Math.imul(index, second)) >>> 0)) return false;
+		return true;
+	}
+
+	clear(): void {
+		this.#bits.fill(0);
+	}
+
+	copyFrom(other: DelegatedKeyFilter): void {
+		this.#bits.set(other.#bits);
+	}
+
+	#set(hash: number): void {
+		const bit = hash % (this.#bits.length * 32);
+		this.#bits[bit >>> 5] |= 1 << (bit & 31);
+	}
+
+	#get(hash: number): boolean {
+		const bit = hash % (this.#bits.length * 32);
+		return (this.#bits[bit >>> 5] & (1 << (bit & 31))) !== 0;
+	}
+
+	#hashes(key: unknown): [number, number] {
+		const value = `${typeof key}:${String(key)}`;
+		let first = 0x811c9dc5;
+		let second = 0x9e3779b9;
+		for (let index = 0; index < value.length; index++) {
+			first = Math.imul(first ^ value.charCodeAt(index), 0x01000193);
+			second = Math.imul(second ^ value.charCodeAt(index), 0x85ebca6b);
+		}
+		return [first >>> 0, (second | 1) >>> 0];
+	}
 }
 
 /**
@@ -382,6 +485,7 @@ export function homeFor(keyId: string, homes: string[]): string | undefined {
 interface Delegation {
 	key: any;
 	token: FencingToken;
+	dependencies: LockDependencySet;
 	/** Monotonic deadline on THIS node. A delegate stops admitting here. */
 	expiresMono: number;
 	/** Set by a recall. No new admission may start, but live ones are drained first. */
@@ -423,6 +527,8 @@ interface HomeGrant {
 	key: any;
 	delegate: string;
 	token: FencingToken;
+	/** Requirement handed to this delegate; reused if the same node renews after losing local state. */
+	dependencies: LockDependencySet | null;
 	/**
 	 * Monotonic deadline on THIS node, set to the delegate's lease PLUS skew. The home always outwaits
 	 * the delegate, so it can never re-grant a key the previous delegate still believes it holds.
@@ -433,6 +539,16 @@ interface HomeGrant {
 	recallConfirmed?: boolean;
 	/** After a FAILED recall, the earliest this home may try that delegate again (`RECALL_RETRY_MS`). */
 	recallRetryAfterMono?: number;
+}
+
+interface PendingDelegation {
+	key: any;
+	token: FencingToken;
+	recalled: boolean;
+}
+
+interface PendingRequest {
+	recalledToken?: FencingToken;
 }
 
 export interface LockRound {
@@ -459,7 +575,7 @@ export interface LockCoordinatorOptions {
 	 * Emit one control entry. Core passes the transport's own `writeControl` when it has one and its
 	 * transaction-log writer otherwise, since writing to the local log IS the send.
 	 */
-	writeControl: (entry: LockControlEntry) => Promise<void> | void;
+	writeControl: (entry: LockControlEntry) => Promise<number | void> | number | void;
 	/** Stable map key for a record id; core passes `writeKeyId`. */
 	keyIdOf: (key: any) => unknown;
 	/** Mints the holder's stamp; core passes the primary store's monotonic timestamp. */
@@ -554,7 +670,7 @@ export class LockCoordinator {
 	readonly table: string;
 	readonly nodeId: string;
 	readonly transport: ClusterLockTransport;
-	#writeControl: (entry: LockControlEntry) => Promise<void> | void;
+	#writeControl: (entry: LockControlEntry) => Promise<number | void> | number | void;
 	#keyIdOf: (key: any) => unknown;
 	#nextTimestamp: () => number;
 	#monotonic: () => number;
@@ -611,6 +727,10 @@ export class LockCoordinator {
 	#quarantineWaived: boolean;
 	/** Keys this node holds a delegation for. */
 	#delegations = new Map<unknown, Delegation>();
+	/** Grants received but not yet installed because their freshness barrier is still running. */
+	#pendingDelegations = new Map<unknown, PendingDelegation>();
+	/** Outbound requests whose grant token is not known yet, so an early recall cannot be lost. */
+	#pendingRequests = new Map<unknown, PendingRequest>();
 	/**
 	 * Every live admission, by id, and the delegation answerable for it. Coordinator-level rather than
 	 * per-delegation so a release can find its admission after the delegation was renewed or replaced.
@@ -621,6 +741,12 @@ export class LockCoordinator {
 	#grants = new Map<unknown, HomeGrant>();
 	/** Per-requester counts, so one peer cannot fill the home's table on its own. */
 	#grantsByRequester = new Map<string, number>();
+	/** Clean-handoff lineage outlives grants and is retained independently under its own cap. */
+	#dependencySets = new Map<unknown, LockDependencySet>();
+	#everDelegated = new DelegatedKeyFilter();
+	#freshnessGeneration: number | undefined;
+	/** False after any interval whose delegation history this coordinator could not have observed. */
+	#trustVirginKeys: boolean;
 	#counter = 0;
 	/**
 	 * Closed coordinators must not keep admitting. `close()` sets this AND expires every delegation,
@@ -654,6 +780,7 @@ export class LockCoordinator {
 		// thread can take coordination ownership long after it booted). `adopt` and the retirement
 		// record below waive or carry the horizon wherever a predecessor's authority is actually known.
 		this.#quarantineWaived = options.grantableAfterMono !== undefined;
+		this.#trustVirginKeys = this.#quarantineWaived;
 		// Ownership observed here, not lazily on the first grant: a coordinator built while this thread
 		// already coordinates has owned it since construction, and the construction horizon covers that.
 		// Leaving it unset until a grant would date ownership from the grant and re-quarantine a reload.
@@ -692,6 +819,8 @@ export class LockCoordinator {
 		// node's authority when the reply lands, rather than on a coordinator nothing consults.
 		this.#successor = successor;
 		for (const [keyId, delegation] of this.#delegations) successor.#delegations.set(keyId, delegation);
+		for (const [keyId, pending] of this.#pendingDelegations) successor.#pendingDelegations.set(keyId, pending);
+		for (const [keyId, request] of this.#pendingRequests) successor.#pendingRequests.set(keyId, request);
 		for (const [keyId, grant] of this.#grants) successor.#grants.set(keyId, grant);
 		for (const [requester, count] of this.#grantsByRequester) successor.#grantsByRequester.set(requester, count);
 		// The admission index moves with the delegations it points into. Without it a handle admitted
@@ -724,11 +853,20 @@ export class LockCoordinator {
 			successor.#quarantineWaived = this.#quarantineWaived;
 		}
 		if (this.#coordinatingIncarnation !== undefined) successor.#coordinatingIncarnation = this.#coordinatingIncarnation;
+		successor.#dependencySets = this.#dependencySets;
+		successor.#everDelegated.copyFrom(this.#everDelegated);
+		successor.#freshnessGeneration = this.#freshnessGeneration;
+		successor.#trustVirginKeys = this.#trustVirginKeys;
+		this.#dependencySets = new Map();
+		this.#everDelegated.clear();
 		this.#delegations.clear();
+		this.#pendingDelegations.clear();
+		this.#pendingRequests.clear();
 		this.#grants.clear();
 		this.#grantsByRequester.clear();
 		this.#admissions.clear();
-		if (successor.#delegations.size > 0 || successor.#grants.size > 0) successor.#startTicking();
+		if (successor.#delegations.size > 0 || successor.#pendingDelegations.size > 0 || successor.#grants.size > 0)
+			successor.#startTicking();
 	}
 
 	/**
@@ -800,20 +938,72 @@ export class LockCoordinator {
 			// delegation from the reply's arrival would hand a delayed reply more time than the home is
 			// holding the key for.
 			const requestedAtMono = this.#monotonic();
-			const reply =
-				home === this.nodeId
-					? this.#grantLocally(keyId, key, homeMap, leaseMs)
-					: await this.#requestRemotely(home, keyId, key, homeMap, leaseMs, deadlineMono);
+			const pendingRequest: PendingRequest = {};
+			this.#pendingRequests.set(keyId, pendingRequest);
+			let reply: DelegationReply;
+			try {
+				reply =
+					home === this.nodeId
+						? this.#grantLocally(keyId, key, homeMap, leaseMs)
+						: await this.#requestRemotely(home, keyId, key, homeMap, leaseMs, deadlineMono);
+			} catch (error) {
+				const requestAuthority = this.#authority();
+				if (requestAuthority.#pendingRequests.get(keyId) === pendingRequest)
+					requestAuthority.#pendingRequests.delete(keyId);
+				throw error;
+			}
 
 			// A transport swap can land while a request is in flight. The grant is authority for this
 			// NODE, and the successor is this node now — installing it here would leave a delegation
 			// nothing consults, admitting a caller that no recall can reach.
-			const authority = this.#authority();
+			let authority = this.#authority();
+			if (authority.#pendingRequests.get(keyId) === pendingRequest) authority.#pendingRequests.delete(keyId);
 			if (authority.#closed)
 				throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
 
-			// A reply that claims a grant without a usable token is a broken transport, not a delegation.
-			if (reply.granted && reply.token && isDuration(reply.leaseMs, MIN_LOCK_LEASE_MS, DELEGATION_LEASE_MS)) {
+			const replyDependencies =
+				reply.dependencies === null ? null : normalizeDependencies(reply.dependencies, homeMap.homes);
+			// A reply that claims a grant without a usable token or freshness requirement is broken transport.
+			if (
+				reply.granted &&
+				isFencingToken(reply.token) &&
+				isDuration(reply.leaseMs, MIN_LOCK_LEASE_MS, DELEGATION_LEASE_MS) &&
+				replyDependencies !== undefined
+			) {
+				const pending: PendingDelegation = {
+					key,
+					token: reply.token,
+					recalled:
+						pendingRequest.recalledToken !== undefined &&
+						compareTokens(pendingRequest.recalledToken, reply.token) === 0,
+				};
+				authority.#pendingDelegations.set(keyId, pending);
+				let dependencies: LockDependencySet;
+				try {
+					let requirement = replyDependencies;
+					for (;;) {
+						const barrierAuthority = authority;
+						dependencies = await barrierAuthority.#establishFreshness(key, requirement, homeMap.homes, deadlineMono);
+						authority = this.#authority();
+						if (authority === barrierAuthority) break;
+						requirement = dependencies;
+					}
+				} catch (error) {
+					authority = this.#authority();
+					if (authority.#pendingDelegations.get(keyId) === pending) authority.#pendingDelegations.delete(keyId);
+					authority.#releaseUnclaimedGrant(key, reply.token);
+					throw new LockUnavailableError(
+						`Could not establish successor freshness for ${this.database}.${this.table}: ${(error as Error)?.message ?? error}`
+					);
+				}
+				const currentPending = authority.#pendingDelegations.get(keyId);
+				if (currentPending === pending) authority.#pendingDelegations.delete(keyId);
+				if (currentPending !== pending || pending.recalled) {
+					authority.#releaseUnclaimedGrant(key, reply.token);
+					if (authority.#closed)
+						throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
+					continue;
+				}
 				// The generation can advance across the await. A grant minted under a superseded one is
 				// authority for a ring that no longer exists: the key may be homed elsewhere now, and that
 				// home can already have granted it to another node. `#liveDelegation` rejects a stale
@@ -822,7 +1012,14 @@ export class LockCoordinator {
 					// Hand it back rather than let the old home hold a key nobody is using for a full lease.
 					authority.#releaseUnclaimedGrant(key, reply.token);
 				} else {
-					const installed = authority.#installDelegation(keyId, key, reply.token, reply.leaseMs, requestedAtMono);
+					const installed = authority.#installDelegation(
+						keyId,
+						key,
+						reply.token,
+						reply.leaseMs,
+						requestedAtMono,
+						dependencies
+					);
 					// A reply that outlived its own delegation grants nothing; fall through and ask again
 					// rather than admitting on authority the home has already expired.
 					if (installed && !installed.recalled && installed.expiresMono - authority.#monotonic() >= leaseMs)
@@ -833,10 +1030,12 @@ export class LockCoordinator {
 					// until it expires on the home's clock.
 					if (!installed) authority.#releaseUnclaimedGrant(key, reply.token);
 				}
-			} else if (reply.granted)
+			} else if (reply.granted) {
+				if (isFencingToken(reply.token)) authority.#releaseUnclaimedGrant(key, reply.token);
 				throw new LockUnavailableError(
-					`The home node for this key on ${this.database}.${this.table} returned a delegation with no usable token`
+					`The home node for this key on ${this.database}.${this.table} returned a delegation with no usable token or freshness requirement`
 				);
+			}
 			if (reply.reason === 'capacity')
 				throw new LockUnavailableError(`Too many record lock delegations in flight on ${this.database}`);
 			if (reply.reason === 'quarantine')
@@ -925,18 +1124,18 @@ export class LockCoordinator {
 	 * the payload — without it a peer could write a release naming any other node and clear a
 	 * delegation it does not hold.
 	 */
-	applyEntry(entry: LockControlEntry, author: string): void {
+	applyEntry(entry: LockControlEntry, author: string, position?: number): void {
 		// The only boundary peer input crosses into this state machine. A throw here would reach the
 		// replicated apply loop and drop the whole enclosing transaction, so one malformed entry could
 		// stall replication for the database.
 		try {
-			this.#applyEntry(entry, author);
+			this.#applyEntry(entry, author, position);
 		} catch (error) {
 			warnOnce('failed to apply a record lock control entry', error);
 		}
 	}
 
-	#applyEntry(entry: LockControlEntry, author: string): void {
+	#applyEntry(entry: LockControlEntry, author: string, position?: number): void {
 		if (this.#closed) return;
 		if (entry.type !== 'lockRelease' || !isNodeName(author)) return;
 		if (entry.requester !== author) return;
@@ -953,13 +1152,38 @@ export class LockCoordinator {
 			}
 			return;
 		}
-		if (!Array.isArray(entry.token) || entry.token.length !== 3) return;
+		if (!isFencingToken(entry.token)) return;
 		const keyId = this.#keyIdOf(entry.key);
 		const grant = this.#grants.get(keyId);
 		// Only the delegate named in the live grant can clear it, and only for the exact token it was
 		// issued — generation and incarnation included, since counters restart. A delayed release from a
 		// previous delegation must not clear its successor's.
 		if (!grant || grant.delegate !== author || compareTokens(grant.token, entry.token) !== 0) return;
+		if (entry.dependencies !== null) {
+			const homeMap = this.transport.homeMap(this.database);
+			const matchingHomes = homeMap?.generation === entry.token[0] ? homeMap.homes : undefined;
+			const inherited = matchingHomes ? normalizeDependencies(entry.dependencies, matchingHomes) : undefined;
+			if (
+				inherited &&
+				matchingHomes.includes(author) &&
+				typeof position === 'number' &&
+				Number.isFinite(position) &&
+				position >= 0
+			) {
+				const merged = new Map<string, number>(this.#dependencySets.get(keyId));
+				for (const [origin, dependencyPosition] of inherited)
+					merged.set(origin, Math.max(merged.get(origin) ?? -Infinity, dependencyPosition));
+				merged.set(author, Math.max(merged.get(author) ?? -Infinity, position));
+				if (merged.size <= MAX_LOCK_DEPENDENCIES)
+					this.#rememberDependencies(
+						keyId,
+						[...merged].sort(([a], [b]) => a.localeCompare(b))
+					);
+				else this.#dependencySets.delete(keyId);
+			} else {
+				this.#dependencySets.delete(keyId);
+			}
+		}
 		this.#clearGrant(keyId, grant);
 	}
 
@@ -1007,8 +1231,21 @@ export class LockCoordinator {
 		if (!this.transport.ownsCoordination())
 			throw new Error('Cluster record lock coordination is not owned by this worker thread');
 		const keyId = this.#keyIdOf(recall.key);
+		const pending = this.#pendingDelegations.get(keyId);
+		if (pending && compareTokens(pending.token, recall.token) === 0) {
+			pending.recalled = true;
+			return;
+		}
 		const delegation = this.#delegations.get(keyId);
-		if (!delegation || compareTokens(delegation.token, recall.token) !== 0) return;
+		if (!delegation || compareTokens(delegation.token, recall.token) !== 0) {
+			// The home can recall immediately after granting, before the reply reaches us. At that point
+			// there is no token-indexed delegation yet, but acknowledging as a no-op would let the reply
+			// install authority the home already believes drained. Remember the token against the one
+			// outbound request; acquire compares it with the eventual reply before admitting anything.
+			const request = this.#pendingRequests.get(keyId);
+			if (request) request.recalledToken = recall.token;
+			return;
+		}
 		delegation.recalled = true;
 		if (delegation.holding > 0) {
 			await new Promise<void>((resolve) => {
@@ -1111,8 +1348,12 @@ export class LockCoordinator {
 			counter: Math.max(retired?.counter ?? 0, this.#counter),
 		});
 		this.#delegations.clear();
+		this.#pendingDelegations.clear();
+		this.#pendingRequests.clear();
 		this.#grants.clear();
 		this.#grantsByRequester.clear();
+		this.#dependencySets.clear();
+		this.#everDelegated.clear();
 		tickingCoordinators.delete(this);
 	}
 
@@ -1146,6 +1387,7 @@ export class LockCoordinator {
 	 */
 	#ownershipHorizon(now: number, homeIncarnation: number): number {
 		if (this.#coordinatingIncarnation !== homeIncarnation || this.#ownedSinceMono === undefined) {
+			this.#loseFreshnessHistory();
 			// Ownership STARTED here, which is the one thing the waiver cannot cover.
 			// `grantableAfterMono` attests that no previous INCARNATION OF THIS PROCESS had issued
 			// delegations — a cold start, a fresh database, a test — and says nothing about the sibling
@@ -1179,6 +1421,39 @@ export class LockCoordinator {
 	#recordGenerationActedOn(generation: number): void {
 		const highest = highestGeneration.get(this.database);
 		if (highest === undefined || generation > highest) highestGeneration.set(this.database, generation);
+	}
+
+	#prepareFreshnessGeneration(generation: number): void {
+		if (this.#freshnessGeneration === undefined) {
+			this.#freshnessGeneration = generation;
+			return;
+		}
+		if (this.#freshnessGeneration === generation) return;
+		this.#freshnessGeneration = generation;
+		this.#loseFreshnessHistory();
+	}
+
+	#loseFreshnessHistory(): void {
+		this.#dependencySets.clear();
+		this.#everDelegated.clear();
+		this.#trustVirginKeys = false;
+	}
+
+	#freshnessFor(keyId: unknown): LockDependencySet | null {
+		const retained = this.#dependencySets.get(keyId);
+		if (retained) {
+			this.#dependencySets.delete(keyId);
+			this.#dependencySets.set(keyId, retained);
+			return retained;
+		}
+		return this.#trustVirginKeys && !this.#everDelegated.has(keyId) ? [] : null;
+	}
+
+	#rememberDependencies(keyId: unknown, dependencies: LockDependencySet): void {
+		this.#dependencySets.delete(keyId);
+		this.#dependencySets.set(keyId, dependencies);
+		while (this.#dependencySets.size > MAX_DEPENDENCY_SETS_PER_TABLE)
+			this.#dependencySets.delete(this.#dependencySets.keys().next().value);
 	}
 
 	#retirementKey(): string {
@@ -1286,7 +1561,8 @@ export class LockCoordinator {
 		key: any,
 		token: FencingToken,
 		leaseMs: number,
-		requestedAtMono: number
+		requestedAtMono: number,
+		dependencies: LockDependencySet
 	): Delegation | undefined {
 		const expiresMono = requestedAtMono + leaseMs;
 		if (expiresMono <= this.#monotonic()) return undefined;
@@ -1310,6 +1586,7 @@ export class LockCoordinator {
 		const delegation: Delegation = {
 			key,
 			token,
+			dependencies,
 			expiresMono,
 			recalled: false,
 			admissions: new Map(),
@@ -1319,6 +1596,35 @@ export class LockCoordinator {
 		this.#delegations.set(keyId, delegation);
 		this.#startTicking();
 		return delegation;
+	}
+
+	async #establishFreshness(
+		key: any,
+		requirement: LockDependencySet | null,
+		homes: readonly string[],
+		deadlineMono: number
+	): Promise<LockDependencySet> {
+		if (requirement?.length === 0) return requirement;
+		const remaining = deadlineMono - this.#monotonic();
+		if (remaining <= 0) throw new Error('the lock wait elapsed before its freshness barrier started');
+		const established = Promise.resolve().then(() =>
+			this.transport.establishLockFreshness(this.database, this.table, key, requirement)
+		);
+		const timeout = delay(remaining);
+		established.then(
+			() => timeout.cancel(),
+			() => timeout.cancel()
+		);
+		const result = await Promise.race([
+			established,
+			timeout.promise.then(() => {
+				throw new Error('the lock wait elapsed before its freshness barrier completed');
+			}),
+		]);
+		if (requirement !== null) return requirement;
+		const recovered = normalizeDependencies(result, homes);
+		if (!recovered) throw new Error('the recovery barrier returned no usable applied-position set');
+		return recovered;
 	}
 
 	/** This node is the key's home: grant to itself through exactly the same table a peer would use. */
@@ -1399,14 +1705,12 @@ export class LockCoordinator {
 		// and let the home hand the key to another node while we are inside it. Comparing tokens here
 		// caught only the case where we installed this exact grant.
 		if (held) return;
-		this.#writeControlSafely({ type: 'lockRelease', key, requester: this.nodeId, token });
-		const grant = this.#grants.get(keyId);
-		if (grant && grant.delegate === this.nodeId && compareTokens(grant.token, token) === 0)
-			this.#clearGrant(keyId, grant);
+		this.#writeControlSafely({ type: 'lockRelease', key, requester: this.nodeId, token, dependencies: null });
 	}
 
 	#grant(keyId: unknown, key: any, homeMap: LockHomeMap, leaseMs: number, requester: string): DelegationReply {
 		const now = this.#monotonic();
+		this.#prepareFreshnessGeneration(homeMap.generation);
 		// Consulted unconditionally — it is what observes a gap in ownership, and the waiver it applies
 		// to itself is the only part `grantableAfterMono` may switch off.
 		const quarantine = Math.max(this.#grantableAfterMono, this.#ownershipHorizon(now, homeMap.homeIncarnation)) - now;
@@ -1431,7 +1735,12 @@ export class LockCoordinator {
 				this.#recordGenerationActedOn(homeMap.generation);
 				existing.token = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
 				existing.expiresMono = now + DELEGATION_LEASE_MS + this.#skewMs;
-				return { granted: true, token: existing.token, leaseMs: DELEGATION_LEASE_MS };
+				return {
+					granted: true,
+					token: existing.token,
+					leaseMs: DELEGATION_LEASE_MS,
+					dependencies: existing.dependencies,
+				};
 			} else {
 				// Someone else holds it. Start the recall and make the caller come back — holding the
 				// request open across a drain would tie the home's reply to the previous delegate's
@@ -1445,10 +1754,13 @@ export class LockCoordinator {
 		if (perRequester >= MAX_DELEGATIONS_PER_REQUESTER) return { granted: false, reason: 'capacity' };
 		this.#recordGenerationActedOn(homeMap.generation);
 		const token: FencingToken = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
+		const dependencies = this.#freshnessFor(keyId);
+		this.#everDelegated.add(keyId);
 		this.#grants.set(keyId, {
 			key,
 			delegate: requester,
 			token,
+			dependencies,
 			// The home always outwaits the delegate by skew, so it cannot re-grant a key the previous
 			// delegate still believes it holds. The delegation runs for its own fixed duration rather
 			// than the caller's lock lease — a delegation sized to one lock leaves no room for the next
@@ -1457,7 +1769,7 @@ export class LockCoordinator {
 		});
 		this.#grantsByRequester.set(requester, perRequester + 1);
 		this.#startTicking();
-		return { granted: true, token, leaseMs: DELEGATION_LEASE_MS };
+		return { granted: true, token, leaseMs: DELEGATION_LEASE_MS, dependencies };
 	}
 
 	#beginRecall(keyId: unknown, grant: HomeGrant): void {
@@ -1520,12 +1832,8 @@ export class LockCoordinator {
 			key: delegation.key,
 			requester: this.nodeId,
 			token: delegation.token,
+			dependencies: delegation.dependencies,
 		};
-		// If we are our own home, clear directly — the entry still goes out so peers replaying the log
-		// see the same handoff, but the home half must not wait on our own replication.
-		const grant = this.#grants.get(keyId);
-		if (grant && grant.delegate === this.nodeId && compareTokens(grant.token, entry.token) === 0)
-			this.#clearGrant(keyId, grant);
 		return this.#writeControlSafely(entry);
 	}
 
@@ -1553,18 +1861,14 @@ export class LockCoordinator {
 		else this.#grantsByRequester.delete(grant.delegate);
 	}
 
-	#writeControlSafely(entry: LockControlEntry): Promise<void> | void {
-		let written: Promise<void> | void;
+	async #writeControlSafely(entry: LockControlEntry): Promise<void> {
 		try {
-			written = this.#writeControl(entry);
+			const position = await this.#writeControl(entry);
+			if (typeof position === 'number') this.#authority().applyEntry(entry, this.nodeId, position);
 		} catch (error) {
-			warnOnce('failed to write a record lock release entry', error);
-			return undefined;
-		}
-		return Promise.resolve(written).catch((error) => {
 			// A lost release costs the key its remaining lease on the home; it never costs exclusion.
 			warnOnce('failed to write a record lock release entry', error);
-		});
+		}
 	}
 
 	#startTicking() {
@@ -1622,13 +1926,14 @@ export function registerClusterLockTransport(database: string, transport: Cluste
 		typeof transport?.homeMap !== 'function' ||
 		typeof transport?.ownsCoordination !== 'function' ||
 		typeof transport?.requestDelegation !== 'function' ||
-		typeof transport?.recallDelegation !== 'function'
+		typeof transport?.recallDelegation !== 'function' ||
+		typeof transport?.establishLockFreshness !== 'function'
 	)
 		throw new ClientError(
-			'A cluster lock transport must provide homeMap(), ownsCoordination(), requestDelegation() and recallDelegation()'
+			'A cluster lock transport must provide homeMap(), ownsCoordination(), requestDelegation(), recallDelegation() and establishLockFreshness()'
 		);
-	transport.onControlEntry = (db: string, table: string, entry: LockControlEntry, author: string) =>
-		deliverLockControlEntry(db, table, entry, author);
+	transport.onControlEntry = (db: string, table: string, entry: LockControlEntry, author: string, position: number) =>
+		deliverLockControlEntry(db, table, entry, author, position);
 	transport.onDelegationRequest = (db: string, table: string, request: DelegationRequest) =>
 		deliverDelegationRequest(db, table, request);
 	transport.onDelegationRecall = (db: string, table: string, recall: DelegationRecall) =>
@@ -1679,9 +1984,10 @@ export function deliverLockControlEntry(
 	database: string,
 	table: string,
 	entry: LockControlEntry,
-	author: string
+	author: string,
+	position: number
 ): void {
-	coordinatorFor(database, table, admittingResolver)?.applyEntry(entry, author);
+	coordinatorFor(database, table, admittingResolver)?.applyEntry(entry, author, position);
 }
 
 export async function deliverDelegationRequest(

@@ -100,6 +100,8 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			ownsCoordination: () => overrides.owns ?? true,
 			requestDelegation: overrides.requestDelegation ?? (() => Promise.reject(new Error('no peer transport'))),
 			recallDelegation: overrides.recallDelegation ?? (() => Promise.resolve()),
+			establishLockFreshness:
+				overrides.establishLockFreshness ?? (async (_database, _table, _key, dependencies) => dependencies ?? []),
 			...overrides.extra,
 		});
 	}
@@ -382,18 +384,43 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.strictEqual(granted.granted, true, 'the peer holds a delegation from this node');
 			assert.strictEqual(coordinator.stats.granted, 1);
 
-			const wire = { type: 'lockRelease', key: recordId, requester: 'peer-sink', token: granted.token };
+			const releasePosition = Date.now();
+			const wire = {
+				type: 'lockRelease',
+				key: recordId,
+				requester: 'peer-sink',
+				token: granted.token,
+				dependencies: [],
+			};
 			events.send({
 				type: 'lockRelease',
 				table: 'SinkLockTest',
 				id: null,
 				value: unpack(encodeLockControlPayload(wire)),
 				nodeId: peerId,
-				timestamp: Date.now(),
+				timestamp: releasePosition,
 			});
 			// Clearing the grant is the observable effect of the entry being routed to the coordinator.
 			await waitFor(() => coordinator.stats.granted === 0);
 			assert.ok(!(await SinkLockTest.get(recordId)), 'and no record was written for it');
+			const successor = await coordinator.onDelegationRequest({
+				key: recordId,
+				requester: NODE_NAME,
+				generation: 1,
+				leaseMs: 5000,
+			});
+			assert.deepStrictEqual(successor.dependencies, [['peer-sink', releasePosition]]);
+			coordinator.applyEntry(
+				{
+					type: 'lockRelease',
+					key: recordId,
+					requester: NODE_NAME,
+					token: successor.token,
+					dependencies: null,
+				},
+				NODE_NAME,
+				releasePosition + 1
+			);
 		});
 
 		it('routes a replicated control entry to the coordinator and never to a record', async function () {
@@ -511,6 +538,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				ownsCoordination: () => true,
 				requestDelegation: () => Promise.reject(new Error('no peer transport')),
 				recallDelegation: () => Promise.resolve(),
+				establishLockFreshness: async (_database, _table, _key, dependencies) => dependencies ?? [],
 			};
 			registerClusterLockTransport('test', transport);
 			const recordId = idHomedHere(homes);
