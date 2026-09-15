@@ -1,10 +1,5 @@
 /**
- * QA-890 — should a pre-first-yield SSE generator throw return a 500 rather than 0 bytes?
- *
- * Background (F-275, established last wave): on the Node http server, an async generator
- * backing an SSE stream that throws BEFORE its first `yield` produces literally 0 bytes -- no
- * status line, nothing. On uWS (HARPER_UWS_HTTP=1) the same shape returns a clean 200 + empty
- * stream (parseable, but implies success -- the separate F-272 problem).
+ * QA-890 — streaming error contract around the first yield.
  *
  * This extends qa886-uws-sse.test.ts's raw-socket-capture shape (same RawCapture technique --
  * a manual net.Socket, not http.request, so chunk-framing bytes and the exact close mechanism
@@ -16,9 +11,7 @@
  *   - iterable-rest : the SAME generator resource (Accept: application/json / default) --
  *                     content negotiation alone picks ndjson vs plain-JSON-array serialization
  *
- * ...crossed with throw-point (pre-first-yield | mid-stream) and server (node | uws).
- * Mid-stream is the cheap contrast arm (already understood: Node aborts the connection, uWS
- * ends cleanly) -- included for a complete table, not deeply investigated here.
+ * ...crossed with throw-point (immediate | delayed | mid-stream) and server (node | uws).
  *
  * Reproduction:
  *   Node: npm run test:integration -- "integrationTests/server/stream-error-contract.test.ts"
@@ -120,7 +113,7 @@ function rawCapture(
 	authHeader: string,
 	surface: string,
 	throwPoint: string,
-	opts: { timeoutMs?: number; http10?: boolean; connection?: string } = {}
+	opts: { timeoutMs?: number; http10?: boolean; connection?: string; acceptEncoding?: string; method?: string } = {}
 ): Promise<RawCapture> {
 	const timeoutMs = opts.timeoutMs ?? 15_000;
 	const url = new URL(restBase);
@@ -137,11 +130,12 @@ function rawCapture(
 		const socket = net.createConnection({ host, port }, () => {
 			const connection = opts.connection ?? (opts.http10 ? undefined : 'close');
 			const req =
-				`GET ${path} HTTP/${opts.http10 ? '1.0' : '1.1'}\r\n` +
+				`${opts.method ?? 'GET'} ${path} HTTP/${opts.http10 ? '1.0' : '1.1'}\r\n` +
 				`Host: ${host}:${port}\r\n` +
 				`Accept: ${acceptHeader}\r\n` +
 				`Authorization: ${authHeader}\r\n` +
 				(connection ? `Connection: ${connection}\r\n` : '') +
+				(opts.acceptEncoding ? `Accept-Encoding: ${opts.acceptEncoding}\r\n` : '') +
 				`\r\n`;
 			socket.write(req);
 		});
@@ -195,10 +189,8 @@ function rawCapture(
 	});
 }
 
-// Fix-agnostic invariant for the pre-first-yield arms: whatever the eventual status contract turns
-// out to be, the server must terminate the request itself -- never leave the client hanging until
-// its own timeout. Asserting the observed status/byte shape here would pin today's divergence
-// (F-275) into CI; the shape is logged instead, and the PR body tracks it.
+// Every stream shape must terminate the request itself rather than leaving the client hanging
+// until its timeout; the contract-specific helpers below add status and record-shape assertions.
 function assertServerTerminated(cap: RawCapture) {
 	ok(
 		!cap.socketEvents.includes('CLIENT_TIMEOUT'),
@@ -251,6 +243,54 @@ function captureKeepAliveReuse(
 		});
 		socket.on('end', () => finish(!settled));
 		socket.on('error', () => finish(false));
+	});
+}
+
+function captureHeadKeepAliveReuse(
+	restBase: string,
+	headPath: string,
+	authHeader: string,
+	timeoutMs = 10_000
+): Promise<{ responses: number; serverClosedEarly: boolean }> {
+	const url = new URL(restBase);
+	const host = url.hostname;
+	const port = Number.parseInt(url.port, 10) || (url.protocol === 'https:' ? 443 : 80);
+	const headRequest =
+		`HEAD ${headPath} HTTP/1.1\r\n` +
+		`Host: ${host}:${port}\r\n` +
+		`Accept: application/x-ndjson\r\n` +
+		`Accept-Encoding: br\r\n` +
+		`Authorization: ${authHeader}\r\n` +
+		`Connection: keep-alive\r\n\r\n`;
+	const probeRequest =
+		`GET /Probe/ HTTP/1.1\r\n` +
+		`Host: ${host}:${port}\r\n` +
+		`Accept: application/json\r\n` +
+		`Authorization: ${authHeader}\r\n` +
+		`Connection: close\r\n\r\n`;
+
+	return new Promise((resolvePromise) => {
+		let raw = '';
+		let sentProbe = false;
+		let settled = false;
+		const socket = net.createConnection({ host, port }, () => socket.write(headRequest));
+		const finish = (serverClosedEarly: boolean) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			socket.destroy();
+			resolvePromise({ responses: raw.split('HTTP/1.1 200').length - 1, serverClosedEarly });
+		};
+		const timer = setTimeout(() => finish(false), timeoutMs);
+		socket.on('data', (data: Buffer) => {
+			raw += data.toString('latin1');
+			if (!sentProbe && raw.includes('\r\n\r\n')) {
+				sentProbe = true;
+				socket.write(probeRequest);
+			}
+		});
+		socket.on('end', () => finish(!sentProbe || raw.split('HTTP/1.1 200').length - 1 < 2));
+		socket.on('error', () => finish(true));
 	});
 }
 
@@ -321,7 +361,7 @@ suite(
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-				config: { threads: { count: 1 }, logging: { level: 'info' } },
+				config: { threads: { count: 1 }, logging: { level: 'info' }, http: { compressionThreshold: 1200 } },
 				env: {},
 			});
 			client = createApiClient(ctx.harper);
@@ -360,14 +400,31 @@ suite(
 			strictEqual(cap.status, 200, `${cap.surface} mid-stream response should start 200, got ${cap.status}`);
 			const records = decodedRecords(cap);
 			deepStrictEqual(records.slice(0, 2), [{ n: 0 }, { n: 1 }]);
-			strictEqual(
-				cap.sawTerminalChunk,
-				VARIANT === 'uws' || cap.surface === 'iterable-rest',
-				`${cap.surface} mid-stream response terminal chunk did not match the ${VARIANT} contract`
-			);
 			if (cap.surface === 'iterable-rest') {
 				deepStrictEqual(records, [{ n: 0 }, { n: 1 }, { error: 'Error: QA890-iter-mid-stream' }]);
-			} else strictEqual(records.length, 2, `${cap.surface} mid-stream response must contain both yielded records`);
+			} else {
+				const source = cap.surface === 'sse' ? 'sse' : 'iter';
+				const error = { error: 'Error', message: `QA890-${source}-mid-stream` };
+				deepStrictEqual(records, [{ n: 0 }, { n: 1 }, cap.surface === 'sse' ? error : { $harperStreamError: error }]);
+			}
+			strictEqual(cap.sawTerminalChunk, true, `${cap.surface} mid-stream response must complete its error record`);
+			assertServerTerminated(cap);
+		}
+
+		function assertStartupError(cap: RawCapture, title: string) {
+			strictEqual(cap.status, 500, `${cap.surface} immediate startup failure must return 500`);
+			const [problem] = decodedRecords(cap);
+			strictEqual(problem.status, 500);
+			strictEqual(problem.code, 'Error');
+			strictEqual(problem.title, title);
+			assertServerTerminated(cap);
+		}
+
+		function assertDelayedError(cap: RawCapture, message: string) {
+			strictEqual(cap.status, 200, `${cap.surface} delayed startup failure occurs after status commitment`);
+			const error = { error: 'Error', message };
+			deepStrictEqual(decodedRecords(cap), [cap.surface === 'sse' ? error : { $harperStreamError: error }]);
+			strictEqual(cap.sawTerminalChunk, true, `${cap.surface} delayed error record must complete cleanly`);
 			assertServerTerminated(cap);
 		}
 
@@ -441,6 +498,30 @@ suite(
 			strictEqual(reuse.responses, 2, 'a keep-alive client must get both responses on one connection');
 		});
 
+		test('control: HEAD does not start or leak a streaming generator', { timeout: 20_000 }, async () => {
+			const before = await getProbeJson(restBase, { Authorization: authHeader });
+			const sse = await rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'head', {
+				method: 'HEAD',
+			});
+			const ndjson = await rawCapture(restBase, '/IterHealth/', 'application/x-ndjson', authHeader, 'ndjson', 'head', {
+				method: 'HEAD',
+				acceptEncoding: 'br',
+			});
+			const envelopeReuse = await captureHeadKeepAliveReuse(restBase, '/EnvelopeHead/', authHeader);
+			await sleep(25);
+			const after = await getProbeJson(restBase, { Authorization: authHeader });
+			strictEqual(sse.status, 200);
+			strictEqual(sse.decodedBody, '');
+			strictEqual(ndjson.status, 200);
+			strictEqual(ndjson.decodedBody, '');
+			strictEqual(envelopeReuse.serverClosedEarly, false);
+			strictEqual(envelopeReuse.responses, 2);
+			strictEqual(after.sseHealth.opened, before.sseHealth.opened);
+			strictEqual(after.iterHealth.closed, before.iterHealth.closed);
+			strictEqual(after.envelopeHead.opened, before.envelopeHead.opened);
+			strictEqual(after.envelopeHead.closed, before.envelopeHead.closed);
+		});
+
 		// ── Pre-first-yield throw: the core question ──────────────────────────────────────────────
 
 		test('sse: pre-first-yield throw -- raw byte capture', { timeout: 20_000 }, async () => {
@@ -451,7 +532,7 @@ suite(
 			console.log(
 				`[QA-890][sse/pre] status=${cap.status} totalBytes=${cap.totalBytes} socketEvents=\n  ${cap.socketEvents.join('\n  ')}`
 			);
-			assertServerTerminated(cap);
+			assertStartupError(cap, 'QA890-sse-pre-yield');
 		});
 
 		test('ndjson: pre-first-yield throw -- raw byte capture', { timeout: 20_000 }, async () => {
@@ -462,6 +543,31 @@ suite(
 			console.log(
 				`[QA-890][ndjson/pre] status=${cap.status} totalBytes=${cap.totalBytes} socketEvents=\n  ${cap.socketEvents.join('\n  ')}`
 			);
+			assertStartupError(cap, 'QA890-iter-pre-yield');
+		});
+
+		test('ndjson: startup error drops the abandoned stream compression header', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('iterPreYield', () =>
+				rawCapture(restBase, '/IterPreYield/', 'application/x-ndjson', authHeader, 'ndjson', 'pre-compressed', {
+					acceptEncoding: 'br',
+				})
+			);
+			captures.push(cap);
+			assertStartupError(cap, 'QA890-iter-pre-yield');
+			strictEqual(cap.headers['content-encoding'], undefined);
+		});
+
+		test('ndjson: a mutating stream uses the in-band error contract instead of a retry-ambiguous 500', async () => {
+			const cap = await captureWithLifecycle('iterMutation', () =>
+				rawCapture(restBase, '/IterMutation/', 'application/x-ndjson', authHeader, 'ndjson', 'mutation', {
+					method: 'POST',
+				})
+			);
+			captures.push(cap);
+			strictEqual(cap.status, 200);
+			deepStrictEqual(decodedRecords(cap), [
+				{ $harperStreamError: { error: 'Error', message: 'QA890-iter-mutation' } },
+			]);
 			assertServerTerminated(cap);
 		});
 
@@ -475,6 +581,22 @@ suite(
 			);
 			console.log(`[QA-890][iterable-rest/pre] socketEvents=\n  ${cap.socketEvents.join('\n  ')}`);
 			assertServerTerminated(cap);
+		});
+
+		test('sse: delayed pre-first-yield throw becomes an error event', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('sseDelayedError', () =>
+				rawCapture(restBase, '/SseDelayedError/', 'text/event-stream', authHeader, 'sse', 'delayed-error')
+			);
+			captures.push(cap);
+			assertDelayedError(cap, 'QA890-sse-delayed-error');
+		});
+
+		test('ndjson: delayed pre-first-yield throw becomes an error record', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('iterDelayedError', () =>
+				rawCapture(restBase, '/IterDelayedError/', 'application/x-ndjson', authHeader, 'ndjson', 'delayed-error')
+			);
+			captures.push(cap);
+			assertDelayedError(cap, 'QA890-iter-delayed-error');
 		});
 
 		// ── Mid-stream throw: cheap contrast arm (already understood) ────────────────────────────
@@ -520,7 +642,16 @@ suite(
 			console.log(`[QA-890][Z] probe counters: ${p ? JSON.stringify(p) : 'DEAD'}`);
 			ok(p !== null, 'Harper must still respond to Probe/ after all streaming cases');
 			strictEqual(p.status, 200, `Probe/ must 200, got ${p.status}`);
-			for (const name of ['ssePreYield', 'sseMidStream', 'sseHealth', 'iterPreYield', 'iterMidStream', 'iterHealth']) {
+			for (const name of [
+				'ssePreYield',
+				'sseDelayedError',
+				'sseMidStream',
+				'sseHealth',
+				'iterPreYield',
+				'iterDelayedError',
+				'iterMidStream',
+				'iterHealth',
+			]) {
 				strictEqual(p[name]?.opened, p[name]?.closed, `${name} generator was not closed`);
 			}
 		});
