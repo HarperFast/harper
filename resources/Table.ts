@@ -139,22 +139,6 @@ const EVICTION_BATCH_SIZE = 100;
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
 const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
-<<<<<<< HEAD
-=======
-// Guardrails for `Prefer: count=exact`: once the requested page has been collected, counting the rest
-// of the match set is bounded by BOTH a row cap and a wall-clock budget, so a paginated read can't turn
-// into an unbounded scan. Exceeding either reports an unknown total (Content-Range `.../*`) rather than
-// truncating the page. These bound the count tail, not the page itself; a genuinely expensive query
-// (large filtered full-scan, in-memory sort) should still be gated by config before broad exposure.
-const MAX_EXACT_COUNT_SCAN = 1_000_000;
-const MAX_EXACT_COUNT_MS = 1_000;
-// Largest page a `Prefer: count=` request will materialize. A request whose limit exceeds this (or is
-// not a finite, non-negative integer, e.g. `limit(Infinity)`/`limit(foo)`) falls through to the normal
-// streaming path with no count, so a count request can't be coerced into buffering an unbounded page.
-const MAX_COUNT_PAGE = 10_000;
-// How often the exact-count drain yields to the macrotask queue (must be a power of two for the bit-mask
-// check). Keeps a large scan from monopolizing the event loop without adding a yield per row.
-const COUNT_YIELD_INTERVAL = 2_048;
 // Smallest forward sample `getRecordCount` will extrapolate a record rate from; below it the scan runs
 // to completion and reports an exact count.
 const MIN_ESTIMATOR_SAMPLE = 1_000;
@@ -169,7 +153,6 @@ function usableCount(estimate: any): number {
 		return 0;
 	return count;
 }
->>>>>>> d9f5ae9e3 (Merge pull request #2612 from HarperFast/kris/describe-o1-key-estimates)
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
