@@ -1,6 +1,5 @@
-// QA-890 — does a pre-first-yield generator throw produce 0 bytes on the wire, or a proper
-// status? Compares three streaming surfaces (SSE, NDJSON, plain iterable REST) across two
-// throw points (pre-first-yield, mid-stream) on both the Node http server and uWS
+// QA-890 compares three streaming surfaces (SSE, NDJSON, plain iterable REST) across
+// immediate, delayed, and mid-stream throws on both the Node http server and uWS
 // (HARPER_UWS_HTTP=1).
 //
 // SSE uses the subscription-style `static async *connect()` idiom (matches qa886's
@@ -11,11 +10,15 @@
 
 const G = (globalThis.__QA890__ ??= {
 	ssePreYield: { opened: 0, closed: 0 },
+	sseDelayedError: { opened: 0, closed: 0 },
 	sseMidStream: { opened: 0, closed: 0 },
 	sseHealth: { opened: 0, closed: 0 },
 	iterPreYield: { opened: 0, closed: 0 },
+	iterDelayedError: { opened: 0, closed: 0 },
 	iterMidStream: { opened: 0, closed: 0 },
 	iterHealth: { opened: 0, closed: 0 },
+	envelopeHead: { opened: 0, closed: 0 },
+	iterMutation: { opened: 0, closed: 0 },
 });
 
 function sleep(ms) {
@@ -30,11 +33,24 @@ export class SsePreYield extends Resource {
 	static async *connect() {
 		G.ssePreYield.opened++;
 		try {
+			yield* [];
 			throw new Error('QA890-sse-pre-yield');
-			// eslint-disable-next-line no-unreachable
-			yield { n: -1 };
 		} finally {
 			G.ssePreYield.closed++;
+		}
+	}
+}
+
+export class SseDelayedError extends Resource {
+	static loadAsInstance = false;
+	static async *connect() {
+		G.sseDelayedError.opened++;
+		try {
+			await sleep(20);
+			yield* [];
+			throw new Error('QA890-sse-delayed-error');
+		} finally {
+			G.sseDelayedError.closed++;
 		}
 	}
 }
@@ -80,14 +96,30 @@ export class SseHealth extends Resource {
 export class IterPreYield extends Resource {
 	static loadAsInstance = false;
 	async get() {
-		G.iterPreYield.opened++;
 		async function* gen() {
+			G.iterPreYield.opened++;
 			try {
+				yield* [];
 				throw new Error('QA890-iter-pre-yield');
-				// eslint-disable-next-line no-unreachable
-				yield { n: -1 };
 			} finally {
 				G.iterPreYield.closed++;
+			}
+		}
+		return gen();
+	}
+}
+
+export class IterDelayedError extends Resource {
+	static loadAsInstance = false;
+	async get() {
+		async function* gen() {
+			G.iterDelayedError.opened++;
+			try {
+				await sleep(20);
+				yield* [];
+				throw new Error('QA890-iter-delayed-error');
+			} finally {
+				G.iterDelayedError.closed++;
 			}
 		}
 		return gen();
@@ -98,8 +130,8 @@ export class IterPreYield extends Resource {
 export class IterMidStream extends Resource {
 	static loadAsInstance = false;
 	async get() {
-		G.iterMidStream.opened++;
 		async function* gen() {
+			G.iterMidStream.opened++;
 			try {
 				for (let i = 0; i < 5; i++) {
 					if (i === 2) throw new Error('QA890-iter-mid-stream');
@@ -118,8 +150,8 @@ export class IterMidStream extends Resource {
 export class IterHealth extends Resource {
 	static loadAsInstance = false;
 	async get() {
-		G.iterHealth.opened++;
 		async function* gen() {
+			G.iterHealth.opened++;
 			try {
 				for (let i = 0; i < 3; i++) {
 					yield { n: i };
@@ -130,6 +162,36 @@ export class IterHealth extends Resource {
 			}
 		}
 		return gen();
+	}
+}
+
+// This response-like envelope keeps lifecycle counters inside the generator so the HEAD test can
+// distinguish constructing the envelope from entering and closing its streaming body.
+export class EnvelopeHead extends Resource {
+	static loadAsInstance = false;
+	async get() {
+		async function* gen() {
+			G.envelopeHead.opened++;
+			try {
+				yield { n: 0 };
+			} finally {
+				G.envelopeHead.closed++;
+			}
+		}
+		return { status: 200, headers: {}, data: gen() };
+	}
+}
+
+export class IterMutation extends Resource {
+	static loadAsInstance = false;
+	static async *post() {
+		G.iterMutation.opened++;
+		try {
+			yield* [];
+			throw new Error('QA890-iter-mutation');
+		} finally {
+			G.iterMutation.closed++;
+		}
 	}
 }
 

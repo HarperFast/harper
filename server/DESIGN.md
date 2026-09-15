@@ -208,6 +208,17 @@ mirror because it only widens what an allowlist may _name_; enforcement stays on
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.
 
+### Streaming startup errors
+
+SSE and NDJSON serializers eagerly take and hold their first iterator step for GET requests. `REST.ts` waits through the next event-loop turn for that step: an immediate rejection remains an HTTP error rendered as Problem Details, while a first item or the cutoff commits the stream. Mutating requests do not use the startup-status gate because their transaction has already committed by this point; all of their stream failures use the in-band form. Later GET failures are terminal, format-valid records (`event: harper-error` for SSE and a reserved control record for NDJSON). Keep the decision in the serializer/REST boundary so Node, uWS, Bun, compression, and injection share one contract; transports must not independently prefetch the iterator.
+
+SSE terminal event data uses `{ error: <code-or-class>, message: <message>, status?: <status> }`; NDJSON wraps the same object as `{ "$harperStreamError": { ... } }` so it cannot be mistaken for an ordinary row with an `error` field.
+Sources with `mapError` remain unmapped for these two formats so their failures reach this single contract instead of becoming legacy data records.
+generic JSON-array streaming retains its older `{ error: "<name>: <message>" }` element shape.
+The `error` value is the stable programmatic discriminator; `message` is diagnostic and follows the same thrown-message exposure policy as pre-commit Problem Details.
+
+Clean stream completion does not prove completeness; clients must inspect SSE for the `harper-error` event and NDJSON for the `$harperStreamError` control record.
+
 ### Deferred credential rejection (#2418)
 
 `authentication` runs before route matching, so when it meets an `Authorization` header it cannot

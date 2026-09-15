@@ -1,6 +1,12 @@
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes.ts';
+import {
+	serialize,
+	serializeMessage,
+	getDeserializer,
+	waitForStreamStartup,
+	discardSerializedStream,
+} from '../server/serverHelpers/contentTypes.ts';
 import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { ServerError, ClientError } from '../utility/errors/hdbError.ts';
@@ -348,7 +354,15 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
-			return finalizeResponse(responseData, headers, status, request);
+			const response = finalizeResponse(responseData, headers, status, request);
+			if (request.method === 'HEAD') {
+				discardSerializedStream(response.body);
+				if (!(response instanceof Response)) response.body = undefined;
+			} else if (request.method === 'GET') {
+				const startup = waitForStreamStartup(response.body);
+				if (startup) await startup;
+			}
+			return response;
 		} else if (isFinite(lastModification)) {
 			etagFloat[0] = lastModification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
@@ -422,7 +436,13 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				setCountHeaders(headers, (target as any).offset || 0, (target as any).count, responseData);
 			}
 			responseObject.body = serialize(responseData, request, responseObject);
-			if (method === 'HEAD') responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
+			if (request.method === 'HEAD') {
+				discardSerializedStream(responseObject.body);
+				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
+			} else if (request.method === 'GET') {
+				const startup = waitForStreamStartup(responseObject.body);
+				if (startup) await startup;
+			}
 		}
 		// A collection read's count headers vary by the request's `Prefer` value; serialize() just reset
 		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count
@@ -466,6 +486,19 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			headers,
 			body: undefined,
 		};
+		// The error body is a different representation, so success representation and caching headers
+		// accumulated before the startup failure must not survive its serialization.
+		for (const header of [
+			'Content-Encoding',
+			'Cache-Control',
+			'ETag',
+			'Last-Modified',
+			'Content-Range',
+			'Range-Unit',
+			'Preference-Applied',
+			'Age',
+		])
+			headers.delete(header);
 		responseObject.body = serialize(problemDetail, request, responseObject);
 		return responseObject;
 	}

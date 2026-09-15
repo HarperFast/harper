@@ -488,9 +488,11 @@ grant on all three components: a home that restarts begins counting again, so a 
 would let a delayed release from a previous incarnation clear a live grant while its delegate is
 still admitting.
 
-**Bounded state.** Delegations are capped per database and per requester, and expiry work is bounded
-per tick, so a scan locking millions of distinct keys cannot make a home retain millions of grants and
-a single peer cannot exhaust the table on its own.
+**Bounded state.** Delegations are capped per database and per requester, expiry work is bounded per
+tick, and clean-handoff dependency sets have a separate, larger LRU cap. A fixed add-only Bloom
+filter distinguishes a truly virgin key from an evicted dependency set while this coordinator has
+observed the whole generation; after a cold start, ownership gap, or generation change, every
+unremembered key conservatively takes recovery.
 
 **Membership is fail-closed.** No agreed home map, no named homes, an unreachable home, a closed
 coordinator, or a call on a thread that does not own coordination all reject with a retryable 503
@@ -525,11 +527,14 @@ makes control-entry volume per lock a thing the measurement gate (harper-pro#824
 acquisition clock, the handle's version floor, and the mixed-transaction rules — unchanged. Nothing in
 the delegation path assigns a record version.
 
-**Not implemented here, deliberately.** The successor-freshness fence of the design note's §7 — the
-inherited `(origin → position)` dependency set on the release entry and the recovery barrier — is
-harper#2542, and harper-pro's operator-agreed home map is harper-pro#825. Until both land, a handoff carries
-exclusion but not the clean-handoff freshness the note's §2 states, which is another reason nothing is
-enabled by default.
+**Successor freshness.** A clean release carries the delegation's inherited `(origin → position)`
+set. The home merges the trusted release origin at the release entry's own log position, retains the
+result after clearing the grant, and sends it with the successor grant. The successor remains pending
+and recallable until `ClusterLockTransport.establishLockFreshness()` has made every dependency applied
+and visible. Missing lineage selects that transport's weaker reachable-member recovery barrier;
+failure or timeout returns 503 and hands the grant back without discarding retained lineage. The
+cached-delegation branch does none of this work. Harper-pro's operator-agreed home map and transport
+implementation remain the enablement boundary (harper-pro#825 / companion work on #822).
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 
@@ -2795,3 +2800,23 @@ insert is the phase-3 follow-up.
 - **The adapter owns the `'error'` listener.** A `destroy(err)` right after `writeHead()` emits before the awaiting caller can attach one; the error stays in the stream's `errored` state for `pipeline()`, `finished()` or async iteration. Client disconnect (`Request.signal`) destroys the response without an error after headers (a plain premature close, which `pipeBodyToResponse` treats as routine) and rejects the promise with the abort reason before them; a handler that throws or rejects before ending the response destroys it, and one that fails after `end()` is logged at warn.
 - **Header names are case-insensitive on removal too.** `Headers.delete` lowercases like `set`/`get`/`has`; the inherited `Map.delete` silently left `send`'s `Content-Length` on a gzip body (truncated transfers).
 - **Express is not a target.** `express`'s `app.handle()` replaces the response's prototype with one rooted at `http.ServerResponse.prototype`, which no Writable-derived response survives, and would do the same to the request `Proxy`'s target, Harper's real `IncomingMessage`. Middleware that duck-types the response (Next.js, `compression`, `send`, `serve-static`, `finalhandler`, h3, fastify) is the supported surface.
+
+## `manageThreads` has two different `workerCount`s (`server/threads/manageThreads.js`)
+
+The module-global `let workerCount` and the per-worker `workerData.workerCount` share a name and
+nothing else. `getWorkerCount()` (and therefore the `server.workerCount` a component reads) resolves
+only `workerData.workerCount`, frozen at spawn — it never reads the global; on the main thread it
+answers `isMainWorker ? 1 : undefined`. The global's one and only reader is `restartWorkers`' default
+`maxWorkersDown = Math.max(Math.floor(workerCount / 8), 1)`, so it is the _serving topology_ the
+rolling-restart throttle is sized from, nothing more.
+
+That makes the global writable only by a start that declares the topology. It used to be assigned
+unconditionally from `options.threadCount` inside the `workerData` literal, so every job worker — which
+passes no `threadCount` — set it to `undefined`, and the next rolling restart computed `NaN` (harper#2491).
+`NaN` defeats the guard below it (`NaN < 1` is false) _and_ every throttle comparison, so the restart
+took the whole pool down at once. A string does the same thing for the same reason. So the fix is the conditional write plus a consumer guard that clamps anything not a usable number. `Infinity` is exempt: it is the deliberate "all at once" sentinel `shutdownWorkers` passes, and `shutdownWorkersNow` depends on it to mark every worker synchronously before the first await. A literal `0` is also left alone, because it reads as a ratio rather than as garbage — it still reaches the ratio branch and stops the restart after one worker (harper#2601).
+
+`workerData.workerCount` must stay exactly what it is for each start, `undefined` for job workers
+included: an earlier attempt to give job workers the serving count instead broke the Windows
+integration shard with ECONNREFUSED across the job tests. A job worker that believes it is part of the
+pool behaves differently.

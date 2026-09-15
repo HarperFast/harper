@@ -13,15 +13,9 @@
  * an async generator streamed over SSE that threw partway through left the HTTP response open
  * forever (client hangs) AND crashed the process with an uncaughtException.
  *
- * The fix extracts an exported `pipeBodyToResponse(body, nodeResponse, ...)` helper that wires
- * the pipe via `stream.pipeline()` instead of a bare `.pipe()`. `pipeline()` tears down both
- * sides symmetrically: a source 'error' destroys the response too, closing the connection
- * (abruptly, not via a clean `.end()` — deliberate, per PR review, so the client doesn't get
- * misled into thinking a truncated transfer completed normally). So post-fix, a client
- * consuming an SSE stream whose generator throws mid-iteration should observe the HTTP
- * response terminate (via 'end', 'error', or 'close' — any of the three, per the updated unit
- * test in contentTypes.test.js) in bounded time, receiving only the events flushed before the
- * throw, with NO uncaughtException logged and the worker still alive afterward.
+ * Streaming errors now terminate with a format-valid SSE error event. A failure during the
+ * startup window returns 500 Problem Details; after commitment, the client receives the yielded
+ * events followed by `{ error, message }`, with no uncaughtException and a live worker.
  *
  * This suite starts from the QA-537 harness/fixture pattern (sse-finite-generator.test.ts, which
  * anchors #1628) and its `ThrowGen` case, which *documented* (did not assert) the pre-fix hang.
@@ -118,11 +112,11 @@ suite(
 					`must not hit the AbortController timeout -- a timeout here indicates the #1789 hang regressed. raw:\n${r.raw}`
 				);
 				ok(r.terminatedBy !== null, 'response must terminate via end/error/close, not hang indefinitely');
-				strictEqual(
-					r.events.length,
-					0,
-					`expected 0 events (throw before any yield), got ${r.events.length}. raw:\n${r.raw}`
-				);
+				strictEqual(r.status, 500);
+				strictEqual(r.events.length, 1, `expected one Problem Details event, got ${r.events.length}. raw:\n${r.raw}`);
+				const problem = JSON.parse(r.events[0]);
+				strictEqual(problem.status, 500);
+				strictEqual(problem.title, 'QA559-intentional-throw-first');
 
 				const probe = await waitForProbe<ProbeSnap>(
 					restBase,
@@ -161,13 +155,11 @@ suite(
 					`must not hit the AbortController timeout -- a timeout here indicates the #1789 hang regressed. raw:\n${r.raw}`
 				);
 				ok(r.terminatedBy !== null, 'response must terminate via end/error/close, not hang indefinitely');
-				ok(
-					r.events.length >= 1 && r.events.length <= 3,
-					`expected a 1-3 event prefix before the abrupt close, got ${r.events.length}. raw:\n${r.raw}`
-				);
-				for (let i = 0; i < r.events.length; i++) {
+				strictEqual(r.events.length, 4, `expected 3 data events and one error event. raw:\n${r.raw}`);
+				for (let i = 0; i < 3; i++) {
 					ok(r.events[i].includes(`"n":${i}`), `expected event ${i} to contain n=${i}, got: ${r.events[i]}`);
 				}
+				strictEqual(JSON.parse(r.events[3]).message, 'QA559-intentional-throw-mid');
 
 				const probe = await waitForProbe<ProbeSnap>(restBase, authHeaders, (snapshot) => snapshot.throwMid.closed >= 1);
 				ok(

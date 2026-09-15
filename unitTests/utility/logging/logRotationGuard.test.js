@@ -87,11 +87,24 @@ describe('Test log rotation on the write path (#1877)', () => {
 		}
 	}
 
-	it('bounds the active log while it is being written, without waiting for an audit tick', () => {
+	// The sink batches into a timer once its own appends start costing measurable time, so
+	// logger.error() returning is not the point at which the entry is on disk.
+	function writeAndObserve(logger, message, logPath, rotatedDir) {
+		const size = activeSize(logPath);
+		const generations = archives(rotatedDir).length;
+		logger.error(message);
+		return waitFor(() => activeSize(logPath) > size || archives(rotatedDir).length > generations, {
+			timeout: 10000,
+			interval: 2,
+			message: `the log never recorded: ${message}`,
+		});
+	}
+
+	it('bounds the active log while it is being written, without waiting for an audit tick', async () => {
 		const { logger, logPath, rotatedDir } = newCase({ maxSize: '4K' });
 		let peak = 0;
 		for (let i = 0; i < 400; i++) {
-			logger.error(`bounded rotation line ${i} ${'x'.repeat(60)}`);
+			await writeAndObserve(logger, `bounded rotation line ${i} ${'x'.repeat(60)}`, logPath, rotatedDir);
 			peak = Math.max(peak, activeSize(logPath));
 		}
 		assert.ok(archives(rotatedDir).length > 0, 'expected the write path to have rotated the log');
@@ -116,7 +129,7 @@ describe('Test log rotation on the write path (#1877)', () => {
 		assert.ok(activeSize(logPath) < 4000, 'expected a fresh, small active log');
 	});
 
-	it('rotates when the log directory does not exist yet and the archives go elsewhere', () => {
+	it('rotates when the log directory does not exist yet and the archives go elsewhere', async () => {
 		// logging.rotation.path resolves against rootPath while logging.root can be moved, so creating
 		// the archive directory does not create the log's own, and the sink only creates that on its
 		// first append.
@@ -130,6 +143,7 @@ describe('Test log rotation on the write path (#1877)', () => {
 			rotation: { enabled: true, maxSize: '4K', auditInterval: NEVER_TICKS, path: rotatedDir },
 		});
 		for (let i = 0; i < 200; i++) logger.error(`fresh install line ${i} ${'y'.repeat(60)}`);
+		await waitForContent(logPath, rotatedDir, 'fresh install line 199 ');
 		assert.ok(archives(rotatedDir).length > 0, 'expected the write path to rotate on a log directory it created');
 	});
 
@@ -207,18 +221,19 @@ describe('Test log rotation on the write path (#1877)', () => {
 		}
 	});
 
-	it('never rotates when rotation is disabled, even with a maxSize set', () => {
+	it('never rotates when rotation is disabled, even with a maxSize set', async () => {
 		const { logger, logPath, rotatedDir } = newCase({ enabled: false, maxSize: '1K' });
 		for (let i = 0; i < 200; i++) logger.error(`disabled rotation line ${i} ${'z'.repeat(60)}`);
+		await waitForContent(logPath, rotatedDir, 'disabled rotation line 199 ');
 		assert.strictEqual(archives(rotatedDir).length, 0, 'expected no archives when rotation is disabled');
 		assert.ok(activeSize(logPath) > 1000, 'expected the log to grow past maxSize when rotation is disabled');
 	});
 
-	it('measures payloads in bytes, so a multi-byte log does not overshoot', () => {
+	it('measures payloads in bytes, so a multi-byte log does not overshoot', async () => {
 		const { logger, logPath, rotatedDir } = newCase({ maxSize: '4K' });
 		let peak = 0;
 		for (let i = 0; i < 200; i++) {
-			logger.error(`multibyte ${i} ${'é中🚀'.repeat(20)}`);
+			await writeAndObserve(logger, `multibyte ${i} ${'é中🚀'.repeat(20)}`, logPath, rotatedDir);
 			peak = Math.max(peak, activeSize(logPath));
 		}
 		assert.ok(archives(rotatedDir).length > 0, 'expected rotation for a multi-byte payload');
@@ -240,9 +255,9 @@ describe('Test log rotation on the write path (#1877)', () => {
 		await worker.terminate();
 		logger.closeLogFile();
 
-		assert.ok(archives(rotatedDir).length > 0, 'expected rotation with a worker thread writing');
 		// Both sinks flush on a timer under load, so wait for the last entry rather than racing it.
 		const contents = await waitForContent(logPath, rotatedDir, 'worker-marker-199-', 'main-marker-199-');
+		assert.ok(archives(rotatedDir).length > 0, 'expected rotation with a worker thread writing');
 		for (const prefix of ['main-marker', 'worker-marker']) {
 			for (let i = 0; i < 200; i++) {
 				const occurrences = contents.split(`${prefix}-${i}-`).length - 1;
@@ -258,6 +273,7 @@ describe('Test log rotation on the write path (#1877)', () => {
 		fs.removeSync(rotatedDir);
 		fs.writeFileSync(rotatedDir, 'not a directory');
 		for (let i = 0; i < 60; i++) logger.error(`broken rotation line ${i} ${'w'.repeat(60)}`);
+		await waitForContent(logPath, rotatedDir, 'broken rotation line 59 ');
 		const strandedSize = activeSize(logPath);
 
 		fs.removeSync(rotatedDir);
@@ -293,7 +309,12 @@ describe('Test log rotation on the write path (#1877)', () => {
 		fs.renameSync(logPath, archivePath);
 		await requestGenerationClose({ logPath, generation: 'g', ino: held.ino, dev: held.dev });
 
-		logger.error('after the announced rotation');
+		const marker = 'after the announced rotation';
+		logger.error(marker);
+		await waitFor(() => fs.pathExistsSync(logPath) && fs.readFileSync(logPath, 'utf8').includes(marker), {
+			timeout: 10000,
+			message: `the log never recorded: ${marker}`,
+		});
 		logger.closeLogFile();
 		assert.ok(fs.pathExistsSync(logPath), 'expected a fresh log file, not an append to the archive');
 		assert.match(fs.readFileSync(logPath, 'utf8'), /after the announced rotation/);
