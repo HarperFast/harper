@@ -18,6 +18,7 @@ import { finished } from 'stream';
 import * as env from '../utility/environment/environmentManager.ts';
 import * as opFuncCaller from '../utility/OperationFunctionCaller.ts';
 import * as AWSConnector from '../utility/AWS/AWSConnector.js';
+import { MissingAwsSdkError } from '../utility/AWS/awsSdkLoader.ts';
 import { BulkLoadFileObject, BulkLoadDataObject } from './dataObjects/BulkLoadObjects.js';
 import PermissionResponseObject from '../security/data_objects/PermissionResponseObject.ts';
 import { verifyBulkLoadAttributePerms } from '../utility/operation_authorization.ts';
@@ -242,6 +243,7 @@ export async function importFromS3(this: any, jsonMessage: any) {
 		return bulkLoadResult;
 	} catch (err) {
 		await deleteTempFile(tempFilePath);
+		if (err instanceof MissingAwsSdkError) throw err;
 		throw buildTopLevelErrMsg(err);
 	}
 }
@@ -297,6 +299,7 @@ async function downloadFileFromS3(s3FileName, jsonMessage) {
 				});
 		});
 	} catch (err) {
+		if (err instanceof MissingAwsSdkError) throw err;
 		logger.error(HDB_ERROR_MSGS.S3_DOWNLOAD_ERR + ' - ' + err);
 		throw handleHDBError(err, CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.S3_DOWNLOAD_ERR));
 	}
