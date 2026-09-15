@@ -9,6 +9,7 @@ import { mkdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
+import { pinProcesses } from './resources.mts';
 
 const exec = promisify(execFile);
 const DIR = import.meta.dirname;
@@ -34,8 +35,14 @@ async function wipePgData(): Promise<void> {
 	const base = dataDir();
 	await mkdir(base, { recursive: true });
 	await exec('docker', [
-		'run', '--rm', '-v', `${base}:/host-data`, 'alpine:latest',
-		'sh', '-c', 'rm -rf /host-data/pgdata',
+		'run',
+		'--rm',
+		'-v',
+		`${base}:/host-data`,
+		'alpine:latest',
+		'sh',
+		'-c',
+		'rm -rf /host-data/pgdata',
 	]);
 }
 
@@ -48,6 +55,8 @@ export interface PgStackOptions {
 	useCache: boolean;
 	fields: number;
 	poolSize: number;
+	/** CPU list the whole server side (Fastify + Postgres + Redis) is confined to. */
+	serverCpus?: string;
 }
 
 export interface PgStack {
@@ -105,21 +114,25 @@ export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
 
 	// Fresh dataset per run: the harness load phase inserts sequential keys, and
 	// leftover rows would change both the row count and the cache hit profile.
-	await exec('docker', [
-		...COMPOSE,
-		'exec',
-		'-T',
-		'postgres',
-		'psql',
-		'-p',
-		'5433',
-		'-U',
-		'ycsb',
-		'-d',
-		'ycsb',
-		'-c',
-		'DROP TABLE IF EXISTS usertable',
-	], { env: composeEnv() });
+	await exec(
+		'docker',
+		[
+			...COMPOSE,
+			'exec',
+			'-T',
+			'postgres',
+			'psql',
+			'-p',
+			'5433',
+			'-U',
+			'ycsb',
+			'-d',
+			'ycsb',
+			'-c',
+			'DROP TABLE IF EXISTS usertable',
+		],
+		{ env: composeEnv() }
+	);
 	await exec('docker', [...COMPOSE, 'exec', '-T', 'redis', 'redis-cli', '-p', '6380', 'flushall'], {
 		env: composeEnv(),
 	});
@@ -156,6 +169,19 @@ export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
 		postgres: await containerCgroup('postgres'),
 	};
 	if (options.useCache) cgroups.redis = await containerCgroup('redis');
+
+	if (options.serverCpus) {
+		// The three server processes share one CPU budget, the same one Harper gets, so
+		// ops-per-server-CPU-second compares like with like. Containers take a cpuset rather
+		// than taskset, which cannot reach inside them.
+		for (const service of options.useCache ? ['postgres', 'redis'] : ['postgres']) {
+			const { stdout } = await exec('docker', [...COMPOSE, 'ps', '-q', service], { env: composeEnv() });
+			await exec('docker', ['update', `--cpuset-cpus=${options.serverCpus}`, stdout.trim()]);
+		}
+		// Every cluster worker, not just the parent: they are already forked by this point and
+		// taskset -acp on the parent would not reach them.
+		await pinProcesses('pg-app/server.mjs', options.serverCpus);
+	}
 
 	return {
 		baseUrl: `http://127.0.0.1:${PG_APP_PORT}`,

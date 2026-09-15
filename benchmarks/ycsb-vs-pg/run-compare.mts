@@ -26,7 +26,16 @@ import { WORKLOADS } from '../ycsb/workload.mts';
 import type { DistributionName, LatencyStats, PhaseResult } from '../ycsb/workload.mts';
 import { startDriver } from './shardedDriver.mts';
 import { startPgStack, dataDir } from './pgStack.mts';
-import { sampleResources, diffResources, type ResourceTargets, type ResourceDelta } from './resources.mts';
+import {
+	pinProcesses,
+	sampleResources,
+	diffResources,
+	ClockProbe,
+	parseCpuList,
+	onlineCpus,
+	type ResourceTargets,
+	type ResourceDelta,
+} from './resources.mts';
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..');
 const HARPER_BIN = join(REPO_ROOT, 'dist', 'bin', 'harper.js');
@@ -77,6 +86,32 @@ async function cpuBusyTicks(): Promise<number> {
 	return values.reduce((a, b) => a + b, 0) - values[3] - values[4];
 }
 
+/**
+ * Disjoint CPU sets for the server under test and the load generator.
+ *
+ * Required for ops-per-CPU-second to mean anything on a hybrid CPU: see pinProcesses() in
+ * resources.mts. The server set is the SAME for every target, so Harper's one process and the
+ * conventional stack's three share an identical budget.
+ */
+const cpuFlag = (name: string): string | undefined =>
+	process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+const SERVER_CPUS = cpuFlag('serverCpus');
+const DRIVER_CPUS = cpuFlag('driverCpus');
+/**
+ * Reject a rep whose mean core clock fell more than this fraction below the best clock seen
+ * for the same workload, and re-run it after a cooldown. 0 disables the gate.
+ *
+ * Cycle normalisation removes most of the clock's effect but not all: measured here,
+ * ops-per-gigacycle still drifts ~20% between 3.5 GHz and 0.85 GHz because the uncore
+ * downclocks with the cores. Only comparing reps that ran at a similar clock keeps that
+ * residual out. Gating on the clock measured DURING a rep is the only honest signal —
+ * scaling_cur_freq between reps reads low because the machine is idle, not because it is
+ * throttled, so it cannot be used to predict whether the next rep will be clean.
+ */
+const CLOCK_TOLERANCE = Number(cpuFlag('clockTolerance') ?? '0.15');
+const CLOCK_COOLDOWN_MS = Number(cpuFlag('clockCooldownMs') ?? '45000');
+const CLOCK_MAX_ATTEMPTS = Number(cpuFlag('clockMaxAttempts') ?? '3');
+
 type Options = ReturnType<typeof parseOptions>;
 
 async function withHarper<T>(
@@ -99,6 +134,7 @@ async function withHarper<T>(
 		const { httpURL } = ctx.harper;
 		await waitForRoute(`${httpURL}/${options.config.table}/`, 30_000);
 		console.log(`harper ready at ${httpURL}`);
+		if (SERVER_CPUS) await pinProcesses('dist/bin/harper.js', SERVER_CPUS);
 		// Harper is one process; its worker threads are counted with it.
 		return await body(httpURL, { processes: { harper: 'dist/bin/harper.js' }, cgroups: {} });
 	} finally {
@@ -118,6 +154,7 @@ async function withPgStack<T>(
 		useCache,
 		fields: options.config.fieldCount,
 		poolSize: Math.max(4, Math.ceil(options.config.concurrency / options.threads) + 4),
+		serverCpus: SERVER_CPUS,
 	});
 	try {
 		await waitForRoute(`${stack.baseUrl}/${options.config.table}/`, 30_000);
@@ -174,6 +211,7 @@ async function benchmarkWorkload(
 			maxScanLength: config.maxScanLength,
 		});
 		try {
+			if (DRIVER_CPUS) await pinProcesses('shardWorker.mts', DRIVER_CPUS);
 			console.log(`  [load] ${driver.load.throughput.toFixed(0)} records/sec, ${driver.load.errors} errors`);
 			// Warm UNIFORMLY over at least the whole keyspace: a zipfian warmup only touches the
 			// hot keys, leaving the measured workload to absorb the first-touch cost of every
@@ -186,20 +224,44 @@ async function benchmarkWorkload(
 			// Resources are sampled around the timed reps only — the load and warmup
 			// phases would otherwise charge each workload for setup it doesn't measure.
 			const reps: { result: PhaseResult; resources: ResourceDelta }[] = [];
+			const clockCpus = SERVER_CPUS ? parseCpuList(SERVER_CPUS) : onlineCpus();
+			let bestClockGHz = 0;
 			for (let rep = 0; rep < config.reps; rep++) {
-				const before = await sampleResources(resourceTargets);
-				const result = await driver.runWorkload(workload, distribution);
-				const resources = diffResources(before, await sampleResources(resourceTargets));
-				const perCore = result.ops / Math.max(resources.totalCpuSeconds, 1e-9);
-				const cacheTotal = resources.redisHits + resources.redisMisses;
-				const hitRate = cacheTotal > 0 ? ` cache-hit ${((resources.redisHits / cacheTotal) * 100).toFixed(1)}%` : '';
-				console.log(
-					`  [${workload} rep ${rep + 1}/${config.reps}] ${result.throughput.toFixed(0)} ops/sec, ` +
-						`${resources.totalCpuSeconds.toFixed(1)} server cpu-s, ${perCore.toFixed(0)} ops/core-s${hitRate}`
-				);
-				reps.push({ result, resources });
+				for (let attempt = 1; ; attempt++) {
+					const clock = new ClockProbe(clockCpus);
+					const before = await sampleResources(resourceTargets);
+					clock.start();
+					const result = await driver.runWorkload(workload, distribution);
+					const meanClockGHz = clock.stop();
+					const resources = { ...diffResources(before, await sampleResources(resourceTargets)), meanClockGHz };
+					bestClockGHz = Math.max(bestClockGHz, meanClockGHz);
+					const perCore = result.ops / Math.max(resources.totalCpuSeconds, 1e-9);
+					const perGcycle = opsPerGigacycle(result.ops, resources);
+					const cacheTotal = resources.redisHits + resources.redisMisses;
+					const hitRate = cacheTotal > 0 ? ` cache-hit ${((resources.redisHits / cacheTotal) * 100).toFixed(1)}%` : '';
+					const throttled =
+						CLOCK_TOLERANCE > 0 && meanClockGHz > 0 && meanClockGHz < bestClockGHz * (1 - CLOCK_TOLERANCE);
+					const retrying = throttled && attempt < CLOCK_MAX_ATTEMPTS;
+					console.log(
+						`  [${workload} rep ${rep + 1}/${config.reps}] ${result.throughput.toFixed(0)} ops/sec, ` +
+							`${resources.totalCpuSeconds.toFixed(1)} server cpu-s @ ${meanClockGHz.toFixed(2)} GHz, ` +
+							`${perCore.toFixed(0)} ops/core-s, ${perGcycle.toFixed(0)} ops/Gcycle${hitRate}` +
+							(throttled
+								? ` — THROTTLED vs ${bestClockGHz.toFixed(2)} GHz${retrying ? ', retrying' : ', accepted anyway'}`
+								: '')
+					);
+					if (!retrying) {
+						reps.push({ result, resources });
+						break;
+					}
+					await delay(CLOCK_COOLDOWN_MS);
+				}
 			}
-			const sorted = [...reps].sort((a, b) => a.result.throughput - b.result.throughput);
+			// Ranked by cycle efficiency rather than throughput: throughput still moves with the
+			// core clock, so a throughput median just picks whichever rep got the best clock.
+			const sorted = [...reps].sort(
+				(a, b) => opsPerGigacycle(a.result.ops, a.resources) - opsPerGigacycle(b.result.ops, b.resources)
+			);
 			const median = sorted[Math.floor((sorted.length - 1) / 2)];
 			return {
 				load: driver.load,
@@ -251,6 +313,19 @@ async function benchmarkTarget(target: TargetName, options: Options, shards: num
 	};
 }
 
+/**
+ * Ops per CPU-gigacycle — the efficiency metric this benchmark compares on.
+ *
+ * CPU-seconds are not comparable across runs here: the core clock moves by 4x under sustained
+ * load, which changes ops-per-CPU-second by the same factor with no software change. Cycles do
+ * not move. Falls back to CPU-seconds where cpufreq is unavailable, which is only comparable if
+ * the clock is actually fixed.
+ */
+function opsPerGigacycle(ops: number, resources: ResourceDelta): number {
+	const gigacycles = resources.totalCpuSeconds * (resources.meanClockGHz || 1);
+	return ops / Math.max(gigacycles, 1e-9);
+}
+
 function printComparison(results: TargetResult[]): void {
 	const baseline = results[0];
 	const width = 118;
@@ -291,7 +366,7 @@ function printComparison(results: TargetResult[]): void {
 	}
 
 	out.push('');
-	out.push('efficiency — ops per server CPU-second (load generator excluded), higher is better');
+	out.push('efficiency — ops per server CPU-gigacycle (load generator excluded), higher is better');
 	out.push('-'.repeat(width));
 	const effRow = (label: string, pick: (r: TargetResult) => number) => {
 		const values = results.map(pick);
@@ -302,7 +377,7 @@ function printComparison(results: TargetResult[]): void {
 	for (const wl of baseline.workloads) {
 		effRow(wl.name, (r) => {
 			const w = r.workloads.find((x) => x.name === wl.name)!;
-			return w.result.ops / Math.max(w.resources.totalCpuSeconds, 1e-9);
+			return opsPerGigacycle(w.result.ops, w.resources);
 		});
 	}
 
@@ -315,13 +390,13 @@ function printComparison(results: TargetResult[]): void {
 				.filter(([, v]) => v > 0.01)
 				.map(([k, v]) => `${k} ${v.toFixed(1)}`)
 				.join('  ');
-			out.push(`  ${`${r.target}/${wl.name}`.padEnd(20)} total ${wl.resources.totalCpuSeconds.toFixed(1).padStart(7)}   ${parts}`);
+			out.push(
+				`  ${`${r.target}/${wl.name}`.padEnd(20)} total ${wl.resources.totalCpuSeconds.toFixed(1).padStart(7)}   ${parts}`
+			);
 		}
 	}
 
-	const withCache = results.filter((r) =>
-		r.workloads.some((w) => w.resources.redisHits + w.resources.redisMisses > 0)
-	);
+	const withCache = results.filter((r) => r.workloads.some((w) => w.resources.redisHits + w.resources.redisMisses > 0));
 	if (withCache.length > 0) {
 		out.push('');
 		out.push('Redis cache hit rate (look-aside, behind Fastify) — what fraction never reached Postgres');
@@ -393,10 +468,11 @@ async function main(): Promise<void> {
 	const shardsArg = extract('--shards');
 	const targets = (targetsArg ? targetsArg.split(',') : ['harper', 'pg-redis']).map((t) => t.trim()) as TargetName[];
 	for (const target of targets) {
-		if (!ALL_TARGETS.includes(target)) throw new Error(`unknown target "${target}" (expected ${ALL_TARGETS.join(', ')})`);
+		if (!ALL_TARGETS.includes(target))
+			throw new Error(`unknown target "${target}" (expected ${ALL_TARGETS.join(', ')})`);
 	}
 	const shards = Number(shardsArg ?? 4);
-	const options = parseOptions(argv.filter((a) => !a.startsWith('--targets=') && !a.startsWith('--shards=')));
+	const options = parseOptions(argv.filter((a) => !/^--(targets|shards|serverCpus|driverCpus|clock[A-Za-z]+)=/.test(a)));
 
 	const { base } = await prepareDataDirs();
 	console.log(`Data directories under ${base} (real disk, single filesystem)`);
