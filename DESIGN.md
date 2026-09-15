@@ -540,10 +540,11 @@ implementation remain the enablement boundary (harper-pro#825 / companion work o
 payload `[1, nonce]`, harper#2625): a replicated no-op the probed member commits after the probe, so
 it is appended after every transaction that member had committed — the one ordering no log-key head,
 received tail, or sender-emitted marker gives, since entries are appended in commit order rather than
-key order. `writeLockBarrier(database, table)` in `recordLockCoordinator.ts` writes one through the
-transport's `writeControl` when it has one and `Table.writeLockControlEntry` otherwise, and resolves
-to the entry's log position; the coordinator ignores the entry on receipt, and every
-`isLockControlType` exclusion above covers it. `establishLockFreshness()` receives the wait remaining
+key order. `writeLockBarrier(database, table, nonce)` in `recordLockCoordinator.ts` writes one — strictly
+this node's own commit through `Table.writeLockControlEntry`, never the transport's `writeControl`
+hook, since the caller is the transport and the fence must be a position in this origin's log — and
+resolves to the entry's log position; the transport supplies the nonce it will match the entry on.
+The coordinator ignores the entry on receipt, and every `isLockControlType` exclusion above covers it. `establishLockFreshness()` receives the wait remaining
 on the lock deadline. The harper-pro operation and drain are harper-pro#822's; a recovery marker with
 no barrier fails closed.
 

@@ -281,8 +281,18 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			const decoded = decodeLockControlPayload(barrier.type, barrier.value);
 			assert.ok(decoded && Number.isFinite(decoded.nonce), 'the payload decodes through the table decoder');
 
-			const later = await writeLockBarrier('test', 'ClusterLockTest');
+			const later = await writeLockBarrier('test', 'ClusterLockTest', 77);
 			assert.ok(later > position, 'positions advance with the log');
+			assert.strictEqual(
+				decodeLockControlPayload('lockBarrier', controlEntries().at(-1).value).nonce,
+				77,
+				'the entry carries the nonce the caller will match it on'
+			);
+			for (const nonce of [-1, 1.5, NaN, 2 ** 53])
+				await assert.rejects(
+					() => writeLockBarrier('test', 'ClusterLockTest', nonce),
+					(error) => error.statusCode === 400
+				);
 			assert.strictEqual(
 				ClusterLockTest.lockCoordinator.stats.granted,
 				grantedBefore,
@@ -292,8 +302,6 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 		it('is always this node’s own commit, never the transport’s control writer', async function () {
 			if (isLMDB) return this.skip();
-			// The caller IS the transport, answering a peer's probe. A relaying hook would re-enter it,
-			// or answer with a position in some other origin's log.
 			const relayed = [];
 			useSoloTransport({ extra: { writeControl: (table, entry) => (relayed.push({ table, entry }), 4242) } });
 			const before = controlEntries().length;
@@ -320,7 +328,6 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				ClusterLockTest.writeLockControlEntry = () => {
 					throw new Error('the log is not accepting writes');
 				};
-				// A synchronous throw from the writer is a rejection here, not a throw into the operation handler.
 				const attempt = writeLockBarrier('test', 'ClusterLockTest');
 				assert.ok(attempt instanceof Promise);
 				await assert.rejects(attempt, /not accepting writes/);

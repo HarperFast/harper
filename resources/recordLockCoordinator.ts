@@ -194,7 +194,7 @@ export interface LockReleaseEntry {
  */
 export interface LockBarrierEntry {
 	type: 'lockBarrier';
-	/** Distinguishes barriers an origin may stamp identically after a restart that reissued a clock reading. */
+	/** Supplied by the requesting transport; distinguishes barriers an origin stamped identically across a restart. */
 	nonce: number;
 }
 
@@ -2049,15 +2049,26 @@ export function setLockCoordinatorResolver(
  * every transaction this node had committed when the call was made, so a peer that has applied this
  * origin's log through the returned position has applied all of them.
  *
+ * The transport supplies the nonce it will match the entry on, since a position alone is not an
+ * identity: a restart after the wall clock moved backwards can reissue a log key, and a drain that
+ * matched the earlier entry at that key would declare this origin drained with its post-restart
+ * commits unapplied.
+ *
  * Strictly this node's own commit, never the transport's `writeControl`: the fence is a position in
  * THIS origin's log, and the caller is the transport itself — a relaying hook would answer with a
  * position that is not local, or re-enter the operation that called here. A write that commits
  * without a position rejects rather than resolve, since a barrier nobody can wait on is not a fence.
  */
-export async function writeLockBarrier(database: string, table: string): Promise<number> {
+export async function writeLockBarrier(
+	database: string,
+	table: string,
+	nonce: number = randomInt(2 ** 48 - 1)
+): Promise<number> {
+	if (!Number.isSafeInteger(nonce) || nonce < 0)
+		throw new ClientError('A lock barrier nonce must be a non-negative integer');
 	const write = controlWriterResolver?.(database, table);
 	if (!write) throw new ClientError(`Table ${database}.${table} does not exist`, 404);
-	const position = await write({ type: 'lockBarrier', nonce: randomInt(2 ** 48 - 1) });
+	const position = await write({ type: 'lockBarrier', nonce });
 	if (typeof position !== 'number' || !(position >= 0) || !Number.isFinite(position))
 		throw new LockUnavailableError(`the record lock barrier for ${database}.${table} committed without a log position`);
 	return position;

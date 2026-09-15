@@ -406,15 +406,16 @@ receiver before an earlier-keyed, later-appended entry is applied; a receiver's 
 zero after its restart while a reachable member still holds committed, undelivered writes; and a
 marker the sender emits at end of stream races `transactionBroadcast`'s `setImmediate`-notified
 queue, so a durable commit can be unobserved when it is emitted. The transport therefore asks each
-reachable member to commit one — `writeLockBarrier(database, table)` resolves to the entry's own log
-position — and drains that member's stream until it has applied that entry.
+reachable member to commit one — `writeLockBarrier(database, table, nonce)` resolves to the entry's
+own log position — and drains that member's stream until it has applied that entry.
 
 > **Invariant:** a barrier entry is appended after every transaction the writing node had committed
 > when the barrier was requested, so a peer that has applied that origin's log through the barrier
 > has applied all of them.
 
-"Through the barrier" means the barrier entry itself — identified by its origin and position, and
-carrying a nonce for the restart case where an origin reissues a clock reading — has been applied,
+"Through the barrier" means the barrier entry itself — identified by its origin and position, and by
+the nonce the requesting transport supplied, for the restart case where an origin reissues a clock
+reading — has been applied,
 not that some entry with a key at or past that position has: log keys are not in append order. And
 "applied" is the receiver's contiguous applied-and-visible cursor for that origin, which must not
 advance across an apply failure — core's replicated apply loop logs a terminal commit failure and

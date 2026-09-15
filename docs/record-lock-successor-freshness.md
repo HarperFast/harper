@@ -35,15 +35,17 @@ returns the established positions so the delegation can carry them onward. Bloom
 only select the slower safe path; there are no false negatives while absence is trusted.
 
 The recovery drain's fence is the `lockBarrier` control entry (harper#2625). Each reachable member
-commits one on request — `writeLockBarrier(database, table)` resolves to the entry's own
-transaction-log position — and the requester drains that member's stream until it has applied that
-entry. The entry is appended after every transaction the member had committed when it was asked,
+commits one on request — `writeLockBarrier(database, table, nonce)` resolves to the entry's own
+transaction-log position, and the requester matches the entry on its origin, position and the nonce
+it supplied — and the requester drains that member's stream until it has applied that entry. The entry is appended after every transaction the member had committed when it was asked,
 which is the property no highest-key head, received tail, or sender-emitted marker has (§7.2 of the
 ownership note lists the disqualifier for each). It carries only a version and a nonce, replicates
 like the release, and the coordinator ignores it. `establishLockFreshness` also receives the wait
 remaining on the lock deadline so the transport can bound the drain to it. A member or transport
 that cannot produce a barrier leaves the recovery marker with no fence, and the lock fails closed
-with the same 503.
+with the same 503 — the transport's rejection is what fails it: core does not second-guess a
+positioned recovery reply, and installs the grant on whatever set the transport returns, empty
+included.
 
 The release wire format becomes a versioned tuple with a leading version and trailing dependency
 set. The decoder still accepts the exact historical five-tuple as a release with unknown lineage;

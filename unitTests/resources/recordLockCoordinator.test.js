@@ -693,8 +693,7 @@ describe('record lock delegations', () => {
 		});
 
 		it('hands the transport the wait remaining on the lock deadline', async () => {
-			// Core races the transport's promise against the deadline but cannot cancel it, so the
-			// transport is told how long it has. On a fixed clock the remaining wait is the whole wait.
+			// On a fixed clock the remaining wait is the whole wait.
 			const calls = [];
 			const coordinator = coldCoordinator(() => 5_000, {
 				grantableAfterMono: -Infinity,
@@ -725,8 +724,7 @@ describe('record lock delegations', () => {
 			const alpha = cluster.node('alpha');
 			const home = cluster.node('gamma').coordinator;
 			const held = await home.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
-			// The predecessor's write, then a release whose lineage is lost on the way — the home has
-			// nothing to hand the successor but the recovery marker.
+			// A release with malformed lineage leaves the home nothing to hand the successor but the marker.
 			const predecessorWrite = ++cluster.tsCounter;
 			alpha.written.push({ type: 'put', key, position: predecessorWrite });
 			home.applyEntry(
@@ -739,9 +737,7 @@ describe('record lock delegations', () => {
 			const applied = { alpha: 0, beta: 0, gamma: 0 };
 			cluster.beforeFreshness = async (name, _key, dependencies) => {
 				if (name !== 'beta' || dependencies !== null) return;
-				// Recovery: every reachable member commits a barrier, and beta drains each origin's stream
-				// through that barrier. Alpha's barrier lands after alpha's put, so draining to it
-				// applies the put.
+				// Every reachable member commits a barrier; beta drains each origin's stream through it.
 				for (const origin of cluster.homes) {
 					const position = await cluster.writeControlFor(origin)({ type: 'lockBarrier', nonce: 1 });
 					for (const entry of cluster.node(origin).written)
@@ -2349,11 +2345,9 @@ describe('record lock delegations', () => {
 			const barrier = { type: 'lockBarrier', nonce: 281_474_976_710_655 };
 			assert.deepStrictEqual(decodeLockControlPayload('lockBarrier', encodeLockControlPayload(barrier)), barrier);
 			assert.deepStrictEqual(decodeLockControlPayload('lockBarrier', [1, 0]), { type: 'lockBarrier', nonce: 0 });
-			// The unknown-version rule: a barrier this version does not understand is ignored, not acted on.
 			assert.strictEqual(decodeLockControlPayload('lockBarrier', [2, 7]), undefined);
 			for (const malformed of [[1], [1, 7, 8], [1, 'nonce'], [1, Infinity], ['1', 7], 'not a tuple', 7])
 				assert.strictEqual(decodeLockControlPayload('lockBarrier', malformed), undefined, JSON.stringify(malformed));
-			// Neither payload decodes under the other's type: the nibble is the dispatch, never the shape.
 			assert.strictEqual(decodeLockControlPayload('lockRelease', encodeLockControlPayload(barrier)), undefined);
 			assert.strictEqual(decodeLockControlPayload('lockRelease', [1, 7]), undefined);
 			const release = { type: 'lockRelease', key: 'k', requester: 'alpha', token: [1, 1, 1] };
