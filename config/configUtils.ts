@@ -175,7 +175,11 @@ export function atomicWriteFile(
 	return true;
 }
 
-export function renameWithRetry(fromPath: string, toPath: string, options: RenameRetryOptions = {}) {
+export function renameWithRetry(
+	fromPath: string,
+	toPath: string,
+	options: Pick<RenameRetryOptions, 'retryBudgetMs' | 'maxRetries' | 'initialDelayMs' | 'maxDelayMs'> = {}
+) {
 	return retryRename(fromPath, toPath, {
 		...options,
 		rename: fs.renameSync,
