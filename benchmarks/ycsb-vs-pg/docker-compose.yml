@@ -1,0 +1,48 @@
+# Backing services for the Postgres + Redis comparison stack.
+# Host networking so the client/server hop is loopback on both sides of the
+# comparison (Harper also runs on the host) — no docker-proxy / NAT in the path.
+services:
+  postgres:
+    image: postgres:17-alpine
+    network_mode: host
+    environment:
+      POSTGRES_PASSWORD: ycsb
+      POSTGRES_USER: ycsb
+      POSTGRES_DB: ycsb
+      PGPORT: '5433'
+    # Durability left at the default (fsync=on, synchronous_commit=on) to match
+    # Harper's default storage.writeAsync=false. Only memory sizing is tuned,
+    # since the stock 128MB shared_buffers would make this a disk benchmark.
+    # PGDATA is tmpfs because the Harper side of this comparison also runs its
+    # data directory under /tmp (tmpfs on this host) — same storage medium, so
+    # the measurement is of the software path rather than the SSD.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=16GB
+      - -c
+      - max_connections=300
+      - -c
+      - max_wal_size=8GB
+    shm_size: 2gb
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+    # Cache role: no persistence, LRU eviction, generous memory.
+    command:
+      - redis-server
+      - --port
+      - '6380'
+      - --save
+      - ''
+      - --appendonly
+      - 'no'
+      - --maxmemory
+      - 8gb
+      - --maxmemory-policy
+      - allkeys-lru
