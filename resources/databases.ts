@@ -2878,8 +2878,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributeDescriptor.enumerable !== attribute.enumerable ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
-				// Include `embed` so a source/model change refreshes the embed registry.
-				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed);
+				// Derived declarations participate in the durable schema descriptor.
+				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed) ||
+				JSON.stringify(attributeDescriptor.fullText) !== JSON.stringify(attribute.fullText);
 			// any metadata difference (drives persistence)
 			const changed =
 				commonChanged || JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);

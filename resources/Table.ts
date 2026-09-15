@@ -150,6 +150,7 @@ import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rock
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
 import { contentTypes } from '../server/serverHelpers/contentTypes';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
+import type { FullTextDefinition } from './fullTextSchema.ts';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -170,6 +171,7 @@ export type Attribute = {
 	resolve?: any;
 	computedFromExpression?: any;
 	embed?: { source: string; model: string };
+	fullText?: FullTextDefinition;
 	version?: any;
 	properties?: Array<Attribute>;
 	elements?: Attribute;
@@ -5920,12 +5922,14 @@ export function makeTable(options) {
 						const properties = attribute.properties;
 						for (let i = 0, l = properties.length; i < l; i++) {
 							const attribute = properties[i];
-							if (attribute.relationship || attribute.computed) {
+							if (attribute.relationship || attribute.computed || attribute.fullText) {
 								if (record.hasOwnProperty(attribute.name)) {
 									addError(
 										`${name}.${attribute.name}`,
-										'computed',
-										`Computed property ${name}.${attribute.name} may not be directly assigned a value`
+										attribute.fullText ? 'full_text' : 'computed',
+										attribute.fullText
+											? `Full-text query property ${name}.${attribute.name} may not be directly assigned a value`
+											: `Computed property ${name}.${attribute.name} may not be directly assigned a value`
 									);
 								}
 								continue;
@@ -6040,12 +6044,14 @@ export function makeTable(options) {
 			};
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
-				if (attribute.relationship || attribute.computed) {
+				if (attribute.relationship || attribute.computed || attribute.fullText) {
 					if (Object.hasOwn(record, attribute.name)) {
 						addError(
 							attribute.name,
-							'computed',
-							`Computed property ${attribute.name} may not be directly assigned a value`
+							attribute.fullText ? 'full_text' : 'computed',
+							attribute.fullText
+								? `Full-text query property ${attribute.name} may not be directly assigned a value`
+								: `Computed property ${attribute.name} may not be directly assigned a value`
 						);
 					}
 					continue;

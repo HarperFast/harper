@@ -41,6 +41,12 @@ A signed double-precision floating-point value
 scalar Float
 
 """
+A query-only handle for a native full-text derived index. Values are never stored
+in table records; use the field in full-text search conditions.
+"""
+scalar FullText
+
+"""
 ID (serialized as a String): A unique identifier that's often used to refetch an
 object or as the key for a cache. Although it's serialized as a String, an ID is
 not intended to be human‐readable.
@@ -70,7 +76,7 @@ Example:
 ```
 type Post @table(table: "posts", database: "blog") {
 id: ID @primaryKey
-title: String @indexed(type: "fulltext")
+title: String @indexed
 body: String
 createdAt: Date @createdTime
 updatedAt: Date @updatedTime
@@ -214,6 +220,44 @@ directive @indexed(
 	latency matters more than recall on large tables.
 	"""
 	efConstructionSearch: Int
+) on FIELD_DEFINITION
+
+"""
+A source attribute included in a full-text index.
+"""
+input FullTextSource {
+	name: String!
+	weight: Float = 1.0
+	highlight: Boolean
+}
+
+"""
+An index-time synonym expansion rule.
+"""
+input FullTextSynonymRule {
+	source: String!
+	replacements: [String!]!
+}
+
+"""
+Opt-in highlighting limits. Omitting highlighting from @fullText disables it.
+"""
+input FullTextHighlighting {
+	maxFragments: Int = 3
+	fragmentLength: Int = 160
+}
+
+"""
+Create a native full-text derived index over the listed source attributes.
+"""
+directive @fullText(
+	fields: [FullTextSource!]!
+	analyzer: String = "english@1"
+	stopWords: Boolean = true
+	positions: Boolean = true
+	surfaceTerms: Boolean = true
+	synonyms: [FullTextSynonymRule!] = []
+	highlighting: FullTextHighlighting
 ) on FIELD_DEFINITION
 
 """

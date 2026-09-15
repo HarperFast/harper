@@ -8,8 +8,22 @@ import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
+import { compileFullTextDefinition } from './fullTextSchema.ts';
 
-const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
+const PRIMITIVE_TYPES = [
+	'ID',
+	'Int',
+	'Float',
+	'Long',
+	'String',
+	'Boolean',
+	'Date',
+	'Bytes',
+	'Any',
+	'BigInt',
+	'Blob',
+	'FullText',
+];
 
 // coerce directive arg values by their AST node kind so numbers arrive as numbers,
 // not as the string literals they're stored as on IntValue/FloatValue nodes.
@@ -26,6 +40,8 @@ function coerceDirectiveValue(node: ValueNode): any {
 			return null;
 		case 'ListValue':
 			return node.values.map(coerceDirectiveValue);
+		case 'ObjectValue':
+			return Object.fromEntries(node.fields.map((field) => [field.name.value, coerceDirectiveValue(field.value)]));
 		default:
 			return (node as { value?: unknown }).value;
 	}
@@ -42,6 +58,7 @@ server.knownGraphQLDirectives.push(
 	'indexed',
 	'computed',
 	'embed',
+	'fullText',
 	'relationship',
 	'createdTime',
 	'updatedTime',
@@ -262,6 +279,19 @@ async function processGraphQLSchema(
 									property.version = `embed:${embedDefinition.model}`;
 								}
 							}
+						} else if (directiveName === 'fullText') {
+							if (property.fullText)
+								throw new ClientError(`@fullText may be declared only once on "${property.name}"`, 400);
+							const fullTextDefinition: Record<string, unknown> = Object.create(null);
+							for (const arg of directive.arguments || []) {
+								if (Object.hasOwn(fullTextDefinition, arg.name.value))
+									throw new ClientError(
+										`@fullText on "${property.name}" declares "${arg.name.value}" more than once`,
+										400
+									);
+								fullTextDefinition[arg.name.value] = coerceDirectiveValue(arg.value);
+							}
+							property.fullText = fullTextDefinition;
 						} else if (directiveName === 'relationship') {
 							const relationshipDefinition = {};
 							for (const arg of directive.arguments) {
@@ -320,6 +350,14 @@ async function processGraphQLSchema(
 							`@embed on "${prop.name}" references unknown source field "${prop.embed.source}"`,
 							400
 						);
+					if (prop.fullText) {
+						if (!typeDef.table)
+							throw new ClientError(`@fullText on "${prop.name}" is only supported on a @table type`, 400);
+						prop.fullText = compileFullTextDefinition(prop, prop.fullText, attributes);
+						// The target is a query handle, not record data. Keep it in Table.attributes for
+						// schema diffing and describe metadata while excluding it from generated record APIs.
+						prop.hidden = true;
+					}
 				}
 				// Project the array form into the canonical `properties` Record (JSON-Schema-shaped,
 				// keyed by attribute name). Both shapes are co-populated in this single pass;
