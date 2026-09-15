@@ -440,7 +440,12 @@ export function serialize(responseData, request, responseObject) {
 			(responseData[Symbol.iterator] || responseData[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {
-			if (responseData.mapError) {
+			if (
+				responseData.mapError &&
+				serializer.type !== 'application/x-ndjson' &&
+				serializer.type !== 'application/ndjson' &&
+				serializer.type !== 'text/event-stream'
+			) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
 				const getColumns = responseData.getColumns;
 				responseData = responseData.mapError((error) => {

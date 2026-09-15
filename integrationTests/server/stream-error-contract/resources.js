@@ -18,6 +18,7 @@ const G = (globalThis.__QA890__ ??= {
 	iterMidStream: { opened: 0, closed: 0 },
 	iterHealth: { opened: 0, closed: 0 },
 	envelopeHead: { opened: 0, closed: 0 },
+	iterMutation: { opened: 0, closed: 0 },
 });
 
 function sleep(ms) {
@@ -178,6 +179,19 @@ export class EnvelopeHead extends Resource {
 			}
 		}
 		return { status: 200, headers: {}, data: gen() };
+	}
+}
+
+export class IterMutation extends Resource {
+	static loadAsInstance = false;
+	static async *post() {
+		G.iterMutation.opened++;
+		try {
+			yield* [];
+			throw new Error('QA890-iter-mutation');
+		} finally {
+			G.iterMutation.closed++;
+		}
 	}
 }
 

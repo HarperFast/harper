@@ -557,6 +557,20 @@ suite(
 			strictEqual(cap.headers['content-encoding'], undefined);
 		});
 
+		test('ndjson: a mutating stream uses the in-band error contract instead of a retry-ambiguous 500', async () => {
+			const cap = await captureWithLifecycle('iterMutation', () =>
+				rawCapture(restBase, '/IterMutation/', 'application/x-ndjson', authHeader, 'ndjson', 'mutation', {
+					method: 'POST',
+				})
+			);
+			captures.push(cap);
+			strictEqual(cap.status, 200);
+			deepStrictEqual(decodedRecords(cap), [
+				{ $harperStreamError: { error: 'Error', message: 'QA890-iter-mutation' } },
+			]);
+			assertServerTerminated(cap);
+		});
+
 		test('iterable-rest: pre-first-yield throw -- raw byte capture', { timeout: 20_000 }, async () => {
 			const cap = await captureWithLifecycle('iterPreYield', () =>
 				rawCapture(restBase, '/IterPreYield/', 'application/json', authHeader, 'iterable-rest', 'pre-first-yield')

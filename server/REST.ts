@@ -386,7 +386,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				if (responseData?.onDone) responseData.onDone();
 				status = 304;
 				responseData = undefined;
-			} else if (request.method === 'GET') {
+			} else {
 				headers.setIfNone('ETag', etag);
 			}
 			if ((httpOptions as any).lastModified)
@@ -439,7 +439,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			if (request.method === 'HEAD') {
 				discardSerializedStream(responseObject.body);
 				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
-			} else {
+			} else if (request.method === 'GET') {
 				const startup = waitForStreamStartup(responseObject.body);
 				if (startup) await startup;
 			}
@@ -486,9 +486,19 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			headers,
 			body: undefined,
 		};
-		// Only startup-aware SSE/NDJSON streams can fail back into this catch after serialization;
-		// compression is the only response header those serializers add before their first step settles.
-		headers.delete('Content-Encoding');
+		// The error body is a different representation, so success representation and caching headers
+		// accumulated before the startup failure must not survive its serialization.
+		for (const header of [
+			'Content-Encoding',
+			'Cache-Control',
+			'ETag',
+			'Last-Modified',
+			'Content-Range',
+			'Range-Unit',
+			'Preference-Applied',
+			'Age',
+		])
+			headers.delete(header);
 		responseObject.body = serialize(problemDetail, request, responseObject);
 		return responseObject;
 	}
