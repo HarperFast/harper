@@ -241,6 +241,25 @@ describe('staged build retention', () => {
 			await fs.rm(root, { recursive: true, force: true });
 		});
 
+		it('leaves a STAGED artifact alone when its stale verdict will not clear, rather than deleting it', async () => {
+			// A filesystem fault says nothing about whether the build is retainable, so it must not be read as
+			// "not retainable" — the other branch of that decision deletes the artifact. Injected as a
+			// directory-shaped control file, the same corruption this code already reasons about elsewhere: it
+			// fails the non-recursive removal deterministically on every platform while leaving the deployment
+			// directory itself perfectly removable, which is what separates the two outcomes.
+			const root = await newRoot('stale-verdict-unclearable');
+			const deploymentDir = await plant(root, 'web', 'd-stuck', { described: true });
+			await fs.mkdir(path.join(deploymentDir, '.unsettled'));
+			await fs.writeFile(path.join(deploymentDir, '.unsettled', 'inner'), '');
+
+			const failures = await recoverInterruptedActivations(root);
+
+			assert.strictEqual(failures.size, 0, 'a cleanup fault is not an unsettled activation');
+			assert.ok(existsSync(deploymentDir), 'the certified artifact is still there');
+			assert.ok(existsSync(path.join(deploymentDir, '.unsettled')), 'and so is the verdict, for the next pass');
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
 		it('takes no lock for a component within its bound, so a held lock does not defer it', async function () {
 			this.timeout(10000);
 			env.setProperty(CONFIG_PARAMS.DEPLOYMENT_STAGINGRETENTION_MAXCOUNT, 2);

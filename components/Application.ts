@@ -2127,7 +2127,10 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				// reclaimed, on the strength of a verdict that no longer applies. Clearing the marker is the
 				// idempotent completion of the settlement that wrote it; an undescribed build stays disposable.
 				if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE))) {
-					const settled = await dormantBuildAfterClearingVerdict(deploymentDirPath, owner!);
+					// A fault clearing the marker is not a licence to delete what it is attached to. The artifact
+					// and its verdict both stay, and the next pass tries again once the filesystem recovers.
+					if (!(await clearStaleVerdict(deploymentDirPath))) return;
+					const settled = await dormantBuildAt(deploymentDirPath, owner!);
 					if (settled) {
 						logger.info?.(
 							`Cleared a stale unsettled verdict from the staged build ${basename(deploymentDirPath)} of ` +
@@ -2136,6 +2139,8 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 						catalogue(owner!, settled);
 						return;
 					}
+					// Cleared, and still not a retainable build — an incomplete or treeless staged directory. That
+					// is residue like any other, so it falls through to the removal below.
 				}
 				// Cleanup, not settlement. There was no activation here — this is most often the residue a
 				// SUCCESSFUL settlement leaves when its own sweep failed — so a sweep that fails again cannot
@@ -2391,26 +2396,22 @@ async function sweepAsideRecords(
 }
 
 /**
- * Clear a stale `.unsettled` from a described artifact and re-derive it as a dormant build, or `undefined`
- * when what is there is not a retainable build after all. Best-effort: a marker that will not clear leaves
- * the artifact where it is rather than failing the pass, because the caller's only other move is to delete
- * it.
+ * Remove a stale `.unsettled` and flush the removal, reporting whether it is gone. Separate from the verdict
+ * about what the artifact IS: a filesystem fault here says nothing about whether the build is retainable,
+ * and the caller must not read it as "not retainable" — its other branch deletes.
  */
-async function dormantBuildAfterClearingVerdict(
-	deploymentDirPath: string,
-	owner: string
-): Promise<DormantBuild | undefined> {
+async function clearStaleVerdict(deploymentDirPath: string): Promise<boolean> {
 	try {
 		await rm(join(deploymentDirPath, UNSETTLED_MARKER), { force: true });
 		await syncDirectory(deploymentDirPath);
+		return true;
 	} catch (error) {
 		logger.warn(
 			`Could not clear the stale unsettled verdict on deploy staging ${deploymentDirPath}:`,
 			errorForLog(error)
 		);
-		return undefined;
+		return false;
 	}
-	return dormantBuildAt(deploymentDirPath, owner);
 }
 
 /**
