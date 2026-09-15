@@ -164,7 +164,8 @@ export class IterHealth extends Resource {
 	}
 }
 
-// A response-like envelope exercises REST.ts's separate finalizeResponse branch.
+// This response-like envelope keeps lifecycle counters inside the generator so the HEAD test can
+// distinguish constructing the envelope from entering and closing its streaming body.
 export class EnvelopeHead extends Resource {
 	static loadAsInstance = false;
 	async get() {

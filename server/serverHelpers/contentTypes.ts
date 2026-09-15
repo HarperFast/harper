@@ -752,8 +752,14 @@ function transformIterable(iterable, transform, serializeError, eager) {
 		return step;
 	};
 	const getNext = () => {
-		const step = getRawNext();
-		if (step.then) return step.then(transformStep);
+		if (terminal) return { done: true };
+		let step;
+		try {
+			step = iterator.next();
+		} catch (error) {
+			return handleError(error);
+		}
+		if (step.then) return step.then(transformStep, handleError);
 		return transformStep(step);
 	};
 	const start = () => {
@@ -793,6 +799,7 @@ function transformIterable(iterable, transform, serializeError, eager) {
 				},
 				return(value) {
 					terminal = true;
+					started = true;
 					if (!iterator)
 						iterator = iterable[Symbol.asyncIterator]
 							? iterable[Symbol.asyncIterator]()

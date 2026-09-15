@@ -486,6 +486,8 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			headers,
 			body: undefined,
 		};
+		// Only startup-aware SSE/NDJSON streams can fail back into this catch after serialization;
+		// compression is the only response header those serializers add before their first step settles.
 		headers.delete('Content-Encoding');
 		responseObject.body = serialize(problemDetail, request, responseObject);
 		return responseObject;

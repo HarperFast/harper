@@ -214,6 +214,7 @@ SSE and NDJSON serializers eagerly take and hold their first iterator step. `RES
 
 SSE and NDJSON terminal records use `{ error: <code-or-class>, message: <message>, status?: <status> }`;
 generic JSON-array streaming retains its older `{ error: "<name>: <message>" }` element shape.
+The `error` value is the stable programmatic discriminator; `message` is diagnostic and follows the same thrown-message exposure policy as pre-commit Problem Details.
 
 Clean stream completion does not prove completeness; clients must inspect streamed records for an
 `error` field.

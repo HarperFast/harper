@@ -189,10 +189,8 @@ function rawCapture(
 	});
 }
 
-// Fix-agnostic invariant for the pre-first-yield arms: whatever the eventual status contract turns
-// out to be, the server must terminate the request itself -- never leave the client hanging until
-// its own timeout. Asserting the observed status/byte shape here would pin today's divergence
-// (F-275) into CI; the shape is logged instead, and the PR body tracks it.
+// Every stream shape must terminate the request itself rather than leaving the client hanging
+// until its timeout; the contract-specific helpers below add status and record-shape assertions.
 function assertServerTerminated(cap: RawCapture) {
 	ok(
 		!cap.socketEvents.includes('CLIENT_TIMEOUT'),
