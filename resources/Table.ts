@@ -49,6 +49,7 @@ import {
 	ServerError,
 	AccessViolation,
 	ValidationError,
+	appendErrorContext,
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -6194,25 +6195,34 @@ export function makeTable(options) {
 					}
 					resolve(resolvedEntry);
 				} catch (error) {
-					error.message += ` while resolving record ${id} for ${tableName}`;
-					if (
-						existingRecord &&
-						(((error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED' || error.code === 'EAI_AGAIN') &&
-							!context?.mustRevalidate) ||
-							(context?.staleIfError &&
-								(error.statusCode === 500 ||
-									error.statusCode === 502 ||
-									error.statusCode === 503 ||
-									error.statusCode === 504)))
-					) {
-						// these are conditions under which we can use stale data after an error
-						resolve({
-							key: id,
-							version: existingVersion,
-							value: existingRecord,
-						} as any);
-						logger.trace?.(error.message, '(returned stale record)');
-					} else reject(error);
+					// A source may reject with anything at all, so deciding how to settle is itself
+					// fallible: `message` is not assignable on every error (a DOMException from
+					// AbortSignal.timeout), and a nullish rejection makes the reads below throw.
+					// Leaving this promise unsettled hangs the caller forever, so every path here
+					// has to end in resolve() or reject().
+					try {
+						appendErrorContext(error, ` while resolving record ${id} for ${tableName}`);
+						if (
+							existingRecord &&
+							(((error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED' || error.code === 'EAI_AGAIN') &&
+								!context?.mustRevalidate) ||
+								(context?.staleIfError &&
+									(error.statusCode === 500 ||
+										error.statusCode === 502 ||
+										error.statusCode === 503 ||
+										error.statusCode === 504)))
+						) {
+							// these are conditions under which we can use stale data after an error
+							resolve({
+								key: id,
+								version: existingVersion,
+								value: existingRecord,
+							} as any);
+							logger.trace?.((error as Error)?.message, '(returned stale record)');
+						} else reject(error);
+					} catch (settlingError) {
+						reject(error ?? settlingError);
+					}
 					const resolveDuration = performance.now() - start;
 					recordAction(resolveDuration, 'cache-resolution', tableName, null, 'fail');
 					if (responseHeaders)
