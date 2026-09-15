@@ -163,24 +163,28 @@ suite(
 					`[QA-537][5] ThrowGen: status=${r.status} events=${r.events.length} terminatedBy=${r.terminatedBy} aborted=${r.aborted} errored=${r.errored?.message ?? null} elapsedMs=${r.elapsedMs}`
 				);
 
-				// #2614 turned the rejection into a terminal `harper-error` frame yielded as an ordinary
-				// stream value, so the response now ends cleanly and the pre-error prefix is no longer
-				// lossy. The throw contract itself is sse-throw-midstream.test.ts's; the wire framing is
-				// stream-error-contract.test.ts's.
 				ok(!r.aborted, `must not hit the AbortController timeout — the response never terminated. raw:\n${r.raw}`);
+				strictEqual(
+					r.status,
+					200,
+					`expected streaming to have started before the throw, got ${r.status} — a fixture that failed to mount yields no frames either. raw:\n${r.raw}`
+				);
 				strictEqual(
 					r.terminatedBy,
 					'end',
-					`the terminal error frame must be followed by a clean close, got terminatedBy=${r.terminatedBy} errored=${r.errored?.message ?? null}`
+					`expected a clean close after the terminal error frame, got terminatedBy=${r.terminatedBy} errored=${r.errored?.message ?? null}`
 				);
-				// Assert the whole ordered shape rather than a count: a named control frame is not an
-				// application event, so an unnamed or misnamed error frame — which a real EventSource
-				// listening for `harper-error` would miss — must not pass here either.
-				deepStrictEqual(parseSseBlocks(r.raw), [
-					{ data: '{"n":0}' },
-					{ data: '{"n":1}' },
-					{ event: 'harper-error', data: '{"error":"Error","message":"QA537-intentional-throw-partway"}' },
-				]);
+				// A named control frame is not an application event: an error delivered unnamed, or under
+				// another name, is invisible to an EventSource listening for `harper-error`.
+				deepStrictEqual(
+					parseSseBlocks(r.raw),
+					[
+						{ data: '{"n":0}' },
+						{ data: '{"n":1}' },
+						{ event: 'harper-error', data: '{"error":"Error","message":"QA537-intentional-throw-partway"}' },
+					],
+					`unexpected SSE frame sequence. raw:\n${r.raw}`
+				);
 				strictEqual(
 					(await uncaughtAfterSettle(logPath)) - uncaughtBefore,
 					0,

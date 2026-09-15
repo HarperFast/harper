@@ -35,8 +35,8 @@
  *     'error' event / uncaughtException + hung connection). 8930b1ef2 IS an ancestor of this SHA
  *     (2615b092b) -- so the expectation is FIXED. ThrowGen below empirically confirms that,
  *     bounded by an AbortController + timeout so a regression surfaces as a caught timeout, never
- *     an infinite hang eating the whole test run. Since #2614 the throw additionally emits a
- *     terminal `harper-error` frame before a clean close, which is what this leg now pins.
+ *     an infinite hang eating the whole test run. The throw emits a terminal `harper-error` frame
+ *     before a clean close (#2614), which is the shape this leg pins.
  *
  * After the stream cases, a liveness probe: HealthGen (a second clean SSE stream) plus Probe
  * (plain GET on a normal route, and open/close lifecycle counters) confirm the worker survived
@@ -401,7 +401,7 @@ suite(
 		// ── (b) F-133 re-characterization: generator throws mid-stream ─────────────────────────
 
 		test(
-			'b: ThrowGen (throws after 2 of 5) over SSE -- F-133 re-check: hang, fixed, or changed shape?',
+			'b: ThrowGen (throws after 2 of 5) over SSE -- F-133: pre-throw events, then a terminal harper-error frame',
 			{ timeout: 20_000 },
 			async () => {
 				const logBefore = readLogSafe(logPath);
@@ -446,10 +446,8 @@ suite(
 					200,
 					`expected streaming to have started (status 200) before the mid-stream throw, got ${r.status}. raw:\n${r.raw}`
 				);
-				// Pin the whole ordered wire shape, not just "didn't hang": the two events yielded before
-				// the throw, then #2614's terminal `harper-error` frame. A count alone would accept a
-				// duplicated {"n":0}, a frame from after the throw point, or an error delivered as an
-				// unnamed data event -- which a real EventSource listening for `harper-error` would miss.
+				// A named control frame is not an application event: an error delivered unnamed, or under
+				// another name, is invisible to an EventSource listening for `harper-error`.
 				deepStrictEqual(
 					parseSseBlocks(r.raw),
 					[
@@ -459,14 +457,12 @@ suite(
 					],
 					`unexpected SSE frame sequence. verdict=${verdict} raw:\n${r.raw}`
 				);
-				// #2614 retired the Node/uWS termination divergence this case used to pin (QA-886/F-272,
-				// where uWS's graceful end made a mid-stream failure byte-indistinguishable from success).
-				// Both transports now end cleanly and the failure is carried in-band by the frame above,
-				// so a clean close is no longer evidence of a complete result set. The byte-level
-				// authority for that is stream-error-contract.test.ts's raw-socket capture.
+				// The failure is now carried in-band by the frame above, so a clean close is no longer
+				// evidence of a complete result set -- and the Node/uWS termination divergence this case
+				// used to pin (QA-886/F-272) is gone. stream-error-contract.test.ts owns the byte level.
 				ok(
 					r.ended,
-					`the terminal error frame must be followed by a clean end on both transports, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
+					`expected a clean end after the terminal error frame on both transports, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
 				);
 			}
 		);

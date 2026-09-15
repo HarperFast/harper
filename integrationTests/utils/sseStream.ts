@@ -36,9 +36,8 @@ function parseEvents(raw: string): string[] {
 }
 
 /**
- * Group raw SSE bytes into blank-line-delimited field maps, keeping the `event:` field that
- * `parseEvents` drops — that field is the only thing separating an application data frame from a
- * named control frame such as the terminal `harper-error` (server/DESIGN.md).
+ * Blank-line-delimited field maps, keeping the `event:` field `parseEvents` drops — the only thing
+ * separating an application data frame from a named control frame such as `harper-error`.
  */
 export function parseSseBlocks(raw: string): Array<Record<string, string>> {
 	return raw
