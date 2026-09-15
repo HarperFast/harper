@@ -10,7 +10,10 @@ import * as envMgr from '../../utility/environment/environmentManager.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import * as YAML from 'yaml';
 import { logger } from '../../utility/logging/logger.ts';
-import { errorToString as harperErrorToString } from '../../utility/logging/harper_logger.ts';
+import {
+	errorToString as harperErrorToString,
+	errorForLog as harperErrorForLog,
+} from '../../utility/logging/harper_logger.ts';
 import { Blob } from '../../resources/blob.ts';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
@@ -36,7 +39,12 @@ function streamErrorRecord(error: any) {
 		if (typeof error?.message === 'string') message = error.message;
 	} catch {}
 	message ??= harperErrorToString(error);
-	return { error: name, message };
+	const record: { error: string; message: string; status?: unknown } = { error: name, message };
+	try {
+		const status = error?.statusCode ?? error?.status;
+		if (status != null) record.status = status;
+	} catch {}
+	return record;
 }
 
 const PUBLIC_ENCODE_OPTIONS = {
@@ -670,13 +678,14 @@ export function waitForStreamStartup(stream) {
 	return startup.result.then((result) => {
 		if (result.failed) {
 			startup.abort();
+			stream.destroy?.();
 			throw result.error;
 		}
 	});
 }
 
 function transformIterable(iterable, transform, serializeError, eager) {
-	const iterator = iterable[Symbol.asyncIterator] ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
+	let iterator;
 	let terminal = false;
 	let first = true;
 	let started = false;
@@ -704,7 +713,10 @@ function transformIterable(iterable, transform, serializeError, eager) {
 			const returned = iterator.return?.();
 			returned?.catch?.(() => {});
 		} catch {}
-		if (startupSettled) return { value: serializeError(error), done: false };
+		if (startupSettled) {
+			logger.warn?.('Error serializing in stream', harperErrorForLog(error));
+			return { value: serializeError(error), done: false };
+		}
 		startupResult.resolve({ failed: true, error });
 		return (await errorDecision.promise) ? { value: serializeError(error), done: false } : { done: true };
 	};
@@ -730,6 +742,7 @@ function transformIterable(iterable, transform, serializeError, eager) {
 	const start = () => {
 		if (started) return;
 		started = true;
+		iterator = iterable[Symbol.asyncIterator] ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
 		firstStep = getNext();
 		Promise.resolve(firstStep).then(() => {
 			if (!terminal) commit();
@@ -757,10 +770,10 @@ function transformIterable(iterable, transform, serializeError, eager) {
 				},
 				return(value) {
 					terminal = true;
-					return iterator.return?.(value) ?? { value, done: true };
+					return iterator?.return?.(value) ?? { value, done: true };
 				},
 				throw(error) {
-					return iterator.throw?.(error) ?? Promise.reject(error);
+					return iterator?.throw?.(error) ?? Promise.reject(error);
 				},
 			};
 		},

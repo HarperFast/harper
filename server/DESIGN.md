@@ -216,8 +216,8 @@ Problem Details, while a first item or the cutoff commits the stream. Later fail
 format-valid records (`event: error` for SSE and an error object for NDJSON). Keep the decision in
 the serializer/REST boundary so Node, uWS, Bun, compression, and injection share one contract;
 transports must not independently prefetch the iterator.
-SSE and NDJSON terminal records use `{ error: <name>, message: <message> }`; generic JSON-array
-streaming retains its older `{ error: "<name>: <message>" }` element shape.
+SSE and NDJSON terminal records use `{ error: <name>, message: <message>, status?: <status> }`;
+generic JSON-array streaming retains its older `{ error: "<name>: <message>" }` element shape.
 
 ### Deferred credential rejection (#2418)
 

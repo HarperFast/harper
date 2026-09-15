@@ -99,7 +99,7 @@ describe('contentTypes – application/x-ndjson', function () {
 
 			const readable = handler.serializeStream(source(), undefined, { method: 'GET' });
 			await assert.rejects(waitForStreamStartup(readable), /startup failed/);
-			assert.strictEqual(await streamToString(readable), '');
+			assert.strictEqual(readable.destroyed, true);
 		});
 
 		it('writes a terminal error record after the startup window', async function () {
@@ -120,7 +120,9 @@ describe('contentTypes – application/x-ndjson', function () {
 		it('writes a terminal error record after the first item', async function () {
 			async function* source() {
 				yield { seq: 'a' };
-				throw new Error('mid-stream failure');
+				const error = new Error('mid-stream failure');
+				error.statusCode = 409;
+				throw error;
 			}
 
 			const readable = handler.serializeStream(source(), undefined, { method: 'GET' });
@@ -130,18 +132,22 @@ describe('contentTypes – application/x-ndjson', function () {
 					.trim()
 					.split('\n')
 					.map((line) => JSON.parse(line)),
-				[{ seq: 'a' }, { error: 'Error', message: 'mid-stream failure' }]
+				[{ seq: 'a' }, { error: 'Error', message: 'mid-stream failure', status: 409 }]
 			);
 		});
 
 		it('does not start a generator for HEAD serialization', async function () {
 			let started = false;
-			async function* source() {
-				started = true;
-				yield { seq: 'a' };
-			}
+			const source = {
+				[Symbol.asyncIterator]() {
+					started = true;
+					return (async function* () {
+						yield { seq: 'a' };
+					})();
+				},
+			};
 
-			handler.serializeStream(source(), undefined, { method: 'HEAD' });
+			handler.serializeStream(source, undefined, { method: 'HEAD' });
 			await new Promise((resolve) => setImmediate(resolve));
 			assert.strictEqual(started, false);
 		});
@@ -254,7 +260,7 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 
 		const readable = handler.serializeStream(source(), undefined, { method: 'GET' });
 		await assert.rejects(waitForStreamStartup(readable), /startup failed/);
-		assert.strictEqual(await streamToString(readable), '');
+		assert.strictEqual(readable.destroyed, true);
 	});
 
 	it('writes a named terminal error event after the startup window', async function () {
