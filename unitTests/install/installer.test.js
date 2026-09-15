@@ -7,7 +7,7 @@ const { expect } = chai;
 const rewire = require('rewire');
 const hdb_utils = require('#src/utility/common_utils');
 const fs = require('fs-extra');
-const inquirer = require('inquirer');
+const { prompts } = require('#src/utility/interactivePrompts');
 const path = require('path');
 const hdb_info_controller = require('#src/dataLayer/hdbInfoController');
 const hdb_logger = require('#src/utility/logging/harper_logger');
@@ -152,23 +152,6 @@ describe.skip('Test installer module', () => {
 		version_stub.restore();
 	});
 
-	it('Test termsAgreement doesnt prompt if override value passed', async () => {
-		const termsAgreement = installer.__get__('termsAgreement');
-		await termsAgreement({ TC_AGREEMENT: 'no' });
-		expect(hdb_log_error_stub.called).to.be.false;
-	});
-
-	it('Test termsAgreement logs and exits if answer not yes', async () => {
-		const termsAgreement = installer.__get__('termsAgreement');
-		const inquirer_stub = sandbox.stub(inquirer, 'prompt').resolves({ TC_AGREEMENT: 'no' });
-		const process_exit_stub = sandbox.stub(process, 'exit');
-		await termsAgreement({});
-		process_exit_stub.restore();
-		inquirer_stub.restore();
-		expect(console_log_stub.called).to.be.true;
-		expect(process_exit_stub.called).to.be.true;
-	});
-
 	it('Test createBootPropertiesFile calls all the things to make file then sets env props', async () => {
 		installer.__set__('hdbRoot', 'user/hdb-test/');
 		sandbox.stub(hdb_utils, 'getHomeDir').returns('homedir/test');
@@ -259,7 +242,7 @@ describe.skip('Test installer module', () => {
 	});
 
 	it('Test installPrompts passes correct schema and override works', async () => {
-		const prompt_stub = sandbox.stub(inquirer, 'prompt');
+		const prompt_stub = sandbox.stub(prompts, 'input');
 		const installPrompts = installer.__get__('installPrompts');
 		const override = {
 			DEFAULTS_MODE: 'dev',

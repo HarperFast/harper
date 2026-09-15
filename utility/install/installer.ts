@@ -1,7 +1,7 @@
 'use strict';
 
 import * as os from 'os';
-import inquirer from 'inquirer';
+import { prompts } from '../interactivePrompts.ts';
 import * as fs from 'fs-extra';
 import PropertiesReader from 'properties-reader';
 import chalk from 'chalk';
@@ -30,8 +30,6 @@ const pSchemaToGlobal = promisify(globalSchema.setSchemaDataToGlobal);
 import * as keys from '../../security/keys.ts';
 import { resolveConfiguredPath } from '../../config/componentEnvPrepass.ts';
 
-// Removes the color formatting that was being applied to the prompt answer.
-const PROMPT_ANSWER_TRANSFORMER = (answer) => answer;
 const HDB_PROMPT_MSG = (msg) => chalk.magenta.bold(msg);
 const LINE_BREAK = os.EOL;
 const PROMPT_PREFIX = '';
@@ -253,70 +251,65 @@ function getConfigFromFile() {
 async function installPrompts(promptOverride) {
 	hdbLogger.trace('Getting install prompts and params.');
 
-	const promptsSchema = [
-		{
-			type: 'input',
-			transformer: PROMPT_ANSWER_TRANSFORMER,
-			when: displayCmdEnvVar(promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH], INSTALL_PROMPTS.DESTINATION),
-			name: hdbTerms.INSTALL_PROMPTS.ROOTPATH,
-			prefix: PROMPT_PREFIX,
+	const theme = { prefix: PROMPT_PREFIX };
+
+	if (displayCmdEnvVar(promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH], INSTALL_PROMPTS.DESTINATION)) {
+		const rootPath = await prompts.input({
+			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.DESTINATION),
 			default: DEFAULT_HDB_ROOT,
-			// Runs before validate, so the existing-install check below (and everything after it)
-			// sees the same expanded path rather than a literal, unresolved `~/...` string.
-			filter: resolveInstallDestination,
+			theme,
 			validate: async (value) => {
 				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
-				if (await fs.pathExists(path.join(value, 'system', 'hdb_user.mdb')))
-					return `'${value}' is already in use. Please enter a different path.`;
+				const resolved = resolveInstallDestination(value);
+				if (await fs.pathExists(path.join(resolved, 'system', 'hdb_user.mdb')))
+					return `'${resolved}' is already in use. Please enter a different path.`;
 				return true;
 			},
-			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.DESTINATION),
-		},
-		{
-			type: 'input',
-			transformer: PROMPT_ANSWER_TRANSFORMER,
-			when: displayCmdEnvVar(promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME], INSTALL_PROMPTS.HDB_USERNAME),
-			name: hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME,
-			prefix: PROMPT_PREFIX,
-			default: DEFAULT_ADMIN_USERNAME,
-			validate: (value) => {
-				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
-				return true;
-			},
+		});
+		promptOverride[hdbTerms.INSTALL_PROMPTS.ROOTPATH] = resolveInstallDestination(rootPath);
+	}
+
+	if (displayCmdEnvVar(promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME], INSTALL_PROMPTS.HDB_USERNAME)) {
+		promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME] = await prompts.input({
 			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.HDB_USERNAME),
-		},
-		{
-			type: 'password',
-			when: displayCmdEnvVar(promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD], INSTALL_PROMPTS.HDB_PASS),
-			name: hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD,
-			prefix: PROMPT_PREFIX,
+			default: DEFAULT_ADMIN_USERNAME,
+			theme,
 			validate: (value) => {
 				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
 				return true;
 			},
+		});
+	}
+
+	if (displayCmdEnvVar(promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD], INSTALL_PROMPTS.HDB_PASS)) {
+		promptOverride[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD] = await prompts.password({
 			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.HDB_PASS),
-		},
-		{
-			type: 'input',
-			transformer: PROMPT_ANSWER_TRANSFORMER,
-			when: displayCmdEnvVar(promptOverride[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME], INSTALL_PROMPTS.NODE_HOSTNAME),
-			name: hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME,
-			prefix: PROMPT_PREFIX,
+			theme,
+			validate: (value) => {
+				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
+				return true;
+			},
+		});
+	}
+
+	if (displayCmdEnvVar(promptOverride[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME], INSTALL_PROMPTS.NODE_HOSTNAME)) {
+		promptOverride[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] = await prompts.input({
+			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.NODE_HOSTNAME),
 			default: DEFAULT_NODE_HOSTNAME,
+			theme,
 			// node.hostname is OPTIONAL — an unset value is valid and preferred when the operator
 			// hasn't got a stable name to pin (it falls back to replication.hostname / cert CN /
 			// listening port). Accept empty/unset rather than forcing a value, which is what used
 			// to cement 'localhost' (harper-pro#351).
 			validate: () => true,
-			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.NODE_HOSTNAME),
-		},
-		{
-			type: 'input',
-			transformer: PROMPT_ANSWER_TRANSFORMER,
-			when: displayCmdEnvVar(promptOverride[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE], INSTALL_PROMPTS.DEFAULTS_MODE),
-			name: hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE,
-			prefix: PROMPT_PREFIX,
+		});
+	}
+
+	if (displayCmdEnvVar(promptOverride[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE], INSTALL_PROMPTS.DEFAULTS_MODE)) {
+		promptOverride[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE] = await prompts.input({
+			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.DEFAULTS_MODE),
 			default: DEFAULT_CONFIG_MODE,
+			theme,
 			validate: (value) => {
 				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
 				if (value !== 'dev' && value !== 'prod') {
@@ -324,21 +317,7 @@ async function installPrompts(promptOverride) {
 				}
 				return true;
 			},
-			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.DEFAULTS_MODE),
-		},
-	];
-
-	const answers = await inquirer.prompt(promptsSchema);
-	// If there are no answers all the prompts have been overridden.
-	if (Object.keys(answers).length === 0) {
-		return promptOverride;
-	}
-
-	// Loop through the answers and if they dont exist in the promptOverride obj add them.
-	for (const param in answers) {
-		if (promptOverride[param] === undefined) {
-			promptOverride[param] = answers[param];
-		}
+		});
 	}
 
 	return promptOverride;

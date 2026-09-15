@@ -6,7 +6,15 @@ const path = require('node:path');
 const os = require('node:os');
 const { login } = require('#src/bin/login');
 const { normalizeTarget } = require('#src/bin/cliCredentials');
-const inquirer = require('inquirer');
+const { prompts } = require('#src/utility/interactivePrompts');
+
+function promptFieldName(message) {
+	if (message === 'Cluster Target URL:') return 'target';
+	if (message.includes('Username')) return 'username';
+	if (message === 'Cluster Password:') return 'password';
+	if (message.includes('Mint a CI refresh token')) return 'confirmed';
+	return undefined;
+}
 
 describe('Login', () => {
 	// login() persists via saveCredentials() to `${getHomeDir()}/.harperdb/credentials.json`. Isolate
@@ -95,19 +103,25 @@ describe('Login', () => {
 	});
 
 	describe('function arguments', () => {
-		let originalPrompt;
+		let originalInput;
+		let originalPassword;
 		let promptCalls;
 
 		beforeEach(() => {
 			promptCalls = [];
 			process.env.CLI_TARGET_PASSWORD = 'mockpassword';
-			originalPrompt = inquirer.prompt;
-			inquirer.prompt = async (questions) => {
-				const q = Array.isArray(questions) ? questions[0] : questions;
-				promptCalls.push(q);
-				if (q.name === 'username') return { username: 'mockuser' };
-				if (q.name === 'target') return { target: 'mock-target' };
-				return { [q.name]: 'mock-response' };
+			originalInput = prompts.input;
+			originalPassword = prompts.password;
+			prompts.input = async (config) => {
+				const name = promptFieldName(config.message);
+				promptCalls.push({ name, ...config });
+				if (name === 'username') return 'mockuser';
+				if (name === 'target') return 'mock-target';
+				return 'mock-response';
+			};
+			prompts.password = async (config) => {
+				promptCalls.push({ name: promptFieldName(config.message), ...config });
+				return 'mock-response';
 			};
 
 			this.originalExit = process.exit;
@@ -118,7 +132,8 @@ describe('Login', () => {
 
 		afterEach(() => {
 			delete process.env.CLI_TARGET_PASSWORD;
-			inquirer.prompt = originalPrompt;
+			prompts.input = originalInput;
+			prompts.password = originalPassword;
 			process.exit = this.originalExit;
 		});
 
@@ -229,7 +244,8 @@ describe('Login', () => {
 		let originalCwd;
 		let originalExit;
 		let originalStdoutWrite;
-		let originalPrompt;
+		let originalInput;
+		let originalPassword;
 		let originalCliOperations;
 		let loginRequest;
 
@@ -243,11 +259,10 @@ describe('Login', () => {
 			};
 			originalStdoutWrite = process.stdout.write;
 			process.stdout.write = () => {};
-			originalPrompt = inquirer.prompt;
-			inquirer.prompt = async (questions) => {
-				const q = Array.isArray(questions) ? questions[0] : questions;
-				return { [q.name]: `prompted-${q.name}` };
-			};
+			originalInput = prompts.input;
+			originalPassword = prompts.password;
+			prompts.input = async (config) => `prompted-${promptFieldName(config.message)}`;
+			prompts.password = async (config) => `prompted-${promptFieldName(config.message)}`;
 			originalCliOperations = cliOperationsModule.cliOperations;
 			cliOperationsModule.cliOperations = async (req) => {
 				loginRequest = req;
@@ -259,7 +274,8 @@ describe('Login', () => {
 			process.cwd = originalCwd;
 			process.exit = originalExit;
 			process.stdout.write = originalStdoutWrite;
-			inquirer.prompt = originalPrompt;
+			prompts.input = originalInput;
+			prompts.password = originalPassword;
 			cliOperationsModule.cliOperations = originalCliOperations;
 			fs.rmSync(testDir, { recursive: true, force: true });
 		});
@@ -326,7 +342,9 @@ describe('Login', () => {
 		let originalCwd;
 		let originalHome;
 		let originalExit;
-		let originalPrompt;
+		let originalInput;
+		let originalPassword;
+		let originalConfirm;
 		let originalConsoleLog;
 		let originalStdoutWrite;
 		let originalStderrWrite;
@@ -350,11 +368,12 @@ describe('Login', () => {
 				if (code !== 0) throw new Error('process.exit:' + code);
 			};
 
-			originalPrompt = inquirer.prompt;
-			inquirer.prompt = async (questions) => {
-				const q = Array.isArray(questions) ? questions[0] : questions;
-				return { [q.name]: 'mock-response' };
-			};
+			originalInput = prompts.input;
+			originalPassword = prompts.password;
+			originalConfirm = prompts.confirm;
+			prompts.input = async () => 'mock-response';
+			prompts.password = async () => 'mock-response';
+			prompts.confirm = async () => true;
 
 			originalCliOperations = cliOperationsModule.cliOperations;
 			cliOperationsModule.cliOperations = async (req) => {
@@ -370,7 +389,9 @@ describe('Login', () => {
 			if (originalHome === undefined) delete process.env.HOME;
 			else process.env.HOME = originalHome;
 			process.exit = originalExit;
-			inquirer.prompt = originalPrompt;
+			prompts.input = originalInput;
+			prompts.password = originalPassword;
+			prompts.confirm = originalConfirm;
 			cliOperationsModule.cliOperations = originalCliOperations;
 			fs.rmSync(testDir, { recursive: true, force: true });
 		});
@@ -506,29 +527,72 @@ describe('Login', () => {
 			assert.ok(!stderr.join('').includes('One refresh token per user'), stderr.join(''));
 		});
 
-		// The CLI cannot verify that a user is dedicated to CI, but it can refuse to rotate that
-		// user's only refresh token without someone saying yes.
-		describe('dedicated-CI-user confirmation (interactive)', () => {
-			let originalCreatePromptModule;
-			let confirmAnswer;
-			let confirmMessage;
+		describe('prompt output stream in --for-ci mode', () => {
+			let promptCtxCalls;
+			let originalInputInner;
+			let originalPasswordInner;
 
 			beforeEach(() => {
-				process.stdin.isTTY = true;
-				confirmMessage = undefined;
-				originalCreatePromptModule = inquirer.createPromptModule;
-				inquirer.createPromptModule = () => async (questions) => {
-					const q = Array.isArray(questions) ? questions[0] : questions;
-					if (q.type === 'confirm') {
-						confirmMessage = q.message;
-						return { [q.name]: confirmAnswer };
-					}
-					return { [q.name]: 'mock-response' };
+				for (const name of [
+					'CLI_TARGET',
+					'HARPER_CLI_TARGET',
+					'CLI_TARGET_USERNAME',
+					'CLI_TARGET_PASSWORD',
+					'HARPER_CLI_USERNAME',
+					'HARPER_CLI_PASSWORD',
+				]) {
+					delete process.env[name];
+				}
+				promptCtxCalls = [];
+				originalInputInner = prompts.input;
+				originalPasswordInner = prompts.password;
+				prompts.input = async (config, ctx) => {
+					promptCtxCalls.push(ctx);
+					return config.message.includes('Target') ? 'https://example.com' : 'ci-deploy';
+				};
+				prompts.password = async (config, ctx) => {
+					promptCtxCalls.push(ctx);
+					return 'secret';
 				};
 			});
 
 			afterEach(() => {
-				inquirer.createPromptModule = originalCreatePromptModule;
+				prompts.input = originalInputInner;
+				prompts.password = originalPasswordInner;
+			});
+
+			it('passes { output: process.stderr } to every prompt, so the credential pipe stays clean', async () => {
+				await captureLogin(undefined, undefined, { forCi: true });
+
+				assert.strictEqual(promptCtxCalls.length, 3, 'expected target, username, and password prompts to fire');
+				for (const ctx of promptCtxCalls) {
+					assert.deepStrictEqual(ctx, { output: process.stderr });
+				}
+			});
+		});
+
+		// The CLI cannot verify that a user is dedicated to CI, but it can refuse to rotate that
+		// user's only refresh token without someone saying yes.
+		describe('dedicated-CI-user confirmation (interactive)', () => {
+			let originalConfirmInner;
+			let confirmAnswer;
+			let confirmMessage;
+			let confirmCtx;
+
+			beforeEach(() => {
+				process.stdin.isTTY = true;
+				confirmMessage = undefined;
+				confirmCtx = undefined;
+				originalConfirmInner = prompts.confirm;
+				prompts.confirm = async (config, ctx) => {
+					confirmMessage = config.message;
+					confirmCtx = ctx;
+					return confirmAnswer;
+				};
+			});
+
+			afterEach(() => {
+				prompts.confirm = originalConfirmInner;
 			});
 
 			it('names the user and proceeds when confirmed', async () => {
@@ -537,6 +601,7 @@ describe('Login', () => {
 
 				assert.ok(confirmMessage.includes("'ci-deploy'"), confirmMessage);
 				assert.ok(confirmMessage.includes('revokes any refresh token it already holds'), confirmMessage);
+				assert.deepStrictEqual(confirmCtx, { output: process.stderr });
 				assert.ok(stdout.join('').includes('HARPER_CLI_REFRESH_TOKEN=ref-tok'), stdout.join(''));
 			});
 
