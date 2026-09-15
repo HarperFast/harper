@@ -249,4 +249,29 @@ export function isHDBError(e: any) {
 	return e.__proto__.constructor.name === HdbError.name;
 }
 
+/**
+ * Append context to an error's message, tolerating errors whose `message` cannot be assigned.
+ *
+ * A `DOMException` - what `fetch` rejects with when an `AbortSignal.timeout` fires - inherits
+ * `message` as a getter-only accessor, so a plain assignment throws under strict mode. Callers use
+ * this where losing the context is acceptable but throwing from a catch block is not.
+ */
+export function appendErrorContext(error: unknown, context: string): void {
+	if (!(error instanceof Error) && typeof (error as any)?.message !== 'string') return;
+	const annotated = `${(error as Error).message}${context}`;
+	try {
+		(error as Error).message = annotated;
+	} catch {
+		try {
+			Object.defineProperty(error, 'message', {
+				value: annotated,
+				writable: true,
+				configurable: true,
+			});
+		} catch {
+			/* frozen or otherwise unwritable - the original message still propagates */
+		}
+	}
+}
+
 export { hdbErrors };

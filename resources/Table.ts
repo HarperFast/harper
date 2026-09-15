@@ -65,6 +65,7 @@ import {
 	ValidationError,
 	UpdateAttributesLockTimeoutError,
 	LockUnavailableError,
+	appendErrorContext,
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
@@ -7497,7 +7498,11 @@ export function makeTable(options) {
 					}
 					resolve(resolvedEntry);
 				} catch (error) {
-					error.message += ` while resolving record ${id} for ${tableName}`;
+					// Annotation must not throw: every exit from this block runs through the settle
+					// below, and a source is free to reject with an error whose `message` cannot be
+					// assigned (a DOMException from AbortSignal.timeout), which would otherwise leave
+					// this promise pending forever.
+					appendErrorContext(error, ` while resolving record ${id} for ${tableName}`);
 					if (
 						existingRecord &&
 						(((error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED' || error.code === 'EAI_AGAIN') &&
