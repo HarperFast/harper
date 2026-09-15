@@ -96,6 +96,14 @@ export interface DerivedIndexBackendHost {
 	getReadiness(): DerivedIndexReadiness;
 }
 
+/** A transient backend-state read failure that should release ownership and retry without rebuilding. */
+export class DerivedIndexBackendRetryError extends Error {
+	constructor(message: string, cause?: unknown) {
+		super(message, cause === undefined ? undefined : { cause });
+		this.name = 'DerivedIndexBackendRetryError';
+	}
+}
+
 /**
  * A backend queues expensive work and publishes durability later: `deliver()` may only enqueue, a
  * barrier completes asynchronously, and the durable cursor trails delivery. Work that survives a
@@ -916,6 +924,13 @@ class DerivedIndexRunner {
 			this.#resetFromDurableCursor();
 			if (this.#owned && !this.#rebuilding) this.#drain();
 		} catch (error) {
+			if (error instanceof DerivedIndexBackendRetryError) {
+				logger.warn?.(`Derived index '${this.id}' could not inspect backend state; retrying`, error);
+				this.status = { state: 'idle' };
+				this.#release();
+				this.#armLockRetry(this.#options.lockRetryMilliseconds);
+				return;
+			}
 			this.#fail('failed to initialize the runner', error);
 		}
 	}

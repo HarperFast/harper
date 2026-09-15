@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { loggerWithTag } from '../utility/logging/logger.ts';
 import {
 	FullTextDerivedIndexBackend,
 	type FullTextDerivedIndexBackendOptions,
@@ -13,6 +14,8 @@ import {
 	type NativeFullTextModule,
 	validateFullTextNativeBinding,
 } from './fullTextNativeBinding.ts';
+
+const logger = loggerWithTag('fulltext-derived-index');
 
 export type NativeFullTextDerivedIndexLifecycleOptions = NativeFullTextIndexConfiguration & {
 	storePath: string;
@@ -197,7 +200,5 @@ function validateNativeConfiguration(options: NativeFullTextDerivedIndexLifecycl
 }
 
 function logWarning(message: string, error: unknown): void {
-	void import('../utility/logging/logger.ts')
-		.then(({ loggerWithTag }) => loggerWithTag('fulltext-derived-index').warn?.(message, error))
-		.catch(() => undefined);
+	logger.warn?.(message, error);
 }

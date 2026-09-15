@@ -155,7 +155,10 @@ describe('FullTextDerivedIndexBackend', () => {
 			return inspect.call(this);
 		};
 		const { backend } = makeBackend(source);
-		assert.throws(() => backend.getDurableCursor(), /temporary read failure/);
+		assert.throws(
+			() => backend.getDurableCursor(),
+			(error) => error.name === 'DerivedIndexBackendRetryError' && /temporary read failure/.test(error.cause?.message)
+		);
 		assert.strictEqual(backend.getDurableCursor(), undefined);
 		assert.strictEqual(source.inspectCalls, 2);
 	});
@@ -313,6 +316,23 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(engine.closes.length, 3);
 	});
 
+	it('does not reinstall a writer closed while its epoch was revoked', async () => {
+		let releaseClose;
+		const engine = new FakeEngine();
+		engine.applyError = new Error('apply failed');
+		engine.closeWait = new Promise((resolve) => (releaseClose = resolve));
+		const { backend, setEpoch } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })]));
+		await waitFor(() => engine.closes.length === 1);
+		setEpoch(2n);
+		releaseClose();
+		await waitFor(() => changes.includes('failed'));
+		await backend.shutdown(1n);
+		assert.strictEqual(engine.closes.length, 1);
+	});
+
 	it('retains a mismatched lazy writer when rollback close fails', async () => {
 		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(15)));
 		engine.closeError = new Error('writer still active');
@@ -376,13 +396,29 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.deliver(batch(1n, [], cursor(20)));
 		await backend.shutdown(1n);
 		assert.deepStrictEqual(first.closes, [{ mode: 'require-clean' }]);
+		source.inspection = { state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(20)) };
 		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
+		assert.strictEqual(source.inspectCalls, 2);
 		setEpoch(2n);
 		assert.strictEqual(backend.deliver(batch(2n, [], cursor(30))), DERIVED_INDEX_ACCEPTED);
 		backend.flush();
 		await waitFor(() => second.publications.length === 1);
 		assert.strictEqual(source.openCalls, 2);
 		await backend.shutdown(2n);
+	});
+
+	it('keeps reset state cursorless when the owner epoch is revoked after reset', async () => {
+		const source = lifecycle({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) });
+		const { backend, setEpoch } = makeBackend(source);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(10).logs);
+		setEpoch(2n);
+		source.reset = async function () {
+			this.resetCalls++;
+			setEpoch(3n);
+		};
+		await assert.rejects(backend.reset(2n), /owner epoch was revoked/);
+		assert.strictEqual(backend.getDurableCursor(), undefined);
+		assert.strictEqual(source.inspectCalls, 1);
 	});
 
 	it('rejects reset while shutdown is still closing the writer', async () => {
