@@ -1,6 +1,10 @@
 'use strict';
 
 const assert = require('node:assert');
+const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { prompts, rawPromptsForTesting, promptYesNo } = require('#src/utility/interactivePrompts');
 
 describe('interactivePrompts — Ctrl-C / ExitPromptError handling', () => {
@@ -149,41 +153,79 @@ describe('promptYesNo', () => {
 	});
 });
 
+// A `registerHooks` call made after this file's own top-level `require('#src/utility/interactivePrompts')`
+// above can only observe resolutions from that point on — it cannot prove the seam's module
+// evaluation itself resolved nothing, since that already happened before the hook existed. A fresh
+// child process with the hook registered before the very first `require` closes that gap.
+const LAZY_PROBE_SCRIPT = `
+'use strict';
+const assert = require('node:assert');
+const { registerHooks } = require('node:module');
+const { PassThrough } = require('node:stream');
+
+const seamPath = process.argv[2];
+const resolved = [];
+const hook = registerHooks({
+	resolve(specifier, context, nextResolve) {
+		resolved.push(specifier);
+		return nextResolve(specifier, context);
+	},
+});
+const result = { ok: false, steps: {} };
+
+(async () => {
+	const seam = require(seamPath);
+
+	result.steps.zeroAtLoad = resolved.filter((s) => s.startsWith('@inquirer'));
+	assert.deepStrictEqual(result.steps.zeroAtLoad, [], 'requiring the seam must not resolve any @inquirer package');
+
+	const fakeOutput = new PassThrough();
+	fakeOutput.on('data', () => {});
+	const controller = new AbortController();
+	controller.abort();
+	await seam.rawPromptsForTesting
+		.input({ message: 'probe' }, { input: new PassThrough(), output: fakeOutput, signal: controller.signal })
+		.catch(() => {});
+
+	result.steps.afterCall = resolved.filter((s) => s.startsWith('@inquirer'));
+	assert.ok(
+		result.steps.afterCall.includes('@inquirer/input'),
+		'invoking the real input prompt must trigger its dynamic import'
+	);
+
+	result.ok = true;
+	process.stdout.write(JSON.stringify(result));
+	hook.deregister();
+	process.exit(0);
+})().catch((error) => {
+	result.error = error.message;
+	process.stdout.write(JSON.stringify(result));
+	hook.deregister();
+	process.exit(1);
+});
+`;
+
 describe('lazy loading', () => {
-	it('resolves no @inquirer package just from the seam being loaded, only on a real (unstubbed) call', async () => {
-		const { registerHooks } = require('node:module');
-		const { PassThrough } = require('node:stream');
-		const resolved = [];
-		const hook = registerHooks({
-			resolve(specifier, context, nextResolve) {
-				resolved.push(specifier);
-				return nextResolve(specifier, context);
-			},
-		});
+	it('resolves no @inquirer package from requiring the compiled seam; only a real (unstubbed) call resolves one — verified in a fresh child process', () => {
+		const seamPath = path.resolve(__dirname, '../../dist/utility/interactivePrompts.js');
+		assert.ok(fs.existsSync(seamPath), `${seamPath} does not exist — run \`npm run build\` first`);
+
+		const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'interactive-prompts-lazy-probe-'));
+		const scriptPath = path.join(probeDir, 'probe.js');
+		fs.writeFileSync(scriptPath, LAZY_PROBE_SCRIPT);
+
+		let output;
 		try {
-			// `prompts`/`rawPromptsForTesting` above were already required when this file (and every
-			// other file in this run) loaded — so nothing has resolved an @inquirer package by this
-			// point proves the seam's own module evaluation never touches them.
-			assert.deepStrictEqual(
-				resolved.filter((s) => s.startsWith('@inquirer')),
-				[],
-				'the seam must not have resolved any @inquirer package before a prompt is actually invoked'
-			);
-
-			// Fake streams + a pre-aborted signal make @inquirer/core reject immediately, without
-			// touching this process's real stdin/TTY, while still exercising the real (unstubbed)
-			// lazy loader underneath `rawPromptsForTesting`.
-			const fakeOutput = new PassThrough();
-			fakeOutput.on('data', () => {});
-			const controller = new AbortController();
-			controller.abort();
-			await rawPromptsForTesting
-				.input({ message: 'probe' }, { input: new PassThrough(), output: fakeOutput, signal: controller.signal })
-				.catch(() => {});
-
-			assert.ok(resolved.includes('@inquirer/input'), 'invoking the real input prompt must trigger its dynamic import');
+			output = execFileSync(process.execPath, [scriptPath, seamPath], { encoding: 'utf8' });
+		} catch (error) {
+			assert.fail(`child probe failed: ${error.stdout || error.message}\n${error.stderr || ''}`);
 		} finally {
-			hook.deregister();
+			fs.rmSync(probeDir, { recursive: true, force: true });
 		}
+
+		const result = JSON.parse(output);
+		assert.strictEqual(result.ok, true, result.error);
+		assert.deepStrictEqual(result.steps.zeroAtLoad, []);
+		assert.ok(result.steps.afterCall.includes('@inquirer/input'));
 	});
 });
