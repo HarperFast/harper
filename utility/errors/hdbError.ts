@@ -196,20 +196,21 @@ export function isHDBError(e: any) {
  * this where losing the context is acceptable but throwing from a catch block is not.
  */
 export function appendErrorContext(error: unknown, context: string): void {
-	if (!(error instanceof Error) && typeof (error as any)?.message !== 'string') return;
-	const annotated = `${(error as Error).message}${context}`;
 	try {
-		(error as Error).message = annotated;
-	} catch {
+		if (typeof (error as any)?.message !== 'string') return;
+		const annotated = `${(error as Error).message}${context}`;
 		try {
-			Object.defineProperty(error, 'message', {
+			(error as Error).message = annotated;
+		} catch {
+			// A getter-only `message` (DOMException) takes an own property instead.
+			Object.defineProperty(error as object, 'message', {
 				value: annotated,
 				writable: true,
 				configurable: true,
 			});
-		} catch {
-			/* frozen or otherwise unwritable - the original message still propagates */
 		}
+	} catch {
+		/* frozen, or a throwing accessor - the original message still propagates */
 	}
 }
 
