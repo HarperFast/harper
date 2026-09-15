@@ -254,9 +254,11 @@ describe('staged build retention', () => {
 
 			const failures = await recoverInterruptedActivations(root);
 
-			assert.strictEqual(failures.size, 0, 'a cleanup fault is not an unsettled activation');
 			assert.ok(existsSync(deploymentDir), 'the certified artifact is still there');
 			assert.ok(existsSync(path.join(deploymentDir, '.unsettled')), 'and so is the verdict, for the next pass');
+			// Every worker fails the component closed on that surviving marker, so main saying nothing is the
+			// split where main serves what every worker refuses.
+			assert.deepStrictEqual([...failures.keys()], ['web'], 'main reaches the same verdict the workers will');
 			await fs.rm(root, { recursive: true, force: true });
 		});
 

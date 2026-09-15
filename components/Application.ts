@@ -2127,9 +2127,17 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 				// reclaimed, on the strength of a verdict that no longer applies. Clearing the marker is the
 				// idempotent completion of the settlement that wrote it; an undescribed build stays disposable.
 				if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE))) {
-					// A fault clearing the marker is not a licence to delete what it is attached to. The artifact
-					// and its verdict both stay, and the next pass tries again once the filesystem recovers.
-					if (!(await clearStaleVerdict(deploymentDirPath))) return;
+					// A fault clearing the marker is not a licence to delete what it is attached to — and not a
+					// licence to say nothing either. The marker survives, every worker fails the component closed
+					// on it, and main reporting success is the split where main serves what every worker refuses.
+					// Failing the component brings main to the workers' verdict instead, the rule the settled tail
+					// follows, and leaves the artifact for the next pass to clear.
+					try {
+						await clearUnsettledVerdict(deploymentDirPath, owner!);
+					} catch (error) {
+						activationToFail = owner;
+						throw error;
+					}
 					const settled = await dormantBuildAt(deploymentDirPath, owner!);
 					if (settled) {
 						logger.info?.(
@@ -2396,25 +2404,6 @@ async function sweepAsideRecords(
 }
 
 /**
- * Remove a stale `.unsettled` and flush the removal, reporting whether it is gone. Separate from the verdict
- * about what the artifact IS: a filesystem fault here says nothing about whether the build is retainable,
- * and the caller must not read it as "not retainable" — its other branch deletes.
- */
-async function clearStaleVerdict(deploymentDirPath: string): Promise<boolean> {
-	try {
-		await rm(join(deploymentDirPath, UNSETTLED_MARKER), { force: true });
-		await syncDirectory(deploymentDirPath);
-		return true;
-	} catch (error) {
-		logger.warn(
-			`Could not clear the stale unsettled verdict on deploy staging ${deploymentDirPath}:`,
-			errorForLog(error)
-		);
-		return false;
-	}
-}
-
-/**
  * Clear an earlier failed recovery's verdict once this settlement has decided. Treated as CORRECTNESS, not
  * cleanup: main would report the component settled and load it while every worker read the stale marker and
  * failed it closed, so a failure here throws and lets main reach the same verdict. The journal outlives it
@@ -2423,6 +2412,9 @@ async function clearStaleVerdict(deploymentDirPath: string): Promise<boolean> {
 async function clearUnsettledVerdict(deploymentDirPath: string, componentName: string): Promise<void> {
 	try {
 		await rm(join(deploymentDirPath, UNSETTLED_MARKER), { force: true });
+		// Flushed here, not with whatever follows: the journal's removal must never be the one that survives
+		// a crash alone, or the verdict outlives the only thing that would settle it again.
+		await syncDirectory(deploymentDirPath);
 	} catch (error) {
 		throw new Error(
 			`Settled the interrupted activation of ${componentName} but could not clear its unsettled ` +
@@ -2543,11 +2535,11 @@ async function settleInterruptedActivation(
 			// about both, because it removes the whole directory afterwards. This one keeps it, so the order
 			// the two unlinks REACH STORAGE decides whether the artifact survives: `.unsettled` with no
 			// journal is a verdict nothing will ever settle and the next retention pass deletes the build on.
+			// Its flush is the barrier between the two unlinks: skipping it would let the journal's removal
+			// persist alone, leaving a verdict nothing will settle again. Throwing is safe here and leaves the
+			// journal, so the next start settles again. Windows cannot fsync a directory, which is why the
+			// residue pass also refuses to read this state as disposable — see DESIGN.md.
 			await clearUnsettledVerdict(deploymentDirPath, journal.component);
-			// The barrier between them. Throwing here is safe and leaves the journal, so the next start
-			// settles again; skipping it would let the journal's removal persist alone. Windows cannot fsync a
-			// directory, so the hazard stands there — see DESIGN.md.
-			await syncDirectory(deploymentDirPath);
 			await rm(journalPath, { force: true });
 			// Nothing may throw past the journal removal, the rule the settled tail follows: the caller
 			// records a failure by writing `.unsettled`, which is the state this branch exists to avoid. An
