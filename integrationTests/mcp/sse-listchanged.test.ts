@@ -20,6 +20,7 @@
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual } from 'node:assert';
 import { resolve } from 'node:path';
+import { Agent, request as httpRequest } from 'node:http';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 
@@ -112,6 +113,65 @@ async function mcpCall(
 		body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
 	});
 	return res.json();
+}
+
+async function requestWithAgent(
+	baseUrl: string,
+	agent: Agent,
+	path: string,
+	options: { method?: string; headers?: Record<string, string>; body?: string; localPort?: number } = {}
+): Promise<{ status: number; body: string }> {
+	return new Promise((resolveRequest, reject) => {
+		const request = httpRequest(
+			new URL(path, baseUrl),
+			{ method: options.method ?? 'GET', headers: options.headers, agent, localPort: options.localPort },
+			(response) => {
+				const chunks: Buffer[] = [];
+				response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+				response.on('end', () =>
+					resolveRequest({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString() })
+				);
+			}
+		);
+		request.on('error', reject);
+		if (options.body) request.end(options.body);
+		else request.end();
+	});
+}
+
+async function workerIdentity(baseUrl: string, auth: string, agent: Agent, localPort: number): Promise<number> {
+	const response = await requestWithAgent(baseUrl, agent, '/WorkerIdentity', {
+		headers: { authorization: auth },
+		localPort,
+	});
+	strictEqual(response.status, 200, `WorkerIdentity failed: ${response.status} ${response.body}`);
+	return JSON.parse(response.body).threadId;
+}
+
+async function mcpCallWithAgent(
+	baseUrl: string,
+	auth: string,
+	agent: Agent,
+	session: { sessionId: string; protocolVersion: string },
+	method: string,
+	params: Record<string, unknown>,
+	id: number,
+	localPort: number
+): Promise<any> {
+	const response = await requestWithAgent(baseUrl, agent, '/mcp', {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json',
+			'accept': 'application/json, text/event-stream',
+			'authorization': auth,
+			'mcp-session-id': session.sessionId,
+			'mcp-protocol-version': session.protocolVersion,
+		},
+		body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+		localPort,
+	});
+	strictEqual(response.status, 200, `MCP ${method} failed: ${response.status} ${response.body}`);
+	return JSON.parse(response.body);
 }
 
 /** Upsert a WorkItem record by id through the application REST API. */
@@ -223,10 +283,102 @@ async function openSse(
 	};
 }
 
+/** Open SSE on the sole socket in `agent`, pinning the stream to that socket's worker. */
+async function openSseWithAgent(
+	baseUrl: string,
+	auth: string,
+	agent: Agent,
+	session: { sessionId: string; protocolVersion: string },
+	localPort: number,
+	headerTimeoutMs = 2500
+): Promise<{
+	status: number;
+	next: (predicate: (msg: any) => boolean, timeoutMs: number) => Promise<any | undefined>;
+	close: () => void;
+}> {
+	let request;
+	const response = (await Promise.race([
+		new Promise((resolveResponse, reject) => {
+			request = httpRequest(
+				new URL('/mcp', baseUrl),
+				{
+					method: 'GET',
+					agent,
+					localPort,
+					headers: {
+						'accept': 'text/event-stream',
+						'authorization': auth,
+						'mcp-session-id': session.sessionId,
+						'mcp-protocol-version': session.protocolVersion,
+					},
+				},
+				resolveResponse
+			);
+			request.on('error', reject);
+			request.end();
+		}),
+		new Promise((_, reject) =>
+			setTimeout(() => reject(new Error('pinned SSE headers never flushed (hung)')), headerTimeoutMs)
+		),
+	])) as import('node:http').IncomingMessage;
+
+	let buffer = '';
+	const parsed: any[] = [];
+	const waiters: Array<{ predicate: (message: any) => boolean; resolve: (message: any) => void }> = [];
+	response.on('data', (chunk) => {
+		buffer += chunk.toString();
+		let index;
+		while ((index = buffer.indexOf('\n\n')) !== -1) {
+			const frame = buffer.slice(0, index);
+			buffer = buffer.slice(index + 2);
+			const dataLine = frame.split('\n').find((line) => line.startsWith('data:'));
+			if (!dataLine) continue;
+			let message;
+			try {
+				message = JSON.parse(dataLine.slice(5).trim());
+			} catch {
+				continue;
+			}
+			parsed.push(message);
+			for (let i = waiters.length - 1; i >= 0; i--) {
+				if (waiters[i].predicate(message)) {
+					waiters[i].resolve(message);
+					waiters.splice(i, 1);
+				}
+			}
+		}
+	});
+
+	return {
+		status: response.statusCode ?? 0,
+		next(predicate, timeoutMs) {
+			const existing = parsed.find(predicate);
+			if (existing) return Promise.resolve(existing);
+			return new Promise((resolveNext) => {
+				const timer = setTimeout(() => resolveNext(undefined), timeoutMs);
+				waiters.push({
+					predicate,
+					resolve: (message) => {
+						clearTimeout(timer);
+						resolveNext(message);
+					},
+				});
+			});
+		},
+		close() {
+			response.destroy();
+			request?.destroy();
+		},
+	};
+}
+
 suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => {
 	before(async () => {
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-			config: { mcp: { operations: { mountPath: '/mcp' }, application: { mountPath: '/mcp' } } },
+			config: {
+				threads: { count: 4 },
+				mcp: { operations: { mountPath: '/mcp' }, application: { mountPath: '/mcp' } },
+			},
 			env: {},
 		});
 	});
@@ -316,6 +468,89 @@ suite('MCP v1 SSE channel + list_changed delivery', (ctx: ContextWithHarper) => 
 			strictEqual(evt.params.uri, uri, 'notification carries the subscribed collection URI');
 		} finally {
 			sse.close();
+		}
+	});
+
+	test('N5: resource subscription routes from a sibling POST worker to the GET-SSE owner', async (t) => {
+		if (process.platform === 'win32' || process.env.HARPER_RUNTIME === 'bun') {
+			t.skip(
+				process.platform === 'win32'
+					? 'Harper forces one HTTP worker on Windows'
+					: 'Bun assigns pinned socket probes to one HTTP worker; Node CI covers cross-worker routing'
+			);
+			return;
+		}
+		const auth = adminAuth(ctx);
+		const session = await initialize(ctx.harper.httpURL, auth);
+		const firstLocalPort = 20000 + (process.pid % 9000);
+		let getAgent;
+		let getThreadId;
+		let getLocalPort;
+		for (let attempt = 0; attempt < 25; attempt++) {
+			const candidateAgent = new Agent({ keepAlive: true, maxSockets: 1 });
+			try {
+				getLocalPort = firstLocalPort + attempt;
+				getThreadId = await workerIdentity(ctx.harper.httpURL, auth, candidateAgent, getLocalPort);
+				getAgent = candidateAgent;
+				break;
+			} catch (error) {
+				candidateAgent.destroy();
+				if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+			}
+		}
+		ok(getAgent && getThreadId !== undefined && getLocalPort !== undefined, 'found a free pinned GET socket');
+		const sse = await openSseWithAgent(ctx.harper.httpURL, auth, getAgent, session, getLocalPort);
+		let postAgent;
+		let postThreadId = getThreadId;
+		let postLocalPort = getLocalPort;
+		let postConnected = false;
+		try {
+			strictEqual(sse.status, 200, 'pinned GET SSE establishes');
+			for (let attempt = 0; attempt < 24 && postThreadId === getThreadId; attempt++) {
+				postAgent?.destroy();
+				postAgent = new Agent({ keepAlive: true, maxSockets: 1 });
+				postLocalPort = getLocalPort + attempt + 1;
+				try {
+					postThreadId = await workerIdentity(ctx.harper.httpURL, auth, postAgent, postLocalPort);
+					postConnected = true;
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+				}
+			}
+			ok(postAgent && postConnected, 'created a POST keep-alive connection on a free local port');
+			ok(
+				postThreadId !== getThreadId,
+				`expected a second application HTTP worker after 24 socket probes; all used thread ${getThreadId}`
+			);
+
+			const id = `cross_worker_${Date.now().toString(36)}`;
+			const uri = new URL(`/WorkItem/${id}`, ctx.harper.httpURL).href;
+			await putWorkItem(ctx, id, { state: 'pending', payload: 'cross-worker' });
+			const subscription = await mcpCallWithAgent(
+				ctx.harper.httpURL,
+				auth,
+				postAgent!,
+				session,
+				'resources/subscribe',
+				{ uri },
+				20,
+				postLocalPort
+			);
+			strictEqual(
+				subscription.error,
+				undefined,
+				`cross-worker resources/subscribe should succeed: ${JSON.stringify(subscription.error)}`
+			);
+			await putWorkItem(ctx, id, { state: 'done', payload: 'cross-worker' });
+			const event = await sse.next(
+				(message) => message?.method === 'notifications/resources/updated' && message?.params?.uri === uri,
+				5000
+			);
+			ok(event, 'the owner worker delivered resources/updated on the pinned GET stream');
+		} finally {
+			sse.close();
+			getAgent.destroy();
+			postAgent?.destroy();
 		}
 	});
 });
