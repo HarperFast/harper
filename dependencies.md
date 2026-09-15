@@ -251,6 +251,17 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Overlap: Complements, does not replace, the `typescript` devDependency — TypeScript 7.0 ships no compiler API yet (planned for 7.1), so `@typescript-eslint/parser` still needs `typescript` 5.x. The 5.x and 7.x versions never coexist in `node_modules` at once: 5.x is the installed devDependency, 7.x is fetched on-demand by `npx` purely for `typecheck:fast`.
 - Eventual removal: Once TypeScript 7 stabilizes as the primary `typescript` devDependency (post-7.1's compiler API), this becomes redundant and `typecheck:fast` can be dropped.
 
+## @inquirer/prompts, @inquirer/core
+
+- Need for usage: Interactive CLI prompting (`bin/login.ts`, `bin/deploySetup.ts`, `utility/install/installer.ts`, `upgrade/upgradePrompt.ts`). Replaces `inquirer@8.2.7` and `prompt@1.3.0`, both removed in the same change (HarperFast/harper#1038). `@inquirer/core` is imported directly (not just transitively) to catch `ExitPromptError` and restore inquirer@8's clean-exit-on-Ctrl-C behavior in one place (`utility/interactivePrompts.ts`).
+- Size/memory cost: ~1.6MB unpacked across the whole tree (measured via a clean, isolated `npm install --omit=dev` of `@inquirer/prompts` alone — 10 packages): the sixteen `@inquirer/*` packages (`prompts`, `core`, `input`, `password`, `select`, `confirm`, plus the other prompt types `@inquirer/prompts` re-exports — `checkbox`, `editor`, `expand`, `number`, `rawlist`, `search` — and their shared `ansi`/`figures`/`type` packages) plus `mute-stream`, `signal-exit`, `fast-wrap-ansi`, `cli-width`, and `@inquirer/external-editor`'s own `chardet`/`iconv-lite`. This replaces `inquirer@8.2.7` (pulled in `rxjs`, ~12MB) and `prompt@1.3.0` (pulled in `winston` + `async`, ~5MB) — combined ~18MB removed for a ~1.6MB addition. `@inquirer/type` declares `@types/node` as an *optional* peerDependency (unlike `inquirer@8`'s chain, which pulled it in as a real production dependency via `@inquirer/external-editor`); the isolated install confirms it is not installed. (`npm ls @types/node` inside this repo's own checkout will still show it — that's dedup against the `@types/node` this repo's own devDependencies already hoist to the top level, not evidence of a production install.)
+- Security: No reported vulnerabilities. Actively maintained by the same author (SBoudrias) as the `inquirer` package it replaces; no `rxjs` in the dependency graph (the entire class of issue that made `inquirer@8` heavy).
+- Environment interaction: None beyond normal stdin/stdout TTY interaction for the prompt it's running.
+- Overlap: None — this is the sole prompting library now; `inquirer` and `prompt` are both removed.
+- Can be deferred: No, these are synchronous CLI flows (login, install, deploy setup, upgrade downgrade-confirmation) that block on the answer.
+- Binary compilation: No.
+- Eventual removal: Low-priority to remove given the size is already minimal; a future removal would mean hand-rolling readline-based prompting for the same four call sites.
+
 ## @harperfast/hnsw (optional dependency)
 
 - Need for usage: Supplies the file-primary memory-mapped HNSW index used only by indexes that opt in with `nativePlane: true`. Harper keeps primary-key mappings and the replay cursor vector in RocksDB; graph nodes and adjacency exist only in the native file.

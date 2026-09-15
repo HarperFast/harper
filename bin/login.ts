@@ -111,7 +111,6 @@ export async function login(
 	if (targetPassword) {
 		say(chalk.gray(`Using password from ${envPrefix}_PASSWORD environment variable.`));
 	} else {
-		// No `mask` option hides input entirely — nothing is echoed until Enter.
 		targetPassword = await prompts.password({ message: 'Cluster Password:' }, ctx);
 	}
 

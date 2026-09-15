@@ -8,8 +8,6 @@ const { login } = require('#src/bin/login');
 const { normalizeTarget } = require('#src/bin/cliCredentials');
 const { prompts } = require('#src/utility/interactivePrompts');
 
-// login.ts's @inquirer/prompts calls carry no `name` field (unlike the old inquirer.prompt
-// schema), so stubs key off the `message` text to keep the same per-field assertions.
 function promptFieldName(message) {
 	if (message === 'Cluster Target URL:') return 'target';
 	if (message.includes('Username')) return 'username';
@@ -529,19 +527,66 @@ describe('Login', () => {
 			assert.ok(!stderr.join('').includes('One refresh token per user'), stderr.join(''));
 		});
 
+		describe('prompt output stream in --for-ci mode', () => {
+			let promptCtxCalls;
+			let originalInputInner;
+			let originalPasswordInner;
+
+			beforeEach(() => {
+				for (const name of [
+					'CLI_TARGET',
+					'HARPER_CLI_TARGET',
+					'CLI_TARGET_USERNAME',
+					'CLI_TARGET_PASSWORD',
+					'HARPER_CLI_USERNAME',
+					'HARPER_CLI_PASSWORD',
+				]) {
+					delete process.env[name];
+				}
+				promptCtxCalls = [];
+				originalInputInner = prompts.input;
+				originalPasswordInner = prompts.password;
+				prompts.input = async (config, ctx) => {
+					promptCtxCalls.push(ctx);
+					return config.message.includes('Target') ? 'https://example.com' : 'ci-deploy';
+				};
+				prompts.password = async (config, ctx) => {
+					promptCtxCalls.push(ctx);
+					return 'secret';
+				};
+			});
+
+			afterEach(() => {
+				prompts.input = originalInputInner;
+				prompts.password = originalPasswordInner;
+			});
+
+			it('passes { output: process.stderr } to every prompt, so the credential pipe stays clean', async () => {
+				await captureLogin(undefined, undefined, { forCi: true });
+
+				assert.strictEqual(promptCtxCalls.length, 3, 'expected target, username, and password prompts to fire');
+				for (const ctx of promptCtxCalls) {
+					assert.deepStrictEqual(ctx, { output: process.stderr });
+				}
+			});
+		});
+
 		// The CLI cannot verify that a user is dedicated to CI, but it can refuse to rotate that
 		// user's only refresh token without someone saying yes.
 		describe('dedicated-CI-user confirmation (interactive)', () => {
 			let originalConfirmInner;
 			let confirmAnswer;
 			let confirmMessage;
+			let confirmCtx;
 
 			beforeEach(() => {
 				process.stdin.isTTY = true;
 				confirmMessage = undefined;
+				confirmCtx = undefined;
 				originalConfirmInner = prompts.confirm;
-				prompts.confirm = async (config) => {
+				prompts.confirm = async (config, ctx) => {
 					confirmMessage = config.message;
+					confirmCtx = ctx;
 					return confirmAnswer;
 				};
 			});
@@ -556,6 +601,7 @@ describe('Login', () => {
 
 				assert.ok(confirmMessage.includes("'ci-deploy'"), confirmMessage);
 				assert.ok(confirmMessage.includes('revokes any refresh token it already holds'), confirmMessage);
+				assert.deepStrictEqual(confirmCtx, { output: process.stderr });
 				assert.ok(stdout.join('').includes('HARPER_CLI_REFRESH_TOKEN=ref-tok'), stdout.join(''));
 			});
 

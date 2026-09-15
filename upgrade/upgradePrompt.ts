@@ -7,11 +7,6 @@ import assignCMDENVVariables from '../utility/assignCmdEnvVariables.ts';
 
 const UPGRADE_PROCEED = ['yes', 'y'];
 
-/**
- * Resolves a yes/no override value (from CLI/env) to a boolean, or `undefined` if the value is
- * absent or doesn't parse as yes/no — in which case the caller falls through to an interactive
- * prompt instead.
- */
 function answerFromOverride(value: string | undefined): boolean | undefined {
 	if (value === undefined) return undefined;
 	const normalized = value.toLowerCase();
