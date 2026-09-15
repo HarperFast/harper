@@ -2510,9 +2510,16 @@ type DerivedIndexBatch = {
 	bytes: number; // estimate; non-enumerable
 	rebuild?: true;
 };
+type DerivedIndexMutation = {
+	tableId: number;
+	recordId: Id;
+	recordKey: string; // canonical writeKeyId(recordId)
+	logVersion: number;
+	state: DerivedIndexState;
+};
 ```
 
-There is one contract and every hook is required. What an ownership handoff has to fence is work
+There is one contract; only `reset` is optional. What an ownership handoff has to fence is work
 that survives a method return — a queued apply, a barrier that completes later, a cursor that
 trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
 handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
@@ -2562,7 +2569,8 @@ completion.
 When the backend has `reset` and the runtime was built with `scanRecords`, `needs-rebuild` is a
 phase, not an end state: publish `rebuilding`; `shutdown(previousEpoch)`; mint a new epoch and
 republish; `reset(newEpoch)` (afterwards `getDurableCursor()` must be `undefined`); capture the
-**committed tail** of every log; scan every registered table (tombstones and symbol keys skipped),
+**committed tail** of every log; scan every registered table (tombstones and records whose canonical
+`writeKeyId()` is not a string skipped),
 project, deliver bounded chunks with `through` absent; deliver a final chunk with `through` = tail;
 install the tail as offered progress and replay through the ordinary drain; publish `ready` at the
 first durable advance past the tail or the first idle pass with durable == offered.

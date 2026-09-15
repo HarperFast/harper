@@ -28,6 +28,7 @@ export type DerivedIndexState =
 export type DerivedIndexMutation = {
 	tableId: number;
 	recordId: Id;
+	recordKey: string;
 	logVersion: number;
 	state: DerivedIndexState;
 };
@@ -93,6 +94,14 @@ export interface DerivedIndexBackendHost {
 	/** True while `epoch` is the most recently minted owner epoch for this backend. */
 	isOwnerEpoch(epoch: bigint): boolean;
 	getReadiness(): DerivedIndexReadiness;
+}
+
+/** A transient backend-state read failure that should release ownership and retry without rebuilding. */
+export class DerivedIndexBackendRetryError extends Error {
+	constructor(message: string, cause?: unknown) {
+		super(message, cause === undefined ? undefined : { cause });
+		this.name = 'DerivedIndexBackendRetryError';
+	}
 }
 
 /**
@@ -168,7 +177,10 @@ export type DerivedIndexRegistration = {
  */
 export type DerivedIndexRecord = { version: number; value: unknown; size?: number } | undefined;
 
-/** A scan record whose `value` is null or undefined is a tombstone, and one whose `recordId` is a symbol is a Harper-internal store entry; neither is indexed. */
+/**
+ * A scan record whose `value` is null or undefined is a tombstone. A record whose canonical
+ * `writeKeyId()` is not a string is a Harper-internal store entry. Neither is indexed.
+ */
 export type DerivedIndexScanRecord = { recordId: Id; version: number; value: unknown; size?: number };
 
 export type DerivedIndexRuntimeOptions = DerivedIndexRunnerOptions & {
@@ -912,6 +924,13 @@ class DerivedIndexRunner {
 			this.#resetFromDurableCursor();
 			if (this.#owned && !this.#rebuilding) this.#drain();
 		} catch (error) {
+			if (error instanceof DerivedIndexBackendRetryError) {
+				logger.warn?.(`Derived index '${this.id}' could not inspect backend state; retrying`, error);
+				this.status = { state: 'idle' };
+				this.#release();
+				this.#armLockRetry(this.#options.lockRetryMilliseconds);
+				return;
+			}
 			this.#fail('failed to initialize the runner', error);
 		}
 	}
@@ -1187,15 +1206,17 @@ class DerivedIndexRunner {
 					// is met exactly once: here, before the rebuild it demands.
 					throw new RunnerError('reload', `table ${entry.tableId} requires a derived-index rebuild`);
 				} else if (ELIGIBLE_ACTIONS.has(entry.type)) {
-					let byRecord = current.keys.get(entry.tableId);
-					if (!byRecord) current.keys.set(entry.tableId, (byRecord = new Map()));
 					const key = writeKeyId(entry.recordId);
-					const known = byRecord.get(key);
-					if (known) known.logVersion = entry.version;
-					else {
-						byRecord.set(key, { recordId: entry.recordId, logVersion: entry.version, sizeHint: entry.size });
-						current.keyCount++;
-						keyCount++;
+					if (typeof key === 'string') {
+						let byRecord = current.keys.get(entry.tableId);
+						if (!byRecord) current.keys.set(entry.tableId, (byRecord = new Map()));
+						const known = byRecord.get(key);
+						if (known) known.logVersion = entry.version;
+						else {
+							byRecord.set(key, { recordId: entry.recordId, logVersion: entry.version, sizeHint: entry.size });
+							current.keyCount++;
+							keyCount++;
+						}
 					}
 				}
 			}
@@ -1249,6 +1270,7 @@ class DerivedIndexRunner {
 					mutations.push({
 						tableId,
 						recordId: collectedKey.recordId,
+						recordKey: record.recordKey,
 						logVersion: collectedKey.logVersion,
 						state: record.state,
 					});
@@ -1307,7 +1329,13 @@ class DerivedIndexRunner {
 		const state: DerivedIndexState = current
 			? this.#project(chunk, tableId, current.value, current.version, current.size ?? collectedKey.sizeHint)
 			: { kind: 'absent' };
-		record = { tableId, recordId: collectedKey.recordId, logVersion: collectedKey.logVersion, state };
+		record = {
+			tableId,
+			recordId: collectedKey.recordId,
+			recordKey: derivedIndexRecordKey(key),
+			logVersion: collectedKey.logVersion,
+			state,
+		};
 		byRecord.set(key, record);
 		chunk.batch.records.push(record);
 		return record;
@@ -1757,14 +1785,16 @@ class DerivedIndexRunner {
 	}
 
 	#addScanRecord(chunk: Chunk, tableId: number, record: DerivedIndexScanRecord): DerivedIndexMutation | undefined {
-		if (record.value == null || typeof record.recordId === 'symbol') return;
+		if (record.value == null) return;
 		const key = writeKeyId(record.recordId);
+		if (typeof key !== 'string') return;
 		let byRecord = chunk.resolved.get(tableId);
 		if (!byRecord) chunk.resolved.set(tableId, (byRecord = new Map()));
 		if (byRecord.has(key)) return;
 		const mutation: DerivedIndexMutation = {
 			tableId,
 			recordId: record.recordId,
+			recordKey: derivedIndexRecordKey(key),
 			logVersion: record.version,
 			state: this.#project(chunk, tableId, record.value, record.version, record.size),
 		};
@@ -1939,6 +1969,11 @@ class DerivedIndexRunner {
 		const settling = Promise.allSettled([this.#resetting, flushed]).then(() => undefined);
 		this.#releasing = settling.then(() => (epoch === undefined ? undefined : this.#quiesce(epoch))).then(unlock, hold);
 	}
+}
+
+function derivedIndexRecordKey(key: unknown): string {
+	if (typeof key !== 'string') throw new Error('derived index record id has no canonical stored key');
+	return key;
 }
 
 function lastOpen(collected: CollectedTransaction[]): CollectedTransaction | undefined {
