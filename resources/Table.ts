@@ -49,12 +49,7 @@ import {
 	ServerError,
 	AccessViolation,
 	ValidationError,
-<<<<<<< HEAD
-=======
-	UpdateAttributesLockTimeoutError,
-	LockUnavailableError,
 	appendErrorContext,
->>>>>>> 73c3bb3bc (Settle the source-fill promise when an error's message cannot be assigned)
 	type ValidationIssue,
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';

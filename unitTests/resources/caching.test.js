@@ -53,19 +53,11 @@ describe('Caching', () => {
 				this.getContext().expiresAt = expiresAt;
 				return new Promise((resolve, reject) => {
 					setTimeout(() => {
-<<<<<<< HEAD
-<<<<<<< HEAD
 						sourceRequests++;
-=======
-						if (return_error_instance) {
-							reject(return_error_instance);
-=======
 						if (return_rejection) {
 							reject(return_rejection.value);
->>>>>>> 89b35e91a (Guarantee the source-fill catch block settles on every path)
 							return;
 						}
->>>>>>> 73c3bb3bc (Settle the source-fill promise when an error's message cannot be assigned)
 						if (return_error) {
 							let error = new Error('test source error');
 							error.statusCode = return_error;
