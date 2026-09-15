@@ -20,12 +20,14 @@ import { setEmbedding, setGenerative } from '../../resources/models/backendRegis
 import {
 	assignFiniteTokenCount,
 	composeSignal,
+	fetchWithRetry,
 	MAX_ERROR_BODY_BYTES,
 	normalizeOrigin,
 	parseJsonResponse,
 	readBoundedJson,
 	requireCredential,
 	requireModel,
+	resolveRetryConfig,
 } from '../../resources/models/backendHelpers.ts';
 import { ServerError } from '../../utility/errors/hdbError.ts';
 import harperLogger from '../../utility/logging/harper_logger.ts';
@@ -83,10 +85,24 @@ export interface OpenAIBackendConfig {
 	model?: string;
 	/** Base URL of the OpenAI-compatible endpoint (default `https://api.openai.com/v1`). */
 	baseUrl?: string;
-	/** Per-request timeout. When set, combined with `opts.signal` via `AbortSignal.any`. */
+	/**
+	 * Overall deadline for a backend call — spans ALL retry attempts and backoff
+	 * sleeps, not one request. Combined with `opts.signal` via `AbortSignal.any`.
+	 */
 	requestTimeoutMs?: number;
 	/** Forwarded as `OpenAI-Organization` header when set. */
 	organization?: string;
+	/**
+	 * Retries after the initial attempt for retriable failures — HTTP 408/429/5xx
+	 * and transient network errors (#1594). Honors `Retry-After`; jittered
+	 * exponential backoff otherwise. All attempts share the `requestTimeoutMs` /
+	 * caller-signal budget. `0` disables. Default 2, clamped to 10. Note: a
+	 * retried `generate` is not exactly-once — a request that succeeded upstream
+	 * but failed in transit may re-execute.
+	 */
+	maxRetries?: number;
+	/** Initial retry backoff in ms (default 500); doubles per attempt with jitter. */
+	retryBackoffMs?: number;
 }
 
 /**
@@ -110,6 +126,8 @@ export class OpenAIBackend implements ModelBackend {
 	readonly #apiKey: string;
 	readonly #organization?: string;
 	readonly #requestTimeoutMs?: number;
+	readonly #maxRetries: number;
+	readonly #retryBackoffMs: number;
 	readonly #fetch: typeof fetch;
 	// True only when talking to api.openai.com itself. OpenAI's reasoning models
 	// (o-series, gpt-5 family) reject `max_tokens` in favour of `max_completion_tokens`;
@@ -127,6 +145,7 @@ export class OpenAIBackend implements ModelBackend {
 		this.#defaultModel = config.model;
 		this.#organization = config.organization;
 		this.#requestTimeoutMs = config.requestTimeoutMs;
+		({ maxRetries: this.#maxRetries, retryBackoffMs: this.#retryBackoffMs } = resolveRetryConfig(config));
 		this.#fetch = fetchImpl;
 	}
 
@@ -249,12 +268,12 @@ export class OpenAIBackend implements ModelBackend {
 			'Authorization': `Bearer ${this.#apiKey}`,
 		};
 		if (this.#organization) headers['OpenAI-Organization'] = this.#organization;
-		const res = await this.#fetch(`${this.#baseUrl}${path}`, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify(body),
-			signal,
-		});
+		const res = await fetchWithRetry(
+			this.#fetch,
+			`${this.#baseUrl}${path}`,
+			{ method: 'POST', headers, body: JSON.stringify(body), signal },
+			{ maxRetries: this.#maxRetries, retryBackoffMs: this.#retryBackoffMs }
+		);
 		if (!res.ok) {
 			// Read OpenAI's well-defined error envelope (`{ error: { message,
 			// type, code, param } }`) for operator-facing detail. `error.message`
