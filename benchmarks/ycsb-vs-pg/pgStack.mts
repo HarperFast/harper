@@ -17,7 +17,11 @@ const COMPOSE = ['compose', '-f', join(DIR, 'docker-compose.yml'), '-p', 'ycsb-v
 /** Where PGDATA lives on the host. Must be a real disk, and the same filesystem Harper uses. */
 export const dataDir = (): string => process.env.YCSB_VS_PG_DATA_DIR || join(DIR, 'data');
 
-const composeEnv = (): NodeJS.ProcessEnv => ({ ...process.env, YCSB_VS_PG_DATA_DIR: dataDir() });
+const composeEnv = (): NodeJS.ProcessEnv => ({
+	...process.env,
+	YCSB_VS_PG_DATA_DIR: dataDir(),
+	YCSB_REDIS_MAXMEMORY: process.env.YCSB_REDIS_MAXMEMORY || '8gb',
+});
 
 /**
  * Removes the previous run's PGDATA. `docker compose down -v` only drops named
@@ -48,7 +52,18 @@ export interface PgStackOptions {
 
 export interface PgStack {
 	baseUrl: string;
+	/** Container cgroup scopes, so Postgres' per-connection backends are all counted. */
+	cgroups: Record<string, string>;
+	/** Command that prints Redis INFO stats, for cache hit-rate sampling. */
+	redisExec: string[];
 	stop(): Promise<void>;
+}
+
+/** Resolves a compose service's cgroup scope path for CPU accounting. */
+async function containerCgroup(service: string): Promise<string> {
+	const { stdout } = await exec('docker', [...COMPOSE, 'ps', '-q', service], { env: composeEnv() });
+	const id = stdout.trim();
+	return id ? `/sys/fs/cgroup/system.slice/docker-${id}.scope` : '';
 }
 
 /**
@@ -81,6 +96,9 @@ async function waitForPostgres(timeoutMs: number): Promise<void> {
 }
 
 export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
+	// Stop first: `up -d` will not recreate an already-running container, so wiping
+	// PGDATA while one is live deletes the data directory out from under it.
+	await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24, env: composeEnv() }).catch(() => {});
 	await wipePgData();
 	await exec('docker', [...COMPOSE, 'up', '-d'], { maxBuffer: 1 << 24, env: composeEnv() });
 	await waitForPostgres(120_000);
@@ -134,8 +152,15 @@ export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
 		child.on('exit', (code) => reject(new Error(`pg-app exited early with ${code}`)));
 	});
 
+	const cgroups: Record<string, string> = {
+		postgres: await containerCgroup('postgres'),
+	};
+	if (options.useCache) cgroups.redis = await containerCgroup('redis');
+
 	return {
 		baseUrl: `http://127.0.0.1:${PG_APP_PORT}`,
+		cgroups,
+		redisExec: ['docker', ...COMPOSE, 'exec', '-T', 'redis', 'redis-cli', '-p', '6380', 'info', 'stats'],
 		async stop(): Promise<void> {
 			child.kill('SIGKILL');
 			await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24, env: composeEnv() });
