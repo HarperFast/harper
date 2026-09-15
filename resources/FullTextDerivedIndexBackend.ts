@@ -7,11 +7,7 @@ import type {
 	DerivedIndexDeliveryResult,
 	DerivedIndexFlushReason,
 } from './derivedIndexRuntime.ts';
-import {
-	DERIVED_INDEX_ACCEPTED,
-	DERIVED_INDEX_DEFERRED,
-	DERIVED_INDEX_FAILED,
-} from './derivedIndexBackendConstants.ts';
+import { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED, DERIVED_INDEX_FAILED } from './derivedIndexRuntime.ts';
 
 const DEFAULT_MAX_QUEUED_BATCHES = 16;
 const DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
@@ -32,9 +28,15 @@ export interface FullTextDerivedIndexEngine {
 	close(options?: { mode?: 'require-clean' | 'rollback' }): Promise<void>;
 }
 
+export type FullTextDerivedIndexInspection =
+	| { state: 'missing' | 'cursorless' }
+	| { state: 'checkpointed'; committedPayload: string }
+	| { state: 'incompatible'; code: string };
+
 export interface FullTextDerivedIndexLifecycle {
-	open(ownerEpoch: bigint): Promise<FullTextDerivedIndexEngine>;
-	replace(ownerEpoch: bigint): Promise<FullTextDerivedIndexEngine>;
+	inspect(): FullTextDerivedIndexInspection;
+	open(): Promise<FullTextDerivedIndexEngine>;
+	reset(): Promise<void>;
 }
 
 export type FullTextMutationBatch = {
@@ -90,13 +92,6 @@ export class FullTextDerivedIndexError extends Error {
 	}
 }
 
-export class FullTextGenerationInvalidError extends FullTextDerivedIndexError {
-	constructor(message: string, cause?: unknown) {
-		super(message, cause);
-		this.name = 'FullTextGenerationInvalidError';
-	}
-}
-
 export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	readonly id: string;
 	#lifecycle: FullTextDerivedIndexLifecycle;
@@ -113,6 +108,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
 	#durableCursor?: DerivedIndexCursor;
+	#inspected = false;
 	#activeEpoch?: bigint;
 	#commands: Command[] = [];
 	#retainedBatches = 0;
@@ -120,15 +116,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#lastAcceptedSequence = 0;
 	#lastAppliedSequence = 0;
 	#lastPublishedSequence = 0;
-	#hasStagedMutations = false;
 	#lastBarrierHorizon = 0;
 	#lastMutationSequence = 0;
 	#lastAcceptedCursor?: DerivedIndexCursor;
+	#hasStagedMutations = false;
 	#cursorOnlyAgeFlushes = 0;
 	#cursorOnlySince?: number;
 	#draining = false;
 	#scheduled = false;
-	#recovering = false;
+	#settlingWriter = false;
 	#lossPendingEpoch?: bigint;
 	#failed = false;
 	#capacityDeferred = false;
@@ -138,10 +134,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (!options.id) throw new TypeError('Full-text derived index id is required');
 		if (
 			!options.lifecycle ||
+			typeof options.lifecycle.inspect !== 'function' ||
 			typeof options.lifecycle.open !== 'function' ||
-			typeof options.lifecycle.replace !== 'function'
+			typeof options.lifecycle.reset !== 'function'
 		)
-			throw new TypeError('Full-text derived index lifecycle must implement open() and replace()');
+			throw new TypeError('Full-text derived index lifecycle must implement inspect(), open(), and reset()');
 		if (typeof options.encodeMutationBatch !== 'function')
 			throw new TypeError('Full-text derived index batch encoder is required');
 		this.id = options.id;
@@ -179,68 +176,43 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	attach(host: DerivedIndexBackendHost): void {
-		if (this.#host && this.#host !== host && (this.#engine || this.#draining || this.#recovering || this.#wake))
+		if (this.#host && this.#host !== host && (this.#engine || this.#draining || this.#wake))
 			throw new Error('Full-text derived index backend is already attached');
 		this.#host = host;
 	}
 
-	async acquire(ownerEpoch: bigint): Promise<DerivedIndexCursor | undefined> {
-		this.#assertAttached();
-		if (this.#engine && this.#activeEpoch === ownerEpoch && !this.#shutdown && !this.#failed)
-			return this.#durableCursor;
-		if (this.#engine || this.#draining || this.#recovering)
-			throw new FullTextDerivedIndexError('Full-text derived index backend is not quiescent at acquisition');
-		this.#shutdown = undefined;
-		this.#failed = false;
-		let engine: FullTextDerivedIndexEngine;
-		try {
-			engine = await this.#open(ownerEpoch);
-		} catch (error) {
-			if (invalidGenerationError(error)) {
-				logWarning(`Full-text derived index '${this.id}' has an invalid generation; rebuilding`, error);
-				return;
-			}
-			throw error;
-		}
-		let cursor: DerivedIndexCursor | undefined;
-		let payloadError: unknown;
-		try {
-			this.#assertSharedEpoch(ownerEpoch);
-			try {
-				cursor = decodeFullTextCursorPayload(engine.committedPayload, this.#maxCursorPayloadBytes);
-			} catch (error) {
-				payloadError = error;
-				throw error;
-			}
-			this.#assertSharedEpoch(ownerEpoch);
-			this.#installEngine(engine, ownerEpoch, cursor);
-			return cursor;
-		} catch (error) {
-			try {
-				await engine.close({ mode: 'rollback' });
-			} catch (closeError) {
-				this.#engine = engine;
-				this.#activeEpoch = ownerEpoch;
-				const failure = new FullTextDerivedIndexError('Full-text acquisition could not close its engine', closeError);
-				this.#markFailed(failure);
-				throw failure;
-			}
-			if (error === payloadError) {
-				logWarning(`Full-text derived index '${this.id}' has an invalid committed cursor; rebuilding`, error);
-				return;
-			}
-			throw error;
-		}
-	}
-
 	getDurableCursor(): DerivedIndexCursor | undefined {
-		return this.#durableCursor;
+		if (!this.#inspected) {
+			const inspection = this.#lifecycle.inspect();
+			this.#inspected = true;
+			if (inspection.state === 'checkpointed') {
+				try {
+					this.#durableCursor = decodeFullTextCursorPayload(inspection.committedPayload, this.#maxCursorPayloadBytes);
+				} catch (error) {
+					logWarning(`Full-text derived index '${this.id}' has an invalid committed cursor; rebuilding`, error);
+					this.#durableCursor = undefined;
+				}
+			} else {
+				if (inspection.state === 'incompatible')
+					logWarning(
+						`Full-text derived index '${this.id}' is incompatible (${inspection.code}); rebuilding`,
+						undefined
+					);
+				this.#durableCursor = undefined;
+			}
+		}
+		return cloneCursor(this.#durableCursor);
 	}
 
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult {
-		if (this.#failed) return DERIVED_INDEX_FAILED;
-		if (this.#recovering || this.#lossPendingEpoch === batch.ownerEpoch) return DERIVED_INDEX_DEFERRED;
-		if (!this.#engine || this.#activeEpoch !== batch.ownerEpoch || this.#shutdown) return DERIVED_INDEX_FAILED;
+		if (this.#failed || !this.#host?.isOwnerEpoch(batch.ownerEpoch)) return DERIVED_INDEX_FAILED;
+		if (this.#settlingWriter || this.#lossPendingEpoch === batch.ownerEpoch) return DERIVED_INDEX_DEFERRED;
+		if (this.#shutdown) {
+			if (this.#shutdown.epoch === batch.ownerEpoch || this.#activeEpoch !== undefined) return DERIVED_INDEX_FAILED;
+			this.#shutdown = undefined;
+		}
+		if (this.#activeEpoch === undefined) this.#activeEpoch = batch.ownerEpoch;
+		if (this.#activeEpoch !== batch.ownerEpoch) return DERIVED_INDEX_FAILED;
 		let through: DerivedIndexCursor | undefined;
 		try {
 			through = batch.through && normalizedCursor(batch.through);
@@ -273,7 +245,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	flush(reason: DerivedIndexFlushReason = 'threshold'): void {
-		if (!this.#engine || this.#activeEpoch === undefined || this.#failed || this.#recovering) return;
+		if (this.#activeEpoch === undefined || this.#failed || this.#shutdown) return;
 		this.#queueBarrier(this.#activeEpoch, reason);
 	}
 
@@ -294,32 +266,24 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	async reset(ownerEpoch: bigint): Promise<void> {
 		this.#assertAttached();
-		if (this.#engine || this.#draining || this.#recovering)
+		if (
+			this.#engine ||
+			this.#scheduled ||
+			this.#draining ||
+			this.#settlingWriter ||
+			this.#commands.length > 0 ||
+			this.#shutdown?.closing
+		)
 			throw new FullTextDerivedIndexError('Full-text derived index backend is not quiescent at reset');
+		this.#assertSharedEpoch(ownerEpoch);
 		this.#shutdown = undefined;
 		this.#failed = false;
-		let replacement: FullTextDerivedIndexEngine | undefined;
-		try {
-			replacement = await this.#lifecycle.replace(ownerEpoch);
-			this.#assertSharedEpoch(ownerEpoch);
-			const cursor = decodeFullTextCursorPayload(replacement.committedPayload, this.#maxCursorPayloadBytes);
-			if (cursor) throw new FullTextDerivedIndexError('Replacement full-text generation retained a durable cursor');
-		} catch (error) {
-			if (replacement) {
-				try {
-					await replacement.close({ mode: 'rollback' });
-				} catch (closeError) {
-					this.#engine = replacement;
-					this.#activeEpoch = ownerEpoch;
-					const failure = new FullTextDerivedIndexError('Replacement full-text generation could not close', closeError);
-					this.#markFailed(failure);
-					throw failure;
-				}
-			}
-			this.#markFailed(error);
-			throw error;
-		}
-		this.#installEngine(replacement, ownerEpoch, undefined);
+		await this.#lifecycle.reset();
+		this.#assertSharedEpoch(ownerEpoch);
+		this.#activeEpoch = ownerEpoch;
+		this.#durableCursor = undefined;
+		this.#inspected = true;
+		this.#resetQueueState();
 	}
 
 	onStateChange(wake: (change?: DerivedIndexBackendStateChange) => void): () => void {
@@ -366,87 +330,103 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (this.#draining) return;
 		this.#draining = true;
 		try {
-			while (this.#commands.length > 0 && !this.#failed) {
+			if (this.#commands.length > 0 && !(await this.#ensureEngine())) return;
+			while (this.#commands.length > 0 && !this.#failed && this.#engine) {
 				const command = this.#commands.shift()!;
 				if (command.type === 'apply') {
 					try {
-						await this.#apply(command);
+						if (!(await this.#apply(command))) break;
 					} finally {
 						this.#retainedBatches = Math.max(0, this.#retainedBatches - 1);
 						this.#retainedBytes = Math.max(0, this.#retainedBytes - command.bytes);
+						if (this.#capacityDeferred && !this.#failed) this.#notify('changed');
 					}
-				} else {
-					await this.#publish(command);
-				}
+				} else if (!(await this.#publish(command))) break;
 			}
 		} catch (error) {
 			this.#failAndNotify(error);
 		} finally {
 			this.#draining = false;
 			if (this.#shutdown && !this.#shutdown.closing) void this.#closeForShutdown(this.#shutdown);
-			else {
-				if (this.#capacityDeferred) this.#notify('changed');
-				if (this.#commands.length > 0) this.#scheduleDrain();
-			}
+			else if (!this.#failed && this.#commands.length > 0) this.#scheduleDrain();
 		}
 	}
 
-	async #apply(command: ApplyCommand): Promise<void> {
-		this.#assertCommandEpoch(command.epoch);
-		if (command.batch.records.length === 0) {
-			this.#lastAppliedSequence = command.sequence;
-			return;
-		}
-		if (!(await this.#applyRecords(command, command.batch.records))) return;
-		this.#assertCommandEpoch(command.epoch);
-		this.#lastAppliedSequence = command.sequence;
-	}
-
-	async #applyRecords(command: ApplyCommand, records: DerivedIndexBatch['records']): Promise<boolean> {
-		let packed: Uint8Array;
+	async #ensureEngine(): Promise<boolean> {
+		if (this.#engine) return true;
+		const epoch = this.#activeEpoch;
+		if (epoch === undefined) throw new FullTextDerivedIndexError('Full-text owner epoch is unavailable');
+		const engine = await this.#open(epoch);
+		let actual: DerivedIndexCursor | undefined;
 		try {
-			packed = this.#encodeMutationBatch(toFullTextMutationRecords(records));
-			if (!(packed instanceof Uint8Array)) throw new TypeError('Full-text batch encoder must return a Uint8Array');
+			this.#assertCommandEpoch(epoch);
+			actual = decodeFullTextCursorPayload(engine.committedPayload, this.#maxCursorPayloadBytes);
 		} catch (error) {
-			if (errorCodeInChain(error) === 'E_BATCH_TOO_LARGE' && records.length > 1) {
-				const middle = Math.ceil(records.length / 2);
-				if (!(await this.#applyRecords(command, records.slice(0, middle)))) return false;
-				return this.#applyRecords(command, records.slice(middle));
-			}
-			if (errorCodeInChain(error) === 'E_BATCH_TOO_LARGE' && records[0]?.state.kind === 'record') {
-				const removal = { ...records[0], state: { kind: 'absent' } as const };
-				try {
-					packed = this.#encodeMutationBatch(toFullTextMutationRecords([removal]));
-				} catch (removalError) {
-					throw new FullTextDerivedIndexError(
-						'Failed to encode removal for an unindexable full-text record',
-						new AggregateError([error, removalError])
-					);
-				}
-				this.#host?.noteUnindexable('FulltextError (E_BATCH_TOO_LARGE)');
-			} else {
-				const failure = new FullTextDerivedIndexError('Failed to encode a full-text mutation batch', error);
-				if (persistentEncodingError(error)) throw failure;
-				await this.#recoverAcceptedWork(command.epoch, failure);
-				return false;
-			}
+			await this.#closeUninstalledEngine(engine, error);
+			throw error;
 		}
-		const expected = records.length;
-		let applied: number;
-		this.#hasStagedMutations = true;
-		try {
-			applied = await this.#engine!.apply(packed);
-		} catch (error) {
-			await this.#recoverAcceptedWork(command.epoch, error);
+		if (!sameCursor(actual, this.#durableCursor)) {
+			this.#lossPendingEpoch = epoch;
+			await this.#closeUninstalledEngine(
+				engine,
+				new FullTextDerivedIndexError('Full-text cursor changed between inspection and writer open')
+			);
+			this.#durableCursor = actual;
+			this.#inspected = true;
+			this.#discardCommands();
+			this.#notify('accepted-work-lost');
 			return false;
 		}
-		if (applied !== expected)
-			throw new FullTextDerivedIndexError(`Full-text engine applied ${applied} of ${expected} mutations`);
+		this.#engine = engine;
 		return true;
 	}
 
-	async #publish(command: BarrierCommand): Promise<void> {
-		if (command.horizon <= this.#lastPublishedSequence) return;
+	async #closeUninstalledEngine(engine: FullTextDerivedIndexEngine, cause: unknown): Promise<void> {
+		this.#settlingWriter = true;
+		try {
+			await engine.close({ mode: 'rollback' });
+		} catch (closeError) {
+			this.#engine = engine;
+			throw new FullTextDerivedIndexError(
+				'Full-text writer could not close after lazy open failed',
+				new AggregateError([cause, closeError])
+			);
+		} finally {
+			this.#settlingWriter = false;
+		}
+	}
+
+	async #apply(command: ApplyCommand): Promise<boolean> {
+		this.#assertCommandEpoch(command.epoch);
+		if (command.batch.records.length === 0) {
+			this.#lastAppliedSequence = command.sequence;
+			return true;
+		}
+		let packed: Uint8Array;
+		try {
+			packed = this.#encodeMutationBatch(toFullTextMutationRecords(command.batch.records));
+			if (!(packed instanceof Uint8Array)) throw new TypeError('Full-text batch encoder must return a Uint8Array');
+		} catch (error) {
+			throw new FullTextDerivedIndexError('Failed to encode a full-text mutation batch', error);
+		}
+		this.#hasStagedMutations = true;
+		try {
+			const applied = await this.#engine!.apply(packed);
+			if (applied !== command.batch.records.length)
+				throw new FullTextDerivedIndexError(
+					`Full-text engine applied ${applied} of ${command.batch.records.length} mutations`
+				);
+		} catch (error) {
+			await this.#loseAcceptedWork(command.epoch, error);
+			return false;
+		}
+		this.#assertCommandEpoch(command.epoch);
+		this.#lastAppliedSequence = command.sequence;
+		return true;
+	}
+
+	async #publish(command: BarrierCommand): Promise<boolean> {
+		if (command.horizon <= this.#lastPublishedSequence) return true;
 		this.#assertCommandEpoch(command.epoch);
 		if (this.#lastAppliedSequence < command.horizon)
 			throw new FullTextDerivedIndexError('Full-text publication barrier passed unapplied work');
@@ -454,55 +434,43 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		const payload = encodeFullTextCursorPayload(cursor, this.#maxCursorPayloadBytes);
 		try {
 			await this.#engine!.publish(payload);
-			this.#assertCommandEpoch(command.epoch);
-			this.#lastPublishedSequence = command.horizon;
-			this.#hasStagedMutations = false;
-			if (cursor) this.#durableCursor = cloneCursor(cursor);
-			if (!this.#shutdown) this.#notify('changed');
 		} catch (error) {
-			await this.#recoverAcceptedWork(command.epoch, error);
+			await this.#loseAcceptedWork(command.epoch, error);
+			return false;
 		}
+		this.#assertCommandEpoch(command.epoch);
+		this.#lastPublishedSequence = command.horizon;
+		this.#hasStagedMutations = false;
+		this.#durableCursor = cloneCursor(cursor);
+		this.#inspected = true;
+		if (!this.#shutdown) this.#notify('changed');
+		return true;
 	}
 
-	async #recoverAcceptedWork(ownerEpoch: bigint, cause: unknown): Promise<void> {
-		if (this.#recovering) return;
-		this.#recovering = true;
+	async #loseAcceptedWork(ownerEpoch: bigint, cause: unknown): Promise<void> {
+		this.#lossPendingEpoch = ownerEpoch;
 		this.#discardCommands();
 		const engine = this.#engine;
+		this.#engine = undefined;
+		if (!engine) throw new FullTextDerivedIndexError('Full-text writer is unavailable', cause);
 		try {
-			if (!engine) throw new FullTextDerivedIndexError('Full-text engine is unavailable', cause);
 			await engine.close({ mode: 'rollback' });
-			this.#engine = undefined;
 			this.#assertCommandEpoch(ownerEpoch);
-			const reopened = await this.#open(ownerEpoch);
-			try {
-				this.#assertCommandEpoch(ownerEpoch);
-				const cursor = decodeFullTextCursorPayload(reopened.committedPayload, this.#maxCursorPayloadBytes);
-				this.#installEngine(reopened, ownerEpoch, cursor);
-			} catch (error) {
-				try {
-					await reopened.close({ mode: 'rollback' });
-				} catch (closeError) {
-					this.#engine = reopened;
-					this.#activeEpoch = ownerEpoch;
-					throw new FullTextDerivedIndexError('Recovered full-text generation could not close', closeError);
-				}
-				throw error;
-			}
-			this.#lossPendingEpoch = ownerEpoch;
-			this.#notify('accepted-work-lost');
 		} catch (error) {
-			this.#failAndNotify(new FullTextDerivedIndexError('Full-text engine recovery failed', error));
-		} finally {
-			this.#recovering = false;
+			this.#engine = engine;
+			throw new FullTextDerivedIndexError(
+				'Full-text writer could not prove quiescence after losing accepted work',
+				new AggregateError([cause, error])
+			);
 		}
+		this.#hasStagedMutations = false;
+		this.#notify('accepted-work-lost');
 	}
 
 	async #closeForShutdown(request: ShutdownRequest): Promise<void> {
 		if (request !== this.#shutdown || request.closing) return;
 		request.closing = true;
 		const engine = this.#engine;
-		this.#activeEpoch = undefined;
 		try {
 			if (engine) {
 				const mode =
@@ -512,12 +480,13 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				await engine.close({ mode });
 			}
 			this.#engine = undefined;
-			this.#durableCursor = undefined;
+			this.#activeEpoch = undefined;
+			this.#resetQueueState();
+			if (this.#shutdown === request) this.#shutdown = undefined;
 			request.resolve();
 		} catch (error) {
-			this.#activeEpoch = request.epoch;
 			if (this.#shutdown === request) this.#shutdown = undefined;
-			const failure = new FullTextDerivedIndexError('Full-text engine shutdown did not prove quiescence', error);
+			const failure = new FullTextDerivedIndexError('Full-text writer shutdown did not prove quiescence', error);
 			this.#markFailed(failure);
 			request.reject(failure);
 		}
@@ -528,34 +497,13 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		for (let attempt = 1; attempt <= this.#openAttempts; attempt++) {
 			this.#assertSharedEpoch(ownerEpoch);
 			try {
-				return await this.#lifecycle.open(ownerEpoch);
+				return await this.#lifecycle.open();
 			} catch (error) {
-				if (invalidGenerationError(error)) throw error;
 				lastError = error;
 				if (attempt < this.#openAttempts && this.#openRetryMilliseconds > 0) await delay(this.#openRetryMilliseconds);
 			}
 		}
-		throw new FullTextDerivedIndexError('Full-text generation could not be opened', lastError);
-	}
-
-	#installEngine(engine: FullTextDerivedIndexEngine, ownerEpoch: bigint, cursor: DerivedIndexCursor | undefined): void {
-		this.#engine = engine;
-		this.#activeEpoch = ownerEpoch;
-		this.#durableCursor = cursor;
-		this.#commands = [];
-		this.#retainedBatches = 0;
-		this.#retainedBytes = 0;
-		this.#lastAcceptedSequence = 0;
-		this.#lastAppliedSequence = 0;
-		this.#lastPublishedSequence = 0;
-		this.#hasStagedMutations = false;
-		this.#lastBarrierHorizon = 0;
-		this.#lastMutationSequence = 0;
-		this.#lastAcceptedCursor = undefined;
-		this.#resetCursorOnlyFlushes();
-		this.#capacityDeferred = false;
-		this.#lossPendingEpoch = undefined;
-		this.#failed = false;
+		throw new FullTextDerivedIndexError('Full-text writer could not be opened', lastError);
 	}
 
 	#discardCommands(): void {
@@ -563,6 +511,23 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#retainedBatches = 0;
 		this.#retainedBytes = 0;
 		this.#lastBarrierHorizon = this.#lastPublishedSequence;
+		this.#capacityDeferred = false;
+		this.#resetCursorOnlyFlushes();
+	}
+
+	#resetQueueState(): void {
+		this.#commands = [];
+		this.#retainedBatches = 0;
+		this.#retainedBytes = 0;
+		this.#lastAcceptedSequence = 0;
+		this.#lastAppliedSequence = 0;
+		this.#lastPublishedSequence = 0;
+		this.#lastBarrierHorizon = 0;
+		this.#lastMutationSequence = 0;
+		this.#lastAcceptedCursor = undefined;
+		this.#hasStagedMutations = false;
+		this.#capacityDeferred = false;
+		this.#lossPendingEpoch = undefined;
 		this.#resetCursorOnlyFlushes();
 	}
 
@@ -584,7 +549,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	#assertAttached(): void {
-		if (!this.#host) throw new Error('Full-text derived index backend must be attached before acquisition');
+		if (!this.#host) throw new Error('Full-text derived index backend must be attached before use');
 	}
 
 	#assertSharedEpoch(ownerEpoch: bigint): void {
@@ -601,12 +566,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		const wake = this.#wake;
 		const activeEpoch = this.#activeEpoch;
 		if (!wake) {
-			if (change === 'accepted-work-lost') this.#lossPendingEpoch = undefined;
+			if (change === 'accepted-work-lost' && this.#lossPendingEpoch === activeEpoch) this.#lossPendingEpoch = undefined;
 			return;
 		}
 		setImmediate(() => {
-			if (this.#activeEpoch !== activeEpoch) return;
-			if (this.#wake !== wake || (change === 'accepted-work-lost' && this.#shutdown)) {
+			if (this.#activeEpoch !== activeEpoch || this.#wake !== wake) {
 				if (change === 'accepted-work-lost' && this.#lossPendingEpoch === activeEpoch)
 					this.#lossPendingEpoch = undefined;
 				return;
@@ -632,31 +596,10 @@ function toFullTextMutationRecords(records: DerivedIndexBatch['records']): FullT
 	const deletes: string[] = [];
 	for (const record of records) {
 		const id = `${record.tableId}.${Buffer.from(record.recordKey, 'latin1').toString('base64url')}`;
-		if (record.state.kind === 'record') {
-			upserts.push({ id, fields: fullTextFields(record.state.projection) });
-		} else {
-			deletes.push(id);
-		}
+		if (record.state.kind === 'record') upserts.push({ id, fields: fullTextFields(record.state.projection) });
+		else deletes.push(id);
 	}
 	return { upserts, deletes };
-}
-
-function persistentEncodingError(error: unknown): boolean {
-	const code = errorCodeInChain(error);
-	return error instanceof TypeError || code === 'E_INVALID_ARGUMENT' || code === 'E_BATCH_TOO_LARGE';
-}
-
-function errorCodeInChain(error: unknown): string | undefined {
-	const seen = new Set<object>();
-	for (
-		let current = error;
-		current && typeof current === 'object';
-		current = 'cause' in current ? current.cause : undefined
-	) {
-		if (seen.has(current)) return;
-		seen.add(current);
-		if ('code' in current && typeof current.code === 'string') return current.code;
-	}
 }
 
 function logWarning(message: string, error: unknown): void {
@@ -668,7 +611,6 @@ function logError(message: string, error: unknown): void {
 }
 
 function log(level: 'warn' | 'error', message: string, error: unknown): void {
-	// Keep the optional binding path from eagerly loading Harper's full config graph.
 	void import('../utility/logging/logger.ts')
 		.then(({ loggerWithTag }) => loggerWithTag('fulltext-derived-index')[level]?.(message, error))
 		.catch(() => undefined);
@@ -744,6 +686,14 @@ function cloneCursor(cursor: DerivedIndexCursor | undefined): DerivedIndexCursor
 	return Object.freeze({ format: 1, logs });
 }
 
+function sameCursor(left: DerivedIndexCursor | undefined, right: DerivedIndexCursor | undefined): boolean {
+	if (!left || !right) return left === right;
+	const leftLogs = Object.entries(left.logs);
+	const rightLogs = Object.entries(right.logs);
+	if (leftLogs.length !== rightLogs.length) return false;
+	return leftLogs.every(([name, timestamp]) => right.logs[name] === timestamp);
+}
+
 function normalizedCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
 	if (!plainObject(cursor) || cursor.format !== 1 || !plainObject(cursor.logs))
 		throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid cursor');
@@ -763,16 +713,6 @@ function plainObject(value: unknown): value is Record<string, any> {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const prototype = Object.getPrototypeOf(value);
 	return prototype === Object.prototype || prototype === null;
-}
-
-function invalidGenerationError(error: unknown): boolean {
-	const seen = new Set<unknown>();
-	while (error && typeof error === 'object' && !seen.has(error)) {
-		if (error instanceof FullTextGenerationInvalidError) return true;
-		seen.add(error);
-		error = 'cause' in error ? error.cause : undefined;
-	}
-	return false;
 }
 
 function positiveInteger(value: number, name: string): number {

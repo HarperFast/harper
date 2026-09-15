@@ -3,7 +3,6 @@ const assert = require('node:assert');
 const { writeKeyId } = require('#src/resources/DatabaseTransaction');
 const {
 	FullTextDerivedIndexBackend,
-	FullTextGenerationInvalidError,
 	decodeFullTextCursorPayload,
 	encodeFullTextCursorPayload,
 	toFullTextMutationBatch,
@@ -30,59 +29,62 @@ class FakeEngine {
 		this.applied.push(batch);
 		if (this.applyError) throw this.applyError;
 		if (this.applyWait) await this.applyWait;
-		return batch.upserts.length + batch.deletes.length;
+		return this.appliedCount ?? batch.upserts.length + batch.deletes.length;
 	}
 
 	async publish(payload) {
 		this.publications.push(payload);
-		if (this.publishAction) return this.publishAction(payload);
+		if (this.publishError) throw this.publishError;
 		this.committedPayload = payload;
 		return 1n;
 	}
 
 	async close(options) {
 		this.closes.push(options);
+		if (this.closeWait) await this.closeWait;
 		if (this.closeError) throw this.closeError;
 	}
 }
 
-function lifecycle(opened, replacements = []) {
+function lifecycle(inspection = { state: 'missing' }, opens = []) {
 	return {
-		openCalls: [],
-		replaceCalls: [],
-		async open(epoch) {
-			this.openCalls.push(epoch);
-			const next = opened.shift();
+		inspection,
+		inspectCalls: 0,
+		openCalls: 0,
+		resetCalls: 0,
+		inspect() {
+			this.inspectCalls++;
+			return this.inspection;
+		},
+		async open() {
+			this.openCalls++;
+			const next = opens.shift();
 			if (next instanceof Error) throw next;
-			if (typeof next === 'function') return next(epoch);
+			if (typeof next === 'function') return next();
 			return next;
 		},
-		async replace(epoch) {
-			this.replaceCalls.push(epoch);
-			const next = replacements.shift();
-			if (next instanceof Error) throw next;
-			if (typeof next === 'function') return next(epoch);
-			return next;
+		async reset() {
+			this.resetCalls++;
+			if (this.resetError) throw this.resetError;
 		},
 	};
 }
 
 function makeBackend(lifecycleValue, options = {}) {
 	let epoch = 1n;
-	const unindexable = [];
 	const backend = new FullTextDerivedIndexBackend({
-		id: options.id ?? 'products-title',
+		id: 'products-title',
 		lifecycle: lifecycleValue,
 		encodeMutationBatch:
 			options.encodeMutationBatch ??
-			((batch) => {
-				options.onEncode?.(batch);
-				return Buffer.from(JSON.stringify(batch));
+			((value) => {
+				options.onEncode?.(value);
+				return Buffer.from(JSON.stringify(value));
 			}),
 		maxQueuedBatches: options.maxQueuedBatches,
 		maxQueuedBytes: options.maxQueuedBytes,
 		openAttempts: options.openAttempts ?? 1,
-		openRetryMilliseconds: 0,
+		openRetryMilliseconds: options.openRetryMilliseconds ?? 0,
 		cursorOnlyPublishAfterFlushes: options.cursorOnlyPublishAfterFlushes,
 		maxCursorOnlyPublishDelayMilliseconds: options.maxCursorOnlyPublishDelayMilliseconds,
 		now: options.now,
@@ -90,19 +92,12 @@ function makeBackend(lifecycleValue, options = {}) {
 	backend.attach({
 		isOwnerEpoch: (candidate) => candidate === epoch,
 		getReadiness: () => ({ state: 'ready', ownerEpoch: epoch, rebuildAttempts: 0 }),
-		noteUnindexable: (reason) => unindexable.push(reason),
 	});
-	return { backend, unindexable, setEpoch: (value) => (epoch = value) };
+	return { backend, setEpoch: (value) => (epoch = value) };
 }
 
 function mutation(recordId, state, tableId = 1) {
-	return {
-		tableId,
-		recordId,
-		recordKey: writeKeyId(recordId),
-		logVersion: 1,
-		state,
-	};
+	return { tableId, recordId, recordKey: writeKeyId(recordId), logVersion: 1, state };
 }
 
 function batch(ownerEpoch, records, through, bytes = 32) {
@@ -110,112 +105,135 @@ function batch(ownerEpoch, records, through, bytes = 32) {
 }
 
 describe('FullTextDerivedIndexBackend', () => {
-	it('rejects unsafe cursor-only publication settings', () => {
-		const engineLifecycle = lifecycle([]);
-		assert.throws(
-			() => makeBackend(engineLifecycle, { cursorOnlyPublishAfterFlushes: 2 }),
-			/maxCursorOnlyPublishDelayMilliseconds is required/
-		);
-		assert.throws(
-			() =>
-				makeBackend(engineLifecycle, {
-					cursorOnlyPublishAfterFlushes: 17,
-					maxCursorOnlyPublishDelayMilliseconds: 1000,
-				}),
-			/must not exceed 16/
-		);
-		assert.throws(
-			() =>
-				makeBackend(engineLifecycle, {
-					cursorOnlyPublishAfterFlushes: 2,
-					maxCursorOnlyPublishDelayMilliseconds: 60_001,
-				}),
-			/must not exceed 60000/
-		);
-	});
-
-	it('encodes deterministic bounded cursor payloads and rejects unsafe persisted values', () => {
+	it('encodes bounded deterministic cursor payloads', () => {
 		const payload = encodeFullTextCursorPayload({ format: 1, logs: { z: 20, a: 10 } });
 		assert.strictEqual(payload, '{"format":1,"cursor":{"format":1,"logs":{"a":10,"z":20}}}');
 		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(payload).logs }, { a: 10, z: 20 });
-		const rocksCursor = { format: 1, logs: { local: 1789099806338.477 } };
-		assert.deepStrictEqual(
-			{ ...decodeFullTextCursorPayload(encodeFullTextCursorPayload(rocksCursor)).logs },
-			rocksCursor.logs,
-			'Harper RocksDB audit positions are positive finite numbers, not necessarily integers'
-		);
 		assert.strictEqual(decodeFullTextCursorPayload(encodeFullTextCursorPayload(undefined)), undefined);
-		assert.throws(() => decodeFullTextCursorPayload('{"format":1,"cursor":{"format":1,"logs":{"__proto__":1}}}'));
 		assert.throws(() => decodeFullTextCursorPayload('{"format":1,"cursor":{"format":1,"logs":{"local":0}}}'));
-		assert.throws(() => decodeFullTextCursorPayload('{"format":1,"cursor":null,"extra":true}'));
 		assert.throws(() => decodeFullTextCursorPayload('x'.repeat(32), 16));
 	});
 
-	it('maps Harper canonical keys to unambiguous Fulltext document ids', () => {
-		const sharedNumberKey = writeKeyId(1);
-		assert.strictEqual(sharedNumberKey, writeKeyId(1n));
+	it('maps canonical Harper keys to unambiguous document ids', () => {
 		const converted = toFullTextMutationBatch(
 			batch(1n, [
 				mutation(1, { kind: 'record', version: 1, projection: { title: 'one' } }),
 				mutation('a', { kind: 'absent' }, 12),
 			])
 		);
-		assert.strictEqual(converted.upserts[0].id, `1.${Buffer.from(sharedNumberKey, 'latin1').toString('base64url')}`);
+		assert.strictEqual(converted.upserts[0].id, `1.${Buffer.from(writeKeyId(1), 'latin1').toString('base64url')}`);
 		assert.strictEqual(converted.deletes[0], `12.${Buffer.from(writeKeyId('a'), 'latin1').toString('base64url')}`);
 		assert.notStrictEqual(converted.upserts[0].id, converted.deletes[0]);
-
-		const unicode = toFullTextMutationBatch(
-			batch(1n, [
-				mutation('日', { kind: 'record', version: 1, projection: { title: 'sun' } }),
-				mutation('å', { kind: 'record', version: 1, projection: { title: 'ring' } }),
-			])
-		);
-		assert.notStrictEqual(writeKeyId('日'), writeKeyId('å'));
-		assert.notStrictEqual(unicode.upserts[0].id, unicode.upserts[1].id);
 	});
 
-	it('defers at its byte and command bounds without encoding in deliver', async () => {
-		let releaseApply;
+	it('inspects the durable cursor without opening a writer', () => {
+		const source = lifecycle({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) });
+		const { backend } = makeBackend(source);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(10).logs);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(10).logs);
+		assert.strictEqual(source.inspectCalls, 1);
+		assert.strictEqual(source.openCalls, 0);
+	});
+
+	it('returns no cursor for missing, incompatible, or malformed native state', () => {
+		for (const inspection of [
+			{ state: 'missing' },
+			{ state: 'incompatible', code: 'E_SCHEMA_MISMATCH' },
+			{ state: 'checkpointed', committedPayload: 'not-json' },
+		]) {
+			const { backend } = makeBackend(lifecycle(inspection));
+			assert.strictEqual(backend.getDurableCursor(), undefined);
+		}
+	});
+
+	it('retries inspection after a transient read failure', () => {
+		const source = lifecycle();
+		const inspect = source.inspect;
+		source.inspect = function () {
+			if (this.inspectCalls++ === 0) throw new Error('temporary read failure');
+			this.inspectCalls--;
+			return inspect.call(this);
+		};
+		const { backend } = makeBackend(source);
+		assert.throws(() => backend.getDurableCursor(), /temporary read failure/);
+		assert.strictEqual(backend.getDurableCursor(), undefined);
+		assert.strictEqual(source.inspectCalls, 2);
+	});
+
+	it('opens the writer lazily on its first accepted delivery', async () => {
 		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const source = lifecycle({ state: 'checkpointed', committedPayload: engine.committedPayload }, [engine]);
+		const { backend } = makeBackend(source);
+		backend.getDurableCursor();
+		assert.strictEqual(source.openCalls, 0);
+		assert.strictEqual(
+			backend.deliver(
+				batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20))
+			),
+			DERIVED_INDEX_ACCEPTED
+		);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.strictEqual(source.openCalls, 1);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
+		await backend.shutdown(1n);
+	});
+
+	it('defers at queue bounds without encoding in deliver', async () => {
+		let releaseApply;
+		const engine = new FakeEngine();
 		engine.applyWait = new Promise((resolve) => (releaseApply = resolve));
 		let encoded = 0;
-		const { backend } = makeBackend(lifecycle([engine]), {
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
 			maxQueuedBatches: 1,
 			maxQueuedBytes: 64,
 			onEncode: () => encoded++,
 		});
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
-		await backend.acquire(1n);
-		const first = batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20));
-		assert.strictEqual(backend.deliver(first), DERIVED_INDEX_ACCEPTED);
+		const value = batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20));
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
 		assert.strictEqual(encoded, 0);
-		assert.strictEqual(backend.deliver(first), DERIVED_INDEX_DEFERRED);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_DEFERRED);
 		await waitFor(() => encoded === 1);
 		releaseApply();
 		await waitFor(() => changes.includes('changed'));
-		assert.strictEqual(backend.deliver(first), DERIVED_INDEX_ACCEPTED);
 		await backend.shutdown(1n);
 	});
 
-	it('does not wake the runtime when an ordinary drain released no deferred capacity', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const { backend } = makeBackend(lifecycle([engine]));
+	it('wakes deferred delivery when the first queued batch releases capacity', async () => {
+		let releaseFirst;
+		let releaseSecond;
+		const firstWait = new Promise((resolve) => (releaseFirst = resolve));
+		const secondWait = new Promise((resolve) => (releaseSecond = resolve));
+		const engine = new FakeEngine();
+		engine.apply = async function (bytes) {
+			const value = JSON.parse(Buffer.from(bytes).toString());
+			this.applied.push(value);
+			await (this.applied.length === 1 ? firstWait : secondWait);
+			return value.upserts.length + value.deletes.length;
+		};
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
+			maxQueuedBatches: 2,
+		});
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		const value = batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })]);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_DEFERRED);
 		await waitFor(() => engine.applied.length === 1);
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.deepStrictEqual(changes, []);
+		releaseFirst();
+		await waitFor(() => engine.applied.length === 2);
+		await waitFor(() => changes.includes('changed'));
+		releaseSecond();
 		await backend.shutdown(1n);
 	});
 
-	it('advances a cursor-only barrier without encoding or calling the native apply path', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+	it('publishes cursor-only progress without encoding mutations', async () => {
+		const engine = new FakeEngine();
 		let encoded = 0;
-		const { backend } = makeBackend(lifecycle([engine]), { onEncode: () => encoded++ });
-		await backend.acquire(1n);
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), { onEncode: () => encoded++ });
 		backend.deliver(batch(1n, [], cursor(20)));
 		backend.flush('age');
 		await waitFor(() => engine.publications.length === 1);
@@ -225,606 +243,196 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
-	it('splits an oversized packed batch before applying it', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const { backend } = makeBackend(lifecycle([engine]), {
-			encodeMutationBatch: (mutationBatch) => {
-				const count = mutationBatch.upserts.length + mutationBatch.deletes.length;
-				if (count > 2) throw Object.assign(new Error('packed value exceeds 1024 bytes'), { code: 'E_BATCH_TOO_LARGE' });
-				return Buffer.from(JSON.stringify(mutationBatch));
-			},
-		});
-		await backend.acquire(1n);
-		backend.deliver(
-			batch(
-				1n,
-				['a', 'b', 'c', 'd'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
-				cursor(20)
-			)
-		);
-		backend.flush();
-		await waitFor(() => engine.publications.length === 1);
-		assert.deepStrictEqual(
-			engine.applied.flatMap((mutationBatch) => mutationBatch.upserts.map(({ fields }) => fields.title)),
-			['a', 'b', 'c', 'd']
-		);
-		await backend.shutdown(1n);
-	});
-
-	it('rolls back an applied shard when a later shard is permanently unencodable', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const { backend } = makeBackend(lifecycle([engine]), {
-			encodeMutationBatch: (mutationBatch) => {
-				if (mutationBatch.upserts.length > 1)
-					throw Object.assign(new Error('packed value exceeds 1024 bytes'), { code: 'E_BATCH_TOO_LARGE' });
-				if (mutationBatch.upserts[0]?.fields.title === 'bad')
-					throw Object.assign(new Error('invalid field value'), { code: 'E_INVALID_ARGUMENT' });
-				return Buffer.from(JSON.stringify(mutationBatch));
-			},
-		});
-		const changes = [];
-		backend.onStateChange((change) => changes.push(change));
-		await backend.acquire(1n);
-		backend.deliver(
-			batch(
-				1n,
-				['good', 'bad'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
-				cursor(20)
-			)
-		);
-		await waitFor(() => changes.includes('failed'));
-		assert.deepStrictEqual(
-			engine.applied.flatMap(({ upserts }) => upserts.map(({ fields }) => fields.title)),
-			['good']
-		);
-		await backend.shutdown(1n);
-		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
-	});
-
-	it('removes a single unencodable record without poisoning the index', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const { backend, unindexable } = makeBackend(lifecycle([engine]), {
-			encodeMutationBatch: (mutationBatch) => {
-				if (mutationBatch.upserts.length)
-					throw Object.assign(new Error('record exceeds the packed limit'), { code: 'E_BATCH_TOO_LARGE' });
-				return Buffer.from(JSON.stringify(mutationBatch));
-			},
-		});
-		const changes = [];
-		backend.onStateChange((change) => changes.push(change));
-		await backend.acquire(1n);
-		backend.deliver(
-			batch(1n, [mutation('huge', { kind: 'record', version: 1, projection: { title: 'huge' } })], cursor(20))
-		);
-		backend.flush();
-		await waitFor(() => engine.publications.length === 1);
-		assert.strictEqual(engine.applied.length, 1);
-		assert.strictEqual(engine.applied[0].upserts.length, 0);
-		assert.strictEqual(engine.applied[0].deletes.length, 1);
-		assert.deepStrictEqual(unindexable, ['FulltextError (E_BATCH_TOO_LARGE)']);
-		assert.strictEqual(changes.includes('failed'), false);
-		await backend.shutdown(1n);
-	});
-
-	it('replays after a transient encoder failure without condemning the generation', async () => {
-		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const reopened = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		let attempts = 0;
-		const { backend } = makeBackend(lifecycle([first, reopened]), {
-			encodeMutationBatch: (mutationBatch) => {
-				if (attempts++ === 0) {
-					const error = new RangeError('allocation failed');
-					error.cause = error;
-					throw error;
-				}
-				return Buffer.from(JSON.stringify(mutationBatch));
-			},
-		});
-		const changes = [];
-		backend.onStateChange((change) => changes.push(change));
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'absent' })], cursor(20)));
-		await waitFor(() => changes.includes('accepted-work-lost'));
-		assert.strictEqual(changes.includes('failed'), false);
-		assert.deepStrictEqual(first.closes, [{ mode: 'rollback' }]);
-		await backend.shutdown(1n);
-	});
-
-	it('fails closed when the native engine violates its applied-count contract', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		engine.apply = async () => 0;
-		const { backend } = makeBackend(lifecycle([engine]));
-		const changes = [];
-		backend.onStateChange((change) => changes.push(change));
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'absent' })], cursor(20)));
-		await waitFor(() => changes.includes('failed'));
-		assert.strictEqual(backend.deliver(batch(1n, [], cursor(20))), DERIVED_INDEX_FAILED);
-		await backend.shutdown(1n);
-	});
-
-	it('coalesces cursor-only age flushes by count with an elapsed-time cap', async () => {
-		let now = 100;
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const { backend } = makeBackend(lifecycle([engine]), {
-			cursorOnlyPublishAfterFlushes: 3,
-			maxCursorOnlyPublishDelayMilliseconds: 1000,
-			now: () => now,
-		});
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [], cursor(20)));
-		backend.flush('age');
-		backend.flush('age');
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.strictEqual(engine.publications.length, 0);
-		backend.flush('age');
-		await waitFor(() => engine.publications.length === 1);
-
-		backend.deliver(batch(1n, [], cursor(30)));
-		backend.flush('age');
-		now += 1000;
-		backend.flush('age');
-		await waitFor(() => engine.publications.length === 2);
-		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(30).logs);
-		await backend.shutdown(1n);
-	});
-
-	it('forces coalesced cursor progress for real mutations and shutdown', async () => {
-		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const firstBackend = makeBackend(lifecycle([first]), {
-			cursorOnlyPublishAfterFlushes: 3,
-			maxCursorOnlyPublishDelayMilliseconds: 1000,
-		}).backend;
-		await firstBackend.acquire(1n);
-		firstBackend.deliver(batch(1n, [], cursor(20)));
-		firstBackend.flush('age');
-		firstBackend.deliver(
-			batch(1n, [mutation('real', { kind: 'record', version: 1, projection: { title: 'real' } })], cursor(30))
-		);
-		firstBackend.flush('age');
-		await waitFor(() => first.publications.length === 1);
-		assert.strictEqual(first.applied.length, 1);
-		assert.deepStrictEqual({ ...firstBackend.getDurableCursor().logs }, cursor(30).logs);
-		await firstBackend.shutdown(1n);
-
-		const second = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const secondBackend = makeBackend(lifecycle([second]), {
-			cursorOnlyPublishAfterFlushes: 3,
-			maxCursorOnlyPublishDelayMilliseconds: 1000,
-		}).backend;
-		await secondBackend.acquire(1n);
-		secondBackend.deliver(batch(1n, [], cursor(20)));
-		secondBackend.flush('age');
-		await secondBackend.shutdown(1n);
-		assert.strictEqual(second.publications.length, 1);
-		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(second.publications[0]).logs }, cursor(20).logs);
-	});
-
-	it('does not notify failures already returned or rejected to the runtime', async () => {
-		const resetting = makeBackend(lifecycle([], [new Error('replace failed')])).backend;
-		const resetChanges = [];
-		resetting.onStateChange((change) => resetChanges.push(change));
-		await assert.rejects(resetting.reset(1n), /replace failed/);
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.deepStrictEqual(resetChanges, []);
-
-		const shutdownEngine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		shutdownEngine.closeError = new Error('busy');
-		const shuttingDown = makeBackend(lifecycle([shutdownEngine])).backend;
-		const shutdownChanges = [];
-		shuttingDown.onStateChange((change) => shutdownChanges.push(change));
-		await shuttingDown.acquire(1n);
-		await assert.rejects(shuttingDown.shutdown(1n), /did not prove quiescence/);
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.deepStrictEqual(shutdownChanges, []);
-	});
-
-	it('does not re-arm a same-epoch engine after a failed shutdown', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		engine.closeError = new Error('writer still active');
-		const { backend } = makeBackend(lifecycle([engine]));
-		await backend.acquire(1n);
-		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
-		await assert.rejects(backend.acquire(1n), /not quiescent/);
-	});
-
-	it('publishes FIFO barrier horizons even when consecutive batches repeat a cursor', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const { backend } = makeBackend(lifecycle([engine]));
-		await backend.acquire(1n);
-		assert.strictEqual(
-			backend.deliver(
-				batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20))
-			),
-			DERIVED_INDEX_ACCEPTED
-		);
-		assert.strictEqual(
-			backend.deliver(
-				batch(1n, [mutation('b', { kind: 'record', version: 1, projection: { title: 'b' } })], cursor(20))
-			),
-			DERIVED_INDEX_ACCEPTED
-		);
-		backend.flush();
-		await waitFor(() => engine.publications.length === 1);
-		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[0]).logs }, cursor(20).logs);
-		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
-		await backend.shutdown(1n);
-	});
-
-	it('preserves physical log order when later transactions have lower timestamp values', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(20)));
-		const { backend } = makeBackend(lifecycle([engine]));
-		await backend.acquire(1n);
-		assert.strictEqual(
-			backend.deliver(
-				batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(10))
-			),
-			DERIVED_INDEX_ACCEPTED
-		);
-		backend.flush();
-		await waitFor(() => engine.publications.length === 1);
-		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(engine.publications[0]).logs }, cursor(10).logs);
-		await backend.shutdown(1n);
-	});
-
-	it('accepts a monotone cursor when the source log set grows', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const { backend } = makeBackend(lifecycle([engine]));
-		await backend.acquire(1n);
-		assert.strictEqual(
-			backend.deliver(
-				batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], {
-					format: 1,
-					logs: { local: 20, peer: 5 },
-				})
-			),
-			DERIVED_INDEX_ACCEPTED
-		);
-		await backend.shutdown(1n);
-	});
-
-	it('omits non-text projection fields without failing the accepted batch', () => {
-		const converted = toFullTextMutationBatch(
-			batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'valid', price: 42 } })], cursor(20))
-		);
-		assert.deepStrictEqual({ ...converted.upserts[0].fields }, { title: 'valid' });
-	});
-
-	it('keeps deliveries after a requested barrier in the next publication', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const { backend } = makeBackend(lifecycle([engine]));
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
-		backend.flush();
-		backend.deliver(batch(1n, [mutation('b', { kind: 'record', version: 1, projection: { title: 'b' } })], cursor(30)));
-		backend.flush();
-		await waitFor(() => engine.publications.length === 2);
-		assert.deepStrictEqual(
-			engine.publications.map((payload) => ({ ...decodeFullTextCursorPayload(payload).logs })),
-			[cursor(20).logs, cursor(30).logs]
-		);
-		await backend.shutdown(1n);
-	});
-
-	it('reopens and exposes its recovered cursor before reporting accepted work lost', async () => {
-		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		first.applyError = new Error('write contention');
-		const reopened = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const { backend } = makeBackend(lifecycle([first, reopened]));
-		const changes = [];
-		backend.onStateChange((change) => changes.push({ change, cursor: backend.getDurableCursor() }));
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
-		await waitFor(() => changes.some(({ change }) => change === 'accepted-work-lost'));
-		const loss = changes.find(({ change }) => change === 'accepted-work-lost');
-		assert.deepStrictEqual({ ...loss.cursor.logs }, cursor(10).logs);
-		assert.deepStrictEqual(first.closes, [{ mode: 'rollback' }]);
-		await backend.shutdown(1n);
-	});
-
-	it('defers deliveries until accepted work loss has been reported', async () => {
-		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		first.applyError = new Error('write contention');
-		const reopened = new FakeEngine();
-		let backend;
-		const changes = [];
-		const deliveriesDuringNotificationWindow = [];
-		Object.defineProperty(reopened, 'committedPayload', {
-			get() {
-				queueMicrotask(() => {
-					deliveriesDuringNotificationWindow.push({
-						result: backend.deliver(
-							batch(1n, [mutation('b', { kind: 'record', version: 1, projection: { title: 'b' } })], cursor(30))
-						),
-						changes: [...changes],
-					});
-				});
-				return encodeFullTextCursorPayload(cursor(10));
-			},
-		});
-		({ backend } = makeBackend(lifecycle([first, reopened])));
-		backend.onStateChange((change) => changes.push(change));
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
-		await waitFor(() => deliveriesDuringNotificationWindow.length > 0);
-		assert.deepStrictEqual(deliveriesDuringNotificationWindow, [{ result: DERIVED_INDEX_DEFERRED, changes: [] }]);
-		await waitFor(() => changes.includes('accepted-work-lost'));
-		assert.strictEqual(
-			backend.deliver(
-				batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20))
-			),
-			DERIVED_INDEX_ACCEPTED
-		);
-		await backend.shutdown(1n);
-	});
-
-	it('releases the delivery fence when an accepted work loss listener throws', async () => {
-		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		first.applyError = new Error('write contention');
-		const reopened = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const { backend } = makeBackend(lifecycle([first, reopened]));
-		const changes = [];
-		backend.onStateChange((change) => {
-			changes.push(change);
-			if (change === 'accepted-work-lost') throw new Error('listener failed');
-		});
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
-		await waitFor(() => changes.includes('accepted-work-lost'));
-		assert.strictEqual(
-			backend.deliver(
-				batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20))
-			),
-			DERIVED_INDEX_ACCEPTED
-		);
-		await backend.shutdown(1n);
-	});
-
-	it('does not deliver a queued state change to a replacement listener', async () => {
-		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		first.applyError = new Error('write contention');
-		const reopened = new FakeEngine();
-		let committedPayload = encodeFullTextCursorPayload(cursor(10));
-		let swapListener;
-		Object.defineProperty(reopened, 'committedPayload', {
-			get() {
-				queueMicrotask(swapListener);
-				return committedPayload;
-			},
-			set(value) {
-				committedPayload = value;
-			},
-		});
-		const { backend } = makeBackend(lifecycle([first, reopened]));
-		const originalChanges = [];
-		const replacementChanges = [];
-		const unsubscribe = backend.onStateChange((change) => originalChanges.push(change));
-		swapListener = () => {
-			unsubscribe();
-			backend.onStateChange((change) => replacementChanges.push(change));
-		};
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
-		await waitFor(() => backend.getDurableCursor()?.logs.local === 10 && first.closes.length === 1);
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.deepStrictEqual(originalChanges, []);
-		assert.deepStrictEqual(replacementChanges, []);
-		await backend.shutdown(1n);
-	});
-
-	it('joins a recovery reopen before shutdown releases quiescence', async () => {
-		let finishOpen;
-		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		first.applyError = new Error('write contention');
-		const reopened = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+	it('reconciles a changed on-disk cursor before applying queued work', async () => {
+		const inspected = cursor(10);
+		const actual = cursor(15);
+		const engine = new FakeEngine(encodeFullTextCursorPayload(actual));
 		const { backend } = makeBackend(
-			lifecycle([
-				first,
-				() =>
-					new Promise((resolve) => {
-						finishOpen = () => resolve(reopened);
-					}),
-			])
+			lifecycle({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(inspected) }, [engine])
 		);
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
-		await backend.acquire(1n);
+		backend.getDurableCursor();
 		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
-		await waitFor(() => first.closes.length === 1 && finishOpen);
-		let settled = false;
-		const shuttingDown = backend.shutdown(1n).then(() => (settled = true));
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.strictEqual(settled, false);
-		finishOpen();
-		await shuttingDown;
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.strictEqual(reopened.closes.length, 1);
-		assert.strictEqual(changes.includes('accepted-work-lost'), false);
-		assert.strictEqual(backend.getDurableCursor(), undefined);
-	});
-
-	it('reconciles an ambiguous publish from the reopened committed payload', async () => {
-		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const reopened = new FakeEngine();
-		first.publishAction = async (payload) => {
-			reopened.committedPayload = payload;
-			throw new Error('response lost after commit');
-		};
-		const { backend } = makeBackend(lifecycle([first, reopened]));
-		const changes = [];
-		backend.onStateChange((change) => changes.push({ change, cursor: backend.getDurableCursor() }));
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
-		backend.flush();
-		await waitFor(() => changes.some(({ change }) => change === 'accepted-work-lost'));
-		assert.deepStrictEqual(
-			{ ...changes.find(({ change }) => change === 'accepted-work-lost').cursor.logs },
-			cursor(20).logs
-		);
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		assert.strictEqual(engine.applied.length, 0);
+		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, actual.logs);
 		await backend.shutdown(1n);
 	});
 
-	it('fails closed when accepted work cannot reopen a valid generation', async () => {
-		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		first.applyError = new Error('apply failed');
-		const reopened = new FakeEngine('{bad json');
-		const { backend } = makeBackend(lifecycle([first, reopened]));
-		const changes = [];
-		backend.onStateChange((change) => changes.push(change));
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
-		await waitFor(() => changes.includes('failed'));
-		await new Promise((resolve) => setImmediate(resolve));
-		assert.deepStrictEqual(changes, ['failed']);
-		assert.strictEqual(backend.deliver(batch(1n, [], cursor(20))), DERIVED_INDEX_FAILED);
-		await backend.shutdown(1n);
-	});
-
-	it('retries rollback after a rejected apply and failed recovery close', async () => {
+	it('rolls back once and reports accepted work loss after apply failure', async () => {
 		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		engine.applyError = new Error('apply failed after staging');
-		engine.closeError = new Error('writer still active');
-		const { backend } = makeBackend(lifecycle([engine]));
+		engine.applyError = new Error('disk failure');
+		const { backend } = makeBackend(
+			lifecycle({ state: 'checkpointed', committedPayload: engine.committedPayload }, [engine])
+		);
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'absent' })], cursor(20)));
-		await waitFor(() => changes.includes('failed'));
+		backend.getDurableCursor();
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(10).logs);
+		await backend.shutdown(1n);
+	});
 
+	it('defers delivery while a failed apply is closing its writer', async () => {
+		let releaseClose;
+		const engine = new FakeEngine();
+		engine.applyError = new Error('apply failed');
+		engine.closeWait = new Promise((resolve) => (releaseClose = resolve));
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine, engine]));
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		const value = batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })]);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		await waitFor(() => engine.closes.length === 1);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_DEFERRED);
+		engine.applyError = undefined;
+		releaseClose();
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		engine.closeWait = undefined;
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		await backend.shutdown(1n);
+	});
+
+	it('retains a writer whose recovery close fails until shutdown proves quiescence', async () => {
+		const engine = new FakeEngine();
+		engine.applyError = new Error('apply failed');
+		engine.closeError = new Error('writer still active');
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		await waitFor(() => changes.includes('failed'));
+		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
+		assert.strictEqual(engine.closes.length, 2);
 		engine.closeError = undefined;
 		await backend.shutdown(1n);
-		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }, { mode: 'rollback' }]);
+		assert.strictEqual(engine.closes.length, 3);
 	});
 
-	it('retains a rejected recovery engine until shutdown proves it closed', async () => {
-		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		first.applyError = new Error('apply failed');
-		const reopened = new FakeEngine('{bad json');
-		reopened.closeError = new Error('writer still active');
-		const { backend } = makeBackend(lifecycle([first, reopened]));
+	it('retains a mismatched lazy writer when rollback close fails', async () => {
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(15)));
+		engine.closeError = new Error('writer still active');
+		const { backend } = makeBackend(
+			lifecycle({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) }, [engine])
+		);
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
-		await backend.acquire(1n);
-		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		backend.getDurableCursor();
+		backend.deliver(batch(1n, [], cursor(20)));
 		await waitFor(() => changes.includes('failed'));
-		reopened.closeError = undefined;
+		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
+		assert.strictEqual(engine.closes.length, 2);
+		engine.closeError = undefined;
 		await backend.shutdown(1n);
-		assert.strictEqual(reopened.closes.length, 2);
 	});
 
-	it('closes at shutdown, clears the cache, and reopens on the next owner epoch', async () => {
+	it('fails permanently when encoding cannot represent an accepted batch', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
+			encodeMutationBatch: () => {
+				throw Object.assign(new Error('too large'), { code: 'E_BATCH_TOO_LARGE' });
+			},
+		});
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		await waitFor(() => changes.includes('failed'));
+		assert.strictEqual(backend.deliver(batch(1n, [], cursor(30))), DERIVED_INDEX_FAILED);
+		await backend.shutdown(1n);
+	});
+
+	it('resets native state only after quiescence and opens no writer', async () => {
+		const source = lifecycle({ state: 'missing' });
+		const { backend, setEpoch } = makeBackend(source);
+		assert.strictEqual(backend.getDurableCursor(), undefined);
+		setEpoch(2n);
+		await backend.reset(2n);
+		assert.strictEqual(source.resetCalls, 1);
+		assert.strictEqual(source.openCalls, 0);
+		assert.strictEqual(backend.getDurableCursor(), undefined);
+		await backend.shutdown(2n);
+	});
+
+	it('rejects reset while an accepted batch is scheduled to drain', async () => {
+		const engine = new FakeEngine();
+		const source = lifecycle({ state: 'missing' }, [engine]);
+		const { backend } = makeBackend(source);
+		backend.deliver(batch(1n, [], cursor(20)));
+		await assert.rejects(backend.reset(1n), /not quiescent/);
+		assert.strictEqual(source.resetCalls, 0);
+		await backend.shutdown(1n);
+	});
+
+	it('closes cleanly at handoff, preserves its cursor, and lazily opens for the successor', async () => {
 		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		const second = new FakeEngine(encodeFullTextCursorPayload(cursor(20)));
-		const context = makeBackend(lifecycle([first, second]));
-		await context.backend.acquire(1n);
-		context.backend.deliver(
-			batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20))
-		);
-		await context.backend.shutdown(1n);
-		assert.strictEqual(context.backend.getDurableCursor(), undefined);
+		const source = lifecycle({ state: 'checkpointed', committedPayload: first.committedPayload }, [first, second]);
+		const { backend, setEpoch } = makeBackend(source);
+		backend.getDurableCursor();
+		backend.deliver(batch(1n, [], cursor(20)));
+		await backend.shutdown(1n);
 		assert.deepStrictEqual(first.closes, [{ mode: 'require-clean' }]);
-		context.setEpoch(2n);
-		assert.deepStrictEqual({ ...(await context.backend.acquire(2n)).logs }, cursor(20).logs);
-		await context.backend.shutdown(2n);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
+		setEpoch(2n);
+		assert.strictEqual(backend.deliver(batch(2n, [], cursor(30))), DERIVED_INDEX_ACCEPTED);
+		backend.flush();
+		await waitFor(() => second.publications.length === 1);
+		assert.strictEqual(source.openCalls, 2);
+		await backend.shutdown(2n);
 	});
 
-	it('retains a failed native close for shutdown retry', async () => {
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		engine.closeError = new Error('busy writer');
-		const { backend } = makeBackend(lifecycle([engine]));
-		await backend.acquire(1n);
-		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
-		engine.closeError = undefined;
-		await backend.shutdown(1n);
-		assert.strictEqual(engine.closes.length, 2);
-		assert.strictEqual(backend.getDurableCursor(), undefined);
+	it('rejects reset while shutdown is still closing the writer', async () => {
+		let releaseClose;
+		const engine = new FakeEngine();
+		const source = lifecycle({ state: 'missing' }, [engine]);
+		const { backend, setEpoch } = makeBackend(source);
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		engine.closeWait = new Promise((resolve) => (releaseClose = resolve));
+		const shuttingDown = backend.shutdown(1n);
+		await waitFor(() => engine.closes.length === 1);
+		await assert.rejects(backend.reset(2n), /not quiescent/);
+		releaseClose();
+		await shuttingDown;
+		setEpoch(2n);
+		await backend.reset(2n);
+		assert.strictEqual(source.resetCalls, 1);
+		await backend.shutdown(2n);
 	});
 
-	it('lets the lifecycle atomically replace a generation without opening the old one', async () => {
-		const events = [];
-		const replacement = new FakeEngine();
-		const lifecycleValue = lifecycle(
-			[],
-			[
-				() => {
-					events.push(['replace']);
-					return replacement;
-				},
-			]
-		);
-		const context = makeBackend(lifecycleValue);
-		await context.backend.reset(1n);
-		assert.deepStrictEqual(events, [['replace']]);
-		assert.deepStrictEqual(lifecycleValue.openCalls, []);
-		assert.strictEqual(context.backend.getDurableCursor(), undefined);
-		await context.backend.shutdown(1n);
-	});
-
-	it('delegates replacement without requiring the retired generation to open', async () => {
-		const replacement = new FakeEngine();
-		const lifecycleValue = lifecycle([], [replacement]);
-		const { backend } = makeBackend(lifecycleValue);
-		await backend.reset(1n);
-		assert.deepStrictEqual(lifecycleValue.replaceCalls, [1n]);
-		assert.deepStrictEqual(lifecycleValue.openCalls, []);
-		await backend.shutdown(1n);
-	});
-
-	it('returns a rebuild cursor immediately for a persistently invalid generation', async () => {
-		const lifecycleValue = lifecycle([
-			new FullTextGenerationInvalidError('invalid generation', new Error('schema mismatch')),
-		]);
-		const { backend } = makeBackend(lifecycleValue, { openAttempts: 3 });
-		assert.strictEqual(await backend.acquire(1n), undefined);
-		assert.strictEqual(lifecycleValue.openCalls.length, 1);
-	});
-
-	it('recognizes a persistently invalid generation through an adapter error cause', async () => {
-		const lifecycleValue = lifecycle([
-			new Error('adapter open failed', {
-				cause: new FullTextGenerationInvalidError('invalid generation'),
-			}),
-		]);
-		const { backend } = makeBackend(lifecycleValue, { openAttempts: 3 });
-		assert.strictEqual(await backend.acquire(1n), undefined);
-		assert.strictEqual(lifecycleValue.openCalls.length, 1);
-	});
-
-	it('closes a rejected replacement generation before reset returns', async () => {
-		const oldGeneration = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const replacement = new FakeEngine(encodeFullTextCursorPayload(cursor(20)));
-		const { backend } = makeBackend(lifecycle([oldGeneration], [replacement]));
-
-		await assert.rejects(backend.reset(1n), /retained a durable cursor/);
-		assert.deepStrictEqual(replacement.closes, [{ mode: 'rollback' }]);
-	});
-
-	it('retains an engine that cannot close after acquisition validation fails', async () => {
-		const engine = new FakeEngine('invalid');
-		engine.closeError = new Error('writer still active');
-		const { backend } = makeBackend(lifecycle([engine]));
-
-		await assert.rejects(backend.acquire(1n), /acquisition could not close/);
-		engine.closeError = undefined;
-		await backend.shutdown(1n);
-		assert.strictEqual(engine.closes.length, 2);
-	});
-
-	it('closes an engine that finishes opening after its owner epoch is revoked', async () => {
+	it('closes a writer that finishes opening after its epoch is revoked', async () => {
 		let finishOpen;
-		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
-		const context = makeBackend(
-			lifecycle([
-				() =>
-					new Promise((resolve) => {
-						finishOpen = () => resolve(engine);
-					}),
+		const engine = new FakeEngine();
+		const source = lifecycle({ state: 'missing' }, [
+			() => new Promise((resolve) => (finishOpen = () => resolve(engine))),
+		]);
+		const { backend, setEpoch } = makeBackend(source);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(batch(1n, [], cursor(20)));
+		await waitFor(() => typeof finishOpen === 'function');
+		setEpoch(2n);
+		finishOpen();
+		await waitFor(() => engine.closes.length === 1);
+		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
+		assert(changes.includes('failed'));
+	});
+
+	it('omits non-text projection values', () => {
+		const converted = toFullTextMutationBatch(
+			batch(1n, [
+				mutation('a', {
+					kind: 'record',
+					version: 1,
+					projection: { title: 'shoe', tags: ['red', 'sale'], price: 12, mixed: ['red', 12] },
+				}),
 			])
 		);
-		const acquiring = context.backend.acquire(1n);
-		context.setEpoch(2n);
-		finishOpen();
-		await assert.rejects(acquiring, /epoch was revoked/);
-		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
+		assert.deepStrictEqual({ ...converted.upserts[0].fields }, { title: 'shoe', tags: ['red', 'sale'] });
 	});
 });

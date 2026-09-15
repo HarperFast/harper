@@ -167,7 +167,7 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			},
 			binding,
 		};
-		const backend = createNativeFullTextDerivedIndexBackend({
+		const backend = await createNativeFullTextDerivedIndexBackend({
 			id: 'rocks-fulltext-products',
 			...lifecycleOptions,
 		});
@@ -205,18 +205,20 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 
 			await unregister();
 			unregister = undefined;
-			const reopened = await new NativeFullTextDerivedIndexLifecycle(lifecycleOptions).open(2n);
+			const reopened = new NativeFullTextDerivedIndexLifecycle(lifecycleOptions);
+			await reopened.initialize();
+			const inspection = reopened.inspect();
+			assert.strictEqual(inspection.state, 'checkpointed');
 			const state = binding.states.get(binding.opens.at(-1).generation);
 			const documentId = `${Product.tableId}.${Buffer.from('p1').toString('base64url')}`;
 			assert.deepStrictEqual(state.documents.get(documentId), {
 				id: documentId,
 				fields: { title: 'first product' },
 			});
-			const storedCursor = decodeFullTextCursorPayload(reopened.committedPayload);
+			const storedCursor = decodeFullTextCursorPayload(inspection.committedPayload);
 			assert.strictEqual(storedCursor.logs.local, p1Cursor);
 			assert(storedCursor.logs.local > anchor, 'the durable cursor advanced beyond the seeded anchor');
 			assert.strictEqual(state.applications, 1);
-			await reopened.close({ mode: 'require-clean' });
 		} finally {
 			if (unregister) await unregister();
 			await runtime.stop();
@@ -250,12 +252,17 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			},
 			binding,
 		};
-		const seeded = await new NativeFullTextDerivedIndexLifecycle(lifecycleOptions).replace(1n);
+		const seededLifecycle = new NativeFullTextDerivedIndexLifecycle(lifecycleOptions);
+		await seededLifecycle.initialize();
+		const seeded = await seededLifecycle.open();
 		await seeded.close({ mode: 'rollback' });
 		const staleGeneration = binding.opens.at(-1).generation;
-		binding.failNextOpenCode = 'E_SCHEMA_MISMATCH';
+		binding.inspectError = 'E_SCHEMA_MISMATCH';
 
-		const backend = createNativeFullTextDerivedIndexBackend({ id: 'invalid-generation-products', ...lifecycleOptions });
+		const backend = await createNativeFullTextDerivedIndexBackend({
+			id: 'invalid-generation-products',
+			...lifecycleOptions,
+		});
 		runtime = new DerivedIndexRuntime(
 			Product.auditStore,
 			(_tableId, recordId) => {
@@ -279,7 +286,8 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 		try {
 			await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 10_000 });
 			const selectedGeneration = binding.opens.at(-1).generation;
-			assert.notStrictEqual(selectedGeneration, staleGeneration);
+			assert.strictEqual(selectedGeneration, staleGeneration);
+			assert.strictEqual(binding.resets, 1);
 			const documentId = `${Product.tableId}.${Buffer.from('p1').toString('base64url')}`;
 			assert.deepStrictEqual(binding.states.get(selectedGeneration).documents.get(documentId), {
 				id: documentId,
@@ -297,13 +305,14 @@ class FakeNativeFullTextModule {
 	constructor() {
 		this.states = new Map();
 		this.opens = [];
+		this.resets = 0;
 	}
 
 	async runtimeInfo() {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 2,
+			nativeAbiVersion: 4,
 			storageBackends: ['native'],
 		};
 	}
@@ -312,13 +321,28 @@ class FakeNativeFullTextModule {
 		return Buffer.from(JSON.stringify(batch));
 	}
 
+	inspectNativeFullTextIndex(options) {
+		if (this.inspectError) {
+			const code = this.inspectError;
+			this.inspectError = undefined;
+			return { state: 'incompatible', code };
+		}
+		const state = this.states.get(options.generation);
+		return state?.committedPayload
+			? { state: 'checkpointed', committedPayload: state.committedPayload }
+			: state
+				? { state: 'cursorless' }
+				: { state: 'missing' };
+	}
+
+	async resetNativeFullTextIndex() {
+		this.resets++;
+		this.states.clear();
+		return { state: 'missing' };
+	}
+
 	async openNativeFullTextIndex(options) {
 		this.opens.push(options);
-		if (this.failNextOpenCode) {
-			const code = this.failNextOpenCode;
-			this.failNextOpenCode = undefined;
-			throw Object.assign(new Error(code), { code });
-		}
 		let state = this.states.get(options.generation);
 		if (!state) {
 			state = { documents: new Map(), applications: 0, publications: 0, committedPayload: undefined };
