@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const script = join(root, 'build-tools/check-shrinkwrap-pins.mjs');
-const dependencies = ['@harperfast/rocksdb-js', 'fastify', 'argon2'];
+const dependencies = ['@harperfast/rocksdb-js', 'fastify', 'systeminformation'];
 const alignedDependencies = {
 	'@harperfast/extended-iterable': '1.0.3',
 	'msgpackr': '2.0.6',
@@ -42,7 +42,7 @@ describe('shrinkwrap pin canaries', function () {
 		const fixture = await createFixture({
 			'@harperfast/rocksdb-js': '2.7.1',
 			'fastify': '^5.8.2',
-			'argon2': '0.45.1',
+			'systeminformation': '^5.31.4',
 		});
 		try {
 			await writeFile(
@@ -64,7 +64,7 @@ describe('shrinkwrap pin canaries', function () {
 		const fixture = await createFixture({
 			'@harperfast/rocksdb-js': '2.7.1',
 			'fastify': '^5.8.2',
-			'argon2': '0.45.1',
+			'systeminformation': '^5.31.4',
 		});
 		try {
 			await writeFile(
@@ -86,7 +86,7 @@ describe('shrinkwrap pin canaries', function () {
 		const fixture = await createFixture({
 			'@harperfast/rocksdb-js': '2.7.1',
 			'fastify': '^5.8.2',
-			'argon2': '0.45.1',
+			'systeminformation': '^5.31.4',
 		});
 		try {
 			await writeFile(
@@ -108,7 +108,7 @@ describe('shrinkwrap pin canaries', function () {
 		const fixture = await createFixture({
 			'@harperfast/rocksdb-js': '2.7.1',
 			'fastify': '^5.8.2',
-			'argon2': '0.45.1',
+			'systeminformation': '^5.31.4',
 			'msgpackr': '^2.0.6',
 		});
 		try {
@@ -125,7 +125,7 @@ describe('shrinkwrap pin canaries', function () {
 			const fixture = await createFixture({
 				'@harperfast/rocksdb-js': '2.7.1',
 				'fastify': '^5.8.2',
-				'argon2': '0.45.1',
+				'systeminformation': '^5.31.4',
 			});
 			try {
 				const nestedDir = join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js/node_modules', dependency);
@@ -145,7 +145,7 @@ describe('shrinkwrap pin canaries', function () {
 		const fixture = await createFixture({
 			'@harperfast/rocksdb-js': '2.7.1',
 			'fastify': '^5.8.2',
-			'argon2': '0.45.1',
+			'systeminformation': '^5.31.4',
 		});
 		try {
 			const rocksdbDir = join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js');
@@ -173,7 +173,7 @@ describe('shrinkwrap pin canaries', function () {
 		const fixture = await createFixture({
 			'@harperfast/rocksdb-js': '2.7.1',
 			'fastify': '^5.8.2',
-			'argon2': '0.45.1',
+			'systeminformation': '^5.31.4',
 		});
 		try {
 			const rocksdbDir = join(fixture.packageRoot, 'node_modules/@harperfast/rocksdb-js');
@@ -213,15 +213,14 @@ describe('shrinkwrap pin canaries', function () {
 		const fixture = await createFixture({
 			'@harperfast/rocksdb-js': '2.7.1',
 			'fastify': '^5.8.2',
-			'argon2': '0.45.1',
+			'systeminformation': '^5.31.4',
 		});
 		try {
 			const result = runCheck(fixture);
 			assert.strictEqual(result.status, 0, result.stderr);
 			const queries = await readFile(fixture.queryLog, 'utf8');
 			assert.doesNotMatch(queries, /@harperfast\/rocksdb-js/);
-			assert.doesNotMatch(queries, /argon2/);
-			assert.match(queries, /fastify@\^5\.8\.2/);
+			assert.match(queries, /systeminformation@\^5\.31\.4/);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -232,7 +231,7 @@ describe('shrinkwrap pin canaries', function () {
 			{
 				'@harperfast/rocksdb-js': '2.7.1',
 				'fastify': '^5.8.2',
-				'argon2': '0.45.1',
+				'systeminformation': '^5.31.4',
 			},
 			{ '@harperfast/rocksdb-js': '1.0.1' }
 		);
@@ -263,7 +262,7 @@ describe('shrinkwrap pin canaries', function () {
 			{
 				'@harperfast/rocksdb-js': '2.7.1',
 				'fastify': '^5.8.2',
-				'argon2': '0.45.1',
+				'systeminformation': '^5.31.4',
 			},
 			{},
 			true
@@ -271,7 +270,10 @@ describe('shrinkwrap pin canaries', function () {
 		try {
 			const result = runCheck(fixture);
 			assert.strictEqual(result.status, 1);
-			assert.match(result.stderr, /every checked canary \(fastify\) is now pinned at the latest version/);
+			assert.match(
+				result.stderr,
+				/every checked canary \(fastify, systeminformation\) is now pinned at the latest version/
+			);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -282,11 +284,11 @@ describe('shrinkwrap pin canaries', function () {
 			{
 				'@harperfast/rocksdb-js': '2.7.1',
 				'fastify': '^5.8.2',
-				'argon2': '0.45.1',
+				'systeminformation': '^5.31.4',
 			},
 			{},
 			false,
-			'fastify@^5.8.2',
+			'systeminformation@^5.31.4',
 			1
 		);
 		try {
@@ -294,7 +296,28 @@ describe('shrinkwrap pin canaries', function () {
 			assert.strictEqual(result.status, 0, result.stderr);
 			assert.match(result.stdout, /registry query attempt 1\/3 failed/);
 			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
-			assert.strictEqual(queries.filter((query) => query === 'fastify@^5.8.2').length, 2);
+			assert.strictEqual(queries.filter((query) => query === 'systeminformation@^5.31.4').length, 2);
+		} finally {
+			await fixture.cleanup();
+		}
+	});
+
+	it('accepts a proven canary after another registry query exhausts its retries', async function () {
+		const fixture = await createFixture(
+			{
+				'@harperfast/rocksdb-js': '2.7.1',
+				'fastify': '^5.8.2',
+				'systeminformation': '^5.31.4',
+			},
+			{},
+			false,
+			'fastify@^5.8.2'
+		);
+		try {
+			const result = runCheck(fixture);
+			assert.strictEqual(result.status, 0, result.stderr);
+			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
+			assert.strictEqual(queries.filter((query) => query === 'fastify@^5.8.2').length, 3);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -305,11 +328,11 @@ describe('shrinkwrap pin canaries', function () {
 			{
 				'@harperfast/rocksdb-js': '2.7.1',
 				'fastify': '^5.8.2',
-				'argon2': '0.45.1',
+				'systeminformation': '^5.31.4',
 			},
 			{},
-			false,
-			'fastify@^5.8.2'
+			true,
+			'systeminformation@^5.31.4'
 		);
 		try {
 			const result = runCheck(fixture);
@@ -319,7 +342,7 @@ describe('shrinkwrap pin canaries', function () {
 			assert.match(result.stderr, /Retry this job/);
 			assert.match(result.stderr, /confirm the listed package ranges match published versions/);
 			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
-			assert.strictEqual(queries.filter((query) => query === 'fastify@^5.8.2').length, 3);
+			assert.strictEqual(queries.filter((query) => query === 'systeminformation@^5.31.4').length, 3);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -330,20 +353,20 @@ describe('shrinkwrap pin canaries', function () {
 			{
 				'@harperfast/rocksdb-js': '2.7.1',
 				'fastify': '^5.8.2',
-				'argon2': '0.45.1',
+				'systeminformation': '^5.31.4',
 			},
 			{},
 			false,
 			'',
 			3,
-			{ missingRange: 'fastify@^5.8.2' }
+			{ missingRange: 'systeminformation@^5.31.4' }
 		);
 		try {
 			const result = runCheck(fixture);
 			assert.strictEqual(result.status, 1);
 			assert.match(result.stderr, /matches no published version/);
 			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
-			assert.strictEqual(queries.filter((query) => query === 'fastify@^5.8.2').length, 1);
+			assert.strictEqual(queries.filter((query) => query === 'systeminformation@^5.31.4').length, 1);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -354,20 +377,20 @@ describe('shrinkwrap pin canaries', function () {
 			{
 				'@harperfast/rocksdb-js': '2.7.1',
 				'fastify': '^5.8.2',
-				'argon2': '0.45.1',
+				'systeminformation': '^5.31.4',
 			},
 			{},
 			false,
 			'',
 			3,
-			{ emptyRange: 'fastify@^5.8.2' }
+			{ emptyRange: 'systeminformation@^5.31.4' }
 		);
 		try {
 			const result = runCheck(fixture);
 			assert.strictEqual(result.status, 1);
 			assert.match(result.stderr, /matches no published version in the configured registry/);
 			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
-			assert.strictEqual(queries.filter((query) => query === 'fastify@^5.8.2').length, 1);
+			assert.strictEqual(queries.filter((query) => query === 'systeminformation@^5.31.4').length, 1);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -378,20 +401,20 @@ describe('shrinkwrap pin canaries', function () {
 			{
 				'@harperfast/rocksdb-js': '2.7.1',
 				'fastify': '^5.8.2',
-				'argon2': '0.45.1',
+				'systeminformation': '^5.31.4',
 			},
 			{},
 			true,
 			'',
 			3,
-			{ invalidRange: 'fastify@^5.8.2' }
+			{ invalidRange: 'systeminformation@^5.31.4' }
 		);
 		try {
 			const result = runCheck(fixture);
 			assert.strictEqual(result.status, 1);
 			assert.match(result.stderr, /::error title=Retry dependency canary check::/);
 			const queries = (await readFile(fixture.queryLog, 'utf8')).split('\n');
-			assert.strictEqual(queries.filter((query) => query === 'fastify@^5.8.2').length, 3);
+			assert.strictEqual(queries.filter((query) => query === 'systeminformation@^5.31.4').length, 3);
 		} finally {
 			await fixture.cleanup();
 		}
@@ -467,7 +490,8 @@ if [ "$ALL_RANGE_VERSIONS_CURRENT" = 1 ]; then
   exit
 fi
 case "$2" in
-  fastify@*) printf '["1.0.0", "1.0.1"]\\n' ;;
+  fastify@*) printf '["1.0.0"]\\n' ;;
+  systeminformation@*) printf '["1.0.0", "1.0.1"]\\n' ;;
   *) printf 'stub npm: unmodelled query %s\\n' "$2" >&2; exit 1 ;;
 esac
 `

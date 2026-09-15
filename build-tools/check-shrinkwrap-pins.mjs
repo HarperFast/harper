@@ -34,7 +34,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
-const CHECKED_DEPS = ['@harperfast/rocksdb-js', 'fastify', 'argon2'];
+const CHECKED_DEPS = ['@harperfast/rocksdb-js', 'fastify', 'systeminformation'];
 const ROCKSDB_SINGLE_INSTANCE_DEPS = ['@harperfast/extended-iterable', 'msgpackr'];
 const REGISTRY_QUERY_ATTEMPTS = 3;
 const retryWait = new Int32Array(new SharedArrayBuffer(4));

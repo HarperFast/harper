@@ -1,6 +1,6 @@
 'use strict';
 
-const { requireAwsSdk } = require('./awsSdkLoader.js');
+const { requireAwsSdk } = require('./awsSdkLoader.ts');
 
 let s3Sdk;
 

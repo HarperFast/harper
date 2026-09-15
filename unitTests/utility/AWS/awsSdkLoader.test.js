@@ -1,10 +1,9 @@
 'use strict';
 
-const chai = require('chai');
-const { expect } = chai;
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { requireAwsSdk, MissingAwsSdkError } = require('#js/utility/AWS/awsSdkLoader');
 
 const MISSING_SDK_MESSAGE =
@@ -20,7 +19,7 @@ describe('Test awsSdkLoader module', () => {
 	it('returns the module on success', () => {
 		const fakeModule = { S3: class {} };
 		const fakeRequire = () => fakeModule;
-		expect(requireAwsSdk('@aws-sdk/client-s3', fakeRequire, null)).to.equal(fakeModule);
+		assert.strictEqual(requireAwsSdk('@aws-sdk/client-s3', fakeRequire, null), fakeModule);
 	});
 
 	it('throws MissingAwsSdkError with the actionable message when @aws-sdk/client-s3 is missing and no rootPath is configured', () => {
@@ -29,11 +28,11 @@ describe('Test awsSdkLoader module', () => {
 		};
 		try {
 			requireAwsSdk('@aws-sdk/client-s3', fakeRequire, null);
-			expect.fail('expected requireAwsSdk to throw');
+			assert.fail('expected requireAwsSdk to throw');
 		} catch (err) {
-			expect(err).to.be.instanceOf(MissingAwsSdkError);
-			expect(err.message).to.equal(MISSING_SDK_MESSAGE);
-			expect(err.statusCode).to.equal(501);
+			assert(err instanceof MissingAwsSdkError);
+			assert.strictEqual(err.message, MISSING_SDK_MESSAGE);
+			assert.strictEqual(err.statusCode, 501);
 		}
 	});
 
@@ -43,11 +42,11 @@ describe('Test awsSdkLoader module', () => {
 		};
 		try {
 			requireAwsSdk('@aws-sdk/lib-storage', fakeRequire, null);
-			expect.fail('expected requireAwsSdk to throw');
+			assert.fail('expected requireAwsSdk to throw');
 		} catch (err) {
-			expect(err).to.be.instanceOf(MissingAwsSdkError);
-			expect(err.message).to.equal(MISSING_SDK_MESSAGE);
-			expect(err.statusCode).to.equal(501);
+			assert(err instanceof MissingAwsSdkError);
+			assert.strictEqual(err.message, MISSING_SDK_MESSAGE);
+			assert.strictEqual(err.statusCode, 501);
 		}
 	});
 
@@ -61,10 +60,10 @@ describe('Test awsSdkLoader module', () => {
 		};
 		try {
 			requireAwsSdk('@aws-sdk/client-s3', fakeRequire, null);
-			expect.fail('expected requireAwsSdk to throw');
+			assert.fail('expected requireAwsSdk to throw');
 		} catch (err) {
-			expect(err).to.equal(transitiveErr);
-			expect(err).to.not.be.instanceOf(MissingAwsSdkError);
+			assert.strictEqual(err, transitiveErr);
+			assert(!(err instanceof MissingAwsSdkError));
 		}
 	});
 
@@ -75,9 +74,9 @@ describe('Test awsSdkLoader module', () => {
 		};
 		try {
 			requireAwsSdk('@aws-sdk/client-s3', fakeRequire, null);
-			expect.fail('expected requireAwsSdk to throw');
+			assert.fail('expected requireAwsSdk to throw');
 		} catch (err) {
-			expect(err).to.equal(originalErr);
+			assert.strictEqual(err, originalErr);
 		}
 	});
 
@@ -87,14 +86,14 @@ describe('Test awsSdkLoader module', () => {
 		};
 		const fakeModule = { S3: class {} };
 		const resolveRootRequire = (rootPath) => {
-			expect(rootPath).to.equal('/home/harperdb/harper');
+			assert.strictEqual(rootPath, '/home/harperdb/harper');
 			return (pkg) => {
-				expect(pkg).to.equal('@aws-sdk/client-s3');
+				assert.strictEqual(pkg, '@aws-sdk/client-s3');
 				return fakeModule;
 			};
 		};
 		const result = requireAwsSdk('@aws-sdk/client-s3', fakeRequire, '/home/harperdb/harper', resolveRootRequire);
-		expect(result).to.equal(fakeModule);
+		assert.strictEqual(result, fakeModule);
 	});
 
 	it('throws MissingAwsSdkError naming the rootPath when both the default and rootPath-anchored require fail', () => {
@@ -106,11 +105,11 @@ describe('Test awsSdkLoader module', () => {
 		};
 		try {
 			requireAwsSdk('@aws-sdk/client-s3', fakeRequire, '/home/harperdb/harper', resolveRootRequire);
-			expect.fail('expected requireAwsSdk to throw');
+			assert.fail('expected requireAwsSdk to throw');
 		} catch (err) {
-			expect(err).to.be.instanceOf(MissingAwsSdkError);
-			expect(err.statusCode).to.equal(501);
-			expect(err.message).to.include('/home/harperdb/harper');
+			assert(err instanceof MissingAwsSdkError);
+			assert.strictEqual(err.statusCode, 501);
+			assert(err.message.includes('/home/harperdb/harper'));
 		}
 	});
 
@@ -126,9 +125,9 @@ describe('Test awsSdkLoader module', () => {
 		};
 		try {
 			requireAwsSdk('@aws-sdk/client-s3', fakeRequire, '/home/harperdb/harper', resolveRootRequire);
-			expect.fail('expected requireAwsSdk to throw');
+			assert.fail('expected requireAwsSdk to throw');
 		} catch (err) {
-			expect(err).to.equal(transitiveErr);
+			assert.strictEqual(err, transitiveErr);
 		}
 	});
 
@@ -147,7 +146,7 @@ describe('Test awsSdkLoader module', () => {
 				throw moduleNotFoundError('@aws-sdk/client-s3', ['/app/utility/AWS/AWSConnector.js']);
 			};
 			const result = requireAwsSdk('@aws-sdk/client-s3', fakeRequire, rootPath);
-			expect(result).to.have.property('S3');
+			assert.strictEqual(typeof result.S3, 'function');
 		} finally {
 			fs.rmSync(rootPath, { recursive: true, force: true });
 		}

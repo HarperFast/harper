@@ -273,8 +273,8 @@
 	},
 	"peerDependencies": {
 		"@aws-sdk/client-bedrock-runtime": "^3.0.0",
-		"@aws-sdk/client-s3": "^3.1012.0",
-		"@aws-sdk/lib-storage": "^3.1012.0",
+		"@aws-sdk/client-s3": "^3.0.0",
+		"@aws-sdk/lib-storage": "^3.0.0",
 		"uWebSockets.js": "20.68.0"
 	},
 	"peerDependenciesMeta": {
