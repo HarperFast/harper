@@ -114,7 +114,12 @@ function split(total: number, parts: number): number[] {
 
 export interface DriverRun {
 	load: PhaseResult;
-	runWorkload(name: string, distribution?: 'uniform' | 'zipfian' | 'latest', opsOverride?: number): Promise<PhaseResult>;
+	runWorkload(
+		name: string,
+		distribution?: 'uniform' | 'zipfian' | 'latest',
+		opsOverride?: number,
+		mix?: Record<string, number>
+	): Promise<PhaseResult>;
 	shardsUsed(name: string): number;
 	close(): void;
 }
@@ -152,7 +157,7 @@ export async function startDriver(config: DriverConfig): Promise<DriverRun> {
 	return {
 		load,
 		shardsUsed: shardsFor,
-		async runWorkload(name, distribution, opsOverride) {
+		async runWorkload(name, distribution, opsOverride, mix) {
 			const shards = shardsFor(name);
 			const ops = split(opsOverride ?? config.opsPerWorkload, shards);
 			const conc = split(config.concurrency, shards);
@@ -164,6 +169,7 @@ export async function startDriver(config: DriverConfig): Promise<DriverRun> {
 				opCount,
 				records: config.records,
 				distribution,
+				mix,
 			}));
 			return mergeShardResults(await pool.dispatch(commands));
 		},

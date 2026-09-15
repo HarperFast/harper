@@ -23,13 +23,19 @@ export interface ShardCommand {
 	to?: number;
 	/** run: workload name, op count for this shard, and the loaded keyspace size. */
 	workload?: string;
+	/** Overrides the named workload's mix, for write-ratio sweeps. */
+	mix?: Record<string, number>;
 	opCount?: number;
 	records?: number;
 	distribution?: 'uniform' | 'zipfian' | 'latest';
 }
 
 async function loadPhase(command: ShardCommand): Promise<PhaseResult> {
-	const executor = createRestExecutor({ baseUrls: [command.baseUrl], table: command.table, maxSockets: command.concurrency });
+	const executor = createRestExecutor({
+		baseUrls: [command.baseUrl],
+		table: command.table,
+		maxSockets: command.concurrency,
+	});
 	const from = command.from!;
 	const to = command.to!;
 	let next = from;
@@ -54,7 +60,11 @@ async function loadPhase(command: ShardCommand): Promise<PhaseResult> {
 }
 
 async function runPhase(command: ShardCommand): Promise<PhaseResult> {
-	const executor = createRestExecutor({ baseUrls: [command.baseUrl], table: command.table, maxSockets: command.concurrency });
+	const executor = createRestExecutor({
+		baseUrls: [command.baseUrl],
+		table: command.table,
+		maxSockets: command.concurrency,
+	});
 	const spec = WORKLOADS[command.workload!];
 	const keys = new KeyState({
 		distribution: command.distribution ?? spec.distribution,
@@ -66,7 +76,7 @@ async function runPhase(command: ShardCommand): Promise<PhaseResult> {
 	const result = await runOperations({
 		opCount: command.opCount!,
 		concurrency: command.concurrency,
-		mix: spec.mix,
+		mix: (command.mix as typeof spec.mix) ?? spec.mix,
 		executor,
 		keys,
 	});
