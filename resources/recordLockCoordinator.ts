@@ -1,4 +1,3 @@
-import { randomInt } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { Packr } from 'msgpackr';
 import harperLogger from '../utility/logging/harper_logger.ts';
@@ -2059,11 +2058,7 @@ export function setLockCoordinatorResolver(
  * position that is not local, or re-enter the operation that called here. A write that commits
  * without a position rejects rather than resolve, since a barrier nobody can wait on is not a fence.
  */
-export async function writeLockBarrier(
-	database: string,
-	table: string,
-	nonce: number = randomInt(2 ** 48 - 1)
-): Promise<number> {
+export async function writeLockBarrier(database: string, table: string, nonce: number): Promise<number> {
 	if (!Number.isSafeInteger(nonce) || nonce < 0)
 		throw new ClientError('A lock barrier nonce must be a non-negative integer');
 	const write = controlWriterResolver?.(database, table);

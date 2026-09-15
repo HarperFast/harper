@@ -261,7 +261,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			assert.ok(Number.isFinite(writeVersion), 'the write has an audit entry');
 			const before = controlEntries().length;
 
-			const position = await writeLockBarrier('test', 'ClusterLockTest');
+			const position = await writeLockBarrier('test', 'ClusterLockTest', 1);
 			assert.ok(Number.isFinite(position), 'the barrier resolves to a log position');
 			assert.ok(position > writeVersion, 'the barrier is ordered after the write committed before it');
 			// Order in the log itself, not only in key space: the write is met before the barrier.
@@ -305,7 +305,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			const relayed = [];
 			useSoloTransport({ extra: { writeControl: (table, entry) => (relayed.push({ table, entry }), 4242) } });
 			const before = controlEntries().length;
-			const position = await writeLockBarrier('test', 'ClusterLockTest');
+			const position = await writeLockBarrier('test', 'ClusterLockTest', 2);
 			assert.deepStrictEqual(relayed, [], 'the transport hook was consulted');
 			assert.strictEqual(controlEntries().slice(before).at(-1)?.version, position, 'the barrier is in the local log');
 		});
@@ -317,18 +317,18 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			try {
 				ClusterLockTest.writeLockControlEntry = () => Promise.resolve(undefined);
 				await assert.rejects(
-					() => writeLockBarrier('test', 'ClusterLockTest'),
+					() => writeLockBarrier('test', 'ClusterLockTest', 3),
 					(error) =>
 						error.statusCode === 503 && error.retryable === true && /without a log position/.test(error.message)
 				);
 				for (const bad of [NaN, -1, Infinity]) {
 					ClusterLockTest.writeLockControlEntry = () => bad;
-					await assert.rejects(() => writeLockBarrier('test', 'ClusterLockTest'), /without a log position/);
+					await assert.rejects(() => writeLockBarrier('test', 'ClusterLockTest', 4), /without a log position/);
 				}
 				ClusterLockTest.writeLockControlEntry = () => {
 					throw new Error('the log is not accepting writes');
 				};
-				const attempt = writeLockBarrier('test', 'ClusterLockTest');
+				const attempt = writeLockBarrier('test', 'ClusterLockTest', 5);
 				assert.ok(attempt instanceof Promise);
 				await assert.rejects(attempt, /not accepting writes/);
 			} finally {
@@ -340,7 +340,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			if (isLMDB) return this.skip();
 			useSoloTransport();
 			await assert.rejects(
-				() => writeLockBarrier('test', 'NoSuchLockTable'),
+				() => writeLockBarrier('test', 'NoSuchLockTable', 6),
 				(error) => error.statusCode === 404
 			);
 		});
@@ -363,9 +363,8 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 				establishLockFreshness: async (database, table, _key, dependencies, deadlineMs) => {
 					calls.push({ dependencies, deadlineMs });
 					if (dependencies !== null) return dependencies;
-					// Recovery: every reachable member commits a barrier and this node drains each member's
-					// stream through it. Solo, the only member is this node and its stream is the local log.
-					barrierPosition = await writeLockBarrier(database, table);
+					// Solo, the only member is this node and its stream is the local log.
+					barrierPosition = await writeLockBarrier(database, table, 7);
 					await waitFor(() =>
 						controlEntries().some((entry) => entry.type === 'lockBarrier' && entry.version === barrierPosition)
 					);
@@ -983,7 +982,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 
 			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });
 			await record.unlock();
-			await writeLockBarrier('test', 'ClusterLockTest');
+			await writeLockBarrier('test', 'ClusterLockTest', 8);
 			await ClusterLockTest.put({ id: recordId, n: 2 });
 			// Wait for the ordinary write to arrive; anything the lock produced would have arrived first.
 			const deadline = Date.now() + 5000;
@@ -1000,7 +999,7 @@ describe('Cluster record locks on a real table (harper#483 Phase 1)', () => {
 			await ClusterLockTest.put({ id: recordId, n: 1 });
 			const record = await ClusterLockTest.lock(recordId, { hold: true, lease: 5000 });
 			await record.unlock();
-			await writeLockBarrier('test', 'ClusterLockTest');
+			await writeLockBarrier('test', 'ClusterLockTest', 9);
 			assert.ok(
 				controlEntries().some((entry) => entry.type === 'lockBarrier'),
 				'the entries are in the log'

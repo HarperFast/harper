@@ -724,7 +724,6 @@ describe('record lock delegations', () => {
 			const alpha = cluster.node('alpha');
 			const home = cluster.node('gamma').coordinator;
 			const held = await home.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
-			// A release with malformed lineage leaves the home nothing to hand the successor but the marker.
 			const predecessorWrite = ++cluster.tsCounter;
 			alpha.written.push({ type: 'put', key, position: predecessorWrite });
 			home.applyEntry(
@@ -737,7 +736,6 @@ describe('record lock delegations', () => {
 			const applied = { alpha: 0, beta: 0, gamma: 0 };
 			cluster.beforeFreshness = async (name, _key, dependencies) => {
 				if (name !== 'beta' || dependencies !== null) return;
-				// Every reachable member commits a barrier; beta drains each origin's stream through it.
 				for (const origin of cluster.homes) {
 					const position = await cluster.writeControlFor(origin)({ type: 'lockBarrier', nonce: 1 });
 					for (const entry of cluster.node(origin).written)

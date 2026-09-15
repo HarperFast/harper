@@ -392,14 +392,15 @@ round and then nothing, and the delegate is in practice the last writer. When an
 key, its home recalls the delegation; the delegate stops admitting, drains what is in flight, and
 writes the release.
 
-**One control entry, not three.** `LOCK_RELEASE = 12` is the only lock action nibble in
-`auditStore.ts`. `LOCK_REQUEST = 9` and `LOCK_GRANT = 10` belonged to the Ricart–Agrawala rule the
-design note replaces; that rule never shipped enabled, so those nibbles were **retired rather than
-migrated** — and 9 has since been taken by eviction, which is why a migration was never an option.
-Delegation request/grant/recall are unicast over the transport. Only the release stays on the
-replicated log, because it is what orders a handoff behind the delegate's own data writes.
+**Two control entries, not four.** `LOCK_RELEASE = 12` and `LOCK_BARRIER = 13` are the lock action
+nibbles in `auditStore.ts`. `LOCK_REQUEST = 9` and `LOCK_GRANT = 10` belonged to the Ricart–Agrawala
+rule the design note replaces; that rule never shipped enabled, so those nibbles were **retired
+rather than migrated** — and 9 has since been taken by eviction, which is why a migration was never
+an option. Delegation request/grant/recall are unicast over the transport. The release stays on the
+replicated log because it is what orders a handoff behind the delegate's own data writes; the
+barrier (the recovery fence below) is on it because its log position is the whole point.
 
-The entry is written in its own transaction, with no primary-store write, and — unlike the `reload`
+The release entry is written in its own transaction, with no primary-store write, and — unlike the `reload`
 marker it is otherwise modeled on — **not** `LOCAL_ONLY`, because replicating it IS the send. Its
 payload is `[key, requesterName, generation, homeIncarnation, counter]`, validated on exact tuple
 length: a future version that grows it must bump the type rather than widen this one, since a
