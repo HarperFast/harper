@@ -48,6 +48,7 @@ describe('Caching', () => {
 	let sourceExpiresAt;
 	let return_value = true;
 	let return_error;
+	let return_error_instance = null;
 	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	before(async function () {
@@ -79,6 +80,10 @@ describe('Caching', () => {
 				sourceRequests++;
 				return new Promise((resolve, reject) => {
 					setTimeout(() => {
+						if (return_error_instance) {
+							reject(return_error_instance);
+							return;
+						}
 						if (return_error) {
 							let error = new Error('test source error');
 							error.statusCode = return_error;
@@ -921,6 +926,34 @@ describe('Caching', () => {
 			assert.equal(sourceRequests, 1); // the source request should be started
 		} finally {
 			return_error = false;
+		}
+	});
+
+	it('Source throw error with a non-writable message', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration(0.005);
+			await delay(10);
+			sourceRequests = 0;
+			events = [];
+			// What `fetch` rejects with when an AbortSignal.timeout fires: DOMException carries
+			// `message` as a getter-only accessor, so annotating it throws under strict mode.
+			return_error_instance = new DOMException('test source error', 'TimeoutError');
+			const HUNG = Symbol('hung');
+			// .mocharc.json sets `timeout: 0`, so an unsettled get() would stall the run rather
+			// than fail it.
+			const outcome = await Promise.race([
+				IndexedCachingTable.get(131).then(
+					() => 'resolved',
+					(error) => error
+				),
+				delay(2000, HUNG),
+			]);
+			assert.notStrictEqual(outcome, HUNG, 'get() must settle when the source rejects');
+			assert.notStrictEqual(outcome, 'resolved', 'get() must reject when the source rejects');
+			assert.equal(outcome.name, 'TimeoutError');
+			assert.equal(sourceRequests, 1);
+		} finally {
+			return_error_instance = null;
 		}
 	});
 	it('Can load cached indexed data', async function () {
