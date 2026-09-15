@@ -13,7 +13,7 @@
  * thread, so the topology, and therefore the gap, is invisible to them.
  */
 import { suite, test, before, after } from 'node:test';
-import { strictEqual, ok } from 'node:assert';
+import { deepStrictEqual, strictEqual, ok } from 'node:assert';
 import { resolve } from 'node:path';
 
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
@@ -64,12 +64,29 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		return { status: response.status, body: await response.json() };
 	}
 
+	async function mcp(body: object, sessionId?: string): Promise<Response> {
+		const { username, password } = ctx.harper.admin;
+		return fetch(`${ctx.harper.operationsAPIURL}/mcp`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/json, text/event-stream',
+				'Authorization': `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+				...(sessionId ? { 'Mcp-Session-Id': sessionId, 'MCP-Protocol-Version': '2025-06-18' } : {}),
+			},
+			body: JSON.stringify(body),
+		});
+	}
+
 	before(async () => {
 		// Multiple HTTP workers so the forward actually has a choice of registering threads.
 		await setupHarperWithFixture(ctx, FIXTURE_PATH, {
 			config: {
 				threads: { count: 2 },
 				logging: { console: true, level: 'error' },
+				mcp: {
+					operations: { mountPath: '/mcp', allow: ['component_registered_echo', 'component_registered_stream'] },
+				},
 			},
 		});
 	});
@@ -87,6 +104,37 @@ suite('Component: registered-operation (#1736)', (ctx: ContextWithHarper) => {
 		ok(body.executedOnThreadId > 0, `expected a worker threadId, got ${body.executedOnThreadId}`);
 		// The authenticated user was forwarded across the thread boundary (#1591 attribution input).
 		strictEqual(body.username, ctx.harper.admin.username);
+	});
+
+	test('registered inputSchema is exposed through MCP tools/list', async () => {
+		const init = await mcp({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'initialize',
+			params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
+		});
+		strictEqual(init.status, 200);
+		const sessionId = init.headers.get('mcp-session-id');
+		ok(sessionId);
+		await init.body?.cancel();
+
+		const response = await mcp({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, sessionId);
+		strictEqual(response.status, 200);
+		const body = (await response.json()) as {
+			result: { tools: Array<{ name: string; inputSchema: object }> };
+		};
+		const tool = body.result.tools.find(({ name }) => name === 'component_registered_echo');
+		ok(tool);
+		deepStrictEqual(tool.inputSchema, {
+			type: 'object',
+			properties: { value: { type: 'string' } },
+			required: ['value'],
+		});
+		strictEqual(
+			body.result.tools.some(({ name }) => name === 'component_registered_stream'),
+			false,
+			'schema-less operations must not be advertised'
+		);
 	});
 
 	test('repeated calls keep working (round-robin across registering workers)', async () => {
