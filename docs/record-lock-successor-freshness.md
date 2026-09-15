@@ -79,11 +79,10 @@ not because each mutation shape needs its own hook.
 | **Do less**         | Carry one scalar record version or wait only for the immediate predecessor.                                                                               | Rejected: record resolution versions are not origin-log positions, equal timestamps from different origins do not identify stream progress, and a dependent patch can require more than the winning record version. Immediate-predecessor waiting also fails the no-write B handoff above.                                                               |
 | **Chosen**          | Core-owned inherited dependency sets, advanced by the trusted release-entry position, plus transport-owned apply-visible and coalesced recovery barriers. | This keeps delegation lineage in its owner, expresses progress in coordinates replication can actually wait on, preserves transitivity, leaves cached acquisitions and all commit paths unchanged, and avoids holder timestamps that may sort behind an already-advanced replication cursor.                                                             |
 
-The planning review returned `Framing-Verdict: better-alternative-exists (6e15d4f0a136)` and proposed
-the release-entry position in place of a per-write commit hook. That alternative is adopted above.
-It removes a hot-path callback, covers writes released before their transaction commits, and fixes a
-cursor-order counterexample in the original plan. The same review's saturated cold-state rule and
-pending-grant recall requirement are also part of the implementation.
+The release-entry position replaces an earlier per-write commit-hook design. It removes a hot-path
+callback, covers every write that remains authorized when the release is committed, and cannot sort
+behind a replication cursor that has already advanced. Cold-state trust is discarded whenever
+history may have been missed, and pending grants remain recallable before admission.
 
 ## Verification route
 

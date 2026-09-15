@@ -484,7 +484,9 @@ external effects need idempotency or fencing at that system.
   during _normal_ operation, not only after a restart. The home therefore keeps a compact
   ever-delegated-in-this-generation filter (add-only, so it has no false negatives): outside it, a key has
   no predecessor and needs no barrier; inside it with the set evicted, the barrier is required. Retain
-  dependency sets longer than delegations, and size the filter as part of the cap budget.
+  dependency sets beyond clean grant removal, and size the filter as part of the cap budget. A grant
+  that expires without its exact clean release invalidates any predecessor set for that key and
+  forces recovery; retaining it would omit the expired holder from the next fence.
 - Ordinary writes keep their existing ungated path, with no exception: exclusion-only (§7.3) adds
   nothing to a write that was not made under a lock, and delegation bookkeeping lives only on lock
   paths. This is the property the fenced arm would have given up, and it is the main reason it was not

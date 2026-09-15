@@ -53,6 +53,7 @@ function coldCoordinator(monotonic, options = {}) {
 		keyIdOf: (key) => String(key),
 		nextTimestamp: () => 1,
 		monotonic,
+		grantableAfterMono: options.grantableAfterMono,
 		autoTick: false,
 	});
 }
@@ -124,6 +125,7 @@ class FakeCluster {
 			/** Set by a test to make this node's control-entry writer throw synchronously. */
 			writerThrows: false,
 			writerCalls: 0,
+			writerReturnsVoid: false,
 			freshnessCalls: [],
 			freshnessError: undefined,
 			/** Set to make this node report no agreed home map — a generation change, or a digest mismatch. */
@@ -185,8 +187,8 @@ class FakeCluster {
 			if (!node?.alive) return Promise.resolve();
 			const position = ++this.tsCounter;
 			node.written.push({ ...entry, position });
-			this.#broadcastRelease(name, entry, position);
-			return Promise.resolve(position);
+			this.#broadcastRelease(name, entry, position, !node.writerReturnsVoid);
+			return Promise.resolve(node.writerReturnsVoid ? undefined : position);
 		};
 	}
 
@@ -231,13 +233,13 @@ class FakeCluster {
 	}
 
 	/** A release entry replicates to every node, as a transaction-log entry does. */
-	#broadcastRelease(author, entry, position) {
+	#broadcastRelease(author, entry, position, applyLocally = true) {
 		for (const [name, node] of this.nodes) {
 			if (name === author || !node.alive) continue;
 			node.coordinator.applyEntry(entry, author, position);
 		}
 		// The author applies its own entry too, as the local write path does.
-		this.node(author).coordinator.applyEntry(entry, author, position);
+		if (applyLocally) this.node(author).coordinator.applyEntry(entry, author, position);
 	}
 
 	/** The node that homes this key under the current membership. */
@@ -500,9 +502,7 @@ describe('record lock delegations', () => {
 			const alphaRound = await alpha.acquire(key, LEASE, WAIT);
 			alpha.release(key, alphaRound.admissionId);
 
-			let releaseBarrier;
-			cluster.beforeFreshness = (name) =>
-				name === 'beta' ? new Promise((resolve) => (releaseBarrier = resolve)) : undefined;
+			cluster.beforeFreshness = (name) => (name === 'beta' ? new Promise(() => {}) : undefined);
 			const beta = cluster.node('beta');
 			const pendingAcquire = beta.coordinator.acquire(key, LEASE, WAIT);
 			await waitFor(() => beta.freshnessCalls.length === 1);
@@ -514,9 +514,11 @@ describe('record lock delegations', () => {
 			});
 			await waitFor(() => cluster.recalls.some(({ to }) => to === 'beta'));
 			beta.mapless = true;
-			releaseBarrier();
 			await assert.rejects(pendingAcquire, /No agreed record lock home map/);
 			assert.strictEqual(beta.coordinator.stats.delegations, 0);
+			await waitFor(() => cluster.node('gamma').coordinator.stats.granted === 0);
+			const contender = await cluster.node('gamma').coordinator.acquire(key, LEASE, WAIT);
+			cluster.node('gamma').coordinator.release(key, contender.admissionId);
 		});
 
 		it('does not lose a recall that arrives before the grant reply', async () => {
@@ -544,6 +546,110 @@ describe('record lock delegations', () => {
 
 			await assert.rejects(() => beta.coordinator.acquire(key, LEASE, WAIT), /No agreed record lock home map/);
 			assert.strictEqual(beta.coordinator.stats.delegations, 0, 'the recalled reply was installed');
+			await waitFor(() => cluster.node('gamma').coordinator.stats.granted === 0);
+			const contender = await cluster.node('gamma').coordinator.acquire(key, LEASE, WAIT);
+			cluster.node('gamma').coordinator.release(key, contender.admissionId);
+		});
+
+		it('settles an early recall of an in-flight renewal before another node acquires', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha');
+			const first = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, first.admissionId);
+			cluster.advance('alpha', DELEGATION_LEASE_MS - LEASE + 1);
+
+			cluster.beforeReply = async (from, _to, _request, reply) => {
+				if (from !== 'alpha' || !reply.granted) return;
+				cluster.beforeReply = undefined;
+				await cluster.node('gamma').coordinator.onDelegationRequest({
+					key,
+					requester: 'beta',
+					generation: 1,
+					leaseMs: LEASE,
+				});
+				await waitFor(() => cluster.recalls.some(({ to }) => to === 'alpha'));
+				alpha.mapless = true;
+			};
+
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, WAIT), /No agreed record lock home map/);
+			await waitFor(() => cluster.node('gamma').coordinator.stats.granted === 0);
+			const successor = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+			cluster.node('beta').coordinator.release(key, successor.admissionId);
+		});
+
+		it('does not repeat a recovery barrier for a continuous renewal', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			cluster.advanceAll(DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
+			const beta = cluster.node('beta');
+			const recovered = await beta.coordinator.acquire(key, LEASE, WAIT);
+			beta.coordinator.release(key, recovered.admissionId);
+			assert.strictEqual(beta.freshnessCalls.length, 1);
+
+			cluster.advance('beta', DELEGATION_LEASE_MS - LEASE + 1);
+			const renewed = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(beta.freshnessCalls.length, 1, 'the renewal repeated the recovery barrier');
+			beta.coordinator.release(key, renewed.admissionId);
+		});
+
+		it('hands back a grant whose barrier leaves too little lease to admit', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, first.admissionId);
+
+			const beta = cluster.node('beta');
+			cluster.beforeFreshness = (name) => {
+				if (name !== 'beta') return;
+				cluster.beforeFreshness = undefined;
+				beta.mono += 61_000;
+				beta.mapless = true;
+			};
+			await assert.rejects(
+				() => beta.coordinator.acquire(key, MAX_LOCK_LEASE_MS, 120_000),
+				/No agreed record lock home map/
+			);
+			await waitFor(() => cluster.node('gamma').coordinator.stats.granted === 0);
+		});
+
+		it('does not trust virgin-key absence after a coordinator retires', async () => {
+			const table = `RetiredFreshness${Date.now()}`;
+			const database = `retiredFreshness${Date.now()}`;
+			const mono = () => performance.now();
+			const predecessor = coldCoordinator(mono, { table, database, grantableAfterMono: -Infinity });
+			await predecessor.acquire('seen-before-close', LEASE, WAIT);
+			predecessor.close();
+
+			const calls = [];
+			const successor = coldCoordinator(mono, {
+				table,
+				database,
+				grantableAfterMono: -Infinity,
+				establishLockFreshness: async (_database, _table, _key, dependencies) => {
+					calls.push(dependencies);
+					return [];
+				},
+			});
+			const round = await successor.acquire('seen-before-close', LEASE, WAIT);
+			assert.deepStrictEqual(calls, [null]);
+			successor.release('seen-before-close', round.admissionId);
+			successor.close();
+		});
+
+		it('clears a self-home grant when a successful writer returns no position', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta']);
+			const key = cluster.keyHomedOn('alpha');
+			const alpha = cluster.node('alpha');
+			alpha.writerReturnsVoid = true;
+			const held = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, held.admissionId);
+
+			const successor = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(alpha.written.some((entry) => entry.type === 'lockRelease'));
+			cluster.node('beta').coordinator.release(key, successor.admissionId);
 		});
 
 		it('takes recovery for an unremembered key after a cold start', async () => {
@@ -565,12 +671,30 @@ describe('record lock delegations', () => {
 		it('takes recovery after a delegate expires without a clean release', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('gamma');
-			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, first.admissionId);
+			const betaRound = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+			cluster.node('beta').coordinator.release(key, betaRound.admissionId);
 			cluster.advanceAll(DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1);
-			const beta = cluster.node('beta');
-			const round = await beta.coordinator.acquire(key, LEASE, WAIT);
-			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
-			beta.coordinator.release(key, round.admissionId);
+			const gamma = cluster.node('gamma');
+			const round = await gamma.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(gamma.freshnessCalls.at(-1).dependencies, null);
+			gamma.coordinator.release(key, round.admissionId);
+		});
+
+		it('ignores recovery positions for nodes outside the current lock map', async () => {
+			let mono = 0;
+			const coordinator = coldCoordinator(() => mono, {
+				establishLockFreshness: async () => [
+					['alpha', 3],
+					['former-member', 9],
+				],
+			});
+			mono = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+			const round = await coordinator.acquire('recovered-key', LEASE, WAIT);
+			coordinator.release('recovered-key', round.admissionId);
+			coordinator.close();
 		});
 
 		it('takes recovery for a virgin key after the home-map generation changes', async () => {
