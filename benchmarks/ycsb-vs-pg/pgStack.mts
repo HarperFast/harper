@@ -5,6 +5,7 @@
  */
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { mkdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
@@ -12,6 +13,27 @@ import type { ChildProcess } from 'node:child_process';
 const exec = promisify(execFile);
 const DIR = import.meta.dirname;
 const COMPOSE = ['compose', '-f', join(DIR, 'docker-compose.yml'), '-p', 'ycsb-vs-pg'];
+
+/** Where PGDATA lives on the host. Must be a real disk, and the same filesystem Harper uses. */
+export const dataDir = (): string => process.env.YCSB_VS_PG_DATA_DIR || join(DIR, 'data');
+
+const composeEnv = (): NodeJS.ProcessEnv => ({ ...process.env, YCSB_VS_PG_DATA_DIR: dataDir() });
+
+/**
+ * Removes the previous run's PGDATA. `docker compose down -v` only drops named
+ * volumes, so a bind mount would otherwise carry a run's WAL and bloat into the
+ * next one — exactly the cross-run contamination the per-workload restarts exist
+ * to prevent. The files are owned by the container's postgres uid, so the delete
+ * runs in a throwaway root container rather than as the host user.
+ */
+async function wipePgData(): Promise<void> {
+	const base = dataDir();
+	await mkdir(base, { recursive: true });
+	await exec('docker', [
+		'run', '--rm', '-v', `${base}:/host-data`, 'alpine:latest',
+		'sh', '-c', 'rm -rf /host-data/pgdata',
+	]);
+}
 
 export const PG_URL = 'postgres://ycsb:ycsb@127.0.0.1:5433/ycsb';
 export const REDIS_URL = 'redis://127.0.0.1:6380';
@@ -29,21 +51,38 @@ export interface PgStack {
 	stop(): Promise<void>;
 }
 
+/**
+ * Waits for the real server, over TCP.
+ *
+ * The postgres image's entrypoint runs a temporary server while it initializes a
+ * fresh PGDATA, then stops it and starts the real one. That temporary server is
+ * socket-only (`listen_addresses=''`), so a unix-socket `pg_isready` reports
+ * "ready" during init and the next statement races its shutdown. Probing over
+ * TCP — which is how the app connects anyway — can only succeed against the real
+ * server. On tmpfs initdb was fast enough to hide this; on a real disk it is not.
+ */
 async function waitForPostgres(timeoutMs: number): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
+	let lastError: unknown;
 	while (Date.now() < deadline) {
 		try {
-			await exec('docker', [...COMPOSE, 'exec', '-T', 'postgres', 'pg_isready', '-p', '5433', '-U', 'ycsb']);
+			await exec(
+				'docker',
+				[...COMPOSE, 'exec', '-T', 'postgres', 'pg_isready', '-h', '127.0.0.1', '-p', '5433', '-U', 'ycsb'],
+				{ env: composeEnv() }
+			);
 			return;
-		} catch {
+		} catch (error) {
+			lastError = error;
 			await delay(500);
 		}
 	}
-	throw new Error('postgres did not become ready');
+	throw new Error(`postgres did not become ready: ${(lastError as Error)?.message ?? 'unknown'}`);
 }
 
 export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
-	await exec('docker', [...COMPOSE, 'up', '-d'], { maxBuffer: 1 << 24 });
+	await wipePgData();
+	await exec('docker', [...COMPOSE, 'up', '-d'], { maxBuffer: 1 << 24, env: composeEnv() });
 	await waitForPostgres(120_000);
 
 	// Fresh dataset per run: the harness load phase inserts sequential keys, and
@@ -62,8 +101,10 @@ export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
 		'ycsb',
 		'-c',
 		'DROP TABLE IF EXISTS usertable',
-	]);
-	await exec('docker', [...COMPOSE, 'exec', '-T', 'redis', 'redis-cli', '-p', '6380', 'flushall']);
+	], { env: composeEnv() });
+	await exec('docker', [...COMPOSE, 'exec', '-T', 'redis', 'redis-cli', '-p', '6380', 'flushall'], {
+		env: composeEnv(),
+	});
 
 	const child: ChildProcess = spawn(process.execPath, [join(DIR, 'pg-app', 'server.mjs')], {
 		env: {
@@ -97,7 +138,7 @@ export async function startPgStack(options: PgStackOptions): Promise<PgStack> {
 		baseUrl: `http://127.0.0.1:${PG_APP_PORT}`,
 		async stop(): Promise<void> {
 			child.kill('SIGKILL');
-			await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24 });
+			await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24, env: composeEnv() });
 		},
 	};
 }

@@ -46,9 +46,12 @@ size, so each side gets the same number of request handlers.
 
 ## Fairness notes
 
-- **Same storage medium.** Postgres' `PGDATA` is tmpfs; the Harper side also
-  runs its data directory under `/tmp`, which is tmpfs on the benchmark host.
-  Neither side is measuring the SSD.
+- **Same storage medium, and it is a real disk.** Both engines write under
+  `YCSB_VS_PG_DATA_DIR` (default `benchmarks/ycsb-vs-pg/data`), and the runner
+  refuses to start if that path is tmpfs or if the two data directories land on
+  different devices. This is load-bearing: on tmpfs an `fsync` is a no-op, so
+  Postgres would get `synchronous_commit=on` for free while Harper still paid
+  real RocksDB compaction, quietly tilting every write-bearing workload.
 - **Same durability setting.** Postgres keeps `fsync=on` /
   `synchronous_commit=on`, matching Harper's default `storage.writeAsync=false`.
 - **Postgres is tuned, Harper is not.** `shared_buffers=4GB`,
