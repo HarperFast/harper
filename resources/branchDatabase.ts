@@ -6,6 +6,7 @@ import { CONFIG_PARAMS, DEFAULT_DATABASE_NAME } from '../utility/hdbTerms.ts';
 import { commonValidators } from '../validation/common_validators.ts';
 import * as env from '../utility/environment/environmentManager.ts';
 import { copyTree } from '../dataLayer/blobBackup.ts';
+import { RESTORE_META_DIR } from '../dataLayer/restoreMarker.ts';
 import { getBlobPathsForDatabaseName, getRootBlobPathsForDB } from './blob.ts';
 import { registryStatus, type RocksDatabase } from '@harperfast/rocksdb-js';
 import {
@@ -808,6 +809,8 @@ function branchDirectoriesFor(appName: string): { branches: string[]; tombstones
 			const entryPath = join(appDirectory, entry.name);
 			if (entry.name.endsWith(BRANCH_REMOVING_SUFFIX))
 				tombstones.push(entryPath.slice(0, -BRANCH_REMOVING_SUFFIX.length));
+			else if (entry.name === RESTORE_META_DIR)
+				continue; // open/restore lock metadata, not branch data
 			else if (entry.name.includes('`'))
 				fail(entryPath, new Error('not a branch directory and not a known control path'));
 			else branches.push(entryPath);

@@ -4,12 +4,15 @@ const assert = require('node:assert');
 const { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = require('node:fs');
 const { basename, dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
+const { Worker } = require('node:worker_threads');
 const { tryFileLock, fileLockRelease } = require('@harperfast/rocksdb-js');
 const {
 	beginRestore,
 	completeRestore,
 	abandonRestore,
 	acquireRestoreLock,
+	acquireDatabaseOpenLock,
+	releaseDatabaseOpenLock,
 	releaseRestoreLock,
 	clearRestoreMarker,
 	checkRestoreState,
@@ -33,6 +36,35 @@ describe('restoreMarker', function () {
 	afterEach(function () {
 		rmSync(tempDir, { recursive: true, force: true });
 	});
+
+	function acquireOpenLockInWorker(maxWaitMilliseconds) {
+		const worker = new Worker(
+			`const { parentPort, workerData } = require('node:worker_threads');
+			const { acquireDatabaseOpenLock, releaseDatabaseOpenLock } = require(workerData.modulePath);
+			try {
+				const token = acquireDatabaseOpenLock(workerData.dbPath, workerData.maxWaitMilliseconds);
+				parentPort.postMessage({ acquired: true });
+				releaseDatabaseOpenLock(token);
+			} catch (error) {
+				parentPort.postMessage({ message: error.message });
+			}`,
+			{
+				eval: true,
+				workerData: {
+					dbPath,
+					maxWaitMilliseconds,
+					modulePath: require.resolve('#src/dataLayer/restoreMarker'),
+				},
+			}
+		);
+		return {
+			worker,
+			result: new Promise((resolve, reject) => {
+				worker.once('message', resolve);
+				worker.once('error', reject);
+			}),
+		};
+	}
 
 	describe('paths', function () {
 		it('keeps restore metadata in an isolated sibling directory, out of the database-name namespace', function () {
@@ -206,6 +238,26 @@ describe('restoreMarker', function () {
 				);
 			} finally {
 				completeRestore(lock);
+			}
+		});
+	});
+
+	describe('database open lock', function () {
+		it('excludes a concurrent worker-thread open until the first open completes', async function () {
+			const token = acquireDatabaseOpenLock(dbPath);
+			const blocked = acquireOpenLockInWorker(25);
+			try {
+				const result = await blocked.result;
+				assert.deepStrictEqual(result, { message: `Timed out acquiring RocksDB open lock for ${dbPath}` });
+			} finally {
+				releaseDatabaseOpenLock(token);
+				await blocked.worker.terminate();
+			}
+			const available = acquireOpenLockInWorker(25);
+			try {
+				assert.deepStrictEqual(await available.result, { acquired: true });
+			} finally {
+				await available.worker.terminate();
 			}
 		});
 	});
