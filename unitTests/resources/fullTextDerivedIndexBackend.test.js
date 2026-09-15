@@ -671,6 +671,22 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('retries rollback after a rejected apply and failed recovery close', async () => {
+		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		engine.applyError = new Error('apply failed after staging');
+		engine.closeError = new Error('writer still active');
+		const { backend } = makeBackend(lifecycle([engine]));
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		await backend.acquire(1n);
+		backend.deliver(batch(1n, [mutation('a', { kind: 'absent' })], cursor(20)));
+		await waitFor(() => changes.includes('failed'));
+
+		engine.closeError = undefined;
+		await backend.shutdown(1n);
+		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }, { mode: 'rollback' }]);
+	});
+
 	it('retains a rejected recovery engine until shutdown proves it closed', async () => {
 		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		first.applyError = new Error('apply failed');
