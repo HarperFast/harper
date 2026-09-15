@@ -577,6 +577,38 @@ describe('Caching', () => {
 			return_error = false;
 		}
 	});
+
+	// Same guard, reached through a hostile accessor rather than a nullish value.
+	it('Source rejects with an error whose code getter throws', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 100 });
+			return_rejection = null;
+			return_error = false;
+			IndexedCachingTable.invalidate(133);
+			await IndexedCachingTable.get(133); // seed an existing record to revalidate against
+			await delay(10);
+			const hostile = new Error('hostile source error');
+			Object.defineProperty(hostile, 'code', {
+				get() {
+					throw new Error('code getter blew up');
+				},
+			});
+			return_rejection = { value: hostile };
+			const HUNG = Symbol('hung');
+			const outcome = await Promise.race([
+				IndexedCachingTable.get(133).then(
+					() => 'resolved',
+					(error) => error
+				),
+				delay(2000, HUNG),
+			]);
+			assert.notStrictEqual(outcome, HUNG, 'get() must settle when reading the error throws');
+			assert.strictEqual(outcome, hostile, 'the source error should reach the caller, not the accessor failure');
+		} finally {
+			return_rejection = null;
+			return_error = false;
+		}
+	});
 	it('Can load cached indexed data', async function () {
 		sourceRequests = 0;
 		events = [];
