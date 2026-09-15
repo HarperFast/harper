@@ -218,6 +218,18 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await assert.rejects(lifecycle.replace(1n), /incompatible runtime capabilities/);
 	});
 
+	it('rejects a native module that still advertises a retired storage backend', async () => {
+		const binding = new FakeNativeModule();
+		binding.runtimeInfo = async () => ({
+			packageVersion: 'test',
+			tantivyVersion: 'test',
+			nativeAbiVersion: 2,
+			storageBackends: ['native', 'harper'],
+		});
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.replace(1n), /incompatible runtime capabilities/);
+	});
+
 	it('validates native configuration before creating storage', () => {
 		assert.throws(
 			() => new NativeFullTextDerivedIndexLifecycle(options(storePath, new FakeNativeModule(), { fields: [] })),

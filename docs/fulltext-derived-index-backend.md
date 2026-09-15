@@ -10,14 +10,15 @@ the local full-text directory is a rebuildable, independently published projecti
 Implement the Harper state machine and native generation lifecycle that adapt an asynchronous
 Fulltext owner runtime to `DerivedIndexBackend`. This unit covers owner acquisition, bounded ordered
 delivery, barrier publication, durable-cursor recovery, crash-safe generation replacement, owner
-fencing, shutdown, and reset. It does not yet wire a customer schema or query API.
+fencing, shutdown, reset, and `@fullText` activation. Query execution remains a separate unit.
 
 The implementation is stacked on
 [Shared derived-index runtime for native backends #2567](https://github.com/HarperFast/harper/pull/2567)
 and keeps Fulltext behind structural engine, encoder, and generation-lifecycle interfaces. The
-production loader is present, while tests inject a structural module until Fulltext has a versioned
-prerelease with supported platform binaries. Harper will exact-pin that release as an optional
-dependency in the schema-integration unit.
+production loader and schema activation are present, while tests inject a structural module until
+Fulltext has a versioned prerelease with supported platform binaries. An exact-pinned optional
+dependency and packed-platform test remain release blockers; the repository's current `0.0.0`
+development version is not a dependency Harper can ship.
 
 ## Architecture
 
@@ -42,6 +43,26 @@ authoritative Harper transaction
 RocksDB does not store Tantivy terms, postings, segments, or documents. Each source node and replica
 builds the same logical index from the authoritative records and transactions it receives. A native
 publication commits the searchable Tantivy generation and its Harper replay cursor together.
+
+## Schema activation
+
+`resources/derivedIndexes.ts` owns one `DerivedIndexRuntime` per database audit store and registers
+both HNSW and full-text backends with it. An `@fullText` declaration requires explicit table audit
+logging and RocksDB, creates one stable backend id per `<table>/<target>`, and writes native files
+under the database directory through `NativeFullTextDerivedIndexLifecycle`. The table's persisted id
+is the source generation; a same-named table recreated with a new id cannot adopt its predecessor's
+cursor or documents. Multiple declarations on one table register independent backends and may be
+owned and written in parallel.
+
+The projection copies only each declaration's `String` and `[String]` sources from the current
+conflict-resolved record. The schema compiler retains `Blob` as an approved source type, but runtime
+activation rejects a Blob-backed declaration until Harper provides bounded asynchronous extraction.
+Treating a file-backed Blob as a synchronous property would index a placeholder or incomplete data.
+
+The integration currently supplies conservative per-index queue, thread, and writer-memory limits
+required by the pre-1.0 native factory. They are server-owned and never appear in `@fullText`.
+Release qualification requires the Fulltext process-wide resource governor so many declared indexes
+share one measured memory/thread envelope rather than multiplying these provisional limits.
 
 ## Invariant
 

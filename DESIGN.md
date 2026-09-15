@@ -2395,7 +2395,7 @@ The SQL and job paths are additive rather than exclusive: `verifyPermsAST` valid
 
 ## Derived-index runtime: committed-log delivery to native index backends (`resources/derivedIndexRuntime.ts`)
 
-A derived index (the native HNSW plane, a future Tantivy full-text index) is a materialized view
+A derived index (the native HNSW plane or a Tantivy full-text index) is a materialized view
 that lives outside the record transaction: its apply is native, costs 0.2–1.4 ms per mutation, and
 its durability barrier is an `msync` or a segment publish, none of which belong on the commit path.
 The runtime is the one Harper-side implementation of the delivery protocol in harper#2489: **the
@@ -2541,6 +2541,28 @@ restart. The runtime also writes a condemnation marker to the root store
 cannot be written issues no reset. The cursor's atomic durability mechanism is the backend's
 (Tantivy publishes it with segment state; HNSW writes it after the plane barrier), which is why the
 cursor is backend-owned and validation is Harper's.
+
+### Schema activation
+
+`resources/derivedIndexes.ts` is the single schema-to-runtime registry for both HNSW and full text.
+Every worker registers the same stable logical backend ids against its database audit store; the
+runtime's existing lock elects the only writer. A table redefinition synchronously unregisters its
+previous runners before installing replacements, while asynchronous shutdown remains fenced behind
+the same backend lock. This also prevents a catalog rescan from leaving duplicate runners when the
+prior `Table` class is no longer reachable.
+
+An `@fullText` target creates no RocksDB column family. Its native directory is rooted inside the
+database directory and selected by the lifecycle's hash of `<table>/<target>`. RocksDB remains the
+source of truth and its transaction logs remain the recovery stream; RocksDB managed backups do not
+copy Tantivy segments. The persisted table id is the source generation, so dropping and recreating
+a table forces replacement even when the table and target names are reused.
+
+Activation requires explicit table auditing and RocksDB. String and string-array sources are
+projected directly from the resolved current record. Blob remains an accepted schema source, but
+activation rejects it until the derived pipeline has the bounded asynchronous extraction lane that
+can read file-backed Blob content without blocking or indexing a placeholder. Operational writer,
+queue, and search limits are Harper-owned constants for this integration slice, not schema options;
+the Fulltext process-wide resource governor must replace them before release qualification.
 
 ### Bounded delivery
 

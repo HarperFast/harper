@@ -55,7 +55,7 @@ import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
 import { replayLogs } from './replayLogs.ts';
-import { attachDerivedIndexes } from './indexes/hnswDerivedIndex.ts';
+import { assertFullTextActivationSupported, attachDerivedIndexes } from './derivedIndexes.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
@@ -2470,8 +2470,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
+	const hasFullText = attributes.some((attribute) => attribute.fullText);
 	if (
-		attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) &&
+		(attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) ||
+			hasFullText) &&
 		audit !== true &&
 		// An explicit false must fail here even for an already-audited Table. Nothing clears the
 		// static, so the runtime would stay attached while the descriptor persists audit: false,
@@ -2479,9 +2481,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		(audit === false || Table?.audit !== true)
 	) {
 		throw new ClientError(
-			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using nativePlane because its transaction log is the derived-index recovery source`
+			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using a derived index because its transaction log is the recovery source`
 		);
 	}
+	if (hasFullText) assertFullTextActivationSupported(rootStore, databaseName, tableName, attributes);
 	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
 
