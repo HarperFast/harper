@@ -17,6 +17,7 @@ const G = (globalThis.__QA890__ ??= {
 	iterDelayedError: { opened: 0, closed: 0 },
 	iterMidStream: { opened: 0, closed: 0 },
 	iterHealth: { opened: 0, closed: 0 },
+	envelopeHead: { opened: 0, closed: 0 },
 });
 
 function sleep(ms) {
@@ -160,6 +161,22 @@ export class IterHealth extends Resource {
 			}
 		}
 		return gen();
+	}
+}
+
+// A response-like envelope exercises REST.ts's separate finalizeResponse branch.
+export class EnvelopeHead extends Resource {
+	static loadAsInstance = false;
+	async get() {
+		async function* gen() {
+			G.envelopeHead.opened++;
+			try {
+				yield { n: 0 };
+			} finally {
+				G.envelopeHead.closed++;
+			}
+		}
+		return { status: 200, headers: {}, data: gen() };
 	}
 }
 

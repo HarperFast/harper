@@ -355,8 +355,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
 			const response = finalizeResponse(responseData, headers, status, request);
-			if (request.method === 'HEAD') discardSerializedStream(response.body);
-			else {
+			if (request.method === 'HEAD') {
+				discardSerializedStream(response.body);
+				if (!(response instanceof Response)) response.body = undefined;
+			} else {
 				const startup = waitForStreamStartup(response.body);
 				if (startup) await startup;
 			}

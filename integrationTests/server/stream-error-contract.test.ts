@@ -248,6 +248,54 @@ function captureKeepAliveReuse(
 	});
 }
 
+function captureHeadKeepAliveReuse(
+	restBase: string,
+	headPath: string,
+	authHeader: string,
+	timeoutMs = 10_000
+): Promise<{ responses: number; serverClosedEarly: boolean }> {
+	const url = new URL(restBase);
+	const host = url.hostname;
+	const port = Number.parseInt(url.port, 10) || (url.protocol === 'https:' ? 443 : 80);
+	const headRequest =
+		`HEAD ${headPath} HTTP/1.1\r\n` +
+		`Host: ${host}:${port}\r\n` +
+		`Accept: application/x-ndjson\r\n` +
+		`Accept-Encoding: br\r\n` +
+		`Authorization: ${authHeader}\r\n` +
+		`Connection: keep-alive\r\n\r\n`;
+	const probeRequest =
+		`GET /Probe/ HTTP/1.1\r\n` +
+		`Host: ${host}:${port}\r\n` +
+		`Accept: application/json\r\n` +
+		`Authorization: ${authHeader}\r\n` +
+		`Connection: close\r\n\r\n`;
+
+	return new Promise((resolvePromise) => {
+		let raw = '';
+		let sentProbe = false;
+		let settled = false;
+		const socket = net.createConnection({ host, port }, () => socket.write(headRequest));
+		const finish = (serverClosedEarly: boolean) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			socket.destroy();
+			resolvePromise({ responses: raw.split('HTTP/1.1 200').length - 1, serverClosedEarly });
+		};
+		const timer = setTimeout(() => finish(false), timeoutMs);
+		socket.on('data', (data: Buffer) => {
+			raw += data.toString('latin1');
+			if (!sentProbe && raw.includes('\r\n\r\n')) {
+				sentProbe = true;
+				socket.write(probeRequest);
+			}
+		});
+		socket.on('end', () => finish(!sentProbe || raw.split('HTTP/1.1 200').length - 1 < 2));
+		socket.on('error', () => finish(true));
+	});
+}
+
 async function getProbeJson(restBase: string, authHeaders: Record<string, string>): Promise<any> {
 	const url = new URL(`${restBase}/Probe/`);
 	return new Promise((resolvePromise, reject) => {
@@ -459,14 +507,19 @@ suite(
 				method: 'HEAD',
 				acceptEncoding: 'br',
 			});
+			const envelopeReuse = await captureHeadKeepAliveReuse(restBase, '/EnvelopeHead/', authHeader);
 			await sleep(25);
 			const after = await getProbeJson(restBase, { Authorization: authHeader });
 			strictEqual(sse.status, 200);
 			strictEqual(sse.decodedBody, '');
 			strictEqual(ndjson.status, 200);
 			strictEqual(ndjson.decodedBody, '');
+			strictEqual(envelopeReuse.serverClosedEarly, false);
+			strictEqual(envelopeReuse.responses, 2);
 			strictEqual(after.sseHealth.opened, before.sseHealth.opened);
 			strictEqual(after.iterHealth.closed, before.iterHealth.closed);
+			strictEqual(after.envelopeHead.opened, before.envelopeHead.opened);
+			strictEqual(after.envelopeHead.closed, before.envelopeHead.closed);
 		});
 
 		// ── Pre-first-yield throw: the core question ──────────────────────────────────────────────

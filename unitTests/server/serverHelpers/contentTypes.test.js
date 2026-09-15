@@ -5,7 +5,12 @@ const http = require('node:http');
 const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
-const { contentTypes, findBestSerializer, waitForStreamStartup } = require('#src/server/serverHelpers/contentTypes');
+const {
+	contentTypes,
+	findBestSerializer,
+	waitForStreamStartup,
+	discardSerializedStream,
+} = require('#src/server/serverHelpers/contentTypes');
 const { pipeBodyToResponse } = require('#src/server/http');
 
 function streamToString(readable) {
@@ -154,19 +159,28 @@ describe('contentTypes – application/x-ndjson', function () {
 		});
 
 		it('does not start a generator for HEAD serialization', async function () {
-			let started = false;
+			let nextCalled = false;
+			let returned = false;
 			const source = {
 				[Symbol.asyncIterator]() {
-					started = true;
-					return (async function* () {
-						yield { seq: 'a' };
-					})();
+					return {
+						next() {
+							nextCalled = true;
+							return Promise.resolve({ value: { seq: 'a' }, done: false });
+						},
+						return() {
+							returned = true;
+							return Promise.resolve({ done: true });
+						},
+					};
 				},
 			};
 
-			handler.serializeStream(source, undefined, { method: 'HEAD' });
+			const readable = handler.serializeStream(source, undefined, { method: 'HEAD' });
+			discardSerializedStream(readable);
 			await new Promise((resolve) => setImmediate(resolve));
-			assert.strictEqual(started, false);
+			assert.strictEqual(nextCalled, false);
+			assert.strictEqual(returned, true);
 		});
 	});
 
@@ -293,6 +307,38 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 			await streamToString(readable),
 			'event: harper-error\ndata: {"error":"Error","message":"delayed failure"}\n\n'
 		);
+	});
+
+	it('does not acknowledge the first message until the stream is consumed', async function () {
+		let acknowledged = false;
+		async function* source() {
+			yield { seq: 'a', acknowledge: () => (acknowledged = true) };
+		}
+
+		const readable = handler.serializeStream(source(), undefined, { method: 'GET' });
+		await waitForStreamStartup(readable);
+		assert.strictEqual(acknowledged, false);
+		await streamToString(readable);
+		assert.strictEqual(acknowledged, true);
+	});
+
+	it('does not acknowledge a pending first message after cancellation', async function () {
+		let resolveStep;
+		let acknowledged = false;
+		const source = {
+			[Symbol.asyncIterator]() {
+				return {
+					next: () => new Promise((resolve) => (resolveStep = resolve)),
+					return: () => Promise.resolve({ done: true }),
+				};
+			},
+		};
+
+		const readable = handler.serializeStream(source, undefined, { method: 'GET' });
+		discardSerializedStream(readable);
+		resolveStep({ value: { acknowledge: () => (acknowledged = true) }, done: false });
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(acknowledged, false);
 	});
 
 	it('ends the response without hanging or raising an uncaughtException when the generator throws mid-stream', async function () {

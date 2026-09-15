@@ -22,6 +22,7 @@ const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== 
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
 const streamStartup = Symbol('streamStartup');
+const serializedStreamError = Symbol('serializedStreamError');
 
 type StreamStartup = {
 	result: Promise<{ failed?: true; error?: unknown }>;
@@ -727,9 +728,11 @@ function transformIterable(iterable, transform, serializeError, eager) {
 		if (!startupSettled) startupResult.resolve({ failed: true, error });
 		if (!startupSettled && !(await errorDecision.promise)) return { done: true };
 		logger.warn?.('Error serializing in stream', harperErrorForLog(error));
-		return { value: serializeError(error), done: false };
+		return { value: serializeError(error), done: false, [serializedStreamError]: true };
 	};
 	const transformStep = (step) => {
+		if (step?.[serializedStreamError]) return step;
+		if (terminal) return { done: true };
 		if (step.done) return step;
 		try {
 			return { value: transform(step.value), done: false };
@@ -737,7 +740,7 @@ function transformIterable(iterable, transform, serializeError, eager) {
 			return handleError(error);
 		}
 	};
-	const getNext = () => {
+	const getRawNext = () => {
 		if (terminal) return { done: true };
 		let step;
 		try {
@@ -745,14 +748,19 @@ function transformIterable(iterable, transform, serializeError, eager) {
 		} catch (error) {
 			return handleError(error);
 		}
-		if (step.then) return step.then(transformStep, handleError);
+		if (step.then) return step.then(undefined, handleError);
+		return step;
+	};
+	const getNext = () => {
+		const step = getRawNext();
+		if (step.then) return step.then(transformStep);
 		return transformStep(step);
 	};
 	const start = () => {
 		if (started) return;
 		started = true;
 		iterator = iterable[Symbol.asyncIterator] ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
-		firstStep = getNext();
+		firstStep = getRawNext();
 		Promise.resolve(firstStep).then(
 			() => {
 				if (!terminal) commit();
@@ -778,12 +786,17 @@ function transformIterable(iterable, transform, serializeError, eager) {
 						start();
 						const step = firstStep;
 						firstStep = undefined;
-						return step;
+						if (step.then) return step.then(transformStep);
+						return transformStep(step);
 					}
 					return getNext();
 				},
 				return(value) {
 					terminal = true;
+					if (!iterator)
+						iterator = iterable[Symbol.asyncIterator]
+							? iterable[Symbol.asyncIterator]()
+							: iterable[Symbol.iterator]?.();
 					return iterator?.return?.(value) ?? { value, done: true };
 				},
 				throw(error) {
