@@ -3,21 +3,67 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
+const { setFullTextNativeBindingForTests } = require('#src/resources/derivedIndexes');
+const { compileFullTextDefinition } = require('#src/resources/fullTextSchema');
+
+class SchemaTestNativeModule {
+	#payloads = new Map();
+
+	async runtimeInfo() {
+		return {
+			packageVersion: 'test',
+			tantivyVersion: 'test',
+			nativeAbiVersion: 2,
+			storageBackends: ['native'],
+		};
+	}
+
+	async openNativeFullTextIndex(options) {
+		const payloads = this.#payloads;
+		return {
+			committedPayload: payloads.get(options.generation),
+			async apply(batch) {
+				const mutations = JSON.parse(Buffer.from(batch).toString());
+				return mutations.upserts.length + mutations.deletes.length;
+			},
+			async publish(payload) {
+				payloads.set(options.generation, payload);
+				this.committedPayload = payload;
+				return 1n;
+			},
+			async close() {},
+		};
+	}
+
+	encodeMutationBatch(batch) {
+		return Buffer.from(JSON.stringify(batch));
+	}
+}
 
 describe('@fullText schema declaration', () => {
-	before(() => setupTestDBPath());
+	before(() => {
+		setupTestDBPath();
+		setFullTextNativeBindingForTests(new SchemaTestNativeModule());
+	});
+	after(async () => {
+		for (const Table of Object.values(tables)) {
+			if (!Table?.attributes?.some((attribute) => attribute.fullText)) continue;
+			const runtime = Table.derivedIndexRuntime;
+			Table.derivedIndexRuntime = undefined;
+			await runtime?.close();
+		}
+		setFullTextNativeBindingForTests(undefined);
+	});
 
 	it('compiles structured fields and approved defaults into a separate descriptor', async () => {
 		await loadGQLSchema(`
-			type FullTextProduct @table {
+			type FullTextProduct @table(audit: true) {
 				id: ID @primaryKey
 				title: String
 				tags: [String]
-				manual: Blob
 				search: FullText @fullText(fields: [
 					{ name: "title", weight: 3.0 }
 					{ name: "tags", highlight: false }
-					{ name: "manual", weight: 0.5, highlight: true }
 				])
 			}
 		`);
@@ -27,7 +73,6 @@ describe('@fullText schema declaration', () => {
 			fields: [
 				{ name: 'title', weight: 3 },
 				{ name: 'tags', weight: 1, highlight: false },
-				{ name: 'manual', weight: 0.5, highlight: true },
 			],
 			analyzer: 'english@1',
 			stopWords: true,
@@ -43,7 +88,7 @@ describe('@fullText schema declaration', () => {
 
 	it('keeps synonyms and highlighting disabled unless configured', async () => {
 		await loadGQLSchema(`
-			type FullTextDefaults @table {
+			type FullTextDefaults @table(audit: true) {
 				id: ID @primaryKey
 				text: String
 				search: FullText @fullText(fields: [{ name: "text" }])
@@ -54,9 +99,18 @@ describe('@fullText schema declaration', () => {
 		assert.strictEqual(definition.highlighting, undefined);
 	});
 
+	it('retains Blob as an accepted declaration source for the asynchronous extraction phase', () => {
+		const target = { name: 'search', type: 'FullText' };
+		const definition = compileFullTextDefinition(target, { fields: [{ name: 'manual' }] }, [
+			{ name: 'manual', type: 'Blob' },
+			target,
+		]);
+		assert.deepStrictEqual(definition.fields, [{ name: 'manual', weight: 1 }]);
+	});
+
 	it('accepts configurable structural options, synonyms, and opt-in highlighting', async () => {
 		await loadGQLSchema(`
-			type FullTextOptions @table {
+			type FullTextOptions @table(audit: true) {
 				id: ID @primaryKey
 				text: String
 				search: FullText @fullText(
@@ -84,7 +138,7 @@ describe('@fullText schema declaration', () => {
 
 	it('supports multiple independent declarations on one table', async () => {
 		await loadGQLSchema(`
-			type FullTextMultiple @table {
+			type FullTextMultiple @table(audit: true) {
 				id: ID @primaryKey
 				title: String
 				description: String
@@ -104,7 +158,7 @@ describe('@fullText schema declaration', () => {
 
 	it('persists declaration changes in the canonical table descriptor', async () => {
 		const declaration = (weight) => `
-			type FullTextPersistence @table {
+			type FullTextPersistence @table(audit: true) {
 				id: ID @primaryKey
 				text: String
 				search: FullText @fullText(fields: [{ name: "text", weight: ${weight} }])
@@ -197,7 +251,7 @@ describe('@fullText schema declaration', () => {
 
 	it('rejects direct writes to the query-only handle', async () => {
 		await loadGQLSchema(`
-			type FullTextWriteGuard @table {
+			type FullTextWriteGuard @table(audit: true) {
 				id: ID @primaryKey
 				text: String
 				search: FullText @fullText(fields: [{ name: "text" }])

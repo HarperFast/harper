@@ -23,7 +23,7 @@ export interface NativeFullTextModule {
 		packageVersion: string;
 		tantivyVersion: string;
 		nativeAbiVersion: number;
-		storageBackends: ReadonlyArray<'native' | 'harper'>;
+		storageBackends: readonly ['native'];
 	}>;
 	openNativeFullTextIndex(
 		options: NativeFullTextIndexConfiguration & {
@@ -66,7 +66,8 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		typeof info.tantivyVersion !== 'string' ||
 		info.nativeAbiVersion !== FULLTEXT_NATIVE_ABI_VERSION ||
 		!Array.isArray(info.storageBackends) ||
-		!info.storageBackends.includes('native')
+		info.storageBackends.length !== 1 ||
+		info.storageBackends[0] !== 'native'
 	)
 		throw new TypeError('@harperfast/fulltext/native reported incompatible runtime capabilities');
 	return binding;

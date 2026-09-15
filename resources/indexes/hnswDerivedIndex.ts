@@ -5,7 +5,6 @@ import type { RocksTransactionLogStore } from '../RocksTransactionLogStore.ts';
 import {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
-	DerivedIndexRuntime,
 	readDerivedIndexReadiness,
 	type DerivedIndexBackend,
 	type DerivedIndexBackendHost,
@@ -27,8 +26,6 @@ export const DERIVED_INDEX_CURSOR_KEY = Symbol.for('derived-index-cursor');
 // chunks a delivery by records and estimated bytes; this caps how many chunks may wait.
 const QUEUE_CAPACITY_BYTES = 64 * 1024 * 1024;
 const APPLY_SLICE_MILLIS = 5;
-// Writes to an index this far behind fail with a retryable 503 (see the runtime's lag policy).
-const DEFAULT_MAX_LAG_MILLISECONDS = 30_000;
 
 /**
  * The native index methods the backend drives. `applyDerivedValue` inserts, replaces or removes
@@ -231,99 +228,6 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			}
 		);
 	}
-}
-
-type Registered = { runtime: DerivedIndexRuntime; tables: Map<number, { Table: any }> };
-const runtimes = new WeakMap<object, Registered>();
-
-function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
-	let registered = runtimes.get(auditStore);
-	if (registered) return registered;
-	const tables = new Map<number, { Table: any }>();
-	const runtime = new DerivedIndexRuntime(
-		auditStore,
-		(tableId, recordId) => {
-			const entry = tables.get(tableId)?.Table.primaryStore.getEntry(recordId);
-			return entry?.value == null ? undefined : { version: entry.version, value: entry.value };
-		},
-		{
-			scanRecords: (tableId) =>
-				tables
-					.get(tableId)!
-					.Table.primaryStore.getRange({ versions: true, snapshot: false })
-					.map(({ key, value, version }) => ({ recordId: key, version, value })),
-		}
-	);
-	registered = { runtime, tables };
-	runtimes.set(auditStore, registered);
-	return registered;
-}
-
-const warnedAuditIndexes = new Set<string>();
-
-/**
- * Register every post-commit custom index of a table with the shared derived-index runtime of its
- * database. Returns the release for the table's registrations, or undefined when it has none. Runs
- * on every worker; the runtime elects one owner per index.
- */
-export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | undefined {
-	const attributes = Table.attributes.filter(
-		(attribute: any) => Table.indices[attribute.name]?.customIndex?.postCommit
-	);
-	if (attributes.length === 0) return;
-	if (Table.audit !== true) {
-		throw new ClientError(
-			`Table '${Table.databaseName}.${Table.tableName}' must enable audit logging before using a post-commit derived index`
-		);
-	}
-	const auditStore = Table.auditStore as RocksTransactionLogStore;
-	const registered = runtimeFor(auditStore);
-	// A redefinition registers the same class again before the previous registration's release has
-	// settled, so the release must only remove what it installed, not whatever is current.
-	const installed = { Table };
-	registered.tables.set(Table.tableId, installed);
-	const releases: Array<() => Promise<void>> = [];
-	for (const attribute of attributes) {
-		const indexStore = Table.indices[attribute.name];
-		const index = indexStore.customIndex as DerivedNativeIndex & { postCommit: true };
-		const id = `hnsw:${indexStore.name}`;
-		const warningKey = `${Table.databaseName}.${Table.tableName}.${indexStore.name}`;
-		if (!warnedAuditIndexes.has(warningKey)) {
-			warnedAuditIndexes.add(warningKey);
-			logger.warn?.(
-				`Derived index ${indexStore.name} requires auditing; the audit API retains full record history for the configured retention window`
-			);
-		}
-		const resolver = Table.propertyResolvers?.[attribute.name];
-		const label = `Vector for attribute "${attribute.name}"`;
-		index.attachDerivedHost({
-			readiness: () => registered.runtime.getReadiness(id),
-			requestRebuild: () => registered.runtime.requestRebuild(id),
-		});
-		releases.push(
-			registered.runtime.register({
-				backend: new HnswDerivedIndexBackend(id, index),
-				projections: new Map([
-					[
-						Table.tableId,
-						(record: any) => {
-							const vector = resolver ? resolver(record) : record[attribute.name];
-							if (vector == null) return undefined;
-							index.assertDerivedValue(vector, label);
-							return vector;
-						},
-					],
-				]),
-				options: { maxLagMilliseconds: attribute.indexed?.maxLagMilliseconds ?? DEFAULT_MAX_LAG_MILLISECONDS },
-			})
-		);
-	}
-	return {
-		async close() {
-			await Promise.all(releases.map((release) => release()));
-			if (registered.tables.get(Table.tableId) === installed) registered.tables.delete(Table.tableId);
-		},
-	};
 }
 
 /** Shared readiness of an index on any worker, registered or not. */
