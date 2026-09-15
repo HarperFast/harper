@@ -1018,7 +1018,7 @@ export function makeTable(options) {
 						// is momentarily unregistered — and this sink runs off the replication stream, not off
 						// that transport. Dropping a peer's clean-handoff release there leaves the home holding
 						// its grant for the delegation's whole deadline.
-						target?.admittingCoordinator?.applyEntry(entry, author);
+						target?.admittingCoordinator?.applyEntry(entry, author, event.timestamp);
 					} catch (error) {
 						logger.warn?.('dropping a record lock control entry: the coordinator is unavailable', error);
 					}
@@ -5813,9 +5813,10 @@ export function makeTable(options) {
 		 * The payload goes in as bytes rather than through `recordUpdater`, which would run it through
 		 * schema projection and the table's shared structure dictionary.
 		 */
-		static writeLockControlEntry(entry: LockControlEntry): Promise<void> {
+		static writeLockControlEntry(entry: LockControlEntry): Promise<number | undefined> {
 			const encodedRecord = encodeLockControlPayload(entry);
 			const nodeId = getThisNodeId(auditStore) ?? 0;
+			let position: number;
 			// No entry pins its clock, the request included. `ts_R` is minted before the write, so pinning
 			// to it can land the entry behind a peer's replication cursor if any write to this table
 			// commits in between — the same hazard that rules it out for grants and releases, which are
@@ -5829,8 +5830,9 @@ export function makeTable(options) {
 						key: null,
 						store: primaryStore,
 						skipReplicationConfirmation: true,
-						commit: (txnTime: number, _existingEntry: any, _retry: any, nativeTransaction: any) =>
-							auditStore[isRocksDB ? 'putSync' : 'put'](
+						commit: (txnTime: number, _existingEntry: any, _retry: any, nativeTransaction: any) => {
+							position = txnTime;
+							return auditStore[isRocksDB ? 'putSync' : 'put'](
 								null,
 								{
 									version: txnTime,
@@ -5850,10 +5852,11 @@ export function makeTable(options) {
 									structureVersion: 0,
 								},
 								{ instructedWrite: true, transaction: nativeTransaction, nodeId, viaNodeId: nodeId }
-							),
+							);
+						},
 					});
 				})
-			).then(() => undefined);
+			).then(() => position);
 		}
 		/**
 		 * The coordinator that holds this node's admissions, transport or not. Releasing and registering
