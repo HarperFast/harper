@@ -386,12 +386,13 @@ function decodeTuple(tuple: unknown[]): LockControlEntry | undefined {
 function normalizeDependencies(value: unknown, homes?: readonly string[]): LockDependencySet | undefined {
 	if (!Array.isArray(value) || value.length > MAX_LOCK_DEPENDENCIES) return undefined;
 	const positions = new Map<string, number>();
+	const allowedOrigins = homes && new Set(homes);
 	for (const dependency of value) {
 		if (!Array.isArray(dependency) || dependency.length !== 2) return undefined;
 		const [origin, position] = dependency;
 		if (!isNodeName(origin) || typeof position !== 'number' || !Number.isFinite(position) || position < 0)
 			return undefined;
-		if (homes && !homes.includes(origin)) return undefined;
+		if (allowedOrigins && !allowedOrigins.has(origin)) return undefined;
 		if (positions.has(origin)) return undefined;
 		positions.set(origin, position);
 	}
@@ -1706,7 +1707,8 @@ export class LockCoordinator {
 		if (requirement !== null) return requirement;
 		const recovered = normalizeDependencies(result);
 		if (!recovered) throw new Error('the recovery barrier returned no usable applied-position set');
-		return recovered.filter(([origin]) => homes.includes(origin));
+		const allowedOrigins = new Set(homes);
+		return recovered.filter(([origin]) => allowedOrigins.has(origin));
 	}
 
 	/** This node is the key's home: grant to itself through exactly the same table a peer would use. */
