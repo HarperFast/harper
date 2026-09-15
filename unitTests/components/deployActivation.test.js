@@ -168,6 +168,35 @@ describe('interrupted activation recovery', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	it('clears an earlier failed recovery verdict when it returns a staged artifact to dormant', async () => {
+		// Returning the artifact to dormant while a stale `.unsettled` survives returns it to a state nothing
+		// can use: every worker fails the component closed on the marker, an activation refuses the id, and
+		// the next retention pass deletes the build as a stale unsettled one.
+		const root = await newRoot('preb1-staged-unsettled');
+		const { deploymentDir } = await stageState(root, 'web', 'd1', {
+			live: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: true,
+		});
+		await fs.writeFile(
+			path.join(deploymentDir, '.artifact.json'),
+			JSON.stringify({ v: 1, component: 'web', rootConfig: null, installationIsOpaque: false, isolated: false })
+		);
+		await fs.writeFile(path.join(deploymentDir, '.unsettled'), 'an earlier pass could not settle this');
+
+		await recoverInterruptedActivations(root);
+
+		assert.ok(existsSync(path.join(deploymentDir, '.complete')), 'the artifact survives');
+		assert.strictEqual(
+			existsSync(path.join(deploymentDir, '.unsettled')),
+			false,
+			'and carries no verdict that would have it refused and then pruned'
+		);
+		assert.strictEqual(existsSync(path.join(deploymentDir, '.activation.json')), false);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('discards a candidate that never activated, leaving the live tree', async () => {
 		const root = await newRoot('preb1');
 		await stageState(root, 'web', 'd1', { live: 'LIVE\n', candidate: 'CANDIDATE\n', complete: true, journal: true });

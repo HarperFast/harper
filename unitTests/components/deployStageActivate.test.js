@@ -675,6 +675,38 @@ describe('an activation that fails before it commits', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	// A read-only ROOT cannot reach the config publish: B1 renames the live tree out of the root, so it is
+	// the step that fails and the callback never runs. To land the failure between the publish and the
+	// commit, the publish itself takes write permission off the DEPLOYMENT directory — B2 renames the
+	// candidate out of there — and the undo puts it back so compensation can still do its work.
+	const failAfterConfigPublish = async (root, component, id, onUndo) => {
+		const seen = { published: [], undone: 0 };
+		await assert.rejects(
+			() =>
+				prepareApplication(applicationAt(root, component), {
+					mode: 'activate',
+					artifactId: id,
+					publishRootConfig: async (entry) => {
+						seen.published.push(entry);
+						await fs.chmod(deploymentDir(root, id), 0o500);
+						return async () => {
+							await fs.chmod(deploymentDir(root, id), 0o700);
+							seen.undone++;
+							await onUndo?.();
+						};
+					},
+				}),
+			(error) => {
+				assert.match(String(error.message), /EACCES|EPERM/);
+				assert.doesNotMatch(String(error.message), /Cannot deploy/);
+				return true;
+			}
+		);
+		await fs.chmod(deploymentDir(root, id), 0o700).catch(() => {});
+		assert.strictEqual(seen.published.length, 1, 'the config publish ran, so the failure is past it');
+		return seen;
+	};
+
 	it('takes back the root-config entry it published, so config does not name a release that is not live', async function () {
 		this.timeout(30000);
 		if (!(await readOnlyDirectoryDeniesWrites())) return this.skip();
@@ -684,15 +716,42 @@ describe('an activation that fails before it commits', () => {
 			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: false }, isolated: false }),
 		});
 
-		const published = [];
-		await failAfterJournal(root, 'web', 'a1', {
-			publishRootConfig: async (entry) => {
-				published.push(entry);
-				return async () => published.pop();
-			},
+		const seen = await failAfterConfigPublish(root, 'web', 'a1');
+
+		assert.strictEqual(seen.undone, 1, 'the entry that named the unactivated release was taken back');
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n');
+		assert.strictEqual(
+			existsSync(path.join(deploymentDir(root, 'a1'), '.activation.json')),
+			false,
+			'and the artifact is dormant again'
+		);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('returns the artifact to dormant even when the config undo fails, because an existing component cannot roll forward', async function () {
+		this.timeout(30000);
+		if (!(await readOnlyDirectoryDeniesWrites())) return this.skip();
+		const root = await newRoot('compensate-config-undo-fails');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		await stage(root, 'web', 'a1', 'STAGED v2\n', {
+			describeArtifact: () => ({ rootConfig: { package: 'npm:web@2', isolated: false }, isolated: false }),
 		});
 
-		assert.deepStrictEqual(published, [], 'the entry that named the unactivated release was taken back');
+		// Compensation has already put the live tree back and taken its rollback record with it, so the next
+		// settle reads live-plus-candidate-with-no-record: for a staged artifact that means dormant, never a
+		// roll forward. Holding the journal for a roll-forward that cannot happen only defers the same
+		// verdict to the next start and leaves the artifact unusable until then.
+		await failAfterConfigPublish(root, 'web', 'a1', async () => {
+			throw new Error('config undo failed');
+		});
+
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n');
+		assert.strictEqual(
+			existsSync(path.join(deploymentDir(root, 'a1'), '.activation.json')),
+			false,
+			'the journal is retired rather than held for a roll forward recovery will not perform'
+		);
+		assert.ok(existsSync(path.join(deploymentDir(root, 'a1'), 'web')), 'and the certified build is still there');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 });

@@ -1656,29 +1656,32 @@ async function claimDeploymentDirectory(deploymentDirPath: string, componentName
 			);
 		}
 		// Ownership has to be POSITIVE to reclaim, and EMPTINESS IS NOT A VERDICT. The sidecar below is
-		// written as part of the claim, so a directory that names nobody is another component inside the
-		// window between its own mkdir and that write — a live claim, not an abandoned one. Nothing on disk
-		// separates it from a claim that got no further, and only the claimant's preparation lock, which is
-		// not this one, serializes it: a deploy can hold an empty directory for minutes while it resolves and
-		// packs, so reclaiming on an empty read deletes a build that is running. Refusing costs a retry under
-		// a fresh id; reclaiming costs someone else's deploy. ENOENT is the exception — the directory is gone,
-		// so there is no claim left to take.
-		if (owner === undefined && (await presentOrAbsent(deploymentDirPath))) {
-			throw new Error(
-				`Deployment id ${basename(deploymentDirPath)} is already claimed by a build that has not named its ` +
-					`component yet`
-			);
+		// written as part of the claim, so a directory naming nobody is another component between its own
+		// mkdir and that write, and a deploy can hold a nearly empty one for minutes while it resolves and
+		// packs. Nothing on disk separates that from a claim that got no further, and the lock that
+		// serializes it is not this one, so only the exclusive create may conclude the id is free: the
+		// directory can also have been discarded by a failed build between the first mkdir and this read,
+		// and another component can claim it in that same gap.
+		if (owner === undefined) {
+			await mkdir(deploymentDirPath, { mode: 0o700 }).catch((retry: NodeJS.ErrnoException) => {
+				if (retry?.code !== 'EEXIST') throw retry;
+				throw new Error(
+					`Deployment id ${basename(deploymentDirPath)} is already claimed by a build that has not named its ` +
+						`component yet`
+				);
+			});
+		} else {
+			if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER))) {
+				throw new Error(
+					`Deployment id ${basename(deploymentDirPath)} already holds a completed build of '${componentName}'; ` +
+						`deploy it with deployment_id, or deploy again to build a new one`
+				);
+			}
+			// This component's own preparation lock serializes the claim and nothing certified it, so nothing
+			// is lost by rebuilding over it.
+			await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+			await mkdir(deploymentDirPath, { mode: 0o700 });
 		}
-		if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER))) {
-			throw new Error(
-				`Deployment id ${basename(deploymentDirPath)} already holds a completed build of '${componentName}'; ` +
-					`deploy it with deployment_id, or deploy again to build a new one`
-			);
-		}
-		// This component's own preparation lock serializes the claim and nothing certified it, so nothing is
-		// lost by rebuilding over it.
-		await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-		await mkdir(deploymentDirPath, { mode: 0o700 });
 	}
 	const claimed = await lstat(deploymentDirPath);
 	if (!claimed.isDirectory() || claimed.isSymbolicLink()) {
@@ -1692,10 +1695,9 @@ async function claimDeploymentDirectory(deploymentDirPath: string, componentName
 			)
 		);
 	}
-	// Ownership is published HERE rather than at certification. `buildCandidateApplication` can spend minutes
-	// resolving and packing before any tree exists to infer an owner from, and for that whole window the
-	// directory answered to nobody — which is what let a second component reading an empty directory delete a
-	// live build. `markCandidateComplete` writes it again and tolerates the EEXIST.
+	// Published as part of the claim, not at certification: resolving and packing can take minutes, and until
+	// a tree exists to infer an owner from, a directory that answers to nobody is one another component will
+	// take for abandoned.
 	await writeControlFileDurably(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), componentName);
 }
 
@@ -2371,6 +2373,25 @@ async function sweepAsideRecords(
 }
 
 /**
+ * Clear an earlier failed recovery's verdict once this settlement has decided. Treated as CORRECTNESS, not
+ * cleanup: main would report the component settled and load it while every worker read the stale marker and
+ * failed it closed, so a failure here throws and lets main reach the same verdict. The journal outlives it
+ * either way, so the next start settles again.
+ */
+async function clearUnsettledVerdict(deploymentDirPath: string, componentName: string): Promise<void> {
+	try {
+		await rm(join(deploymentDirPath, UNSETTLED_MARKER), { force: true });
+	} catch (error) {
+		throw new Error(
+			`Settled the interrupted activation of ${componentName} but could not clear its unsettled ` +
+				`marker at ${join(deploymentDirPath, UNSETTLED_MARKER)}; the component stays failed closed on ` +
+				`every thread until that file can be removed: ${errorMessage(error)}`,
+			{ cause: error }
+		);
+	}
+}
+
+/**
  * One interrupted activation, under the component preparation lock. Ambiguity exists only while the live
  * path is absent, and there the `complete` marker is the roll-forward authority: without it the candidate
  * was never validated, so the committed tree in the aside wins. Every branch is idempotent, so a crash
@@ -2476,6 +2497,10 @@ async function settleInterruptedActivation(
 		// descriptor is what tells the two apart, and it is on disk precisely so recovery can. Returning the
 		// artifact to dormant by removing only the journal leaves it exactly as `deployment_id` expects it.
 		if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE))) {
+			// This branch returns early and so reaches none of the settled tail below. An artifact returned to
+			// dormant still carrying a stale verdict is one nothing can use: activation refuses the id and the
+			// next retention pass deletes the build.
+			await clearUnsettledVerdict(deploymentDirPath, journal.component);
 			await rm(journalPath, { force: true });
 			await syncDirectory(deploymentDirPath);
 			logger.info?.(
@@ -2511,20 +2536,7 @@ async function settleInterruptedActivation(
 	// An earlier failed recovery may have left an unsettled marker here. Cleared BEFORE the journal and
 	// treated as correctness: main would report this component settled and load it, while every worker read
 	// the stale marker and failed it closed.
-	try {
-		await rm(join(deploymentDirPath, UNSETTLED_MARKER), { force: true });
-	} catch (error) {
-		// The tree decision is applied, but the marker still says otherwise and every worker reads it and
-		// fails the component closed. Thrown rather than returned so MAIN reaches that same verdict instead
-		// of reporting the component settled — a split where main serves what every worker refuses is worse
-		// than both refusing. The journal survives, so the next start settles again.
-		throw new Error(
-			`Settled the interrupted activation of ${journal.component} but could not clear its unsettled ` +
-				`marker at ${join(deploymentDirPath, UNSETTLED_MARKER)}; the component stays failed closed on ` +
-				`every thread until that file can be removed: ${errorMessage(error)}`,
-			{ cause: error }
-		);
-	}
+	await clearUnsettledVerdict(deploymentDirPath, journal.component);
 	await rm(journalPath, { force: true }).catch((error) =>
 		logger.warn(`Settled ${journal.component} but could not remove its activation journal:`, errorForLog(error))
 	);
@@ -2852,9 +2864,14 @@ export async function activateCandidateApplication(
 			},
 		});
 	} catch (error) {
+		// Whether the journal can still carry this activation forward, decided BEFORE compensation removes the
+		// evidence it is read from. Only a first-ever deploy qualifies: `restoreLive` leaves the live path
+		// absent, and recovery reads absent-plus-complete-candidate as a roll forward. A component that
+		// already had a tree gets that tree back and loses its rollback record with it, so the next settle
+		// reads live-plus-candidate-with-no-record and returns the artifact to dormant whatever the journal
+		// says — keeping it there defers the same verdict to the next start and strands config until then.
+		const recoveryCanRollForward = priorAbsentRecordPath !== undefined;
 		await compensate(error, pendingEffect, restoreLive, application);
-		// Before the journal is retired: config naming the staged release with no journal to roll forward is
-		// what sends the next boot to the registry instead of the certified artifact.
 		let configRestored = true;
 		if (undoAfterJournal) {
 			configRestored = await undoAfterJournal().then(
@@ -2862,17 +2879,21 @@ export async function activateCandidateApplication(
 				(undoError) => {
 					application.logger.warn(
 						`Restored ${application.name} after a failed activation but could not restore its root config, ` +
-							`which still names deployment ${deploymentId}; keeping its activation journal so recovery can ` +
-							`roll the certified build forward instead:`,
+							`which still names deployment ${deploymentId}` +
+							(recoveryCanRollForward
+								? '; keeping its activation journal so recovery can roll the certified build forward instead:'
+								: '. The certified build stays dormant and the previous release stays live, so the two ' +
+									'disagree until an operator republishes the component or activates it again:'),
 						undoError
 					);
 					return false;
 				}
 			);
 		}
-		// An undo that failed leaves exactly the state the journal exists for. Retiring it here would strand
-		// config on a release that is not live with nothing saying how to get there.
-		if (configRestored) await returnToDormant();
+		// Kept only where it changes the outcome. Config is stranded either way for a component that already
+		// had a tree — the durable-config window #2315 step 3 closes — and a journal that recovery will only
+		// settle back to dormant buys nothing for holding it.
+		if (configRestored || !recoveryCanRollForward) await returnToDormant();
 		throw error;
 	}
 
@@ -4339,11 +4360,10 @@ async function activateStagedArtifact(
 
 	await options.admitIsolation?.(descriptor);
 
-	// `.complete` is a durability marker over the bytes, not a seal on them: nothing stops a dormant artifact
-	// being edited while it waits, and every check that made it safe to activate ran at stage time. Both are
-	// re-run here, on the cold path, rather than trusted from a marker. The link rule is the one that must
-	// not be skipped — `repairRelocatedDependencyLinks` runs past the commit point and can only warn, so a
-	// link planted after staging would otherwise reach the live path with the operation reporting success.
+	// `.complete` is a durability marker over the bytes, not a seal on them, and every check that made this
+	// artifact safe ran at stage time. The link rule especially cannot be skipped:
+	// `repairRelocatedDependencyLinks` runs past the commit point and can only warn, so a link planted while
+	// the artifact sat dormant would otherwise go live with the operation reporting success.
 	await assertOwnedArtifactTree(candidateDirPath, application.name, 'activate');
 	// Also the activation's `prepare` phase end: the deploy path emits `prepare`/`start` for every mode but
 	// only ever emitted its `done` from here.

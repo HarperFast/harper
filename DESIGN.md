@@ -697,6 +697,19 @@ name never exists with partial contents; the candidate's own contents are fsynce
 written, since `.complete` is what vouches for them. Recovery runs before `installApplications()`, which
 installs whatever the root config names and would otherwise reinstall over a half-swapped candidate.
 
+**Every settlement outcome clears an earlier failed recovery's `.unsettled`, including the one that returns a
+staged artifact to dormant.** That branch returns before the settled tail, so it has to clear the verdict
+itself: an artifact left carrying a stale marker is refused by `deployment_id` and then deleted by the next
+retention pass as a stale unsettled build, which is the opposite of returning it to dormant.
+
+**Keeping the activation journal after a failed root-config undo only changes the outcome for a first-ever
+deploy.** Compensation has already put an existing component's tree back and taken its rollback record with
+it, so the next settle reads live-plus-candidate-with-no-record and returns the artifact to dormant whatever
+the journal says — holding it there defers the same verdict to the next start and leaves the artifact
+unusable until then. Only a first deploy leaves the live path absent, which recovery reads as a roll forward.
+Config is stranded either way for an existing component; that is the durable-config window #2315 step 3
+closes, not something the journal can cover.
+
 The journal is consulted **first**, and the legacy in-place extraction recovery enforces that itself: it
 refuses to restore a rollback record while an unsettled journal is attributable to that component — by its
 own `component` field OR by the deployment's ownership sidecar, whichever can be read, because restoring is

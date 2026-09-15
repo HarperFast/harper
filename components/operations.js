@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const { isMainThread, parentPort } = require('node:worker_threads');
+const { isDeepStrictEqual } = require('node:util');
 const fs = require('fs-extra');
 const fg = require('fast-glob');
 const normalize = require('normalize-path');
@@ -821,7 +822,16 @@ async function deployComponent(req) {
 				const previous = configUtils.getConfigObj()?.[req.project];
 				await configUtils.addConfig(req.project, entry);
 				env.initSync(true);
+				// Read BACK rather than compared against `entry`: the undo below has to tell "nobody has touched
+				// this since" from "somebody has", and only a value that went through the same write-and-parse
+				// round trip is comparable to one read later. Comparing the entry as passed would make any
+				// serialization difference read as a concurrent change and silently skip every undo.
+				const published = configUtils.getConfigObj()?.[req.project];
 				return async () => {
+					// Only what this activation published is this activation's to take back. The preparation lock
+					// does not serialize root-config writers, so a `set_configuration` acknowledged while the swap
+					// was retrying would otherwise be overwritten by a snapshot taken before it.
+					if (!isDeepStrictEqual(configUtils.getConfigObj()?.[req.project], published)) return;
 					if (previous === undefined) configUtils.deleteConfigFromFile([req.project]);
 					else await configUtils.addConfig(req.project, previous);
 					env.initSync(true);
