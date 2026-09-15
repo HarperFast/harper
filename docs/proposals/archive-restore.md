@@ -6,6 +6,12 @@ Design note. No issue yet — this note is the input to filing them (§9). Super
 running"; [#1831](https://github.com/HarperFast/harper/pull/1831) landed `restore_backup` doing
 exactly that the following day.
 
+## Planning-review history
+
+| round           | verdict                 | what it changed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 (`88498550c`) | `chosen-approach-sound` | Framing cleared; seven blockers against under-specification. Adopted: the marker is not a journal (§5.6), blob staging must be per-volume (§5.4), the retained database must be scan-invisible (§5.8), validation must await strict replay because the load path does not (§5.5, §5.7), intake cannot be a standard job operation (§5.6), super-user must be enforced in the handler (§5.1), and archive limits must bound entries/inodes, not only bytes (§5.4). Also adopted: refuse-on-peers does **not** close #2451 (§5.9), engine-only replacement restores must be refused (§5.4), and pre-manifest archives need a decided policy rather than an open question (§7.1). §7.2 was demoted — its one-boot fix was wrong. Two citations overruled: a `DESIGN.md:250-254` reference that does not exist, and #2031 as a hard dependency. |
+
 Every behavior claim below is traced in `origin/main` at `52512e85a`. Claims I could not trace are
 marked `verify:` and are not load-bearing for the chosen design.
 
@@ -85,6 +91,17 @@ failure mode is silent blob mis-addressing is not a smaller change, it is an unb
 partial form of this axis _is_ adopted: restore is refused, not designed around, wherever it would
 have to reason about cluster state (§5.9).
 
+Two further alternatives were tested during planning review and rejected on facts:
+
+- **A rocksdb-js `import tar into managed repository` primitive.** It would improve engine-level
+  validation by reusing the binding's own backup machinery, but it cannot coordinate blob roots,
+  which live on volumes outside the engine's knowledge and are addressed by a persisted root index,
+  nor component-held handles. It is a component of a solution, not a replacement for one.
+- **Provision a new Fabric instance from the archive and cut routing over.** Operationally safer —
+  no in-place swap at all — but it changes instance identity and control-plane state, requires a
+  CM/host-manager change per restore, and does not serve self-managed installs, which is where
+  `get_backup` archives are most likely to be produced.
+
 **Chosen — a streaming upload operation that extracts and validates out-of-process, then hands the
 swap to the next startup.** The single fact that beats each rejection: the swap must happen while
 no copy of the database is loaded, and startup is the only point where Harper can guarantee that
@@ -99,7 +116,14 @@ refuses (`verifyDatabaseClosed`, `dataLayer/rocksdbBackup.ts:624`).
 multipart upload; extraction, validation, the startup swap, rollback, and reclamation of the
 displaced database.
 
-**Out:** the `system` database (an archive of it carries users, roles, components and deployment
+Authorization is enforced **inside every handler** — intake, rollback, resume, reclamation — with
+`requireSuperUser()`, matching `dataLayer/rocksdbBackup.ts:82` and the existing backup operations.
+Declarative `requires_su` metadata is not sufficient on its own: #2175 records that operation
+allowlist grants are gate-inert for operations registered without an `api_name`, so a metadata-only
+gate can be bypassed. An operation that accepts filesystem content and restarts the node is the
+worst place to discover that.
+
+**Out:** engine-only archives as _replacement_ restores (see §5.4); the `system` database (an archive of it carries users, roles, components and deployment
 rows — a different and much riskier operation); LMDB archives (`get_backup` on LMDB returns the raw
 `.mdb` file, not a tar — `bin/backup.ts:152`, so a `.tar[.gz]` is by definition a v5 RocksDB
 artifact); v4 migration, which keeps its existing path; and any restore onto a node with peers
@@ -137,6 +161,15 @@ Two checks, both via `getStorageSpaceStats()`:
 2. **Continuous**, during extraction, aborting below a floor. This is the authoritative gate and is
    honest whether the client was accurate, sloppy, or hostile.
 
+The continuous check meters _extracted bytes_ on every chunk but refreshes the statistics only past
+a byte/time threshold. `getStorageSpaceStats()` reads quota state, resolves paths, and may call
+`statfs` (`server/storageReclamation.ts:160-185`); calling it per chunk or per tar entry would put
+filesystem work on the operations worker for the length of a multi-gigabyte upload and degrade
+unrelated traffic. Tar, zlib and validator modules are lazily loaded so ordinary startup and request
+paths pay nothing for this feature.
+
+Space is gated **per destination volume**, not once: see §5.4.
+
 Treat `basis: 'filesystem'` as lower confidence and add margin — it means either no
 `quota-status.json` or a stale one (>5 min, `QUOTA_STATUS_MAX_AGE_MS`), so the number may describe a
 shared volume rather than this tenant's quota.
@@ -149,10 +182,19 @@ the _additional_ space the gate must find is `size(restored)` plus margin.
 
 ### 5.4 Extraction and staging
 
-Decompress the upload stream directly to disk into a temp directory — no intermediate copy. The temp
-directory must be on the same filesystem as the database root, or the swap degrades from a rename to
-a copy and loses its crash properties (`extractTarballInto` documents the same constraint for its
-scratch dir, `components/Application.ts:867`).
+Decompress the upload stream directly to disk into staging areas — no intermediate copy.
+
+**Staging is per destination volume, not one directory.** `storage.blobPaths` may name several roots
+on several filesystems, and records persist the _root index_, not the path. A single staging
+directory beside the database therefore turns each blob "move" into a cross-filesystem copy, and a
+crash mid-copy can publish new engine files alongside partially copied blobs. So: the engine tree
+stages on the database root's filesystem, and each `blobs/<rootIndex>/` tree stages on the
+filesystem of the blob root it is destined for. Space is gated separately on each. Every rename is
+journaled (§5.6).
+
+Each staging area must be on the same filesystem as its destination, or the swap degrades from a
+rename to a copy and loses its crash properties (`extractTarballInto` documents the same constraint
+for its scratch dir, `components/Application.ts:867`).
 
 Placing it outside the database root, rather than using `<name>.migrating` inside it, means the
 startup scan cannot see it at all — so the design does not depend on the reserved-name skip
@@ -163,7 +205,24 @@ Entry filtering is explicit, not inherited: reject `..`, absolute paths, symlink
 device nodes rather than trusting `tar-fs` defaults. Tar extraction of operator-supplied bytes is a
 path-traversal sink.
 
-An aborted upload or a crash mid-extract leaves an orphan temp tree; startup sweeps them.
+**Byte limits are not sufficient — bound the entry set too.** The multipart parser deliberately
+enforces no file-size cap: "Operation handlers stream the file part directly into extraction
+(gunzip + tar-fs), so there is no separate filesize cap to enforce here ... bounded by disk space
+rather than memory" (`server/serverHelpers/multipartParser.ts:15-17`). Disk _bytes_ are therefore
+the only ambient bound, and millions of zero-byte entries exhaust inodes without ever crossing the
+free-byte floor. Enforce, per archive: entry count, total actual uncompressed bytes (metered, not
+declared), per-entry size, path length, and duplicate entry names.
+
+**Engine-only archives cannot be replacement restores.** An archive created with `exclude_blobs`
+carries no blobs, so restoring it over an existing database rolls records back while leaving the
+current blob roots in place — a mixed generation, in which a blob id reused since the backup point
+resolves to unrelated bytes. Reject `exclude_blobs` archives for replacement; they remain valid for
+create-if-absent, where there are no pre-existing blobs to disagree with. A related producer-side
+gap stays open (§11).
+
+Intake failure removes its staging areas **eagerly**, not at the next startup: a startup-only sweep
+lets repeated disk-floor or malformed-archive failures accumulate quota while Harper keeps running.
+The startup sweep remains, for the crash case only.
 
 ### 5.5 Validation, out of process
 
@@ -175,7 +234,22 @@ whole Harper (config, components, servers, `system`), and `initStores` stamps
 blob roots for a temp name.
 
 The validator opens the staged directory read-only, enumerates the internal DBI for table
-definitions, opens each table's stores and indices, prints JSON, exits.
+definitions, opens each table's stores and indices, **awaits a strict transaction-log replay**,
+prints JSON, exits.
+
+The strict replay is load-bearing and belongs here rather than in the live load path, because the
+live load path cannot report it: `readRocksMetaDb` is synchronous and calls `replayLogs()` without
+awaiting it (`resources/databases.ts:982`; `replayLogs` returns `Promise<void>`,
+`resources/replayLogs.ts:60`). Boot replay is also deliberately more tolerant of a damaged tail than
+strict branch replay is. So an archive with a valid table catalogue and a failing log tail would
+otherwise match the expected table set, be reported successful, and serve rewound data. Doing the
+strict replay in the validator gets the guarantee without making synchronous `getDatabases()`
+globally async for one feature.
+
+The validator is resource-bounded: wall-clock runtime, stdout/stderr size, memory, and file
+descriptors, with an explicit kill. Signal death, timeout, and malformed output are all validation
+_failure_ — otherwise a crafted archive can hang the validator while holding the instance restore
+lock.
 
 Out-of-process rather than in-process, despite `initStores(path, rootStore, name, { destination,
 storeName, openedStores })` already supporting exactly this shape — `destination` builds Table
@@ -207,19 +281,43 @@ is later compared against (§5.7).
 
 The operation writes the intent, inserts a job row, returns the job id, and requests a restart.
 
-**The intent lives in the restore marker, not in config.** `dataLayer/restoreMarker.ts` already has
-the per-database flock, the three-state `checkRestoreState()`, and integration with the startup scan
-via `databasesBlockedByRestore`. Extending it costs one field (the staged path) plus the intended
-blob moves. Putting the same intent in `harperdb-config.yaml` would add a read-modify-write of a
-shared YAML document to a crash-sensitive path, and would need its own clear-on-consume story where
-the marker protocol already has one. A stale config flag re-triggers a restore on every boot; a
-marker is a single atomic rename.
+**The intent lives beside the restore marker, in a new versioned journal — not in config, and not in
+the marker itself.**
 
-The marker records the intended moves — database directory rename plus each blob-root move — so the
-swap is **idempotent and resumable**, not atomic. Concurrency is not the hazard (nothing is loaded);
-crash-during-swap is. A power loss between the database rename and the Nth blob-root move must
-re-run to completion on the next boot rather than leave a restored database pointing at pre-restore
-blobs.
+Config is the easier rejection: writing the intent into `harperdb-config.yaml` adds a
+read-modify-write of a shared YAML document to a crash-sensitive path, and a stale flag re-triggers
+a restore on every boot.
+
+The marker is the more interesting one, because an earlier draft of this note proposed extending it
+"by one field". It cannot be: `beginRestore()` opens the marker with `openSync(markerPath, 'w')` —
+which truncates before the name is written — and then writes two lines
+(`dataLayer/restoreMarker.ts:193-199`), while `scanBlockedRestores()` skips any marker whose first
+line is empty (`:272`). A kill between the truncate and the write therefore yields a marker that
+blocks nothing. For the _current_ restore path that is benign on a first attempt, since nothing
+destructive has happened yet — but on a recovery attempt over a half-purged directory
+`beginRestore()` re-truncates an already-valid marker, and a crash there turns a correctly-blocked
+half-purged database into one that loads as healthy. **That is a pre-existing defect in
+`restore_backup` today** and is filed separately (§7.4). Building a swap protocol on top of it would
+inherit it.
+
+So: a separately versioned journal, written temp → `fsync` → `rename` → parent `fsync`, holding the
+generation id, the exact source/destination/retained paths for the engine tree and every blob root,
+the current phase, the attempt count, the job id, and the archive digest — re-persisted after every
+rename. Malformed or torn journal data **fails closed**: the database is blocked, never loaded. The
+marker keeps its existing job of blocking the database; the journal carries the intent.
+
+Recording every intended move is what makes the swap **idempotent and resumable** rather than
+atomic. Concurrency is not the hazard (nothing is loaded); crash-during-swap is. A power loss
+between the engine rename and the Nth blob-root move must re-run to completion on the next boot
+rather than leave a restored database pointing at pre-restore blobs.
+
+**Intake cannot be a standard job operation.** `jobs.addJob()` persists the request into the job row
+so the job process can read it — `newJob.request = jsonBody` (`server/jobs/jobs.ts:200`) — and a
+`Readable` does not survive that. The upload stream must therefore be consumed in the request
+process, which persists only scalar staged metadata; the job row is a status surface, and journal
+and job state are reconciled after the restart. This is a real divergence from how `create_backup`
+and `restore_backup` are structured, so it is a named API decision rather than an inherited
+pattern.
 
 **The restart is orchestrator-driven on Fabric, which makes the failure path a crash loop.** Under
 `HARPER_EXIT_ON_RESTART`, `restart` is `process.exit(0)` — the comment says "use this to exit the
@@ -233,6 +331,12 @@ restarting Harper, repeatedly, indefinitely. The protocol therefore needs:
 
 The existing protocol already lands there: a failed restore keeps the marker, `databasesBlockedByRestore`
 keeps the database out, and the operator reruns. That is the floor of the retry ladder.
+
+**That the terminal state starts Harper successfully is an assumption this design owes a proof.** A
+component that requires the blocked database during application load can fail every HTTP worker, and
+the Fabric crash loop returns by another route. Either demonstrate that component startup tolerates
+a blocked database, or define a management-capable safe mode that serves the operations API with
+applications unloaded. Until one of those exists, the retry ladder has no floor.
 
 `verify:` host-manager sets `HARPER_EXIT_ON_RESTART` for Fabric containers. It is set only in
 `.github/workflows/docker-smoke.yml` in this repo; the inference is from the code comment.
@@ -250,15 +354,24 @@ the current restart path.
 - the table set enumerated after load matches the set validation recorded in the marker, and
 - every one of those tables' stores actually opened.
 
-Transaction-log replay is inside this boundary, not after it: the archive carries
-`transaction_logs/`, and `replayLogs()` runs on open (`resources/databases.ts:982`). The replay is
-wanted — it is what makes the restored state consistent — but it is a post-swap failure point and
-must be part of the success definition rather than a step that follows it.
+Transaction-log replay is **not** proved here. The archive carries `transaction_logs/` and
+`replayLogs()` does run on open, but it is invoked without `await` from a synchronous
+`readRocksMetaDb` (`resources/databases.ts:982`), so the load path cannot observe whether it
+succeeded. Replay success is established in the validator, before publication (§5.5); this check
+confirms the published generation is the validated one, not that a fresh replay went well.
 
 ### 5.8 Rollback and reclamation
 
-The displaced database is **not deleted automatically.** It is renamed to a predictable path and its
-location is reported in the operation result; a separate operation reclaims it.
+The displaced database is **not deleted automatically.** It is renamed under a reserved,
+scan-skipped directory — not to an ordinary sibling — and its location is reported in the operation
+result; a separate operation reclaims it.
+
+The reserved location is required, not tidiness: the startup scan opens _any_ directory containing
+`CURRENT` plus `MANIFEST-*` as a database (`resources/databases.ts:602-609`), so a retained tree
+renamed to `<name>.previous` beside the live one would be discovered and loaded as a second
+database. `RESTORE_META_DIR` is the existing precedent for a name the scan skips — and #2033 is the
+open bug about that skip being silent, which this design should not make load-bearing without
+fixing.
 
 The failure this survives is not a corrupt restore — validation catches those — but a _technically
 successful, semantically wrong_ one: right database, wrong backup, wrong point in time. In disaster
@@ -286,8 +399,26 @@ This is compatible with the two real workflows:
   afterwards, at which point ordinary replication seeds it.
 
 The check must be **re-asserted at swap time**, during startup before the swap, not only at upload
-time: a peer can be added between staging and the restart, so an upload-time check alone is
-check-then-act. Finding peers at boot lands in §5.6's terminal blocked state, not in a swap.
+time _and before replication starts_: a peer can be added between staging and the restart, so an
+upload-time check alone is check-then-act. Finding peers at boot lands in §5.6's terminal blocked
+state, not in a swap. Admission refuses on **any configured peer other than self**, not on "has
+previously connected" — connection history is exactly the check-then-act state this is trying to
+avoid.
+
+**This restriction does not close #2451, and an earlier draft of this note implied it did.**
+[#2451](https://github.com/HarperFast/harper/issues/2451) is that a restore rolls a database back in
+time with no generation marker, so audit retention floors, record versions, and per-node replication
+sequence records all come back at the backup's values and read as valid. Two of those three bite on
+a _single_ node: a local MQTT durable subscriber holding a cursor from after the backup point
+compares it against the restored (older) audit floor, reads it as safe, resumes, and waits for
+entries that no longer exist. Refusing peers removes the cross-node divergence; it leaves every
+local resumable consumer intact and wrong.
+
+So archive restore must either land after #2451, or mint a database generation itself at the same
+single point in the swap sequence and force local consumers to resync. It cannot be silent about it.
+(A planning-review citation of `DESIGN.md:250-254` for this does not check out — those lines
+describe record-lock upgrades, and DESIGN.md carries no generation note. The substance is #2451
+itself, read directly.)
 
 ### 5.10 Roles
 
@@ -331,6 +462,19 @@ restore.** So this ships first and separately. A version/format manifest as the 
 is cheaply readable after inflating a few KB; it cannot be the last entry, because reaching the end
 of a `.tar.gz` requires inflating the whole stream.
 
+The manifest carries: archive-schema version, engine/storage-format identifier, producing Harper
+version, source database name, whether blobs are included, and the blob root count. The
+compatibility rule is decided here rather than left open: an archive is restorable when its
+archive-schema version is understood and its storage format is not _newer_ than the target's —
+#2046 records that the 5.2.0 upgrade is one-way, so a newer archive into an older instance is
+refused.
+
+**Pre-manifest archives need an explicit decision, or the reader rejects every archive that
+motivated the feature.** A manifest-less archive is accepted only under an explicit super-user
+override that records the operator's assertion of provenance, and the result reports the archive as
+unidentified. The alternative — refusing them outright — makes the feature useless for exactly the
+backups already sitting on operators' disks.
+
 Implementation note: this unifies `createBackupStream`'s two branches. The `excludeBlobs` path hands
 the whole archive to the binding, which gzips it directly (`dataLayer/rocksdbBackup.ts:704-709`), so
 there is no tar-stream pack to prepend an entry to. Adding a manifest means routing both paths
@@ -353,19 +497,42 @@ legitimately old.
 Scope of the consequence, traced in both directions: a restored node **catching up** draws on its
 _peers'_ logs, so this does not by itself break the migration workflow. What it breaks is the
 restored node's ability to serve incremental history _to_ peers — a later join sources a full base
-copy instead. So an incremental migration needs both the peers' retention to cover the gap (an
-operator action: raise `logging.auditRetention` before migrating) _and_ the restored log to survive
-first open (this bug).
+copy instead. `purgeLogs` also removes only files entirely before the last-flushed position, so
+replay-required entries are never among them; this is lost _history_, not lost data.
 
-Independent of the archive work; affects `restore_backup` today.
+**Demoted from prerequisite, and the fix an earlier draft proposed was wrong.** Exempting a freshly
+restored database on first open does not hold: the steady-state cleanup loop purges against the same
+`retentionCutoff()` (`resources/auditStore.ts:267-269`) and erases the exemption minutes later. A
+correct fix is either retention measured from the restore generation rather than entry wall-clock
+time — which is #2451's generation by another name — or an operator action: raise
+`logging.auditRetention` to cover the backup gap before first open. So this is a real defect worth
+filing, related to the archive work but not gating it, and its fix belongs with the generation
+rather than in the startup path.
 
 ### 7.3 Backup management operations do not serialize (#2031)
 
 Open, verified unfixed: no management lock exists. `createBackup` drops the engine writer lock when
 `rootStore.backup()` resolves and then snapshots blobs and writes the manifest
 (`dataLayer/rocksdbBackup.ts:374-392`), while `deleteBackup` and `purgeBackups` take no lock at all.
-The per-database lock #2031 asks for is also what the archive path needs to exclude a concurrent
-`create_backup` during staging.
+
+**Not a hard dependency**, on review: archive intake does not read or write the managed backup
+repository at all, so it needs its own exclusion (§8) rather than #2031's. It becomes a dependency
+only if the two protocols end up sharing one per-database lock, which is worth doing but is not
+forced. #2031 stands on its own defect regardless.
+
+### 7.4 `beginRestore()` can truncate a valid marker and unblock a half-purged database
+
+`beginRestore()` opens the restoring marker with `openSync(markerPath, 'w')`, truncating it before
+the database name is written (`dataLayer/restoreMarker.ts:193-199`), and `scanBlockedRestores()`
+skips any marker whose first line is empty (`:272`). On a first attempt this is benign — nothing
+destructive has run. On a **recovery** attempt, where `lock.preexisting` is true and the database
+directory may already be half-purged from a failed restore, `beginRestore()` re-truncates the marker
+that was correctly blocking it; a crash in that window leaves a half-purged database that loads as
+healthy on the next boot.
+
+Pre-existing, affects `restore_backup` today, and independent of the archive work — but the archive
+swap protocol must not be built on the marker as-is (§5.6). Fix by writing the marker temp →
+`fsync` → `rename`, so a torn write can never replace a valid one.
 
 ## 8. Concurrency
 
@@ -384,15 +551,16 @@ restore. Replacing a staged tree silently would discard work the operator may be
 
 ## 9. Work breakdown
 
-| #   | Work                                                                                                                                                                                                                                                                                                                                                                                | Depends on |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| 1   | §7.3 — per-database backup-management lock (#2031, already open, v5.2)                                                                                                                                                                                                                                                                                                              | —          |
-| 2   | §7.1 — version/format manifest as the archive's first entry                                                                                                                                                                                                                                                                                                                         | —          |
-| 3   | §7.2 — do not purge a freshly restored transaction log on first open                                                                                                                                                                                                                                                                                                                | —          |
-| 4   | **Intake** — multipart streaming operation, advisory size field, pre-flight + continuous disk gate, stream-to-disk extraction with explicit entry filtering, out-of-process validation, marker written with staged path / expected table set / intended blob moves, orphan sweep. Ends at "staged and validated, awaiting restart"; independently testable without ever restarting. | 1, 2       |
-| 5   | **Startup swap** — consume the marker, idempotent resumable swap, create-if-absent and replace, peer re-assertion, bounded attempts, terminal blocked state, load verification per §5.7, rollback by rename-back, reclamation operation, outcome written back to the job row.                                                                                                       | 4          |
+| #   | Work                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Depends on |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| 1   | §7.1 — version/format manifest as the archive's first entry, plus the pre-manifest override policy. Ships first: every archive already in the field is unidentifiable, and that set only grows.                                                                                                                                                                                                                                                                                                                                                                         | —          |
+| 2   | §7.4 — `beginRestore()` writes the restoring marker temp → `fsync` → `rename` so a torn write cannot replace a valid one. Fixes `restore_backup` today; the swap protocol depends on marker integrity.                                                                                                                                                                                                                                                                                                                                                                  | —          |
+| 3   | #2451 — the database generation. Either this lands first, or item 5 mints a generation itself (§5.9).                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | —          |
+| 4   | **Intake** — multipart streaming operation with handler-enforced super-user, advisory size field, throttled per-volume disk gate, stream-to-disk extraction per destination volume, entry/inode/path limits, engine-only replacement refusal, resource-bounded out-of-process validation including strict replay, versioned journal written with the generation id / all rename targets / expected table set / attempt count / archive digest, eager staging cleanup. Ends at "staged and validated, awaiting restart"; independently testable without ever restarting. | 1          |
+| 5   | **Startup swap** — consume the journal before database discovery and before replication starts, idempotent resumable swap across the engine tree and every blob volume, create-if-absent and replace, peer re-assertion, bounded attempts, terminal blocked state (with §5.6's safe-mode proof), publication check per §5.7, rollback by rename-back, reclamation operation, outcome reconciled into the job row.                                                                                                                                                       | 3, 4       |
 
-Items 1–3 are separately shippable and each stands on its own defect.
+Items 1–3 are separately shippable and each stands on its own defect. #2031 (§7.3) and #2033 (§5.8)
+are adjacent and independently valid but are not dependencies.
 
 ## 10. Outcome reporting
 
@@ -401,34 +569,44 @@ operations server already sets `Connection: close` for restart operations
 (`server/operationsServer.ts:341`). So the job row cannot be updated by the process that created it,
 and the CLI must reconnect and poll.
 
-The swap's outcome is therefore written twice: into the marker (authoritative, readable before the
-database loads) and into the job row once `system` is up. Without the marker copy the operation's
+The swap's outcome is therefore written twice: into the journal (authoritative, readable before the
+database loads) and into the job row once `system` is up. Without the journal copy the operation's
 observable result is "Harper is restarting" followed by silence, and the operator is left polling
-`get_status` and guessing.
+`get_status` and guessing. Journal and job state are reconciled at startup, including the case where
+the job-row write itself failed.
 
 ## 11. Open questions
 
-1. **Does the peer check refuse on configured peers, or on a non-empty `hdb_nodes`?** A node
-   configured for replication that has never connected is arguably safe to restore; one that has is
-   not. The cheap, conservative reading — any peer configuration at all — may refuse cases operators
-   legitimately need during a migration.
-2. **What identifies "compatible" in §7.1's manifest?** Harper version, storage format version, or
-   both — and is the rule "equal", "not newer", or a declared compatibility range?
-3. **Does the reclamation operation get a retention policy**, or stay purely manual? Manual is
+1. **Does the reclamation operation get a retention policy**, or stay purely manual? Manual is
    safer and leaves `size(restored) + size(existing)` on disk until someone acts, which under a
    Fabric quota is a real operational trap.
+2. **Is the producer-side blob capture coherent enough for a strict restore claim?** `create_backup`
+   and `get_backup` substitute PENDING/ERROR markers for blobs that were not capturable whole, and a
+   blob reclaimed before its parent directory is enumerated is absent from the archive with no
+   marker at all (`dataLayer/blobBackup.ts:30-40`). An optional O(data) blob-reference scan cannot
+   support an unqualified integrity claim, so either the scan is mandatory for replacement restores
+   or the result must report captured-with-substitutions explicitly. This is a producer defect the
+   restore surfaces rather than causes.
+3. **Does a management-capable safe mode already exist, or must it be built?** §5.6's terminal
+   blocked state depends on it.
 4. `verify:` items in §5.2, §5.5, §5.6 and §5.10 — each needs confirming, none changes the shape.
 
 ## 12. Verification route
 
-- **Unit** — entry-filter rejection table (`..`, absolute, symlink, hardlink, device); advisory-size
-  handling for exact, estimated, absent and hostile values; marker state transitions including the
-  attempt counter and the terminal blocked state; swap resumption from each intermediate point.
-- **Integration** — upload → stage → validate → restart → swap → load, asserting the restored table
-  set; a corrupt archive rejected with the live database untouched; a crash injected between the
-  database rename and a blob-root move, asserting the next boot completes the swap; a restore
-  refused on a node with a peer; rollback leaving the pre-restore database loadable.
+- **Unit** — entry-filter rejection table (`..`, absolute, symlink, hardlink, device, duplicate
+  name, over-long path, entry-count and inode limits); advisory-size handling for exact, estimated,
+  absent and hostile values; journal write/read round-trip including a torn and a malformed journal
+  failing closed; attempt counter reaching the terminal state; swap resumption from each
+  intermediate phase.
+- **Integration** — a real CLI `get_backup` → multipart upload → supervised process exit and
+  restart → record _and blob_ reads, which is the only shape that proves the feature; cross-filesystem
+  blob roots; kill injection after every journal write, rename and `fsync` phase; strict replay
+  failure rejected before publication; engine-only replacement refused; malformed, legacy and
+  pre-manifest archives; inode exhaustion; a peer appearing between intake and boot; a failed job-row
+  update reconciled at startup; rollback under Windows rename semantics; terminal safe-mode health.
+  Unit transition tests alone do not prove restart integration.
 - **Live smoke on Fabric**, with recorded evidence: a real `get_backup` archive from one instance
   restored into another, including the GTM drain behavior §5.6 flags as unverified.
-- §7.2 needs a fails-on-base check: assert the transaction log survives first open of a database
-  restored from a backup older than `logging.auditRetention`.
+- §7.4 needs a fails-on-base check: a torn marker write must leave the database blocked.
+
+Rollout order: producer manifest first, then a feature-gated reader, then Fabric canary evidence.
