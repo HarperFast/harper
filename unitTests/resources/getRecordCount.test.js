@@ -329,6 +329,31 @@ describe('Table.getRecordCount', () => {
 		}
 	});
 
+	it('rejects an estimate whose confidence is not a number', async function () {
+		this.timeout(120000);
+		// `null >= 0 && null <= 1` is true, so a range check alone accepts `confidence: null` and lets an
+		// unvalidated count become the extrapolation base. Mirrors the contract check at
+		// `resources/search.ts:1280` for the same estimate shape.
+		const store = EstimatorTable.primaryStore;
+		if (typeof store.createCountEstimator !== 'function') return this.skip();
+		const original = store.createCountEstimator;
+		const owned = Object.hasOwn(store, 'createCountEstimator');
+		store.createCountEstimator = () => ({
+			advance() {},
+			estimate: () => ({ count: LIVE_ROWS * 10, confidence: null }),
+		});
+		try {
+			const result = await EstimatorTable.getRecordCount({ timeLimit: -1 });
+			assert.ok(
+				result.recordCount <= LIVE_ROWS * 2,
+				`reported ${result.recordCount} for ~${LIVE_ROWS} live records; a confidence of null was accepted as a valid estimate`
+			);
+		} finally {
+			if (owned) store.createCountEstimator = original;
+			else delete store.createCountEstimator;
+		}
+	});
+
 	it('stops scanning when the base keeps saying the scan is past halfway', async function () {
 		this.timeout(120000);
 		// A base that undershoots holds `entriesScanned < floor(entryCount/2)` false at every checkpoint, so

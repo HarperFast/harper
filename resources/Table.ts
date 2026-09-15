@@ -220,9 +220,11 @@ const MAX_ESTIMATE_CHECKPOINTS = 20;
 // A store estimate's `count`, or 0 when the store answered with a shape that cannot be trusted --
 // DESIGN.md's invariant for this API family is that such an answer degrades rather than poisons.
 function usableCount(estimate: any): number {
-	return Number.isFinite(estimate?.count) && estimate.count >= 0 && estimate.confidence >= 0 && estimate.confidence <= 1
-		? estimate.count
-		: 0;
+	const { count, confidence } = estimate ?? {};
+	// `confidence` needs its own finiteness check, not just the range: `null >= 0 && null <= 1` is true
+	if (!Number.isFinite(count) || count < 0 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1)
+		return 0;
+	return count;
 }
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
