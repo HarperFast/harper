@@ -555,9 +555,12 @@ describe('record lock delegations', () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('gamma');
 			const alpha = cluster.node('alpha');
-			const first = await alpha.coordinator.acquire(key, LEASE, WAIT);
-			alpha.coordinator.release(key, first.admissionId);
-			cluster.advance('alpha', DELEGATION_LEASE_MS - LEASE + 1);
+			const first = await alpha.coordinator.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
+			// Leave the first admission active while advancing far enough that a second maximum
+			// lease requires renewal. Table's native key lock normally serializes these calls, but
+			// exercising the coordinator directly proves its recall state machine does not clear a
+			// grant before an inherited admission drains.
+			cluster.advance('alpha', DELEGATION_LEASE_MS - MAX_LOCK_LEASE_MS + 1);
 
 			cluster.beforeReply = async (from, _to, _request, reply) => {
 				if (from !== 'alpha' || !reply.granted) return;
@@ -572,7 +575,14 @@ describe('record lock delegations', () => {
 				alpha.mapless = true;
 			};
 
-			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, WAIT), /No agreed record lock home map/);
+			let renewalSettled = false;
+			const renewal = alpha.coordinator.acquire(key, MAX_LOCK_LEASE_MS, WAIT).finally(() => (renewalSettled = true));
+			await waitFor(() => cluster.recalls.some(({ to }) => to === 'alpha'));
+			await new Promise(setImmediate);
+			assert.strictEqual(renewalSettled, false, 'the recalled renewal did not wait for its inherited admission');
+			assert.strictEqual(alpha.written.length, 0, 'the recalled renewal released its home grant before draining');
+			alpha.coordinator.release(key, first.admissionId);
+			await assert.rejects(() => renewal, /No agreed record lock home map/);
 			await waitFor(() => cluster.node('gamma').coordinator.stats.granted === 0);
 			const successor = await cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
 			cluster.node('beta').coordinator.release(key, successor.admissionId);

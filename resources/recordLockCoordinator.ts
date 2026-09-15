@@ -1017,8 +1017,10 @@ export class LockCoordinator {
 						existing.dependencies
 					);
 					if (renewed && recalledBeforeReply) {
-						renewed.recalled = true;
-						await authority.#surrender(keyId, renewed);
+						// The renewed delegation inherits every admission from the old token. Drain those
+						// admissions through the ordinary recall path; surrendering directly would revoke
+						// their handles and clear the home's grant while their critical sections still run.
+						await authority.onDelegationRecall({ key, token: reply.token });
 						if (authority.#closed)
 							throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
 						continue acquisition;
