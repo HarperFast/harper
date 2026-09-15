@@ -20,9 +20,7 @@
  * settle check fails, so a single run yields maximal diagnostic signal.
  *
  * Reproduction:
- *   cd /home/kzyp/dev/harper
  *   npm run test:integration -- "integrationTests/database/qa592-blob-concurrent-writers.test.ts"
- * Harper SHA: 3dbcf7b9e (main)
  */
 import { suite, test, before, after } from 'node:test';
 import { ok } from 'node:assert';

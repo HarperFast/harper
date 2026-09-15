@@ -313,7 +313,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 					// referenced the blob can flip skipped/superseded back to false first.
 					for (const write of this.writes) {
 						if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
-							cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+							cleanupUnusedBlobs(
+								write.savedBlobs,
+								collectRetainedFileIds(write.store.getEntry(write.key)?.value),
+								write.blobOwnerWriteToken,
+								write.cleanupLosingVersion
+							);
 					}
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.clearWrites();
@@ -360,7 +365,12 @@ export class LMDBTransaction extends DatabaseTransaction {
 		// already-saved blob shared with the surviving record; see harper-pro#406).
 		for (const write of this.writes) {
 			if (write?.savedBlobs)
-				cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+				cleanupUnusedBlobs(
+					write.savedBlobs,
+					collectRetainedFileIds(write.store.getEntry(write.key)?.value),
+					write.blobOwnerWriteToken,
+					write.cleanupLosingVersion
+				);
 		}
 		// reset the transaction
 		this.clearWrites();

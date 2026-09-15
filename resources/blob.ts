@@ -69,6 +69,11 @@ type StorageInfo = {
 	store?: any;
 	filePath?: string;
 	owner?: BlobOwner;
+	// Identifies the in-memory record write that first stamped owner. It is deliberately not persisted:
+	// cleanup only uses it while deciding whether this write may publish an ownerless intent.
+	ownerWriteToken?: object;
+	// Sticky once any different write encodes this instance; the first stamper can no longer prove sole use.
+	ownerSharedAcrossWrites?: boolean;
 	// This process allocated the file id, so no committed record can reference it yet. It is what
 	// makes ownership stampable: a reference read back from storage never becomes owned, because
 	// nothing here can prove some other legacy record does not reference the same file.
@@ -107,11 +112,17 @@ type BlobOwner = [tableName: string | null, key: any];
 // colliding file's claim under the drain still using it.
 type BlobFileInfo = { store?: any; fileId?: string; storageIndex?: number; owner?: BlobOwner; claimed?: boolean };
 /**
- * The record write that gave a blob file up: the version of the record it replaced, whether that
- * write commits synchronously, and whether an owner-aware intent must be durable to be safe. The
- * second is what decides how the intent has to be written — see {@link stageDurableUnlink}.
+ * The record write that gave a blob file up: the version of the record it replaced and whether that
+ * write commits synchronously. The latter decides how the intent has to be written — see
+ * {@link stageDurableUnlink}.
  */
-type BlobSupersession = { priorVersion?: number; synchronous?: boolean; requireDurable?: boolean };
+type BlobSupersession = {
+	priorVersion?: number;
+	losingVersion?: number;
+	synchronous?: boolean;
+	requireDurable?: boolean;
+	preserveExisting?: boolean;
+};
 
 function discardStorage(storageInfo: StorageInfo): void {
 	(storageInfo.fileState ??= {}).discarded = true;
@@ -186,6 +197,7 @@ let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
 let encodeForStorageForRecordId: any = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let encodeForStorageTableName: string | null | undefined; // the table half of the owner this encode stamps
+let encodeForStorageOwnerWriteToken: object | undefined;
 let promisedWrites: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
@@ -1663,17 +1675,14 @@ export function registerBlobOwnerTable(rootStore: any, tableName: string, primar
  * The result is cached for the drain pass, keyed by the owner tuple's exact encoding, so a record
  * with many blobs is decoded and walked once rather than once per file it is losing.
  */
-type OwnerReads = Map<string, { fileIds: Set<string>; version: number } | null>;
-function readOwner(
-	rootStore: any,
-	owner: BlobOwner | undefined,
-	reads: OwnerReads
-): { fileIds: Set<string>; version: number } | null {
+type OwnerRead = { fileIds: Set<string>; version: number; tableGone?: boolean };
+type OwnerReads = Map<string, OwnerRead | null>;
+function readOwner(rootStore: any, owner: BlobOwner | undefined, reads: OwnerReads): OwnerRead | null {
 	// Validated before it is used to look anything up: this tuple came off disk.
 	if (!Array.isArray(owner) || owner.length < 2 || typeof owner[0] !== 'string') return null;
 	const cacheKey = pack(owner).toString('latin1');
 	if (reads.has(cacheKey)) return reads.get(cacheKey);
-	let result: { fileIds: Set<string>; version: number } | null = null;
+	let result: OwnerRead | null = null;
 	// The catalog first, and not merely as a fallback for a read that failed. A dropped table's
 	// records are dead, but the store handle a thread already holds can go on answering from the
 	// dropped column family — so a record read alone reports the table's own rows as live, at their
@@ -1681,7 +1690,7 @@ function readOwner(
 	// case. It would then defer every one of that table's files to the retention age cap, and the
 	// orphan sweep skips them while their intents are queued: dropping a table would stop reclaiming
 	// its blob files at all. The catalog is the authority on whether a table exists; a handle is not.
-	if (ownerTableIsGone(rootStore, owner[0])) result = { fileIds: new Set(), version: undefined };
+	if (ownerTableIsGone(rootStore, owner[0])) result = { fileIds: new Set(), version: undefined, tableGone: true };
 	else {
 		const store = ownerTablesByRoot.get(rootStore)?.get(owner[0])?.deref();
 		try {
@@ -1908,7 +1917,9 @@ function stageDurableUnlink(
 	fileInfo: BlobFileInfo,
 	supersededAt: number,
 	priorVersion?: number,
-	synchronous = true
+	synchronous = true,
+	losingVersion?: number,
+	preserveExisting?: boolean
 ): boolean {
 	if (!fileInfo.owner || fileInfo.owner[0] == null || !fileInfo.fileId) return false;
 	const queueDb = unlinkQueueDb(fileInfo.store);
@@ -1920,12 +1931,17 @@ function stageDurableUnlink(
 		owner: fileInfo.owner,
 		supersededAt,
 		priorVersion,
+		losingVersion,
 	};
 	// STAGED ahead of the write, so no encode skips the queue read once a stage has begun; SETTLED
 	// behind it, so a drain that read the range while the row was in flight cannot record the queue
 	// as empty at the count the row lands under.
 	bumpUnlinkEpoch(fileInfo.store, STAGED);
 	try {
+		if (preserveExisting && queueDb.getSync(key)) {
+			bumpUnlinkEpoch(fileInfo.store, SETTLED);
+			return false;
+		}
 		if (synchronous) {
 			queueDb.putSync(key, value);
 			bumpUnlinkEpoch(fileInfo.store, SETTLED);
@@ -2191,6 +2207,24 @@ function readyToUnlink(
 			);
 			abandonUnlinkRow(queueDb, key, storageInfo, localUnlinkAttempts.get(storageInfo.store));
 		}
+		return false;
+	}
+	if (value.losingVersion !== undefined && !owner.tableGone && !owner.fileIds.has(storageInfo.fileId)) {
+		if (!(owner.version > value.losingVersion)) {
+			if (!expired) releaseReclaimClaim(storageInfo);
+			else abandonUnlinkRow(queueDb, key, storageInfo, localUnlinkAttempts.get(storageInfo.store));
+			return false;
+		}
+	}
+	if (
+		value.priorVersion === undefined &&
+		value.losingVersion === undefined &&
+		!owner.tableGone &&
+		!owner.fileIds.has(storageInfo.fileId)
+	) {
+		// Older builds could persist this unprovable shape. Leave its file to the full orphan scan.
+		if (!expired) releaseReclaimClaim(storageInfo);
+		else abandonUnlinkRow(queueDb, key, storageInfo, localUnlinkAttempts.get(storageInfo.store));
 		return false;
 	}
 	if (owner.fileIds.has(storageInfo.fileId)) {
@@ -2574,7 +2608,16 @@ export function deleteBlob(blob: Blob, supersession?: BlobSupersession): void {
 	// idempotent (same key, and the deadline is measured from the first supersession either way).
 	if (supersession) {
 		const supersededAt = pending.durable ? pending.supersededAt : now;
-		if (stageDurableUnlink(pending.fileInfo, supersededAt, supersession.priorVersion, supersession.synchronous)) {
+		if (
+			stageDurableUnlink(
+				pending.fileInfo,
+				supersededAt,
+				supersession.priorVersion,
+				supersession.synchronous,
+				supersession.losingVersion,
+				supersession.preserveExisting
+			)
+		) {
 			pending.durable = true;
 			pending.deadline = supersededAt + getReclamationDelay();
 			// Set directly rather than through enqueue(): the in-memory queue's deadline ordering
@@ -2583,8 +2626,6 @@ export function deleteBlob(blob: Blob, supersession?: BlobSupersession): void {
 			scheduleBlobUnlinkDrain(pending.fileInfo.store, Math.max(0, pending.deadline - now));
 			return;
 		}
-		// Cleanup of an unused blob with a stamped owner must never degrade to an ownerless local unlink:
-		// another write can have committed that shared instance, so only a durable owner recheck is safe.
 		if (supersession.requireDurable) return;
 	}
 	if (pending.durable) return; // the row already carries this deletion, with its own deadline
@@ -3938,10 +3979,12 @@ export function encodeBlobsWithFilePath<T>(
 	callback: () => T,
 	encodingId: any,
 	store: RootDatabase,
-	tableName?: string
+	tableName?: string,
+	ownerWriteToken?: object
 ): T {
 	encodeForStorageForRecordId = encodingId;
 	encodeForStorageTableName = tableName ?? null;
+	encodeForStorageOwnerWriteToken = ownerWriteToken;
 	currentStore = store;
 	blobsWereEncoded = false;
 	try {
@@ -3949,6 +3992,7 @@ export function encodeBlobsWithFilePath<T>(
 	} finally {
 		encodeForStorageForRecordId = undefined;
 		encodeForStorageTableName = undefined;
+		encodeForStorageOwnerWriteToken = undefined;
 		currentStore = undefined;
 	}
 }
@@ -4227,18 +4271,28 @@ export function startPreCommitBlobsForRecord(
  * would corrupt that record (harper-pro#406).
  * @param blobs blobs that were registered via {@link startPreCommitBlobsForRecord}
  * @param retainedFileIds fileIds the committed record still references; never deleted
+ * @param ownerWriteToken identifies the write whose unused saves are being cleaned up
+ * @param losingVersion source record version that lost to the committed record
  */
-export function cleanupUnusedBlobs(blobs: Blob[] | undefined, retainedFileIds?: Set<string>): void {
+export function cleanupUnusedBlobs(
+	blobs: Blob[] | undefined,
+	retainedFileIds?: Set<string>,
+	ownerWriteToken?: object,
+	losingVersion?: number
+): void {
 	if (!blobs?.length) return;
 	for (const blob of blobs) {
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (!storageInfo?.fileId || (blob as FileBackedBlob).saveInRecord) continue; // no file written, nothing to clean up
 		if (retainedFileIds?.has(storageInfo.fileId)) continue; // the committed record still references this blob
-		// A never-owned blob is already condemned, even if its writer is still settling; tombstone it now
-		// so it cannot be re-stored in that window. A stamped owner means another write committed this
-		// shared instance, so only the drain may discard it after revalidating that owner.
-		if (!storageInfo.owner) discardStorage(storageInfo);
-		const remove = () => deleteUnusedBlob(blob, storageInfo);
+		const selfStamped =
+			ownerWriteToken !== undefined &&
+			storageInfo.ownerWriteToken === ownerWriteToken &&
+			!storageInfo.ownerSharedAcrossWrites;
+		// This write's retained-set check proves its own stamp unused. A different write's stamp might
+		// still be in flight, so it must be left intact for the database-wide orphan scan.
+		if (!storageInfo.owner || selfStamped) discardStorage(storageInfo);
+		const remove = () => deleteUnusedBlob(blob, storageInfo, selfStamped, losingVersion);
 		if (storageInfo.saved) remove();
 		// Do not unlink beneath an open writer: Windows refuses it and Unix loses the final path.
 		else (storageInfo.saving ?? Promise.resolve()).then(remove, remove);
@@ -4249,18 +4303,17 @@ export function cleanupUnusedBlobs(blobs: Blob[] | undefined, retainedFileIds?: 
 
 /**
  * Persist cleanup for a file that this unsuccessful write did not retain. A shared blob instance can
- * have acquired an owner from another committed write, so that case uses the normal owned durable path
- * and lets the drain revalidate the record. Only a never-owned file is safe to queue ownerless and due
- * immediately.
+ * have acquired a stamp from another in-flight write, so only a never-owned file or this write's own
+ * stamp is safe to queue ownerless and due immediately. A wire-owned source loser instead carries
+ * the version proof that lets the drain decide it.
  */
-function deleteUnusedBlob(blob: Blob, storageInfo: StorageInfo): void {
-	if (storageInfo.owner) {
+function deleteUnusedBlob(blob: Blob, storageInfo: StorageInfo, selfStamped: boolean, losingVersion?: number): void {
+	if (storageInfo.owner && !selfStamped) {
+		if (storageInfo.ownerWriteToken !== undefined || losingVersion === undefined) return;
 		try {
-			deleteBlob(blob, { synchronous: true, requireDurable: true });
+			deleteBlob(blob, { losingVersion, synchronous: true, requireDurable: true, preserveExisting: true });
 		} catch (error) {
-			// If the owner-aware intent cannot be staged, leave the file to the orphan sweep. Falling back
-			// to an ownerless unlink could delete a file that the committed owner still references.
-			logger.debug?.('Could not durably queue an owned unused blob; leaving it to the orphan sweep', error);
+			logger.debug?.('Could not durably queue a version-ordered unused blob', error);
 		}
 		return;
 	}
@@ -4372,7 +4425,14 @@ addExtension({
 			// Built here rather than once per encode: every record write passes through
 			// encodeBlobsWithFilePath, and the overwhelming majority carry no newly allocated blob, so
 			// an owner tuple allocated up there would be garbage on the serialization hot path.
-			if (storageInfo.allocated) storageInfo.owner ??= [encodeForStorageTableName ?? null, encodeForStorageForRecordId];
+			if (storageInfo.allocated) {
+				if (!storageInfo.owner) {
+					storageInfo.owner = [encodeForStorageTableName ?? null, encodeForStorageForRecordId];
+					storageInfo.ownerWriteToken = encodeForStorageOwnerWriteToken;
+				} else if (storageInfo.ownerWriteToken !== encodeForStorageOwnerWriteToken) {
+					storageInfo.ownerSharedAcrossWrites = true;
+				}
+			}
 			// Per-node hint only — a replication sender uses it to skip the header sniff for the
 			// uncompressed majority, but always confirms against the local file header before sending
 			// raw: a relayed record (or an in-place repair) can outlive the storage form recorded here.

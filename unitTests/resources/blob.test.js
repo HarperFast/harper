@@ -2661,7 +2661,83 @@ describe('durable blob-unlink queue (#1832)', () => {
 		unlinkSync(retainedPath); // never stored in a record; leave no orphan behind
 	});
 
-	it('revalidates a blob another write committed before cleaning up a skipped write', async () => {
+	it("queues a losing write's own blob stamp as ownerless and due now", async () => {
+		setDeletionDelay(0);
+		const blob = createBlob(randomBytes(20000), { saveBeforeCommit: true });
+		const unusedWrite = startPreCommitBlobsForRecord({ id: 'self-stamped-skipped', blob }, rootStore(), false, false);
+		await unusedWrite.complete();
+		const ownerWriteToken = {};
+		encodeBlobsWithFilePath(
+			() => pack({ id: 'self-stamped-skipped', blob }),
+			'self-stamped-skipped',
+			rootStore(),
+			'BlobQueueTest',
+			ownerWriteToken
+		);
+		const fileId = getFileId(blob);
+		const filePath = getFilePathForBlob(blob);
+		const db = queueDb();
+		const realPutSync = db.putSync;
+		let cleanupIntent;
+		db.putSync = function (key, value) {
+			if (Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) cleanupIntent = value;
+			return realPutSync.apply(this, arguments);
+		};
+		try {
+			cleanupUnusedBlobs(unusedWrite.blobs, undefined, ownerWriteToken);
+		} finally {
+			db.putSync = realPutSync;
+		}
+
+		assert.equal(cleanupIntent?.owner, undefined, 'self-stamped cleanup must not publish an unprovable owner');
+		assert.ok(cleanupIntent?.due <= Date.now(), 'self-stamped cleanup must be eligible immediately');
+		await waitFor(() => !existsSync(filePath), {
+			timeout: 5000,
+			message: 'self-stamped unused cleanup must unlink without waiting for the orphan sweep',
+		});
+		await assert.rejects(
+			async () => QueueTest.put({ id: 'self-stamped-skipped', blob }),
+			/discarded/,
+			'an application retry must supply bytes again after its abandoned file was reclaimed'
+		);
+	});
+
+	it('does not clean a first stamp after another same-key write encodes the instance', async () => {
+		setDeletionDelay(0);
+		const blob = createBlob(randomBytes(20000), { saveBeforeCommit: true });
+		const firstWrite = startPreCommitBlobsForRecord({ id: 'shared-same-key', blob }, rootStore(), false, false);
+		await firstWrite.complete();
+		const firstWriteToken = {};
+		encodeBlobsWithFilePath(
+			() => pack({ id: 'shared-same-key', blob }),
+			'shared-same-key',
+			rootStore(),
+			'BlobQueueTest',
+			firstWriteToken
+		);
+		await QueueTest.put({ id: 'shared-same-key', blob });
+		const fileId = getFileId(blob);
+		const filePath = getFilePathForBlob(blob);
+		const db = queueDb();
+		const realPutSync = db.putSync;
+		let cleanupAttempts = 0;
+		db.putSync = function (key) {
+			if (Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) cleanupAttempts++;
+			return realPutSync.apply(this, arguments);
+		};
+		try {
+			cleanupUnusedBlobs(firstWrite.blobs, undefined, firstWriteToken);
+		} finally {
+			db.putSync = realPutSync;
+		}
+
+		assert.equal(cleanupAttempts, 0, 'a second encoder must make the first stamp unprovable');
+		assert.equal(queueRow(fileId), undefined, 'the first write must not publish an ownerless intent');
+		assert.ok(existsSync(filePath), 'the second write must retain its file');
+		assert.equal((await (await QueueTest.get('shared-same-key')).blob.arrayBuffer()).byteLength, 20000);
+	});
+
+	it('leaves a blob stamped by another write out of skipped-write cleanup', async () => {
 		setDeletionDelay(0);
 		const shared = createBlob(randomBytes(20000), { saveBeforeCommit: true });
 		const unusedWrite = startPreCommitBlobsForRecord({ id: 'shared-skipped', blob: shared }, rootStore(), false, false);
@@ -2671,63 +2747,125 @@ describe('durable blob-unlink queue (#1832)', () => {
 		const filePath = getFilePathForBlob(shared);
 		const db = queueDb();
 		const realPutSync = db.putSync;
+		let cleanupAttempts = 0;
+		db.putSync = function (key) {
+			if (Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) cleanupAttempts++;
+			return realPutSync.apply(this, arguments);
+		};
+		try {
+			cleanupUnusedBlobs(unusedWrite.blobs);
+		} finally {
+			db.putSync = realPutSync;
+		}
+		const committed = QueueTest.primaryStore.getEntry('shared-owner')?.value;
+
+		assert.equal(getFileId(committed?.blob), fileId, 'the first write must commit the shared file');
+		assert.equal(cleanupAttempts, 0, "cleanup must not stage an intent for another write's stamp");
+		assert.equal(queueRow(fileId), undefined, 'foreign-stamped cleanup must leave no durable intent');
+		assert.ok(existsSync(filePath), 'foreign-stamped cleanup must preserve the committed file');
+		assert.equal((await shared.arrayBuffer()).byteLength, 20000, 'cleanup must not tombstone the live blob instance');
+		await QueueTest.put({ id: 'shared-owner', blob: shared });
+		assert.equal((await (await QueueTest.get('shared-owner')).blob.arrayBuffer()).byteLength, 20000);
+	});
+
+	it('does not overwrite a versioned row when staging a wire-owned source loser', async () => {
+		const blob = createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(blob).saving, rootStore());
+		encodeBlobsWithFilePath(() => pack({ blob }), 'foreign-owner', rootStore(), 'BlobQueueTest');
+		const fileId = getFileId(blob);
+		const filePath = getFilePathForBlob(blob);
+		const key = [UNLINK_QUEUE_KEY, fileId];
+		const existing = {
+			due: Date.now() + 600000,
+			storageIndex: 0,
+			owner: ['BlobQueueTest', 'versioned-owner'],
+			priorVersion: 41,
+		};
+		queueDb().putSync(key, existing);
+		try {
+			cleanupUnusedBlobs([blob], undefined, undefined, 7);
+			assert.deepEqual(queueRow(fileId), existing, 'source cleanup must not rewrite the existing intent');
+			assert.ok(existsSync(filePath), 'source cleanup must leave the file intact');
+		} finally {
+			queueDb().removeSync(key);
+			unlinkSync(filePath);
+		}
+	});
+
+	it('reclaims a wire-owned source loser once the winning version proves it cannot land', async () => {
+		setDeletionDelay(0);
+		const blob = createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(blob).saving, rootStore());
+		encodeBlobsWithFilePath(() => pack({ blob }), 'wire-version-loser', rootStore(), 'BlobQueueTest');
+		await QueueTest.put({ id: 'wire-version-loser', blob: await createBlob(randomBytes(20000)) });
+		const winnerVersion = QueueTest.primaryStore.getEntry('wire-version-loser').version;
+		const fileId = getFileId(blob);
+		const filePath = getFilePathForBlob(blob);
+		const db = queueDb();
+		const realPutSync = db.putSync;
 		let cleanupIntent;
 		db.putSync = function (key, value) {
 			if (Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) cleanupIntent = value;
 			return realPutSync.apply(this, arguments);
 		};
 		try {
-			cleanupUnusedBlobs(unusedWrite.blobs);
+			cleanupUnusedBlobs([blob], undefined, undefined, winnerVersion - 1);
 		} finally {
 			db.putSync = realPutSync;
 		}
-		const row = queueRow(fileId);
-		const committed = QueueTest.primaryStore.getEntry('shared-owner')?.value;
 
-		assert.equal(getFileId(committed?.blob), fileId, 'the first write must commit the shared file');
-		assert.deepEqual(cleanupIntent?.owner, ['BlobQueueTest', 'shared-owner'], 'cleanup must stage the owner');
-		assert.deepEqual(row?.owner, ['BlobQueueTest', 'shared-owner'], 'cleanup must retain the committed owner');
-		assert.equal(row?.priorVersion, undefined, 'the cleanup intent is not tied to a superseded owner version');
-		assert.equal(row?.claimedBy, undefined, 'cleanup must not claim the file before the drain validates its owner');
-		await waitFor(() => queueRow(fileId) === undefined, {
+		assert.equal(cleanupIntent?.losingVersion, winnerVersion - 1, 'cleanup must persist the version proof');
+		assert.deepEqual(cleanupIntent?.owner, ['BlobQueueTest', 'wire-version-loser']);
+		await waitFor(() => !existsSync(filePath), {
 			timeout: 5000,
-			message: 'the drain must drop cleanup for a file the committed owner still references',
+			message: 'a strictly newer owner version must reclaim the skipped source blob',
 		});
-		assert.ok(existsSync(filePath), 'owner revalidation must preserve the committed file');
-		assert.equal((await shared.arrayBuffer()).byteLength, 20000, 'cleanup must not tombstone the live blob instance');
-		await QueueTest.put({ id: 'shared-owner', blob: shared });
-		assert.equal((await (await QueueTest.get('shared-owner')).blob.arrayBuffer()).byteLength, 20000);
+		assert.equal((await (await QueueTest.get('wire-version-loser')).blob.arrayBuffer()).byteLength, 20000);
 	});
 
-	it('leaves an owned unused blob intact when its owner-aware intent cannot be staged', async () => {
+	it('defers a wire-owned source loser without a strictly newer owner version', async () => {
 		setDeletionDelay(0);
-		const shared = createBlob(randomBytes(20000), { saveBeforeCommit: true });
-		const unusedWrite = startPreCommitBlobsForRecord({ id: 'failed-stage', blob: shared }, rootStore(), false, false);
-		await unusedWrite.complete();
-		await QueueTest.put({ id: 'failed-stage-owner', blob: shared });
-		const fileId = getFileId(shared);
-		const filePath = getFilePathForBlob(shared);
-		const db = queueDb();
-		const realPutSync = db.putSync;
-		let attempts = 0;
-		db.putSync = function (key) {
-			if (Array.isArray(key) && key[0] === UNLINK_QUEUE_KEY && key[1] === fileId) {
-				attempts++;
-				throw new Error('queue unavailable');
-			}
-			return realPutSync.apply(this, arguments);
-		};
-		try {
-			cleanupUnusedBlobs(unusedWrite.blobs);
-		} finally {
-			db.putSync = realPutSync;
-		}
+		const blob = createBlob(randomBytes(20000));
+		await decodeFromDatabase(() => saveBlob(blob).saving, rootStore());
+		encodeBlobsWithFilePath(() => pack({ blob }), 'wire-version-pending', rootStore(), 'BlobQueueTest');
+		const fileId = getFileId(blob);
+		const filePath = getFilePathForBlob(blob);
+		const key = [UNLINK_QUEUE_KEY, fileId];
+		cleanupUnusedBlobs([blob], undefined, undefined, Date.now());
 
-		assert.equal(attempts, 1, 'cleanup must attempt to stage the owner-aware intent');
-		assert.equal(queueRow(fileId), undefined, 'a rejected stage must not leave a partial intent');
-		assert.ok(existsSync(filePath), 'cleanup must fail safe when it cannot persist owner revalidation');
-		assert.equal((await shared.arrayBuffer()).byteLength, 20000, 'cleanup must not tombstone the live blob instance');
-		await QueueTest.put({ id: 'failed-stage-owner', blob: shared });
+		drainBlobUnlinkQueue(rootStore());
+		await delay(200);
+
+		assert.ok(queueRow(fileId), 'an absent owner version must keep protecting the source blob');
+		assert.ok(existsSync(filePath), 'an absent owner version must not license an unlink');
+		queueDb().removeSync(key);
+		unlinkSync(filePath);
+	});
+
+	it('abandons a preexisting versionless owned row when the owner does not reference the file', async () => {
+		setDeletionDelay(0);
+		const { fileId, filePath } = await fileBackedBlob('versionless-owned-file');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+			due: Date.now() - 1,
+			storageIndex: 0,
+			owner: ['BlobQueueTest', 'missing-versionless-owner'],
+		});
+
+		drainBlobUnlinkQueue(rootStore());
+		await delay(200);
+		assert.ok(queueRow(fileId), 'the row must protect an in-flight owner from an immediate orphan sweep');
+		assert.ok(existsSync(filePath), 'an absent owner is not proof that a versionless row may unlink');
+		queueDb().putSync([UNLINK_QUEUE_KEY, fileId], {
+			...queueRow(fileId),
+			supersededAt: Date.now() - 2_000_000,
+		});
+		drainBlobUnlinkQueue(rootStore());
+
+		await waitFor(() => queueRow(fileId) === undefined, {
+			timeout: 5000,
+			message: 'the unprovable compatibility row must be handed to the orphan sweep',
+		});
+		assert.ok(existsSync(filePath), 'the aged row must be abandoned without unlinking');
 	});
 
 	it('retries a rejected durable unused-blob intent through local reclamation', async () => {

@@ -983,7 +983,8 @@ export function recordUpdater(store, tableId, auditStore, tableName?: string) {
 					() => (isRocksDB ? store.putSync(id, record, putOptions) : store.put(id, record, putOptions)),
 					id,
 					store.rootStore,
-					tableName
+					tableName,
+					options?.blobOwnerWriteToken
 				);
 				if (blobsWereEncoded) {
 					extendedType |= HAS_BLOBS;
@@ -996,7 +997,13 @@ export function recordUpdater(store, tableId, auditStore, tableName?: string) {
 					// replication payload), so it takes the same projection — except for message/publish
 					// entries, whose auditRecord IS the published payload and must reach subscribers verbatim.
 					if (type !== 'message' && type !== 'publish') auditRecord = storedFieldsOnly(store.encoder, auditRecord);
-					encodeBlobsWithFilePath(() => store.encoder.encode(auditRecord), id, store.rootStore, tableName);
+					encodeBlobsWithFilePath(
+						() => store.encoder.encode(auditRecord),
+						id,
+						store.rootStore,
+						tableName,
+						options?.blobOwnerWriteToken
+					);
 					if (blobsWereEncoded) {
 						extendedType |= HAS_BLOBS;
 					}

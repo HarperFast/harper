@@ -2530,6 +2530,7 @@ export function makeTable(options) {
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
 							transaction,
+							blobOwnerWriteToken: write.blobOwnerWriteToken,
 							tableToTrack: tableName,
 							recordVersion: txnTime,
 							additionalAuditRefs:
@@ -4011,6 +4012,7 @@ export function makeTable(options) {
 								viaNodeId: options?.viaNodeId,
 								originatingOperation: (context as any)?.originatingOperation,
 								transaction,
+								blobOwnerWriteToken: write.blobOwnerWriteToken,
 								// no per-row db-write analytics for a bulk copy; system tables never track
 								tableToTrack: isCopyApply || databaseName === 'system' ? null : options?.replay ? null : tableName,
 								additionalAuditRefs: additionalAuditRefs.length > 0 ? additionalAuditRefs : undefined,
@@ -5756,6 +5758,7 @@ export function makeTable(options) {
 							nodeId: options?.nodeId,
 							viaNodeId: options?.viaNodeId,
 							transaction,
+							blobOwnerWriteToken: write.blobOwnerWriteToken,
 							tableToTrack: tableName,
 						},
 						'message',
@@ -7647,6 +7650,7 @@ export function makeTable(options) {
 									expiresAt: sourceContext.expiresAt,
 									residencyId,
 									transaction,
+									blobOwnerWriteToken: sourceWrite.blobOwnerWriteToken,
 									tableToTrack: tableName,
 									additionalAuditRefs:
 										writeAudit && txnLogKey !== recordVersion ? [{ version: txnLogKey, nodeId: 0 }] : undefined,
@@ -8081,6 +8085,7 @@ export function makeTable(options) {
 	): any {
 		const preCommit = startPreCommitBlobsForRecord(record, primaryStore.rootStore, saveInRecord, trackPersistedBlobs);
 		if (preCommit) {
+			write.blobOwnerWriteToken ??= preCommit.blobs;
 			// track the blobs on the write so abort/skip paths can clean up the files if the commit doesn't reference them
 			write.savedBlobs = preCommit.blobs;
 			// if there are blobs that we have started saving, they need to be saved and completed before we commit, so we need to wait for
