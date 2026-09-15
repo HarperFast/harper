@@ -139,6 +139,20 @@ const EVICTION_BATCH_SIZE = 100;
 // letting an unbounded number of open transactions (and their snapshots) accumulate.
 const MAX_INFLIGHT_EVICTION_BATCHES = 4;
 const CACHEABLE_STATUS_CODES = new Set([200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501]);
+// Smallest forward sample `getRecordCount` will extrapolate a record rate from; below it the scan runs
+// to completion and reports an exact count.
+const MIN_ESTIMATOR_SAMPLE = 1_000;
+// Budget intervals the forward scan may spend before it must estimate rather than keep scanning.
+const MAX_ESTIMATE_CHECKPOINTS = 20;
+// A store estimate's `count`, or 0 when the store answered with a shape that cannot be trusted --
+// DESIGN.md's invariant for this API family is that such an answer degrades rather than poisons.
+function usableCount(estimate: any): number {
+	const { count, confidence } = estimate ?? {};
+	// `confidence` needs its own finiteness check, not just the range: `null >= 0 && null <= 1` is true
+	if (!Number.isFinite(count) || count < 0 || !Number.isFinite(confidence) || confidence < 0 || confidence > 1)
+		return 0;
+	return count;
+}
 envMngr.initSync();
 const LMDB_PREFETCH_WRITES = envMngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -1595,8 +1609,7 @@ export function makeTable(options) {
 					records: './', // an href to the records themselves
 					name: tableName,
 					database: databaseName,
-					auditSize:
-						auditStore instanceof RocksDatabase ? auditStore.getKeysCount() : auditStore?.getStats().entryCount,
+					auditSize: auditStore?.getStats().entryCount,
 					attributes,
 					recordCount: undefined,
 					estimatedRecordRange: undefined,
@@ -4896,82 +4909,174 @@ export function makeTable(options) {
 			const exactCount = options?.exactCount;
 			const TIME_LIMIT = options?.timeLimit ?? 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
 			const start = performance.now();
-			// `entryCount` (the exact key count) is only needed once the scan blows the time budget --
-			// to decide whether to estimate and as the extrapolation base. On RocksDB it is a full
-			// key-only scan, so we defer it: tables that finish within budget (the common case) and
-			// `exact_count` requests never pay for it. `halfway`/`entryCount` stay 0 until first computed.
 			let entryCount = 0;
-			let halfway = 0;
-			let counted = false;
-			let completeForExact = false;
+			let remainderPhysical = 0;
+			let estimator;
+			// feature-detected per DESIGN.md's invariant for this API family; LMDB stores do not implement it
+			const canEstimate =
+				typeof primaryStore.createCountEstimator === 'function' && typeof primaryStore.estimateCount === 'function';
+			let estimatorFailed = false;
+			let warnedNoBase = false;
+			let checkpoints = 0;
+			let checkpointedEntries = 0;
 			let recordCount = 0;
 			let entriesScanned = 0;
+			let lastKey;
 			let limit: number;
-			for (const { value } of primaryStore.getRange({ start: true, lazy: true, snapshot: false })) {
+			let nextCheckAt = start + TIME_LIMIT;
+			for (const { key, value } of primaryStore.getRange({ start: true, lazy: true, snapshot: false })) {
 				if (value != null) recordCount++;
 				entriesScanned++;
+				lastKey = key;
 				await rest();
-				if (!exactCount && !completeForExact && performance.now() - start > TIME_LIMIT) {
-					if (!counted) {
-						counted = true;
-						entryCount = isRocksDB
-							? primaryStore.getKeysCount({ start: undefined })
-							: primaryStore.getStats().entryCount;
-						halfway = Math.floor(entryCount / 2);
+				// a table too small to reach the floor is small enough to finish exactly
+				if (exactCount || entriesScanned < MIN_ESTIMATOR_SAMPLE) continue;
+				const now = performance.now();
+				if (now <= nextCheckAt) continue;
+				nextCheckAt = now + TIME_LIMIT;
+				checkpoints++;
+				if (canEstimate && !estimatorFailed) {
+					try {
+						estimator ??= primaryStore.createCountEstimator({ start: true });
+						estimator.advance(lastKey, entriesScanned - checkpointedEntries);
+						checkpointedEntries = entriesScanned;
+						entryCount = usableCount(estimator.estimate());
+					} catch (error) {
+						// a store closing concurrently -- drop_table can, while this scan is parked in a yield
+						logger.debug?.('Count estimator unavailable, falling back to an exact scan', error);
+						estimatorFailed = true;
+						estimator = undefined;
+						entryCount = 0;
 					}
-					if (entriesScanned < halfway) {
-						// it is taking too long, so we will just take this sample and a sample from the end to estimate
-						limit = entriesScanned;
-						break;
+				} else if (!canEstimate) {
+					// `canEstimate` false is not the same as "LMDB": a RocksDB store whose native module predates
+					// the estimator API lands here too, and `RocksDatabase.getStats()` carries no `entryCount`.
+					try {
+						const stats = primaryStore.getStats?.();
+						entryCount = Number.isFinite(stats?.entryCount) && stats.entryCount > 0 ? stats.entryCount : 0;
+					} catch {
+						entryCount = 0;
 					}
-					// Past the halfway point already: finishing the scan for an exact count is cheaper
-					// than estimating. Set the flag so we stop re-evaluating the budget on each remaining iteration.
-					completeForExact = true;
+				}
+				if (!entryCount && canEstimate && !estimatorFailed) {
+					// Range estimates are block-granular and can report 0 for a store whose entries are still
+					// in the memtable. Without a base the escape cannot fire at all, so fall back to the
+					// whole-store property rather than silently walking the table.
+					try {
+						const wholeStore = primaryStore.getEstimatedKeyCount();
+						entryCount = Number.isFinite(wholeStore) && wholeStore > 0 ? wholeStore : 0;
+					} catch {
+						entryCount = 0;
+					}
+					if (!entryCount && !warnedNoBase) {
+						warnedNoBase = true;
+						logger.debug?.(`No usable key-count estimate for ${tableName}; counting records by full scan`);
+					}
+				}
+				// Zero is "no usable base": degrade to the exact scan. The checkpoint ceiling is what stops a
+				// base that keeps undershooting from holding the halfway test false forever and walking the
+				// whole table; the reverse sample is bounded by `limit` in turn.
+				if (
+					entryCount > 0 &&
+					(checkpoints >= MAX_ESTIMATE_CHECKPOINTS || entriesScanned < Math.floor(entryCount / 2))
+				) {
+					if (canEstimate) {
+						try {
+							const remaining = primaryStore.estimateCount({ start: lastKey, exclusiveStart: true });
+							// widened by its own reported untrustworthiness: block-granular, so it can land below
+							// the live count it is meant to bound
+							const remainingCount = usableCount(remaining);
+							remainderPhysical = remainingCount > 0 ? remainingCount * (2 - remaining.confidence) : 0;
+						} catch {
+							remainderPhysical = 0;
+						}
+						// A zero or unusable remainder is valid -- entries still in the memtable read as none
+						// through range statistics -- but it would leave `baseMax` resting on the sampled ends
+						// alone. The whole-store property is a separate, non-range source, so fall back to it.
+						if (!remainderPhysical) {
+							try {
+								const wholeStore = primaryStore.getEstimatedKeyCount();
+								if (Number.isFinite(wholeStore)) remainderPhysical = Math.max(wholeStore - entriesScanned, 0);
+							} catch {
+								remainderPhysical = 0;
+							}
+						}
+					}
+					limit = entriesScanned;
+					break;
 				}
 			}
 			if (limit) {
 				// in this case we are going to make an estimate of the table count using the first thousand
 				// entries and last thousand entries
 				const firstRecordCount = recordCount;
+				const firstKey = lastKey;
 				recordCount = 0;
 				// Bound the reverse scan explicitly. The getRange `limit` option is honored by lmdb-js but
 				// ignored by rocksdb-js; without this break the scan reads the whole table, so `recordRate`
 				// blows up to ~entryCount/(2*limit) and the estimate scales with entryCount^2 -- the source
 				// of the wildly inflated `record_count` (e.g. 20,000,000 for ~105k rows) on large RocksDB
-				// tables. The early-exit above guarantees limit < entryCount/2, so the two samples stay disjoint.
+				// tables.
 				let reverseScanned = 0;
-				for (const { value } of primaryStore.getRange({
+				// Sized independently of the forward scan. `entriesScanned` is whatever the forward pass
+				// covered before it escaped, and the checkpoint ceiling lets that run twenty budget
+				// intervals when the base keeps undershooting; matching it here would read that same count
+				// again and double the wall clock of the call this path exists to bound.
+				const reverseLimit = Math.min(limit, MIN_ESTIMATOR_SAMPLE);
+				// Disjointness is enforced against the forward scan's own last key rather than inferred from
+				// the base, which is an estimate that can overshoot by more than 2x.
+				let sampledWholeTable = false;
+				for (const { key, value } of primaryStore.getRange({
 					start: '\uffff',
 					reverse: true,
 					lazy: true,
-					limit,
+					limit: reverseLimit,
 					snapshot: false,
 				})) {
+					if (compareKeys(key, firstKey) <= 0) {
+						sampledWholeTable = true;
+						break;
+					}
 					if (value != null) recordCount++;
 					reverseScanned++;
 					await rest();
-					if (reverseScanned >= limit) break;
+					if (reverseScanned >= reverseLimit) break;
 				}
+				// the samples met, so between them they covered every entry
+				if (sampledWholeTable) return { recordCount: recordCount + firstRecordCount };
 				// Use the actual entries sampled, not limit*2: the reverse scan can yield fewer than `limit`
 				// (concurrent deletions under snapshot:false, or an overestimated entryCount), and counting
 				// those un-scanned slots would inflate the denominator and underestimate the rate.
-				const sampleSize = limit + reverseScanned;
-				const recordRate = (recordCount + firstRecordCount) / sampleSize;
-				const variance =
-					Math.pow((recordCount - firstRecordCount + 1) / limit / 2, 2) + // variance between samples
-					(recordRate * (1 - recordRate)) / sampleSize;
-				const sd = Math.max(Math.sqrt(variance) * entryCount, 1);
-				const estimatedRecordCount = Math.round(recordRate * entryCount);
-				// TODO: This uses a normal/Wald interval, but a binomial confidence interval is probably better calculated using
-				// Wilson score interval or Agresti-Coull interval (I think the latter is a little easier to calculate/implement).
-				const lowerCiLimit = Math.max(estimatedRecordCount - 1.96 * sd, recordCount + firstRecordCount);
-				const upperCiLimit = Math.min(estimatedRecordCount + 1.96 * sd, entryCount);
-				let significantUnit = Math.pow(10, Math.round(Math.log10(sd)));
-				if (significantUnit > estimatedRecordCount) significantUnit = significantUnit / 10;
-				recordCount = Math.round(estimatedRecordCount / significantUnit) * significantUnit;
+				const sampledRecords = recordCount + firstRecordCount;
+				const recordRate = sampledRecords / (limit + reverseScanned);
+				// Endpoints for the extrapolation base, spanning both ways an estimated base can be wrong:
+				// every remaining entry superseded (only what was sampled is live) through every remaining
+				// entry live (the uncalibrated physical count). Churn concentrated outside the sampled ends
+				// calibrates to nothing, so an interval derived from the estimator's confidence would sit
+				// narrowly around the wrong number. Both endpoints are themselves estimates on RocksDB, so
+				// this is a widened heuristic interval, not a guaranteed bound on the live count.
+				const baseMin = entriesScanned + reverseScanned;
+				const baseMax = Math.max(entriesScanned + remainderPhysical, entryCount, baseMin);
+				const estimatedRecordCount = Math.round(recordRate * Math.max(entryCount, baseMin));
+				// The samples counted these directly, and the entries between them can only add; everything
+				// outside the samples could be live. A statistical interval inside those endpoints would be
+				// narrowest exactly where the ends are least representative of the middle -- sampled ends
+				// that are all deletion entries give a rate of 0, collapsing an upper end to ~0 with live
+				// rows in between -- so the endpoints are the evidence itself.
+				const lower = sampledRecords;
+				const upper = Math.round(baseMax);
+				// Report only the precision the interval supports, but never so coarse a unit that the
+				// estimate rounds away: `baseMax` is physical and can exceed a calibrated estimate by
+				// orders of magnitude, which a single division cannot walk back.
+				let significantUnit = Math.pow(10, Math.round(Math.log10(Math.max((upper - lower) / 2, 1))));
+				while (significantUnit > estimatedRecordCount && significantUnit > 1) significantUnit /= 10;
+				recordCount = Math.min(
+					Math.max(Math.round(estimatedRecordCount / significantUnit) * significantUnit, lower),
+					upper
+				);
 				return {
 					recordCount,
-					estimatedRange: [Math.round(lowerCiLimit), Math.round(upperCiLimit)],
+					estimatedRange: [lower, upper],
 				};
 			}
 			return {
