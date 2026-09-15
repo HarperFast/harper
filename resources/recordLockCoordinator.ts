@@ -371,11 +371,7 @@ function decodeTuple(tuple: unknown[]): LockControlEntry | undefined {
 	if (versioned) {
 		const rawDependencies = tuple[6];
 		if (rawDependencies === null) dependencies = null;
-		else {
-			const normalized = normalizeDependencies(rawDependencies);
-			if (!normalized) return undefined;
-			dependencies = normalized;
-		}
+		else dependencies = normalizeDependencies(rawDependencies);
 	}
 	const entry: LockControlEntry = {
 		type: 'lockRelease',
@@ -834,8 +830,6 @@ export class LockCoordinator {
 		}
 		this.#grantableAfterMono = options.grantableAfterMono ?? this.#monotonic() + DELEGATION_LEASE_MS + this.#skewMs;
 		options.adopt?.handOffTo(this);
-		// After the handoff, which sets both for the adopted case: a predecessor that closed without one
-		// left its outstanding authority here instead, and this coordinator inherits its bounds.
 		const retired = retiredCoordinators.get(this.#retirementKey());
 		if (retired) {
 			this.#counter = Math.max(this.#counter, retired.counter);
@@ -1317,10 +1311,8 @@ export class LockCoordinator {
 		}
 		const delegation = this.#delegations.get(keyId);
 		if (!delegation || compareTokens(delegation.token, recall.token) !== 0) {
-			// The home can recall immediately after granting, before the reply reaches us. At that point
-			// there is no token-indexed delegation yet, but acknowledging as a no-op would let the reply
-			// install authority the home already believes drained. Remember the token against the one
-			// outbound request; acquire compares it with the eventual reply before admitting anything.
+			// A recall can beat the grant reply. Remember its token so that reply cannot install authority
+			// the home already believes drained.
 			const request = this.#pendingRequests.get(keyId);
 			if (request) request.recalledToken = recall.token;
 			return;
@@ -1965,8 +1957,7 @@ export class LockCoordinator {
 		} catch (error) {
 			// A lost release costs the key its remaining lease on the home; it never costs exclusion.
 			warnOnce('failed to write a record lock release entry', error);
-			// A local home can settle its own failed handback without waiting out the full grant. There
-			// was no durable clean release, so discard lineage and force the next delegate through recovery.
+			// A local home can discard its own failed handback safely; its successor will recover.
 			try {
 				const keyId = this.#keyIdOf(entry.key);
 				const grant = this.#grants.get(keyId);

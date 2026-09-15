@@ -572,7 +572,8 @@ describe('record lock delegations', () => {
 			const first = await alpha.coordinator.acquire(key, MAX_LOCK_LEASE_MS, WAIT);
 			// Leave the first admission active while advancing far enough that a second maximum
 			// lease requires renewal. Table's native key lock normally serializes these calls, but
-			// exercising the coordinator directly proves its recall state machine does not clear a
+			// exercising the coordinator directly proves its recall state machine does not clear the
+			// home grant while an inherited admission is still holding.
 			cluster.advance('alpha', DELEGATION_LEASE_MS - MAX_LOCK_LEASE_MS + 1);
 
 			cluster.beforeReply = async (from, _to, _request, reply) => {
@@ -2238,19 +2239,40 @@ describe('record lock delegations', () => {
 				);
 		});
 
-		it('rejects malformed historical and versioned tuples', () => {
+		it('rejects malformed tuple headers and treats malformed dependencies as unknown lineage', () => {
 			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 1]), undefined);
 			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 1, 1, 'extra']), undefined);
 			assert.strictEqual(decodeLockControlPayload('lockRelease', [2, 'k', 'alpha', 1, 1, 1, []]), undefined);
-			assert.strictEqual(decodeLockControlPayload('lockRelease', [1, 'k', 'alpha', 1, 1, 1, [['', 2]]]), undefined);
-			assert.strictEqual(
-				decodeLockControlPayload('lockRelease', [1, 'k', 'alpha', 1, 1, 1, [['beta', Infinity]]]),
-				undefined
-			);
+			const unknownLineage = { type: 'lockRelease', key: 'k', requester: 'alpha', token: [1, 1, 1] };
+			for (const dependencies of [[['', 2]], [['beta', Infinity]], 'not a dependency set'])
+				assert.deepStrictEqual(decodeLockControlPayload('lockRelease', [1, 'k', 'alpha', 1, 1, 1, dependencies]), {
+					...unknownLineage,
+					dependencies: undefined,
+				});
 			assert.strictEqual(decodeLockControlPayload('lockRelease', 'not a tuple'), undefined);
 			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', '', 1, 1, 1]), undefined);
 			assert.strictEqual(decodeLockControlPayload('lockRelease', ['k', 'alpha', 1, 1, 'not a number']), undefined);
 			assert.strictEqual(decodeLockControlPayload('lockRelease', [{ bad: 'key' }, 'alpha', 1, 1, 1]), undefined);
+		});
+
+		it('clears an exact grant with malformed lineage and makes its successor recover', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const home = cluster.node('gamma').coordinator;
+			const granted = await home.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			const release = decodeLockControlPayload('lockRelease', [
+				1,
+				key,
+				'alpha',
+				...granted.token,
+				'corrupt dependencies',
+			]);
+			home.applyEntry(release, 'alpha', 11);
+
+			const beta = cluster.node('beta');
+			const successor = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
+			beta.coordinator.release(key, successor.admissionId);
 		});
 
 		it('no longer decodes the retired Ricart–Agrawala types', () => {
