@@ -290,6 +290,41 @@ describe('Table.getRecordCount', () => {
 		}
 	});
 
+	it('falls back to the whole-store estimate when range estimates report zero', async function () {
+		this.timeout(120000);
+		// Range estimates are block-granular and can legitimately report 0 for present keys -- a store whose
+		// entries are still in the memtable. With no base the escape cannot fire at all, so this must reach
+		// the whole-store property rather than silently walking the table.
+		const store = EstimatorTable.primaryStore;
+		if (typeof store.createCountEstimator !== 'function') return this.skip();
+		const originalEstimator = store.createCountEstimator;
+		const originalWhole = store.getEstimatedKeyCount;
+		const ownedEstimator = Object.hasOwn(store, 'createCountEstimator');
+		const ownedWhole = Object.hasOwn(store, 'getEstimatedKeyCount');
+		let wholeStoreCalls = 0;
+		store.createCountEstimator = () => ({
+			advance() {},
+			estimate: () => ({ count: 0, confidence: 0 }),
+		});
+		store.getEstimatedKeyCount = function (...args) {
+			wholeStoreCalls++;
+			return originalWhole.apply(this, args);
+		};
+		try {
+			const result = await EstimatorTable.getRecordCount({ timeLimit: -1 });
+			assert.ok(wholeStoreCalls > 0, 'a zero range estimate must fall back to the whole-store key count');
+			assert.ok(
+				Array.isArray(result.estimatedRange),
+				'with a usable whole-store base the escape should fire rather than scanning the whole table'
+			);
+		} finally {
+			if (ownedEstimator) store.createCountEstimator = originalEstimator;
+			else delete store.createCountEstimator;
+			if (ownedWhole) store.getEstimatedKeyCount = originalWhole;
+			else delete store.getEstimatedKeyCount;
+		}
+	});
+
 	it('stops scanning when the base keeps saying the scan is past halfway', async function () {
 		this.timeout(120000);
 		// A base that undershoots holds `entriesScanned < floor(entryCount/2)` false at every checkpoint, so
