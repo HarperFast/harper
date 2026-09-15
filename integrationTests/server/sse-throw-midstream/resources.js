@@ -6,9 +6,9 @@
 // doesn't forward source 'error' events to the destination, and an unhandled 'error' on an
 // EventEmitter is a Node uncaughtException -- contentTypes.ts's serializeStream()/Readable.from
 // already surfaced the generator's rejection correctly, it just had no listener downstream. The
-// fix extracts an exported `pipeBodyToResponse` helper that wires the pipe via `stream.pipeline`,
-// which tears down both sides (including closing the response, abruptly rather than cleanly) on
-// a source error instead of leaving it hanging / crashing the process.
+// `pipeBodyToResponse` prevents an unhandled stream error from crashing the process. The
+// content-type boundary now converts generator failures to startup HTTP errors or terminal SSE
+// error events before the response reaches that transport helper.
 //
 // This fixture exercises multiple throw-timing shapes over SSE (dispatched via
 // `resource.connect()`, which is what Harper's REST layer invokes for CONNECT/SSE requests --

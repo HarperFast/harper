@@ -353,7 +353,12 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
-			return finalizeResponse(responseData, headers, status, request);
+			const response = finalizeResponse(responseData, headers, status, request);
+			if (method !== 'HEAD') {
+				const startup = waitForStreamStartup(response.body);
+				if (startup) await startup;
+			}
+			return response;
 		} else if (isFinite(lastModification)) {
 			etagFloat[0] = lastModification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
@@ -429,7 +434,10 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			responseObject.body = serialize(responseData, request, responseObject);
 			if (method === 'HEAD')
 				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
-			else await waitForStreamStartup(responseObject.body);
+			else {
+				const startup = waitForStreamStartup(responseObject.body);
+				if (startup) await startup;
+			}
 		}
 		// A collection read's count headers vary by the request's `Prefer` value; serialize() just reset
 		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count
@@ -473,6 +481,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			headers,
 			body: undefined,
 		};
+		headers.delete('Content-Encoding');
 		responseObject.body = serialize(problemDetail, request, responseObject);
 		return responseObject;
 	}

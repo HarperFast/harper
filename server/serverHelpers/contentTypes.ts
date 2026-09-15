@@ -23,18 +23,19 @@ const streamStartup = Symbol('streamStartup');
 type StreamStartup = {
 	result: Promise<{ failed?: true; error?: unknown }>;
 	abort: () => void;
+	start: () => void;
 };
 
 function streamErrorRecord(error: any) {
-	const rendered = harperErrorToString(error);
 	let name = 'Error';
-	let message = rendered;
+	let message;
 	try {
 		if (typeof error?.name === 'string') name = error.name;
 	} catch {}
 	try {
 		if (typeof error?.message === 'string') message = error.message;
 	} catch {}
+	message ??= harperErrorToString(error);
 	return { error: name, message };
 }
 
@@ -129,7 +130,7 @@ const ndjsonHandler = {
 				data,
 				(msg: any) => JSONStringify(msg) + '\n',
 				(error) => JSONStringify(streamErrorRecord(error)) + '\n',
-				request?.method !== 'HEAD'
+				request?.method != null && request.method !== 'HEAD'
 			);
 		}
 		return JSONStringify(data) + '\n';
@@ -163,7 +164,7 @@ mediaTypes.set('text/event-stream', {
 			iterable,
 			this.serialize,
 			(error) => this.serialize({ event: 'error', data: streamErrorRecord(error) }),
-			request?.method !== 'HEAD'
+			request?.method != null && request.method !== 'HEAD'
 		);
 	},
 	serialize: function (message) {
@@ -662,17 +663,19 @@ function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
 	return readable;
 }
 
-export async function waitForStreamStartup(stream) {
+export function waitForStreamStartup(stream) {
 	const startup: StreamStartup | undefined = stream?.[streamStartup];
 	if (!startup) return;
-	const result = await startup.result;
-	if (result.failed) {
-		startup.abort();
-		throw result.error;
-	}
+	startup.start();
+	return startup.result.then((result) => {
+		if (result.failed) {
+			startup.abort();
+			throw result.error;
+		}
+	});
 }
 
-function transformIterable(iterable, transform, serializeError, eager = false) {
+function transformIterable(iterable, transform, serializeError, eager) {
 	const iterator = iterable[Symbol.asyncIterator] ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
 	let terminal = false;
 	let first = true;
@@ -731,27 +734,24 @@ function transformIterable(iterable, transform, serializeError, eager = false) {
 		Promise.resolve(firstStep).then(() => {
 			if (!terminal) commit();
 		});
+		// After this turn, the HTTP status can no longer wait for a first item without delaying long-lived streams.
 		startupTimer = setImmediate(commit);
 	};
-	if (serializeError && eager) start();
+	if (eager) start();
 
 	return {
-		[streamStartup]: serializeError
-			? {
-					result: startupResult.promise,
-					abort,
-					start,
-				}
-			: undefined,
+		[streamStartup]: {
+			result: startupResult.promise,
+			abort,
+			start,
+		},
 		[Symbol.asyncIterator]() {
 			return {
 				next() {
 					if (first) {
 						first = false;
-						if (serializeError) {
-							start();
-							return firstStep;
-						}
+						start();
+						return firstStep;
 					}
 					return getNext();
 				},

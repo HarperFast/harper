@@ -113,7 +113,7 @@ function rawCapture(
 	authHeader: string,
 	surface: string,
 	throwPoint: string,
-	opts: { timeoutMs?: number; http10?: boolean; connection?: string } = {}
+	opts: { timeoutMs?: number; http10?: boolean; connection?: string; acceptEncoding?: string } = {}
 ): Promise<RawCapture> {
 	const timeoutMs = opts.timeoutMs ?? 15_000;
 	const url = new URL(restBase);
@@ -135,6 +135,7 @@ function rawCapture(
 				`Accept: ${acceptHeader}\r\n` +
 				`Authorization: ${authHeader}\r\n` +
 				(connection ? `Connection: ${connection}\r\n` : '') +
+				(opts.acceptEncoding ? `Accept-Encoding: ${opts.acceptEncoding}\r\n` : '') +
 				`\r\n`;
 			socket.write(req);
 		});
@@ -314,7 +315,7 @@ suite(
 
 		before(async () => {
 			await setupHarperWithFixture(ctx, FIXTURE_PATH, {
-				config: { threads: { count: 1 }, logging: { level: 'info' } },
+				config: { threads: { count: 1 }, logging: { level: 'info' }, http: { compressionThreshold: 1200 } },
 				env: {},
 			});
 			client = createApiClient(ctx.harper);
@@ -471,6 +472,17 @@ suite(
 				`[QA-890][ndjson/pre] status=${cap.status} totalBytes=${cap.totalBytes} socketEvents=\n  ${cap.socketEvents.join('\n  ')}`
 			);
 			assertStartupError(cap, 'QA890-iter-pre-yield');
+		});
+
+		test('ndjson: startup error drops the abandoned stream compression header', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('iterPreYield', () =>
+				rawCapture(restBase, '/IterPreYield/', 'application/x-ndjson', authHeader, 'ndjson', 'pre-compressed', {
+					acceptEncoding: 'br',
+				})
+			);
+			captures.push(cap);
+			assertStartupError(cap, 'QA890-iter-pre-yield');
+			strictEqual(cap.headers['content-encoding'], undefined);
 		});
 
 		test('iterable-rest: pre-first-yield throw -- raw byte capture', { timeout: 20_000 }, async () => {
