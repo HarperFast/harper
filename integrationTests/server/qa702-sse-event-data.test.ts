@@ -466,31 +466,23 @@ suite(
 					200,
 					`expected streaming to have started (status 200) before the mid-stream throw, got ${r.status}. raw:\n${r.raw}`
 				);
-				// The events actually yielded before the throw (0, 1) must be exactly what arrived, followed
-				// by #2614's terminal `harper-error` frame and nothing from after the throw point. Assert the
-				// actual values, not just a count -- a count alone would also accept a duplicated {"n":0}, a
-				// corrupted {"n":1}, or (if the throw's timing ever shifts) a frame from after the throw
-				// silently replacing one before it.
+				// Assert the whole frame sequence, not a count in range: a count alone would also accept a
+				// duplicated {"n":0}, a corrupted {"n":1}, a frame from after the throw silently replacing one
+				// before it, or #2614's error record arriving unnamed or out of terminal position.
 				const blocks = parseSseBlocks(r.raw);
-				const dataBlocks = blocks.filter((b) => 'data' in b && b.event !== 'harper-error');
+				strictEqual(blocks.length, 3, `expected the 2 pre-throw frames plus one error frame. raw:\n${r.raw}`);
 				deepStrictEqual(
-					dataBlocks.map((b) => b.data),
+					blocks.slice(0, 2).map((b) => b.data),
 					['{"n":0}', '{"n":1}'],
-					`expected the exact pre-throw sequence, got: ${JSON.stringify(dataBlocks.map((b) => b.data))}. raw:\n${r.raw}`
+					`expected the exact pre-throw sequence, got: ${JSON.stringify(blocks.slice(0, 2))}`
 				);
-				const errorBlocks = blocks.filter((b) => b.event === 'harper-error');
-				strictEqual(errorBlocks.length, 1, `expected exactly one harper-error frame. raw:\n${r.raw}`);
-				deepStrictEqual(JSON.parse(errorBlocks[0].data), {
+				strictEqual(blocks[2].event, 'harper-error', `expected a named terminal error frame. raw:\n${r.raw}`);
+				deepStrictEqual(JSON.parse(blocks[2].data), {
 					error: 'Error',
 					message: 'QA702-intentional-throw-partway',
 				});
-				// Pin the actual shipped shape, not just "didn't hang". The two HTTP servers used to diverge
-				// here: Node (`server/http.ts` pipeBodyToResponse) closed the socket abruptly without the
-				// terminal `0\r\n\r\n` chunk to signal the truncation, while uWS
-				// (`server/serverHelpers/uwsServer.ts` streamResponse) ended cleanly, making a mid-stream
-				// failure byte-indistinguishable from a generator that legitimately finished (QA-886/F-272).
-				// #2614 carries that signal in-band instead, so both servers now end cleanly after the
-				// `harper-error` frame asserted above -- one converged shape, pinned once.
+				// Node and uWS used to close this differently (QA-886/F-272); #2614 carries the truncation
+				// signal in the error frame instead, so both now end cleanly and one shape is pinned.
 				ok(
 					r.ended,
 					`expected a clean end after the terminal error frame, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`

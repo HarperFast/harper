@@ -162,9 +162,8 @@ suite(
 					`[QA-537][5] ThrowGen: status=${r.status} events=${r.events.length} terminatedBy=${r.terminatedBy} aborted=${r.aborted} errored=${r.errored?.message ?? null} elapsedMs=${r.elapsedMs}`
 				);
 
-				// A rejecting generator now emits #2614's terminal `harper-error` frame and then ends the
-				// stream cleanly, so the delivered prefix is exact rather than a truncation race. The throw
-				// contract itself is sse-throw-midstream.test.ts's.
+				// #2614's terminal `harper-error` frame ends the stream cleanly, so the delivered prefix is
+				// exact rather than a truncation race.
 				ok(!r.aborted, `must not hit the AbortController timeout — the response never terminated. raw:\n${r.raw}`);
 				strictEqual(
 					r.terminatedBy,
@@ -177,7 +176,14 @@ suite(
 					`expected the 2 events yielded before the throw plus one error event, got ${r.events.length}. raw:\n${r.raw}`
 				);
 				deepStrictEqual(eventNumbers(r).slice(0, 2), [0, 1]);
-				deepStrictEqual(JSON.parse(r.events[2]), { error: 'Error', message: 'QA537-intentional-throw-partway' });
+				// parseEvents keeps only `data: ` lines, so the frame's `event:` name and its terminal position
+				// are observable only on the raw bytes.
+				ok(
+					r.raw.endsWith(
+						'event: harper-error\ndata: {"error":"Error","message":"QA537-intentional-throw-partway"}\n\n'
+					),
+					`expected the stream to end with the named harper-error frame. raw:\n${r.raw}`
+				);
 				strictEqual(
 					(await uncaughtAfterSettle(logPath)) - uncaughtBefore,
 					0,
