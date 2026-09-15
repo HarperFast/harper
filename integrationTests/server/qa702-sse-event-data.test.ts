@@ -35,7 +35,8 @@
  *     'error' event / uncaughtException + hung connection). 8930b1ef2 IS an ancestor of this SHA
  *     (2615b092b) -- so the expectation is FIXED. ThrowGen below empirically confirms that,
  *     bounded by an AbortController + timeout so a regression surfaces as a caught timeout, never
- *     an infinite hang eating the whole test run.
+ *     an infinite hang eating the whole test run. Since #2614 the throw additionally emits a
+ *     terminal `harper-error` frame before a clean close, which is what this leg now pins.
  *
  * After the stream cases, a liveness probe: HealthGen (a second clean SSE stream) plus Probe
  * (plain GET on a normal route, and open/close lifecycle counters) confirm the worker survived
@@ -56,6 +57,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { URL } from 'node:url';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
+import { parseSseBlocks } from '../utils/sseStream.ts';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
 
@@ -169,28 +171,6 @@ function consumeSse(urlStr: string, authHeaders: Record<string, string>, timeout
 		});
 		req.end();
 	});
-}
-
-// Groups raw SSE bytes into blank-line-delimited { event, data } records (mirrors the
-// unitTests/server/serverHelpers/progressEmitter.test.js parseSSEBlocks helper).
-function parseSseBlocks(raw: string): Array<Record<string, string>> {
-	return raw
-		.split('\n\n')
-		.filter((block) => block.trim().length > 0)
-		.map((block) => {
-			const out: Record<string, string> = {};
-			for (const line of block.split('\n')) {
-				const colon = line.indexOf(':');
-				if (colon === -1) continue;
-				const field = line.slice(0, colon);
-				let value = line.slice(colon + 1);
-				if (value.startsWith(' ')) value = value.slice(1);
-				if (field === 'data' && field in out) out.data += '\n' + value;
-				else out[field] = value;
-			}
-			return out;
-		})
-		.filter((rec) => 'event' in rec || 'data' in rec || 'id' in rec || 'retry' in rec);
 }
 
 function readLogSafe(logPath: string): string {
@@ -466,49 +446,28 @@ suite(
 					200,
 					`expected streaming to have started (status 200) before the mid-stream throw, got ${r.status}. raw:\n${r.raw}`
 				);
-				// The events actually yielded before the throw (0, 1) must be exactly what arrived, nothing
-				// from after the throw point. Assert the actual values, not just a count in range -- a
-				// count alone would also accept a duplicated {"n":0}, a corrupted {"n":1}, or (if the
-				// throw's timing ever shifts) a frame from after the throw silently replacing one before it.
-				const blocks = parseSseBlocks(r.raw);
-				const dataBlocks = blocks.filter((b) => 'data' in b);
-				const expectedPrefix = ['{"n":0}', '{"n":1}'];
-				ok(
-					dataBlocks.length >= 1 && dataBlocks.length <= 2,
-					`expected 1-2 events yielded before the throw, got ${dataBlocks.length}. raw:\n${r.raw}`
-				);
+				// Pin the whole ordered wire shape, not just "didn't hang": the two events yielded before
+				// the throw, then #2614's terminal `harper-error` frame. A count alone would accept a
+				// duplicated {"n":0}, a frame from after the throw point, or an error delivered as an
+				// unnamed data event -- which a real EventSource listening for `harper-error` would miss.
 				deepStrictEqual(
-					dataBlocks.map((b) => b.data),
-					expectedPrefix.slice(0, dataBlocks.length),
-					`expected the exact pre-throw sequence (a prefix of ${JSON.stringify(expectedPrefix)}), got: ${JSON.stringify(dataBlocks.map((b) => b.data))}`
+					parseSseBlocks(r.raw),
+					[
+						{ data: '{"n":0}' },
+						{ data: '{"n":1}' },
+						{ event: 'harper-error', data: '{"error":"Error","message":"QA702-intentional-throw-partway"}' },
+					],
+					`unexpected SSE frame sequence. verdict=${verdict} raw:\n${r.raw}`
 				);
-				// Pin the actual shipped shape, not just "didn't hang". The two HTTP servers genuinely
-				// differ here, so pin BOTH shapes rather than asserting one and skipping the other --
-				// the divergence is the point, and a silent skip would let it drift unnoticed.
-				//
-				// Node (`server/http.ts` pipeBodyToResponse): closes the socket abruptly WITHOUT the
-				// terminal `0\r\n\r\n` chunk, deliberately -- its own comment notes this "correctly
-				// signals a failed/truncated transfer... instead of implying it completed". That is the
-				// contract, and it is what a spec-compliant client uses to detect the truncation.
-				//
-				// uWS (`server/serverHelpers/uwsServer.ts` streamResponse): routes the source's 'error'
-				// and 'end' through the SAME finish(true) -> res.end() path, so it DOES write the
-				// terminal chunk. The wire response is then byte-indistinguishable from a generator that
-				// legitimately finished -- a mid-stream failure is silently presented as success. That is
-				// a real uWS-path defect (QA-886/F-272), not an alternative contract; the fix is to close
-				// the connection instead of ending it. Pinned here so it cannot regress further or get
-				// quietly "fixed" in the wrong direction.
-				if (process.env.HARPER_UWS_HTTP) {
-					ok(
-						r.ended,
-						`uWS path: expected the (defective) graceful end for the mid-stream throw, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
-					);
-				} else {
-					ok(
-						r.closed && !r.ended,
-						`expected an abrupt close (closed=true, ended=false) for the mid-stream throw, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
-					);
-				}
+				// #2614 retired the Node/uWS termination divergence this case used to pin (QA-886/F-272,
+				// where uWS's graceful end made a mid-stream failure byte-indistinguishable from success).
+				// Both transports now end cleanly and the failure is carried in-band by the frame above,
+				// so a clean close is no longer evidence of a complete result set. The byte-level
+				// authority for that is stream-error-contract.test.ts's raw-socket capture.
+				ok(
+					r.ended,
+					`the terminal error frame must be followed by a clean end on both transports, got closed=${r.closed} ended=${r.ended}. verdict=${verdict}`
+				);
 			}
 		);
 

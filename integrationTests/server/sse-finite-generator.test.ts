@@ -7,7 +7,7 @@
  *
  * The arms vary where the terminal step falls relative to the yielded values — N=0 (it is the
  * first step produced, the sharpest trigger), N=1, N=5, N=3000 — plus ThrowGen, whose rejection
- * never reaches the terminal step and so exercises #1789's teardown instead.
+ * never reaches the terminal step and so exercises #2614's terminal `harper-error` frame instead.
  *
  * sse-throw-midstream.test.ts (#1789) anchors the throw path; stream-error-contract.test.ts pins
  * the stream-error contract across SSE, NDJSON and iterable-REST on raw socket bytes. Neither
@@ -25,6 +25,7 @@ import {
 	awaitFixtureReady,
 	consumeSse,
 	countUncaught,
+	parseSseBlocks,
 	readLogOrThrow,
 	readLogSafe,
 	uncaughtAfterSettle,
@@ -162,20 +163,24 @@ suite(
 					`[QA-537][5] ThrowGen: status=${r.status} events=${r.events.length} terminatedBy=${r.terminatedBy} aborted=${r.aborted} errored=${r.errored?.message ?? null} elapsedMs=${r.elapsedMs}`
 				);
 
-				// A rejecting generator exits via #1789's pipeline() teardown, which destroys the response
-				// instead of ending it cleanly. Only boundedness is asserted here; the throw contract
-				// itself is sse-throw-midstream.test.ts's.
+				// #2614 turned the rejection into a terminal `harper-error` frame yielded as an ordinary
+				// stream value, so the response now ends cleanly and the pre-error prefix is no longer
+				// lossy. The throw contract itself is sse-throw-midstream.test.ts's; the wire framing is
+				// stream-error-contract.test.ts's.
 				ok(!r.aborted, `must not hit the AbortController timeout — the response never terminated. raw:\n${r.raw}`);
-				ok(r.terminatedBy !== null, 'response must terminate via end/error/close, not hang indefinitely');
-				// The generator yields 2 before it throws. The upper bound is the contract; the lower bound
-				// is 1 rather than 2 because the abrupt destroy can drop the last chunk before it drains,
-				// and a prefix of zero events would mean the pre-error events were never delivered at all.
-				const delivered = eventNumbers(r);
-				ok(
-					delivered.length >= 1 && delivered.length <= 2,
-					`expected a 1-2 event prefix before the throw, got ${delivered.length}. raw:\n${r.raw}`
+				strictEqual(
+					r.terminatedBy,
+					'end',
+					`the terminal error frame must be followed by a clean close, got terminatedBy=${r.terminatedBy} errored=${r.errored?.message ?? null}`
 				);
-				deepStrictEqual(delivered, [0, 1].slice(0, delivered.length));
+				// Assert the whole ordered shape rather than a count: a named control frame is not an
+				// application event, so an unnamed or misnamed error frame — which a real EventSource
+				// listening for `harper-error` would miss — must not pass here either.
+				deepStrictEqual(parseSseBlocks(r.raw), [
+					{ data: '{"n":0}' },
+					{ data: '{"n":1}' },
+					{ event: 'harper-error', data: '{"error":"Error","message":"QA537-intentional-throw-partway"}' },
+				]);
 				strictEqual(
 					(await uncaughtAfterSettle(logPath)) - uncaughtBefore,
 					0,
