@@ -1006,13 +1006,8 @@ async function deployComponent(req) {
 			//
 			// The wording stays at "did not confirm". An unreachable peer and one that dropped the request
 			// look identical from here, and telling an operator those nodes went live would be a guess.
-			if (mode === 'stage' && Array.isArray(response?.replicated)) {
-				// The entry shape is the replicator's, not this repo's — `normalizePeerResult` already tolerates
-				// two of them — so the marker is read flat or from a wrapped body. Assuming flat would make
-				// every peer in a fully-upgraded cluster read as unconfirmed.
-				const confirmed = (peer) =>
-					peer?.staged === true || peer?.value?.staged === true || peer?.body?.staged === true;
-				const unconfirmed = response.replicated.filter((peer) => peer && !confirmed(peer));
+			if (mode === 'stage') {
+				const unconfirmed = unconfirmedStagingPeers(response?.replicated);
 				if (unconfirmed.length > 0) {
 					const detail = unconfirmed.map((peer) => peer.node ?? 'unknown').join(', ');
 					const unconfirmedError = new ServerError(
@@ -1106,6 +1101,22 @@ async function deployComponent(req) {
 		}
 		throw outErr;
 	}
+}
+
+/**
+ * Peers that did not answer a stage with `staged: true` — either unreachable, or running a build that
+ * predates staged deploys and therefore treated the request as an ordinary deploy.
+ *
+ * Split out from the caller so it can be tested without a cluster: this is the only safety net for the
+ * mixed-version hazard #2315 records as accepted, and a regression in it fails silently. The entry shape
+ * belongs to harper-pro's replicator rather than this repo — `normalizePeerResult` already tolerates more
+ * than one — so the marker is read flat or from a wrapped body; assuming flat would report every peer in a
+ * fully-upgraded cluster as unconfirmed.
+ */
+function unconfirmedStagingPeers(replicated) {
+	if (!Array.isArray(replicated)) return [];
+	const confirmed = (peer) => peer?.staged === true || peer?.value?.staged === true || peer?.body?.staged === true;
+	return replicated.filter((peer) => peer && !confirmed(peer));
 }
 
 // Ring buffer of install stdout/stderr lines, capped by both line count and bytes so
@@ -1585,6 +1596,7 @@ exports.addComponent = addComponent;
 exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
+exports.unconfirmedStagingPeers = unconfirmedStagingPeers;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;

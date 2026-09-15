@@ -23,6 +23,7 @@ const {
 	Application,
 } = require('#src/components/Application');
 const { packageDirectory } = require('#src/components/packageComponent');
+const { unconfirmedStagingPeers } = require('#src/components/operations');
 
 async function newRoot(label) {
 	return fs.mkdtemp(path.join(os.tmpdir(), `stage-activate-${label}-`));
@@ -672,5 +673,44 @@ describe('a build with no artifact id', () => {
 
 		assert.strictEqual(candidatePath, candidateApplicationPath(dirPath, 'lifecycle-token'));
 		await fs.rm(root, { recursive: true, force: true });
+	});
+});
+
+describe('which peers confirmed a stage', () => {
+	// The only safety net for the mixed-version hazard #2315 records as accepted: a node running a build
+	// that predates staged deploys treats `activate: false` as an ordinary deploy and serves the release.
+	// It cannot be prevented, so a regression in detecting it fails silently.
+	it("accepts the marker flat or wrapped, because the entry shape is the replicator's", () => {
+		assert.deepStrictEqual(
+			unconfirmedStagingPeers([
+				{ node: 'a', staged: true },
+				{ node: 'b', value: { staged: true } },
+				{ node: 'c', body: { staged: true } },
+			]),
+			[],
+			'a fully-upgraded cluster must not read as unconfirmed whichever shape the replicator returns'
+		);
+	});
+
+	it('names every peer that did not confirm, whatever it did answer', () => {
+		const unconfirmed = unconfirmedStagingPeers([
+			{ node: 'upgraded', staged: true },
+			{ node: 'old', message: 'Successfully deployed: web' },
+			{ node: 'failed', status: 'failed', error: { message: 'boom' } },
+			{ node: 'wrapped-false', value: { staged: false } },
+		]);
+
+		assert.deepStrictEqual(
+			unconfirmed.map((peer) => peer.node),
+			['old', 'failed', 'wrapped-false'],
+			'an old peer, a failed one and an explicit false are all "did not confirm"'
+		);
+	});
+
+	it('treats a missing or non-array aggregate as nothing to report', () => {
+		for (const replicated of [undefined, null, {}, 'nope']) {
+			assert.deepStrictEqual(unconfirmedStagingPeers(replicated), [], String(replicated));
+		}
+		assert.deepStrictEqual(unconfirmedStagingPeers([null, undefined]), [], 'holes are not peers');
 	});
 });
