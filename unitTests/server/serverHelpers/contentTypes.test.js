@@ -5,7 +5,7 @@ const http = require('node:http');
 const testUtils = require('../../testUtils.js');
 testUtils.preTestPrep();
 
-const { contentTypes, findBestSerializer } = require('#src/server/serverHelpers/contentTypes');
+const { contentTypes, findBestSerializer, waitForStreamStartup } = require('#src/server/serverHelpers/contentTypes');
 const { pipeBodyToResponse } = require('#src/server/http');
 
 function streamToString(readable) {
@@ -89,6 +89,61 @@ describe('contentTypes – application/x-ndjson', function () {
 			assert.strictEqual(lines.length, 2);
 			assert.deepStrictEqual(JSON.parse(lines[0]), { seq: 'a' });
 			assert.deepStrictEqual(JSON.parse(lines[1]), { seq: 'b' });
+		});
+
+		it('surfaces an immediate first-step failure during startup', async function () {
+			async function* source() {
+				yield* [];
+				throw new Error('startup failed');
+			}
+
+			const readable = handler.serializeStream(source(), undefined, { method: 'GET' });
+			await assert.rejects(waitForStreamStartup(readable), /startup failed/);
+			assert.strictEqual(await streamToString(readable), '');
+		});
+
+		it('writes a terminal error record after the startup window', async function () {
+			async function* source() {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				yield* [];
+				throw new Error('delayed failure');
+			}
+
+			const readable = handler.serializeStream(source(), undefined, { method: 'GET' });
+			await waitForStreamStartup(readable);
+			assert.deepStrictEqual(JSON.parse((await streamToString(readable)).trim()), {
+				error: 'Error',
+				message: 'delayed failure',
+			});
+		});
+
+		it('writes a terminal error record after the first item', async function () {
+			async function* source() {
+				yield { seq: 'a' };
+				throw new Error('mid-stream failure');
+			}
+
+			const readable = handler.serializeStream(source(), undefined, { method: 'GET' });
+			await waitForStreamStartup(readable);
+			assert.deepStrictEqual(
+				(await streamToString(readable))
+					.trim()
+					.split('\n')
+					.map((line) => JSON.parse(line)),
+				[{ seq: 'a' }, { error: 'Error', message: 'mid-stream failure' }]
+			);
+		});
+
+		it('does not start a generator for HEAD serialization', async function () {
+			let started = false;
+			async function* source() {
+				started = true;
+				yield { seq: 'a' };
+			}
+
+			handler.serializeStream(source(), undefined, { method: 'HEAD' });
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.strictEqual(started, false);
 		});
 	});
 
@@ -191,18 +246,32 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 		assert.deepStrictEqual(events, [{ n: 1 }, { n: 2 }]);
 	});
 
-	// #1763 (follow-up to #1628/#1632): a generator that throws mid-iteration is the error-path
-	// sibling of the terminal-`done` case #1632 fixed. serializeStream()'s Readable.from() already
-	// surfaces the rejection as an 'error' event correctly, but server/http.ts's production
-	// requestHandler used to pipe that Readable into the Node response with `.pipe()` and no
-	// 'error' listener — an unhandled 'error' event is a Node uncaughtException, and pipe() never
-	// forwards it to the destination, so the response was left open. Exercise the real
-	// `pipeBodyToResponse` helper (extracted from http.ts) over a real HTTP connection to guard the
-	// fix. `pipeBodyToResponse` now tears the chain down with `stream.pipeline()`, which closes the
-	// response abruptly (rather than a clean `.end()`) on a source error — that's deliberate, since a
-	// clean end would misleadingly tell the client the transfer completed. So the client side here may
-	// observe 'end', 'error', or 'close' instead of always a clean 'end'; what must hold regardless is
-	// no hang and no uncaughtException.
+	it('surfaces an immediate first-step failure during startup', async function () {
+		async function* source() {
+			yield* [];
+			throw new Error('startup failed');
+		}
+
+		const readable = handler.serializeStream(source(), undefined, { method: 'GET' });
+		await assert.rejects(waitForStreamStartup(readable), /startup failed/);
+		assert.strictEqual(await streamToString(readable), '');
+	});
+
+	it('writes a named terminal error event after the startup window', async function () {
+		async function* source() {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			yield* [];
+			throw new Error('delayed failure');
+		}
+
+		const readable = handler.serializeStream(source(), undefined, { method: 'GET' });
+		await waitForStreamStartup(readable);
+		assert.strictEqual(
+			await streamToString(readable),
+			'event: error\ndata: {"error":"Error","message":"delayed failure"}\n\n'
+		);
+	});
+
 	it('ends the response without hanging or raising an uncaughtException when the generator throws mid-stream', async function () {
 		async function* source() {
 			yield { seq: 'a' };
@@ -239,11 +308,10 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 				request.on('error', () => resolve(Buffer.concat(chunks).toString()));
 			});
 
-			const events = output
-				.split('\n\n')
-				.filter(Boolean)
-				.map((frame) => JSON.parse(frame.replace(/^data: /, '')));
-			assert.deepStrictEqual(events, [{ seq: 'a' }, { seq: 'b' }]);
+			assert.strictEqual(
+				output,
+				'data: {"seq":"a"}\n\ndata: {"seq":"b"}\n\nevent: error\ndata: {"error":"Error","message":"boom"}\n\n'
+			);
 			assert.strictEqual(uncaughtError, undefined, 'generator rejection must not escape as an uncaughtException');
 		} finally {
 			process.removeListener('uncaughtException', onUncaughtException);

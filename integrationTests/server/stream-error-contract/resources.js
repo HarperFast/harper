@@ -1,6 +1,5 @@
-// QA-890 — does a pre-first-yield generator throw produce 0 bytes on the wire, or a proper
-// status? Compares three streaming surfaces (SSE, NDJSON, plain iterable REST) across two
-// throw points (pre-first-yield, mid-stream) on both the Node http server and uWS
+// QA-890 compares three streaming surfaces (SSE, NDJSON, plain iterable REST) across
+// immediate, delayed, and mid-stream throws on both the Node http server and uWS
 // (HARPER_UWS_HTTP=1).
 //
 // SSE uses the subscription-style `static async *connect()` idiom (matches qa886's
@@ -11,9 +10,11 @@
 
 const G = (globalThis.__QA890__ ??= {
 	ssePreYield: { opened: 0, closed: 0 },
+	sseDelayedError: { opened: 0, closed: 0 },
 	sseMidStream: { opened: 0, closed: 0 },
 	sseHealth: { opened: 0, closed: 0 },
 	iterPreYield: { opened: 0, closed: 0 },
+	iterDelayedError: { opened: 0, closed: 0 },
 	iterMidStream: { opened: 0, closed: 0 },
 	iterHealth: { opened: 0, closed: 0 },
 });
@@ -35,6 +36,21 @@ export class SsePreYield extends Resource {
 			yield { n: -1 };
 		} finally {
 			G.ssePreYield.closed++;
+		}
+	}
+}
+
+export class SseDelayedError extends Resource {
+	static loadAsInstance = false;
+	static async *connect() {
+		G.sseDelayedError.opened++;
+		try {
+			await sleep(20);
+			throw new Error('QA890-sse-delayed-error');
+			// eslint-disable-next-line no-unreachable
+			yield { n: -1 };
+		} finally {
+			G.sseDelayedError.closed++;
 		}
 	}
 }
@@ -88,6 +104,24 @@ export class IterPreYield extends Resource {
 				yield { n: -1 };
 			} finally {
 				G.iterPreYield.closed++;
+			}
+		}
+		return gen();
+	}
+}
+
+export class IterDelayedError extends Resource {
+	static loadAsInstance = false;
+	async get() {
+		G.iterDelayedError.opened++;
+		async function* gen() {
+			try {
+				await sleep(20);
+				throw new Error('QA890-iter-delayed-error');
+				// eslint-disable-next-line no-unreachable
+				yield { n: -1 };
+			} finally {
+				G.iterDelayedError.closed++;
 			}
 		}
 		return gen();

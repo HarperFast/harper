@@ -1,6 +1,11 @@
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes.ts';
+import {
+	serialize,
+	serializeMessage,
+	getDeserializer,
+	waitForStreamStartup,
+} from '../server/serverHelpers/contentTypes.ts';
 import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write.ts';
 import * as harperLogger from '../utility/logging/harper_logger.ts';
 import { ServerError, ClientError } from '../utility/errors/hdbError.ts';
@@ -422,7 +427,9 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				setCountHeaders(headers, (target as any).offset || 0, (target as any).count, responseData);
 			}
 			responseObject.body = serialize(responseData, request, responseObject);
-			if (method === 'HEAD') responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
+			if (method === 'HEAD')
+				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
+			else await waitForStreamStartup(responseObject.body);
 		}
 		// A collection read's count headers vary by the request's `Prefer` value; serialize() just reset
 		// `Vary`, so declare it here (after serialization) — otherwise a shared cache could serve count

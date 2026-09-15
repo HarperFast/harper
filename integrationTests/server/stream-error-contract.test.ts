@@ -1,10 +1,5 @@
 /**
- * QA-890 — should a pre-first-yield SSE generator throw return a 500 rather than 0 bytes?
- *
- * Background (F-275, established last wave): on the Node http server, an async generator
- * backing an SSE stream that throws BEFORE its first `yield` produces literally 0 bytes -- no
- * status line, nothing. On uWS (HARPER_UWS_HTTP=1) the same shape returns a clean 200 + empty
- * stream (parseable, but implies success -- the separate F-272 problem).
+ * QA-890 — streaming error contract around the first yield.
  *
  * This extends qa886-uws-sse.test.ts's raw-socket-capture shape (same RawCapture technique --
  * a manual net.Socket, not http.request, so chunk-framing bytes and the exact close mechanism
@@ -16,9 +11,7 @@
  *   - iterable-rest : the SAME generator resource (Accept: application/json / default) --
  *                     content negotiation alone picks ndjson vs plain-JSON-array serialization
  *
- * ...crossed with throw-point (pre-first-yield | mid-stream) and server (node | uws).
- * Mid-stream is the cheap contrast arm (already understood: Node aborts the connection, uWS
- * ends cleanly) -- included for a complete table, not deeply investigated here.
+ * ...crossed with throw-point (immediate | delayed | mid-stream) and server (node | uws).
  *
  * Reproduction:
  *   Node: npm run test:integration -- "integrationTests/server/stream-error-contract.test.ts"
@@ -360,14 +353,29 @@ suite(
 			strictEqual(cap.status, 200, `${cap.surface} mid-stream response should start 200, got ${cap.status}`);
 			const records = decodedRecords(cap);
 			deepStrictEqual(records.slice(0, 2), [{ n: 0 }, { n: 1 }]);
-			strictEqual(
-				cap.sawTerminalChunk,
-				VARIANT === 'uws' || cap.surface === 'iterable-rest',
-				`${cap.surface} mid-stream response terminal chunk did not match the ${VARIANT} contract`
-			);
 			if (cap.surface === 'iterable-rest') {
 				deepStrictEqual(records, [{ n: 0 }, { n: 1 }, { error: 'Error: QA890-iter-mid-stream' }]);
-			} else strictEqual(records.length, 2, `${cap.surface} mid-stream response must contain both yielded records`);
+			} else {
+				const source = cap.surface === 'sse' ? 'sse' : 'iter';
+				deepStrictEqual(records, [{ n: 0 }, { n: 1 }, { error: 'Error', message: `QA890-${source}-mid-stream` }]);
+			}
+			strictEqual(cap.sawTerminalChunk, true, `${cap.surface} mid-stream response must complete its error record`);
+			assertServerTerminated(cap);
+		}
+
+		function assertStartupError(cap: RawCapture, title: string) {
+			strictEqual(cap.status, 500, `${cap.surface} immediate startup failure must return 500`);
+			const [problem] = decodedRecords(cap);
+			strictEqual(problem.status, 500);
+			strictEqual(problem.code, 'Error');
+			strictEqual(problem.title, title);
+			assertServerTerminated(cap);
+		}
+
+		function assertDelayedError(cap: RawCapture, message: string) {
+			strictEqual(cap.status, 200, `${cap.surface} delayed startup failure occurs after status commitment`);
+			deepStrictEqual(decodedRecords(cap), [{ error: 'Error', message }]);
+			strictEqual(cap.sawTerminalChunk, true, `${cap.surface} delayed error record must complete cleanly`);
 			assertServerTerminated(cap);
 		}
 
@@ -451,7 +459,7 @@ suite(
 			console.log(
 				`[QA-890][sse/pre] status=${cap.status} totalBytes=${cap.totalBytes} socketEvents=\n  ${cap.socketEvents.join('\n  ')}`
 			);
-			assertServerTerminated(cap);
+			assertStartupError(cap, 'QA890-sse-pre-yield');
 		});
 
 		test('ndjson: pre-first-yield throw -- raw byte capture', { timeout: 20_000 }, async () => {
@@ -462,7 +470,7 @@ suite(
 			console.log(
 				`[QA-890][ndjson/pre] status=${cap.status} totalBytes=${cap.totalBytes} socketEvents=\n  ${cap.socketEvents.join('\n  ')}`
 			);
-			assertServerTerminated(cap);
+			assertStartupError(cap, 'QA890-iter-pre-yield');
 		});
 
 		test('iterable-rest: pre-first-yield throw -- raw byte capture', { timeout: 20_000 }, async () => {
@@ -475,6 +483,22 @@ suite(
 			);
 			console.log(`[QA-890][iterable-rest/pre] socketEvents=\n  ${cap.socketEvents.join('\n  ')}`);
 			assertServerTerminated(cap);
+		});
+
+		test('sse: delayed pre-first-yield throw becomes an error event', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('sseDelayedError', () =>
+				rawCapture(restBase, '/SseDelayedError/', 'text/event-stream', authHeader, 'sse', 'delayed-error')
+			);
+			captures.push(cap);
+			assertDelayedError(cap, 'QA890-sse-delayed-error');
+		});
+
+		test('ndjson: delayed pre-first-yield throw becomes an error record', { timeout: 20_000 }, async () => {
+			const cap = await captureWithLifecycle('iterDelayedError', () =>
+				rawCapture(restBase, '/IterDelayedError/', 'application/x-ndjson', authHeader, 'ndjson', 'delayed-error')
+			);
+			captures.push(cap);
+			assertDelayedError(cap, 'QA890-iter-delayed-error');
 		});
 
 		// ── Mid-stream throw: cheap contrast arm (already understood) ────────────────────────────
@@ -520,7 +544,16 @@ suite(
 			console.log(`[QA-890][Z] probe counters: ${p ? JSON.stringify(p) : 'DEAD'}`);
 			ok(p !== null, 'Harper must still respond to Probe/ after all streaming cases');
 			strictEqual(p.status, 200, `Probe/ must 200, got ${p.status}`);
-			for (const name of ['ssePreYield', 'sseMidStream', 'sseHealth', 'iterPreYield', 'iterMidStream', 'iterHealth']) {
+			for (const name of [
+				'ssePreYield',
+				'sseDelayedError',
+				'sseMidStream',
+				'sseHealth',
+				'iterPreYield',
+				'iterDelayedError',
+				'iterMidStream',
+				'iterHealth',
+			]) {
 				strictEqual(p[name]?.opened, p[name]?.closed, `${name} generator was not closed`);
 			}
 		});

@@ -208,6 +208,15 @@ mirror because it only widens what an allowlist may _name_; enforcement stays on
 
 `REST.ts → http(request, nextHandler)` is the chief integration point: it takes a `Request`, asks the `Resources` registry for a match, builds a `RequestTarget`, and dispatches into the Resource class's static method. Cache headers are translated to `request.expiresAt` / `onlyIfCached` / `noCache` flags within the same function.
 
+### Streaming startup errors
+
+SSE and NDJSON serializers eagerly take and hold their first iterator step. `REST.ts` waits through
+the next event-loop turn for that step: an immediate rejection remains an HTTP error rendered as
+Problem Details, while a first item or the cutoff commits the stream. Later failures are terminal,
+format-valid records (`event: error` for SSE and an error object for NDJSON). Keep the decision in
+the serializer/REST boundary so Node, uWS, Bun, compression, and injection share one contract;
+transports must not independently prefetch the iterator.
+
 ### Deferred credential rejection (#2418)
 
 `authentication` runs before route matching, so when it meets an `Authorization` header it cannot
