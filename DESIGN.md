@@ -536,6 +536,17 @@ failure or timeout returns 503 and hands the grant back without discarding retai
 cached-delegation branch does none of this work. Harper-pro's operator-agreed home map and transport
 implementation remain the enablement boundary (harper-pro#825 / companion work on #822).
 
+**Recovery fence.** The recovery barrier's position is a `lockBarrier` control entry (nibble 13,
+payload `[1, nonce]`, harper#2625): a replicated no-op the probed member commits after the probe, so
+it is appended after every transaction that member had committed — the one ordering no log-key head,
+received tail, or sender-emitted marker gives, since entries are appended in commit order rather than
+key order. `writeLockBarrier(database, table)` in `recordLockCoordinator.ts` writes one through the
+transport's `writeControl` when it has one and `Table.writeLockControlEntry` otherwise, and resolves
+to the entry's log position; the coordinator ignores the entry on receipt, and every
+`isLockControlType` exclusion above covers it. `establishLockFreshness()` receives the wait remaining
+on the lock deadline. The harper-pro operation and drain are harper-pro#822's; a recovery marker with
+no barrier fails closed.
+
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 
 `txnForContext` builds an `ImmediateTransaction` for a context slot that is empty or holds

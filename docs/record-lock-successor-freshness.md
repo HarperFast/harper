@@ -34,6 +34,17 @@ member to captured positions. It must coalesce concurrent recovery snapshots acr
 returns the established positions so the delegation can carry them onward. Bloom false positives
 only select the slower safe path; there are no false negatives while absence is trusted.
 
+The recovery drain's fence is the `lockBarrier` control entry (harper#2625). Each reachable member
+commits one on request — `writeLockBarrier(database, table)` resolves to the entry's own
+transaction-log position — and the requester drains that member's stream until it has applied that
+entry. The entry is appended after every transaction the member had committed when it was asked,
+which is the property no highest-key head, received tail, or sender-emitted marker has (§7.2 of the
+ownership note lists the disqualifier for each). It carries only a version and a nonce, replicates
+like the release, and the coordinator ignores it. `establishLockFreshness` also receives the wait
+remaining on the lock deadline so the transport can bound the drain to it. A member or transport
+that cannot produce a barrier leaves the recovery marker with no fence, and the lock fails closed
+with the same 503.
+
 The release wire format becomes a versioned tuple with a leading version and trailing dependency
 set. The decoder still accepts the exact historical five-tuple as a release with unknown lineage;
 an old or malformed entry can clear only the exact live fencing token and forces recovery on the
