@@ -56,7 +56,7 @@ directive @fullText(
 	positions: Boolean = true
 	surfaceTerms: Boolean = true
 	synonyms: [FullTextSynonymRule!] = []
-	highlighting: FullTextHighlighting = { maxFragments: 3, fragmentLength: 160 }
+	highlighting: FullTextHighlighting
 ) on FIELD_DEFINITION
 
 input FullTextSynonymRule {
@@ -116,10 +116,12 @@ source-field boosts in the first release. `Table.search()` and REST cannot overr
 ranking profile. Changing only a weight creates a new ranking fingerprint and atomically replaces
 the active ranking configuration; it does not change postings or create a new index generation.
 
-`highlight` is intentionally nullable. When omitted, Harper resolves it to `true` for `String` and
-`[String]` sources and `false` for `Blob` sources. Explicit `true` opts a UTF-8 `text/plain` Blob into
-highlight retrieval; explicit `false` excludes any source. This policy affects only `$highlights` and
-does not change whether the source is indexed or searchable.
+Highlighting is disabled when `highlighting` is omitted. Supplying the object enables it and applies
+the object's defaults to omitted limits. Within an enabled index, `highlight` is intentionally
+nullable: Harper resolves omission to `true` for `String` and `[String]` sources and `false` for
+`Blob` sources. Explicit `true` opts a UTF-8 `text/plain` Blob into highlight retrieval; explicit
+`false` excludes any source. This policy affects only `$highlights` and does not change whether the
+source is indexed or searchable.
 
 ### Schema validation
 
