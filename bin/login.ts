@@ -22,7 +22,7 @@ export async function login(
 	dotenv.config();
 
 	// In --for-ci mode stdout is reserved for the credential block, so anything a human reads is
-	// written to stderr instead. @inquirer/prompts defaults to stdout too, hence the explicit
+	// written to stderr instead. The prompt library defaults to stdout too, hence the explicit
 	// output override — without it the user would be typing their password blind into the pipe.
 	const say = forCi ? (message = '') => process.stderr.write(`${message}\n`) : (message = '') => console.log(message);
 	const ctx = forCi ? { output: process.stderr } : undefined;

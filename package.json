@@ -187,7 +187,6 @@
 		"@harperfast/rocksdb-js": "2.9.1",
 		"@harperfast/skills": "^1.10.8",
 		"@inquirer/confirm": "^6.3.2",
-		"@inquirer/core": "^12.0.3",
 		"@inquirer/input": "^5.1.6",
 		"@inquirer/password": "^5.2.2",
 		"@inquirer/select": "^5.2.5",

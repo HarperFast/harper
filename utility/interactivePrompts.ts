@@ -1,26 +1,47 @@
-import input from '@inquirer/input';
-import password from '@inquirer/password';
-import select from '@inquirer/select';
-import confirm from '@inquirer/confirm';
-import { ExitPromptError } from '@inquirer/core';
-
-// Each prompt type is imported from its own subpath package rather than the `@inquirer/prompts`
-// umbrella, which bundles all ten prompt implementations plus `@inquirer/external-editor` (and
-// its `chardet`/`iconv-lite`) even though Harper only ever asks for four of them — and this module
-// loads on the server boot path (bin/run.ts -> hdbInfoController -> upgradePrompt -> here), not
-// just interactive CLI entry points.
-//
-// These are genuine ES modules, so their named/default exports are non-writable bindings —
-// `require('@inquirer/input').default = stub` silently no-ops even after CJS interop, unlike a
-// CJS default export's own properties (see the chokidar seam in watcherFallback.ts). Routing every
-// call through this plain, mutable object gives unit tests a real seam to stub while production
-// code still calls straight through to the real prompts.
-const rawPrompts = { confirm, input, password, select };
+import type input from '@inquirer/input';
+import type password from '@inquirer/password';
+import type select from '@inquirer/select';
+import type confirm from '@inquirer/confirm';
 
 type PromptContext = Parameters<typeof input>[1];
+type PromptFn<C, R> = (config: C, context?: PromptContext) => Promise<R>;
+
+// Loads its @inquirer subpath package only on first actual call, not at module evaluation. This
+// module sits on the normal server boot path (bin/run.ts -> hdbInfoController -> upgradePrompt ->
+// here), so every rolling-restart node was paying to initialize four prompt implementations (and
+// @inquirer/core underneath them) it will almost always never call.
+function lazyPrompt<C, R>(loadModule: () => Promise<{ default: PromptFn<C, R> }>): PromptFn<C, R> {
+	let cached: PromptFn<C, R> | undefined;
+	return async (config, context) => {
+		cached ??= (await loadModule()).default;
+		return cached(config, context);
+	};
+}
+
+// These are genuine ES modules, so their default exports are non-writable bindings —
+// `require('@inquirer/input').default = stub` silently no-ops even after CJS interop, unlike a
+// CJS default export's own properties (see the chokidar seam in watcherFallback.ts). Routing every
+// call through this plain, mutable object gives unit tests a real seam to stub — a test
+// reassignment here is checked before `lazyPrompt`'s own `import()` ever runs, so stubbing never
+// triggers the real load either.
+const rawPrompts = {
+	confirm: lazyPrompt<Parameters<typeof confirm>[0], Awaited<ReturnType<typeof confirm>>>(
+		() => import('@inquirer/confirm')
+	),
+	input: lazyPrompt<Parameters<typeof input>[0], Awaited<ReturnType<typeof input>>>(() => import('@inquirer/input')),
+	password: lazyPrompt<Parameters<typeof password>[0], Awaited<ReturnType<typeof password>>>(
+		() => import('@inquirer/password')
+	),
+	select: lazyPrompt<Parameters<typeof select>[0], Awaited<ReturnType<typeof select>>>(
+		() => import('@inquirer/select')
+	),
+};
 
 function isExitPromptError(error: unknown): boolean {
-	return error instanceof ExitPromptError || (error instanceof Error && error.name === 'ExitPromptError');
+	// Name-only check (no `instanceof @inquirer/core.ExitPromptError`) so detecting a cancel never
+	// needs to import @inquirer/core itself — by the time this runs, whichever prompt package was
+	// actually called has already pulled core in as its own transitive dependency anyway.
+	return error instanceof Error && error.name === 'ExitPromptError';
 }
 
 async function guardExitPrompt<R>(promise: Promise<R>, context?: PromptContext): Promise<R> {
@@ -50,7 +71,7 @@ export const prompts = {
 		// toggleMask (default on) lets Ctrl+T echo the plaintext password to the terminal. Harper
 		// has no call site that wants that, so it's disabled unconditionally here rather than left
 		// as a per-call opt-out.
-		return guardExitPrompt(rawPrompts.password({ ...config, toggleMask: false }), context);
+		return guardExitPrompt(rawPrompts.password({ ...config, toggleMask: false }, context), context);
 	},
 	select: (...args: Parameters<typeof select>) => guardExitPrompt(rawPrompts.select(...args), args[1]),
 };

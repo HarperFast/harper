@@ -3,11 +3,6 @@
 const assert = require('node:assert');
 const { prompts, rawPromptsForTesting, promptYesNo } = require('#src/utility/interactivePrompts');
 
-// inquirer@8's own UI re-raised SIGINT itself, so Ctrl-C at a prompt exited the process silently.
-// @inquirer/core instead rejects the prompt promise with ExitPromptError, which a call site's
-// generic catch (bin/install.ts, dataLayer/hdbInfoController.ts's downgrade confirm) would
-// otherwise surface as a logged error plus a stack. `prompts` must restore the old clean-cancel
-// exit instead of letting that rejection propagate.
 describe('interactivePrompts — Ctrl-C / ExitPromptError handling', () => {
 	let originalInput;
 	let originalExit;
@@ -96,13 +91,6 @@ describe('interactivePrompts — Ctrl-C / ExitPromptError handling', () => {
 	});
 });
 
-// @inquirer/confirm's own `getBooleanValue` silently resolves unrecognized input to the configured
-// default on Enter — verified by reading node_modules/@inquirer/confirm/dist/index.js: any input
-// that doesn't prefix-match "yes"/"no" falls through to `return defaultValue !== false`. That is
-// wrong for a gate like GENERATE_CERTS (default yes): a typo must not silently trigger full CA/cert
-// regeneration. `promptYesNo` is built on `input` + `validate` instead, whose contract (verified by
-// reading node_modules/@inquirer/input/dist/index.js) blocks submission — re-rendering with an error
-// and never calling `done()` — until `validate` returns `true`.
 describe('promptYesNo', () => {
 	let originalInput;
 
@@ -114,10 +102,6 @@ describe('promptYesNo', () => {
 		rawPromptsForTesting.input = originalInput;
 	});
 
-	// Drives the exact `validate` function promptYesNo hands to `input` against a sequence of
-	// candidate answers, mirroring @inquirer/input's own re-ask-until-valid loop: an answer is
-	// accepted only once `validate` returns `true`. This proves an unrecognized answer is rejected
-	// (would re-ask for real) before a valid one is ever accepted.
 	function simulateInputLoop(candidateAnswers) {
 		const rejections = [];
 		rawPromptsForTesting.input = async (config) => {
@@ -162,5 +146,44 @@ describe('promptYesNo', () => {
 
 		simulateInputLoop(['']);
 		assert.strictEqual(await promptYesNo({ message: 'Proceed?', default: false }), false);
+	});
+});
+
+describe('lazy loading', () => {
+	it('resolves no @inquirer package just from the seam being loaded, only on a real (unstubbed) call', async () => {
+		const { registerHooks } = require('node:module');
+		const { PassThrough } = require('node:stream');
+		const resolved = [];
+		const hook = registerHooks({
+			resolve(specifier, context, nextResolve) {
+				resolved.push(specifier);
+				return nextResolve(specifier, context);
+			},
+		});
+		try {
+			// `prompts`/`rawPromptsForTesting` above were already required when this file (and every
+			// other file in this run) loaded — so nothing has resolved an @inquirer package by this
+			// point proves the seam's own module evaluation never touches them.
+			assert.deepStrictEqual(
+				resolved.filter((s) => s.startsWith('@inquirer')),
+				[],
+				'the seam must not have resolved any @inquirer package before a prompt is actually invoked'
+			);
+
+			// Fake streams + a pre-aborted signal make @inquirer/core reject immediately, without
+			// touching this process's real stdin/TTY, while still exercising the real (unstubbed)
+			// lazy loader underneath `rawPromptsForTesting`.
+			const fakeOutput = new PassThrough();
+			fakeOutput.on('data', () => {});
+			const controller = new AbortController();
+			controller.abort();
+			await rawPromptsForTesting
+				.input({ message: 'probe' }, { input: new PassThrough(), output: fakeOutput, signal: controller.signal })
+				.catch(() => {});
+
+			assert.ok(resolved.includes('@inquirer/input'), 'invoking the real input prompt must trigger its dynamic import');
+		} finally {
+			hook.deregister();
+		}
 	});
 });
