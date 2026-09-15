@@ -354,6 +354,72 @@ describe('Table.getRecordCount', () => {
 		}
 	});
 
+	it('does not collapse the range when the remainder estimate reports zero', async function () {
+		this.timeout(120000);
+		// A zero remainder is valid -- entries still in the memtable read as none through range statistics.
+		// If the prefix estimator returned any positive underestimate the whole-store fallback above is
+		// skipped, so a zero remainder would leave `baseMax` resting on the sampled ends alone and publish a
+		// range that excludes the live rows between them.
+		const store = EstimatorTable.primaryStore;
+		if (typeof store.createCountEstimator !== 'function') return this.skip();
+		const originalEstimator = store.createCountEstimator;
+		const originalCount = store.estimateCount;
+		const ownedEstimator = Object.hasOwn(store, 'createCountEstimator');
+		const ownedCount = Object.hasOwn(store, 'estimateCount');
+		// a positive underestimate: enough for the halfway test to fire, well under the true row count
+		store.createCountEstimator = () => ({ advance() {}, estimate: () => ({ count: 2100, confidence: 0.5 }) });
+		store.estimateCount = () => ({ count: 0, confidence: 1 });
+		try {
+			const result = await EstimatorTable.getRecordCount({ timeLimit: -1 });
+			const [lower, upper] = result.estimatedRange ?? [result.recordCount, result.recordCount];
+			assert.ok(
+				lower <= LIVE_ROWS && LIVE_ROWS <= upper,
+				`range [${lower}, ${upper}] must contain the ${LIVE_ROWS} live records despite a zero remainder estimate`
+			);
+		} finally {
+			if (ownedEstimator) store.createCountEstimator = originalEstimator;
+			else delete store.createCountEstimator;
+			if (ownedCount) store.estimateCount = originalCount;
+			else delete store.estimateCount;
+		}
+	});
+
+	it('caps the reverse sample independently of the forward scan', async function () {
+		this.timeout(120000);
+		// `limit` is whatever the forward pass covered before escaping, and the checkpoint ceiling lets that
+		// run twenty budget intervals when the base undershoots. Sizing the tail sample to match would read
+		// that count a second time and double the call's wall clock.
+		const store = EstimatorTable.primaryStore;
+		if (typeof store.createCountEstimator !== 'function') return this.skip();
+		const original = store.createCountEstimator;
+		const owned = Object.hasOwn(store, 'createCountEstimator');
+		// never releases the halfway test, so the forward scan runs to the checkpoint ceiling
+		let traversed = 0;
+		store.createCountEstimator = () => ({
+			advance(lastKey, count) {
+				traversed += count;
+			},
+			estimate: () => ({ count: traversed, confidence: 0.5 }),
+		});
+		const originalGetRange = store.getRange;
+		let reverseRequested;
+		store.getRange = function (options) {
+			if (options?.reverse) reverseRequested = options.limit;
+			return originalGetRange.call(this, options);
+		};
+		try {
+			await EstimatorTable.getRecordCount({ timeLimit: -1 });
+			assert.ok(
+				reverseRequested != null && reverseRequested <= MIN_ESTIMATOR_SAMPLE,
+				`reverse sample requested ${reverseRequested} entries; it must stay capped at ${MIN_ESTIMATOR_SAMPLE} regardless of how far the forward scan ran`
+			);
+		} finally {
+			if (owned) store.createCountEstimator = original;
+			else delete store.createCountEstimator;
+			store.getRange = originalGetRange;
+		}
+	});
+
 	it('stops scanning when the base keeps saying the scan is past halfway', async function () {
 		this.timeout(120000);
 		// A base that undershoots holds `entriesScanned < floor(entryCount/2)` false at every checkpoint, so

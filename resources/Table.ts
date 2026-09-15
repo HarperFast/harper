@@ -6221,6 +6221,17 @@ export function makeTable(options) {
 						} catch {
 							remainderPhysical = 0;
 						}
+						// A zero or unusable remainder is valid -- entries still in the memtable read as none
+						// through range statistics -- but it would leave `baseMax` resting on the sampled ends
+						// alone. The whole-store property is a separate, non-range source, so fall back to it.
+						if (!remainderPhysical) {
+							try {
+								const wholeStore = primaryStore.getEstimatedKeyCount();
+								if (Number.isFinite(wholeStore)) remainderPhysical = Math.max(wholeStore - entriesScanned, 0);
+							} catch {
+								remainderPhysical = 0;
+							}
+						}
 					}
 					limit = entriesScanned;
 					break;
@@ -6238,6 +6249,11 @@ export function makeTable(options) {
 				// of the wildly inflated `record_count` (e.g. 20,000,000 for ~105k rows) on large RocksDB
 				// tables.
 				let reverseScanned = 0;
+				// Sized independently of the forward scan. `entriesScanned` is whatever the forward pass
+				// covered before it escaped, and the checkpoint ceiling lets that run twenty budget
+				// intervals when the base keeps undershooting; matching it here would read that same count
+				// again and double the wall clock of the call this path exists to bound.
+				const reverseLimit = Math.min(limit, MIN_ESTIMATOR_SAMPLE);
 				// Disjointness is enforced against the forward scan's own last key rather than inferred from
 				// the base, which is an estimate that can overshoot by more than 2x.
 				let sampledWholeTable = false;
@@ -6245,7 +6261,7 @@ export function makeTable(options) {
 					start: '\uffff',
 					reverse: true,
 					lazy: true,
-					limit,
+					limit: reverseLimit,
 					snapshot: false,
 				})) {
 					if (compareKeys(key, firstKey) <= 0) {
@@ -6255,7 +6271,7 @@ export function makeTable(options) {
 					if (value != null) recordCount++;
 					reverseScanned++;
 					await rest();
-					if (reverseScanned >= limit) break;
+					if (reverseScanned >= reverseLimit) break;
 				}
 				// the samples met, so between them they covered every entry
 				if (sampledWholeTable) return { recordCount: recordCount + firstRecordCount };
