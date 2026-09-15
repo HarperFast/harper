@@ -2494,12 +2494,7 @@ record values. Any other projection or primary-read failure is fail-closed.
 ```ts
 interface DerivedIndexBackend {
 	readonly id: string;
-	attach(host: {
-		isOwnerEpoch(epoch: bigint): boolean;
-		getReadiness(): DerivedIndexReadiness;
-		noteUnindexable(reason: string): void;
-	}): void;
-	acquire?(ownerEpoch: bigint): DerivedIndexCursor | undefined | Promise<DerivedIndexCursor | undefined>;
+	attach(host: { isOwnerEpoch(epoch: bigint): boolean; getReadiness(): DerivedIndexReadiness }): void;
 	getDurableCursor(): DerivedIndexCursor | undefined;
 	deliver(batch: DerivedIndexBatch): DERIVED_INDEX_ACCEPTED | DERIVED_INDEX_DEFERRED | DERIVED_INDEX_FAILED;
 	flush(reason: 'age' | 'threshold' | 'shutdown'): void | Promise<void>; // barrier request
@@ -2524,11 +2519,7 @@ type DerivedIndexMutation = {
 };
 ```
 
-There is one contract; only `acquire` and `reset` are optional. The runtime calls `acquire` after
-minting the owner epoch and before reading the durable cursor. A transient acquisition failure
-publishes `unknown` with reason `acquisition-failed`, admits source writes, releases the lock, and
-retries up to `maxAcquisitionAttempts`; exhausting that local budget publishes `unavailable`.
-What an ownership handoff has to fence is work
+There is one contract; only `reset` is optional. What an ownership handoff has to fence is work
 that survives a method return — a queued apply, a barrier that completes later, a cursor that
 trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
 handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
@@ -2651,11 +2642,7 @@ be enabled only once every worker runs a runtime with the admission check.
 
 ```mermaid
 flowchart TD
-    A0[acquire owner-only backend state] -->|opened| A[load backend cursor]
-    A0 -->|transient failure below cap| R[admit writes, release, back off]
-    R --> A0
-    A0 -->|acquisition attempt cap| U
-    A --> B{all saved logs and boundaries exact?}
+    A[load backend cursor] --> B{all saved logs and boundaries exact?}
     B -->|no| X{backend has reset and runtime has scanRecords?}
     B -->|yes| C[open aggregate iterator after anchors]
     C --> D[bounded drain: collect, resolve, deliver]
