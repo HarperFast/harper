@@ -433,9 +433,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		}
 		const expected = records.length;
 		let applied: number;
+		this.#hasStagedMutations = true;
 		try {
 			applied = await this.#engine!.apply(packed);
-			this.#hasStagedMutations = true;
 		} catch (error) {
 			await this.#recoverAcceptedWork(command.epoch, error);
 			return false;
