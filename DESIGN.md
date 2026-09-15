@@ -719,6 +719,13 @@ unusable until then. Only a first deploy leaves the live path absent, which reco
 Config is stranded either way for an existing component; that is the durable-config window #2315 step 3
 closes, not something the journal can cover.
 
+**The same window costs isolation, not just a version string.** A staged artifact records the isolation the
+build admitted in its `.artifact.json`, and an activation publishes that with the rest of its root-config
+entry between B1 and the commit. `rollForward()` publishes nothing, so a crash after the roll-forward state
+exists but before that publish brings the certified artifact up under the previous release's config — and a
+component staged to run isolated comes back NON-ISOLATED, with nothing in the operation reporting it.
+Isolation is a containment boundary, so weigh that window by this rather than by the version mismatch.
+
 The journal is consulted **first**, and the legacy in-place extraction recovery enforces that itself: it
 refuses to restore a rollback record while an unsettled journal is attributable to that component — by its
 own `component` field OR by the deployment's ownership sidecar, whichever can be read, because restoring is

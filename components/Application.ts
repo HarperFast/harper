@@ -2884,9 +2884,11 @@ export async function activateCandidateApplication(
 		// exists to prevent.
 		//
 		// A crash in the remaining window — after the roll-forward state exists but before this publish — is
-		// the inverse and smaller hazard: the certified artifact goes live while config still names the
-		// PREVIOUS release. Closing that needs config to be an effect of the journal itself, which is #2315
-		// step 3.
+		// the inverse hazard: `rollForward()` renames the candidate live and publishes nothing, so the
+		// certified artifact serves under the PREVIOUS release's config. That includes its ISOLATION intent,
+		// which is a containment boundary and not just a version string: a component staged to run isolated
+		// comes back non-isolated after an ordinary crash, with nothing in the operation reporting it.
+		// Closing it needs config to be an effect of the journal itself, which is #2315 step 3.
 		pendingEffect = 'publish the root configuration';
 		undoAfterJournal = await options.afterJournal?.();
 
