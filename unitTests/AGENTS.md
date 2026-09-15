@@ -17,8 +17,9 @@ this exact shape —
 [Fix flaky outstanding-commit tracking unit test under concurrent analytics commits](https://github.com/HarperFast/harper/pull/2579)
 (2026-09-13), [Attribute the getRecordCount entry-count spy to the call under test](https://github.com/HarperFast/harper/pull/2590)
 (2026-09-14), [Attribute the stuck-commit log assertions to the commit under test](https://github.com/HarperFast/harper/pull/2596)
-(2026-09-15) — which makes it a defect class, not three unrelated flakes. Commit 52512e85a's
-message has the full anatomy of one instance.
+(2026-09-15) — which makes it a defect class, not three unrelated flakes.
+[Commit 52512e85a](https://github.com/HarperFast/harper/commit/52512e85a)'s message has the full
+anatomy of one instance.
 
 **The tell:** a `beforeEach`/`try` block that swaps `harperLogger.warn`/`.error` (or reads a
 thread-global counter) into a local array, then asserts `array.length === N` with no filtering
