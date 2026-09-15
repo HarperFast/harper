@@ -404,7 +404,8 @@ suite(
 				deepStrictEqual(records, [{ n: 0 }, { n: 1 }, { error: 'Error: QA890-iter-mid-stream' }]);
 			} else {
 				const source = cap.surface === 'sse' ? 'sse' : 'iter';
-				deepStrictEqual(records, [{ n: 0 }, { n: 1 }, { error: 'Error', message: `QA890-${source}-mid-stream` }]);
+				const error = { error: 'Error', message: `QA890-${source}-mid-stream` };
+				deepStrictEqual(records, [{ n: 0 }, { n: 1 }, cap.surface === 'sse' ? error : { $harperStreamError: error }]);
 			}
 			strictEqual(cap.sawTerminalChunk, true, `${cap.surface} mid-stream response must complete its error record`);
 			assertServerTerminated(cap);
@@ -421,7 +422,8 @@ suite(
 
 		function assertDelayedError(cap: RawCapture, message: string) {
 			strictEqual(cap.status, 200, `${cap.surface} delayed startup failure occurs after status commitment`);
-			deepStrictEqual(decodedRecords(cap), [{ error: 'Error', message }]);
+			const error = { error: 'Error', message };
+			deepStrictEqual(decodedRecords(cap), [cap.surface === 'sse' ? error : { $harperStreamError: error }]);
 			strictEqual(cap.sawTerminalChunk, true, `${cap.surface} delayed error record must complete cleanly`);
 			assertServerTerminated(cap);
 		}

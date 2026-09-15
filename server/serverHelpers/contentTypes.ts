@@ -142,8 +142,8 @@ const ndjsonHandler = {
 			return errorFrameStream(
 				data,
 				(msg: any) => JSONStringify(msg) + '\n',
-				(error) => JSONStringify(streamErrorRecord(error)) + '\n',
-				request?.method != null && request.method !== 'HEAD'
+				(error) => JSONStringify({ $harperStreamError: streamErrorRecord(error) }) + '\n',
+				request?.method === 'GET'
 			);
 		}
 		return JSONStringify(data) + '\n';
@@ -177,7 +177,7 @@ mediaTypes.set('text/event-stream', {
 			iterable,
 			this.serialize,
 			(error) => this.serialize({ event: 'harper-error', data: streamErrorRecord(error) }),
-			request?.method != null && request.method !== 'HEAD'
+			request?.method === 'GET'
 		);
 	},
 	serialize: function (message) {
@@ -787,6 +787,7 @@ function transformIterable(iterable, transform, serializeError, eager) {
 		[Symbol.asyncIterator]() {
 			return {
 				next() {
+					if (terminal) return { done: true };
 					if (first) {
 						first = false;
 						start();

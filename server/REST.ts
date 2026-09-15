@@ -358,7 +358,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 			if (request.method === 'HEAD') {
 				discardSerializedStream(response.body);
 				if (!(response instanceof Response)) response.body = undefined;
-			} else {
+			} else if (request.method === 'GET') {
 				const startup = waitForStreamStartup(response.body);
 				if (startup) await startup;
 			}
@@ -386,7 +386,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				if (responseData?.onDone) responseData.onDone();
 				status = 304;
 				responseData = undefined;
-			} else {
+			} else if (request.method === 'GET') {
 				headers.setIfNone('ETag', etag);
 			}
 			if ((httpOptions as any).lastModified)

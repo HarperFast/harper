@@ -117,8 +117,7 @@ describe('contentTypes – application/x-ndjson', function () {
 			const readable = handler.serializeStream(source(), undefined, { method: 'GET' });
 			await waitForStreamStartup(readable);
 			assert.deepStrictEqual(JSON.parse((await streamToString(readable)).trim()), {
-				error: 'Error',
-				message: 'delayed failure',
+				$harperStreamError: { error: 'Error', message: 'delayed failure' },
 			});
 		});
 
@@ -137,7 +136,7 @@ describe('contentTypes – application/x-ndjson', function () {
 					.trim()
 					.split('\n')
 					.map((line) => JSON.parse(line)),
-				[{ seq: 'a' }, { error: 'Error', message: 'mid-stream failure', status: 409 }]
+				[{ seq: 'a' }, { $harperStreamError: { error: 'Error', message: 'mid-stream failure', status: 409 } }]
 			);
 		});
 
@@ -155,7 +154,21 @@ describe('contentTypes – application/x-ndjson', function () {
 				.trim()
 				.split('\n')
 				.map((line) => JSON.parse(line));
-			assert.deepStrictEqual(records[1], { error: 'STREAM_SOURCE_FAILED', message: 'coded failure' });
+			assert.deepStrictEqual(records[1], {
+				$harperStreamError: { error: 'STREAM_SOURCE_FAILED', message: 'coded failure' },
+			});
+		});
+
+		it('uses an in-band error record for a mutating request even when the first step rejects immediately', async function () {
+			async function* source() {
+				yield* [];
+				throw new Error('committed mutation failed');
+			}
+
+			const readable = handler.serializeStream(source(), undefined, { method: 'POST' });
+			assert.deepStrictEqual(JSON.parse((await streamToString(readable)).trim()), {
+				$harperStreamError: { error: 'Error', message: 'committed mutation failed' },
+			});
 		});
 
 		it('does not start a generator for HEAD serialization', async function () {
