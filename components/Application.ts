@@ -2119,6 +2119,24 @@ export async function recoverInterruptedActivations(componentsRootDirPath: strin
 					catalogue(owner!, build);
 					return;
 				}
+				// A DESCRIBED artifact carrying a stale verdict is settled, not residue. `fail()` only ever writes
+				// `.unsettled` beside a journal it keeps, so a marker with no journal says settlement finished
+				// and only the marker's own removal was lost — which is exactly what a crash between a dormant
+				// return's two unlinks leaves, and the barrier that orders them cannot run on Windows. Deleting
+				// here would destroy a build somebody staged deliberately, whose payload may already have been
+				// reclaimed, on the strength of a verdict that no longer applies. Clearing the marker is the
+				// idempotent completion of the settlement that wrote it; an undescribed build stays disposable.
+				if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE))) {
+					const settled = await dormantBuildAfterClearingVerdict(deploymentDirPath, owner!);
+					if (settled) {
+						logger.info?.(
+							`Cleared a stale unsettled verdict from the staged build ${basename(deploymentDirPath)} of ` +
+								`${owner}; its activation was already settled`
+						);
+						catalogue(owner!, settled);
+						return;
+					}
+				}
 				// Cleanup, not settlement. There was no activation here — this is most often the residue a
 				// SUCCESSFUL settlement leaves when its own sweep failed — so a sweep that fails again cannot
 				// make anything unsettled, and recording it would refuse a live component on every worker
@@ -2370,6 +2388,29 @@ async function sweepAsideRecords(
 			new Set([record, retiredMarkerPath])
 		).catch((error) => logger.warn(`Settled ${componentName} but could not sweep ${record}:`, errorForLog(error)));
 	}
+}
+
+/**
+ * Clear a stale `.unsettled` from a described artifact and re-derive it as a dormant build, or `undefined`
+ * when what is there is not a retainable build after all. Best-effort: a marker that will not clear leaves
+ * the artifact where it is rather than failing the pass, because the caller's only other move is to delete
+ * it.
+ */
+async function dormantBuildAfterClearingVerdict(
+	deploymentDirPath: string,
+	owner: string
+): Promise<DormantBuild | undefined> {
+	try {
+		await rm(join(deploymentDirPath, UNSETTLED_MARKER), { force: true });
+		await syncDirectory(deploymentDirPath);
+	} catch (error) {
+		logger.warn(
+			`Could not clear the stale unsettled verdict on deploy staging ${deploymentDirPath}:`,
+			errorForLog(error)
+		);
+		return undefined;
+	}
+	return dormantBuildAt(deploymentDirPath, owner);
 }
 
 /**

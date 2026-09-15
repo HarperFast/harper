@@ -704,9 +704,12 @@ retention pass as a stale unsettled build, which is the opposite of returning it
 durability barrier the tail does not, because the tail removes the whole deployment directory afterwards and
 this branch keeps it: with both unlinks flushed by one sync at the end, a crash can persist the journal's
 removal and not the marker's, leaving a verdict no settlement will ever revisit — settlement keys on the
-journal. The marker's removal is therefore flushed before the journal's. Windows cannot fsync a directory, so
-that ordering is unenforced there; unlike the rest of this design, where a lost directory update degrades to
-a roll back, here it degrades to a deleted artifact.
+journal. The marker's removal is therefore flushed before the journal's — and because Windows cannot fsync a
+directory, the ordering cannot be the only defence: the residue pass treats a DESCRIBED artifact carrying a
+verdict but no journal as settled rather than disposable, clears the marker, and retains it. `fail()` only
+ever writes `.unsettled` beside a journal it keeps, so a marker without one says settlement finished and only
+the marker's own removal was lost. An undescribed build in that state stays disposable, which is the rule
+that predates staging.
 
 **Keeping the activation journal after a failed root-config undo only changes the outcome for a first-ever
 deploy.** Compensation has already put an existing component's tree back and taken its rollback record with
