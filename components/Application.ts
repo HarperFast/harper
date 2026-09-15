@@ -2497,16 +2497,19 @@ async function settleInterruptedActivation(
 		// descriptor is what tells the two apart, and it is on disk precisely so recovery can. Returning the
 		// artifact to dormant by removing only the journal leaves it exactly as `deployment_id` expects it.
 		if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE))) {
-			// This branch returns early and so reaches none of the settled tail below. An artifact returned to
-			// dormant still carrying a stale verdict is one nothing can use: activation refuses the id and the
-			// next retention pass deletes the build.
+			// This branch returns early and so reaches none of the settled tail below — which can be careless
+			// about both, because it removes the whole directory afterwards. This one keeps it, so the order
+			// the two unlinks REACH STORAGE decides whether the artifact survives: `.unsettled` with no
+			// journal is a verdict nothing will ever settle and the next retention pass deletes the build on.
 			await clearUnsettledVerdict(deploymentDirPath, journal.component);
+			// The barrier between them. Throwing here is safe and leaves the journal, so the next start
+			// settles again; skipping it would let the journal's removal persist alone. Windows cannot fsync a
+			// directory, so the hazard stands there — see DESIGN.md.
+			await syncDirectory(deploymentDirPath);
 			await rm(journalPath, { force: true });
-			// NOTHING MAY THROW PAST THE JOURNAL REMOVAL, the same rule the settled tail follows. The caller
-			// records a failure by writing `.unsettled`, so a throw here would leave the artifact marked
-			// unsettled with no journal left to settle it — unactivatable, and deleted by the next retention
-			// pass. An unflushed removal is the safe direction instead: a power loss resurrects the journal,
-			// and settling again is idempotent.
+			// Nothing may throw past the journal removal, the rule the settled tail follows: the caller
+			// records a failure by writing `.unsettled`, which is the state this branch exists to avoid. An
+			// unflushed removal is the safe direction — a power loss resurrects a journal that settles again.
 			await syncDirectory(deploymentDirPath).catch((error) =>
 				logger.warn(
 					`Returned the staged build ${basename(deploymentDirPath)} of ${journal.component} to dormant but ` +

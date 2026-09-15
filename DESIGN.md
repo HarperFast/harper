@@ -700,7 +700,13 @@ installs whatever the root config names and would otherwise reinstall over a hal
 **Every settlement outcome clears an earlier failed recovery's `.unsettled`, including the one that returns a
 staged artifact to dormant.** That branch returns before the settled tail, so it has to clear the verdict
 itself: an artifact left carrying a stale marker is refused by `deployment_id` and then deleted by the next
-retention pass as a stale unsettled build, which is the opposite of returning it to dormant.
+retention pass as a stale unsettled build, which is the opposite of returning it to dormant. It also needs a
+durability barrier the tail does not, because the tail removes the whole deployment directory afterwards and
+this branch keeps it: with both unlinks flushed by one sync at the end, a crash can persist the journal's
+removal and not the marker's, leaving a verdict no settlement will ever revisit — settlement keys on the
+journal. The marker's removal is therefore flushed before the journal's. Windows cannot fsync a directory, so
+that ordering is unenforced there; unlike the rest of this design, where a lost directory update degrades to
+a roll back, here it degrades to a deleted artifact.
 
 **Keeping the activation journal after a failed root-config undo only changes the outcome for a first-ever
 deploy.** Compensation has already put an existing component's tree back and taken its rollback record with
