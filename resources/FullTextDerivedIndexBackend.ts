@@ -7,7 +7,15 @@ import type {
 	DerivedIndexDeliveryResult,
 	DerivedIndexFlushReason,
 } from './derivedIndexRuntime.ts';
-import { DERIVED_INDEX_ACCEPTED, DERIVED_INDEX_DEFERRED, DERIVED_INDEX_FAILED } from './derivedIndexRuntime.ts';
+import {
+	DERIVED_INDEX_ACCEPTED,
+	DERIVED_INDEX_DEFERRED,
+	DERIVED_INDEX_FAILED,
+	DerivedIndexBackendRetryError,
+} from './derivedIndexRuntime.ts';
+import { loggerWithTag } from '../utility/logging/logger.ts';
+
+const logger = loggerWithTag('fulltext-derived-index');
 
 const DEFAULT_MAX_QUEUED_BATCHES = 16;
 const DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
@@ -183,7 +191,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	getDurableCursor(): DerivedIndexCursor | undefined {
 		if (!this.#inspected) {
-			const inspection = this.#lifecycle.inspect();
+			let inspection: FullTextDerivedIndexInspection;
+			try {
+				inspection = this.#lifecycle.inspect();
+			} catch (error) {
+				throw new DerivedIndexBackendRetryError('Full-text derived index state could not be inspected', error);
+			}
 			this.#inspected = true;
 			if (inspection.state === 'checkpointed') {
 				try {
@@ -279,10 +292,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#shutdown = undefined;
 		this.#failed = false;
 		await this.#lifecycle.reset();
-		this.#assertSharedEpoch(ownerEpoch);
-		this.#activeEpoch = ownerEpoch;
 		this.#durableCursor = undefined;
 		this.#inspected = true;
+		this.#assertSharedEpoch(ownerEpoch);
+		this.#activeEpoch = ownerEpoch;
 		this.#resetQueueState();
 	}
 
@@ -455,7 +468,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (!engine) throw new FullTextDerivedIndexError('Full-text writer is unavailable', cause);
 		try {
 			await engine.close({ mode: 'rollback' });
-			this.#assertCommandEpoch(ownerEpoch);
 		} catch (error) {
 			this.#engine = engine;
 			throw new FullTextDerivedIndexError(
@@ -463,6 +475,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				new AggregateError([cause, error])
 			);
 		}
+		this.#assertCommandEpoch(ownerEpoch);
 		this.#hasStagedMutations = false;
 		this.#notify('accepted-work-lost');
 	}
@@ -481,6 +494,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			}
 			this.#engine = undefined;
 			this.#activeEpoch = undefined;
+			this.#inspected = false;
 			this.#resetQueueState();
 			if (this.#shutdown === request) this.#shutdown = undefined;
 			request.resolve();
@@ -611,9 +625,7 @@ function logError(message: string, error: unknown): void {
 }
 
 function log(level: 'warn' | 'error', message: string, error: unknown): void {
-	void import('../utility/logging/logger.ts')
-		.then(({ loggerWithTag }) => loggerWithTag('fulltext-derived-index')[level]?.(message, error))
-		.catch(() => undefined);
+	logger[level]?.(message, error);
 }
 
 export function encodeFullTextCursorPayload(

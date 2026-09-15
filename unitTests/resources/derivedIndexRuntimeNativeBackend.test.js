@@ -1155,6 +1155,36 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('retries a transient full-text inspection failure without condemning or resetting the index', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		let inspections = 0;
+		let resets = 0;
+		const backend = new FullTextDerivedIndexBackend({
+			id: 'inspect-retry',
+			lifecycle: {
+				inspect() {
+					if (inspections++ === 0) throw new Error('temporary inspection failure');
+					return { state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) };
+				},
+				async open() {
+					throw new Error('writer should not open');
+				},
+				async reset() {
+					resets++;
+				},
+			},
+			encodeMutationBatch: (batch) => Buffer.from(JSON.stringify(batch)),
+		});
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		runtime.register(registration(backend, { lockRetryMilliseconds: 5 }));
+
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready');
+		assert.strictEqual(inspections, 2);
+		assert.strictEqual(resets, 0);
+		assert.strictEqual(store.markers.size, 0);
+		await runtime.stop();
+	});
+
 	it('spends one rebuild attempt when the full-text backend rejects a delivery synchronously', async () => {
 		const records = new Map([['1:a', { version: 20, value: { title: 'oversized' }, size: 32 }]]);
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]), {
