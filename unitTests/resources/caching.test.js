@@ -48,7 +48,7 @@ describe('Caching', () => {
 	let sourceExpiresAt;
 	let return_value = true;
 	let return_error;
-	let return_error_instance = null;
+	let return_rejection = null; // when set, `{ value }` is rejected as-is
 	// skip LMDB test for now, https://github.com/HarperFast/harper/issues/414 for re-enabling
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	before(async function () {
@@ -80,8 +80,8 @@ describe('Caching', () => {
 				sourceRequests++;
 				return new Promise((resolve, reject) => {
 					setTimeout(() => {
-						if (return_error_instance) {
-							reject(return_error_instance);
+						if (return_rejection) {
+							reject(return_rejection.value);
 							return;
 						}
 						if (return_error) {
@@ -937,7 +937,7 @@ describe('Caching', () => {
 			events = [];
 			// What `fetch` rejects with when an AbortSignal.timeout fires: DOMException carries
 			// `message` as a getter-only accessor, so annotating it throws under strict mode.
-			return_error_instance = new DOMException('test source error', 'TimeoutError');
+			return_rejection = { value: new DOMException('test source error', 'TimeoutError') };
 			const HUNG = Symbol('hung');
 			// .mocharc.json sets `timeout: 0`, so an unsettled get() would stall the run rather
 			// than fail it.
@@ -953,7 +953,33 @@ describe('Caching', () => {
 			assert.equal(outcome.name, 'TimeoutError');
 			assert.equal(sourceRequests, 1);
 		} finally {
-			return_error_instance = null;
+			return_rejection = null;
+		}
+	});
+
+	// The settle decision reads `error.code`, so a nullish rejection reaching it with a
+	// record already cached used to throw before either resolve() or reject() ran.
+	it('Source rejects with no error while a record is cached', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 100 });
+			return_rejection = null;
+			return_error = false;
+			IndexedCachingTable.invalidate(132);
+			await IndexedCachingTable.get(132); // seed an existing record to revalidate against
+			await delay(10);
+			return_rejection = { value: undefined };
+			const HUNG = Symbol('hung');
+			const outcome = await Promise.race([
+				IndexedCachingTable.get(132).then(
+					() => 'resolved',
+					(error) => ({ rejected: error })
+				),
+				delay(2000, HUNG),
+			]);
+			assert.notStrictEqual(outcome, HUNG, 'get() must settle when the source rejects with no error');
+		} finally {
+			return_rejection = null;
+			return_error = false;
 		}
 	});
 	it('Can load cached indexed data', async function () {
