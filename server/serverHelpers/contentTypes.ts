@@ -27,13 +27,17 @@ type StreamStartup = {
 	result: Promise<{ failed?: true; error?: unknown }>;
 	abort: () => void;
 	start: () => void;
+	cancel?: () => void;
 };
 
 function streamErrorRecord(error: any) {
 	let name = 'Error';
 	let message;
 	try {
-		if (typeof error?.name === 'string') name = error.name;
+		const code = error?.code;
+		if (typeof code === 'string' || typeof code === 'number') name = String(code);
+		else if (typeof error?.constructor?.name === 'string') name = error.constructor.name;
+		else if (typeof error?.name === 'string') name = error.name;
 	} catch {}
 	try {
 		if (typeof error?.message === 'string') message = error.message;
@@ -171,7 +175,7 @@ mediaTypes.set('text/event-stream', {
 		return errorFrameStream(
 			iterable,
 			this.serialize,
-			(error) => this.serialize({ event: 'error', data: streamErrorRecord(error) }),
+			(error) => this.serialize({ event: 'harper-error', data: streamErrorRecord(error) }),
 			request?.method != null && request.method !== 'HEAD'
 		);
 	},
@@ -667,8 +671,15 @@ function deserializerUnknownType(contentType: ContentType): Deserialize {
 function errorFrameStream(iterable, transform, serializeError, eager: boolean) {
 	const transformed = transformIterable(iterable, transform, serializeError, eager);
 	const readable = Readable.from(transformed);
-	readable[streamStartup] = transformed[streamStartup];
+	const startup: StreamStartup = transformed[streamStartup];
+	startup.cancel = () => readable.destroy();
+	readable[streamStartup] = startup;
 	return readable;
+}
+
+export function discardSerializedStream(stream) {
+	stream?.[streamStartup]?.cancel?.();
+	stream?.destroy?.();
 }
 
 export function waitForStreamStartup(stream) {
@@ -678,7 +689,7 @@ export function waitForStreamStartup(stream) {
 	return startup.result.then((result) => {
 		if (result.failed) {
 			startup.abort();
-			stream.destroy?.();
+			discardSerializedStream(stream);
 			throw result.error;
 		}
 	});
@@ -765,7 +776,9 @@ function transformIterable(iterable, transform, serializeError, eager) {
 					if (first) {
 						first = false;
 						start();
-						return firstStep;
+						const step = firstStep;
+						firstStep = undefined;
+						return step;
 					}
 					return getNext();
 				},

@@ -210,13 +210,8 @@ mirror because it only widens what an allowlist may _name_; enforcement stays on
 
 ### Streaming startup errors
 
-SSE and NDJSON serializers eagerly take and hold their first iterator step. `REST.ts` waits through
-the next event-loop turn for that step: an immediate rejection remains an HTTP error rendered as
-Problem Details, while a first item or the cutoff commits the stream. Later failures are terminal,
-format-valid records (`event: error` for SSE and an error object for NDJSON). Keep the decision in
-the serializer/REST boundary so Node, uWS, Bun, compression, and injection share one contract;
-transports must not independently prefetch the iterator.
-SSE and NDJSON terminal records use `{ error: <name>, message: <message>, status?: <status> }`;
+SSE and NDJSON serializers eagerly take and hold their first iterator step. `REST.ts` waits through the next event-loop turn for that step: an immediate rejection remains an HTTP error rendered as Problem Details, while a first item or the cutoff commits the stream. Later failures are terminal, format-valid records (`event: harper-error` for SSE and an error object for NDJSON). Keep the decision in the serializer/REST boundary so Node, uWS, Bun, compression, and injection share one contract; transports must not independently prefetch the iterator.
+SSE and NDJSON terminal records use `{ error: <code-or-class>, message: <message>, status?: <status> }`;
 generic JSON-array streaming retains its older `{ error: "<name>: <message>" }` element shape.
 Clean stream completion does not prove completeness; clients must inspect streamed records for an
 `error` field.

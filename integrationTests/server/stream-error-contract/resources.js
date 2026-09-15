@@ -31,9 +31,8 @@ export class SsePreYield extends Resource {
 	static async *connect() {
 		G.ssePreYield.opened++;
 		try {
+			yield* [];
 			throw new Error('QA890-sse-pre-yield');
-			// eslint-disable-next-line no-unreachable
-			yield { n: -1 };
 		} finally {
 			G.ssePreYield.closed++;
 		}
@@ -46,9 +45,8 @@ export class SseDelayedError extends Resource {
 		G.sseDelayedError.opened++;
 		try {
 			await sleep(20);
+			yield* [];
 			throw new Error('QA890-sse-delayed-error');
-			// eslint-disable-next-line no-unreachable
-			yield { n: -1 };
 		} finally {
 			G.sseDelayedError.closed++;
 		}
@@ -96,12 +94,11 @@ export class SseHealth extends Resource {
 export class IterPreYield extends Resource {
 	static loadAsInstance = false;
 	async get() {
-		G.iterPreYield.opened++;
 		async function* gen() {
+			G.iterPreYield.opened++;
 			try {
+				yield* [];
 				throw new Error('QA890-iter-pre-yield');
-				// eslint-disable-next-line no-unreachable
-				yield { n: -1 };
 			} finally {
 				G.iterPreYield.closed++;
 			}
@@ -113,13 +110,12 @@ export class IterPreYield extends Resource {
 export class IterDelayedError extends Resource {
 	static loadAsInstance = false;
 	async get() {
-		G.iterDelayedError.opened++;
 		async function* gen() {
+			G.iterDelayedError.opened++;
 			try {
 				await sleep(20);
+				yield* [];
 				throw new Error('QA890-iter-delayed-error');
-				// eslint-disable-next-line no-unreachable
-				yield { n: -1 };
 			} finally {
 				G.iterDelayedError.closed++;
 			}
@@ -132,8 +128,8 @@ export class IterDelayedError extends Resource {
 export class IterMidStream extends Resource {
 	static loadAsInstance = false;
 	async get() {
-		G.iterMidStream.opened++;
 		async function* gen() {
+			G.iterMidStream.opened++;
 			try {
 				for (let i = 0; i < 5; i++) {
 					if (i === 2) throw new Error('QA890-iter-mid-stream');
@@ -152,8 +148,8 @@ export class IterMidStream extends Resource {
 export class IterHealth extends Resource {
 	static loadAsInstance = false;
 	async get() {
-		G.iterHealth.opened++;
 		async function* gen() {
+			G.iterHealth.opened++;
 			try {
 				for (let i = 0; i < 3; i++) {
 					yield { n: i };

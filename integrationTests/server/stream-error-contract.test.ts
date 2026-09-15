@@ -450,15 +450,23 @@ suite(
 			strictEqual(reuse.responses, 2, 'a keep-alive client must get both responses on one connection');
 		});
 
-		test('control: HEAD with SSE accept does not start the generator', { timeout: 20_000 }, async () => {
+		test('control: HEAD does not start or leak a streaming generator', { timeout: 20_000 }, async () => {
 			const before = await getProbeJson(restBase, { Authorization: authHeader });
-			const cap = await rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'head', {
+			const sse = await rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'head', {
 				method: 'HEAD',
 			});
+			const ndjson = await rawCapture(restBase, '/IterHealth/', 'application/x-ndjson', authHeader, 'ndjson', 'head', {
+				method: 'HEAD',
+				acceptEncoding: 'br',
+			});
+			await sleep(25);
 			const after = await getProbeJson(restBase, { Authorization: authHeader });
-			strictEqual(cap.status, 200);
-			strictEqual(cap.decodedBody, '');
+			strictEqual(sse.status, 200);
+			strictEqual(sse.decodedBody, '');
+			strictEqual(ndjson.status, 200);
+			strictEqual(ndjson.decodedBody, '');
 			strictEqual(after.sseHealth.opened, before.sseHealth.opened);
+			strictEqual(after.iterHealth.closed, before.iterHealth.closed);
 		});
 
 		// ── Pre-first-yield throw: the core question ──────────────────────────────────────────────

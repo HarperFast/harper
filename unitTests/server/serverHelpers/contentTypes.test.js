@@ -136,6 +136,23 @@ describe('contentTypes – application/x-ndjson', function () {
 			);
 		});
 
+		it('uses a stable error code when one is available', async function () {
+			async function* source() {
+				yield { seq: 'a' };
+				const error = new Error('coded failure');
+				error.code = 'STREAM_SOURCE_FAILED';
+				throw error;
+			}
+
+			const readable = handler.serializeStream(source(), undefined, { method: 'GET' });
+			await waitForStreamStartup(readable);
+			const records = (await streamToString(readable))
+				.trim()
+				.split('\n')
+				.map((line) => JSON.parse(line));
+			assert.deepStrictEqual(records[1], { error: 'STREAM_SOURCE_FAILED', message: 'coded failure' });
+		});
+
 		it('does not start a generator for HEAD serialization', async function () {
 			let started = false;
 			const source = {
@@ -274,7 +291,7 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 		await waitForStreamStartup(readable);
 		assert.strictEqual(
 			await streamToString(readable),
-			'event: error\ndata: {"error":"Error","message":"delayed failure"}\n\n'
+			'event: harper-error\ndata: {"error":"Error","message":"delayed failure"}\n\n'
 		);
 	});
 
@@ -316,7 +333,7 @@ describe('contentTypes – text/event-stream (SSE)', function () {
 
 			assert.strictEqual(
 				output,
-				'data: {"seq":"a"}\n\ndata: {"seq":"b"}\n\nevent: error\ndata: {"error":"Error","message":"boom"}\n\n'
+				'data: {"seq":"a"}\n\ndata: {"seq":"b"}\n\nevent: harper-error\ndata: {"error":"Error","message":"boom"}\n\n'
 			);
 			assert.strictEqual(uncaughtError, undefined, 'generator rejection must not escape as an uncaughtException');
 		} finally {
