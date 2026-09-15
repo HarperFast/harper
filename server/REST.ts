@@ -354,7 +354,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 		} else if (responseData.headers) {
 			// if response is a Response object (or response-like envelope with headers), use it as the response
 			const response = finalizeResponse(responseData, headers, status, request);
-			if (method !== 'HEAD') {
+			if (request.method !== 'HEAD') {
 				const startup = waitForStreamStartup(response.body);
 				if (startup) await startup;
 			}
@@ -432,7 +432,7 @@ async function http(request: Request, nextHandler, resources: Resources, httpOpt
 				setCountHeaders(headers, (target as any).offset || 0, (target as any).count, responseData);
 			}
 			responseObject.body = serialize(responseData, request, responseObject);
-			if (method === 'HEAD')
+			if (request.method === 'HEAD')
 				responseObject.body = undefined; // we want everything else to be the same as GET, but then omit the body
 			else {
 				const startup = waitForStreamStartup(responseObject.body);

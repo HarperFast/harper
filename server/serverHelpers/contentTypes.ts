@@ -39,10 +39,10 @@ function streamErrorRecord(error: any) {
 		if (typeof error?.message === 'string') message = error.message;
 	} catch {}
 	message ??= harperErrorToString(error);
-	const record: { error: string; message: string; status?: unknown } = { error: name, message };
+	const record: { error: string; message: string; status?: number } = { error: name, message };
 	try {
 		const status = error?.statusCode ?? error?.status;
-		if (status != null) record.status = status;
+		if (typeof status === 'number') record.status = status;
 	} catch {}
 	return record;
 }
@@ -713,12 +713,10 @@ function transformIterable(iterable, transform, serializeError, eager) {
 			const returned = iterator.return?.();
 			returned?.catch?.(() => {});
 		} catch {}
-		if (startupSettled) {
-			logger.warn?.('Error serializing in stream', harperErrorForLog(error));
-			return { value: serializeError(error), done: false };
-		}
-		startupResult.resolve({ failed: true, error });
-		return (await errorDecision.promise) ? { value: serializeError(error), done: false } : { done: true };
+		if (!startupSettled) startupResult.resolve({ failed: true, error });
+		if (!startupSettled && !(await errorDecision.promise)) return { done: true };
+		logger.warn?.('Error serializing in stream', harperErrorForLog(error));
+		return { value: serializeError(error), done: false };
 	};
 	const transformStep = (step) => {
 		if (step.done) return step;
@@ -744,9 +742,12 @@ function transformIterable(iterable, transform, serializeError, eager) {
 		started = true;
 		iterator = iterable[Symbol.asyncIterator] ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
 		firstStep = getNext();
-		Promise.resolve(firstStep).then(() => {
-			if (!terminal) commit();
-		});
+		Promise.resolve(firstStep).then(
+			() => {
+				if (!terminal) commit();
+			},
+			() => {}
+		);
 		// After this turn, the HTTP status can no longer wait for a first item without delaying long-lived streams.
 		startupTimer = setImmediate(commit);
 	};

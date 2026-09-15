@@ -113,7 +113,7 @@ function rawCapture(
 	authHeader: string,
 	surface: string,
 	throwPoint: string,
-	opts: { timeoutMs?: number; http10?: boolean; connection?: string; acceptEncoding?: string } = {}
+	opts: { timeoutMs?: number; http10?: boolean; connection?: string; acceptEncoding?: string; method?: string } = {}
 ): Promise<RawCapture> {
 	const timeoutMs = opts.timeoutMs ?? 15_000;
 	const url = new URL(restBase);
@@ -130,7 +130,7 @@ function rawCapture(
 		const socket = net.createConnection({ host, port }, () => {
 			const connection = opts.connection ?? (opts.http10 ? undefined : 'close');
 			const req =
-				`GET ${path} HTTP/${opts.http10 ? '1.0' : '1.1'}\r\n` +
+				`${opts.method ?? 'GET'} ${path} HTTP/${opts.http10 ? '1.0' : '1.1'}\r\n` +
 				`Host: ${host}:${port}\r\n` +
 				`Accept: ${acceptHeader}\r\n` +
 				`Authorization: ${authHeader}\r\n` +
@@ -448,6 +448,17 @@ suite(
 			const reuse = await captureKeepAliveReuse(restBase, '/IterHealth/', 'application/json', authHeader);
 			strictEqual(reuse.serverClosedEarly, false, 'server closed a keep-alive connection after a streamed response');
 			strictEqual(reuse.responses, 2, 'a keep-alive client must get both responses on one connection');
+		});
+
+		test('control: HEAD with SSE accept does not start the generator', { timeout: 20_000 }, async () => {
+			const before = await getProbeJson(restBase, { Authorization: authHeader });
+			const cap = await rawCapture(restBase, '/SseHealth/', 'text/event-stream', authHeader, 'sse', 'head', {
+				method: 'HEAD',
+			});
+			const after = await getProbeJson(restBase, { Authorization: authHeader });
+			strictEqual(cap.status, 200);
+			strictEqual(cap.decodedBody, '');
+			strictEqual(after.sseHealth.opened, before.sseHealth.opened);
 		});
 
 		// ── Pre-first-yield throw: the core question ──────────────────────────────────────────────
