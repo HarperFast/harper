@@ -12,10 +12,7 @@ services:
       PGPORT: '5433'
     # Durability left at the default (fsync=on, synchronous_commit=on) to match
     # Harper's default storage.writeAsync=false. Only memory sizing is tuned,
-    # since the stock 128MB shared_buffers would make this a disk benchmark.
-    # PGDATA is tmpfs because the Harper side of this comparison also runs its
-    # data directory under /tmp (tmpfs on this host) — same storage medium, so
-    # the measurement is of the software path rather than the SSD.
+    # since the stock 128MB shared_buffers would make this a page-fault benchmark.
     command:
       - postgres
       - -c
@@ -27,8 +24,13 @@ services:
       - -c
       - max_wal_size=8GB
     shm_size: 2gb
-    tmpfs:
-      - /var/lib/postgresql/data
+    # Real disk, not tmpfs. On tmpfs an fsync is a no-op, so Postgres would pay
+    # nothing for synchronous_commit while Harper still paid real LSM compaction
+    # — which silently tilts every write-bearing workload. The bind mount must
+    # land on the same filesystem as the Harper data directory (run-compare.mts
+    # puts both under YCSB_VS_PG_DATA_DIR and asserts they share a device).
+    volumes:
+      - ${YCSB_VS_PG_DATA_DIR:-./data}/pgdata:/var/lib/postgresql/data
 
   redis:
     image: redis:7-alpine

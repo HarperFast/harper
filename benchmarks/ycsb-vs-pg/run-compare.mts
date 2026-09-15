@@ -16,7 +16,8 @@
  * the client is still the limit.
  */
 import { setTimeout as delay } from 'node:timers/promises';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, statfs } from 'node:fs/promises';
+import { statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { createHarperContext, setupHarperWithFixture, teardownHarper } from '@harperfast/integration-testing';
@@ -24,7 +25,7 @@ import { parseOptions } from '../ycsb/harness.mts';
 import { WORKLOADS } from '../ycsb/workload.mts';
 import type { DistributionName, LatencyStats, PhaseResult } from '../ycsb/workload.mts';
 import { startDriver } from './shardedDriver.mts';
-import { startPgStack } from './pgStack.mts';
+import { startPgStack, dataDir } from './pgStack.mts';
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..');
 const HARPER_BIN = join(REPO_ROOT, 'dist', 'bin', 'harper.js');
@@ -265,6 +266,43 @@ function cpuCount(): number {
 	return Number(execFileSync('nproc', { encoding: 'utf8' }).trim());
 }
 
+/**
+ * Puts both engines' data on one real filesystem and proves they share it.
+ *
+ * The storage medium is not a detail here. On tmpfs an fsync costs nothing, so
+ * Postgres gets `synchronous_commit=on` for free while Harper still pays real
+ * RocksDB compaction — every write-bearing workload is then measuring the
+ * asymmetry, not the engines. Same device, real disk, or the comparison is void.
+ */
+async function prepareDataDirs(): Promise<{ base: string; harperRoot: string }> {
+	const base = dataDir();
+	const harperRoot = join(base, 'harper');
+	await mkdir(join(base, 'pgdata'), { recursive: true });
+	await mkdir(harperRoot, { recursive: true });
+
+	// The framework reads this from the environment when it allocates an install dir.
+	process.env.HARPER_INTEGRATION_TEST_INSTALL_PARENT_DIR = harperRoot;
+
+	const pgDev = statSync(join(base, 'pgdata')).dev;
+	const harperDev = statSync(harperRoot).dev;
+	if (pgDev !== harperDev) {
+		throw new Error(
+			`Harper and Postgres data directories are on different devices (${harperDev} vs ${pgDev}); ` +
+				'set YCSB_VS_PG_DATA_DIR to a single filesystem so the storage medium is not a variable'
+		);
+	}
+	// f_flags is not exposed portably, so detect tmpfs by its magic number instead.
+	const fs = await statfs(base);
+	const TMPFS_MAGIC = 0x01021994;
+	if (Number(fs.type) === TMPFS_MAGIC) {
+		throw new Error(
+			`${base} is tmpfs — fsync is a no-op there, which flatters whichever engine relies on it. ` +
+				'Point YCSB_VS_PG_DATA_DIR at a real disk.'
+		);
+	}
+	return { base, harperRoot };
+}
+
 async function main(): Promise<void> {
 	const argv = process.argv.slice(2);
 	const extract = (flag: string): string | undefined => {
@@ -280,6 +318,9 @@ async function main(): Promise<void> {
 	const shards = Number(shardsArg ?? 4);
 	const options = parseOptions(argv.filter((a) => !a.startsWith('--targets=') && !a.startsWith('--shards=')));
 
+	const { base } = await prepareDataDirs();
+	console.log(`Data directories under ${base} (real disk, single filesystem)`);
+
 	const results: TargetResult[] = [];
 	for (const target of targets) results.push(await benchmarkTarget(target, options, shards));
 
@@ -287,7 +328,7 @@ async function main(): Promise<void> {
 	await mkdir(RESULTS_DIR, { recursive: true });
 	const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 	const payload = {
-		meta: { timestamp: stamp, nodeVersion: process.version, cpus: cpuCount(), shards },
+		meta: { timestamp: stamp, nodeVersion: process.version, cpus: cpuCount(), shards, dataDir: base },
 		config: { ...options.config, threads: options.threads, engine: options.engine },
 		targets: results,
 	};
