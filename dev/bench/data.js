@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789457252323,
+  "lastUpdate": 1789463669480,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -17811,6 +17811,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 430230,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "52512e85af5e3216d0eb14d9a52a4d02df28dc0a",
+          "message": "Attribute the stuck-commit log assertions to the commit under test (#2596)\n\n* Attribute the stuck-commit log assertions to the commit under test\n\n`the stuck-commit log names holder candidates` replaced the process-global\n`harperLogger.error` with a collector and then asserted an absolute\n`errorLines.length === 1`, indexing `errorLines[0]` for the content checks. That\ncount is not a count of what the test did: the hook catches every\n`harperLogger.error` caller on the thread, and `setMaxOutstandingTxnDuration(1)`\nin `beforeEach` puts every background write one millisecond from being shed, so\nan analytics-aggregation write, a transaction-expiration abort, or another\nsuite's stuck commit landing inside one 10 ms poll gap fails the assertion. That\nis what turned main red at 7f052787f on the Node 22 leg, and at d6f4efaed on\nNode 26 four days earlier; neither commit touches this file.\n\nFilter the captured lines to the shed report carrying this fixture's own commit\nidentity, wait on and assert that attributed set, and report the unattributed\nlines in the failure message so the next failure names its own noise. Inject two\nforeign lines — another commit's shed line, and a caller whose first argument is\nan Error — as a committed positive control, so a future return to\n`errorLines.length` fails immediately instead of waiting for a timer to\ninterleave.\n\nThe old `=== 1` could not prove the \"logged once\" it claimed either: `waitFor`\nreturns on the first line, so removing the per-node `logged` guard still left one\nreport. Add a test that sheds past the thread-wide cooldown with the same commit\noldest, then settles it and requires the next-oldest to get its own report — the\nsecond commit's line being granted as soon as it is asked for is what proves the\nprobe outlasted the cooldown rather than ending inside it.\n\nRefs #2471\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Shed once past the probe deadline, and drop the wall-clock cooldown proxy\n\nPre-push review, round 1. The dedup probe only sheds from inside a\n`while (Date.now() < probeUntil)` loop, so an event-loop stall spanning the whole\nwindow exits it having shed only inside the cooldown: removing the per-node\n`logged` guard would still leave one report and the test would pass vacuously.\nShed once more unconditionally after the deadline.\n\nThe post-settle `Date.now() - askedAt < PROBE_PAST_COOLDOWN_MS` check was the\nmirror of the same proxy in the other direction — a >2.5s stall between settling\nthe first commit and the poll that sees the second one's line failed the test\nwhile production behaved correctly, which is the flake class this PR exists to\nremove. Drop it; the next-oldest report arriving is what the test is named for.\n\nName the real failure mode on the waits: an older foreign outstanding commit\nholds the oldest slot and the fixture's line never comes, which surfaced as a\nbare timeout.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Measure the dedup probe on the same clock the cooldown uses\n\nPre-push review, round 2: the probe deadline read `Date.now()` while\n`allowStuckCommitLog` compares `performance.now()`, so a forward wall-clock jump\ncould end the probe before the cooldown it must outlast had actually elapsed —\nthe same vacuous pass round 1 closed for event-loop stalls.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T04:10:41Z",
+          "url": "https://github.com/HarperFast/harper/commit/52512e85af5e3216d0eb14d9a52a4d02df28dc0a"
+        },
+        "date": 1789463667203,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 17500,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 14507,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 11122,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 33663488,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 9589,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 3799,
             "unit": "ops"
           }
         ]
