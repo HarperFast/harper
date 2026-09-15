@@ -60,6 +60,16 @@ describe('appendErrorContext', () => {
 		assert.strictEqual(err.message, 'frozen');
 	});
 
+	it('survives an error whose message getter throws', () => {
+		const err = Object.defineProperty(new Error('x'), 'message', {
+			get() {
+				throw new Error('hostile');
+			},
+			configurable: true,
+		});
+		assert.doesNotThrow(() => appendErrorContext(err, ' extra'));
+	});
+
 	it('ignores values that carry no message', () => {
 		assert.doesNotThrow(() => appendErrorContext(undefined, ' extra'));
 		assert.doesNotThrow(() => appendErrorContext('a string', ' extra'));
