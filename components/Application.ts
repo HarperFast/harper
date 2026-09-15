@@ -1388,7 +1388,11 @@ const LOADER_OWNED_LINKS = new Set(['harper', 'harperdb']);
  * and activation happen within one call; the delay is what makes it reachable.
  *
  */
-async function assertOwnedArtifactTree(candidateDirPath: string, componentName: string): Promise<void> {
+async function assertOwnedArtifactTree(
+	candidateDirPath: string,
+	componentName: string,
+	action: 'stage' | 'activate' = 'stage'
+): Promise<void> {
 	const ownedRoot = await realpath(candidateDirPath);
 	// The loader repairs the component's OWN `node_modules/harper`, not a copy nested inside a dependency,
 	// so only that one path is exempt. Matching the name at any depth would let `dep/node_modules/harper`
@@ -1410,7 +1414,7 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 			const target = await realpath(entryPath).catch(() => undefined);
 			if (target === undefined || (target !== ownedRoot && !target.startsWith(ownedRoot + sep))) {
 				throw new Error(
-					`Cannot stage ${componentName}: ${entryPath} links outside the build to ${target ?? 'a missing target'}, ` +
+					`Cannot ${action} ${componentName}: ${entryPath} links outside the build to ${target ?? 'a missing target'}, ` +
 						`so the bytes activated later would not be the bytes this build certified`
 				);
 			}
@@ -1423,7 +1427,7 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 			const linkTarget = await readlink(entryPath);
 			if (isAbsolute(linkTarget)) {
 				throw new Error(
-					`Cannot stage ${componentName}: ${entryPath} names its target inside the build by absolute path ` +
+					`Cannot ${action} ${componentName}: ${entryPath} names its target inside the build by absolute path ` +
 						`(${linkTarget}), which activation moves. Re-link it relatively — on Windows, npm ` +
 						`writes absolute junctions for 'file:' and workspace dependencies, so those have to be relative ` +
 						`before the component can be staged.`
@@ -1441,7 +1445,7 @@ async function assertOwnedArtifactTree(candidateDirPath: string, componentName: 
 				prefix = await realpath(join(prefix, segment)).catch(() => join(prefix, segment));
 				if (prefix !== ownedRoot && !prefix.startsWith(ownedRoot + sep)) {
 					throw new Error(
-						`Cannot stage ${componentName}: ${entryPath} reaches ${prefix} on its way to ${linkTarget}, ` +
+						`Cannot ${action} ${componentName}: ${entryPath} reaches ${prefix} on its way to ${linkTarget}, ` +
 							`leaving the build — after activation moves the tree that path resolves somewhere else`
 					);
 				}
@@ -1651,30 +1655,28 @@ async function claimDeploymentDirectory(deploymentDirPath: string, componentName
 					`names one artifact for its lifetime`
 			);
 		}
+		// Ownership has to be POSITIVE to reclaim, and EMPTINESS IS NOT A VERDICT. The sidecar below is
+		// written as part of the claim, so a directory that names nobody is another component inside the
+		// window between its own mkdir and that write — a live claim, not an abandoned one. Nothing on disk
+		// separates it from a claim that got no further, and only the claimant's preparation lock, which is
+		// not this one, serializes it: a deploy can hold an empty directory for minutes while it resolves and
+		// packs, so reclaiming on an empty read deletes a build that is running. Refusing costs a retry under
+		// a fresh id; reclaiming costs someone else's deploy. ENOENT is the exception — the directory is gone,
+		// so there is no claim left to take.
+		if (owner === undefined && (await presentOrAbsent(deploymentDirPath))) {
+			throw new Error(
+				`Deployment id ${basename(deploymentDirPath)} is already claimed by a build that has not named its ` +
+					`component yet`
+			);
+		}
 		if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER))) {
 			throw new Error(
 				`Deployment id ${basename(deploymentDirPath)} already holds a completed build of '${componentName}'; ` +
 					`deploy it with deployment_id, or deploy again to build a new one`
 			);
 		}
-		// Ownership has to be POSITIVE to reclaim. A directory that names nobody is either empty — a claim
-		// that got no further — or a build in flight that has not written its sidecar yet, and the second is
-		// another component's candidate being extracted right now. Only the component's own preparation lock
-		// serializes claims, and that lock does not span components, so removing an unattributable directory
-		// here can delete a live build. Refusing costs a retry; reclaiming costs someone else's deploy.
-		// ENOENT means the claimant removed it between the failed mkdir and this read (a failed build under a
-		// duplicated id discards its whole directory), which is an empty directory by another name.
-		const entries = await readdir(deploymentDirPath).catch((error: NodeJS.ErrnoException) => {
-			if (error?.code === 'ENOENT') return [];
-			throw error;
-		});
-		if (owner === undefined && entries.length > 0) {
-			throw new Error(
-				`Deployment id ${basename(deploymentDirPath)} is already in use by a build that has not named its ` +
-					`component yet`
-			);
-		}
-		// Nothing certified it, so nothing is lost by rebuilding over it.
+		// This component's own preparation lock serializes the claim and nothing certified it, so nothing is
+		// lost by rebuilding over it.
 		await rm(deploymentDirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 		await mkdir(deploymentDirPath, { mode: 0o700 });
 	}
@@ -1690,6 +1692,11 @@ async function claimDeploymentDirectory(deploymentDirPath: string, componentName
 			)
 		);
 	}
+	// Ownership is published HERE rather than at certification. `buildCandidateApplication` can spend minutes
+	// resolving and packing before any tree exists to infer an owner from, and for that whole window the
+	// directory answered to nobody — which is what let a second component reading an empty directory delete a
+	// live build. `markCandidateComplete` writes it again and tolerates the EEXIST.
+	await writeControlFileDurably(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), componentName);
 }
 
 async function ensureExtractionStagingDirectory(asideStagingDir: string): Promise<void> {
@@ -4331,6 +4338,16 @@ async function activateStagedArtifact(
 	if (!descriptor) throw unavailable('it does not record what its build decided');
 
 	await options.admitIsolation?.(descriptor);
+
+	// `.complete` is a durability marker over the bytes, not a seal on them: nothing stops a dormant artifact
+	// being edited while it waits, and every check that made it safe to activate ran at stage time. Both are
+	// re-run here, on the cold path, rather than trusted from a marker. The link rule is the one that must
+	// not be skipped — `repairRelocatedDependencyLinks` runs past the commit point and can only warn, so a
+	// link planted after staging would otherwise reach the live path with the operation reporting success.
+	await assertOwnedArtifactTree(candidateDirPath, application.name, 'activate');
+	// Also the activation's `prepare` phase end: the deploy path emits `prepare`/`start` for every mode but
+	// only ever emitted its `done` from here.
+	await options.validateCandidate?.(candidateDirPath);
 
 	if (!application.isNewComponent) {
 		application.packageMetadataChanged = installedRuntimeChanged(

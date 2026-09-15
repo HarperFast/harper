@@ -638,7 +638,13 @@ did not need it:
 - **Claiming an id is exclusive.** `buildCandidateApplication` used to tolerate an existing deployment
   directory because a fresh UUID could not collide; a public id can be repeated by an operator or by a
   redelivered replication, so a claim now rejects another component's directory and any directory carrying
-  `.complete`, and rebuilds only over an uncertified partial. The id this request names is also pinned
+  `.complete`, and rebuilds only over an uncertified partial of its _own_ component. Ownership is published
+  as part of the claim — the `.component` sidecar is written right after the exclusive `mkdir`, not at
+  certification — because `buildCandidateApplication` can spend minutes resolving and packing before any
+  tree exists to infer an owner from. For that whole window the directory answered to nobody, and an empty
+  `readdir` is indistinguishable from an abandoned claim, so a second component could delete a build that
+  was still running. **Emptiness is not a verdict:** an unattributed directory is refused, never reclaimed,
+  which is the same reading recovery already gives it. The id this request names is also pinned
   through the preparation preamble, so retention cannot evict the artifact the request is about to use —
   which it otherwise would, immediately, at `deployment_stagingRetention_maxCount: 0`. The contract is
   bounded: an id names one artifact _while that artifact exists_. Activation consumes it (the swap is a
@@ -647,7 +653,11 @@ did not need it:
   tree resolving outside it (bar the `node_modules/harper`/`harperdb` links the loader owns and repairs).
   Certification fsyncs the tree but follows no links, and the post-swap relocation repair leaves external
   targets alone — so a link out of the build is a hole in "activate exactly the bytes that were certified"
-  that only a delay makes reachable.
+  that only a delay makes reachable. **`.complete` is a durability marker over the bytes, not a seal on
+  them:** nothing stops a dormant artifact being edited while it waits, so the link rule and the load
+  validation are both re-run at activation rather than trusted from the marker. Content tampering is still
+  not detected — that needs a manifest the marker is bound to, and the load validation that would catch a
+  broken entry point is a no-op on the main thread until #2315 step 2.
 
 Certification moved out of `activateCandidateApplication` and up into `prepareApplication` for the same
 reason: `markCandidateComplete` fsyncs the whole candidate tree, and a delayed activation must not re-walk

@@ -314,6 +314,53 @@ describe('claiming a deployment id', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
+	it('refuses an id whose directory is empty, because a claim in flight looks exactly like that', async function () {
+		this.timeout(20000);
+		const root = await newRoot('claim-empty');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		// What another component's claim looks like for as long as it takes to resolve and pack: the
+		// directory exists, names nobody, and holds nothing yet. Emptiness cannot distinguish it from a
+		// claim that got no further, and only that component's own preparation lock — not this one —
+		// serializes it, so deleting on an empty read deletes a build that is still running.
+		const dir = deploymentDir(root, 'a1');
+		await fs.mkdir(dir, { recursive: true });
+
+		await assert.rejects(() => stage(root, 'web', 'a1', 'WEB STAGED\n'), /has not named its component yet/);
+		assert.ok(existsSync(dir), 'the in-flight claim is left alone');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('names its component as part of the claim, before there is a tree to infer it from', async function () {
+		this.timeout(20000);
+		const root = await newRoot('claim-names-early');
+		const tarball = await makeTarball({
+			'package.json': '{"name":"web","version":"2.0.0"}\n',
+			'index.js': 'STAGED v2\n',
+		});
+		const app = applicationAt(root, 'web');
+		let namedWhenClaimed;
+		let treeWhenClaimed;
+		Object.defineProperty(app, 'payload', {
+			configurable: true,
+			get() {
+				// The deployment directory exists only once the claim has succeeded, so the first read that
+				// sees it is inside the window a concurrent claim used to reclaim: after the mkdir, before
+				// anything is extracted.
+				if (existsSync(deploymentDir(root, 'a1'))) {
+					namedWhenClaimed ??= existsSync(path.join(deploymentDir(root, 'a1'), '.component'));
+					treeWhenClaimed ??= existsSync(path.join(deploymentDir(root, 'a1'), 'web'));
+				}
+				return tarball;
+			},
+		});
+
+		await prepareApplication(app, { mode: 'stage', artifactId: 'a1' });
+
+		assert.strictEqual(treeWhenClaimed, false, 'no single component directory to infer an owner from yet');
+		assert.strictEqual(namedWhenClaimed, true, 'and the claim has already published who it belongs to');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
 	it('rejects an id that is not a single path segment before it reaches the filesystem', async () => {
 		const root = await newRoot('claim-traversal');
 		const live = path.join(root, 'web');
@@ -417,6 +464,22 @@ describe('activating a staged artifact', () => {
 			await assert.rejects(() => activate(root, 'web', 'a1'), /belongs to 'api'/);
 			assert.ok(existsSync(deploymentDir(root, 'a1')), "another component's artifact is not this request's to remove");
 			assert.strictEqual(await readLive(root, 'web'), 'LIVE web\n');
+			await fs.rm(root, { recursive: true, force: true });
+		});
+
+		it('when the artifact gained a link out of its tree while it sat dormant', async function () {
+			this.timeout(20000);
+			const root = await newRoot('reject-tampered-link');
+			await writeLive(root, 'web', 'LIVE v1\n');
+			await stage(root, 'web', 'a1', 'STAGED v2\n');
+			// `.complete` vouches that the bytes reached storage; it is not a seal over them. The link rule
+			// ran at stage time, so without re-running it here an artifact edited while dormant reaches the
+			// commit rename — and the post-swap repair runs past that point and can only warn.
+			await fs.symlink(root, path.join(deploymentDir(root, 'a1'), 'web', 'escape'), 'dir');
+
+			await assert.rejects(() => activate(root, 'web', 'a1'), /links outside the build/);
+			assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n', 'the previous version is still serving');
+			assert.ok(existsSync(deploymentDir(root, 'a1')), 'and a refusal never deletes what it refused');
 			await fs.rm(root, { recursive: true, force: true });
 		});
 
