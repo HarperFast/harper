@@ -5800,7 +5800,7 @@ export function makeTable(options) {
 		 * The payload goes in as bytes rather than through `recordUpdater`, which would run it through
 		 * schema projection and the table's shared structure dictionary.
 		 */
-		static writeLockControlEntry(entry: LockControlEntry): Promise<number> {
+		static writeLockControlEntry(entry: LockControlEntry): Promise<number | undefined> {
 			const encodedRecord = encodeLockControlPayload(entry);
 			const nodeId = getThisNodeId(auditStore) ?? 0;
 			let position: number;

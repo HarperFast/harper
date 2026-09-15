@@ -92,7 +92,12 @@ const MAX_EXPIRIES_PER_TICK = 256;
 const MAX_NODE_NAME_LENGTH = 255;
 const MAX_LOCK_DEPENDENCIES = 1_024;
 const MAX_DEPENDENCY_SETS_PER_TABLE = 20_000;
-const DELEGATED_KEY_FILTER_WORDS = 2_048;
+/**
+ * A 256 KiB filter keeps the false-positive rate near 1% through 200,000 distinct delegated keys
+ * per lock-active table and generation. Saturation remains safe — it selects recovery — but making
+ * that the normal path would turn every first lock on a new key into a cluster-wide barrier.
+ */
+const DELEGATED_KEY_FILTER_WORDS = 65_536;
 /** A node whose identity resolved to one of these is not distinctive enough to be a ring member. */
 const NON_DISTINCTIVE_NODE_NAMES = new Set(['127.0.0.1', '::1', 'localhost', '0.0.0.0']);
 
@@ -171,7 +176,11 @@ export interface LockControlEntry {
 	 * delegate is still admitting.
 	 */
 	token: FencingToken;
-	/** Inherited clean-handoff lineage; null preserves retained lineage, absent means legacy/unknown. */
+	/**
+	 * Inherited clean-handoff lineage. Null hands back an unused first grant without advancing it; a
+	 * renewed grant still drops retained lineage because its earlier token may have admitted writes.
+	 * Absent means legacy/unknown.
+	 */
 	dependencies?: LockDependencySet | null;
 }
 
@@ -239,9 +248,12 @@ export interface ClusterLockTransport {
 	homeMap(database: string): LockHomeMap | undefined;
 	/**
 	 * Overrides core's cold-start grant quarantine (§4.3). Set it only where a previous incarnation
-	 * of this process provably issued nothing — a fresh database, a first start, or a test. Omitted
-	 * means core enforces the full `DELEGATION_LEASE_MS + skew` from that coordinator's construction —
-	 * see `#grantableAfterMono` for why neither process start nor thread start is a sound anchor.
+	 * of this process provably issued nothing — a fresh database, a first start, or a test. Because the
+	 * same attestation enables the virgin-key freshness fast path, it must prove that no earlier
+	 * incarnation delegated any key under the current home-map generation at any time, not merely that
+	 * its last delegation lease has elapsed. Omitted means core enforces the full
+	 * `DELEGATION_LEASE_MS + skew` from that coordinator's construction — see `#grantableAfterMono` for
+	 * why neither process start nor thread start is a sound anchor.
 	 */
 	grantableAfterMono?: number;
 	/**
@@ -531,6 +543,8 @@ interface HomeGrant {
 	token: FencingToken;
 	/** Requirement handed to this delegate; reused if the same node renews after losing local state. */
 	dependencies: LockDependencySet | null;
+	/** This grant advanced from an earlier token that may already have admitted writes. */
+	renewed?: boolean;
 	/**
 	 * Monotonic deadline on THIS node, set to the delegate's lease PLUS skew. The home always outwaits
 	 * the delegate, so it can never re-grant a key the previous delegate still believes it holds.
@@ -1041,7 +1055,7 @@ export class LockCoordinator {
 							requirement,
 							homeMap.homes,
 							deadlineMono,
-							pending.recalledPromise
+							pending
 						);
 						authority = this.#authority();
 						if (authority === barrierAuthority) break;
@@ -1248,7 +1262,7 @@ export class LockCoordinator {
 			} else {
 				this.#dependencySets.delete(keyId);
 			}
-		}
+		} else if (grant.renewed) this.#dependencySets.delete(keyId);
 		this.#clearGrant(keyId, grant);
 	}
 
@@ -1396,6 +1410,7 @@ export class LockCoordinator {
 				for (const resolve of waiters) resolve();
 			}
 		}
+		for (const pending of this.#pendingDelegations.values()) pending.markRecalled();
 		// The delegations THIS node issued as a home outlive it: no peer sees a local close, so each one
 		// stands until its own deadline. Leave the latest of those deadlines, and the counter, for
 		// whatever coordinator takes this table next.
@@ -1668,8 +1683,9 @@ export class LockCoordinator {
 		requirement: LockDependencySet | null,
 		homes: readonly string[],
 		deadlineMono: number,
-		recalled?: Promise<void>
+		pending?: PendingDelegation
 	): Promise<LockDependencySet> {
+		if (pending?.recalled) throw PENDING_DELEGATION_RECALLED;
 		if (requirement?.length === 0) return requirement;
 		const remaining = deadlineMono - this.#monotonic();
 		if (remaining <= 0) throw new Error('the lock wait elapsed before its freshness barrier started');
@@ -1687,9 +1703,9 @@ export class LockCoordinator {
 				throw new Error('the lock wait elapsed before its freshness barrier completed');
 			}),
 		];
-		if (recalled)
+		if (pending)
 			alternatives.push(
-				recalled.then(() => {
+				pending.recalledPromise.then(() => {
 					timeout.cancel();
 					throw PENDING_DELEGATION_RECALLED;
 				})
@@ -1808,6 +1824,7 @@ export class LockCoordinator {
 				// Renewal for the node that already holds it: extend rather than recall itself.
 				this.#recordGenerationActedOn(homeMap.generation);
 				existing.token = [homeMap.generation, homeMap.homeIncarnation, ++this.#counter];
+				existing.renewed = true;
 				existing.expiresMono = now + DELEGATION_LEASE_MS + this.#skewMs;
 				return {
 					granted: true,
@@ -1948,6 +1965,14 @@ export class LockCoordinator {
 		} catch (error) {
 			// A lost release costs the key its remaining lease on the home; it never costs exclusion.
 			warnOnce('failed to write a record lock release entry', error);
+			// A local home can settle its own failed handback without waiting out the full grant. There
+			// was no durable clean release, so discard lineage and force the next delegate through recovery.
+			try {
+				const keyId = this.#keyIdOf(entry.key);
+				const grant = this.#grants.get(keyId);
+				if (grant?.delegate === this.nodeId && compareTokens(grant.token, entry.token) === 0)
+					this.#expireGrant(keyId, grant);
+			} catch {}
 		}
 	}
 

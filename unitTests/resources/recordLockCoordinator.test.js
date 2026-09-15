@@ -187,7 +187,7 @@ class FakeCluster {
 			if (!node?.alive) return Promise.resolve();
 			const position = ++this.tsCounter;
 			node.written.push({ ...entry, position });
-			this.#broadcastRelease(name, entry, position, !node.writerReturnsVoid);
+			this.#broadcastRelease(name, entry, position);
 			return Promise.resolve(node.writerReturnsVoid ? undefined : position);
 		};
 	}
@@ -233,13 +233,11 @@ class FakeCluster {
 	}
 
 	/** A release entry replicates to every node, as a transaction-log entry does. */
-	#broadcastRelease(author, entry, position, applyLocally = true) {
+	#broadcastRelease(author, entry, position) {
 		for (const [name, node] of this.nodes) {
 			if (name === author || !node.alive) continue;
 			node.coordinator.applyEntry(entry, author, position);
 		}
-		// The author applies its own entry too, as the local write path does.
-		if (applyLocally) this.node(author).coordinator.applyEntry(entry, author, position);
 	}
 
 	/** The node that homes this key under the current membership. */
@@ -521,6 +519,21 @@ describe('record lock delegations', () => {
 			cluster.node('gamma').coordinator.release(key, contender.admissionId);
 		});
 
+		it('cancels a pending freshness barrier when its coordinator closes', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha').coordinator;
+			const first = await alpha.acquire(key, LEASE, WAIT);
+			alpha.release(key, first.admissionId);
+
+			cluster.beforeFreshness = (name) => (name === 'beta' ? new Promise(() => {}) : undefined);
+			const beta = cluster.node('beta');
+			const acquiring = beta.coordinator.acquire(key, LEASE, WAIT);
+			await waitFor(() => beta.freshnessCalls.length === 1);
+			beta.coordinator.close();
+			await assert.rejects(acquiring, /coordination was closed/);
+		});
+
 		it('does not lose a recall that arrives before the grant reply', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('gamma');
@@ -546,6 +559,7 @@ describe('record lock delegations', () => {
 
 			await assert.rejects(() => beta.coordinator.acquire(key, LEASE, WAIT), /No agreed record lock home map/);
 			assert.strictEqual(beta.coordinator.stats.delegations, 0, 'the recalled reply was installed');
+			assert.strictEqual(beta.freshnessCalls.length, 0, 'a recalled reply launched an unused freshness barrier');
 			await waitFor(() => cluster.node('gamma').coordinator.stats.granted === 0);
 			const contender = await cluster.node('gamma').coordinator.acquire(key, LEASE, WAIT);
 			cluster.node('gamma').coordinator.release(key, contender.admissionId);
@@ -559,7 +573,6 @@ describe('record lock delegations', () => {
 			// Leave the first admission active while advancing far enough that a second maximum
 			// lease requires renewal. Table's native key lock normally serializes these calls, but
 			// exercising the coordinator directly proves its recall state machine does not clear a
-			// grant before an inherited admission drains.
 			cluster.advance('alpha', DELEGATION_LEASE_MS - MAX_LOCK_LEASE_MS + 1);
 
 			cluster.beforeReply = async (from, _to, _request, reply) => {
@@ -691,6 +704,35 @@ describe('record lock delegations', () => {
 			const round = await gamma.coordinator.acquire(key, LEASE, WAIT);
 			assert.strictEqual(gamma.freshnessCalls.at(-1).dependencies, null);
 			gamma.coordinator.release(key, round.admissionId);
+		});
+
+		it('takes recovery when a renewed grant is handed back without clean lineage', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha');
+			const first = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, first.admissionId);
+
+			const renewed = await cluster.node('gamma').coordinator.onDelegationRequest({
+				key,
+				requester: 'alpha',
+				generation: 1,
+				leaseMs: LEASE,
+			});
+			assert.strictEqual(renewed.granted, true);
+			cluster.advance('alpha', DELEGATION_LEASE_MS + 1);
+			await cluster.writeControlFor('alpha')({
+				type: 'lockRelease',
+				key,
+				requester: 'alpha',
+				token: renewed.token,
+				dependencies: null,
+			});
+
+			const beta = cluster.node('beta');
+			const successor = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
+			beta.coordinator.release(key, successor.admissionId);
 		});
 
 		it('ignores recovery positions for nodes outside the current lock map', async () => {
@@ -2289,6 +2331,21 @@ describe('record lock delegations', () => {
 				confirmed,
 				'the writer throw escaped the surrender, so the home retried the recall'
 			);
+		});
+
+		it('recovers immediately when a self-home release writer fails', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta']);
+			const key = cluster.keyHomedOn('alpha');
+			const alpha = cluster.node('alpha');
+			const first = await alpha.coordinator.acquire(key, LEASE, WAIT);
+			alpha.coordinator.release(key, first.admissionId);
+			alpha.writerThrows = true;
+
+			const beta = cluster.node('beta');
+			const successor = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.ok(alpha.writerCalls > 0, 'the self-home release writer did not fail');
+			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
+			beta.coordinator.release(key, successor.admissionId);
 		});
 	});
 });
