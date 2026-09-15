@@ -822,21 +822,18 @@ async function deployComponent(req) {
 				const previous = configUtils.getConfigObj()?.[req.project];
 				await configUtils.addConfig(req.project, entry);
 				env.initSync(true);
-				// Read BACK rather than compared against `entry`: the undo below has to tell "nobody has touched
-				// this since" from "somebody has", and only a value that went through the same write-and-parse
-				// round trip is comparable to one read later. Comparing the entry as passed would make any
-				// serialization difference read as a concurrent change and silently skip every undo.
+				// Read BACK, not `entry` — see `publishedEntryStillStands`.
 				const published = configUtils.getConfigObj()?.[req.project];
 				return async () => {
-					// Only what this activation published is this activation's to take back. The preparation lock
-					// does not serialize root-config writers, so a `set_configuration` acknowledged while the swap
-					// was retrying would otherwise be overwritten by a snapshot taken before it. Re-read from
-					// disk first: `set_configuration` writes the file without refreshing this process's config
-					// object, so comparing the cache would compare against a value that predates it and conclude
-					// nothing had changed. This narrows the window rather than closing it — serializing config
-					// publication is #2315 step 3.
-					env.initSync(true);
-					if (!isDeepStrictEqual(configUtils.getConfigObj()?.[req.project], published)) return;
+					if (
+						!publishedEntryStillStands(
+							published,
+							() => env.initSync(true),
+							() => configUtils.getConfigObj()?.[req.project]
+						)
+					) {
+						return;
+					}
 					if (previous === undefined) configUtils.deleteConfigFromFile([req.project]);
 					else await configUtils.addConfig(req.project, previous);
 					env.initSync(true);
@@ -1116,6 +1113,27 @@ async function deployComponent(req) {
 		}
 		throw outErr;
 	}
+}
+
+/**
+ * Whether the root-config entry an activation published is still the one on disk — the condition for that
+ * activation's failure to take it back. A `set_configuration` acknowledged while the swap was retrying is
+ * not this operation's to overwrite, and restoring a snapshot taken before it would silently drop it.
+ *
+ * Split out from the caller so it can be tested without a deploy: this is the only guard on a hazard the
+ * preparation lock does not cover, and both ways it can regress fail silently. `refreshConfig` is called
+ * BEFORE the read and is load-bearing — `set_configuration` writes the config file without refreshing this
+ * process's config object, so a cached read compares against a value that predates the very change the
+ * guard exists to protect and always concludes nothing moved. It narrows the window rather than closing
+ * it; serializing config publication is #2315 step 3.
+ *
+ * `published` must be the entry as read back after publication, not as passed in: only two values that went
+ * through the same write-and-parse round trip are comparable, and comparing against the argument would read
+ * any serialization difference as a concurrent change and skip every undo.
+ */
+function publishedEntryStillStands(published, refreshConfig, readCurrentEntry) {
+	refreshConfig();
+	return isDeepStrictEqual(readCurrentEntry(), published);
 }
 
 /**
@@ -1612,6 +1630,7 @@ exports.dropCustomFunctionProject = dropCustomFunctionProject;
 exports.packageComponent = packageComponent;
 exports.deployComponent = deployComponent;
 exports.unconfirmedStagingPeers = unconfirmedStagingPeers;
+exports.publishedEntryStillStands = publishedEntryStillStands;
 exports.getComponents = getComponents;
 exports.getComponentFile = getComponentFile;
 exports.setComponentFile = setComponentFile;

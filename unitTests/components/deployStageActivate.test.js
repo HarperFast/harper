@@ -23,7 +23,7 @@ const {
 	Application,
 } = require('#src/components/Application');
 const { packageDirectory } = require('#src/components/packageComponent');
-const { unconfirmedStagingPeers } = require('#src/components/operations');
+const { unconfirmedStagingPeers, publishedEntryStillStands } = require('#src/components/operations');
 
 async function newRoot(label) {
 	return fs.mkdtemp(path.join(os.tmpdir(), `stage-activate-${label}-`));
@@ -795,6 +795,62 @@ describe('a build with no artifact id', () => {
 
 		assert.strictEqual(candidatePath, candidateApplicationPath(dirPath, 'lifecycle-token'));
 		await fs.rm(root, { recursive: true, force: true });
+	});
+});
+
+describe('whether a failed activation still owns the root-config entry it published', () => {
+	// The only guard on a hazard the preparation lock does not cover — it serializes deploys of one
+	// component, not root-config writers — and both ways it can regress fail silently.
+	it('refreshes before it reads, because a config write does not update this process in place', () => {
+		const order = [];
+		publishedEntryStillStands(
+			{ package: 'npm:web@2' },
+			() => order.push('refresh'),
+			() => {
+				order.push('read');
+				return { package: 'npm:web@2' };
+			}
+		);
+
+		assert.deepStrictEqual(
+			order,
+			['refresh', 'read'],
+			'reading first compares against a value that predates the change this guard exists to protect'
+		);
+	});
+
+	it('still stands when nothing else touched it, whatever order the keys come back in', () => {
+		assert.strictEqual(
+			publishedEntryStillStands(
+				{ package: 'npm:web@2', isolated: false },
+				() => {},
+				() => ({ isolated: false, package: 'npm:web@2' })
+			),
+			true
+		);
+	});
+
+	it('does not stand once something else has changed the entry, so the undo leaves it alone', () => {
+		assert.strictEqual(
+			publishedEntryStillStands(
+				{ package: 'npm:web@2' },
+				() => {},
+				() => ({ package: 'npm:web@3' })
+			),
+			false,
+			"a set_configuration acknowledged while the swap retried is not this activation's to overwrite"
+		);
+	});
+
+	it('does not stand when the entry is gone entirely', () => {
+		assert.strictEqual(
+			publishedEntryStillStands(
+				{ package: 'npm:web@2' },
+				() => {},
+				() => undefined
+			),
+			false
+		);
 	});
 });
 
