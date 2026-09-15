@@ -132,7 +132,8 @@ its source apply loop, before delivering events. Registration does not replay ea
 
 The listener receives `{ database, table?, nodeId, position, localTime?, error }`. `nodeId` is
 the audit header's translated origin id, not the immediate relay; `position` is the failed
-event's original `timestamp` (the origin transaction-log key), never its record `version` or
+event's original `timestamp` (the origin transaction-log key), inherited from the transaction
+envelope for sub-writes without their own coordinates, never its record `version` or
 peer resume `localTime`. Events without numeric origin and log coordinates cannot be attributed
 and are not reported. A transaction commit failure uses its saved begin event, including when
 an `end_txn` marker lacks an origin or a new `beginTxn` belongs to a different origin.
@@ -143,7 +144,9 @@ Consecutive `beginTxn` events require pulling the new begin marker to close the 
 transaction; the preceding failure's notification completes before staging that new marker's
 write. The listener set is captured when notification starts, and callbacks run in registration
 order outside the source transaction's async context. A listener may therefore persist a hole
-in its own transaction. It must resolve only after that state is durable and be idempotent for
+in its own transaction. Dropped-entry notifications can run while the source transaction is
+still open: persist to dedicated state keys/tables outside the replicated writes, and never
+wait for that source transaction to commit. A listener must resolve only after its state is durable and be idempotent for
 `(nodeId, position)`: a crash before the later cursor update can replay the same failure.
 
 The hook covers terminal commit/staging failures, malformed transaction envelopes, unknown
@@ -151,7 +154,10 @@ operations, valueless puts, and explicitly discarded lock-control entries. These
 notifications before the next source pull, even inside an open transaction. A successful commit
 followed by a failing `onCommit` callback or resume-cursor write is logged as before but does not
 report a missing write. Conflict retries and successful no-op conflict/dedup resolution are
-unchanged. The outer subscription-error handler terminates iteration and is not a skip.
+unchanged. An unsupported operation, including a future operation type, is reported because
+core cannot certify that it applied it; transports should consume their own non-write markers
+before forwarding events to the table apply loop. The outer subscription-error handler
+terminates iteration and is not a skip.
 
 Listener throws and rejections are logged individually and do not stop later listeners or change
 continue-on-failure behavior. Core has no timeout or durable fallback for listeners: a hung

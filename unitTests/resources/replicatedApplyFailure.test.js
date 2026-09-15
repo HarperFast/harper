@@ -10,6 +10,7 @@ const {
 } = require('#src/resources/replicatedApplyFailure');
 const { waitFor } = require('../waitFor');
 const { pinLogConfig } = require('../logConfigFixture');
+const { exportIdMapping } = require('#src/resources/nodeIdMapping');
 
 function deferred() {
 	let resolve, reject;
@@ -101,7 +102,6 @@ describe('replicated apply failure listeners', function () {
 			then(resolve) {
 				txn = event.transaction;
 				while (!txn.db && txn.next) txn = txn.next;
-				// Exercise the real pre-commit hook on both engines without replacing commit or storage methods.
 				txn.addWrite({
 					key: `${event.id}-failure`,
 					store: Table.primaryStore,
@@ -198,7 +198,14 @@ describe('replicated apply failure listeners', function () {
 		});
 	}
 
-	for (const kind of ['staging', 'empty transaction', 'unknown operation', 'lock control', 'valueless put']) {
+	for (const kind of [
+		'staging',
+		'empty transaction',
+		'unknown operation',
+		'lock control',
+		'lock origin',
+		'valueless put',
+	]) {
 		it(`awaits notification for a ${kind} failure before pulling another event`, async () => {
 			const { Table, pulls, start } = fixture();
 			const failed = put('failed');
@@ -206,7 +213,9 @@ describe('replicated apply failure listeners', function () {
 			if (kind === 'valueless put') Object.assign(failed, { value: null, beginTxn: true });
 			if (kind === 'empty transaction') Object.assign(failed, { type: 'transaction', writes: [] });
 			if (kind === 'unknown operation') Object.assign(failed, { type: 'invalid-operation', beginTxn: true });
-			if (kind === 'lock control') Object.assign(failed, { type: 'lockGrant', value: [], beginTxn: true });
+			if (kind === 'lock control') Object.assign(failed, { type: 'lockRelease', value: [], beginTxn: true });
+			if (kind === 'lock origin')
+				Object.assign(failed, { type: 'lockRelease', value: ['key', 'peer', 1, 2, 3], nodeId: 12345, beginTxn: true });
 			const gate = deferred();
 			const failures = [];
 			listen(async (failure) => {
@@ -228,6 +237,88 @@ describe('replicated apply failure listeners', function () {
 		});
 	}
 
+	it('inherits origin and position for a dropped write inside a transaction envelope', async () => {
+		const { Table, pulls, start } = fixture();
+		const notification = deferred();
+		const failures = [];
+		const envelope = {
+			type: 'transaction',
+			nodeId: 21,
+			timestamp: Date.now(),
+			localTime: 999,
+			writes: [{ type: 'put', id: 'dropped', value: null }],
+		};
+		listen(async (failure) => {
+			failures.push(failure);
+			await notification.promise;
+		});
+		try {
+			start([envelope, put('next')]);
+			await waitFor(() => failures.length === 1);
+			assert.equal(pulls.length, 1);
+			assert.equal(failures[0].nodeId, envelope.nodeId);
+			assert.equal(failures[0].position, envelope.timestamp);
+			assert.equal(failures[0].localTime, envelope.localTime);
+			notification.resolve();
+			await waitFor(async () => await Table.get('next'));
+			assert.equal(await Table.get('dropped'), undefined);
+		} finally {
+			notification.resolve();
+		}
+	});
+
+	it('reports a lock-control origin lookup exception and keeps applying', async () => {
+		const { Table, start } = fixture('apply-failed-origin-lookup');
+		const key = Symbol.for('remote-ids');
+		exportIdMapping(Table.auditStore);
+		const saved = Buffer.from(Table.auditStore.getBinary(key));
+		const failures = [];
+		const restore = () => Table.auditStore.putSync(key, saved);
+		listen((failure) => {
+			failures.push(failure);
+			restore();
+		}, 'apply-failed-origin-lookup');
+		try {
+			Table.auditStore.putSync(key, Buffer.from([0xc1]));
+			const failed = put('control', { type: 'lockRelease', value: ['key', 'peer', 1, 2, 3], nodeId: 12345 });
+			start([failed, put('next')]);
+			await waitFor(async () => await Table.get('next'));
+			assert.equal(failures.length, 1);
+			assert.equal(failures[0].position, failed.timestamp);
+			assert.ok(failures[0].error instanceof Error);
+		} finally {
+			restore();
+		}
+	});
+
+	it('reports a valueless put before it can queue behind an earlier write to the same key', async () => {
+		const { Table, pulls, start } = fixture();
+		const firstWrite = deferred();
+		const notification = deferred();
+		const failures = [];
+		const first = put('same', { beginTxn: true, finished: firstWrite.promise });
+		const dropped = put('same', { value: null, timestamp: first.timestamp });
+		listen(async (failure) => {
+			failures.push(failure);
+			await notification.promise;
+		});
+		try {
+			start([first, dropped, put('next', { beginTxn: true }), { type: 'end_txn' }]);
+			await waitFor(() => failures.length === 1, {
+				message: 'the dropped write must notify before its key queue drains',
+			});
+			assert.equal(pulls.length, 2, 'the next event must wait for the dropped-write listener');
+			assert.equal(failures[0].position, dropped.timestamp);
+			notification.resolve();
+			firstWrite.resolve();
+			await waitFor(async () => await Table.get('next'));
+			assert.ok(await Table.get('same'), 'the valueless put must not remove or replace the prior record');
+		} finally {
+			notification.resolve();
+			firstWrite.resolve();
+		}
+	});
+
 	it('logs throwing and rejecting listeners, then awaits later listeners outside the source transaction', async () => {
 		const { Table, start } = fixture();
 		const syncError = `sync listener failure ${serial}`;
@@ -244,7 +335,7 @@ describe('replicated apply failure listeners', function () {
 			persisted = true;
 		});
 		start([
-			put('bad', { type: 'lockGrant', value: [], beginTxn: true }),
+			put('bad', { type: 'lockRelease', value: [], beginTxn: true }),
 			put('next', { beginTxn: true }),
 			{ type: 'end_txn' },
 		]);
