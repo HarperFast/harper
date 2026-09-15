@@ -15,6 +15,10 @@ describe('Table.getRecordCount', () => {
 	const LIVE_ROWS = 3000;
 	// mirrors MIN_ESTIMATOR_SAMPLE in resources/Table.ts
 	const MIN_ESTIMATOR_SAMPLE = 1000;
+	// Each churn round is a write pass plus a flushSync, which is what puts superseded versions in
+	// their own SST. Five saturates rocksdb's inflated `estimate-num-keys` (measured: the physical
+	// estimate stops climbing well before this), and the suite's CI step has under a minute of slack.
+	const CHURN_ROUNDS = 5;
 
 	let RecordCountTable;
 	let EstimatorTable;
@@ -102,7 +106,7 @@ describe('Table.getRecordCount', () => {
 		// versions accumulating across uncompacted SSTs drive rocksdb `estimate-num-keys` well above the
 		// live count, and the base must still track live rows. Needs more than MIN_ESTIMATOR_SAMPLE rows,
 		// or the scan completes exactly and never exercises the estimator at all.
-		const Churned = await buildTable('RecordCountUniformChurn', LIVE_ROWS, { churnRounds: 10 });
+		const Churned = await buildTable('RecordCountUniformChurn', LIVE_ROWS, { churnRounds: CHURN_ROUNDS });
 		const physicalEstimate = Churned.primaryStore.getEstimatedKeyCount?.() ?? LIVE_ROWS;
 		if (physicalEstimate < LIVE_ROWS * 1.5) {
 			console.warn(
@@ -124,7 +128,7 @@ describe('Table.getRecordCount', () => {
 		// over-reports. The bounded scan cannot detect this, so the contract that has to hold is the
 		// range: built from the uncalibrated physical remainder, it must still contain the live count.
 		const Middle = await buildTable('RecordCountMiddleChurn', LIVE_ROWS, {
-			churnRounds: 30,
+			churnRounds: CHURN_ROUNDS,
 			churnFrom: 1000,
 			churnTo: 2000,
 		});
@@ -188,8 +192,8 @@ describe('Table.getRecordCount', () => {
 		// interval is self-contradictory whatever the base did. Head-concentrated churn is the case that
 		// produces it: the inflated prefix calibrates the base *below* what the two samples already counted.
 		const shapes = [
-			['RecordCountHeadChurn', { churnRounds: 30, churnFrom: 0, churnTo: 1000 }],
-			['RecordCountTailChurn', { churnRounds: 30, churnFrom: 2000, churnTo: 3000 }],
+			['RecordCountHeadChurn', { churnRounds: CHURN_ROUNDS, churnFrom: 0, churnTo: 1000 }],
+			['RecordCountTailChurn', { churnRounds: CHURN_ROUNDS, churnFrom: 2000, churnTo: 3000 }],
 		];
 		for (const [name, shape] of shapes) {
 			const built = await buildTable(name, LIVE_ROWS, shape);
@@ -218,13 +222,13 @@ describe('Table.getRecordCount', () => {
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 		});
-		const TOTAL = 5000;
-		const LIVE = 2000;
+		const TOTAL = 3600;
+		const LIVE = 1200;
 		let last;
 		for (let i = 0; i < TOTAL; i++) last = Trimmed.put({ id: rowId(i), name: 'name-' + i });
 		await last;
-		for (let i = 0; i < 1500; i++) last = Trimmed.delete(rowId(i));
-		for (let i = 3500; i < TOTAL; i++) last = Trimmed.delete(rowId(i));
+		for (let i = 0; i < 1200; i++) last = Trimmed.delete(rowId(i));
+		for (let i = 2400; i < TOTAL; i++) last = Trimmed.delete(rowId(i));
 		await last;
 		Trimmed.primaryStore.flushSync?.();
 
