@@ -3,13 +3,13 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 import {
 	FullTextDerivedIndexBackend,
-	HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES,
 	HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES,
 	type FullTextDerivedIndexBackendOptions,
 	type FullTextDerivedIndexEngine,
 	type FullTextDerivedIndexInspection,
 } from './FullTextDerivedIndexBackend.ts';
 import {
+	getValidatedFullTextRuntimeInfo,
 	loadFullTextNativeBinding,
 	type NativeFullTextIndexConfiguration,
 	type NativeFullTextModule,
@@ -34,7 +34,6 @@ export class NativeFullTextDerivedIndexLifecycle {
 	readonly #path: string;
 	readonly #generation: string;
 	#binding?: NativeFullTextModule;
-	#invalidHandle?: { close(options: { mode: 'rollback' }): Promise<{ cleanupError?: unknown }> };
 	#maxCommitPayloadBytes?: number;
 
 	constructor(options: NativeFullTextDerivedIndexLifecycleOptions) {
@@ -61,7 +60,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 			...this.#nativeOptions(),
 			limits: this.#options.limits,
 		});
-		this.#maxCommitPayloadBytes = (await binding.runtimeInfo()).limits.maxCommitPayloadBytes;
+		this.#maxCommitPayloadBytes = getValidatedFullTextRuntimeInfo(binding).limits.maxCommitPayloadBytes;
 		await this.#reclaimRetired();
 	}
 
@@ -75,42 +74,18 @@ export class NativeFullTextDerivedIndexLifecycle {
 	}
 
 	async open(): Promise<FullTextDerivedIndexEngine> {
-		await this.quiesce();
-		const engine = await this.#requireBinding().openNativeFullTextIndex({
+		return this.#requireBinding().openNativeFullTextIndex({
 			...this.#nativeOptions(),
 			limits: this.#options.limits,
 		});
-		if (validEngine(engine)) return engine;
-		const error = new TypeError('@harperfast/fulltext/native returned an invalid index handle');
-		if (engine && typeof (engine as { close?: unknown }).close === 'function') {
-			this.#invalidHandle = engine as {
-				close(options: { mode: 'rollback' }): Promise<{ cleanupError?: unknown }>;
-			};
-			try {
-				await this.quiesce();
-			} catch (closeError) {
-				throw new AggregateError([error, closeError], 'Invalid full-text index handle could not be closed');
-			}
-		}
-		throw error;
 	}
 
 	async reset(): Promise<void> {
-		await this.quiesce();
 		const result = await this.#requireBinding().resetNativeFullTextIndex({
 			path: this.#path,
 			indexId: this.#options.indexId,
 		});
 		await this.#reclaimRetired(result.state === 'reset' ? result.retiredPath : undefined);
-	}
-
-	async quiesce(): Promise<void> {
-		const handle = this.#invalidHandle;
-		if (!handle) return;
-		const result = await handle.close({ mode: 'rollback' });
-		if (result.cleanupError)
-			logWarning('Invalid full-text index handle closed with a native cleanup error', result.cleanupError);
-		if (this.#invalidHandle === handle) this.#invalidHandle = undefined;
 	}
 
 	async #reclaimRetired(retiredPath?: string): Promise<void> {
@@ -161,9 +136,6 @@ export class NativeFullTextDerivedIndexLifecycle {
 export async function createNativeFullTextDerivedIndexBackend(
 	options: NativeFullTextDerivedIndexBackendOptions
 ): Promise<FullTextDerivedIndexBackend> {
-	const maxQueuedBytes = options.maxQueuedBytes ?? HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES;
-	if (options.limits.maxBatchBytes > maxQueuedBytes)
-		throw new RangeError('Full-text maxBatchBytes must not exceed the backend maxQueuedBytes');
 	const lifecycle = new NativeFullTextDerivedIndexLifecycle({ ...options, indexId: options.id });
 	await lifecycle.initialize();
 	const maxCursorPayloadBytes = options.maxCursorPayloadBytes ?? HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES;
@@ -181,17 +153,6 @@ export async function createNativeFullTextDerivedIndexBackend(
 
 function digest(value: string): string {
 	return createHash('sha256').update(value).digest('hex');
-}
-
-function validEngine(value: unknown): value is FullTextDerivedIndexEngine {
-	if (!value || typeof value !== 'object') return false;
-	const engine = value as Partial<Record<keyof FullTextDerivedIndexEngine, unknown>>;
-	return (
-		typeof engine.encodeMutationBatches === 'function' &&
-		typeof engine.apply === 'function' &&
-		typeof engine.publish === 'function' &&
-		typeof engine.close === 'function'
-	);
 }
 
 function logWarning(message: string, error: unknown): void {

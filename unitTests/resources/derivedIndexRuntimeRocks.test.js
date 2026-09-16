@@ -307,7 +307,9 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 class FakeNativeFullTextModule {
 	constructor() {
 		this.NativeFullTextIndex = class {
-			encodeMutationBatches() {}
+			applyMutationBatch() {}
+			publish() {}
+			close() {}
 		};
 		this.states = new Map();
 		this.opens = [];
@@ -320,7 +322,7 @@ class FakeNativeFullTextModule {
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
 			lifecycleApiVersion: 1,
-			mutationBatchApiVersion: 2,
+			mutationBatchApiVersion: 3,
 			storageBackends: ['native'],
 			limits: { maxCommitPayloadBytes: 64 * 1024 },
 		};
@@ -361,25 +363,17 @@ class FakeNativeFullTextModule {
 		}
 		return {
 			committedPayload: state.committedPayload,
-			encodeMutationBatches(batch) {
-				return {
-					batches: [
-						{
-							bytes: Buffer.from(JSON.stringify(batch)),
-							mutationCount: batch.upserts.length + batch.deletes.length,
-						},
-					],
-					rejected: [],
-					consumedUpserts: batch.upserts.length,
-					consumedDeletes: batch.deletes.length,
-				};
-			},
-			async apply(packed) {
-				const batch = JSON.parse(Buffer.from(packed).toString());
-				for (const document of batch.upserts) state.documents.set(document.id, document);
+			async applyMutationBatch(batch) {
+				for (const document of batch.upserts)
+					state.documents.set(document.id, { id: document.id, fields: { ...document.fields } });
 				for (const id of batch.deletes) state.documents.delete(id);
 				state.applications++;
-				return batch.upserts.length + batch.deletes.length;
+				return {
+					processed: batch.upserts.length + batch.deletes.length,
+					rejected: [],
+					encodedBytes: 1,
+					frames: 1,
+				};
 			},
 			async publish(payload) {
 				state.committedPayload = payload;

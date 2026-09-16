@@ -36,8 +36,11 @@ function options(storePath, binding, overrides = {}) {
 class FakeNativeModule {
 	constructor() {
 		this.NativeFullTextIndex = class {
-			encodeMutationBatches() {}
+			applyMutationBatch() {}
+			publish() {}
+			close() {}
 		};
+		this.runtimeInfoCalls = 0;
 		this.inspection = { state: 'missing' };
 		this.inspections = [];
 		this.opens = [];
@@ -47,12 +50,13 @@ class FakeNativeModule {
 	}
 
 	async runtimeInfo() {
+		this.runtimeInfoCalls++;
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
 			lifecycleApiVersion: 1,
-			mutationBatchApiVersion: 2,
+			mutationBatchApiVersion: 3,
 			storageBackends: ['native'],
 			limits: { maxCommitPayloadBytes: 64 * 1024 },
 		};
@@ -72,21 +76,13 @@ class FakeNativeModule {
 		this.opens.push(openOptions);
 		return {
 			committedPayload: this.inspection.state === 'checkpointed' ? this.inspection.committedPayload : undefined,
-			encodeMutationBatches(batch) {
+			async applyMutationBatch(batch) {
 				return {
-					batches: [
-						{
-							bytes: Buffer.from(JSON.stringify(batch)),
-							mutationCount: batch.upserts.length + batch.deletes.length,
-						},
-					],
+					processed: batch.upserts.length + batch.deletes.length,
 					rejected: [],
-					consumedUpserts: batch.upserts.length,
-					consumedDeletes: batch.deletes.length,
+					encodedBytes: 1,
+					frames: 1,
 				};
-			},
-			async apply() {
-				return 0;
 			},
 			async publish() {
 				return 1n;
@@ -160,58 +156,12 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await lifecycle.initialize();
 		await lifecycle.open();
+		assert.strictEqual(binding.runtimeInfoCalls, 1);
 		assert.deepStrictEqual(binding.opens[0].fields, [{ name: 'title', weight: 2 }]);
 		assert.strictEqual(binding.opens[0].analyzer, 'english@1');
 		assert.strictEqual(binding.opens[0].positions, true);
 		assert.strictEqual(binding.opens[0].surfaceTerms, false);
 		assert.deepStrictEqual(binding.opens[0].limits, limits);
-	});
-
-	it('rollback-closes an opened handle that does not implement the engine contract', async () => {
-		const binding = new FakeNativeModule();
-		const closes = [];
-		binding.openNativeFullTextIndex = async () => ({
-			async close(closeOptions) {
-				closes.push(closeOptions);
-				return {};
-			},
-		});
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
-		await lifecycle.initialize();
-		await assert.rejects(lifecycle.open(), /invalid index handle/);
-		assert.deepStrictEqual(closes, [{ mode: 'rollback' }]);
-	});
-
-	it('retains an invalid handle until rollback close proves quiescence', async () => {
-		const binding = new FakeNativeModule();
-		let closes = 0;
-		binding.openNativeFullTextIndex = async () => ({
-			async close() {
-				if (++closes === 1) throw new Error('writer still active');
-				return {};
-			},
-		});
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
-		await lifecycle.initialize();
-		await assert.rejects(lifecycle.open(), /could not be closed/);
-		await lifecycle.quiesce();
-		assert.strictEqual(closes, 2);
-	});
-
-	it('releases an invalid handle after native reports a quiesced cleanup error', async () => {
-		const binding = new FakeNativeModule();
-		let closes = 0;
-		binding.openNativeFullTextIndex = async () => ({
-			async close() {
-				closes++;
-				return { cleanupError: new Error('native cleanup failed after release') };
-			},
-		});
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
-		await lifecycle.initialize();
-		await assert.rejects(lifecycle.open(), /invalid index handle/);
-		await lifecycle.quiesce();
-		assert.strictEqual(closes, 1);
 	});
 
 	it('delegates reset and asks the wrapper to reclaim retired storage', async () => {
@@ -274,7 +224,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			tantivyVersion: 'test',
 			nativeAbiVersion: 5,
 			lifecycleApiVersion: 2,
-			mutationBatchApiVersion: 2,
+			mutationBatchApiVersion: 3,
 			storageBackends: ['native'],
 			limits: { maxCommitPayloadBytes: 64 * 1024 },
 		});
@@ -282,7 +232,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
 	});
 
-	it('rejects a wrapper without resumable mutation-batch support', async () => {
+	it('rejects a wrapper without logical mutation-batch support', async () => {
 		const binding = new FakeNativeModule();
 		binding.runtimeInfo = async () => ({
 			packageVersion: 'test',
@@ -292,6 +242,14 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			storageBackends: ['native'],
 			limits: { maxCommitPayloadBytes: 64 * 1024 },
 		});
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
+	});
+
+	it('rejects an unknown mutation-batch API version', async () => {
+		const binding = new FakeNativeModule();
+		const runtimeInfo = binding.runtimeInfo.bind(binding);
+		binding.runtimeInfo = async () => ({ ...(await runtimeInfo()), mutationBatchApiVersion: 4 });
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
 	});
@@ -309,16 +267,14 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		);
 	});
 
-	it('keeps the native frame limit within the backend total limit', async () => {
-		await assert.rejects(
-			createNativeFullTextDerivedIndexBackend({
-				...options(storePath, new FakeNativeModule(), {
-					limits: { ...limits, maxBatchBytes: 2048, maxQueuedBytes: 2048 },
-				}),
-				id: 'products-title',
-				maxQueuedBytes: 1024,
+	it('keeps native frame and retained-source queue limits independent', async () => {
+		const backend = await createNativeFullTextDerivedIndexBackend({
+			...options(storePath, new FakeNativeModule(), {
+				limits: { ...limits, maxBatchBytes: 2048, maxQueuedBytes: 2048 },
 			}),
-			/backend maxQueuedBytes/
-		);
+			id: 'products-title',
+			maxQueuedBytes: 1024,
+		});
+		assert.strictEqual(backend.id, 'products-title');
 	});
 });

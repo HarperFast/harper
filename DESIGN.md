@@ -2753,34 +2753,34 @@ canonical key, so the backend does not reinterpret customer IDs.
 
 #### Binding and writer lifecycle
 
-Harper validates lifecycle API 1, mutation-batch API 2, the `native` storage capability, and the
+Harper validates lifecycle API 1, mutation-batch API 3, the `native` storage capability, and the
 wrapper-reported commit-payload capacity before registration. The native ABI remains an internal
 Rust/Node compatibility check enforced by the wrapper's own loader; Harper does not couple itself
 to that implementation version. Harper keeps its cursor format ceiling at 64 KiB and refuses to
 activate if the wrapper cannot carry that configured value.
 
 ```ts
-type EncodedMutationBatches = {
-	batches: Array<{ bytes: Uint8Array; mutationCount: number }>;
+type AppliedMutationBatch = {
+	processed: number;
 	rejected: Array<{
-		operation: 'upsert' | 'delete';
+		operation: 'upsert';
 		index: number;
 		code: 'E_INVALID_ARGUMENT' | 'E_BATCH_TOO_LARGE';
 	}>;
-	consumedUpserts: number;
-	consumedDeletes: number;
+	encodedBytes: number;
+	frames: number;
 };
 
 interface NativeFullTextModule {
 	NativeFullTextIndex: new (...args: unknown[]) => {
-		encodeMutationBatches(batch, options?): EncodedMutationBatches;
+		applyMutationBatch(batch, options?): Promise<AppliedMutationBatch>;
 	};
 	runtimeInfo(): Promise<{
 		packageVersion: string;
 		tantivyVersion: string;
 		nativeAbiVersion: number;
 		lifecycleApiVersion: 1;
-		mutationBatchApiVersion: 2;
+		mutationBatchApiVersion: 3;
 		storageBackends: ReadonlyArray<'native'>;
 		limits: { maxCommitPayloadBytes: number };
 	}>;
@@ -2793,8 +2793,10 @@ interface NativeFullTextModule {
 		| { state: 'incompatible'; code: string };
 	openNativeFullTextIndex(options): Promise<{
 		readonly committedPayload?: string;
-		encodeMutationBatches(batch, options?: { maxTotalBytes?: number; allowPartial?: boolean }): EncodedMutationBatches;
-		apply(frame: Uint8Array): Promise<number>;
+		applyMutationBatch(
+			batch,
+			options: { assumeDistinctIds: true; rejectedUpsert: 'delete' }
+		): Promise<AppliedMutationBatch>;
 		publish(cursor: string): Promise<bigint>;
 		close(options?: { mode?: 'require-clean' | 'rollback' }): Promise<{ cleanupError?: unknown }>;
 	}>;
@@ -2829,17 +2831,16 @@ list passed to Fulltext when the native schema is opened. Unknown projection fie
 error that the registration path must fail rather than silently drop. This slice does not register
 schemas.
 
-In one serialized drain, the wrapper encodes FTMB frames no larger than `maxBatchBytes`. Harper
-passes its queue-byte ceiling as `maxTotalBytes` and explicitly sets `allowPartial: true`. The
-wrapper returns separate `consumedUpserts` and `consumedDeletes`; Harper applies every returned
-frame and continues with each suffix. Other callers retain Fulltext's fail-loudly default for an
-incomplete logical batch. Harper validates progress, ordering, rejection metadata, and native
-applied counts before advancing.
+In one serialized drain, Harper passes one logical mutation batch to `applyMutationBatch()`. The
+wrapper owns FTMB encoding, frame partitioning, exact `maxBatchBytes` enforcement, native frame
+counts, rejection details, and replacement deletes. Harper sets `assumeDistinctIds: true` because a
+resolved runtime chunk contains at most one mutation per source record key. Harper verifies that the
+wrapper processed the whole logical batch before advancing and uses only the rejection count for
+metrics; it does not interpret the wrapper's internal frames or rejection metadata.
 
 A wrapper-rejected upsert becomes a delete for the same derived document ID so an old searchable
-value cannot survive; it is also counted as unindexable. Rejected deletes, malformed rejection
-metadata, schema mismatch, and call-level encoding failures fail the backend. Replacement deletes
-use the same bounded-prefix loop.
+value cannot survive; Harper counts the returned rejection as unindexable. Schema mismatch and
+invalid aggregate results fail the backend.
 
 All frames and replacements for an accepted command remain staged in one writer window. One
 `publish(cursor)` makes them searchable and durable with the cursor. A failure after any staged
@@ -2853,7 +2854,7 @@ sequenceDiagram
     participant N as Native Fulltext
     R->>B: deliver(batch, epoch)
     B-->>R: accepted
-    B->>N: encode/apply bounded prefixes
+    B->>N: applyMutationBatch(logical batch)
     R->>B: flush(reason)
     B->>N: publish(cursor)
     N-->>B: segments + cursor durable/searchable
@@ -2866,7 +2867,7 @@ Apply or publish failure discards later commands and performs one rollback close
 not told accepted work was lost until close proves native quiescence. Harper permits one immediate
 replay for a transient writer failure. A second writer failure before any successful publication is
 reported as permanent, entering the shared condemnation/rebuild budget and its backoff instead of
-spinning an unbounded open/apply/close loop. A permanent encoder or protocol violation enters that
+spinning an unbounded open/apply/close loop. A wrapper contract or protocol violation enters that
 same shared budget immediately rather than adding a Fulltext-specific recovery state machine.
 
 Shutdown drains accepted work, publishes when possible, closes the writer, and resolves only after
@@ -2892,8 +2893,8 @@ generation rebuilds from authoritative tables before serving Fulltext queries. O
 reads and writes continue unless the optional derived-index lag policy is enabled and exceeded.
 
 The focused verification covers binding capabilities, delegated validation and reclamation,
-deterministic identity, inspect-without-open, lazy cursor reconciliation, bounded multi-prefix
-application, rejected-record removal, rollback, handoff quiescence, restart replay, local rebuild,
+deterministic identity, inspect-without-open, lazy cursor reconciliation, logical-batch delegation,
+rejected-record accounting, rollback, handoff quiescence, restart replay, local rebuild,
 and absence of derived storage feedback into the authoritative log. Wrapper tests own the
 filesystem safety matrix for retirement. Performance qualification must measure rebuild and
 incremental throughput, publication cost, memory, disk amplification, restart recovery, and search
