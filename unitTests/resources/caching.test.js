@@ -893,39 +893,45 @@ describe('Caching', () => {
 
 	it('Source throw error', async function () {
 		try {
-			IndexedCachingTable.setTTLExpiration(0.005);
-			await new Promise((resolve) => setTimeout(resolve, 10));
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 100 });
+			await IndexedCachingTable.invalidate(30);
 			sourceRequests = 0;
 			events = [];
 			return_error = 500;
 			let returned_error;
-			let result;
 			try {
-				result = await IndexedCachingTable.get(30);
+				await IndexedCachingTable.get(30);
 			} catch (error) {
 				returned_error = error;
 			}
 			assert.equal(returned_error?.message, 'test source error while resolving record 30 for IndexedCachingTable');
 			assert.equal(sourceRequests, 1);
 
-			IndexedCachingTable.setTTLExpiration({
-				expiration: 0.005,
-				eviction: 0.01,
-			});
 			return_error = false;
-			IndexedCachingTable.invalidate(23); // reset the entry
+			const expiredAt = (sourceExpiresAt = Date.now() - 1);
+			await IndexedCachingTable.invalidate(23);
 			await IndexedCachingTable.get(23);
+			await waitFor(
+				() =>
+					!IndexedCachingTable.primaryStore.hasLock(23) &&
+					IndexedCachingTable.primaryStore.getEntry(23)?.expiresAt === expiredAt,
+				{ message: 'the expired source fill should be committed and remain resident' }
+			);
+			const staleEntry = IndexedCachingTable.primaryStore.getEntry(23);
+			assert(staleEntry);
+			assert(staleEntry.expiresAt < Date.now());
 			sourceRequests = 0;
 			sourceResponses = 0;
 			events = [];
-			await new Promise((resolve) => setTimeout(resolve, 10));
-			// should be stale but not evicted
 			return_error = 504;
-			result = await IndexedCachingTable.get(23, { staleIfError: true });
-			assert(result); // should return stale value despite error
-			assert.equal(sourceRequests, 1); // the source request should be started
+			const result = await IndexedCachingTable.get(23, { staleIfError: true });
+			assert(result);
+			assert.equal(result.name, 'name 23');
+			assert.equal(sourceRequests, 1);
 		} finally {
 			return_error = false;
+			sourceExpiresAt = undefined;
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 100 });
 		}
 	});
 
