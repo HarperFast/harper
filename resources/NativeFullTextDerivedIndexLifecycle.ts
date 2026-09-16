@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readdir, rm } from 'node:fs/promises';
+import { lstat, readdir, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 import {
@@ -114,6 +114,11 @@ export class NativeFullTextDerivedIndexLifecycle {
 		const retiredRoot = join(dirname(this.#path), '.fulltext-retired');
 		let entries;
 		try {
+			const stats = await lstat(retiredRoot);
+			if (!stats.isDirectory() || stats.isSymbolicLink()) {
+				logWarning(`Refused to inspect invalid retired full-text root '${retiredRoot}'`, undefined);
+				return;
+			}
 			entries = await readdir(retiredRoot, { withFileTypes: true });
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;

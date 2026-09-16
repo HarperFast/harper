@@ -28,6 +28,7 @@ export interface NativeFullTextModule {
 		packageVersion: string;
 		tantivyVersion: string;
 		nativeAbiVersion: number;
+		mutationBatchApiVersion: number;
 		storageBackends: ReadonlyArray<'native'>;
 	}>;
 	openNativeFullTextIndex(
@@ -89,6 +90,7 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		typeof info.packageVersion !== 'string' ||
 		typeof info.tantivyVersion !== 'string' ||
 		info.nativeAbiVersion !== FULLTEXT_NATIVE_ABI_VERSION ||
+		info.mutationBatchApiVersion !== 2 ||
 		!Array.isArray(info.storageBackends) ||
 		!info.storageBackends.includes('native')
 	)

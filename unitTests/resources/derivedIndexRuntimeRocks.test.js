@@ -316,6 +316,7 @@ class FakeNativeFullTextModule {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 4,
+			mutationBatchApiVersion: 2,
 			storageBackends: ['native'],
 		};
 	}
@@ -358,7 +359,8 @@ class FakeNativeFullTextModule {
 						},
 					],
 					rejected: [],
-					consumedRecords: batch.upserts.length + batch.deletes.length,
+					consumedUpserts: batch.upserts.length,
+					consumedDeletes: batch.deletes.length,
 				};
 			},
 			async apply(packed) {
