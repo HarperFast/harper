@@ -23,7 +23,7 @@ export const HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES = 64 * 1024;
 const DEFAULT_OPEN_ATTEMPTS = 3;
 const DEFAULT_OPEN_RETRY_MILLISECONDS = 10;
 const MAX_CONSECUTIVE_WRITER_FAILURES = 2;
-const RESERVED_LOG_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+const UNSAFE_LOG_NAMES = new Set(['__proto__', 'constructor']);
 
 export interface FullTextDerivedIndexEngine {
 	readonly committedPayload?: string;
@@ -753,7 +753,7 @@ function normalizedCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
 	for (const name in cursor.logs) {
 		if (!Object.hasOwn(cursor.logs, name)) continue;
 		const timestamp = cursor.logs[name];
-		if (!name || RESERVED_LOG_NAMES.has(name) || !Number.isFinite(timestamp) || timestamp <= 0)
+		if (!name || UNSAFE_LOG_NAMES.has(name) || !Number.isFinite(timestamp) || timestamp <= 0)
 			throw new FullTextDerivedIndexError('Full-text cursor payload contains an invalid log position');
 		logs[name] = timestamp;
 	}

@@ -106,9 +106,9 @@ function batch(ownerEpoch, records, through, bytes = 32) {
 
 describe('FullTextDerivedIndexBackend', () => {
 	it('encodes bounded deterministic cursor payloads', () => {
-		const payload = encodeFullTextCursorPayload({ format: 1, logs: { z: 20, a: 10 } });
-		assert.strictEqual(payload, '{"format":1,"cursor":{"format":1,"logs":{"a":10,"z":20}}}');
-		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(payload).logs }, { a: 10, z: 20 });
+		const payload = encodeFullTextCursorPayload({ format: 1, logs: { z: 20, prototype: 15, a: 10 } });
+		assert.strictEqual(payload, '{"format":1,"cursor":{"format":1,"logs":{"a":10,"prototype":15,"z":20}}}');
+		assert.deepStrictEqual({ ...decodeFullTextCursorPayload(payload).logs }, { a: 10, prototype: 15, z: 20 });
 		assert.strictEqual(decodeFullTextCursorPayload(encodeFullTextCursorPayload(undefined)), undefined);
 		assert.throws(() => decodeFullTextCursorPayload('{"format":1,"cursor":{"format":1,"logs":{"local":0}}}'));
 		assert.throws(() => decodeFullTextCursorPayload('x'.repeat(32), 16));
@@ -347,11 +347,12 @@ describe('FullTextDerivedIndexBackend', () => {
 	it('publishes cursor-only progress without applying mutations', async () => {
 		const engine = new FakeEngine();
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
-		backend.deliver(batch(1n, [], cursor(20)));
+		const prototypeCursor = { format: 1, logs: { prototype: 20 } };
+		backend.deliver(batch(1n, [], prototypeCursor));
 		backend.flush('age');
 		await waitFor(() => engine.publications.length === 1);
 		assert.strictEqual(engine.applied.length, 0);
-		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, prototypeCursor.logs);
 		await backend.shutdown(1n);
 	});
 
