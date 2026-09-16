@@ -638,6 +638,22 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(engine.closes.length, 3);
 	});
 
+	it('releases a writer when its lifecycle proves a reported close error is quiesced', async () => {
+		const engine = new FakeEngine();
+		engine.closeError = Object.assign(new Error('native cleanup failed after release'), { code: 'E_CLOSE_FAILED' });
+		const source = lifecycle({ state: 'missing' }, [engine]);
+		source.isQuiescedCloseError = (error) => error?.code === 'E_CLOSE_FAILED';
+		const { backend, setEpoch } = makeBackend(source);
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		await backend.shutdown(1n);
+		setEpoch(2n);
+		await backend.reset(2n);
+		assert.strictEqual(source.resetCalls, 1);
+		await backend.shutdown(2n);
+	});
+
 	it('holds shutdown when a lifecycle-owned invalid handle is not quiescent', async () => {
 		const source = lifecycle({ state: 'missing' }, [new Error('invalid native handle')]);
 		let quiesceError = new Error('writer still active');

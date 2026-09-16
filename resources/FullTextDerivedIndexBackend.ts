@@ -50,6 +50,7 @@ export interface FullTextDerivedIndexLifecycle {
 	open(): Promise<FullTextDerivedIndexEngine>;
 	reset(): Promise<void>;
 	quiesce?(): void | Promise<void>;
+	isQuiescedCloseError?(error: unknown): boolean;
 }
 
 export type FullTextMutationBatch = {
@@ -435,7 +436,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	async #closeUninstalledEngine(engine: FullTextDerivedIndexEngine, cause: unknown): Promise<void> {
 		this.#settlingWriter = true;
 		try {
-			await engine.close({ mode: 'rollback' });
+			await this.#closeEngine(engine, { mode: 'rollback' });
 		} catch (closeError) {
 			this.#engine = engine;
 			throw new FullTextDerivedIndexError(
@@ -612,7 +613,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#engine = undefined;
 		if (!engine) throw new FullTextDerivedIndexError('Full-text writer is unavailable', cause);
 		try {
-			await engine.close({ mode: 'rollback' });
+			await this.#closeEngine(engine, { mode: 'rollback' });
 		} catch (error) {
 			this.#engine = engine;
 			throw new FullTextDerivedIndexError(
@@ -638,7 +639,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 					this.#hasStagedMutations || this.#lastAppliedSequence > this.#lastPublishedSequence
 						? 'rollback'
 						: 'require-clean';
-				await engine.close({ mode });
+				await this.#closeEngine(engine, { mode });
 			}
 			await this.#lifecycle.quiesce?.();
 			this.#engine = undefined;
@@ -652,6 +653,18 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			const failure = new FullTextDerivedIndexError('Full-text writer shutdown did not prove quiescence', error);
 			this.#markFailed(failure);
 			request.reject(failure);
+		}
+	}
+
+	async #closeEngine(
+		engine: FullTextDerivedIndexEngine,
+		options: { mode: 'require-clean' | 'rollback' }
+	): Promise<void> {
+		try {
+			await engine.close(options);
+		} catch (error) {
+			if (!this.#lifecycle.isQuiescedCloseError?.(error)) throw error;
+			logWarning(`Full-text derived index '${this.id}' closed with a native cleanup error`, error);
 		}
 	}
 

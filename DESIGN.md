@@ -2755,7 +2755,8 @@ canonical key, so the backend does not reinterpret customer IDs.
 
 Harper validates native ABI 4, mutation-batch API 2, and the `native` storage capability before
 registration. ABI 4 is the Rust/Node boundary; mutation-batch API 2 separately identifies the
-resumable JavaScript partition contract.
+resumable JavaScript partition contract. Harper also caps cursor payloads at Fulltext's 64 KiB
+native commit-payload limit during backend construction.
 
 ```ts
 type EncodedMutationBatches = {
@@ -2857,6 +2858,9 @@ recovery state machine.
 Shutdown drains accepted work, publishes when possible, closes the writer, and resolves only after
 no command from that owner epoch can touch the index. A close that cannot prove quiescence rejects,
 so the runtime keeps the runner lock and no successor can open the same writer.
+Fulltext's `E_CLOSE_FAILED` is distinct: it reports cleanup trouble after native resources were
+released, so Harper logs it and completes handoff. `E_QUIESCENCE_FAILED` and unknown close failures
+still reject and retain the runner lock.
 
 Reset runs only inside the shared rebuild sequence after condemnation is durable and the prior
 epoch is quiescent. Fulltext atomically retires the active directory. Harper accepts returned

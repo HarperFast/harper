@@ -180,6 +180,22 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.strictEqual(closes, 2);
 	});
 
+	it('releases an invalid handle after native reports a quiesced cleanup error', async () => {
+		const binding = new FakeNativeModule();
+		let closes = 0;
+		binding.openNativeFullTextIndex = async () => ({
+			async close() {
+				closes++;
+				throw Object.assign(new Error('native cleanup failed after release'), { code: 'E_CLOSE_FAILED' });
+			},
+		});
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await lifecycle.initialize();
+		await assert.rejects(lifecycle.open(), /invalid index handle/);
+		await lifecycle.quiesce();
+		assert.strictEqual(closes, 1);
+	});
+
 	it('delegates reset and reclaims the wrapper-retired directory before returning', async () => {
 		const binding = new FakeNativeModule();
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
@@ -341,6 +357,19 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		});
 		assert.strictEqual(backend.id, 'products-title');
 		assert.strictEqual(loaded, 1);
+		assert.strictEqual(binding.opens.length, 0);
+	});
+
+	it('rejects a cursor payload limit above the native commit limit', async () => {
+		const binding = new FakeNativeModule();
+		await assert.rejects(
+			createNativeFullTextDerivedIndexBackend({
+				...options(storePath, binding),
+				id: 'products-title',
+				maxCursorPayloadBytes: 64 * 1024 + 1,
+			}),
+			/maxCursorPayloadBytes must not exceed 65536/
+		);
 		assert.strictEqual(binding.opens.length, 0);
 	});
 
