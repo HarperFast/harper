@@ -90,6 +90,8 @@ describe('indexing crash-recovery: restartNumber re-trigger (#1359)', () => {
 			};
 		}
 		if (Tbl.indexingOperation) await Tbl.indexingOperation;
+		// the thread keeps this index handle across reloads, so the clean re-run below needs the mock gone
+		if (tagIndex) delete tagIndex.put;
 
 		const parked = findDescriptor(Tbl, 'tag');
 		assert.ok(parked, 'tag descriptor should exist after a parked backfill');

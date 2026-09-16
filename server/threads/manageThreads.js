@@ -6,9 +6,10 @@
 const { realExit } = require('./workerProcessGuard.ts');
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 const { readdirSync, readFileSync, readlinkSync } = require('node:fs');
 const { setTimeout: delay } = require('node:timers/promises');
+const { confirmWindowsProcessTreeGone, ROOT_SPAWN_ALLOWANCE_MS } = require('./windowsProcessTree.ts');
 const { join, isAbsolute, extname } = require('path');
 const { pathToFileURL } = require('url');
 const { server } = require('../Server.ts');
@@ -185,9 +186,11 @@ module.exports = {
 	notifyThreadExit,
 	registerProcessGroup,
 	unregisterProcessGroup,
+	addProcessGroup,
+	removeProcessGroup,
+	terminateProcessGroupsForThread,
 	isProcessGroupAlive,
 	isThreadRunning,
-	waitUntilConfirmedGone,
 	restartNumber: workerData?.restartNumber || 1,
 	// Identifies this process incarnation, where the PID cannot: a container reuses PID 1. Minted once
 	// on the main thread and carried to workers, so live siblings agree on it — one derived per thread
@@ -1490,6 +1493,10 @@ const PROCESS_GROUP_LIVENESS_WARNING_MS = 30000;
 const THREAD_RUNNING_TERMINATION_BACKSTOP_MS = PROCESS_GROUP_LIVENESS_WARNING_MS;
 const zombieGroupScanTimes = new Map();
 const processGroupLivenessStates = new Map();
+// When each group's root was registered — by then it was already running, which is what lets the
+// Windows scan tell our root from a later process that recycled its PID.
+const processGroupSpawnedAt = new Map();
+let processGroupRegistrationGeneration = 0;
 
 function processGroupExists(processGroupId) {
 	try {
@@ -1621,90 +1628,73 @@ function processGroupIsAlive(processGroupId) {
 	return isProcessGroupAlive(processGroupId);
 }
 
-async function waitForProcessGroupExit(processGroupId) {
-	while (processGroupIsAlive(processGroupId)) await delay(PROCESS_GROUP_TERMINATION_POLL_MS);
-}
-
-// Mirrors Application.ts's windowsProcessTreeIsAlive: a descendant retains its ParentProcessId
-// after its parent exits, which is exactly the taskkill "process not found" race, so query the
-// process table by walking parentage rather than trusting only the root pid.
-function windowsProcessTreeIsAlive(rootPid) {
-	// Exit code 1 must mean "queried the process table and positively found nothing" — never
-	// "the query itself failed" (e.g. Get-CimInstance denied or WMI unavailable), which would
-	// otherwise read identically to a confirmed-gone tree and release the lock while a descendant
-	// may still be alive. ErrorActionPreference=Stop plus the wrapping try/catch turns a query
-	// failure into its own exit code (2), which the caller below already treats as unknown.
-	const script =
-		"$ErrorActionPreference = 'Stop'; try { " +
-		`$rootPid = ${rootPid}; ` +
-		'$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId); ' +
-		'$frontier = @($rootPid); $seen = @{}; $found = $false; ' +
-		'while ($frontier.Count -gt 0) { ' +
-		'$next = @(); foreach ($parentPid in $frontier) { if ($seen[$parentPid]) { continue }; ' +
-		'$seen[$parentPid] = $true; foreach ($p in $all) { ' +
-		'if ($p.ProcessId -eq $parentPid) { $found = $true }; ' +
-		'if ($p.ParentProcessId -eq $parentPid) { $found = $true; $next += [int]$p.ProcessId } } }; ' +
-		'$frontier = $next }; ' +
-		'if ($found) { exit 0 } else { exit 1 } ' +
-		'} catch { exit 2 }';
-	return new Promise((resolve) => {
-		const query = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-			stdio: 'ignore',
-			windowsHide: true,
-		});
-		query.once('close', (code) => resolve(code === 0 ? true : code === 1 ? false : null));
-		query.once('error', () => resolve(null));
-	});
-}
-
-// The initial taskkill in terminateProcessGroupsForThread is fired synchronously (required so
-// that call still works from a process `exit` handler) but its result is not checked there, since
-// a nonzero exit is ambiguous between a real failure and the target having already exited. Confirm
-// via the process table and keep retrying taskkill until the whole tree is positively gone —
-// reclamation must not proceed on an unconfirmed guess either way. Exported so a test can drive the
-// retry logic with injected callbacks instead of real Windows processes.
-async function waitUntilConfirmedGone(attemptTermination, treeIsAlive, pollMs) {
-	for (;;) {
-		// A successful taskkill exit only proves the request was accepted, not that the whole tree
-		// has actually exited — Windows termination is asynchronous, and taskkill can report overall
-		// success even when a descendant is not yet (or never) reaped. Only an explicit `false` from
-		// treeIsAlive, independently confirming no member of the tree remains, is safe to return on;
-		// `true` or `null` (unknown) must keep the loop retrying.
-		await attemptTermination();
-		if ((await treeIsAlive()) === false) return;
-		await delay(pollMs);
+async function waitForProcessGroupExit(processGroupId, registration) {
+	while (true) {
+		const currentRegistration = processGroupSpawnedAt.get(processGroupId);
+		if (currentRegistration !== undefined && currentRegistration !== registration) return;
+		if (!processGroupIsAlive(processGroupId)) return;
+		await delay(PROCESS_GROUP_TERMINATION_POLL_MS);
 	}
 }
 
-function waitForWindowsGroupExit(processGroupId) {
-	return waitUntilConfirmedGone(
-		() =>
-			new Promise((resolve) => {
-				const taskkill = spawn('taskkill', ['/pid', String(processGroupId), '/T', '/F'], {
-					stdio: 'ignore',
-					windowsHide: true,
-				});
-				taskkill.once('close', (code) => resolve(code === 0));
-				taskkill.once('error', () => resolve(false));
-			}),
-		() => windowsProcessTreeIsAlive(processGroupId),
-		PROCESS_GROUP_TERMINATION_POLL_MS
+// The initial taskkill in terminateProcessGroupsForThread is fired synchronously (required so
+// that call still works from a process `exit` handler). A nonzero exit there is ambiguous between
+// a real failure and the target having already exited, so only a reported success bounds the
+// root's lifetime up front (a terminated process cannot spawn); otherwise the scan latches the
+// root's exit itself, re-terminating the root while it is still found running as ours. Either
+// way the wait confirms via the process table — reclamation must not proceed on a guess. The
+// root was created inside the spawner's spawn() call, whose start and return times travel with the
+// registration so the cross-thread hop adds nothing to the window before it.
+function waitForWindowsGroupExit(processGroupId, spawn, killedAt) {
+	return confirmWindowsProcessTreeGone(
+		{
+			rootPid: processGroupId,
+			rootKnownAt: spawn?.spawnedAt ?? killedAt ?? Date.now(),
+			rootStartedWithinMs:
+				spawn?.spawnStartedAt !== undefined ? spawn.spawnedAt - spawn.spawnStartedAt : ROOT_SPAWN_ALLOWANCE_MS,
+			rootExitedAt: killedAt,
+		},
+		{ pollMs: PROCESS_GROUP_TERMINATION_POLL_MS, label: `process group ${processGroupId}` }
 	);
 }
 
-function addProcessGroup(ownerThreadId, processGroupId) {
+function addProcessGroup(ownerThreadId, processGroupId, spawnedAt, spawnStartedAt, registrationGeneration) {
 	if (!Number.isInteger(processGroupId) || processGroupId <= 0) return;
+	const previousRegistration = processGroupSpawnedAt.get(processGroupId);
+	if (
+		previousRegistration &&
+		(previousRegistration.ownerThreadId !== ownerThreadId ||
+			previousRegistration.registrationGeneration !== registrationGeneration)
+	) {
+		clearProcessGroupLivenessState(processGroupId);
+	}
 	let processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) processGroupsByThread.set(ownerThreadId, (processGroups = new Set()));
 	processGroups.add(processGroupId);
+	// The map is keyed by PID, which the OS reuses the instant a process exits. Owner distinguishes
+	// threads; generation distinguishes two children of the same thread that receive the same PID.
+	processGroupSpawnedAt.set(processGroupId, {
+		ownerThreadId,
+		registrationGeneration,
+		spawnedAt: Number.isFinite(spawnedAt) ? spawnedAt : Date.now(),
+		spawnStartedAt: Number.isFinite(spawnStartedAt) && spawnStartedAt <= spawnedAt ? spawnStartedAt : undefined,
+	});
 }
 
-function removeProcessGroup(ownerThreadId, processGroupId) {
+function removeProcessGroup(ownerThreadId, processGroupId, registrationGeneration) {
+	const currentRegistration = processGroupSpawnedAt.get(processGroupId);
+	const sameOwnerNewerGeneration =
+		currentRegistration?.ownerThreadId === ownerThreadId &&
+		currentRegistration.registrationGeneration !== registrationGeneration;
+	if (!sameOwnerNewerGeneration) {
+		const processGroups = processGroupsByThread.get(ownerThreadId);
+		if (processGroups?.delete(processGroupId) && processGroups.size === 0) {
+			processGroupsByThread.delete(ownerThreadId);
+		}
+	}
+	if (currentRegistration?.ownerThreadId !== ownerThreadId || sameOwnerNewerGeneration) return;
 	clearProcessGroupLivenessState(processGroupId);
-	const processGroups = processGroupsByThread.get(ownerThreadId);
-	if (!processGroups) return;
-	processGroups.delete(processGroupId);
-	if (processGroups.size === 0) processGroupsByThread.delete(ownerThreadId);
+	processGroupSpawnedAt.delete(processGroupId);
 }
 
 // Returns a promise that resolves once every process group tracked for `ownerThreadId` is
@@ -1717,11 +1707,23 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	const processGroups = processGroupsByThread.get(ownerThreadId);
 	if (!processGroups) return pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
 	processGroupsByThread.delete(ownerThreadId);
-	const groupIds = [...processGroups];
+	// Membership is not ownership: a PID is reusable the moment its process exits.
+	const groupIds = [...processGroups].filter((processGroupId) => {
+		if (processGroupSpawnedAt.get(processGroupId)?.ownerThreadId === ownerThreadId) return true;
+		harperLogger.warn(
+			`Not terminating process group ${processGroupId} for thread ${ownerThreadId}: it is no longer registered to this thread`
+		);
+		return false;
+	});
+	const killedAt = new Map();
 	for (const processGroupId of groupIds) {
 		try {
 			if (process.platform === 'win32') {
-				spawnSync('taskkill', ['/pid', String(processGroupId), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+				const result = spawnSync('taskkill', ['/pid', String(processGroupId), '/T', '/F'], {
+					stdio: 'ignore',
+					windowsHide: true,
+				});
+				if (result.status === 0) killedAt.set(processGroupId, Date.now());
 			} else {
 				process.kill(-processGroupId, 'SIGKILL');
 			}
@@ -1730,9 +1732,18 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 		}
 	}
 	const termination = Promise.all(
-		groupIds.map((processGroupId) =>
-			process.platform === 'win32' ? waitForWindowsGroupExit(processGroupId) : waitForProcessGroupExit(processGroupId)
-		)
+		groupIds.map((processGroupId) => {
+			const registration = processGroupSpawnedAt.get(processGroupId);
+			const wait =
+				process.platform === 'win32'
+					? waitForWindowsGroupExit(processGroupId, registration, killedAt.get(processGroupId))
+					: waitForProcessGroupExit(processGroupId, registration);
+			return wait.finally(() => {
+				if (processGroupSpawnedAt.get(processGroupId) === registration) {
+					processGroupSpawnedAt.delete(processGroupId);
+				}
+			});
+		})
 	).finally(() => {
 		if (pendingProcessGroupTerminations.get(ownerThreadId) === termination) {
 			pendingProcessGroupTerminations.delete(ownerThreadId);
@@ -1742,14 +1753,26 @@ function terminateProcessGroupsForThread(ownerThreadId) {
 	return termination;
 }
 
-function registerProcessGroup(processGroupId) {
-	if (isMainThread) addProcessGroup(threadId, processGroupId);
-	else parentPort?.postMessage({ type: REGISTER_PROCESS_GROUP, processGroupId });
+// `spawnedAt` / `spawnStartedAt`: the caller's clock as its spawn() of the group's root returned and
+// as it was called — the root was created between the two.
+function registerProcessGroup(processGroupId, spawnedAt = Date.now(), spawnStartedAt) {
+	const registrationGeneration = ++processGroupRegistrationGeneration;
+	if (isMainThread) addProcessGroup(threadId, processGroupId, spawnedAt, spawnStartedAt, registrationGeneration);
+	else {
+		parentPort?.postMessage({
+			type: REGISTER_PROCESS_GROUP,
+			processGroupId,
+			spawnedAt,
+			spawnStartedAt,
+			registrationGeneration,
+		});
+	}
+	return registrationGeneration;
 }
 
-function unregisterProcessGroup(processGroupId) {
-	if (isMainThread) removeProcessGroup(threadId, processGroupId);
-	else parentPort?.postMessage({ type: UNREGISTER_PROCESS_GROUP, processGroupId });
+function unregisterProcessGroup(processGroupId, registrationGeneration) {
+	if (isMainThread) removeProcessGroup(threadId, processGroupId, registrationGeneration);
+	else parentPort?.postMessage({ type: UNREGISTER_PROCESS_GROUP, processGroupId, registrationGeneration });
 }
 
 class ProcessGroupTerminationUnconfirmedError extends Error {
@@ -1856,9 +1879,15 @@ function addPort(port, keepRef, isJobWorker) {
 	port
 		.on('message', (message) => {
 			if (message.type === REGISTER_PROCESS_GROUP) {
-				addProcessGroup(portThreadId, message.processGroupId);
+				addProcessGroup(
+					portThreadId,
+					message.processGroupId,
+					message.spawnedAt,
+					message.spawnStartedAt,
+					message.registrationGeneration
+				);
 			} else if (message.type === UNREGISTER_PROCESS_GROUP) {
-				removeProcessGroup(portThreadId, message.processGroupId);
+				removeProcessGroup(portThreadId, message.processGroupId, message.registrationGeneration);
 			} else if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
 				addPort(message.port, false, message.isJobWorker);

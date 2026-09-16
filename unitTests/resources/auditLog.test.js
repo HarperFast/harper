@@ -1541,6 +1541,36 @@ describe('Audit cleanup retirement', () => {
 		}
 	});
 
+	it('only lets the newest overlapping stop resume cleanup', async function () {
+		const rootStore = openScratchStore();
+		try {
+			const { auditStore, counts, releaseRemoval } = armGatedPass(rootStore, { entries: 1 });
+			const pass = auditStore.scheduleAuditCleanup(1);
+			await waitFor(() => counts.removals === 1, { timeout: 1000, message: 'the gated pass never started' });
+
+			// Two close attempts can stop the same suspended pass. The older failed close must not be
+			// allowed to restart cleanup through the newer close's retirement window.
+			const olderStop = auditStore.stopAuditCleanup();
+			const newerStop = auditStore.stopAuditCleanup();
+			const olderResume = auditStore.resumeAuditCleanup(olderStop);
+			releaseRemoval();
+			await pass;
+
+			assert.equal(await olderResume, false, 'an older stop generation must not resume cleanup');
+			await auditStore.scheduleAuditCleanup(1);
+			await delay(20);
+			assert.equal(counts.advances, 1, 'cleanup must remain stopped for the newer close');
+
+			assert.equal(await auditStore.resumeAuditCleanup(newerStop), true, 'the newest stop may resume cleanup');
+			await auditStore.scheduleAuditCleanup(1);
+			assert.equal(counts.advances, 2, 'cleanup runs again only after the newest stop resumes it');
+		} finally {
+			await rootStore.auditStore?.stopAuditCleanup?.();
+			removeStorageReclamation(rootStore.path);
+			if (rootStore.status !== 'closed') await rootStore.close();
+		}
+	});
+
 	it('touches nothing further once the root store closes under a suspended pass', async function () {
 		const rootStore = openScratchStore();
 		let unhandledRejection;
