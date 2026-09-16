@@ -928,6 +928,7 @@ describe('Caching', () => {
 			assert(result);
 			assert.equal(result.name, 'name 23');
 			assert.equal(sourceRequests, 1);
+			await waitFor(() => !IndexedCachingTable.primaryStore.hasLock(23));
 		} finally {
 			return_error = false;
 			sourceExpiresAt = undefined;
