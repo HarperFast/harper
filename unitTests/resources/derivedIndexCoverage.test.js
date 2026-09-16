@@ -1,5 +1,6 @@
 require('../testUtils');
 const assert = require('node:assert');
+const { existsSync } = require('node:fs');
 const { setupTestDBPath } = require('../testUtils');
 const { table, closeDatabase } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -21,7 +22,7 @@ describe('native derived-index query coverage', function () {
 	this.timeout(20_000);
 	let Product, Other, index;
 	const vector = [1, 0, 0, 0];
-	const search = (maxIndexLagMilliseconds) =>
+	const search = (maxIndexLagMilliseconds, waitForIndexMilliseconds, context = { transaction: undefined }) =>
 		index.search(
 			{
 				target: vector,
@@ -29,8 +30,9 @@ describe('native derived-index query coverage', function () {
 				distance: 'cosine',
 				ef: 200,
 				maxIndexLagMilliseconds,
+				waitForIndexMilliseconds,
 			},
-			{ transaction: undefined }
+			context
 		);
 	const current = () =>
 		waitFor(
@@ -97,6 +99,182 @@ describe('native derived-index query coverage', function () {
 			);
 		}
 		assert.equal((await search(0)).indexCoverage.state, 'current');
+	});
+	it('waits for a completed prior write on an otherwise idle database', async () => {
+		await Product.put('waited-write', { vector });
+		const result = await search(undefined, 10_000);
+		assert(result.some(({ key }) => key === 'waited-write'));
+		assert.deepStrictEqual(result.indexCoverage, {
+			state: 'current',
+			maxLagMilliseconds: 3000,
+			lagUpperBoundMilliseconds: 0,
+		});
+		assert.equal(search().indexAdmission, undefined);
+	});
+	it('times out despite a tolerant lag setting and leaves the native plane healthy', async () => {
+		await current();
+		const plane = index.getPlane();
+		await Product.put('short-wait', { vector });
+		await assert.rejects(
+			Promise.resolve().then(() => search(60_000, Number.MIN_VALUE)),
+			{ code: 'DERIVED_INDEX_LAGGING', statusCode: 503, retryable: true }
+		);
+		assert.strictEqual(index.getPlane(), plane);
+		await search(undefined, 10_000);
+	});
+	it('validates wait budgets and keeps the zero-wait behavior', async () => {
+		for (const invalid of [-1, null, NaN, Infinity, '1000', {}, 30_001]) {
+			await assert.rejects(
+				Promise.resolve().then(() => search(undefined, invalid)),
+				(error) => error.statusCode === 400 && /waitForIndexMilliseconds/.test(error.message)
+			);
+		}
+		assert.equal(search(undefined, 0).indexAdmission, undefined);
+	});
+	it('keeps a fixed certified boundary after later unrelated writes', async () => {
+		const since = process.hrtime.bigint();
+		await index.derivedHost.waitForCoverage(since, 10_000);
+		await Other.put('after-wait-boundary', { value: 1 });
+		await index.derivedHost.waitForCoverage(since, 10_000);
+		await assert.rejects(
+			Promise.resolve().then(() => search(0)),
+			{ code: 'DERIVED_INDEX_LAGGING' }
+		);
+		await current();
+	});
+	it('cancels a waiting query and releases its read snapshot', async () => {
+		await Product.put('cancelled-wait', { vector });
+		const transaction = new DatabaseTransaction();
+		const controller = new AbortController();
+		try {
+			const pending = Product.search(
+				{ sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 }, limit: 10 },
+				{ transaction, signal: controller.signal }
+			);
+			controller.abort(new Error('cancel coverage wait'));
+			await assert.rejects(Promise.resolve(pending), /cancel coverage wait/);
+			await transaction.commit();
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+		}
+		await current();
+	});
+	it('gates mapped async-authorized searches and zero-size pages before returning', async () => {
+		class Mapped extends Product {
+			static loadAsInstance = false;
+			async allowRead() {
+				return true;
+			}
+			search(target) {
+				const results = super.search(target);
+				return results instanceof Promise ? results : results.map((record) => record);
+			}
+		}
+		for (const count of [undefined, 'exact']) {
+			await current();
+			await Product.put('gated-' + count, { vector });
+			const transaction = new DatabaseTransaction();
+			try {
+				await assert.rejects(
+					Promise.resolve().then(() =>
+						Mapped.search(
+							{
+								sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: Number.MIN_VALUE },
+								limit: 0,
+								count,
+							},
+							{ transaction, user: { role: { permission: {} } }, authorize: true }
+						)
+					),
+					{ code: 'DERIVED_INDEX_LAGGING' }
+				);
+				await transaction.commit();
+				assert.equal(transaction.readTxnsUsed, 0);
+			} finally {
+				transaction.abort();
+			}
+		}
+		await current();
+	});
+	it('shares concurrent waits while cancelling only the disconnected caller', async () => {
+		await Product.put('shared-wait', { vector });
+		const controller = new AbortController();
+		const cancelled = search(undefined, 10_000, { transaction: undefined, signal: controller.signal });
+		const pending = Array.from({ length: 20 }, () => search(undefined, 10_000));
+		controller.abort(new Error('one caller left'));
+		await assert.rejects(cancelled, /one caller left/);
+		for (const entries of await Promise.all(pending)) assert(entries.some(({ key }) => key === 'shared-wait'));
+	});
+	it('gates every native admission in a nested OR query', async () => {
+		await Product.put('or-wait', { vector });
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				Product.search({
+					operator: 'or',
+					conditions: [
+						{ attribute: 'id', value: 'initial' },
+						{
+							operator: 'and',
+							conditions: [
+								{
+									attribute: 'vector',
+									comparator: 'le',
+									value: 0.1,
+									target: vector,
+									waitForIndexMilliseconds: Number.MIN_VALUE,
+								},
+							],
+						},
+					],
+					limit: 0,
+				})
+			),
+			{ code: 'DERIVED_INDEX_LAGGING' }
+		);
+		await current();
+	});
+	it('handles an abandoned native wait rejection', async () => {
+		await Product.put('abandoned-wait', { vector });
+		const unhandled = [];
+		const onUnhandled = (error) => unhandled.push(error);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			search(undefined, Number.MIN_VALUE);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+		await current();
+	});
+	it('keeps aligned sort wait budgets and lets an explicit condition override them', async () => {
+		await Product.put('aligned-wait', { vector });
+		const result = await Product.search({
+			conditions: [{ attribute: 'vector', comparator: 'le', value: 0.1, target: vector }],
+			sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+			limit: 100,
+		});
+		assert((await Array.fromAsync(result)).some(({ id }) => id === 'aligned-wait'));
+		await Product.put('aligned-wait-override', { vector });
+		await assert.rejects(
+			Promise.resolve().then(() =>
+				Product.search({
+					conditions: [
+						{
+							attribute: 'vector',
+							comparator: 'le',
+							value: 0.1,
+							target: vector,
+							waitForIndexMilliseconds: Number.MIN_VALUE,
+						},
+					],
+					sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+				})
+			),
+			{ code: 'DERIVED_INDEX_LAGGING' }
+		);
+		await current();
 	});
 	it('keeps a sort tolerance when a vector condition already supplies the index search', async () => {
 		await current();
@@ -326,6 +504,42 @@ describe('native derived-index query coverage', function () {
 			assert.equal(read().state, 'unknown');
 		} finally {
 			await db.close();
+		}
+	});
+
+	it('closing a database rejects its waiters without removing the native file', async () => {
+		const Closing = table({
+			database: 'closing-coverage-wait',
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', type: 'Array', indexed: { type: 'HNSW', nativePlane: true } },
+			],
+		});
+		const closingIndex = Closing.indices.vector.customIndex;
+		const query = (options) =>
+			closingIndex.search({ target: vector, comparator: 'sort', ...options }, { transaction: undefined });
+		try {
+			await Closing.put('first', { vector });
+			await waitFor(async () => {
+				try {
+					return await query({ maxIndexLagMilliseconds: 0 });
+				} catch (error) {
+					if (error.statusCode === 503) return false;
+					throw error;
+				}
+			}, 15_000);
+			const path = closingIndex.planeFilePath();
+			assert(existsSync(path));
+			await Closing.put('pending', { vector });
+			const pending = query({ waitForIndexMilliseconds: 10_000 });
+			const rejected = assert.rejects(pending, (error) => error.statusCode === 503);
+			await closeDatabase('closing-coverage-wait');
+			await rejected;
+			assert(existsSync(path));
+		} finally {
+			await closeDatabase('closing-coverage-wait');
 		}
 	});
 

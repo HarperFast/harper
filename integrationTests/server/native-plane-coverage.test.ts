@@ -52,20 +52,22 @@ test(
 					body: body === undefined ? undefined : JSON.stringify(body),
 					signal: AbortSignal.timeout(30_000),
 				});
+				const text = await response.text();
 				return {
 					status: response.status,
 					coverage: response.headers.get('harper-index-coverage'),
-					body: await response.json(),
+					body: text ? JSON.parse(text) : undefined,
 				};
 			}
-			const query = (tolerance?: unknown) =>
-				request('/PlaneProbe/', 'QUERY', {
+			const query = (tolerance?: unknown, wait?: unknown, queryTarget = target, path = '/PlaneProbe/') =>
+				request(path, 'QUERY', {
 					sort: {
 						attribute: 'vector',
-						target,
+						target: queryTarget,
 						distance: 'cosine',
 						ef: 200,
 						...(tolerance === undefined ? {} : { maxIndexLagMilliseconds: tolerance }),
+						...(wait === undefined ? {} : { waitForIndexMilliseconds: wait }),
 					},
 					select: ['id', '$distance'],
 					limit: 10,
@@ -76,6 +78,13 @@ test(
 				const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
 				assert(result.status < 300, JSON.stringify(result));
 			}
+			const timedOut = await query(1_000_000, 1);
+			assert.equal(timedOut.status, 503, JSON.stringify(timedOut));
+			assert.equal(timedOut.body.code, 'DERIVED_INDEX_LAGGING');
+			assert.equal(timedOut.coverage, null);
+			const mappedTimeout = await query(1_000_000, 1, target, '/MappedPlane/');
+			assert.equal(mappedTimeout.status, 503, JSON.stringify(mappedTimeout));
+			assert.equal(mappedTimeout.body.code, 'DERIVED_INDEX_LAGGING');
 			let rejectedStrict = false;
 			let servedTolerant = false;
 			await waitFor(
@@ -122,6 +131,29 @@ test(
 				assert.equal(result.status, 400, JSON.stringify(result));
 				assert.match(result.body.title, /maxIndexLagMilliseconds/);
 			}
+			for (const invalid of [-1, null, '1000', 30_001]) {
+				const result = await query(undefined, invalid);
+				assert.equal(result.status, 400, JSON.stringify(result));
+				assert.match(result.body.title, /waitForIndexMilliseconds/);
+			}
+			for (let start = 0; start < 200; start += 20) {
+				await Promise.all(
+					Array.from({ length: 20 }, async (_, offset) => {
+						const sequence = start + offset;
+						const id = records.length + sequence;
+						const vector = records[sequence].vector;
+						const written = await request(`/PlaneProbe/${id}`, 'PUT', { vector });
+						assert(written.status < 300, JSON.stringify(written));
+						const result = await query(undefined, 20_000, vector, sequence % 2 ? '/MappedPlane/' : '/PlaneProbe/');
+						assert.equal(result.status, 200, JSON.stringify(result));
+						assert.equal(result.coverage, 'current; lag=0; tolerance=3000');
+						assert(
+							result.body.some((record: { id: number }) => record.id === id),
+							`prior write ${id} missing`
+						);
+					})
+				);
+			}
 			await killHarper(ctx);
 			await startHarper(ctx, {
 				config: { threads: { count: 6 }, logging: { level: 'warn' } },
@@ -130,7 +162,7 @@ test(
 			});
 			await waitFor(
 				async () => {
-					const result = await query(0);
+					const result = await query(0, 10_000);
 					if (result.status === 503) return false;
 					assert.equal(result.status, 200, JSON.stringify(result));
 					assert.equal(result.coverage, 'current; lag=0; tolerance=0');

@@ -70,7 +70,8 @@ export function executeConditions(
 	context,
 	transformToEntries,
 	filtered,
-	recordAccess?
+	recordAccess?,
+	admissions?: Promise<unknown>[]
 ) {
 	const firstSearch = conditions[0];
 	// Record-level guards (caller-supplied vectorFilter + rowFilter) apply to every record
@@ -139,13 +140,16 @@ export function executeConditions(
 				request,
 				context,
 				transformToEntries,
-				filtered
+				filtered,
+				undefined,
+				admissions
 				// recordAccess intentionally omitted: guards run once, at the top level (see above).
 			);
 		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
 			allowFullScan: request.allowFullScan,
 			filtered,
 			context,
+			admissions,
 			minResults: request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 		});
 	}
@@ -288,13 +292,14 @@ export function searchByIndex(
 		// approximate index returns a fixed-size candidate list, so without this a query asking for more
 		// rows than that list holds silently gets a short result set. Only custom indexes read it.
 		minResults?: number;
+		admissions?: Promise<unknown>[];
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
 	// fail loud rather than silently reading every option as undefined.
 	if (typeof options !== 'object' || options === null)
 		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
-	const { allowFullScan, filtered, context, minResults } = options;
+	const { allowFullScan, filtered, context, minResults, admissions } = options;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -554,16 +559,19 @@ export function searchByIndex(
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
 			const searched = index.customIndex.search(searchCondition, context, { filter: recordFilter, minResults });
-			const coverage = (searched as any).indexCoverage;
-			if (coverage && context?.responseHeaders) {
-				appendHeader(
-					context.responseHeaders,
-					'Harper-Index-Coverage',
-					`${coverage.state}; lag=${coverage.lagUpperBoundMilliseconds}; tolerance=${coverage.maxLagMilliseconds}`,
-					true
-				);
-				appendHeader(context.responseHeaders, 'Access-Control-Expose-Headers', 'Harper-Index-Coverage', true);
-			}
+			const reportCoverage = (entries: any) => {
+				const coverage = entries.indexCoverage;
+				if (coverage && context?.responseHeaders) {
+					appendHeader(
+						context.responseHeaders,
+						'Harper-Index-Coverage',
+						`${coverage.state}; lag=${coverage.lagUpperBoundMilliseconds}; tolerance=${coverage.maxLagMilliseconds}`,
+						true
+					);
+					appendHeader(context.responseHeaders, 'Access-Control-Expose-Headers', 'Harper-Index-Coverage', true);
+				}
+			};
+			if (!(searched as any).indexAdmission) reportCoverage(searched);
 			const processEntries = (entries: any[]) => {
 				const loaded = entries
 					.map((entry) => {
@@ -589,7 +597,12 @@ export function searchByIndex(
 				return loaded;
 			};
 			if (typeof (searched as any)?.then === 'function') {
-				const pending = (searched as Promise<any[]>).then(processEntries);
+				const pending = (searched as Promise<any[]>).then((entries) => {
+					const loaded = processEntries(entries);
+					if ((searched as any).indexAdmission) reportCoverage(entries);
+					return loaded;
+				});
+				if ((searched as any).indexAdmission) admissions?.push(pending);
 				// A consumer may abandon this lazy iterable without calling next().
 				pending.catch(() => {});
 				const results: any = new ExtendedIterable();

@@ -2642,7 +2642,7 @@ Generation readiness and read freshness are separate. A `ready` native index can
 committed mutations. Native vector sort/threshold conditions accept `maxIndexLagMilliseconds`:
 **3000 ms by default**, `0` for strict coverage, or an explicit finite nonnegative number. This default
 allows three ordinary 1000 ms flush ages; it does not change the separate writer backpressure budget.
-Synchronous/non-native indexes ignore the option. For example, an HTTP QUERY body can contain:
+Synchronous/non-native indexes ignore the native coverage options. For example, an HTTP QUERY body can contain:
 
 ```json
 {
@@ -2656,8 +2656,24 @@ Synchronous/non-native indexes ignore the option. For example, an HTTP QUERY bod
 }
 ```
 
-When a vector condition also provides the sort order, its explicit tolerance takes precedence; if it
-has none, it inherits the sort's tolerance. The query planner must preserve that option when combining them.
+For read-after-write, add `waitForIndexMilliseconds: 10000` to that sort (or vector condition).
+Omitted or `0` preserves immediate admission; a positive finite number, capped at **30,000 ms**,
+opts into a bounded wait for coverage of writes committed before the native search starts.
+The wait takes precedence over lag tolerance: a recent but stale proof cannot satisfy it. An already
+physically current index proceeds immediately. Otherwise the query captures one monotonic target and
+waits for the owner's certified time to reach it; later writes never reset the target. Successful waiting
+queries report `current; lag=0` relative to that boundary, even when later writes are still being indexed.
+A timeout returns retryable `DERIVED_INDEX_LAGGING` / HTTP 503. Request cancellation also ends the wait.
+
+Waiting preserves the normal 1000 ms flush-age schedule: a small write followed by a search commonly
+waits about a second plus barrier time. Shorter deadlines are valid but may expire. Replay must reach
+an end-of-log pass with readable committed prefixes to publish a new capture; sustained overload or
+unfinished transactions can prevent certification and cause timeouts even for unaffected tables.
+The wait does not promise exact ANN recall, a historical graph snapshot, or visibility of writes that
+have not committed locally.
+
+When a vector condition also provides the sort order, each explicit coverage option takes precedence;
+missing options inherit the sort's values. The query planner preserves both when combining them.
 
 A successful native query certifies coverage **at admission**. `Harper-Index-Coverage` is either
 `current; lag=0; tolerance=0` (with the actual requested tolerance), or
@@ -2665,15 +2681,19 @@ A successful native query certifies coverage **at admission**. `Harper-Index-Cov
 mutations; it is not a claim that the index is incomplete, nor an ANN recall guarantee. The header is
 exposed to CORS clients. Record arrays retain their existing shape. Direct custom-index callers can
 read the same `indexCoverage` property on the result array and, for asynchronous searches, on the
-returned promise before awaiting it. The query adapter sets the header **synchronously** from that
-promise: setting it after native traversal is too late because REST can already have started streaming.
+returned promise before awaiting it for ordinary searches. Waiting searches expose coverage on the
+resolved array. Their internal admission promise covers the native traversal and mapping reads;
+Table propagates a separate `SEARCH_ADMISSION` gate through supported iterable transforms, alongside
+async authorization. Static Resource search/query awaits both before returning the streaming response,
+so timeout/native-result errors precede HTTP headers. The adapter then publishes coverage before
+admission completes. Ordinary searches still set their header synchronously from the native promise.
 An unknown or excessive bound produces `DERIVED_INDEX_LAGGING` / HTTP 503, with the tolerance and
 last certified age (when known) in the message. These admission failures never invalidate a healthy
 plane; existing unavailable/rebuilding checks still take precedence.
 
 Multiple native searches in one response append one coverage entry per admission. The response has
 current coverage only if every entry is current; a bounded entry means part of it may omit recent writes.
-The header describes admission of successful results, not the outcome of a later traversal failure.
+For ordinary non-waiting searches the header describes admission, not the outcome of a later traversal failure.
 File-primary node-to-record mappings are read from current storage, just like the native graph itself:
 an older record snapshot must not hide mappings published after a record already visible in that snapshot.
 Record filtering and materialization retain the request's snapshot; the native graph is not an MVCC index.
@@ -2711,6 +2731,10 @@ health transitions. An owner refreshes idle coverage at its flush cadence withou
 release deadline. A query within the certified age bound reads only shared memory and the monotonic
 clock; strict or older queries compare the persisted vector with current physical positions. This also
 certifies an unchanged index after owner release or process restart, when no usable time proof remains.
+Concurrent waiters on one worker/index share a single 25 ms poll timer, removed when all resolve,
+time out, or abort. A first waiter nudges its local runner without changing writer-lag accounting or
+retrying a deferred batch; an active peer owner already refreshes at flush cadence. No cross-worker
+notification or per-query persisted coverage write is needed. Closing a registration rejects its waiters.
 The strict/ownerless path costs a cursor read and stats per physical log. If a database-wide backlog
 prevents the owner from inspecting unrelated writes, coverage can conservatively become unprovable
 for an otherwise unaffected index; queries do not scan logs to classify that backlog.

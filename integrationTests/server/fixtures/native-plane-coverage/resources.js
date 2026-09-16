@@ -33,3 +33,13 @@ export class PlaneStatus extends Resource {
 		};
 	}
 }
+
+export class MappedPlane extends tables.PlaneProbe {
+	static loadAsInstance = false;
+	async allowRead() {
+		return true;
+	}
+	search(target, query) {
+		return super.search(query ?? target).map((record) => record);
+	}
+}

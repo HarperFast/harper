@@ -4,6 +4,7 @@ import type { RocksTransactionLogStore, TransactionLogIterable } from './RocksTr
 import { writeKeyId } from './DatabaseTransaction.ts';
 import { registerDerivedIndexTables } from './derivedIndexRegistry.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
+import { DerivedIndexLagError, ServerError } from '../utility/errors/hdbError.ts';
 
 const logger = loggerWithTag('derived-index');
 
@@ -29,6 +30,8 @@ export type DerivedIndexCoverage = {
 };
 
 type CoverageCapture = { time: bigint; positions: DerivedIndexPositions };
+type CoverageWaiter = { since: bigint; deadline: bigint; finish: (error?: unknown) => void };
+type CoverageWaitGroup = { waiters: Set<CoverageWaiter>; timer?: NodeJS.Timeout };
 
 export type DerivedIndexState =
 	| { kind: 'record'; version: number; projection: unknown }
@@ -280,6 +283,7 @@ export class DerivedIndexRuntime {
 	#onCommit = () => this.wake();
 	#listening = false;
 	#stopped = false;
+	#coverageWaits = new Map<string, CoverageWaitGroup>();
 
 	constructor(
 		logStore: RocksTransactionLogStore,
@@ -319,6 +323,11 @@ export class DerivedIndexRuntime {
 		return () => {
 			if (this.#runners.get(registration.backend.id) === runner) {
 				this.#runners.delete(registration.backend.id);
+				const waiting = this.#coverageWaits.get(registration.backend.id);
+				if (waiting) {
+					for (const waiter of waiting.waiters)
+						waiter.finish(new ServerError('The native HNSW index is unavailable', 503));
+				}
 				this.#stopListeningIfIdle();
 			}
 			return this.#track(runner, runner.stop());
@@ -354,6 +363,71 @@ export class DerivedIndexRuntime {
 		return this.#runners.get(backendId)?.getMetrics();
 	}
 
+	waitForCoverage(backendId: string, since: bigint, timeout: number, signal?: AbortSignal): Promise<void> {
+		if (this.#stopped || !this.#runners.has(backendId))
+			return Promise.reject(new ServerError('The native HNSW index is unavailable', 503));
+		let group = this.#coverageWaits.get(backendId);
+		const first = !group;
+		if (!group) this.#coverageWaits.set(backendId, (group = { waiters: new Set() }));
+		const waiting = group;
+		const result = new Promise<void>((resolve, reject) => {
+			const waiter: CoverageWaiter = {
+				since,
+				deadline: since + BigInt(Math.ceil(timeout * 1e6)),
+				finish: (error) => {
+					if (!waiting.waiters.delete(waiter)) return;
+					signal?.removeEventListener('abort', abort);
+					if (!waiting.waiters.size) {
+						clearTimeout(waiting.timer);
+						this.#coverageWaits.delete(backendId);
+					}
+					if (error !== undefined) reject(error);
+					else resolve();
+				},
+			};
+			const abort = () => waiter.finish(signal.reason ?? new Error('Index wait aborted'));
+			waiting.waiters.add(waiter);
+			signal?.addEventListener('abort', abort, { once: true });
+			if (signal?.aborted) abort();
+		});
+		if (first && waiting.waiters.size) {
+			// Demand must not retry a deferred batch or count as unread writes for writer backpressure.
+			try {
+				this.#runners.get(backendId)?.wake(false, true);
+				this.#pollCoverage(backendId, waiting);
+			} catch (error) {
+				for (const waiter of waiting.waiters) waiter.finish(error);
+			}
+		}
+		return result;
+	}
+
+	#pollCoverage(backendId: string, group: CoverageWaitGroup) {
+		try {
+			const views = getReadinessViews(this.#logStore, backendId);
+			const before = readReadiness(views);
+			const time = Atomics.load(views.coverage, 0);
+			const after = readReadiness(views);
+			if (after.state !== 'ready')
+				throw new ServerError(
+					`The native HNSW index is ${after.state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
+					503
+				);
+			const now = process.hrtime.bigint();
+			let delay = 25;
+			for (const waiter of group.waiters) {
+				if (now >= waiter.deadline)
+					waiter.finish(new DerivedIndexLagError('Timed out waiting for native HNSW index coverage; retry this query'));
+				else if (before.state === 'ready' && before.ownerEpoch === after.ownerEpoch && time >= waiter.since)
+					waiter.finish();
+				else delay = Math.min(delay, Math.max(1, Number(waiter.deadline - now) / 1e6));
+			}
+			if (group.waiters.size) group.timer = setTimeout(() => this.#pollCoverage(backendId, group), delay);
+		} catch (error) {
+			for (const waiter of group.waiters) waiter.finish(error);
+		}
+	}
+
 	/** Force a rebuild (or retry one that became `unavailable`). Returns false when the backend cannot be rebuilt by the runtime. */
 	requestRebuild(backendId: string): boolean {
 		const held = this.#heldRunners.get(backendId);
@@ -378,6 +452,9 @@ export class DerivedIndexRuntime {
 	stop(): Promise<void> {
 		if (this.#stopping) return this.#stopping;
 		this.#stopped = true;
+		for (const group of this.#coverageWaits.values()) {
+			for (const waiter of group.waiters) waiter.finish(new ServerError('The native HNSW index is unavailable', 503));
+		}
 		for (const runner of this.#runners.values()) this.#track(runner, runner.stop());
 		this.#runners.clear();
 		this.#stopListening();
@@ -606,9 +683,9 @@ class DerivedIndexRunner {
 		return this.#sharedViews;
 	}
 
-	wake(fromBackend = false) {
+	wake(fromBackend = false, forCoverage = false) {
 		if (this.#stopped || this.#rebuilding) return;
-		if (!fromBackend && this.#lagBudget > 0) this.#unreadSince ??= this.#options.now();
+		if (!fromBackend && !forCoverage && this.#lagBudget > 0) this.#unreadSince ??= this.#options.now();
 		if (this.status.state === 'unavailable') {
 			if (
 				this.#heldLock ||

@@ -31,7 +31,7 @@ import type {
 } from './ResourceInterface.ts';
 import type { User } from '../security/user.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, SEARCH_AUTHORIZATION, transformForSelect } from './Resource.ts';
+import { Resource, SEARCH_AUTHORIZATION, SEARCH_ADMISSION, transformForSelect } from './Resource.ts';
 import { when, promiseNormalize } from '../utility/when.ts';
 import {
 	DatabaseTransaction,
@@ -396,9 +396,9 @@ const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
-function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
+function propagateSearchGate(iterable: any, gate: symbol, promise: Promise<any>, source?: any) {
 	if (!iterable || typeof iterable !== 'object') return iterable;
-	iterable[SEARCH_AUTHORIZATION] = authorization;
+	iterable[gate] = promise;
 	if (source) {
 		if (source.selectApplied) iterable.selectApplied = true;
 		if (source.getColumns && !iterable.getColumns) iterable.getColumns = source.getColumns;
@@ -411,7 +411,11 @@ function propagateSearchAuthorization(iterable: any, authorization: Promise<any>
 		Object.defineProperty(iterable, methodName, {
 			configurable: true,
 			value: function (...args: any[]) {
-				return propagateSearchAuthorization(transform.apply(this, args), authorization, this);
+				const transformed = transform.apply(this, args);
+				for (const gate of [SEARCH_AUTHORIZATION, SEARCH_ADMISSION]) {
+					if (this[gate]) propagateSearchGate(transformed, gate, this[gate], this);
+				}
+				return transformed;
 			},
 		});
 	}
@@ -4386,7 +4390,7 @@ export function makeTable(options) {
 							},
 						};
 					};
-					return propagateSearchAuthorization(gatedResults, authorization);
+					return propagateSearchGate(gatedResults, SEARCH_AUTHORIZATION, authorization);
 				}
 				if (!allowed) {
 					throw new AccessViolation((context as any).user);
@@ -4580,6 +4584,8 @@ export function makeTable(options) {
 						orderAlignedCondition.descending = Boolean(sort.descending);
 						if (orderAlignedCondition.maxIndexLagMilliseconds === undefined)
 							orderAlignedCondition.maxIndexLagMilliseconds = sort.maxIndexLagMilliseconds;
+						if (orderAlignedCondition.waitForIndexMilliseconds === undefined)
+							orderAlignedCondition.waitForIndexMilliseconds = sort.waitForIndexMilliseconds;
 					}
 				}
 			}
@@ -4648,6 +4654,7 @@ export function makeTable(options) {
 				boundRowFilter || typeof target.vectorFilter === 'function'
 					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
+			const admissions: Promise<unknown>[] = [];
 			const entries = executeConditions(
 				conditions,
 				operator,
@@ -4657,7 +4664,8 @@ export function makeTable(options) {
 				context,
 				(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
 				filtered,
-				recordAccess
+				recordAccess,
+				admissions
 			);
 			const ensure_loaded = (target as any).ensureLoaded !== false;
 			// The guards inside executeConditions evaluate the
@@ -4743,6 +4751,7 @@ export function makeTable(options) {
 					let scanned = 0;
 					let exact = true;
 					try {
+						if (admissions.length) await Promise.all(admissions);
 						for await (const record of results) {
 							if (scanned >= offset && scanned < pageEnd) page.push(record);
 							scanned++;
@@ -4811,6 +4820,11 @@ export function makeTable(options) {
 			};
 			results.selectApplied = true;
 			results.getColumns = getColumns;
+			if (admissions.length) {
+				const admission = Promise.all(admissions);
+				admission.catch(() => results.onDone?.());
+				propagateSearchGate(results, SEARCH_ADMISSION, admission);
+			}
 			return results;
 		}
 		/**

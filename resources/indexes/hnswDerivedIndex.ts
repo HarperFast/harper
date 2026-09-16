@@ -27,10 +27,12 @@ const logger = loggerWithTag('HNSW');
 /** The one durable cursor vector of a file-primary HNSW index, stored beside its node mappings. */
 export const DERIVED_INDEX_CURSOR_KEY = Symbol.for('derived-index-cursor');
 export const DEFAULT_MAX_INDEX_LAG_MILLISECONDS = 3000;
+export const MAX_WAIT_FOR_INDEX_MILLISECONDS = 30_000;
 
 export type DerivedNativeIndexHost = {
 	readiness: () => DerivedIndexReadiness;
 	coverage: (maxLagMilliseconds: number) => DerivedIndexCoverage;
+	waitForCoverage: (since: bigint, timeout: number, signal?: AbortSignal) => Promise<void>;
 	requestRebuild: () => boolean;
 };
 
@@ -328,6 +330,7 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 					maxLagMilliseconds
 				),
 			requestRebuild: () => registered.runtime.requestRebuild(id),
+			waitForCoverage: (since, timeout, signal) => registered.runtime.waitForCoverage(id, since, timeout, signal),
 		});
 		releases.push(
 			registered.runtime.register({
