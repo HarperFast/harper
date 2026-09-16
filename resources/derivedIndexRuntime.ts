@@ -928,6 +928,7 @@ class DerivedIndexRunner {
 			if (error instanceof DerivedIndexBackendRetryError) {
 				logger.warn?.(`Derived index '${this.id}' could not inspect backend state; retrying`, error);
 				this.status = { state: 'idle' };
+				this.#publishReadiness('unknown', 'backend-failed');
 				this.#release();
 				this.#armLockRetry(this.#options.lockRetryMilliseconds);
 				return;

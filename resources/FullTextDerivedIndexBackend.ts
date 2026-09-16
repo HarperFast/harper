@@ -49,6 +49,7 @@ export interface FullTextDerivedIndexLifecycle {
 	inspect(): FullTextDerivedIndexInspection;
 	open(): Promise<FullTextDerivedIndexEngine>;
 	reset(): Promise<void>;
+	quiesce?(): void | Promise<void>;
 }
 
 export type FullTextMutationBatch = {
@@ -562,6 +563,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 						: 'require-clean';
 				await engine.close({ mode });
 			}
+			await this.#lifecycle.quiesce?.();
 			this.#engine = undefined;
 			this.#activeEpoch = undefined;
 			this.#inspectedEpoch = undefined;

@@ -7,7 +7,6 @@ const {
 	createNativeFullTextDerivedIndexBackend,
 	NativeFullTextDerivedIndexLifecycle,
 } = require('#src/resources/NativeFullTextDerivedIndexLifecycle');
-const { waitFor } = require('../waitFor');
 
 const limits = {
 	indexingThreads: 1,
@@ -163,7 +162,22 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.deepStrictEqual(closes, [{ mode: 'rollback' }]);
 	});
 
-	it('delegates reset and reclaims the wrapper-retired directory asynchronously', async () => {
+	it('retains an invalid handle until rollback close proves quiescence', async () => {
+		const binding = new FakeNativeModule();
+		let closes = 0;
+		binding.openNativeFullTextIndex = async () => ({
+			async close() {
+				if (++closes === 1) throw new Error('writer still active');
+			},
+		});
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await lifecycle.initialize();
+		await assert.rejects(lifecycle.open(), /could not be closed/);
+		await lifecycle.quiesce();
+		assert.strictEqual(closes, 2);
+	});
+
+	it('delegates reset and reclaims the wrapper-retired directory before returning', async () => {
 		const binding = new FakeNativeModule();
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		const retiredPath = path.join(storePath, '.fulltext-retired', 'retired-index');
@@ -172,7 +186,16 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await lifecycle.initialize();
 		await lifecycle.reset();
 		assert.deepStrictEqual(binding.resets, [{ path: lifecycle.path, indexId: 'products-title' }]);
-		await waitFor(() => !fs.existsSync(retiredPath));
+		assert.strictEqual(fs.existsSync(retiredPath), false);
+	});
+
+	it('reclaims retired indexes left by an interrupted earlier reset during initialization', async () => {
+		const binding = new FakeNativeModule();
+		const retiredPath = path.join(storePath, '.fulltext-retired', 'orphaned-index');
+		fs.mkdirSync(retiredPath, { recursive: true });
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await lifecycle.initialize();
+		assert.strictEqual(fs.existsSync(retiredPath), false);
 	});
 
 	it('does not remove a retirement path outside the wrapper retirement root', async () => {

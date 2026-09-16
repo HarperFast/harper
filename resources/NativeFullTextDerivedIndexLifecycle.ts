@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { readdir, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 import {
@@ -33,6 +33,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 	readonly #path: string;
 	readonly #generation: string;
 	#binding?: NativeFullTextModule;
+	#invalidHandle?: { close(options: { mode: 'rollback' }): Promise<void> };
 
 	constructor(options: NativeFullTextDerivedIndexLifecycleOptions) {
 		if (!isAbsolute(options.storePath)) throw new TypeError('Full-text storePath must be absolute');
@@ -55,6 +56,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 
 	async initialize(): Promise<void> {
 		await this.#getBinding();
+		await this.#reclaimRetired();
 	}
 
 	inspect(): FullTextDerivedIndexInspection {
@@ -62,6 +64,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 	}
 
 	async open(): Promise<FullTextDerivedIndexEngine> {
+		await this.quiesce();
 		const engine = await this.#requireBinding().openNativeFullTextIndex({
 			...this.#nativeOptions(),
 			limits: this.#options.limits,
@@ -69,8 +72,9 @@ export class NativeFullTextDerivedIndexLifecycle {
 		if (validEngine(engine)) return engine;
 		const error = new TypeError('@harperfast/fulltext/native returned an invalid index handle');
 		if (engine && typeof (engine as { close?: unknown }).close === 'function') {
+			this.#invalidHandle = engine as { close(options: { mode: 'rollback' }): Promise<void> };
 			try {
-				await (engine as { close(options: { mode: 'rollback' }): Promise<void> }).close({ mode: 'rollback' });
+				await this.quiesce();
 			} catch (closeError) {
 				throw new AggregateError([error, closeError], 'Invalid full-text index handle could not be closed');
 			}
@@ -79,6 +83,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 	}
 
 	async reset(): Promise<void> {
+		await this.quiesce();
 		const result = await this.#requireBinding().resetNativeFullTextIndex({
 			path: this.#path,
 			indexId: this.#options.indexId,
@@ -89,10 +94,37 @@ export class NativeFullTextDerivedIndexLifecycle {
 				logWarning(`Refused to remove invalid retired full-text path '${result.retiredPath}'`, undefined);
 				return;
 			}
-			void rm(result.retiredPath, { recursive: true, force: true }).catch((error) =>
+			await removeRetired(result.retiredPath).catch((error) =>
 				logWarning(`Could not remove retired full-text index '${result.retiredPath}'`, error)
 			);
 		}
+		await this.#reclaimRetired();
+	}
+
+	async quiesce(): Promise<void> {
+		const handle = this.#invalidHandle;
+		if (!handle) return;
+		await handle.close({ mode: 'rollback' });
+		if (this.#invalidHandle === handle) this.#invalidHandle = undefined;
+	}
+
+	async #reclaimRetired(): Promise<void> {
+		const retiredRoot = join(dirname(this.#path), '.fulltext-retired');
+		let entries;
+		try {
+			entries = await readdir(retiredRoot, { withFileTypes: true });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+			logWarning(`Could not inspect retired full-text indexes in '${retiredRoot}'`, error);
+			return;
+		}
+		await Promise.all(
+			entries.map((entry) =>
+				removeRetired(join(retiredRoot, entry.name)).catch((error) =>
+					logWarning(`Could not remove retired full-text index '${join(retiredRoot, entry.name)}'`, error)
+				)
+			)
+		);
 	}
 
 	#nativeOptions(): Omit<NativeFullTextIndexConfiguration, 'limits'> & {
@@ -146,6 +178,10 @@ function digest(value: string): string {
 function strictChild(parent: string, child: string): boolean {
 	const suffix = relative(resolve(parent), resolve(child));
 	return suffix !== '' && suffix !== '..' && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix);
+}
+
+function removeRetired(path: string): Promise<void> {
+	return rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 }
 
 function plainObject(value: unknown): value is Record<string, unknown> {
