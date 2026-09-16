@@ -19,6 +19,7 @@ const {
 	prepareApplication,
 	pruneDormantBuilds,
 	candidateApplicationPath,
+	publishClaimOwnership,
 	DEPLOY_STAGING_DIR,
 	Application,
 } = require('#src/components/Application');
@@ -373,6 +374,65 @@ describe('claiming a deployment id', () => {
 
 		assert.strictEqual(treeWhenClaimed, false, 'no single component directory to infer an owner from yet');
 		assert.strictEqual(namedWhenClaimed, true, 'and the claim has already published who it belongs to');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('takes back a directory it created but could not name, so the id is not burned', async () => {
+		// Unattributed is a permanent refusal, so a claim that wins the mkdir and then cannot record who it
+		// belongs to — a full disk, an EIO on the temp write or its sync — would leave every retry of that id
+		// refused by its own wreckage. The write is injected because no filesystem can be made to fail on
+		// exactly this write and nothing else.
+		const root = await newRoot('claim-unnameable');
+		const dir = deploymentDir(root, 'a1');
+		await fs.mkdir(dir, { recursive: true });
+
+		await assert.rejects(
+			() =>
+				publishClaimOwnership(dir, 'web', async () => {
+					throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+				}),
+			/no space left on device/
+		);
+
+		assert.strictEqual(existsSync(dir), false, 'the directory it created is gone, so the id can be claimed again');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('keeps the directory when it can name it', async () => {
+		const root = await newRoot('claim-nameable');
+		const dir = deploymentDir(root, 'a1');
+		await fs.mkdir(dir, { recursive: true });
+
+		await publishClaimOwnership(dir, 'web');
+
+		assert.strictEqual(await fs.readFile(path.join(dir, '.component'), 'utf8'), 'web');
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('stages a link whose target is a single legal filename containing a backslash', async function () {
+		this.timeout(20000);
+		if (process.platform === 'win32') return this.skip(); // there a backslash IS a separator
+		// On POSIX a backslash is an ordinary filename character, so `..\\asset` names one entry inside the
+		// candidate and keeps resolving there after relocation. Splitting link targets on it anyway turned that
+		// into `..` plus `asset` and refused a component that never left its own tree.
+		const root = await newRoot('backslash-name');
+		await writeLive(root, 'web', 'LIVE v1\n');
+		const app = applicationAt(
+			root,
+			'web',
+			await makeTarball({ 'package.json': '{"name":"web","version":"2.0.0"}\n', 'index.js': 'STAGED\n' })
+		);
+
+		await prepareApplication(app, {
+			mode: 'stage',
+			artifactId: 'a1',
+			validateCandidate: async (candidateDirPath) => {
+				await fs.writeFile(path.join(candidateDirPath, '..\\asset'), 'INSIDE\n');
+				await fs.symlink('..\\asset', path.join(candidateDirPath, 'alias'));
+			},
+		});
+
+		assert.ok(existsSync(path.join(deploymentDir(root, 'a1'), 'web', 'alias')), 'the artifact was staged');
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -778,10 +838,20 @@ describe('an activation that fails before it commits', () => {
 		// settle reads live-plus-candidate-with-no-record: for a staged artifact that means dormant, never a
 		// roll forward. Holding the journal for a roll-forward that cannot happen only defers the same
 		// verdict to the next start and leaves the artifact unusable until then.
-		await failAfterConfigPublish(root, 'web', 'a1', async () => {
+		const seen = await failAfterConfigPublish(root, 'web', 'a1', async () => {
 			throw new Error('config undo failed');
 		});
 
+		// ASSERTED, not glossed: the entry this activation published is still standing while the previous
+		// release is what is live. That divergence is the whole of #2315 step 3 — and it includes the
+		// isolation the artifact recorded — so it is pinned here rather than left for a reader to infer from
+		// trees and journals. Whoever closes step 3 should find this assertion inverted.
+		assert.strictEqual(seen.undone, 1, 'the undo was attempted');
+		assert.deepStrictEqual(
+			seen.published[0],
+			{ package: 'npm:web@2', isolated: false },
+			'and its entry is the one config is left naming, though that release is not live'
+		);
 		assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n');
 		assert.strictEqual(
 			existsSync(path.join(deploymentDir(root, 'a1'), '.activation.json')),

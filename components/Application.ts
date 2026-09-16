@@ -1376,6 +1376,8 @@ async function readArtifactDescriptor(
 	return parsed as ArtifactDescriptor;
 }
 
+const SEPARATORS_IN_LINK_TARGETS = process.platform === 'win32' ? /[\\/]/ : /\//;
+
 // `node_modules/harper` and `node_modules/harperdb` are links the LOADER owns: it points them at the
 // running install on every non-root component load and repairs them when they are missing or stale. They
 // are outside the artifact by construction and by design, so they are the one external link a staged
@@ -1448,7 +1450,11 @@ async function assertOwnedArtifactTree(
 			// So every PREFIX of the walk is resolved, with symlinks followed as the filesystem will follow
 			// them, and each one has to still be inside the candidate.
 			let prefix = dirname(entryPath);
-			for (const segment of linkTarget.split(/[\\/]/)) {
+			// Only Windows treats a backslash as a separator. On POSIX it is an ordinary filename character, so
+			// splitting on it there turns a link to the single legal entry `..\asset` — which resolves inside
+			// the candidate and keeps resolving there after relocation — into `..` plus `asset`, and refuses a
+			// component that never left its own tree.
+			for (const segment of linkTarget.split(SEPARATORS_IN_LINK_TARGETS)) {
 				if (segment === '' || segment === '.') continue;
 				prefix = await realpath(join(prefix, segment)).catch(() => join(prefix, segment));
 				if (prefix !== ownedRoot && !prefix.startsWith(ownedRoot + sep)) {
@@ -1706,10 +1712,41 @@ async function claimDeploymentDirectory(deploymentDirPath: string, componentName
 			)
 		);
 	}
-	// Published as part of the claim, not at certification: resolving and packing can take minutes, and until
-	// a tree exists to infer an owner from, a directory that answers to nobody is one another component will
-	// take for abandoned.
-	await writeControlFileDurably(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), componentName);
+	await publishClaimOwnership(deploymentDirPath, componentName);
+}
+
+/**
+ * Name the component that owns a deployment directory THIS CALL created, and take the directory back if that
+ * cannot be recorded.
+ *
+ * Ownership is published as part of the claim rather than at certification, because resolving and packing can
+ * take minutes and until a tree exists to infer an owner from, a directory answering to nobody is one another
+ * component will take for abandoned. Unattributed is a permanent refusal, though, so a failure here — a full
+ * disk, an EIO on the temp write or its sync — would burn this deployment id for good, every retry refused by
+ * its own wreckage. The removal is scoped to the directory this invocation made, and deliberately not
+ * broadened to one found by EEXIST: that directory may be another claimant's, and removing it is the race the
+ * refusal exists to prevent. Best-effort, because the claim failure is what the caller needs to see.
+ *
+ * `write` is a parameter so the failure is testable without a filesystem that can be made to fail on exactly
+ * this write and nothing else.
+ */
+export async function publishClaimOwnership(
+	deploymentDirPath: string,
+	componentName: string,
+	write: (filePath: string, contents: string) => Promise<void> = writeControlFileDurably
+): Promise<void> {
+	try {
+		await write(join(deploymentDirPath, CANDIDATE_COMPONENT_FILE), componentName);
+	} catch (error) {
+		await rm(deploymentDirPath, { recursive: true, force: true }).catch((cleanupError) =>
+			logger.warn(
+				`Could not remove the deployment directory ${deploymentDirPath} after failing to publish its ` +
+					`ownership; the id stays unusable until it is removed:`,
+				errorForLog(cleanupError)
+			)
+		);
+		throw error;
+	}
 }
 
 async function ensureExtractionStagingDirectory(asideStagingDir: string): Promise<void> {
