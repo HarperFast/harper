@@ -689,7 +689,29 @@ const retiredCoordinators = new Map<string, { grantableAfterMono: number; counte
  */
 const highestGeneration = new Map<string, number>();
 
+/** Bound one drain step so a single unresponsive delegate cannot consume the whole transition budget. */
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+	if (!(ms > 0)) return Promise.reject(new Error('the quiesce deadline elapsed'));
+	const timer = delay(ms);
+	work.then(
+		() => timer.cancel(),
+		() => timer.cancel()
+	);
+	return Promise.race([
+		work,
+		timer.promise.then<T>(() => {
+			throw new Error('the quiesce deadline elapsed');
+		}),
+	]);
+}
+
 const tickingCoordinators = new Set<LockCoordinator>();
+/**
+ * Every coordinator alive on this thread, so a membership transition can quiesce a whole database
+ * rather than one table at a time (harper-pro#856). The per-`(database, table)` resolvers cannot
+ * enumerate: they answer a name you already have.
+ */
+const liveCoordinators = new Set<LockCoordinator>();
 let tickTimer: ReturnType<typeof setInterval> | undefined;
 function ensureTicking() {
 	if (tickTimer || tickingCoordinators.size === 0) return;
@@ -828,6 +850,7 @@ export class LockCoordinator {
 			);
 		this.database = options.database;
 		this.table = options.table;
+		liveCoordinators.add(this);
 		this.nodeId = options.nodeId;
 		this.transport = options.transport;
 		this.#writeControl = options.writeControl;
@@ -1409,12 +1432,65 @@ export class LockCoordinator {
 	}
 
 	/**
+	 * One table's half of `quiesceDelegations`. Never throws for a single grant: a transition needs to
+	 * know exactly what is still live, and one unreachable delegate must not hide the rest.
+	 */
+	async quiesce(result: QuiesceResult, remaining: () => number): Promise<void> {
+		if (this.#closed) return;
+		// Delegate side first: this is what admits, and surrendering is purely local — it cannot be
+		// refused by an unreachable peer, so it succeeds even when the recalls below do not.
+		for (const delegation of [...this.#delegations.values()]) {
+			try {
+				await withDeadline(
+					this.onDelegationRecall({ key: delegation.key, token: delegation.token }),
+					remaining()
+				);
+				result.surrendered++;
+			} catch (error) {
+				result.outstanding.push({
+					table: this.table,
+					key: delegation.key,
+					reason: `this node still holds a delegation it could not drain: ${(error as Error)?.message ?? error}`,
+				});
+			}
+		}
+		// Home side: tell delegates elsewhere to stop. `#beginRecall` owns the retry and confirmation
+		// bookkeeping; this only drives it and reports what it did not confirm.
+		for (const [keyId, grant] of [...this.#grants]) {
+			if (grant.recallConfirmed) {
+				result.recalled++;
+				continue;
+			}
+			try {
+				this.#beginRecall(keyId, grant);
+				if (grant.recalling) await withDeadline(grant.recalling, remaining());
+				if (grant.recallConfirmed) result.recalled++;
+				else
+					result.outstanding.push({
+						table: this.table,
+						key: grant.key,
+						delegate: grant.delegate,
+						reason: 'the delegate did not confirm it stopped admitting',
+					});
+			} catch (error) {
+				result.outstanding.push({
+					table: this.table,
+					key: grant.key,
+					delegate: grant.delegate,
+					reason: `recall failed: ${(error as Error)?.message ?? error}`,
+				});
+			}
+		}
+	}
+
+	/**
 	 * Stop this coordinator and invalidate what it issued. Expiring every delegation is the part that
 	 * matters: `close()` runs when a transport is replaced (a component reload is enough), and a
 	 * successor coordinator must not be able to grant a key whose predecessor handles are still live.
 	 */
 	close(): void {
 		this.#closed = true;
+		liveCoordinators.delete(this);
 		// State that was handed to a successor is that coordinator's now; expiring it here would
 		// invalidate delegations the successor is correctly still honouring.
 		if (this.#handedOff) {
@@ -2040,6 +2116,55 @@ export function setLockCoordinatorResolver(
 	coordinatorResolver = resolve;
 	admittingResolver = resolveAdmitting;
 	controlWriterResolver = resolveControlWriter;
+}
+
+export interface QuiesceOutstanding {
+	table: string;
+	key: unknown;
+	/** Present when this node was the HOME and the delegate did not confirm. */
+	delegate?: string;
+	reason: string;
+}
+
+export interface QuiesceResult {
+	/** Delegations this node held and gave up, so it can no longer admit under them. */
+	surrendered: number;
+	/** Grants this node issued whose delegate confirmed it stopped admitting. */
+	recalled: number;
+	/** What is still live; empty means this node is provably quiesced for the database. */
+	outstanding: QuiesceOutstanding[];
+}
+
+/**
+ * Stop this node admitting under the current generation for `database`, and say whether it is
+ * provably done (harper-pro#856).
+ *
+ * A membership change otherwise has to wait out `DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS` before the
+ * next generation may activate, because authority already issued under the old one has to expire —
+ * roughly six minutes during which the staged nodes serve no cluster locks at all. That interval is a
+ * TIMER, chosen because you cannot recall what you cannot reach. In a planned transition every
+ * participant is reachable, so the same guarantee can be *established* instead of waited out: this
+ * drains both directions and reports what, if anything, is left.
+ *
+ * - **As a delegate** it surrenders every delegation it holds. This is the load-bearing half: a
+ *   delegate is what admits, and `onDelegationRecall` is the existing path whose resolution means
+ *   "nothing on this node can admit on that token" — live critical sections are drained, not cut.
+ * - **As a home** it recalls every grant it issued, so delegates elsewhere stop too. Redundant when
+ *   every node is quiescing at once, and the reason this still terminates when one is not.
+ *
+ * `outstanding` empty on every node in `homes(g) ∪ homes(g+1)` is the operator's evidence that the
+ * next generation may be activated immediately. Anything left is a node to fall back to the timer for,
+ * or to fence externally — this never claims a drain it did not get, and never throws for one grant.
+ */
+export async function quiesceDelegations(database: string, deadlineMs: number): Promise<QuiesceResult> {
+	const result: QuiesceResult = { surrendered: 0, recalled: 0, outstanding: [] };
+	const coordinators = [...liveCoordinators].filter((coordinator) => coordinator.database === database);
+	const deadline = Date.now() + Math.max(0, deadlineMs);
+	const remaining = () => Math.max(0, deadline - Date.now());
+	for (const coordinator of coordinators) {
+		await coordinator.quiesce(result, remaining);
+	}
+	return result;
 }
 
 /**

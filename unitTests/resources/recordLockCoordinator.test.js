@@ -8,6 +8,7 @@ const {
 	decodeLockControlPayload,
 	encodeLockControlPayload,
 	homeFor,
+	quiesceDelegations,
 	ringKeyFor,
 } = require('#src/resources/recordLockCoordinator');
 const { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS, makeKeyLockHandle } = require('#src/resources/recordLock');
@@ -2469,5 +2470,119 @@ describe('record lock delegations', () => {
 			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
 			beta.coordinator.release(key, successor.admissionId);
 		});
+	});
+});
+
+describe('quiesceDelegations (harper-pro#856)', () => {
+	/** A coordinator that is a HOME for `alpha` and can grant to a peer, with a scriptable recall. */
+	function homeWithPeer(database, table, recall) {
+		return new LockCoordinator({
+			database,
+			table,
+			nodeId: 'alpha',
+			transport: {
+				homeMap: () => ({ generation: 1, homes: ['alpha', 'beta'], homeIncarnation: 1 }),
+				ownsCoordination: () => true,
+				establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+				requestDelegation: () => {
+					throw new Error('unused');
+				},
+				recallDelegation: recall,
+			},
+			writeControl: () => {},
+			keyIdOf: (key) => String(key),
+			nextTimestamp: () => 1,
+			monotonic: () => Date.now(),
+			grantableAfterMono: -Infinity,
+			autoTick: false,
+		});
+	}
+
+	it('reports a clean database as quiesced with nothing outstanding', async () => {
+		const coordinator = homeWithPeer('q1', 'T', async () => {});
+		const result = await quiesceDelegations('q1', 1000);
+		assert.deepStrictEqual(result.outstanding, []);
+		assert.strictEqual(result.surrendered, 0);
+		assert.strictEqual(result.recalled, 0);
+		coordinator.close();
+	});
+
+	/** Keys are homed by rendezvous hash, so a test that needs THIS node to be the home must pick one. */
+	function keysHomedHere(database, table, count, homes = ['alpha', 'beta']) {
+		const found = [];
+		for (let i = 0; found.length < count; i++) {
+			const key = `k${i}`;
+			if (homeFor(ringKeyFor(database, table, key), homes) === 'alpha') found.push(key);
+		}
+		return found;
+	}
+
+	it('recalls a grant this node issued and counts it once confirmed', async () => {
+		const recalls = [];
+		const coordinator = homeWithPeer('q2', 'T', async (node, _db, _table, recall) => {
+			recalls.push({ node, key: recall.key });
+		});
+		// A grant to a peer, through the production request path.
+		const [key] = keysHomedHere('q2', 'T', 1);
+		const reply = await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 });
+		assert.strictEqual(reply.granted, true, 'the test key must be homed on this node');
+		const result = await quiesceDelegations('q2', 1000);
+		assert.deepStrictEqual(
+			recalls.map((r) => [r.node, r.key]),
+			[['beta', key]]
+		);
+		assert.strictEqual(result.recalled, 1);
+		assert.deepStrictEqual(result.outstanding, []);
+		coordinator.close();
+	});
+
+	it('reports an unconfirmed delegate as outstanding instead of claiming a drain', async () => {
+		const coordinator = homeWithPeer('q3', 'T', async () => {
+			throw new Error('unreachable');
+		});
+		const [key] = keysHomedHere('q3', 'T', 1);
+		assert.strictEqual(
+			(await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 })).granted,
+			true
+		);
+		const result = await quiesceDelegations('q3', 500);
+		assert.strictEqual(result.recalled, 0);
+		assert.strictEqual(result.outstanding.length, 1);
+		assert.strictEqual(result.outstanding[0].delegate, 'beta');
+		assert.strictEqual(result.outstanding[0].key, key);
+		assert.match(result.outstanding[0].reason, /did not confirm|recall failed/);
+		coordinator.close();
+	});
+
+	it('one unreachable delegate does not hide the rest', async () => {
+		const [good1, bad, good2] = keysHomedHere('q4', 'T', 3);
+		const coordinator = homeWithPeer('q4', 'T', async (_node, _db, _table, recall) => {
+			if (recall.key === bad) throw new Error('unreachable');
+		});
+		for (const key of [good1, bad, good2])
+			assert.strictEqual(
+				(await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 })).granted,
+				true
+			);
+		const result = await quiesceDelegations('q4', 500);
+		assert.strictEqual(result.recalled, 2, 'the reachable grants still drained');
+		assert.deepStrictEqual(
+			result.outstanding.map((o) => o.key),
+			[bad]
+		);
+		coordinator.close();
+	});
+
+	it('only touches the named database, and a closed coordinator is not swept', async () => {
+		const a = homeWithPeer('q5', 'T', async () => {});
+		const b = homeWithPeer('q6', 'T', async () => {});
+		const [keyA] = keysHomedHere('q5', 'T', 1);
+		const [keyB] = keysHomedHere('q6', 'T', 1);
+		await a.onDelegationRequest({ key: keyA, requester: 'beta', generation: 1, leaseMs: 1000 });
+		await b.onDelegationRequest({ key: keyB, requester: 'beta', generation: 1, leaseMs: 1000 });
+		assert.strictEqual((await quiesceDelegations('q5', 1000)).recalled, 1);
+		b.close();
+		assert.strictEqual((await quiesceDelegations('q6', 1000)).recalled, 0, 'closed coordinators are deregistered');
+		a.close();
 	});
 });
