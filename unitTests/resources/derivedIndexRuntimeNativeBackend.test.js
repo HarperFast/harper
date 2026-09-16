@@ -447,7 +447,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert(runtime.getMetrics('oversized').stalledMilliseconds > 0, 'a parked runner reports how long it has stalled');
 		assert.strictEqual(backend.deliveries[0].records.length, 3);
 		assert.deepStrictEqual(backend.deliveries[0].through, cursor(10), 'an open transaction advances no cursor');
-		assert.strictEqual(runtime.getMetrics('oversized').deferredBytes, 96);
+		assert.strictEqual(runtime.getMetrics('oversized').deferredBytes, 147);
 		defer = false;
 		backend.stateChange();
 
@@ -465,6 +465,36 @@ describe('DerivedIndexRuntime for native backends', () => {
 			chunks.map((batch) => batch.transactions.map((transaction) => transaction.timestamp)),
 			[[20], [20], [20, 30]],
 			'each chunk carries the transaction it is part of'
+		);
+		await runtime.stop();
+	});
+
+	it('charges canonical key bytes when chunking a maximum-key delete transaction', async () => {
+		const key = 'x'.repeat(1978);
+		const entries = Array.from({ length: 4096 }, (_, index) =>
+			audit({ timestamp: 20, recordId: `${index}.${key}`, endTxn: index === 4095 })
+		);
+		const store = new FakeLogStore(new Map([[10, entries]]));
+		const backend = new SyncBackend('delete-key-budget', cursor(10), (batch, target) => {
+			target.cursor = batch.through;
+			return DERIVED_INDEX_ACCEPTED;
+		});
+		const { runtime } = runtimeFor(store, new Map(), {
+			maxChunkRecords: 4096,
+			maxChunkBytes: 4 * 1024 * 1024,
+			maxMillisecondsPerTurn: 100_000,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.cursor.logs.local === 20);
+		assert(backend.deliveries.length > 1);
+		assert.strictEqual(
+			backend.deliveries.reduce((records, batch) => records + batch.records.length, 0),
+			4096
+		);
+		assert(
+			backend.deliveries.every((batch) => batch.bytes <= 4 * 1024 * 1024 + 2048),
+			'a chunk may exceed the soft byte target only by its final maximum-size key'
 		);
 		await runtime.stop();
 	});
@@ -1173,7 +1203,6 @@ describe('DerivedIndexRuntime for native backends', () => {
 					resets++;
 				},
 			},
-			encodeMutationBatch: (batch) => Buffer.from(JSON.stringify(batch)),
 		});
 		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
 		runtime.register(registration(backend, { lockRetryMilliseconds: 5 }));
@@ -1193,6 +1222,18 @@ describe('DerivedIndexRuntime for native backends', () => {
 		class Engine {
 			constructor(committedPayload) {
 				this.committedPayload = committedPayload;
+			}
+
+			encodeMutationBatches(batch) {
+				return {
+					batches: [
+						{
+							bytes: Buffer.from(JSON.stringify(batch)),
+							mutationCount: batch.upserts.length + batch.deletes.length,
+						},
+					],
+					rejected: [],
+				};
 			}
 
 			async apply(bytes) {
@@ -1224,7 +1265,6 @@ describe('DerivedIndexRuntime for native backends', () => {
 					return new Promise((resolve) => (finishReset = resolve));
 				},
 			},
-			encodeMutationBatch: (batch) => Buffer.from(JSON.stringify(batch)),
 			maxQueuedBytes: 1,
 			openAttempts: 1,
 		});

@@ -20,8 +20,27 @@ class FakeEngine {
 	constructor(committedPayload) {
 		this.committedPayload = committedPayload;
 		this.applied = [];
+		this.encoded = [];
+		this.encodingOptions = [];
 		this.publications = [];
 		this.closes = [];
+	}
+
+	encodeMutationBatches(batch, options) {
+		this.encoded.push(batch);
+		this.encodingOptions.push(options);
+		this.onEncode?.(batch, options);
+		if (this.encodeError) throw this.encodeError;
+		if (this.encodeResult) return this.encodeResult(batch);
+		return {
+			batches: [
+				{
+					bytes: Buffer.from(JSON.stringify(batch)),
+					mutationCount: batch.upserts.length + batch.deletes.length,
+				},
+			],
+			rejected: [],
+		};
 	}
 
 	async apply(bytes) {
@@ -75,12 +94,6 @@ function makeBackend(lifecycleValue, options = {}) {
 	const backend = new FullTextDerivedIndexBackend({
 		id: 'products-title',
 		lifecycle: lifecycleValue,
-		encodeMutationBatch:
-			options.encodeMutationBatch ??
-			((value) => {
-				options.onEncode?.(value);
-				return Buffer.from(JSON.stringify(value));
-			}),
 		maxQueuedBatches: options.maxQueuedBatches,
 		maxQueuedBytes: options.maxQueuedBytes,
 		openAttempts: options.openAttempts ?? 1,
@@ -182,15 +195,79 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('applies every exact wrapper partition before publishing one cursor', async () => {
+		const engine = new FakeEngine();
+		engine.encodeResult = (value) => ({
+			batches: value.upserts.map((upsert) => ({
+				bytes: Buffer.from(JSON.stringify({ upserts: [upsert], deletes: [] })),
+				mutationCount: 1,
+			})),
+			rejected: [],
+		});
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), { maxQueuedBytes: 128 });
+		backend.deliver(
+			batch(
+				1n,
+				['a', 'b', 'c'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
+				cursor(20)
+			)
+		);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.strictEqual(engine.applied.length, 3);
+		assert.strictEqual(engine.applied.flatMap((value) => value.upserts).length, 3);
+		assert.deepStrictEqual(engine.encodingOptions, [{ maxTotalBytes: 128 }]);
+		await backend.shutdown(1n);
+	});
+
+	it('replaces only wrapper-rejected upserts with removals', async () => {
+		const engine = new FakeEngine();
+		engine.encodeResult = (value) => {
+			const rejectedIndex = value.upserts.findIndex((upsert) => upsert.fields.title === 'too large');
+			if (rejectedIndex !== -1)
+				return {
+					batches: [],
+					rejected: [{ operation: 'upsert', index: rejectedIndex, code: 'E_BATCH_TOO_LARGE' }],
+				};
+			return {
+				batches: [
+					{
+						bytes: Buffer.from(JSON.stringify(value)),
+						mutationCount: value.upserts.length + value.deletes.length,
+					},
+				],
+				rejected: [],
+			};
+		};
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		backend.deliver(
+			batch(
+				1n,
+				[
+					mutation('good', { kind: 'record', version: 1, projection: { title: 'good' } }),
+					mutation('bad', { kind: 'record', version: 1, projection: { title: 'too large' } }),
+				],
+				cursor(20)
+			)
+		);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.strictEqual(engine.applied.length, 1);
+		assert.strictEqual(engine.applied[0].upserts.length, 1);
+		assert.strictEqual(engine.applied[0].deletes.length, 1);
+		assert.strictEqual(engine.applied[0].deletes[0], engine.encoded[0].upserts[1].id);
+		await backend.shutdown(1n);
+	});
+
 	it('defers at queue bounds without encoding in deliver', async () => {
 		let releaseApply;
-		const engine = new FakeEngine();
-		engine.applyWait = new Promise((resolve) => (releaseApply = resolve));
 		let encoded = 0;
+		const engine = new FakeEngine();
+		engine.onEncode = () => encoded++;
+		engine.applyWait = new Promise((resolve) => (releaseApply = resolve));
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
 			maxQueuedBatches: 1,
 			maxQueuedBytes: 64,
-			onEncode: () => encoded++,
 		});
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
@@ -236,7 +313,8 @@ describe('FullTextDerivedIndexBackend', () => {
 	it('publishes cursor-only progress without encoding mutations', async () => {
 		const engine = new FakeEngine();
 		let encoded = 0;
-		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), { onEncode: () => encoded++ });
+		engine.onEncode = () => encoded++;
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
 		backend.deliver(batch(1n, [], cursor(20)));
 		backend.flush('age');
 		await waitFor(() => engine.publications.length === 1);
@@ -278,6 +356,23 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
 		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(10).logs);
 		await backend.shutdown(1n);
+	});
+
+	it('does not publish a discarded cursor during immediate shutdown after publication failure', async () => {
+		const first = new FakeEngine();
+		first.publishError = new Error('publish failed');
+		const second = new FakeEngine();
+		const source = lifecycle({ state: 'missing' }, [first, second]);
+		const { backend } = makeBackend(source);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		backend.flush();
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		await backend.shutdown(1n);
+		assert.strictEqual(source.openCalls, 1);
+		assert.strictEqual(second.publications.length, 0);
+		assert.strictEqual(backend.getDurableCursor(), undefined);
 	});
 
 	it('defers delivery while a failed apply is closing its writer', async () => {
@@ -352,11 +447,8 @@ describe('FullTextDerivedIndexBackend', () => {
 
 	it('fails permanently when encoding cannot represent an accepted batch', async () => {
 		const engine = new FakeEngine();
-		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
-			encodeMutationBatch: () => {
-				throw Object.assign(new Error('too large'), { code: 'E_BATCH_TOO_LARGE' });
-			},
-		});
+		engine.encodeError = Object.assign(new Error('too large'), { code: 'E_BATCH_TOO_LARGE' });
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
 		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
@@ -374,6 +466,18 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(source.resetCalls, 1);
 		assert.strictEqual(source.openCalls, 0);
 		assert.strictEqual(backend.getDurableCursor(), undefined);
+		await backend.shutdown(2n);
+	});
+
+	it('invalidates inspect-only state when ownership changes', async () => {
+		const source = lifecycle({ state: 'missing' });
+		const { backend, setEpoch } = makeBackend(source);
+		assert.strictEqual(backend.getDurableCursor(), undefined);
+		await backend.shutdown(1n);
+		setEpoch(2n);
+		source.inspection = { state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(20)) };
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
+		assert.strictEqual(source.inspectCalls, 2);
 		await backend.shutdown(2n);
 	});
 
@@ -414,11 +518,12 @@ describe('FullTextDerivedIndexBackend', () => {
 		setEpoch(2n);
 		source.reset = async function () {
 			this.resetCalls++;
+			this.inspection = { state: 'missing' };
 			setEpoch(3n);
 		};
 		await assert.rejects(backend.reset(2n), /owner epoch was revoked/);
 		assert.strictEqual(backend.getDurableCursor(), undefined);
-		assert.strictEqual(source.inspectCalls, 1);
+		assert.strictEqual(source.inspectCalls, 2);
 	});
 
 	it('rejects reset while shutdown is still closing the writer', async () => {

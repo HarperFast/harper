@@ -246,6 +246,7 @@ const READINESS_REASONS: DerivedIndexReadinessReason[] = [
 	'rebuild-requested',
 ];
 const CONDEMNED_MARKER = new Uint8Array([1]);
+const DERIVED_INDEX_MUTATION_OVERHEAD_BYTES = 16;
 // One shared allocation per backend: five independently read Int32 words, then the owner-epoch
 // counter. Each word is self-consistent on its own; nothing needs to observe two of them atomically.
 const READINESS_WORDS = 6;
@@ -1325,6 +1326,8 @@ class DerivedIndexRunner {
 			record.logVersion = collectedKey.logVersion;
 			return record;
 		}
+		const recordKey = derivedIndexRecordKey(key);
+		chunk.batch.bytes += Buffer.byteLength(recordKey, 'latin1') + DERIVED_INDEX_MUTATION_OVERHEAD_BYTES;
 		const current = this.#resolveRecord(tableId, collectedKey.recordId);
 		const state: DerivedIndexState = current
 			? this.#project(chunk, tableId, current.value, current.version, current.size ?? collectedKey.sizeHint)
@@ -1332,7 +1335,7 @@ class DerivedIndexRunner {
 		record = {
 			tableId,
 			recordId: collectedKey.recordId,
-			recordKey: derivedIndexRecordKey(key),
+			recordKey,
 			logVersion: collectedKey.logVersion,
 			state,
 		};
@@ -1791,10 +1794,12 @@ class DerivedIndexRunner {
 		let byRecord = chunk.resolved.get(tableId);
 		if (!byRecord) chunk.resolved.set(tableId, (byRecord = new Map()));
 		if (byRecord.has(key)) return;
+		const recordKey = derivedIndexRecordKey(key);
+		chunk.batch.bytes += Buffer.byteLength(recordKey, 'latin1') + DERIVED_INDEX_MUTATION_OVERHEAD_BYTES;
 		const mutation: DerivedIndexMutation = {
 			tableId,
 			recordId: record.recordId,
-			recordKey: derivedIndexRecordKey(key),
+			recordKey,
 			logVersion: record.version,
 			state: this.#project(chunk, tableId, record.value, record.version, record.size),
 		};

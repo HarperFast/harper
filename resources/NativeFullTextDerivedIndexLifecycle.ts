@@ -25,10 +25,7 @@ export type NativeFullTextDerivedIndexLifecycleOptions = NativeFullTextIndexConf
 	binding?: NativeFullTextModule | (() => Promise<NativeFullTextModule>);
 };
 
-export type NativeFullTextDerivedIndexBackendOptions = Omit<
-	FullTextDerivedIndexBackendOptions,
-	'lifecycle' | 'encodeMutationBatch'
-> &
+export type NativeFullTextDerivedIndexBackendOptions = Omit<FullTextDerivedIndexBackendOptions, 'lifecycle'> &
 	Omit<NativeFullTextDerivedIndexLifecycleOptions, 'indexId'>;
 
 /** Thin Harper adapter around the native binding's storage lifecycle. */
@@ -89,10 +86,6 @@ export class NativeFullTextDerivedIndexLifecycle {
 		}
 	}
 
-	encodeMutationBatch(batch: Parameters<NativeFullTextModule['encodeMutationBatch']>[0]): Uint8Array {
-		return this.#requireBinding().encodeMutationBatch(batch, this.#options.limits.maxBatchBytes);
-	}
-
 	#nativeOptions(): Omit<NativeFullTextIndexConfiguration, 'limits'> & {
 		path: string;
 		indexId: string;
@@ -134,7 +127,6 @@ export async function createNativeFullTextDerivedIndexBackend(
 		...options,
 		id: options.id,
 		lifecycle,
-		encodeMutationBatch: (batch) => lifecycle.encodeMutationBatch(batch),
 	});
 }
 

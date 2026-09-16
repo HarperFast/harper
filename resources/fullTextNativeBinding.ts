@@ -1,4 +1,4 @@
-import type { FullTextDerivedIndexEngine, FullTextMutationBatch } from './FullTextDerivedIndexBackend.ts';
+import type { FullTextDerivedIndexEngine } from './FullTextDerivedIndexBackend.ts';
 
 const FULLTEXT_NATIVE_ABI_VERSION = 4;
 
@@ -19,6 +19,9 @@ export interface NativeFullTextIndexConfiguration {
 }
 
 export interface NativeFullTextModule {
+	NativeFullTextIndex: {
+		prototype: Pick<FullTextDerivedIndexEngine, 'encodeMutationBatches'>;
+	};
 	runtimeInfo(): Promise<{
 		packageVersion: string;
 		tantivyVersion: string;
@@ -46,7 +49,6 @@ export interface NativeFullTextModule {
 		path: string;
 		indexId: string;
 	}): Promise<{ state: 'missing' } | { state: 'reset'; retiredPath: string }>;
-	encodeMutationBatch(batch: FullTextMutationBatch, maxBytes?: number): Uint8Array;
 }
 
 let bindingPromise: Promise<NativeFullTextModule> | undefined;
@@ -66,14 +68,16 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		typeof module !== 'object' ||
 		!('runtimeInfo' in module) ||
 		typeof module.runtimeInfo !== 'function' ||
+		!('NativeFullTextIndex' in module) ||
+		typeof module.NativeFullTextIndex !== 'function' ||
+		typeof (module.NativeFullTextIndex as { prototype?: { encodeMutationBatches?: unknown } }).prototype
+			?.encodeMutationBatches !== 'function' ||
 		!('openNativeFullTextIndex' in module) ||
 		typeof module.openNativeFullTextIndex !== 'function' ||
 		!('inspectNativeFullTextIndex' in module) ||
 		typeof module.inspectNativeFullTextIndex !== 'function' ||
 		!('resetNativeFullTextIndex' in module) ||
-		typeof module.resetNativeFullTextIndex !== 'function' ||
-		!('encodeMutationBatch' in module) ||
-		typeof module.encodeMutationBatch !== 'function'
+		typeof module.resetNativeFullTextIndex !== 'function'
 	)
 		throw new TypeError('@harperfast/fulltext/native does not implement the required Harper binding contract');
 	const binding = module as NativeFullTextModule;
