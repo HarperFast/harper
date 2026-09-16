@@ -13,7 +13,10 @@ import type { ProgressEmitter } from '../server/serverHelpers/progressEmitter.ts
 const { HTTP_STATUS_CODES } = hdbErrors;
 
 const DEPLOYMENT_TABLE = terms.SYSTEM_TABLE_NAMES.DEPLOYMENT_TABLE_NAME;
-const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back']);
+// `staged` belongs here: the build is complete on disk and nothing further happens to this deployment, so
+// an SSE tail must finish and `delete_deployment_payload` must not refuse a tarball nobody is installing
+// from any more. Activating the artifact is a separate deployment with a row of its own.
+const TERMINAL_STATUSES = new Set(['success', 'failed', 'rolled_back', 'staged']);
 
 interface ListRequest {
 	project?: string;

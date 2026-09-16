@@ -59,7 +59,7 @@ const NONTERMINAL_FIXTURE_KB = 256;
 const LARGE_FIXTURE_KB = 12 * 1024;
 
 // Mirrors TERMINAL_STATUSES in components/deploymentOperations.ts -- the set the 409 guard keys on.
-const TERMINAL_STATUSES = ['success', 'failed', 'rolled_back'];
+const TERMINAL_STATUSES = ['success', 'failed', 'rolled_back', 'staged'];
 
 function postMultipart(
 	url: URL,
