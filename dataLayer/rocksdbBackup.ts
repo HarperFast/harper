@@ -163,14 +163,10 @@ function requireRocksRootStore(databaseName: string, operation: string): RocksDa
 }
 
 /**
- * Apply the engine gate only when there is a loaded database to gate.
- *
- * A repository outlives its database. A restore that failed leaves the database blocked by its
- * restoring marker with the repository intact, and a backup can be imported for a name that does not
- * exist yet — both are exactly the states an operator needs list/verify/delete/purge for. Refusing
- * them because no root store is loaded turns a recoverable situation into a filesystem intervention,
- * which on Fabric the operator cannot perform at all. A name that is neither a loaded database nor a
- * repository is still a 404, so a typo does not silently answer with an empty list.
+ * Apply the engine gate only when there is a loaded database to gate. A repository outlives its
+ * database — a failed restore leaves it blocked with the repository intact — and those are the
+ * states maintenance is most needed in. A name that is neither a loaded database nor a repository is
+ * still a 404, so a typo does not answer with an empty list.
  */
 function requireBackupRepositoryAccess(databaseName: string, operation: string): void {
 	const loaded = getDatabases()[databaseName];
@@ -789,10 +785,14 @@ async function streamBackupArchive(
 	// before anything is awaited, so the snapshot is taken on the caller's tick — a caller that hands
 	// us a database and then closes it must not race the manifest lookup.
 	const nativeDone = rootStore.backup(Writable.toWeb(nativeTar) as any, { gzip: false, transactionLogs: true });
-	// A consumer that aborts (destroys `out`) rejects `consumed` before we reach the `await` below, so
-	// attach silent observers now to close the unhandled-rejection window; the awaits/allSettled still
-	// see the rejection and drive the real teardown.
-	consumed.catch(() => {});
+	// A consumer that aborts (destroys `out`) rejects `consumed` from anywhere, including while this
+	// function is awaiting something that does not touch `plain` at all. Nothing would then drain
+	// `nativeTar`, and the native producer would wait on it forever — holding the snapshot open and
+	// its deferred file deletions with it. Tearing the producer down from the rejection itself is what
+	// bounds that, rather than relying on reaching the catch below.
+	consumed.catch(() => {
+		if (!nativeTar.destroyed) nativeTar.destroy(new Error('backup stream consumer aborted'));
+	});
 	nativeDone.catch(() => {});
 	try {
 		// the manifest is the archive's FIRST entry, so a reader can identify it after inflating a few KB
@@ -832,10 +832,10 @@ async function streamBackupArchive(
 }
 
 /**
- * The roles that grant access to this database, for the archive manifest. Best effort by design: it
- * reads the already-loaded `system` database rather than calling `getDatabases()`, because the
- * offline CLI runs with nothing loaded and a scan there would open — and lock — every database on
- * the instance. Null means "not recorded", which a reader must not confuse with "no roles".
+ * The roles that grant access to this database, for the archive manifest. Reads the already-loaded
+ * `system` database rather than calling `getDatabases()`: the offline CLI runs with nothing loaded,
+ * and a scan there would open — and lock — every database on the instance. Null means "not
+ * recorded", which is not "no roles".
  */
 async function collectDatabaseRoleNames(databaseName: string): Promise<string[] | null> {
 	const roleTable = (databases as any).system?.hdb_role;
@@ -853,9 +853,8 @@ async function collectDatabaseRoleNames(databaseName: string): Promise<string[] 
 }
 
 /**
- * A tar holding exactly one text entry, with its end-of-archive trailer removed so more entries can
- * follow. This is how an entry is placed *before* the binding's own tar, which is a stream we cannot
- * insert into.
+ * A tar holding one text entry with its end-of-archive trailer removed, so it can be concatenated
+ * ahead of the binding's own tar — a stream that cannot be inserted into.
  */
 async function tarEntryPrefix(name: string, content: string): Promise<Buffer> {
 	const pack = tarPack();

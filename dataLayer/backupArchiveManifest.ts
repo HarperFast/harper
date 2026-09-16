@@ -6,39 +6,23 @@ import { ClientError } from '../utility/errors/hdbError.ts';
 /**
  * The machine-readable identification carried by a `get_backup` archive.
  *
- * Archives produced before this existed carry only human-readable READMEs, so a reader cannot tell
- * what produced them and cannot refuse one it is unable to open. That is the whole reason this
- * ships ahead of any consumer: every archive taken before it exists is unidentifiable, and that set
- * only grows.
+ * The manifest is the first entry in the tar because a `.tar.gz` must be inflated from the start to
+ * reach a later entry: a trailing manifest would cost a full pass over a multi-gigabyte archive just
+ * to decide whether to reject it.
  *
- * The manifest is the **first** entry in the tar. A `.tar.gz` has to be inflated from the start to
- * reach a later entry, so a trailing manifest would cost a full pass over a multi-gigabyte archive
- * just to decide whether to reject it; the first entry is readable after a few kilobytes.
- *
- * ## Compatibility is expressed as capabilities, not as a version comparison
- *
- * "Refuse an archive from a newer Harper" is the wrong rule in both directions: most Harper
- * releases change nothing about the on-disk formats an archive carries, and the changes that *do*
- * matter are not all tied to the Harper version. What actually makes an archive unreadable is a
- * format the target cannot decode — a newer RocksDB `format_version`, records written in a struct
- * mode the reader lacks (DESIGN.md "Struct mode is gated to primary DBIs"), a transaction-log
- * framing change, or deflate-compressed blob bodies (harper#2443) on a build with no deflate
- * support. Engine-level formats fail closed on their own: RocksDB refuses to open a directory whose
- * `format_version` it does not understand. The rest do not, which is what `requires` is for.
- *
- * So the producer declares the capabilities a reader needs, and the reader refuses any it does not
- * have. New capability tokens are additive: an older reader refuses an archive naming a token it has
- * never heard of, which is the correct answer, and no version table has to be maintained.
+ * Compatibility is a capability list rather than a version comparison. What makes an archive
+ * unreadable is a format the target cannot decode, and the engine-level ones already fail closed on
+ * their own (RocksDB refuses a `format_version` it does not understand). The ones that do not are
+ * record struct mode (DESIGN.md "Struct mode is gated to primary DBIs"), transaction-log framing,
+ * and deflate-compressed blob bodies (harper#2443). So the producer declares what a reader needs and
+ * the reader refuses any token it does not have; new tokens are additive, and an older reader
+ * refusing an unknown one is the intended answer.
  */
 
 /** Tar entry name of the manifest. First entry in the archive. */
 export const ARCHIVE_MANIFEST_ENTRY = 'harper-backup.json';
 
-/**
- * Structure of the manifest document itself. Bumped only when the shape changes incompatibly — a
- * reader refuses a schema version it does not understand, because it cannot trust `requires` from a
- * document it cannot parse correctly.
- */
+/** Bumped only when the document shape changes incompatibly; a reader refuses a version above its own. */
 export const ARCHIVE_SCHEMA_VERSION = 1;
 
 /** Capability tokens this build can satisfy when reading an archive. */
@@ -112,10 +96,9 @@ export function serializeArchiveManifest(manifest: BackupArchiveManifest): strin
 }
 
 /**
- * Parse a manifest read out of an archive. Anything that is not a well-formed manifest is an error
- * rather than a silent "unidentified": an archive that carries a manifest entry Harper cannot read
- * is a different situation from one that predates manifests, and only the second is eligible for the
- * operator's provenance override.
+ * A malformed manifest is an error, not a silent "unidentified": an archive carrying an unreadable
+ * manifest is a different situation from one that predates manifests, and only the second is
+ * eligible for the operator's provenance override.
  */
 export function parseArchiveManifest(contents: string): BackupArchiveManifest {
 	let parsed: any;
@@ -133,10 +116,7 @@ export function parseArchiveManifest(contents: string): BackupArchiveManifest {
 	return parsed as BackupArchiveManifest;
 }
 
-/**
- * Refuse an archive this build cannot read. Both checks answer the same question — is there
- * something in here we do not understand — and both fail closed on the unknown.
- */
+/** Refuse an archive this build cannot read. Both checks fail closed on the unknown. */
 export function assertArchiveRestorable(manifest: BackupArchiveManifest): void {
 	if (manifest.archive_schema_version > ARCHIVE_SCHEMA_VERSION) {
 		throw new ClientError(

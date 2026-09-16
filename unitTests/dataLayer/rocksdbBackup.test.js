@@ -870,6 +870,38 @@ describe('rocksdbBackup', function () {
 			}
 		});
 
+		it('stops the engine-only producer when the consumer aborts', async function () {
+			this.timeout(30000);
+			const ABORT_DB = `${DB_NAME}-abort`;
+			const dir = join(storageDir, ABORT_DB);
+			const seed = RocksDatabase.open(dir);
+			try {
+				for (let i = 0; i < 200; i++) seed.putSync(`k${i}`, { payload: 'x'.repeat(2048) });
+			} finally {
+				seed.close();
+			}
+
+			const store = RocksDatabase.open(dir);
+			try {
+				const stream = createBackupStream(store, ABORT_DB, false, true);
+				// what a client disconnecting mid-download does to the response stream
+				stream.destroy(new Error('client went away'));
+				// the producer must not be left waiting on a stream nobody will ever read again
+				await new Promise((resolve, reject) => {
+					const timer = setTimeout(() => reject(new Error('backup producer still pending after abort')), 5000);
+					const settle = () => {
+						clearTimeout(timer);
+						resolve();
+					};
+					stream.on('close', settle);
+					stream.on('error', settle);
+				});
+			} finally {
+				store.close();
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
 		it('makes the manifest the first entry of an engine-only archive too, and says so', async function () {
 			this.timeout(30000);
 			const MANIFEST_DB = `${DB_NAME}-archive-manifest-engine`;
