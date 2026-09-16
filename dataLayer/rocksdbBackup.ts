@@ -877,6 +877,9 @@ async function tarEntryPrefix(name: string, content: string): Promise<Buffer> {
 		pack.on('end', () => resolvePromise());
 		pack.on('error', reject);
 	});
+	// A pack error while the entry below is still being awaited rejects this before anything awaits
+	// it; the silent observer closes that unhandled-rejection window without swallowing the throw.
+	collected.catch(() => {});
 	await addTextEntry(pack, name, content);
 	pack.finalize();
 	await collected;
