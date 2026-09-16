@@ -1056,23 +1056,23 @@ Returns a single deployment record by `deployment_id`. When called on an in-prog
 
 The deployment record includes:
 
-| Field                | Description                                                                                      |
-| -------------------- | ------------------------------------------------------------------------------------------------ |
-| `deployment_id`      | Unique identifier (content hash)                                                                 |
-| `project`            | Component project name                                                                           |
-| `package_identifier` | Package reference or `payload` for tar uploads                                                   |
-| `status`             | `pending`, `success`, `failed`, `staged` (v5.3.0), or `rolled_back`                              |
-| `phase`              | Current lifecycle phase: `prepare`, `load`, `replicate`, `restart`                               |
-| `event_log`          | Bounded log of install output and phase transitions (up to 200 entries)                          |
-| `peer_results`       | Per-node outcome map for replicated deployments                                                  |
-| `payload_hash`       | SHA-256 hash of the deployment tarball                                                           |
-| `payload_size`       | Byte size of the deployment tarball                                                              |
-| `started_at`         | Timestamp when deployment began                                                                  |
-| `completed_at`       | Timestamp when deployment finished                                                               |
-| `user`               | User who initiated the deployment                                                                |
-| `activated_from`     | <VersionBadge version="v5.3.0" /> On an activation, the id of the staged deployment it made live |
-| `rollback_of`        | `deployment_id` of the deployment this rolls back, if applicable                                 |
-| `error`              | Error message for failed deployments                                                             |
+| Field                | Description                                                             |
+| -------------------- | ----------------------------------------------------------------------- |
+| `deployment_id`      | Unique identifier (content hash)                                        |
+| `project`            | Component project name                                                  |
+| `package_identifier` | Package reference or `payload` for tar uploads                          |
+| `status`             | `pending`, `success`, `failed`, `staged` (v5.3.0), or `rolled_back`     |
+| `phase`              | Current lifecycle phase: `prepare`, `load`, `replicate`, `restart`      |
+| `event_log`          | Bounded log of install output and phase transitions (up to 200 entries) |
+| `peer_results`       | Per-node outcome map for replicated deployments                         |
+| `payload_hash`       | SHA-256 hash of the deployment tarball                                  |
+| `payload_size`       | Byte size of the deployment tarball                                     |
+| `started_at`         | Timestamp when deployment began                                         |
+| `completed_at`       | Timestamp when deployment finished                                      |
+| `user`               | User who initiated the deployment                                       |
+| `activated_from`     | (v5.3.0) On an activation, the id of the staged deployment it made live |
+| `rollback_of`        | `deployment_id` of the deployment this rolls back, if applicable        |
+| `error`              | Error message for failed deployments                                    |
 
 ### `get_deployment_payload`
 
