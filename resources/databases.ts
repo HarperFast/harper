@@ -3203,24 +3203,39 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
  * while the operations API and config objects can supply them reordered or as numbers; without
  * canonicalizing, such a representation-only difference flips the structural comparison and forces
  * a needless full rebuild (clearing + rebuilding the index, 503-ing the attribute throughout) for a
- * semantically identical index. Sorts object keys and coerces numeric-looking string scalars to
- * numbers. Conservative by design: boolean-vs-object and absent-vs-present differences are preserved,
- * so a genuine change (`true` vs `{ type: 'HNSW' }`, an added/removed option, a changed value) still
- * triggers a rebuild. Persistence keys off the raw form, so the stored descriptor self-heals toward
- * this shape over time. harper#1357
+ * semantically identical index. Sorts object keys and coerces numeric-looking non-zero strings to
+ * numbers. Known HNSW numeric options also coerce zero because their consumer normalizes before use;
+ * other zero strings remain distinct because a generic consumer may branch on truthiness. Boolean-vs-
+ * object and absent-vs-present differences are preserved, so a genuine change (`true` vs
+ * `{ type: 'HNSW' }`, an added/removed option, a changed value) still triggers a rebuild. Persistence
+ * keys off the raw form, so the stored descriptor self-heals toward this shape over time. harper#1357
  */
-export function canonicalizeIndexOptions(value: any): any {
-	if (Array.isArray(value)) return value.map(canonicalizeIndexOptions);
+const HNSW_NUMERIC_OPTIONS = new Set([
+	'M',
+	'efConstruction',
+	'efConstructionSearch',
+	'mL',
+	'optimizeRouting',
+	'filterExpansion',
+	'nativePlaneMaxNodes',
+]);
+export function canonicalizeIndexOptions(value: any, coerceZero = false): any {
+	if (Array.isArray(value)) return value.map((item) => canonicalizeIndexOptions(item, coerceZero));
 	if (value && typeof value === 'object') {
 		const canonical: Record<string, any> = {};
-		for (const key of Object.keys(value).sort()) canonical[key] = canonicalizeIndexOptions(value[key]);
+		const hnswOptions = value.type === 'HNSW';
+		for (const key of Object.keys(value).sort())
+			canonical[key] = canonicalizeIndexOptions(
+				value[key],
+				coerceZero || (hnswOptions && HNSW_NUMERIC_OPTIONS.has(key))
+			);
 		return canonical;
 	}
 	// Coerce numeric-looking strings ("16" -> 16) so string-vs-number representations of the same
 	// option compare equal. Leave non-numeric strings, booleans, null, etc. intact.
 	if (typeof value === 'string' && value.trim() !== '') {
 		const numeric = Number(value);
-		if (Number.isFinite(numeric)) return numeric;
+		if ((numeric !== 0 || coerceZero) && Number.isFinite(numeric)) return numeric;
 	}
 	return value;
 }

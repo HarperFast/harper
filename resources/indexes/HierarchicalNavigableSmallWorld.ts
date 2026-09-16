@@ -308,10 +308,13 @@ export class HierarchicalNavigableSmallWorld {
 		const configuredEfConstruction = numericOption('efConstruction', options?.efConstruction);
 		const configuredEfConstructionSearch = numericOption('efConstructionSearch', options?.efConstructionSearch);
 		const configuredML = numericOption('mL', options?.mL);
-		const configuredOptimizeRouting = numericOption(
-			'optimizeRouting',
-			typeof options?.optimizeRouting === 'boolean' ? Number(options.optimizeRouting) : options?.optimizeRouting
-		);
+		const optimizeRouting = options?.optimizeRouting;
+		const configuredOptimizeRouting =
+			optimizeRouting === true || optimizeRouting === 'true'
+				? 1
+				: optimizeRouting === false || optimizeRouting === 'false'
+					? 0
+					: numericOption('optimizeRouting', optimizeRouting);
 		const configuredFilterExpansion = numericOption('filterExpansion', options?.filterExpansion);
 		this.int8 = options?.quantization !== 'none';
 		// Respect an explicitly-configured ef (efConstruction seeds the search ef too); otherwise auto-scale both.

@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { tables } = require('#src/resources/databases');
+const { resetDatabases, tables } = require('#src/resources/databases');
 const { ClientError } = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -48,9 +48,15 @@ describe('HNSW GraphQL numeric options', () => {
 			['HnswQuotedZeroRoutingOption', 'optimizeRouting: "0"'],
 			['HnswUnquotedZeroRoutingOption', 'optimizeRouting: 0'],
 			['HnswBooleanDisabledRoutingOption', 'optimizeRouting: false'],
+			['HnswQuotedBooleanDisabledRoutingOption', 'optimizeRouting: "false"'],
 		]) {
 			routingDisabled.push(await loadTable(tableName, '', `type: "HNSW", ${option}`));
 		}
+		const quotedBooleanEnabled = await loadTable(
+			'HnswQuotedBooleanEnabledRoutingOption',
+			'',
+			'type: "HNSW", optimizeRouting: "true"'
+		);
 
 		assert.equal(indexedOptions('HnswQuotedNumericOptions').M, '12');
 		assert.equal(indexedOptions('HnswUnquotedNumericOptions').M, 12);
@@ -76,6 +82,13 @@ describe('HNSW GraphQL numeric options', () => {
 			assert.equal(index.optimizeRouting, 0);
 			assert.equal(typeof index.optimizeRouting, 'number');
 		}
+		assert.equal(quotedBooleanEnabled.optimizeRouting, 1);
+		assert.equal(typeof quotedBooleanEnabled.optimizeRouting, 'number');
+
+		resetDatabases();
+		const reloaded = customIndex('HnswQuotedBooleanDisabledRoutingOption');
+		assert.equal(reloaded.optimizeRouting, 0);
+		assert.equal(typeof reloaded.optimizeRouting, 'number');
 	});
 
 	it('rejects options that are not finite numeric values', async () => {
