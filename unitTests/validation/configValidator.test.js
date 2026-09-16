@@ -475,7 +475,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('does not warn when a short absolute rootPath resolves within the limit', () => {
-			expect(getDomainSocketPathLengthWarning('/hdb/relative/root', 'operations-server')).to.equal(null);
+			expect(getDomainSocketPathLengthWarning('/hdb/root', 'operations-server')).to.equal(null);
 		});
 	});
 
