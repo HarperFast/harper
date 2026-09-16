@@ -2843,13 +2843,27 @@ registration. ABI 4 is the Rust/Node boundary; mutation-batch API 2 separately i
 resumable JavaScript partition contract.
 
 ```ts
+type EncodedMutationBatches = {
+	batches: Array<{ bytes: Uint8Array; mutationCount: number }>;
+	rejected: Array<{
+		operation: 'upsert' | 'delete';
+		index: number;
+		code: 'E_INVALID_ARGUMENT' | 'E_BATCH_TOO_LARGE';
+	}>;
+	consumedUpserts: number;
+	consumedDeletes: number;
+};
+
 interface NativeFullTextModule {
+	NativeFullTextIndex: new (...args: unknown[]) => {
+		encodeMutationBatches(batch, options?): EncodedMutationBatches;
+	};
 	runtimeInfo(): Promise<{
 		packageVersion: string;
 		tantivyVersion: string;
 		nativeAbiVersion: 4;
 		mutationBatchApiVersion: 2;
-		storageBackends: readonly ['native'];
+		storageBackends: ReadonlyArray<'native'>;
 	}>;
 	inspectNativeFullTextIndex(
 		options
@@ -2859,18 +2873,10 @@ interface NativeFullTextModule {
 		| { state: 'incompatible'; code: string };
 	openNativeFullTextIndex(options): Promise<{
 		readonly committedPayload?: string;
-		encodeMutationBatches(
-			batch,
-			options?: { maxTotalBytes?: number; allowPartial?: boolean }
-		): {
-			batches: Array<{ bytes: Uint8Array; mutationCount: number }>;
-			rejected: Array<{ operation: 'upsert' | 'delete'; index: number; code: string }>;
-			consumedUpserts: number;
-			consumedDeletes: number;
-		};
+		encodeMutationBatches(batch, options?: { maxTotalBytes?: number; allowPartial?: boolean }): EncodedMutationBatches;
 		apply(frame: Uint8Array): Promise<number>;
-		publish(cursor: string): Promise<void>;
-		close(options?: { rollback?: boolean }): Promise<void>;
+		publish(cursor: string): Promise<bigint>;
+		close(options?: { mode?: 'require-clean' | 'rollback' }): Promise<void>;
 	}>;
 	resetNativeFullTextIndex(options): Promise<{ state: 'missing' } | { state: 'reset'; retiredPath: string }>;
 }
@@ -2889,6 +2895,11 @@ and asks the runtime to replay from that exact point.
 estimated source bytes are a scheduling bound and allow one oversized batch when the queue is
 empty, matching HNSW and preventing one large record from permanently stalling the index. Exact
 wire limits belong to Fulltext.
+
+When schema registration is added, it must build the runtime projection from the same declared field
+list passed to Fulltext when the native schema is opened. Unknown projection fields are an integration
+error that the registration path must fail rather than silently drop. This slice does not register
+schemas.
 
 In one serialized drain, the wrapper encodes FTMB frames no larger than `maxBatchBytes`. Harper
 passes its queue-byte ceiling as `maxTotalBytes` and explicitly sets `allowPartial: true`. The
@@ -2936,6 +2947,16 @@ Reset runs only inside the shared rebuild sequence after condemnation is durable
 epoch is quiescent. Fulltext atomically retires the active directory. Harper accepts returned
 cleanup paths only under the expected `.fulltext-retired` sibling, refuses symbolic-link roots,
 retries bounded removal, and sweeps interrupted retirements during initialization.
+
+The cleanup checks fail closed when the retirement root is a symbolic link or is not a directory,
+canonicalize candidate parents before recursive removal, and accept both canonical and alias-form
+paths beneath a symlinked store ancestor. Harper's storage directory permissions remain the trust
+boundary: Node does not provide the descriptor-relative recursive removal needed to defend against a
+local actor concurrently replacing the checked directory between filesystem operations.
+
+The retirement root is shared by every native full-text index under the same `storePath`.
+Initialization sweeps all entries because every directory there has already been atomically retired;
+concurrent per-index removals are safe and a bounded-removal warning leaves residue for the next sweep.
 
 A restart reuses compatible files and replays from the cursor embedded in the Tantivy publication.
 A new replica, restore without local files, missing/corrupt/incompatible index, or condemned
