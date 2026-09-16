@@ -21,7 +21,7 @@ describe('CRUD operations with the Resource API', () => {
 			relationship: { from: 'relatedId' },
 			definition: {},
 		};
-		analytics.analyticsDelay = 50; // let's make this fast
+		analytics.analyticsDelay = 50; // flush analytics windows quickly so the assertions below don't wait a second
 		analytics.setAnalyticsEnabled(true);
 		CRUDTable = table({
 			table: 'CRUDTable',
@@ -118,21 +118,65 @@ describe('CRUD operations with the Resource API', () => {
 		});
 		registerTests();
 	});
-	async function waitForAnalyticsMetric(metric, start) {
-		return waitFor(
-			async () => {
-				if (!databases.system?.hdb_raw_analytics) return undefined;
-				const analyticsResults = await databases.system.hdb_raw_analytics.search({
-					conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
-				});
-				for await (let { metrics } of analyticsResults) {
-					if (!Array.isArray(metrics)) continue;
-					const found = metrics.find((entry) => entry?.metric === metric && entry?.path === 'CRUDTable');
-					if (found) return found;
-				}
-			},
-			{ message: `${metric} was recorded in analytics` }
-		);
+	// The publish's own byte counts have to be distinguishable from every other CRUDTable write in
+	// this file (all under 100 bytes): a record id is stamped when the window is flushed, not when
+	// it closed, so a window that predates a test's `start` can still be returned to it.
+	const PUBLISHED_MESSAGE = 'A published message'.padEnd(2048, '.');
+	const PUBLISHED_MESSAGE_MIN_BYTES = 1024;
+	// A stored analytics record reports the MEAN of its aggregation window. The window is short here,
+	// but its flush is an unref'd timer: a loaded runner delays it past the writes of the next test,
+	// and one unrelated small write — a delete records 1 byte — then drags a correctly recorded large
+	// write under the threshold. What these assertions mean is "one operation recorded more than N
+	// bytes", which is the window's largest single value; the percentile distribution always carries
+	// it because the percentiles run to the 100th.
+	function largestRecordedValue(metric) {
+		if (!Array.isArray(metric?.distribution)) return undefined;
+		let largest = -Infinity;
+		for (const entry of metric.distribution) {
+			const value = typeof entry === 'number' ? entry : entry?.value;
+			if (typeof value === 'number' && value > largest) largest = value;
+		}
+		return largest === -Infinity ? undefined : largest;
+	}
+	it('reads the largest single write from a distribution rather than the window mean', function () {
+		// The record CI stored for the red `publishes and subscribes` run on main at f154c3876: the
+		// publish's own 23-byte write sharing a window with the two 1-byte deletes before it.
+		const diluted = { mean: 8.333333333333334, count: 3, distribution: [{ value: 1, count: 2 }, 23] };
+		assert(!(diluted.mean > 20));
+		assert.equal(largestRecordedValue(diluted), 23);
+		assert.equal(largestRecordedValue({ distribution: [28] }), 28);
+		assert.equal(largestRecordedValue({ distribution: [44, { value: 78, count: 65 }, 79] }), 79);
+		assert.equal(largestRecordedValue({ distribution: [] }), undefined);
+		assert.equal(largestRecordedValue({ mean: 12 }), undefined);
+	});
+	async function waitForAnalyticsMetrics(metricNames, start, minBytes, timeout) {
+		const observed = [];
+		try {
+			return await waitFor(
+				async () => {
+					if (!databases.system?.hdb_raw_analytics) return undefined;
+					const analyticsResults = await databases.system.hdb_raw_analytics.search({
+						conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
+					});
+					const recorded = new Set();
+					observed.length = 0;
+					for await (let { metrics } of analyticsResults) {
+						if (!Array.isArray(metrics)) continue;
+						for (const entry of metrics) {
+							if (entry?.path !== 'CRUDTable' || !metricNames.includes(entry.metric)) continue;
+							const largest = largestRecordedValue(entry);
+							observed.push(`${entry.metric} max ${largest} (count ${entry.count}, mean ${entry.mean})`);
+							if (largest > minBytes) recorded.add(entry.metric);
+						}
+					}
+					return metricNames.every((name) => recorded.has(name)) || undefined;
+				},
+				{ timeout, message: `${metricNames.join(' and ')} byte counts over ${minBytes} were recorded in analytics` }
+			);
+		} catch (error) {
+			error.message += `; observed ${observed.length ? observed.join('; ') : 'no CRUDTable analytics records'}`;
+			throw error;
+		}
 	}
 	function registerTests() {
 		it('puts', async function () {
@@ -154,14 +198,12 @@ describe('CRUD operations with the Resource API', () => {
 				nestedData: { id: 'some-id', name: 'nested name ' },
 			});
 			assert.equal((await CRUDTable.get('two')).name, 'Two');
-			const analyticRecorded = await waitForAnalyticsMetric('db-write', start);
-			assert(analyticRecorded.mean > 2, 'db-write bytes count were recorded in analytics');
+			await waitForAnalyticsMetrics(['db-write'], start, 2);
 		});
 		it('get is recorded in analytics', async function () {
 			const start = Date.now();
 			assert.equal((await CRUDTable.get('two')).name, 'Two');
-			const analyticRecorded = await waitForAnalyticsMetric('db-read', start);
-			assert(analyticRecorded.mean > 20, 'db-read bytes count were recorded in analytics');
+			await waitForAnalyticsMetrics(['db-read'], start, 20);
 		});
 		it('gets', async function () {
 			const context = {};
@@ -199,7 +241,6 @@ describe('CRUD operations with the Resource API', () => {
 			assert.equal(await CRUDTable.get('two'), undefined);
 		});
 		it('publishes and subscribes', async function () {
-			await new Promise((resolve) => setTimeout(resolve, 100)); // let previous analytics get written
 			const start = Date.now();
 			const messages = [];
 			const subscription = await CRUDTable.subscribe('pubsub');
@@ -208,41 +249,11 @@ describe('CRUD operations with the Resource API', () => {
 			});
 			await CRUDTable.publish('pubsub', {
 				id: 'pubsub',
-				name: 'A published message',
+				name: PUBLISHED_MESSAGE,
 			});
 			await waitFor(() => messages.length >= 1);
 			assert.equal(messages.length, 1);
-			const observedPublishMeans = new Set();
-			const observedMessageMeans = new Set();
-			try {
-				await waitFor(
-					async () => {
-						const analyticsResults = await databases.system.hdb_raw_analytics.search({
-							conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
-						});
-						let publishRecorded, messageRecorded;
-						for await (let { metrics } of analyticsResults) {
-							for (const { metric, path, mean } of metrics) {
-								if (path !== 'CRUDTable') continue;
-								if (metric === 'db-write') {
-									observedPublishMeans.add(mean);
-									if (mean > 20) publishRecorded = true;
-								} else if (metric === 'db-message') {
-									observedMessageMeans.add(mean);
-									if (mean > 20) messageRecorded = true;
-								}
-							}
-							if (publishRecorded && messageRecorded) return true;
-						}
-					},
-					{ timeout: 5000, message: 'db-write and db-message byte counts were recorded in analytics' }
-				);
-			} catch (error) {
-				error.message += `; observed db-write means: ${[...observedPublishMeans]}; db-message means: ${[
-					...observedMessageMeans,
-				]}`;
-				throw error;
-			}
+			await waitForAnalyticsMetrics(['db-write', 'db-message'], start, PUBLISHED_MESSAGE_MIN_BYTES, 5000);
 		});
 		it('create with auto-id', async function () {
 			let created = await CRUDTable.create({ relatedId: 1, name: 'constructed with auto-id' });
