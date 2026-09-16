@@ -2515,6 +2515,43 @@ describe('quiesceDelegations (harper-pro#856)', () => {
 		assert.strictEqual(result.complete, false, 'an unattested, unswept database cannot be proven quiesced');
 	});
 
+	it('a thread that took ownership recently cannot prove quiescence, however long it has been up', async () => {
+		// cursor-grok's counterexample: worker A owns the database, grants, and exits. Worker B built
+		// empty coordinators earlier (a cluster_status poll), so its registry is non-empty and its uptime
+		// is long — but A's delegates still admit. Ownership continuity, not uptime, is the proof.
+		let mono = 0;
+		const coordinator = new LockCoordinator({
+			database: 'handoff',
+			table: 'T',
+			nodeId: 'alpha',
+			transport: {
+				homeMap: () => ({ generation: 1, homes: ['alpha', 'beta'], homeIncarnation: 1 }),
+				ownsCoordination: () => true,
+				establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+				requestDelegation: () => {
+					throw new Error('unused');
+				},
+				recallDelegation: async () => {},
+			},
+			writeControl: () => {},
+			keyIdOf: (key) => String(key),
+			nextTimestamp: () => 1,
+			monotonic: () => mono,
+			// No grantableAfterMono: this is NOT a first incarnation, so nothing is waived.
+			autoTick: false,
+		});
+		// Take ownership "now", then let a lot of wall time pass without the horizon elapsing.
+		const taken = await quiesceDelegations('handoff', 100);
+		assert.strictEqual(taken.complete, false, 'ownership just started: authority from the previous owner may be live');
+		assert.ok(taken.outstanding.some((o) => /long enough to rule out authority/.test(o.reason)));
+		// Past the horizon, the same sweep is a proof.
+		mono = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+		const later = await quiesceDelegations('handoff', 100);
+		assert.deepStrictEqual(later.outstanding, []);
+		assert.strictEqual(later.complete, true);
+		coordinator.close();
+	});
+
 	it('never reports complete alongside outstanding work', async () => {
 		const coordinator = homeWithPeer('q7', 'T', async () => {
 			throw new Error('unreachable');

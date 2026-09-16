@@ -712,13 +712,6 @@ const tickingCoordinators = new Set<LockCoordinator>();
  * enumerate: they answer a name you already have.
  */
 const liveCoordinators = new Set<LockCoordinator>();
-/**
- * When this process started, on the monotonic clock. Nothing a previous incarnation of this process
- * granted can be ruled out until a full delegation lease has passed from here — and that is a
- * per-process fact, not a per-table one, which is why it is what `complete` rests on rather than the
- * set of coordinators that happen to have been built.
- */
-const PROCESS_START_MONO = performance.now();
 let tickTimer: ReturnType<typeof setInterval> | undefined;
 function ensureTicking() {
 	if (tickTimer || tickingCoordinators.size === 0) return;
@@ -790,9 +783,18 @@ export class LockCoordinator {
 	 * delegate-side generation check in `#liveDelegation` is what stops the old delegate.
 	 */
 	#grantableAfterMono: number;
-	/** Whether the transport attested that no previous incarnation of this process ever delegated. */
-	get quarantineWaived(): boolean {
-		return this.#grantableAfterMono === -Infinity;
+	/**
+	 * How long until this coordinator can rule out authority issued before it took over — 0 when it
+	 * already can. Non-mutating, unlike `#ownershipHorizon`, which records ownership as a side effect.
+	 *
+	 * A waived quarantine is the transport's attestation that no previous incarnation of this process
+	 * ever delegated, which is the one case where "before it took over" has nothing in it.
+	 */
+	unprovenOwnershipMs(): number {
+		if (this.#quarantineWaived) return 0;
+		const now = this.#monotonic();
+		if (this.#ownedSinceMono === undefined) return DELEGATION_LEASE_MS + this.#skewMs;
+		return Math.max(0, this.#ownedSinceMono + DELEGATION_LEASE_MS + this.#skewMs - now);
 	}
 	/**
 	 * When this coordinator was last observed to own coordination, and `undefined` while it does not.
@@ -1448,20 +1450,6 @@ export class LockCoordinator {
 	 */
 	async quiesce(result: QuiesceResult, remaining: () => number): Promise<void> {
 		if (this.#closed) return;
-		// A sweep can only see what THIS coordinator holds. Inside the restart quarantine a previous
-		// incarnation of this process may have granted delegations that are still live on other nodes,
-		// and nothing in memory records them — so an empty sweep here is not evidence of quiescence, and
-		// saying so is the whole contract. The quarantine's own end IS the drain the operator would have
-		// waited for, so reporting it lets them wait exactly that long and no longer.
-		if (this.#monotonic() < this.#grantableAfterMono) {
-			result.complete = false;
-			result.outstanding.push({
-				table: this.table,
-				key: undefined,
-				reason: `this node restarted and is inside its grant quarantine for another ${Math.ceil(this.#grantableAfterMono - this.#monotonic())}ms; delegations a previous incarnation issued may still be live elsewhere`,
-			});
-			return;
-		}
 		// Delegate side first: this is what admits, and surrendering is purely local — it cannot be
 		// refused by an unreachable peer, so it succeeds even when the recalls below do not.
 		for (const delegation of [...this.#delegations.values()]) {
@@ -2197,31 +2185,34 @@ export async function quiesceDelegations(database: string, deadlineMs: number): 
 	const coordinators = [...liveCoordinators].filter((coordinator) => coordinator.database === database);
 	const deadline = Date.now() + Math.max(0, deadlineMs);
 	const remaining = () => Math.max(0, deadline - Date.now());
-	let attested = typeof clusterLockTransports.get(database)?.grantableAfterMono === 'number';
 	for (const coordinator of coordinators) {
-		// A waived quarantine IS the transport's attestation that no previous incarnation of this
-		// process ever delegated for this database; the waiver is per transport, not per table.
-		if (coordinator.quarantineWaived) attested = true;
 		await coordinator.quiesce(result, remaining);
 	}
-	// A sweep proves quiescence only if it could have seen everything. Coordinators are built lazily,
-	// so a database with none — or a process that restarted recently without that attestation — has
-	// authority this sweep cannot rule out, whatever `outstanding` says.
-	const sinceStart = performance.now() - PROCESS_START_MONO;
-	const restartHorizon = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
-	if (!attested && sinceStart < restartHorizon) {
-		result.outstanding.push({
-			table: '*',
-			key: undefined,
-			reason: `this process started ${Math.round(sinceStart)}ms ago; delegations a previous incarnation issued cannot be ruled out for another ${Math.ceil(restartHorizon - sinceStart)}ms`,
-		});
-	} else if (coordinators.length === 0 && !attested) {
+	// A sweep proves quiescence only if it could have seen everything this NODE issued, not merely what
+	// this coordinator holds. Two ways it could not have:
+	//
+	// - No coordinator exists for the database on this thread, so there is nothing to attest from.
+	// - A coordinator has not owned coordination long enough for authority issued BEFORE it took over
+	//   — by a previous owner thread, or a previous incarnation of this process — to have expired.
+	//   Those grants live on delegate nodes and no local sweep can see them; the same fact is what
+	//   core's own grant gate refuses on, and it is why uptime is not the right measure (a worker that
+	//   built empty coordinators early and took ownership late has plenty of uptime and no proof).
+	if (coordinators.length === 0) {
 		result.outstanding.push({
 			table: '*',
 			key: undefined,
 			reason:
 				'no lock coordinator exists for this database on this thread, so there is nothing to prove quiescence from',
 		});
+	}
+	for (const coordinator of coordinators) {
+		const unproven = coordinator.unprovenOwnershipMs();
+		if (unproven > 0)
+			result.outstanding.push({
+				table: coordinator.table,
+				key: undefined,
+				reason: `this thread has not coordinated ${database}.${coordinator.table} long enough to rule out authority issued before it took over; ${Math.ceil(unproven)}ms remain`,
+			});
 	}
 	if (result.outstanding.length > 0) result.complete = false;
 	return result;
