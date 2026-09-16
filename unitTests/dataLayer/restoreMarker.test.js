@@ -3,6 +3,7 @@
 const assert = require('node:assert');
 const {
 	appendFileSync,
+	chmodSync,
 	existsSync,
 	mkdtempSync,
 	mkdirSync,
@@ -355,19 +356,46 @@ describe('restoreMarker', function () {
 		});
 
 		it('does not make a concurrent open look like a restore to checkRestoreState', function () {
-			abandonRestore(beginRestore(dbPath)); // marker survives, so the state is probed
-			withRestoreExclusion(
-				dbPath,
-				() => {
-					assert.strictEqual(
-						checkRestoreState(dbPath),
-						'incomplete',
-						'a reader holding the lock must not read as a restore in progress'
-					);
-					return 'opened';
-				},
-				() => 'blocked'
-			);
+			// a reader holding the shared lock, exactly as withRestoreExclusion does mid-open
+			abandonRestore(beginRestore(dbPath)); // marker survives, so the state is actually probed
+			const readerToken = tryFileLock(restoreLockPath(dbPath), true);
+			assert.notStrictEqual(readerToken, 0, 'a reader must be able to take the lock shared');
+			try {
+				assert.strictEqual(
+					checkRestoreState(dbPath),
+					'incomplete',
+					'a reader holding the lock must not read as a restore in progress'
+				);
+			} finally {
+				fileLockRelease(readerToken);
+			}
+		});
+
+		it('still blocks on a marker when the metadata directory cannot be created', function () {
+			// an unwritable databases root: the exclusion degrades to the marker check rather than
+			// throwing out through the startup scan and taking every later database with it
+			abandonRestore(beginRestore(dbPath));
+			const unwritable = join(tempDir, 'readonly');
+			mkdirSync(unwritable);
+			chmodSync(unwritable, 0o500);
+			try {
+				const states = [];
+				assert.strictEqual(
+					withRestoreExclusion(
+						join(unwritable, 'somedb'),
+						() => 'opened',
+						(state) => {
+							states.push(state);
+							return 'blocked';
+						}
+					),
+					'opened',
+					'an unmarked database in an unwritable root still loads'
+				);
+				assert.deepStrictEqual(states, []);
+			} finally {
+				chmodSync(unwritable, 0o700);
+			}
 		});
 	});
 
