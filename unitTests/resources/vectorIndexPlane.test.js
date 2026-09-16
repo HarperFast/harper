@@ -81,7 +81,7 @@ describe('HNSW native plane file-primary delivery', function () {
 		return await customIndex().search(
 			{ target, comparator: 'sort', distance: 'cosine', ef: EF },
 			{ transaction: undefined },
-			filter
+			{ filter }
 		);
 	}
 	async function readySearch(target, filter) {

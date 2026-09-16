@@ -141,16 +141,12 @@ export function executeConditions(
 				filtered
 				// recordAccess intentionally omitted: guards run once, at the top level (see above).
 			);
-		return searchByIndex(
-			condition,
-			txn,
-			condition.descending || request.reverse === true,
-			table,
-			request.allowFullScan,
+		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
+			allowFullScan: request.allowFullScan,
 			filtered,
 			context,
-			request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
-		);
+			minResults: request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
+		});
 	}
 	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
 		return conditions
@@ -269,27 +265,35 @@ function distinctRecords(entries: any): AsyncIterable<Id> {
 }
 
 /**
- * Search for records or keys, based on the search condition, using an index if available
+ * Search for records or keys, based on the search condition, using an index if available. The four
+ * leading parameters are required at every call site; everything optional is named, so a new
+ * capability can be added without shifting positions at callers that don't use it.
  * @param searchCondition
  * @param transaction
  * @param reverse
  * @param Table
- * @param allowFullScan
- * @param filtered
+ * @param options
  */
 export function searchByIndex(
 	searchCondition: DirectCondition,
 	transaction: any,
 	reverse: boolean,
 	Table: any,
-	allowFullScan?: boolean,
-	filtered?: any,
-	context?: any,
-	// How many rows the query will ultimately consume (offset + limit), when it is bounded. An
-	// approximate index returns a fixed-size candidate list, so without this a query asking for more
-	// rows than that list holds silently gets a short result set. Only custom indexes read it.
-	minResults?: number
+	options: {
+		allowFullScan?: boolean;
+		filtered?: any;
+		context?: any;
+		// How many rows the query will ultimately consume (offset + limit), when it is bounded. An
+		// approximate index returns a fixed-size candidate list, so without this a query asking for more
+		// rows than that list holds silently gets a short result set. Only custom indexes read it.
+		minResults?: number;
+	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
+	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
+	// fail loud rather than silently reading every option as undefined.
+	if (typeof options !== 'object' || options === null)
+		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
+	const { allowFullScan, filtered, context, minResults } = options;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -323,8 +327,7 @@ export function searchByIndex(
 				transaction,
 				reverse,
 				relatedTable,
-				allowFullScan,
-				joined
+				{ allowFullScan, filtered: joined }
 			);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match
@@ -341,8 +344,7 @@ export function searchByIndex(
 						transaction,
 						reverse,
 						Table,
-						allowFullScan,
-						joined
+						{ allowFullScan, filtered: joined }
 					);
 				};
 				if (attribute.elements) {
@@ -550,7 +552,7 @@ export function searchByIndex(
 			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
-			const searched = index.customIndex.search(searchCondition, context, recordFilter, minResults);
+			const searched = index.customIndex.search(searchCondition, context, { filter: recordFilter, minResults });
 			const processEntries = (entries: any[]) => {
 				const loaded = entries
 					.map((entry) => {

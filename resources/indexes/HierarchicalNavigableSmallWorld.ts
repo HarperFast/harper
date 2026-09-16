@@ -1558,12 +1558,14 @@ export class HierarchicalNavigableSmallWorld {
 	 * This the main entry from Harper's query functionality, where we actually search for an ordered list of nearest
 	 * neighbors, using the provided sort/order definition object and performing the multi-layer skip-list search.
 	 * This returns an iterable of the nearest neighbors to the provided target vector, with nearest ordered first.
-	 * @param target
-	 * @param value
-	 * @param descending
-	 * @param distance
-	 * @param comparator
-	 * @param context
+	 *
+	 * This is also the contract an index implemented outside this repo has to satisfy, so everything
+	 * optional is named: a future capability (a paging cursor, a deadline, a recall target) is a new
+	 * field on `options` rather than a positional argument that breaks every existing implementation.
+	 * @param searchCondition the vector query: `target`, `comparator`, and the optional `value`,
+	 *   `descending`, `distance`, `ef` and `filterExpansion` tuning knobs
+	 * @param context the query context; its `transaction` is the nested RocksDB transaction reads use
+	 * @param options optional, named: `filter` (predicate-aware traversal) and `minResults`
 	 */
 	search(
 		{
@@ -1584,16 +1586,21 @@ export class HierarchicalNavigableSmallWorld {
 			filterExpansion?: number;
 		},
 		context: any,
-		// Predicate-aware traversal (#1241). When provided, only nodes for which `filter(primaryKey)`
-		// returns true are admitted to the result list at layer 0; routing is unaffected. Composed by
-		// search.ts from companion AND conditions and caller-supplied vector/row filters. Must be
-		// synchronous and side-effect free. JS-API only (never from a REST query string).
-		filter?: (primaryKey: Id) => boolean,
-		// offset + limit for a bounded query. A layer-0 search returns at most `ef` candidates, so a
-		// query asking for more rows than that used to come back short with no error — capped at 512
-		// (AUTO_EF_MAX) however large the limit was. Raising ef to cover the request keeps `limit`
-		// meaningful; the caller pays for what it asked for.
-		minResults?: number
+		{
+			filter,
+			minResults,
+		}: {
+			// Predicate-aware traversal (#1241). When provided, only nodes for which `filter(primaryKey)`
+			// returns true are admitted to the result list at layer 0; routing is unaffected. Composed by
+			// search.ts from companion AND conditions and caller-supplied vector/row filters. Must be
+			// synchronous and side-effect free. JS-API only (never from a REST query string).
+			filter?: (primaryKey: Id) => boolean;
+			// offset + limit for a bounded query. A layer-0 search returns at most `ef` candidates, so a
+			// query asking for more rows than that used to come back short with no error — capped at 512
+			// (AUTO_EF_MAX) however large the limit was. Raising ef to cover the request keeps `limit`
+			// meaningful; the caller pays for what it asked for.
+			minResults?: number;
+		} = {}
 	) {
 		let limit: number | undefined; // only set for threshold comparators; 0 is a valid threshold (e.g. dotProduct)
 		let limitInclusive = false; // true for `le`, false for `lt`
@@ -1622,7 +1629,7 @@ export class HierarchicalNavigableSmallWorld {
 		if (!target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
 
-		const options = context.transaction; // should have a nested RocksDB transaction
+		const txnOptions = context.transaction; // should have a nested RocksDB transaction
 		// Resolve search ef: per-query ef wins; else use the schema-pinned value (from either ef option);
 		// otherwise auto-scale with the graph size so recall holds as the table grows.
 		let effectiveEf = this.efConstructionSearch;
@@ -1681,7 +1688,7 @@ export class HierarchicalNavigableSmallWorld {
 			// path, which tolerates the mismatch, rather than disabling the healthy plane
 			if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {
 				try {
-					return this.searchPlane(plane, target, effectiveEf, filter, filterState, options).catch((error) => {
+					return this.searchPlane(plane, target, effectiveEf, filter, filterState, txnOptions).catch((error) => {
 						// the query failed for a reason outside the traversal: re-raise instead of disabling the file
 						if (error?.[NOT_A_PLANE_FAILURE]) throw error;
 						// There is no JS graph behind a file-primary index: it stays unavailable until
@@ -1714,7 +1721,7 @@ export class HierarchicalNavigableSmallWorld {
 			}
 			return withStats([], filterState);
 		}
-		let entryPoint = this.getEntryPoint(options);
+		let entryPoint = this.getEntryPoint(txnOptions);
 		if (!entryPoint) return withStats([], filterState);
 		let entryPointId = entryPoint.id;
 		let results: Candidate[] = [];
@@ -1732,7 +1739,7 @@ export class HierarchicalNavigableSmallWorld {
 				entryPoint,
 				l === 0 ? effectiveEf : ROUTING_EF,
 				l,
-				options,
+				txnOptions,
 				distanceFunction,
 				l === 0 ? filter : undefined,
 				l === 0 ? filterState : undefined

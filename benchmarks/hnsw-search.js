@@ -223,7 +223,7 @@ for (const p of SELECTIVITIES) {
 
 		// predicate-aware traversal
 		const t0 = performance.now();
-		const pred = hnsw.search({ target: query, comparator: 'sort', descending: false }, {}, filter);
+		const pred = hnsw.search({ target: query, comparator: 'sort', descending: false }, {}, { filter });
 		predNs += (performance.now() - t0) * 1e6;
 		const predIdx = new Set(pred.slice(0, k).map((r) => idxOf(r.key)));
 		predRecall += overlap(gt, predIdx) / k;
