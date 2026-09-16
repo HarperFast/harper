@@ -18,7 +18,7 @@ import { loggerWithTag } from '../utility/logging/logger.ts';
 const logger = loggerWithTag('fulltext-derived-index');
 
 const DEFAULT_MAX_QUEUED_BATCHES = 16;
-const DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
+export const HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
 export const HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES = 64 * 1024;
 const DEFAULT_OPEN_ATTEMPTS = 3;
 const DEFAULT_OPEN_RETRY_MILLISECONDS = 10;
@@ -176,7 +176,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			options.maxQueuedBatches ?? DEFAULT_MAX_QUEUED_BATCHES,
 			'maxQueuedBatches'
 		);
-		this.#maxQueuedBytes = positiveInteger(options.maxQueuedBytes ?? DEFAULT_MAX_QUEUED_BYTES, 'maxQueuedBytes');
+		this.#maxQueuedBytes = positiveInteger(
+			options.maxQueuedBytes ?? HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES,
+			'maxQueuedBytes'
+		);
 		this.#maxCursorPayloadBytes = positiveInteger(
 			options.maxCursorPayloadBytes ?? HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES,
 			'maxCursorPayloadBytes'
@@ -565,7 +568,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				(rejection.code !== 'E_INVALID_ARGUMENT' && rejection.code !== 'E_BATCH_TOO_LARGE') ||
 				!Number.isSafeInteger(rejection.index)
 			)
-				throw new FullTextDerivedIndexProtocolError('Full-text encoder rejected an immutable document ID');
+				throw new FullTextDerivedIndexProtocolError('Full-text encoder returned invalid rejection metadata');
 			if (rejection.index < 0 || rejection.index >= batch.upserts.length || indexes.has(rejection.index))
 				throw new FullTextDerivedIndexProtocolError('Full-text encoder returned an invalid rejection index');
 			indexes.add(rejection.index);
