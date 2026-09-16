@@ -28,7 +28,6 @@ export type NativeFullTextDerivedIndexLifecycleOptions = NativeFullTextIndexConf
 export type NativeFullTextDerivedIndexBackendOptions = Omit<FullTextDerivedIndexBackendOptions, 'lifecycle'> &
 	Omit<NativeFullTextDerivedIndexLifecycleOptions, 'indexId'>;
 
-/** Thin Harper adapter around the native binding's storage lifecycle. */
 export class NativeFullTextDerivedIndexLifecycle {
 	readonly #options: NativeFullTextDerivedIndexLifecycleOptions;
 	readonly #path: string;
