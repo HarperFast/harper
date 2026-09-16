@@ -607,21 +607,52 @@ describe('rocksdbBackup', function () {
 			assert.strictEqual((await listBackupsInDir(backupDir)).length, 2, 'a refused purge must remove nothing');
 		});
 
-		it('purges exactly the backups it admitted, so a concurrent create is not swept up', async function () {
+		it('deletes exactly the ids it admitted and reports that count', async function () {
 			this.timeout(30000);
 			const { first, second } = await seedTwoBackups();
+			const third = await createBackupOffline(PINNED);
 			const backupDir = backupDirForDatabase(PINNED);
-			// keep_count=1 admits {first}; a third backup created before the engine call must survive,
-			// because "keep the newest 1" evaluated later would have dropped `second` instead
+
 			const purged = await purgeBackupsOffline(PINNED, 1);
 
-			const surviving = (await listBackupsInDir(backupDir)).map((backup) => backup.backupId);
-			assert.deepStrictEqual(surviving, [second.backup_id]);
-			assert.ok(!surviving.includes(first.backup_id));
-			assert.strictEqual(purged.remaining, 1);
+			assert.deepStrictEqual(purged, { deleted: 2, remaining: 1 }, 'the count comes from the deletes themselves');
+			assert.deepStrictEqual(
+				(await listBackupsInDir(backupDir)).map((backup) => backup.backupId),
+				[third.backup_id]
+			);
+			assert.ok(![first.backup_id, second.backup_id].some((id) => id === third.backup_id));
 		});
 
-		it('reconciles blob snapshots the engine no longer has, even ones it did not delete itself', async function () {
+		it('refuses to publish a backup the engine no longer has by the time it finalizes', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PINNED));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const backupDir = backupDirForDatabase(PINNED);
+			// stand in for a purge admitted while the blob snapshot is being written
+			const original = blobBackupModule.snapshotBlobs;
+			blobBackupModule.snapshotBlobs = async (dir) => {
+				for (const backup of await listBackupsInDir(dir)) await backups.delete(dir, backup.backupId);
+			};
+			try {
+				await assert.rejects(
+					createBackupOffline(PINNED),
+					(error) => error.statusCode === 404 && /removed while it was being finalized/.test(error.message)
+				);
+			} finally {
+				blobBackupModule.snapshotBlobs = original;
+			}
+			assert.deepStrictEqual(
+				await listBackupsOffline(PINNED),
+				[],
+				'no backup may be published for missing engine files'
+			);
+		});
+
+		it('sweeps blob snapshots the engine no longer has, whatever removed them', async function () {
 			this.timeout(30000);
 			const { first, second } = await seedTwoBackups();
 			const backupDir = backupDirForDatabase(PINNED);

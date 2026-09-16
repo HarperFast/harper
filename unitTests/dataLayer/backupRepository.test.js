@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
+const { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -14,6 +14,7 @@ const {
 	unpinBackup,
 	withBackupRepositoryLock,
 } = require('#src/dataLayer/backupRepository');
+const { abandonRestore, beginRestore, completeRestore } = require('#src/dataLayer/restoreMarker');
 
 describe('backupRepository', function () {
 	let tempDir;
@@ -115,13 +116,35 @@ describe('backupRepository', function () {
 			assert.throws(() => unpinBackup(backupDir, 'a/b'), /Invalid backup pin id/);
 		});
 
-		it('treats a pin unlinked mid-read as the released claim it is', function () {
-			// readdir lists it, the read fails: a concurrent unpin, not a torn file
-			mkdirSync(backupPinsDir(backupDir), { recursive: true });
-			symlinkSync(join(backupDir, 'no-such-target'), join(backupPinsDir(backupDir), 'released.json'));
+		it('honors a restore pin only while its database is still marked', function () {
+			const databasePath = join(tempDir, 'somedb');
+			const lock = beginRestore(databasePath);
+			try {
+				pinBackup(backupDir, 'restore-abc', 7, 'restore in flight', databasePath);
+				assert.throws(
+					() => assertBackupsUnpinned(backupDir, [7], 'somedb'),
+					(error) => error.statusCode === 409
+				);
+			} finally {
+				completeRestore(lock); // the restore finished; the marker is gone
+			}
 
-			assert.deepStrictEqual(readBackupPins(backupDir), []);
-			assertBackupsUnpinned(backupDir, [1], 'somedb');
+			// the pin outlived the restore it protected — a process killed between clearing the marker
+			// and releasing the pin leaves exactly this
+			assertBackupsUnpinned(backupDir, [7], 'somedb');
+			assert.deepStrictEqual(readBackupPins(backupDir), [], 'a lapsed pin is swept, not left to 409 forever');
+		});
+
+		it('keeps honoring a restore pin while the marker survives a failed attempt', function () {
+			const databasePath = join(tempDir, 'somedb');
+			abandonRestore(beginRestore(databasePath)); // destructive failure: marker retained
+			pinBackup(backupDir, 'restore-abc', 7, 'restore awaiting rerun', databasePath);
+
+			assert.throws(
+				() => assertBackupsUnpinned(backupDir, [7], 'somedb'),
+				(error) => error.statusCode === 409,
+				'the rerun still needs this backup'
+			);
 		});
 
 		it('has no pins before anything claims one', function () {
