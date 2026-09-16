@@ -2808,7 +2808,10 @@ The decision belongs to the durable index-creation boundary, not `openIndex()` o
 constructor: those are also catalog-reload paths. An existing descriptor is therefore authoritative
 when a later declaration omits `nativePlane`; legacy descriptors with no field stay on the JS graph,
 and legacy string values retain their historical truthiness until an explicit declaration changes
-the mode and rebuilds the index. A replicated new attribute uses native mode only when the receiving
+the mode and rebuilds the index. Numeric HNSW options are likewise normalized and validated only at
+the declaration boundary: persisted legacy values keep their previous runtime coercion, while a new
+canonical declaration triggers a rebuild when that interpretation changes (notably
+`optimizeRouting: "0"`). A replicated new attribute uses native mode only when the receiving
 node is independently audited and eligible, because the plane is node-local derived state. Set
 `HNSW_NO_NATIVE_DEFAULT=1` to keep newly omitted declarations on JS during rollout; it does not
 disable an explicit or already persisted native index. Set it before creating indexes when a

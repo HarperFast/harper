@@ -66,7 +66,7 @@ describe('HNSW GraphQL numeric options', () => {
 		);
 		const nullDefault = await loadTable('HnswNullNumericOption', '', 'type: "HNSW", M: null');
 
-		assert.equal(indexedOptions('HnswQuotedNumericOptions').M, '12');
+		assert.equal(indexedOptions('HnswQuotedNumericOptions').M, 12);
 		assert.equal(indexedOptions('HnswUnquotedNumericOptions').M, 12);
 		for (const index of [quoted, unquoted]) {
 			assert.equal(index.M, 12);
@@ -99,6 +99,27 @@ describe('HNSW GraphQL numeric options', () => {
 		const reloaded = customIndex('HnswQuotedBooleanDisabledRoutingOption');
 		assert.equal(reloaded.optimizeRouting, 0);
 		assert.equal(typeof reloaded.optimizeRouting, 'number');
+	});
+
+	it('loads legacy numeric values with their original runtime semantics', async () => {
+		const tableName = 'HnswLegacyNumericOptions';
+		await loadTable(tableName, '', 'type: "HNSW", M: 12, optimizeRouting: 0.6');
+		const descriptor = tables[tableName].dbisDB.getSync(`${tableName}/embedding`);
+		descriptor.indexed.M = true;
+		descriptor.indexed.optimizeRouting = '0';
+		tables[tableName].dbisDB.putSync(`${tableName}/embedding`, descriptor);
+		delete tables[tableName].indices.embedding;
+
+		resetDatabases();
+		const reloaded = customIndex(tableName);
+		assert.equal(reloaded.M, true);
+		assert.equal(reloaded.optimizeRouting, '0');
+		assert.equal(Boolean(reloaded.optimizeRouting), true);
+
+		const redeclared = await loadTable(tableName, '', 'type: "HNSW", M: 12, optimizeRouting: 0');
+		assert.equal(redeclared.M, 12);
+		assert.equal(redeclared.optimizeRouting, 0);
+		assert.equal(indexedOptions(tableName).optimizeRouting, 0);
 	});
 
 	it('rejects options that are not finite numeric values', async () => {

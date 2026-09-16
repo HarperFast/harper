@@ -150,6 +150,12 @@ function numericOption(name: string, value: unknown): number | undefined {
 	return numericValue;
 }
 
+function normalizeOptimizeRoutingDeclaration(value: unknown): unknown {
+	if (value === true || value === 'true') return 1;
+	if (value === false || value === 'false') return 0;
+	return value;
+}
+
 function nativePlaneMaxNodes(options: any): number {
 	const maxNodes = numericOption('nativePlaneMaxNodes', options?.nativePlaneMaxNodes) ?? PLANE_MAX_NODES;
 	if (!Number.isSafeInteger(maxNodes) || maxNodes < 1 || maxNodes >= PLANE_NO_ID) {
@@ -262,9 +268,17 @@ export class HierarchicalNavigableSmallWorld {
 	static truthyStructuralOptions = new Set(['nativePlane']);
 	static normalizeOptionValue(name: string, value: unknown): unknown {
 		if (name !== 'optimizeRouting') return value;
-		if (value === true || value === 'true') return 1;
-		if (value === false || value === 'false') return 0;
+		if (value === true) return 1;
+		if (value === false) return 0;
+		if (value === '0' || value === 'true' || value === 'false') return `legacy:${value}`;
 		return value;
+	}
+	static normalizeDeclarationOptions(options: any): void {
+		for (const name of HierarchicalNavigableSmallWorld.numericOptions) {
+			if (options[name] === undefined || options[name] === null) continue;
+			const value = name === 'optimizeRouting' ? normalizeOptimizeRoutingDeclaration(options[name]) : options[name];
+			options[name] = numericOption(name, value);
+		}
 	}
 	static normalizeNativePlaneDeclaration(value: unknown): boolean | undefined {
 		if (value === undefined || value === null) return undefined;
@@ -278,7 +292,7 @@ export class HierarchicalNavigableSmallWorld {
 		const configuredML = numericOption('mL', options?.mL);
 		const configuredOptimizeRouting = numericOption(
 			'optimizeRouting',
-			HierarchicalNavigableSmallWorld.normalizeOptionValue('optimizeRouting', options?.optimizeRouting)
+			normalizeOptimizeRoutingDeclaration(options?.optimizeRouting)
 		);
 		nativePlaneMaxNodes(options);
 		return (
@@ -364,15 +378,12 @@ export class HierarchicalNavigableSmallWorld {
 			// (we would actually like to use float16 if it were available)
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
-		const configuredM = numericOption('M', options?.M);
-		const configuredEfConstruction = numericOption('efConstruction', options?.efConstruction);
-		const configuredEfConstructionSearch = numericOption('efConstructionSearch', options?.efConstructionSearch);
-		const configuredML = numericOption('mL', options?.mL);
-		const configuredOptimizeRouting = numericOption(
-			'optimizeRouting',
-			HierarchicalNavigableSmallWorld.normalizeOptionValue('optimizeRouting', options?.optimizeRouting)
-		);
-		const configuredFilterExpansion = numericOption('filterExpansion', options?.filterExpansion);
+		const configuredM = options?.M ?? undefined;
+		const configuredEfConstruction = options?.efConstruction ?? undefined;
+		const configuredEfConstructionSearch = options?.efConstructionSearch ?? undefined;
+		const configuredML = options?.mL ?? undefined;
+		const configuredOptimizeRouting = options?.optimizeRouting ?? undefined;
+		const configuredFilterExpansion = options?.filterExpansion ?? undefined;
 		this.int8 = options?.quantization !== 'none';
 		// Respect an explicitly-configured ef (efConstruction seeds the search ef too); otherwise auto-scale both.
 		this.efSearchConfigured = configuredEfConstructionSearch !== undefined || configuredEfConstruction !== undefined;

@@ -2482,6 +2482,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			attribute.indexed = true;
 		} else attribute.attribute = attribute.name;
 		if (attribute.expiresAt) attribute.indexed = true;
+		if (attribute.indexed?.type === 'HNSW' && origin !== 'cluster') {
+			CUSTOM_INDEXES.HNSW.normalizeDeclarationOptions(attribute.indexed);
+		}
 		if (attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane != null) {
 			try {
 				attribute.indexed.nativePlane = CUSTOM_INDEXES.HNSW.normalizeNativePlaneDeclaration(
@@ -2519,8 +2522,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			return Boolean(existingAttribute?.indexed.nativePlane);
 		}) &&
 		!auditExplicitlyEnabled &&
-		// Explicit false must fail even when the live class is still audited: otherwise its runtime
-		// stays attached while the durable recovery source is disabled, and the next boot cannot attach it.
 		(auditExplicitlyDisabled || Table?.audit !== true)
 	) {
 		throw new ClientError(

@@ -73,7 +73,7 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		assert.equal(sameStructure({ x: '' }, { x: 0 }), false);
 		// booleans and numeric-looking strings are distinct (no boolean coercion)
 		assert.equal(sameStructure({ flag: true }, { flag: 'true' }), false);
-		assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: '0' }, { type: 'HNSW', optimizeRouting: 0 }), true);
+		assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: '0' }, { type: 'HNSW', optimizeRouting: 0 }), false);
 		assert.equal(
 			sameStructure({ type: 'HNSW', maxLagMilliseconds: '0' }, { type: 'HNSW', maxLagMilliseconds: 0 }),
 			true
@@ -82,10 +82,18 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		assert.equal(sameStructure({ type: 'HNSW' }, { type: 'HNSW', nativePlane: false }), true);
 		assert.equal(sameStructure({ type: 'HNSW', nativePlane: '0' }, { type: 'HNSW', nativePlane: 0 }), false);
 		assert.equal(sameStructure({ type: 'HNSW', nativePlane: 'false' }, { type: 'HNSW', nativePlane: false }), false);
-		for (const value of [true, 'true', 1, '1'])
+		for (const value of [true, 1, '1'])
 			assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: value }, { type: 'HNSW', optimizeRouting: 1 }), true);
-		for (const value of [false, 'false', 0, '0'])
+		for (const value of [false, 0])
 			assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: value }, { type: 'HNSW', optimizeRouting: 0 }), true);
+		for (const value of ['true', 'false'])
+			assert.equal(
+				sameStructure(
+					{ type: 'HNSW', optimizeRouting: value },
+					{ type: 'HNSW', optimizeRouting: Number(value === 'true') }
+				),
+				false
+			);
 		assert.equal(canonicalizeIndexOptions('0'), '0');
 		assert.equal(canonicalizeIndexOptions('0.0'), '0.0');
 		assert.equal(sameStructure({ optimizeRouting: '0.6' }, { optimizeRouting: 0.6 }), true);
