@@ -2,6 +2,7 @@
 
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { open, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join, relative, resolve, sep } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -332,6 +333,15 @@ async function finalizeBackup(
 ): Promise<void> {
 	try {
 		if (blobs) await snapshotBlobs(backupDir, backupId, getBlobPathsForDatabaseName(databaseName));
+		// The engine backup was created outside this lock (db.backup takes only the binding's own) and
+		// the blob snapshot above can take a while, so a purge can have removed the engine files by now.
+		// The manifest is what publishes a backup as usable, so writing one for engine files that are
+		// gone is the #2031 false-green shape: a backup that lists and verifies with nothing to restore.
+		if (!(await listBackupsInDir(backupDir)).some((backup) => backup.backupId === backupId)) {
+			throw new BackupNotFoundError(
+				`Backup ${backupId} of database '${databaseName}' was removed while it was being finalized; rerun create_backup`
+			);
+		}
 		await writeBackupManifest(backupDir, backupId, blobs);
 	} catch (error) {
 		await deleteBackupManifest(backupDir, backupId).catch(() => {});
@@ -568,20 +578,18 @@ export async function restoreBackup(request: any) {
 		backupHasBlobs: manifest.blobs,
 		allowEngineOnly,
 	});
-	// Claim the source for the duration — repository maintenance no longer needs a loaded database.
-	const pinId = `restore-${process.pid}-${Date.now()}`;
-	await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		pinBackup(backupDir, pinId, backupId, `restore of database '${databaseName}'`);
-	});
-	let lock: RestoreLock;
-	try {
-		lock = beginRestoreForDatabase(databaseDir, databaseName);
-	} catch (error) {
-		unpinBackup(backupDir, pinId);
-		throw error;
-	}
+	// The restore lock first, so only the attempt that will actually run ever touches the pin.
+	const lock = beginRestoreForDatabase(databaseDir, databaseName);
+	const pinId = restorePinId(databaseDir);
 	let destructionStarted = false;
 	try {
+		// Claim the source, then re-check it survived: repository maintenance no longer needs a loaded
+		// database, so a delete_backup admitted between resolving this backup and claiming it would
+		// otherwise leave the destination purged with nothing to restore from.
+		await withBackupRepositoryLock(backupDir, databaseName, async () => {
+			pinBackup(backupDir, pinId, backupId, `restore of database '${databaseName}'`, databaseDir);
+		});
+		await findBackup(backupDir, backupId, databaseName);
 		// Block new blob saves, drain in-flight saves, and close the database across all worker threads.
 		// Each thread also rescans, and the restoring marker keeps it from reloading mid-restore.
 		await signalling.signalSchemaChange(restoreSchemaEvent(databaseName, 'close'));
@@ -612,8 +620,9 @@ export async function restoreBackup(request: any) {
 		// partial/corrupt data. Only a *fresh* marker on a *previously healthy* database that failed
 		// before any destruction is safe to clear.
 		if (destructionStarted || lock.preexisting) {
+			// The marker stays, so the database is unloadable until a rerun — and the rerun needs this
+			// backup. The pin stays with it, and lapses on its own once the marker is gone.
 			abandonRestore(lock);
-			unpinBackup(backupDir, pinId);
 			// wrap rather than mutate error.message: a frozen/library error can have a non-writable
 			// message (assigning it throws TypeError under 'use strict')
 			throw new Error(
@@ -679,6 +688,14 @@ async function verifyDatabaseClosed(databaseDir: string, databaseName: string): 
  * beginRestore's own error message carries the filesystem path (useful in CLI/server logs);
  * client-facing operations report by database name instead.
  */
+/**
+ * One pin per target database, not per attempt: two attempts can never collide on it, and a rerun
+ * after a failed restore reuses the claim the failed attempt left protecting its source.
+ */
+function restorePinId(databaseDir: string): string {
+	return `restore-${createHash('sha256').update(resolve(databaseDir)).digest('hex').slice(0, 32)}`;
+}
+
 function beginRestoreForDatabase(databaseDir: string, databaseName: string): RestoreLock {
 	try {
 		return beginRestore(databaseDir);
@@ -1045,24 +1062,23 @@ export async function restoreBackupOffline(
 		backupHasBlobs: manifest.blobs,
 		allowEngineOnly,
 	});
-	// Claim the source for the duration. Repository maintenance no longer needs a loaded database, so
-	// a delete_backup or purge_backups can now run against this repository while the restore is
-	// reading its blob snapshot out of it.
-	const pinId = `restore-${process.pid}-${Date.now()}`;
-	await withBackupRepositoryLock(backupDir, databaseName, async () => {
-		pinBackup(backupDir, pinId, backupId as number, `restore of database '${targetDatabase ?? databaseName}'`);
-	});
 	// Take the restore lock + marker BEFORE probing so a server that starts after this point sees the
 	// marker and refuses to load the database (closing the window between the probe and the purge).
-	let lock: RestoreLock;
-	try {
-		lock = beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName);
-	} catch (error) {
-		unpinBackup(backupDir, pinId);
-		throw error;
-	}
+	const lock = beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName);
+	const pinId = restorePinId(databaseDir);
 	let destructionStarted = false;
 	try {
+		// Claim the source, then re-check it survived the gap since it was resolved.
+		await withBackupRepositoryLock(backupDir, databaseName, async () => {
+			pinBackup(
+				backupDir,
+				pinId,
+				backupId as number,
+				`restore of database '${targetDatabase ?? databaseName}'`,
+				databaseDir
+			);
+		});
+		await findBackup(backupDir, backupId as number, databaseName);
 		// The offline path is entered only when the CLI sees no running server (getHdbPid), but that is
 		// a heuristic: the PID file is briefly absent mid-`harper restart`, and backups.restore's
 		// purgeAllFiles never takes RocksDB's own lock. Probe that lock by opening the database — a live
@@ -1105,9 +1121,13 @@ export async function restoreBackupOffline(
 		// Preserve the marker on a destructive failure or a recovery over a pre-existing marker (see
 		// the online restoreBackup for the rationale); otherwise clear the fresh marker so an intact,
 		// merely-locked database is not left flagged as an incomplete restore.
+		// The pin stays exactly as long as the marker does: a retained marker means a rerun is required,
+		// and the rerun needs this backup to still be there.
 		if (destructionStarted || lock.preexisting) abandonRestore(lock);
-		else completeRestore(lock);
-		unpinBackup(backupDir, pinId);
+		else {
+			completeRestore(lock);
+			unpinBackup(backupDir, pinId);
+		}
 		// preserve typed client errors (e.g. the 409 lock probe) unwrapped; only wrap an opaque restore
 		// failure after destruction has begun
 		if (destructionStarted && !(error instanceof ClientError)) {
@@ -1203,6 +1223,7 @@ export async function purgeBackupsOffline(databaseName: string, keepCount: numbe
 		const byId = [...before].sort((first, second) => first.backupId - second.backupId);
 		const removing = byId.slice(0, Math.max(0, byId.length - keepCount)).map((backup) => backup.backupId);
 		assertBackupsUnpinned(backupDir, removing, databaseName);
+		let deleted = 0;
 		try {
 			for (const backupId of removing) {
 				try {
@@ -1210,6 +1231,7 @@ export async function purgeBackupsOffline(databaseName: string, keepCount: numbe
 				} catch (error) {
 					throw mapLockedError(error, databaseName);
 				}
+				deleted++;
 			}
 		} finally {
 			// Reconciled from what actually survives, in a finally: an engine failure partway through still
@@ -1217,8 +1239,8 @@ export async function purgeBackupsOffline(databaseName: string, keepCount: numbe
 			// to list_backups and still charged to the tenant's quota.
 			await reconcileHarperManagedBackupFiles(backupDir);
 		}
-		const remainingBackups = await listBackupsInDir(backupDir);
-		// clamp: a concurrent create between the two lists can otherwise make this negative
-		return { deleted: Math.max(0, before.length - remainingBackups.length), remaining: remainingBackups.length };
+		// Counted from the deletes themselves: a create landing mid-purge (its engine phase takes no
+		// lock) would make a before/after length comparison under-report, or report zero.
+		return { deleted, remaining: (await listBackupsInDir(backupDir)).length };
 	});
 }
