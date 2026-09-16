@@ -318,10 +318,18 @@ class FakeNativeFullTextModule {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 4,
+			nativeAbiVersion: 5,
+			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 2,
 			storageBackends: ['native'],
+			limits: { maxCommitPayloadBytes: 64 * 1024 },
 		};
+	}
+
+	validateNativeFullTextIndexOptions() {}
+
+	async reclaimRetiredNativeFullTextIndexes() {
+		return { removed: 0, failed: 0 };
 	}
 
 	inspectNativeFullTextIndex(options) {
@@ -379,7 +387,9 @@ class FakeNativeFullTextModule {
 				this.committedPayload = payload;
 				return BigInt(state.publications);
 			},
-			async close() {},
+			async close() {
+				return {};
+			},
 		};
 	}
 }

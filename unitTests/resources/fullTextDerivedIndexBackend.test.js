@@ -64,6 +64,7 @@ class FakeEngine {
 		this.closes.push(options);
 		if (this.closeWait) await this.closeWait;
 		if (this.closeError) throw this.closeError;
+		return this.closeResult ?? {};
 	}
 }
 
@@ -638,11 +639,10 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(engine.closes.length, 3);
 	});
 
-	it('releases a writer when its lifecycle proves a reported close error is quiesced', async () => {
+	it('releases a writer when close reports a non-fatal cleanup error', async () => {
 		const engine = new FakeEngine();
-		engine.closeError = Object.assign(new Error('native cleanup failed after release'), { code: 'E_CLOSE_FAILED' });
+		engine.closeResult = { cleanupError: new Error('native cleanup failed after release') };
 		const source = lifecycle({ state: 'missing' }, [engine]);
-		source.isQuiescedCloseError = (error) => error?.code === 'E_CLOSE_FAILED';
 		const { backend, setEpoch } = makeBackend(source);
 		backend.deliver(batch(1n, [], cursor(20)));
 		backend.flush();
