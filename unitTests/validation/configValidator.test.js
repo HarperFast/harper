@@ -474,8 +474,8 @@ describe('Test configValidator module', () => {
 			expect(warning).to.include('Unix domain socket path limit');
 		});
 
-		it('does not warn when a relative rootPath resolves within the limit', () => {
-			expect(getDomainSocketPathLengthWarning('relative/root', 'operations-server')).to.equal(null);
+		it('does not warn when a short absolute rootPath resolves within the limit', () => {
+			expect(getDomainSocketPathLengthWarning('/hdb/root', 'operations-server')).to.equal(null);
 		});
 	});
 
