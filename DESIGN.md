@@ -2799,7 +2799,10 @@ interface NativeFullTextModule {
 		close(options?: { mode?: 'require-clean' | 'rollback' }): Promise<{ cleanupError?: unknown }>;
 	}>;
 	resetNativeFullTextIndex(options): Promise<{ state: 'missing' } | { state: 'reset'; retiredPath: string }>;
-	reclaimRetiredNativeFullTextIndexes(options: { path: string }): Promise<{ removed: number; failed: number }>;
+	reclaimRetiredNativeFullTextIndexes(options: {
+		path: string;
+		retiredPath?: string;
+	}): Promise<{ removed: number; failed: number }>;
 }
 ```
 
@@ -2860,9 +2863,11 @@ sequenceDiagram
 #### Failure, shutdown, and rebuild
 
 Apply or publish failure discards later commands and performs one rollback close. The runtime is
-not told accepted work was lost until close proves native quiescence. A permanent encoder or
-protocol violation enters the shared condemnation/rebuild budget rather than a Fulltext-specific
-recovery state machine.
+not told accepted work was lost until close proves native quiescence. Harper permits one immediate
+replay for a transient writer failure. A second writer failure before any successful publication is
+reported as permanent, entering the shared condemnation/rebuild budget and its backoff instead of
+spinning an unbounded open/apply/close loop. A permanent encoder or protocol violation enters that
+same shared budget immediately rather than adding a Fulltext-specific recovery state machine.
 
 Shutdown drains accepted work, publishes when possible, closes the writer, and resolves only after
 no command from that owner epoch can touch the index. The wrapper returns a structured close result:
@@ -2878,7 +2883,8 @@ during lifecycle initialization and again after reset—and calls the wrapper re
 index path. It neither interprets `retiredPath` nor recursively removes native files itself. The
 wrapper limits removal to generated names for that one index, ignores unrelated entries and other
 indices sharing `.fulltext-retired`, and reports failed removals for Harper to log and retry on a
-later lifecycle pass.
+later lifecycle pass. After reset Harper passes the opaque `retiredPath` back to the wrapper so the
+producer's canonical basename is retained without Harper parsing it.
 
 A restart reuses compatible files and replays from the cursor embedded in the Tantivy publication.
 A new replica, restore without local files, missing/corrupt/incompatible index, or condemned

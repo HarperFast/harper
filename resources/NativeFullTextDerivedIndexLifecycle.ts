@@ -96,11 +96,11 @@ export class NativeFullTextDerivedIndexLifecycle {
 
 	async reset(): Promise<void> {
 		await this.quiesce();
-		await this.#requireBinding().resetNativeFullTextIndex({
+		const result = await this.#requireBinding().resetNativeFullTextIndex({
 			path: this.#path,
 			indexId: this.#options.indexId,
 		});
-		await this.#reclaimRetired();
+		await this.#reclaimRetired(result.state === 'reset' ? result.retiredPath : undefined);
 	}
 
 	async quiesce(): Promise<void> {
@@ -112,9 +112,12 @@ export class NativeFullTextDerivedIndexLifecycle {
 		if (this.#invalidHandle === handle) this.#invalidHandle = undefined;
 	}
 
-	async #reclaimRetired(): Promise<void> {
+	async #reclaimRetired(retiredPath?: string): Promise<void> {
 		try {
-			const result = await this.#requireBinding().reclaimRetiredNativeFullTextIndexes({ path: this.#path });
+			const result = await this.#requireBinding().reclaimRetiredNativeFullTextIndexes({
+				path: this.#path,
+				retiredPath,
+			});
 			if (result.failed > 0)
 				logWarning(`Could not remove ${result.failed} retired full-text index paths for '${this.#path}'`, undefined);
 		} catch (error) {

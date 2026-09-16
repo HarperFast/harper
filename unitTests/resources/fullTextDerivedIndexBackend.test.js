@@ -586,6 +586,28 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('fails permanently after a repeated writer failure without durable progress', async () => {
+		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		const second = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		first.applyError = new Error('disk failure');
+		second.applyError = new Error('disk still failing');
+		const { backend } = makeBackend(
+			lifecycle({ state: 'checkpointed', committedPayload: first.committedPayload }, [first, second])
+		);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.getDurableCursor();
+		const value = batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20));
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		await waitFor(() => changes.includes('failed'));
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_FAILED);
+		assert.deepStrictEqual(first.closes, [{ mode: 'rollback' }]);
+		assert.deepStrictEqual(second.closes, [{ mode: 'rollback' }]);
+		await backend.shutdown(1n);
+	});
+
 	it('does not publish a discarded cursor during immediate shutdown after publication failure', async () => {
 		const first = new FakeEngine();
 		first.publishError = new Error('publish failed');
