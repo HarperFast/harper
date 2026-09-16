@@ -121,11 +121,8 @@ describe('CRUD operations with the Resource API', () => {
 		});
 		registerTests();
 	});
-	// A stored record reports the MEAN of its aggregation window, which a preceding test's small
-	// writes (a delete records 1 byte) can drag under the threshold when the window's unref'd flush
-	// timer slips. These assertions mean "one operation recorded more than N bytes": the window's
-	// largest single value, which the percentile distribution always carries because it runs to the
-	// 100th percentile.
+	// These assertions mean "one operation recorded more than N bytes", which the window MEAN does not
+	// answer. The percentile distribution runs to the 100th, so it always carries that value.
 	function largestRecordedValue(metric) {
 		if (!Array.isArray(metric?.distribution)) return undefined;
 		let largest = -Infinity;
@@ -255,10 +252,8 @@ describe('CRUD operations with the Resource API', () => {
 			subscription.on('data', (message) => {
 				messages.push(message);
 			});
-			// Each registerTests() run publishes a larger payload than the one before it. A record's id
-			// is stamped when its window is flushed rather than when it closed, so an earlier run's
-			// window can still be returned to this one; requiring more bytes than that run could have
-			// written is what ties the assertion below to this run's publish.
+			// A record's id is stamped at flush time, so an earlier run's window can still be returned to
+			// this one; only a payload larger than that run's ties the assertion to this run's publish.
 			const payloadBytes = PUBLISHED_MESSAGE_BYTES * ++publishIteration;
 			await CRUDTable.publish('pubsub', {
 				id: 'pubsub',
