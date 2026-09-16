@@ -151,7 +151,7 @@ describe('CRUD operations with the Resource API', () => {
 			analytics.recordAction(FLUSH_RACE_BYTES, 'db-write', 'CRUDTable', null);
 		});
 		analytics.recordAction(64, 'db-write', 'CRUDTable', null);
-		await waitForAnalyticsMetrics(['db-write'], start, FLUSH_RACE_BYTES - 1, 5000);
+		await waitForAnalyticsMetrics(['db-write'], start, FLUSH_RACE_BYTES, 5000);
 	});
 	async function waitForAnalyticsMetrics(metricNames, start, minBytes, timeout) {
 		const observed = [];
@@ -170,13 +170,16 @@ describe('CRUD operations with the Resource API', () => {
 							if (entry?.path !== 'CRUDTable' || !metricNames.includes(entry.metric)) continue;
 							const largest = largestRecordedValue(entry);
 							observed.push(`${entry.metric} max ${largest} (count ${entry.count}, mean ${entry.mean})`);
-							if (largest > minBytes) recorded.add(entry.metric);
+							if (largest >= minBytes) recorded.add(entry.metric);
 						}
 						if (metricNames.every((name) => recorded.has(name))) return true;
 					}
 					return undefined;
 				},
-				{ timeout, message: `${metricNames.join(' and ')} byte counts over ${minBytes} were recorded in analytics` }
+				{
+					timeout,
+					message: `${metricNames.join(' and ')} byte counts of at least ${minBytes} were recorded in analytics`,
+				}
 			);
 		} catch (error) {
 			error.message += `; observed ${observed.length ? observed.join('; ') : 'no CRUDTable analytics records'}`;
