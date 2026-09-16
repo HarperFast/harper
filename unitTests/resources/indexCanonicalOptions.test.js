@@ -63,13 +63,12 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		assert.equal(sameStructure({ x: '' }, { x: 0 }), false);
 		// booleans and numeric-looking strings are distinct (no boolean coercion)
 		assert.equal(sameStructure({ flag: true }, { flag: 'true' }), false);
-		// zero must NOT coerce: string "0" is truthy but number 0 is falsy, and index code branches on
-		// truthiness (e.g. HNSW `if (this.optimizeRouting)` doubles maxConnections) — so these build
-		// structurally different indexes and must remain a genuine change. (cross-model review, #1357)
-		assert.equal(sameStructure({ optimizeRouting: '0' }, { optimizeRouting: 0 }), false);
-		assert.equal(canonicalizeIndexOptions('0'), '0');
-		assert.equal(canonicalizeIndexOptions('0.0'), '0.0');
-		// non-zero numeric strings still coerce (both forms are truthy and numerically identical)
+		// HNSW normalizes numeric options before using them, so zero string/number spellings are the
+		// same structural option and must not trigger a needless rebuild.
+		assert.equal(sameStructure({ optimizeRouting: '0' }, { optimizeRouting: 0 }), true);
+		assert.equal(canonicalizeIndexOptions('0'), 0);
+		assert.equal(canonicalizeIndexOptions('0.0'), 0);
+		// non-zero numeric strings coerce as well
 		assert.equal(sameStructure({ optimizeRouting: '0.6' }, { optimizeRouting: 0.6 }), true);
 		// the canonical form of a scalar is the scalar; whitespace-padded numerics still coerce
 		assert.equal(canonicalizeIndexOptions('16'), 16);

@@ -3203,12 +3203,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
  * while the operations API and config objects can supply them reordered or as numbers; without
  * canonicalizing, such a representation-only difference flips the structural comparison and forces
  * a needless full rebuild (clearing + rebuilding the index, 503-ing the attribute throughout) for a
- * semantically identical index. Sorts object keys and coerces numeric-looking (non-zero) string
- * scalars to numbers.
- * Conservative by design: boolean-vs-object, absent-vs-present, and string-"0"-vs-number-0
- * differences are all preserved, so a genuine change (`true` vs `{ type: 'HNSW' }`, an added/removed
- * option, a changed value) still triggers a rebuild. Persistence keys off the raw form, so the stored
- * descriptor self-heals toward this shape over time. harper#1357
+ * semantically identical index. Sorts object keys and coerces numeric-looking string scalars to
+ * numbers. Conservative by design: boolean-vs-object and absent-vs-present differences are preserved,
+ * so a genuine change (`true` vs `{ type: 'HNSW' }`, an added/removed option, a changed value) still
+ * triggers a rebuild. Persistence keys off the raw form, so the stored descriptor self-heals toward
+ * this shape over time. harper#1357
  */
 export function canonicalizeIndexOptions(value: any): any {
 	if (Array.isArray(value)) return value.map(canonicalizeIndexOptions);
@@ -3218,14 +3217,10 @@ export function canonicalizeIndexOptions(value: any): any {
 		return canonical;
 	}
 	// Coerce numeric-looking strings ("16" -> 16) so string-vs-number representations of the same
-	// option compare equal — EXCEPT zero: the string "0" is truthy while the number 0 is falsy, and
-	// index code may branch on truthiness (e.g. HNSW `if (this.optimizeRouting)` doubles maxConnections),
-	// so "0" and 0 build structurally different indexes and must still trigger a rebuild. Zero is the
-	// only finite number whose string and numeric forms diverge in truthiness, so excluding it fully
-	// closes that gap. Leave non-numeric strings, booleans, null, etc. intact.
+	// option compare equal. Leave non-numeric strings, booleans, null, etc. intact.
 	if (typeof value === 'string' && value.trim() !== '') {
 		const numeric = Number(value);
-		if (numeric !== 0 && Number.isFinite(numeric)) return numeric;
+		if (Number.isFinite(numeric)) return numeric;
 	}
 	return value;
 }
