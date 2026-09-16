@@ -27,6 +27,7 @@ const {
 	restoringMarkerPath,
 	restoreMetaDir,
 	scanBlockedRestores,
+	withRestoreExclusion,
 	RESTORE_META_DIR,
 } = require('#src/dataLayer/restoreMarker');
 
@@ -272,6 +273,101 @@ describe('restoreMarker', function () {
 			} finally {
 				completeRestore(lock);
 			}
+		});
+	});
+
+	describe('withRestoreExclusion', function () {
+		const opened = () => 'opened';
+		const blockedWith = (states) => (state) => {
+			states.push(state);
+			return 'blocked';
+		};
+
+		it('opens when no restore is in progress and no marker survives', function () {
+			assert.strictEqual(
+				withRestoreExclusion(dbPath, opened, () => 'blocked'),
+				'opened'
+			);
+		});
+
+		it('reports an incomplete restore rather than opening a half-purged directory', function () {
+			abandonRestore(beginRestore(dbPath));
+			const states = [];
+			assert.strictEqual(withRestoreExclusion(dbPath, opened, blockedWith(states)), 'blocked');
+			assert.deepStrictEqual(states, ['incomplete']);
+		});
+
+		it('reports a restore in progress while one holds the lock', function () {
+			const lock = beginRestore(dbPath);
+			try {
+				const states = [];
+				assert.strictEqual(withRestoreExclusion(dbPath, opened, blockedWith(states)), 'blocked');
+				assert.deepStrictEqual(states, ['in-progress']);
+			} finally {
+				completeRestore(lock);
+			}
+		});
+
+		it('keeps a restore from starting while the database is being opened', function () {
+			// the window the marker alone cannot close: check says clear, then a restore claims the
+			// directory, then the open lands on a directory that is being purged
+			const result = withRestoreExclusion(
+				dbPath,
+				() => {
+					assert.throws(
+						() => beginRestore(dbPath),
+						(error) => error.statusCode === 409,
+						'a restore must not be able to claim a database that is mid-open'
+					);
+					return 'opened';
+				},
+				() => 'blocked'
+			);
+			assert.strictEqual(result, 'opened');
+		});
+
+		it('lets concurrent opens proceed — readers do not exclude each other', function () {
+			const result = withRestoreExclusion(
+				dbPath,
+				() =>
+					withRestoreExclusion(
+						dbPath,
+						() => 'both opened',
+						() => 'blocked'
+					),
+				() => 'blocked'
+			);
+			assert.strictEqual(result, 'both opened');
+		});
+
+		it('releases the lock when the open throws', function () {
+			assert.throws(() => {
+				withRestoreExclusion(
+					dbPath,
+					() => {
+						throw new Error('open failed');
+					},
+					() => 'blocked'
+				);
+			}, /open failed/);
+			const lock = beginRestore(dbPath);
+			completeRestore(lock);
+		});
+
+		it('does not make a concurrent open look like a restore to checkRestoreState', function () {
+			abandonRestore(beginRestore(dbPath)); // marker survives, so the state is probed
+			withRestoreExclusion(
+				dbPath,
+				() => {
+					assert.strictEqual(
+						checkRestoreState(dbPath),
+						'incomplete',
+						'a reader holding the lock must not read as a restore in progress'
+					);
+					return 'opened';
+				},
+				() => 'blocked'
+			);
 		});
 	});
 
