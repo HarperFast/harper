@@ -244,14 +244,14 @@ function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
 		auditStore,
 		(tableId, recordId) => {
 			const entry = tables.get(tableId)?.Table.primaryStore.getEntry(recordId);
-			return entry?.value == null ? undefined : { version: entry.version, value: entry.value };
+			return entry?.value == null ? undefined : { version: entry.version, value: entry.value, size: entry.size };
 		},
 		{
 			scanRecords: (tableId) =>
 				tables
 					.get(tableId)!
 					.Table.primaryStore.getRange({ versions: true, snapshot: false })
-					.map(({ key, value, version }) => ({ recordId: key, version, value })),
+					.map(({ key, value, version, size }) => ({ recordId: key, version, value, size })),
 		}
 	);
 	registered = { runtime, tables };

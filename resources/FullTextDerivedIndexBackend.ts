@@ -64,6 +64,7 @@ export type FullTextEncodedMutationBatches = {
 		index: number;
 		code: 'E_INVALID_ARGUMENT' | 'E_BATCH_TOO_LARGE';
 	}>;
+	consumedRecords: number;
 };
 
 export type FullTextDerivedIndexBackendOptions = {
@@ -114,6 +115,7 @@ export class FullTextDerivedIndexError extends Error {
 }
 
 class FullTextDerivedIndexProtocolError extends FullTextDerivedIndexError {}
+class FullTextDerivedIndexEncodingError extends FullTextDerivedIndexError {}
 
 export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	readonly id: string;
@@ -152,6 +154,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#capacityDeferred = false;
 	#shutdown?: ShutdownRequest;
 	#unindexableWarned = false;
+	#unindexableRecords = 0;
+	#stagedUnindexableRecords = 0;
+	#invalidEstimateWarned = false;
 
 	constructor(options: FullTextDerivedIndexBackendOptions) {
 		if (!options.id) throw new TypeError('Full-text derived index id is required');
@@ -231,6 +236,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		return cloneCursor(this.#durableCursor);
 	}
 
+	getUnindexableRecords(): number {
+		return this.#unindexableRecords;
+	}
+
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult {
 		if (this.#failed || !this.#host?.isOwnerEpoch(batch.ownerEpoch)) return DERIVED_INDEX_FAILED;
 		if (this.#settlingWriter || this.#lossPendingEpoch === batch.ownerEpoch) return DERIVED_INDEX_DEFERRED;
@@ -247,12 +256,18 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#markFailed(error);
 			return DERIVED_INDEX_FAILED;
 		}
-		const bytes = Math.max(1, batch.bytes);
-		if (!Number.isSafeInteger(bytes) || bytes > this.#maxQueuedBytes) {
-			this.#markFailed(new FullTextDerivedIndexError('Full-text derived index batch exceeds its queue byte limit'));
-			return DERIVED_INDEX_FAILED;
+		let bytes = batch.bytes;
+		if (!Number.isSafeInteger(bytes) || bytes <= 0) {
+			bytes = this.#maxQueuedBytes;
+			if (!this.#invalidEstimateWarned) {
+				this.#invalidEstimateWarned = true;
+				logWarning(`Full-text derived index '${this.id}' received an invalid batch byte estimate`, undefined);
+			}
 		}
-		if (this.#retainedBatches >= this.#maxQueuedBatches || this.#retainedBytes + bytes > this.#maxQueuedBytes) {
+		if (
+			this.#retainedBatches >= this.#maxQueuedBatches ||
+			(this.#retainedBatches > 0 && this.#retainedBytes + bytes > this.#maxQueuedBytes)
+		) {
 			this.#capacityDeferred = true;
 			return DERIVED_INDEX_DEFERRED;
 		}
@@ -361,8 +376,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (this.#draining) return;
 		this.#draining = true;
 		try {
-			if (this.#commands.length > 0 && !(await this.#ensureEngine())) return;
-			while (this.#commands.length > 0 && !this.#failed && this.#engine) {
+			while (this.#commands.length > 0 && !this.#failed) {
+				const next = this.#commands[0];
+				if ((next.type === 'barrier' || next.batch.records.length > 0) && !(await this.#ensureEngine())) return;
 				const command = this.#commands.shift()!;
 				if (command.type === 'apply') {
 					try {
@@ -435,43 +451,65 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			return true;
 		}
 		let logical = toFullTextMutationRecords(command.batch.records);
-		let encoded: FullTextEncodedMutationBatches;
-		try {
-			const encodingOptions = { maxTotalBytes: this.#maxQueuedBytes };
-			encoded = this.#engine!.encodeMutationBatches(logical, encodingOptions);
-			if (encoded.rejected.length > 0) {
-				logical = this.#replaceRejectedUpserts(logical, encoded.rejected);
-				encoded = this.#engine!.encodeMutationBatches(logical, encodingOptions);
-				if (encoded.rejected.length > 0)
-					throw new FullTextDerivedIndexError('Full-text replacement mutations were rejected');
-			}
-		} catch (error) {
-			throw new FullTextDerivedIndexError('Failed to partition a full-text mutation batch', error);
-		}
 		let applied = 0;
 		try {
-			for (const batch of encoded.batches) {
-				this.#hasStagedMutations = true;
-				const count = await this.#engine!.apply(batch.bytes);
-				if (count !== batch.mutationCount)
-					throw new FullTextDerivedIndexProtocolError(
-						`Full-text engine applied ${count} of ${batch.mutationCount} frame mutations`
-					);
-				applied += count;
+			while (mutationCount(logical) > 0) {
+				const { encoded, consumedRecords } = this.#encodePrefix(logical);
+				for (const batch of encoded.batches) {
+					this.#hasStagedMutations = true;
+					const count = await this.#engine!.apply(batch.bytes);
+					if (count !== batch.mutationCount)
+						throw new FullTextDerivedIndexProtocolError(
+							`Full-text engine applied ${count} of ${batch.mutationCount} frame mutations`
+						);
+					applied += count;
+				}
+				logical = mutationSuffix(logical, consumedRecords);
 			}
 			if (applied !== command.batch.records.length)
 				throw new FullTextDerivedIndexProtocolError(
 					`Full-text engine applied ${applied} of ${command.batch.records.length} mutations`
 				);
 		} catch (error) {
-			const protocolFailure = error instanceof FullTextDerivedIndexProtocolError;
-			await this.#loseAcceptedWork(command.epoch, error, !protocolFailure);
-			if (protocolFailure) this.#failAndNotify(error);
+			const permanentFailure =
+				error instanceof FullTextDerivedIndexProtocolError || error instanceof FullTextDerivedIndexEncodingError;
+			if (this.#hasStagedMutations) await this.#loseAcceptedWork(command.epoch, error, !permanentFailure);
+			if (permanentFailure) this.#failAndNotify(error);
 			return false;
 		}
 		this.#assertCommandEpoch(command.epoch);
 		this.#lastAppliedSequence = command.sequence;
 		return true;
+	}
+
+	#encodePrefix(logical: FullTextMutationBatch): {
+		encoded: FullTextEncodedMutationBatches;
+		consumedRecords: number;
+	} {
+		let encoded: FullTextEncodedMutationBatches;
+		try {
+			encoded = this.#engine!.encodeMutationBatches(logical, { maxTotalBytes: this.#maxQueuedBytes });
+		} catch (error) {
+			throw new FullTextDerivedIndexEncodingError('Failed to partition a full-text mutation batch', error);
+		}
+		const total = mutationCount(logical);
+		if (
+			!Number.isSafeInteger(encoded.consumedRecords) ||
+			encoded.consumedRecords <= 0 ||
+			encoded.consumedRecords > total
+		)
+			throw new FullTextDerivedIndexProtocolError('Full-text encoder returned an invalid consumed record count');
+		const prefix = mutationPrefix(logical, encoded.consumedRecords);
+		if (encoded.rejected.length === 0) return { encoded, consumedRecords: encoded.consumedRecords };
+		const replacement = this.#replaceRejectedUpserts(prefix, encoded.rejected);
+		try {
+			encoded = this.#engine!.encodeMutationBatches(replacement, { maxTotalBytes: this.#maxQueuedBytes });
+		} catch (error) {
+			throw new FullTextDerivedIndexEncodingError('Failed to partition full-text replacement mutations', error);
+		}
+		if (encoded.rejected.length > 0 || encoded.consumedRecords !== mutationCount(replacement))
+			throw new FullTextDerivedIndexProtocolError('Full-text replacement mutations were not fully encoded');
+		return { encoded, consumedRecords: mutationCount(prefix) };
 	}
 
 	#replaceRejectedUpserts(
@@ -503,6 +541,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				undefined
 			);
 		}
+		this.#stagedUnindexableRecords += indexes.size;
 		return { upserts, deletes };
 	}
 
@@ -522,6 +561,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertCommandEpoch(command.epoch);
 		this.#lastPublishedSequence = command.horizon;
 		this.#hasStagedMutations = false;
+		this.#unindexableRecords += this.#stagedUnindexableRecords;
+		this.#stagedUnindexableRecords = 0;
 		this.#durableCursor = cloneCursor(cursor);
 		this.#inspectedEpoch = command.epoch;
 		this.#unindexableWarned = false;
@@ -547,6 +588,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#rewindAcceptedWork();
 		this.#assertCommandEpoch(ownerEpoch);
 		this.#hasStagedMutations = false;
+		this.#stagedUnindexableRecords = 0;
 		if (notify) this.#notify('accepted-work-lost');
 		else this.#lossPendingEpoch = undefined;
 	}
@@ -608,6 +650,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#lastMutationSequence = Math.min(this.#lastMutationSequence, this.#lastPublishedSequence);
 		this.#lastAcceptedCursor = cloneCursor(this.#durableCursor);
 		this.#hasStagedMutations = false;
+		this.#stagedUnindexableRecords = 0;
 	}
 
 	#resetQueueState(): void {
@@ -621,8 +664,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#lastMutationSequence = 0;
 		this.#lastAcceptedCursor = undefined;
 		this.#hasStagedMutations = false;
+		this.#stagedUnindexableRecords = 0;
 		this.#capacityDeferred = false;
 		this.#lossPendingEpoch = undefined;
+		this.#invalidEstimateWarned = false;
 		this.#resetCursorOnlyFlushes();
 	}
 
@@ -695,6 +740,23 @@ function toFullTextMutationRecords(records: DerivedIndexBatch['records']): FullT
 		else deletes.push(id);
 	}
 	return { upserts, deletes };
+}
+
+function mutationCount(batch: FullTextMutationBatch): number {
+	return batch.upserts.length + batch.deletes.length;
+}
+
+function mutationPrefix(batch: FullTextMutationBatch, count: number): FullTextMutationBatch {
+	const upserts = batch.upserts.slice(0, count);
+	return {
+		upserts,
+		deletes: batch.deletes.slice(0, Math.max(0, count - upserts.length)),
+	};
+}
+
+function mutationSuffix(batch: FullTextMutationBatch, count: number): FullTextMutationBatch {
+	if (count < batch.upserts.length) return { upserts: batch.upserts.slice(count), deletes: batch.deletes };
+	return { upserts: [], deletes: batch.deletes.slice(count - batch.upserts.length) };
 }
 
 function logWarning(message: string, error: unknown): void {

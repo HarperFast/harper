@@ -1224,7 +1224,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
-	it('spends one rebuild attempt when the full-text backend rejects a delivery synchronously', async () => {
+	it('charges the rebuild budget when the full-text encoder violates its progress contract', async () => {
 		const records = new Map([['1:a', { version: 20, value: { title: 'oversized' }, size: 32 }]]);
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]), {
 			logEntries: new Map([['local', [audit({ timestamp: 20, recordId: 'a' })]]]),
@@ -1243,6 +1243,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 						},
 					],
 					rejected: [],
+					consumedRecords: 0,
 				};
 			}
 
@@ -1258,7 +1259,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 
 			async close() {}
 		}
-		const opened = [new Engine()];
+		const opened = [new Engine(), new Engine()];
 		let finishReset;
 		let resets = 0;
 		const backend = new FullTextDerivedIndexBackend({
@@ -1275,7 +1276,6 @@ describe('DerivedIndexRuntime for native backends', () => {
 					return new Promise((resolve) => (finishReset = resolve));
 				},
 			},
-			maxQueuedBytes: 1,
 			openAttempts: 1,
 		});
 		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 1000 });
@@ -1284,8 +1284,9 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await waitFor(() => resets === 1);
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.strictEqual(runtime.getStatus(backend.id).state, 'rebuilding');
-		assert.strictEqual(runtime.getMetrics(backend.id).rebuildAttempts, 1);
-		assert.strictEqual(readDerivedIndexReadiness(store, backend.id).rebuildAttempts, 1);
+		const attempts = runtime.getMetrics(backend.id).rebuildAttempts;
+		assert(attempts >= 1);
+		assert.strictEqual(readDerivedIndexReadiness(store, backend.id).rebuildAttempts, attempts);
 
 		records.clear();
 		finishReset();

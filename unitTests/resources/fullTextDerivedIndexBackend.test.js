@@ -40,6 +40,7 @@ class FakeEngine {
 				},
 			],
 			rejected: [],
+			consumedRecords: batch.upserts.length + batch.deletes.length,
 		};
 	}
 
@@ -203,6 +204,7 @@ describe('FullTextDerivedIndexBackend', () => {
 				mutationCount: 1,
 			})),
 			rejected: [],
+			consumedRecords: value.upserts.length + value.deletes.length,
 		});
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), { maxQueuedBytes: 128 });
 		backend.deliver(
@@ -220,6 +222,67 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('continues consumed mutation prefixes behind one publication barrier', async () => {
+		const engine = new FakeEngine();
+		engine.encodeResult = (value) => {
+			const prefix =
+				value.upserts.length > 0
+					? { upserts: value.upserts.slice(0, 1), deletes: [] }
+					: { upserts: [], deletes: value.deletes.slice(0, 1) };
+			return {
+				batches: [{ bytes: Buffer.from(JSON.stringify(prefix)), mutationCount: 1 }],
+				rejected: [],
+				consumedRecords: 1,
+			};
+		};
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), { maxQueuedBytes: 128 });
+		backend.deliver(
+			batch(
+				1n,
+				['a', 'b', 'c'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
+				cursor(20)
+			)
+		);
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert.strictEqual(engine.encoded.length, 3);
+		assert.deepStrictEqual(
+			engine.applied.flatMap((value) => value.upserts.map((upsert) => upsert.fields.title)),
+			['a', 'b', 'c']
+		);
+		await backend.shutdown(1n);
+	});
+
+	it('rolls back staged prefixes when a later prefix cannot be encoded', async () => {
+		const engine = new FakeEngine();
+		let encodes = 0;
+		engine.encodeResult = (value) => {
+			if (++encodes === 2) throw new Error('later prefix failed');
+			const prefix = { upserts: value.upserts.slice(0, 1), deletes: [] };
+			return {
+				batches: [{ bytes: Buffer.from(JSON.stringify(prefix)), mutationCount: 1 }],
+				rejected: [],
+				consumedRecords: 1,
+			};
+		};
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(
+			batch(
+				1n,
+				['a', 'b'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
+				cursor(20)
+			)
+		);
+		backend.flush();
+		await waitFor(() => changes.includes('failed'));
+		assert.strictEqual(engine.applied.length, 1);
+		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
+		assert(!changes.includes('accepted-work-lost'));
+		await backend.shutdown(1n);
+	});
+
 	it('rolls back every staged frame when a later frame fails', async () => {
 		const engine = new FakeEngine();
 		engine.encodeResult = (value) => ({
@@ -228,6 +291,7 @@ describe('FullTextDerivedIndexBackend', () => {
 				mutationCount: 1,
 			})),
 			rejected: [],
+			consumedRecords: value.upserts.length + value.deletes.length,
 		});
 		engine.apply = async function (bytes) {
 			const value = JSON.parse(Buffer.from(bytes).toString());
@@ -276,6 +340,7 @@ describe('FullTextDerivedIndexBackend', () => {
 				return {
 					batches: [],
 					rejected: [{ operation: 'upsert', index: rejectedIndex, code: 'E_BATCH_TOO_LARGE' }],
+					consumedRecords: value.upserts.length + value.deletes.length,
 				};
 			return {
 				batches: [
@@ -285,6 +350,7 @@ describe('FullTextDerivedIndexBackend', () => {
 					},
 				],
 				rejected: [],
+				consumedRecords: value.upserts.length + value.deletes.length,
 			};
 		};
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
@@ -304,6 +370,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(engine.applied[0].upserts.length, 1);
 		assert.strictEqual(engine.applied[0].deletes.length, 1);
 		assert.strictEqual(engine.applied[0].deletes[0], engine.encoded[0].upserts[1].id);
+		assert.strictEqual(backend.getUnindexableRecords(), 1);
 		await backend.shutdown(1n);
 	});
 
@@ -326,6 +393,24 @@ describe('FullTextDerivedIndexBackend', () => {
 		await waitFor(() => encoded === 1);
 		releaseApply();
 		await waitFor(() => changes.includes('changed'));
+		await backend.shutdown(1n);
+	});
+
+	it('accepts one oversized byte estimate as a soft queue cap', async () => {
+		let releaseApply;
+		const engine = new FakeEngine();
+		engine.applyWait = new Promise((resolve) => (releaseApply = resolve));
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), { maxQueuedBytes: 64 });
+		const value = batch(
+			1n,
+			[mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })],
+			cursor(20),
+			128
+		);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_DEFERRED);
+		await waitFor(() => engine.applied.length === 1);
+		releaseApply();
 		await backend.shutdown(1n);
 	});
 
@@ -369,6 +454,20 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(encoded, 0);
 		assert.strictEqual(engine.applied.length, 0);
 		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
+		await backend.shutdown(1n);
+	});
+
+	it('does not open a writer for cursor-only work until a barrier arrives', async () => {
+		const engine = new FakeEngine();
+		const source = lifecycle({ state: 'missing' }, [engine]);
+		const { backend } = makeBackend(source, { maxQueuedBatches: 1 });
+		assert.strictEqual(backend.deliver(batch(1n, [], cursor(20))), DERIVED_INDEX_ACCEPTED);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(source.openCalls, 0);
+		assert.strictEqual(backend.deliver(batch(1n, [], cursor(21))), DERIVED_INDEX_ACCEPTED);
+		backend.flush('age');
+		await waitFor(() => engine.publications.length === 1);
+		assert.strictEqual(source.openCalls, 1);
 		await backend.shutdown(1n);
 	});
 
@@ -469,6 +568,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
 		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
 		await waitFor(() => changes.includes('failed'));
 		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
 		quiesceError = undefined;
@@ -502,6 +602,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.onStateChange((change) => changes.push(change));
 		backend.getDurableCursor();
 		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
 		await waitFor(() => changes.includes('failed'));
 		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
 		assert.strictEqual(engine.closes.length, 2);
@@ -620,6 +721,7 @@ describe('FullTextDerivedIndexBackend', () => {
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
 		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
 		await waitFor(() => typeof finishOpen === 'function');
 		setEpoch(2n);
 		finishOpen();

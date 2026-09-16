@@ -71,6 +71,7 @@ class FakeNativeModule {
 						},
 					],
 					rejected: [],
+					consumedRecords: batch.upserts.length + batch.deletes.length,
 				};
 			},
 			async apply() {
@@ -259,6 +260,35 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.throws(
 			() => new NativeFullTextDerivedIndexLifecycle(options('relative', new FakeNativeModule())),
 			/storePath must be absolute/
+		);
+		assert.throws(
+			() =>
+				new NativeFullTextDerivedIndexLifecycle(
+					options(storePath, new FakeNativeModule(), {
+						fields: Array.from({ length: 1025 }, (_, index) => ({ name: `field-${index}` })),
+					})
+				),
+			/fields must contain/
+		);
+		assert.throws(
+			() =>
+				new NativeFullTextDerivedIndexLifecycle(
+					options(storePath, new FakeNativeModule(), { limits: { ...limits, maxBatchBytes: 14 } })
+				),
+			/mutation batch header/
+		);
+	});
+
+	it('keeps the native frame limit within the backend total limit', async () => {
+		await assert.rejects(
+			createNativeFullTextDerivedIndexBackend({
+				...options(storePath, new FakeNativeModule(), {
+					limits: { ...limits, maxBatchBytes: 2048, maxQueuedBytes: 2048 },
+				}),
+				id: 'products-title',
+				maxQueuedBytes: 1024,
+			}),
+			/backend maxQueuedBytes/
 		);
 	});
 });

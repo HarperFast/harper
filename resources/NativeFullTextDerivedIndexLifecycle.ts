@@ -9,6 +9,8 @@ import {
 	type FullTextDerivedIndexInspection,
 } from './FullTextDerivedIndexBackend.ts';
 import {
+	FULLTEXT_MUTATION_BATCH_HEADER_BYTES,
+	FULLTEXT_NATIVE_MAX_FIELDS,
 	loadFullTextNativeBinding,
 	type NativeFullTextIndexConfiguration,
 	type NativeFullTextModule,
@@ -162,6 +164,9 @@ export class NativeFullTextDerivedIndexLifecycle {
 export async function createNativeFullTextDerivedIndexBackend(
 	options: NativeFullTextDerivedIndexBackendOptions
 ): Promise<FullTextDerivedIndexBackend> {
+	const maxQueuedBytes = options.maxQueuedBytes ?? 64 * 1024 * 1024;
+	if (options.limits.maxBatchBytes > maxQueuedBytes)
+		throw new RangeError('Full-text maxBatchBytes must not exceed the backend maxQueuedBytes');
 	const lifecycle = new NativeFullTextDerivedIndexLifecycle({ ...options, indexId: options.id });
 	await lifecycle.initialize();
 	return new FullTextDerivedIndexBackend({
@@ -203,8 +208,12 @@ function validEngine(value: unknown): value is FullTextDerivedIndexEngine {
 
 function validateNativeConfiguration(options: NativeFullTextDerivedIndexLifecycleOptions): void {
 	if (options.analyzer !== 'english@1') throw new TypeError('Full-text analyzer must be english@1');
-	if (!Array.isArray(options.fields) || options.fields.length === 0 || options.fields.length > 0xffff)
-		throw new TypeError('Full-text fields must contain between 1 and 65535 entries');
+	if (
+		!Array.isArray(options.fields) ||
+		options.fields.length === 0 ||
+		options.fields.length > FULLTEXT_NATIVE_MAX_FIELDS
+	)
+		throw new TypeError(`Full-text fields must contain between 1 and ${FULLTEXT_NATIVE_MAX_FIELDS} entries`);
 	const names = new Set<string>();
 	for (const field of options.fields) {
 		if (
@@ -245,6 +254,8 @@ function validateNativeConfiguration(options: NativeFullTextDerivedIndexLifecycl
 		throw new RangeError('Full-text writerMemoryBytes per indexing thread is outside Tantivy limits');
 	if (limits.maxBatchBytes > limits.maxQueuedBytes)
 		throw new RangeError('Full-text maxBatchBytes must not exceed maxQueuedBytes');
+	if (limits.maxBatchBytes <= FULLTEXT_MUTATION_BATCH_HEADER_BYTES)
+		throw new RangeError('Full-text maxBatchBytes must exceed the mutation batch header');
 }
 
 function logWarning(message: string, error: unknown): void {

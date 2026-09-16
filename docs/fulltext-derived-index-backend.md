@@ -103,8 +103,8 @@ interface NativeFullTextModule {
 
 `inspectNativeFullTextIndex()` is synchronous and read-only. It lets the existing synchronous
 `DerivedIndexBackend.getDurableCursor()` contract determine the replay anchor without opening the
-single native writer. `openNativeFullTextIndex()` is called lazily after the backend accepts its
-first batch for an owner epoch. This avoids holding one Tantivy writer per inactive index and avoids
+single native writer. `openNativeFullTextIndex()` is called lazily when the backend first needs to
+apply mutations or publish a cursor for an owner epoch. This avoids holding one Tantivy writer per inactive index and avoids
 adding a Fulltext-specific acquisition phase to the shared runtime.
 
 `resetNativeFullTextIndex()` is called only inside Harper's existing rebuild protocol: the old
@@ -157,12 +157,16 @@ then publishes the encoded cursor payload. Publication success updates the in-me
 and wakes the runtime. The payload is bounded, versioned JSON and rejects malformed formats,
 reserved log names, and non-positive or non-finite positions.
 
-Queue limits are independent count and estimated-byte bounds. The runtime estimate includes source
-record size, canonical document-id bytes, and fixed mutation overhead; it protects scheduling but is
-not a wire-size calculation. In the drain, the opened Fulltext handle performs the exact FTMB
+Queue limits are independent count and estimated-byte soft bounds. The runtime estimate includes
+source record size when the store provides it, canonical document-id bytes, and fixed mutation
+overhead; it protects scheduling but is not a wire-size calculation. One batch is admitted when the
+queue is empty even if its estimate exceeds the byte ceiling, matching the HNSW backend and ensuring
+that a large but valid record cannot permanently stall delivery. In the drain, the opened Fulltext handle performs the exact FTMB
 encoding and greedily partitions one logical batch into frames bounded by its configured
 `maxBatchBytes`. Harper also passes its queue-byte ceiling as `maxTotalBytes`, so one encoding call
-cannot retain an unbounded set of frames.
+cannot retain an unbounded set of frames. The wrapper reports the leading logical records consumed
+under that ceiling; Harper applies those frames and continues with the suffix without re-encoding
+the prefix.
 
 Harper applies every returned frame in order and verifies both each frame's mutation count and the
 logical batch's total count before crossing the publication barrier. The frames remain staged in one
@@ -170,7 +174,8 @@ Tantivy writer and become durable with one `publish(cursor)` call. A failure aft
 rollback-close and replay from the previous durable cursor; Harper never publishes a partial logical
 batch.
 
-The wrapper may reject an individual upsert as invalid or too large for one frame. Harper replaces
+The native frame limit must fit within Harper's per-call total ceiling, and both sides reject a
+frame limit too small to hold the FTMB header. The wrapper may reject an individual upsert as invalid or too large for one frame. Harper replaces
 that upsert with a delete for the same derived document id, so a formerly indexed value cannot
 remain searchable, and records the event as unindexable. A rejected delete, duplicate or malformed
 rejection index, unknown rejection code, schema mismatch, or call-level encoding failure is a

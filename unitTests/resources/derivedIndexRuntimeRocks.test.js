@@ -358,6 +358,7 @@ class FakeNativeFullTextModule {
 						},
 					],
 					rejected: [],
+					consumedRecords: batch.upserts.length + batch.deletes.length,
 				};
 			},
 			async apply(packed) {

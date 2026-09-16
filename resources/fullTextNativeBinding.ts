@@ -1,6 +1,8 @@
 import type { FullTextDerivedIndexEngine } from './FullTextDerivedIndexBackend.ts';
 
 const FULLTEXT_NATIVE_ABI_VERSION = 4;
+export const FULLTEXT_NATIVE_MAX_FIELDS = 1_024;
+export const FULLTEXT_MUTATION_BATCH_HEADER_BYTES = 14;
 
 export interface NativeFullTextIndexConfiguration {
 	fields: Array<{ name: string; weight?: number }>;
