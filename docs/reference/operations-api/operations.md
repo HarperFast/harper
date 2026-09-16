@@ -884,6 +884,8 @@ Additional parameters:
 
 A deploy normally builds the new version and swaps it in as one operation. `activate: false` stops after the build, so the work that takes time and can fail — fetching, resolving, installing dependencies — happens when you choose, and the cut-over itself is two directory renames you can run in a maintenance window.
 
+Every `deploy_component` response carries a `deployment_id`, staged or not, so a build you deploy today can be named later.
+
 ```json
 {
 	"operation": "deploy_component",
@@ -916,10 +918,15 @@ That request takes no `package`, `payload`, `credentials`, install options, or `
 
 A few things worth knowing before you rely on it:
 
-- **Activation consumes the build.** The swap is a rename, so a deployment id can be activated once. To go back to a previous version, stage it again.
+- **Activation consumes the build.** The swap is a rename, so a deployment id can be activated once. Activating it again returns `404`.
+- **A staged build outlives later deploys, which is how you go back.** Staging a release keeps it available even if you deploy something else afterwards: stage v2, deploy v3, and activating v2's id later returns the component to v2. Only versions you staged can be returned to — an ordinary deploy leaves nothing behind to activate.
 - **Staged builds are bounded.** [`deployment.stagingRetention.maxCount`](../configuration/options.md#deployment) caps how many unactivated builds a component keeps (default `5`); the oldest are removed at the start of that component's next deploy and at startup. A build pruned before you activate it has to be staged again.
 - **A deployment id names one build.** Staging again with the same id is rejected rather than rebuilding over it, and the id stays bound to that build until it is activated or pruned.
 - **`file:` directory sources cannot be staged.** A local-directory package is linked rather than copied, so the bytes could change between staging and activation. Deploy those normally.
+- **`restart` belongs on the activation, not the stage.** A stage changes nothing that is running, so `restart` is rejected alongside `activate: false`; pass it with `deployment_id` to restart as the new version goes live.
+- **Reclaiming the payload does not disable the artifact.** [`delete_deployment_payload`](#delete_deployment_payload) on a staged deployment frees the stored tarball; the build is already installed on disk, so its id still activates.
+
+A refused activation says which kind of refusal it is: `404` when nothing on that node answers to the id — it never existed, or it has already been activated or pruned — and `409` when the build is there but cannot be activated, such as one belonging to another component or one whose files changed after it was staged.
 
 :::warning
 **Upgrade every node before staging.** A stage is replicated like any other deploy. A node still running a version before v5.3.0 does not recognize `activate: false`. It performs an ordinary deploy and serves the release immediately.
@@ -1049,22 +1056,23 @@ Returns a single deployment record by `deployment_id`. When called on an in-prog
 
 The deployment record includes:
 
-| Field                | Description                                                             |
-| -------------------- | ----------------------------------------------------------------------- |
-| `deployment_id`      | Unique identifier (content hash)                                        |
-| `project`            | Component project name                                                  |
-| `package_identifier` | Package reference or `payload` for tar uploads                          |
-| `status`             | `pending`, `success`, `failed`, `staged` (v5.3.0), or `rolled_back`     |
-| `phase`              | Current lifecycle phase: `prepare`, `load`, `replicate`, `restart`      |
-| `event_log`          | Bounded log of install output and phase transitions (up to 200 entries) |
-| `peer_results`       | Per-node outcome map for replicated deployments                         |
-| `payload_hash`       | SHA-256 hash of the deployment tarball                                  |
-| `payload_size`       | Byte size of the deployment tarball                                     |
-| `started_at`         | Timestamp when deployment began                                         |
-| `completed_at`       | Timestamp when deployment finished                                      |
-| `user`               | User who initiated the deployment                                       |
-| `rollback_of`        | `deployment_id` of the deployment this rolls back, if applicable        |
-| `error`              | Error message for failed deployments                                    |
+| Field                | Description                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------ |
+| `deployment_id`      | Unique identifier (content hash)                                                                 |
+| `project`            | Component project name                                                                           |
+| `package_identifier` | Package reference or `payload` for tar uploads                                                   |
+| `status`             | `pending`, `success`, `failed`, `staged` (v5.3.0), or `rolled_back`                              |
+| `phase`              | Current lifecycle phase: `prepare`, `load`, `replicate`, `restart`                               |
+| `event_log`          | Bounded log of install output and phase transitions (up to 200 entries)                          |
+| `peer_results`       | Per-node outcome map for replicated deployments                                                  |
+| `payload_hash`       | SHA-256 hash of the deployment tarball                                                           |
+| `payload_size`       | Byte size of the deployment tarball                                                              |
+| `started_at`         | Timestamp when deployment began                                                                  |
+| `completed_at`       | Timestamp when deployment finished                                                               |
+| `user`               | User who initiated the deployment                                                                |
+| `activated_from`     | <VersionBadge version="v5.3.0" /> On an activation, the id of the staged deployment it made live |
+| `rollback_of`        | `deployment_id` of the deployment this rolls back, if applicable                                 |
+| `error`              | Error message for failed deployments                                                             |
 
 ### `get_deployment_payload`
 
