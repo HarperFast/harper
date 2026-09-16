@@ -78,25 +78,27 @@ test(
 				const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
 				assert(result.status < 300, JSON.stringify(result));
 			}
-			const timedOut = await query(1_000_000, 1);
-			assert.equal(timedOut.status, 503, JSON.stringify(timedOut));
-			assert.equal(timedOut.body.code, 'DERIVED_INDEX_LAGGING');
-			assert.equal(timedOut.coverage, null);
-			const mappedTimeout = await query(1_000_000, 1, target, '/MappedPlane/');
-			assert.equal(mappedTimeout.status, 503, JSON.stringify(mappedTimeout));
-			assert.equal(mappedTimeout.body.code, 'DERIVED_INDEX_LAGGING');
-			let rejectedStrict = false;
-			let servedTolerant = false;
+			for (const path of ['/PlaneProbe/', '/MappedPlane/']) {
+				const shortWait = await query(1_000_000, 1, target, path);
+				if (shortWait.status === 503) {
+					assert.equal(shortWait.body.code, 'DERIVED_INDEX_LAGGING');
+					assert.equal(shortWait.coverage, null);
+				} else {
+					assert.equal(shortWait.status, 200, JSON.stringify(shortWait));
+					assert.equal(shortWait.coverage, 'current; lag=0; tolerance=1000000');
+					assert(shortWait.body.some(({ id }) => id === records.length - 1));
+				}
+			}
 			await waitFor(
 				async () => {
 					const before = (await request('/PlaneStatus/')).body;
 					const strict = await query(0);
 					if (strict.status === 503) {
 						assert.equal(strict.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(strict));
-						rejectedStrict = true;
 					} else {
 						assert.equal(strict.status, 200, JSON.stringify(strict));
 						assert.match(strict.coverage ?? '', /^current; lag=0; tolerance=0$/);
+						assert(strict.body.some(({ id }) => id === records.length - 1));
 					}
 					const normal = await query();
 					if (normal.status === 503) {
@@ -113,14 +115,11 @@ test(
 					if (tolerant.status === 200) {
 						assert(Array.isArray(tolerant.body));
 						assert.match(tolerant.coverage ?? '', /^(current|bounded); lag=[0-9.e+-]+; tolerance=1000000$/);
-						if (before.mappings < records.length && tolerant.coverage?.startsWith('bounded')) servedTolerant = true;
 					} else assert.equal(tolerant.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(tolerant));
 					return before.mappings === records.length && strict.status === 200;
 				},
 				{ timeout: 90_000, interval: 100, message: 'native plane did not certify current coverage' }
 			);
-			assert(rejectedStrict, 'no strict query rejected the native catch-up window');
-			assert(servedTolerant, 'no tolerant query exposed bounded coverage during catch-up');
 			const final = await query(0);
 			assert.equal(final.status, 200, JSON.stringify(final));
 			const ids = final.body.map((record: { id: number }) => record.id);

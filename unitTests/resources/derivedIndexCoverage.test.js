@@ -5,7 +5,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table, closeDatabase } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
-const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
+const { DatabaseTransaction, TRANSACTION_STATE, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
 const { DERIVED_INDEX_CURSOR_KEY, HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
 const {
 	READINESS_BYTES,
@@ -141,6 +141,64 @@ describe('native derived-index query coverage', function () {
 			{ code: 'DERIVED_INDEX_LAGGING' }
 		);
 		await current();
+	});
+	it('accepts a published fixed-boundary proof on the final deadline check', async () => {
+		const since = process.hrtime.bigint();
+		await index.derivedHost.waitForCoverage(since, 10_000);
+		await index.derivedHost.waitForCoverage(since, Number.MIN_VALUE);
+	});
+	it('keeps the request snapshot and transaction open throughout a bounded wait', async () => {
+		await current();
+		setTxnExpiration(20);
+		const transaction = new DatabaseTransaction();
+		try {
+			await Product.put('active-read-wait', { vector });
+			const pending = Product.search(
+				{ sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 }, limit: 10 },
+				{ transaction }
+			);
+			const snapshot = transaction.transaction;
+			const started = performance.now();
+			const results = await pending;
+			assert(performance.now() - started > 100, 'the wait did not span several idle-monitor ticks');
+			assert.equal(transaction.open, TRANSACTION_STATE.OPEN);
+			assert.strictEqual(transaction.transaction, snapshot);
+			assert((await Array.fromAsync(results)).some(({ id }) => id === 'active-read-wait'));
+			await transaction.commit();
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+			setTxnExpiration(30_000);
+		}
+	});
+	it('does not keep staged writes alive while waiting for native coverage', async () => {
+		await current();
+		setTxnExpiration(20);
+		const transaction = new DatabaseTransaction();
+		try {
+			await Product.put('write-timeout-wait', { vector });
+			await Other.put('uncommitted-wait', { value: 1 }, { transaction });
+			assert(transaction.hasPendingWrites());
+			const pending = Promise.resolve(
+				Product.search(
+					{ sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 }, limit: 10 },
+					{ transaction }
+				)
+			);
+			pending.catch(() => {});
+			await waitFor(() => transaction.timedOut);
+			await Promise.allSettled([pending]);
+			await assert.rejects(
+				Promise.resolve().then(() => transaction.commit()),
+				(error) => error.statusCode === 422
+			);
+			assert(transaction.timedOut);
+			assert.equal(transaction.pendingReads, 0);
+			assert.equal(await Other.get('uncommitted-wait'), undefined);
+		} finally {
+			transaction.abort();
+			setTxnExpiration(30_000);
+		}
 	});
 	it('cancels a waiting query and releases its read snapshot', async () => {
 		await Product.put('cancelled-wait', { vector });
@@ -393,6 +451,64 @@ describe('native derived-index query coverage', function () {
 			);
 			assert.equal((await search(0)).indexCoverage.state, 'current');
 		} finally {
+			await runtime.stop();
+		}
+	});
+	it('refreshes a completed nonempty drain while new unrelated commits keep arriving', async () => {
+		await Product.derivedIndexRuntime?.close();
+		const id = `hnsw:${Product.indices.vector.name}`;
+		const root = Product.auditStore.rootStore;
+		const log = root.useLog('continuous-coverage');
+		let producing = false;
+		let delivered = 0;
+		const commit = () =>
+			root.transactionSync((txn) => {
+				ENTRY_DATAVIEW.setUint32(0, 0);
+				log.addEntry(
+					Buffer.from(
+						createAuditEntry(
+							{
+								type: 'delete',
+								tableId: Other.tableId,
+								recordId: 'continuous',
+								nodeId: 0,
+								version: txn.getTimestamp(),
+							},
+							4
+						)
+					),
+					txn.id
+				);
+			});
+		// Real backend and real committed audit entries: each accepted batch causes another writer
+		// commit before the next drain, so there is no intervening empty iterator pass.
+		class ProducingBackend extends HnswDerivedIndexBackend {
+			deliver(batch) {
+				const result = super.deliver(batch);
+				if (producing) {
+					delivered++;
+					commit();
+				}
+				return result;
+			}
+		}
+		const runtime = new DerivedIndexRuntime(Product.auditStore, (_tableId, recordId) => {
+			const entry = Product.primaryStore.getEntry(recordId);
+			return entry && { version: entry.version, value: entry.value };
+		});
+		try {
+			runtime.register({
+				backend: new ProducingBackend(id, index),
+				projections: new Map([[Product.tableId, (record) => record.vector]]),
+			});
+			await waitFor(() => runtime.getStatus(id).state === 'idle' && runtime.getStatus(id).ownerEpoch !== undefined);
+			producing = true;
+			commit();
+			await runtime.waitForCoverage(id, process.hrtime.bigint(), 500);
+			assert(delivered > 0);
+		} finally {
+			producing = false;
+			await runtime.waitForCoverage(id, process.hrtime.bigint(), 10_000);
 			await runtime.stop();
 		}
 	});

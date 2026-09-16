@@ -642,6 +642,21 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
+	pendingReads = 0;
+
+	/** Keep a known, bounded asynchronous read active without extending staged-write lifetimes. */
+	keepReadActiveUntil<T>(pending: Promise<T>): Promise<T> {
+		const links: DatabaseTransaction[] = [];
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			txn.pendingReads++;
+			txn.renewReadTimeout();
+			links.push(txn);
+		}
+		return pending.finally(() => {
+			for (const txn of links) txn.pendingReads--;
+		});
+	}
+
 	rangeReadActive = false;
 
 	renewReadTimeout(): void {
@@ -2220,7 +2235,7 @@ function startMonitoringTxns() {
 		reportNow: number,
 		reportBudget: LongLivedHolderReportBudget
 	) {
-		if (txn.rangeReadActive) {
+		if (txn.rangeReadActive || txn.pendingReads > 0) {
 			txn.rangeReadActive = false;
 			txn.renewReadTimeout();
 		}

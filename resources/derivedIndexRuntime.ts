@@ -416,10 +416,9 @@ export class DerivedIndexRuntime {
 			const now = process.hrtime.bigint();
 			let delay = 25;
 			for (const waiter of group.waiters) {
-				if (now >= waiter.deadline)
+				if (before.state === 'ready' && before.ownerEpoch === after.ownerEpoch && time >= waiter.since) waiter.finish();
+				else if (now >= waiter.deadline)
 					waiter.finish(new DerivedIndexLagError('Timed out waiting for native HNSW index coverage; retry this query'));
-				else if (before.state === 'ready' && before.ownerEpoch === after.ownerEpoch && time >= waiter.since)
-					waiter.finish();
 				else delay = Math.min(delay, Math.max(1, Number(waiter.deadline - now) / 1e6));
 			}
 			if (group.waiters.size) group.timer = setTimeout(() => this.#pollCoverage(backendId, group), delay);
@@ -569,6 +568,7 @@ class DerivedIndexRunner {
 	#unanchoredAcceptedAt = 0;
 	#pendingBatch?: DerivedIndexBatch;
 	#carried: CollectedTransaction[] = [];
+	#collectedToEnd = false;
 	#latestSeen = new Map<string, number>();
 	#stalledSince?: number;
 	#lastCaughtUpAt?: number;
@@ -1113,6 +1113,7 @@ class DerivedIndexRunner {
 				if (this.#offeredCursors.length - 1 >= this.#options.maxAcceptedBatchesAhead) return;
 				this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			}
+			this.#collectedToEnd = false;
 			const batch = this.#pendingBatch ?? this.#collectChunk();
 			if (!this.#live(generation)) return;
 			if (batch === CONTINUE) {
@@ -1135,7 +1136,12 @@ class DerivedIndexRunner {
 			this.#pendingBatch = undefined;
 			this.#noteAccepted(batch);
 			if (!this.#live(generation)) return;
+			// A nonempty turn can also exhaust the captured log tail. Waiting for an empty turn
+			// would starve coverage under continuous writes even when each drain catches up.
+			const completedCapture = this.#collectedToEnd && this.#carried.length === 0 ? capture : undefined;
+			if (completedCapture) this.#offeredCursors.at(-1)!.coverage = completedCapture;
 			if (!this.#reconcileDurableCursor()) return;
+			this.#publishUnchangedCoverage(completedCapture);
 			this.#publishLag();
 			if (!lastOpen(this.#carried) && this.#offeredCursors.length - 1 >= this.#options.maxAcceptedBatchesAhead) {
 				this.status = { state: 'waiting-durable', ownerEpoch: this.#ownerEpoch };
@@ -1260,6 +1266,7 @@ class DerivedIndexRunner {
 						'log-corrupt',
 						`transaction ${current.timestamp} from '${current.logName}' is incomplete`
 					);
+				this.#collectedToEnd = true;
 				break;
 			}
 			const entry = next.value;
@@ -1516,13 +1523,7 @@ class DerivedIndexRunner {
 		}
 		if (capture) this.#offeredCursors.at(-1)!.coverage = capture;
 		if (!this.#reconcileDurableCursor(durable)) return;
-		if (
-			capture &&
-			this.#unanchoredMutations === 0 &&
-			this.#offeredCursors.slice(1).every((offered) => offered.mutations === 0)
-		) {
-			this.#publishCoverage(capture);
-		}
+		this.#publishUnchangedCoverage(capture);
 		this.#armCoverageTimer();
 		if (sameCursor(durable, this.#offered!)) this.#lastCaughtUpAt = this.#options.now();
 		this.#publishLag();
@@ -1542,6 +1543,16 @@ class DerivedIndexRunner {
 				this.#fail('backend cursor read threw at idle release', error, 'backend-failed');
 			}
 		}, this.#options.idleGraceMilliseconds);
+	}
+
+	#publishUnchangedCoverage(capture?: CoverageCapture) {
+		if (
+			capture &&
+			!this.#boundaryPending &&
+			this.#unanchoredMutations === 0 &&
+			this.#offeredCursors.slice(1).every((offered) => offered.mutations === 0)
+		)
+			this.#publishCoverage(capture);
 	}
 
 	#reconcileDurableCursor(cursor = this.#registration.backend.getDurableCursor()): boolean {

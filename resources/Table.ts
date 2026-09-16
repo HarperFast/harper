@@ -4667,6 +4667,9 @@ export function makeTable(options) {
 				recordAccess,
 				admissions
 			);
+			const admission = admissions.length
+				? (context.transaction ?? txn).keepReadActiveUntil(Promise.all(admissions))
+				: undefined;
 			const ensure_loaded = (target as any).ensureLoaded !== false;
 			// The guards inside executeConditions evaluate the
 			// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
@@ -4751,7 +4754,7 @@ export function makeTable(options) {
 					let scanned = 0;
 					let exact = true;
 					try {
-						if (admissions.length) await Promise.all(admissions);
+						if (admission) await admission;
 						for await (const record of results) {
 							if (scanned >= offset && scanned < pageEnd) page.push(record);
 							scanned++;
@@ -4820,8 +4823,7 @@ export function makeTable(options) {
 			};
 			results.selectApplied = true;
 			results.getColumns = getColumns;
-			if (admissions.length) {
-				const admission = Promise.all(admissions);
+			if (admission) {
 				admission.catch(() => results.onDone?.());
 				propagateSearchGate(results, SEARCH_ADMISSION, admission);
 			}

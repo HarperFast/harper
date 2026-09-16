@@ -2735,6 +2735,10 @@ Concurrent waiters on one worker/index share a single 25 ms poll timer, removed 
 time out, or abort. A first waiter nudges its local runner without changing writer-lag accounting or
 retrying a deferred batch; an active peer owner already refreshes at flush cadence. No cross-worker
 notification or per-query persisted coverage write is needed. Closing a registration rejects its waiters.
+A completed nonempty drain also attaches its capture to the accepted boundary; ongoing writes need
+not leave an empty turn between batches. The capture remains fenced behind every indexed mutation
+accepted through that boundary. Query admission keeps existing read-only transaction links active
+until the bounded wait settles; `renewReadTimeout()` still refuses to extend pending write intents.
 The strict/ownerless path costs a cursor read and stats per physical log. If a database-wide backlog
 prevents the owner from inspecting unrelated writes, coverage can conservatively become unprovable
 for an otherwise unaffected index; queries do not scan logs to classify that backlog.
