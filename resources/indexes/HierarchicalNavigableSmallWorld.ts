@@ -141,6 +141,15 @@ const PLANE_ATTACH_RETRY_MS = 250;
 // it as an ordinary query failure instead of disabling the (healthy) plane.
 const NOT_A_PLANE_FAILURE = Symbol('notAPlaneFailure');
 
+function numericOption(name: string, value: unknown): number | undefined {
+	if (value === undefined) return undefined;
+	if ((typeof value !== 'number' && typeof value !== 'string') || (typeof value === 'string' && value.trim() === ''))
+		throw new ClientError(`${name} must be a finite number`);
+	const numericValue = Number(value);
+	if (!Number.isFinite(numericValue)) throw new ClientError(`${name} must be a finite number`);
+	return numericValue;
+}
+
 class MinHeap {
 	private data: Candidate[] = [];
 	get size() {
@@ -295,10 +304,19 @@ export class HierarchicalNavigableSmallWorld {
 			// (we would actually like to use float16 if it were available)
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
+		const configuredM = numericOption('M', options?.M);
+		const configuredEfConstruction = numericOption('efConstruction', options?.efConstruction);
+		const configuredEfConstructionSearch = numericOption('efConstructionSearch', options?.efConstructionSearch);
+		const configuredML = numericOption('mL', options?.mL);
+		const configuredOptimizeRouting = numericOption(
+			'optimizeRouting',
+			typeof options?.optimizeRouting === 'boolean' ? Number(options.optimizeRouting) : options?.optimizeRouting
+		);
+		const configuredFilterExpansion = numericOption('filterExpansion', options?.filterExpansion);
 		this.int8 = options?.quantization !== 'none';
 		// Respect an explicitly-configured ef (efConstruction seeds the search ef too); otherwise auto-scale both.
-		this.efSearchConfigured = options?.efConstructionSearch !== undefined || options?.efConstruction !== undefined;
-		this.efConstructionConfigured = options?.efConstruction !== undefined;
+		this.efSearchConfigured = configuredEfConstructionSearch !== undefined || configuredEfConstruction !== undefined;
+		this.efConstructionConfigured = configuredEfConstruction !== undefined;
 		this.distance =
 			options?.distance === 'euclidean'
 				? euclideanDistance
@@ -307,32 +325,33 @@ export class HierarchicalNavigableSmallWorld {
 					: cosineDistance;
 		if (options) {
 			// allow all the HNSW parameters to be configured/tuned
-			if (options.M !== undefined) {
-				this.M = options.M;
+			if (configuredM !== undefined) {
+				this.M = configuredM;
 				this.mL = 1 / Math.log(this.M); // recalculate
 			}
-			if (options.efConstruction !== undefined)
-				this.efConstruction = this.efConstructionSearch = options.efConstruction;
-			if (options.efConstructionSearch !== undefined) this.efConstructionSearch = options.efConstructionSearch;
-			if (options.mL !== undefined) this.mL = options.mL;
-			if (options.optimizeRouting !== undefined) this.optimizeRouting = options.optimizeRouting;
-			if (options.filterExpansion !== undefined) this.filterExpansion = options.filterExpansion;
+			if (configuredEfConstruction !== undefined)
+				this.efConstruction = this.efConstructionSearch = configuredEfConstruction;
+			if (configuredEfConstructionSearch !== undefined) this.efConstructionSearch = configuredEfConstructionSearch;
+			if (configuredML !== undefined) this.mL = configuredML;
+			if (configuredOptimizeRouting !== undefined) this.optimizeRouting = configuredOptimizeRouting;
+			if (configuredFilterExpansion !== undefined) this.filterExpansion = configuredFilterExpansion;
 		}
 		if (options?.nativePlane) {
+			const configuredNativePlaneMaxNodes = numericOption('nativePlaneMaxNodes', options.nativePlaneMaxNodes);
 			if (!(indexStore?.rootStore instanceof RocksDatabase)) {
 				throw new ClientError('nativePlane requires the RocksDB storage engine');
 			}
 			const nativeML = 1 / Math.log(16);
 			if (
-				(options.M !== undefined && options.M !== 16) ||
-				(options.efConstruction !== undefined && options.efConstruction !== 200) ||
-				(options.mL !== undefined && options.mL !== nativeML) ||
-				(options.optimizeRouting !== undefined && options.optimizeRouting !== 0.5)
+				(configuredM !== undefined && configuredM !== 16) ||
+				(configuredEfConstruction !== undefined && configuredEfConstruction !== 200) ||
+				(configuredML !== undefined && configuredML !== nativeML) ||
+				(configuredOptimizeRouting !== undefined && configuredOptimizeRouting !== 0.5)
 			) {
 				throw new ClientError('nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5');
 			}
-			this.efConstruction = options.efConstruction ?? 200;
-			this.nativePlaneMaxNodes = options.nativePlaneMaxNodes ?? PLANE_MAX_NODES;
+			this.efConstruction = configuredEfConstruction ?? 200;
+			this.nativePlaneMaxNodes = configuredNativePlaneMaxNodes ?? PLANE_MAX_NODES;
 			if (
 				!Number.isSafeInteger(this.nativePlaneMaxNodes) ||
 				this.nativePlaneMaxNodes < 1 ||

@@ -218,7 +218,7 @@ async function processGraphQLSchema(
 							const indexedDefinition = {};
 							// store indexed arguments for configurable indexes.
 							for (const arg of directive.arguments || []) {
-								indexedDefinition[arg.name.value] = (arg.value as StringValueNode).value;
+								indexedDefinition[arg.name.value] = coerceDirectiveValue(arg.value);
 							}
 							property.indexed = indexedDefinition;
 						} else if (directiveName === 'computed') {

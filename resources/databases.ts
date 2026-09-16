@@ -3199,11 +3199,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 }
 /**
  * Canonical form used ONLY for the structural (reindex-triggering) comparison of index options.
- * `@indexed(...)` records options in source-argument order and as strings, while the operations API
- * and config objects can supply them reordered or as numbers; without canonicalizing, such a
- * representation-only difference flips the structural comparison and forces a needless full rebuild
- * (clearing + rebuilding the index, 503-ing the attribute throughout) for a semantically identical
- * index. Sorts object keys and coerces numeric-looking (non-zero) string scalars to numbers.
+ * `@indexed(...)` records options in source-argument order and may contain quoted numeric strings,
+ * while the operations API and config objects can supply them reordered or as numbers; without
+ * canonicalizing, such a representation-only difference flips the structural comparison and forces
+ * a needless full rebuild (clearing + rebuilding the index, 503-ing the attribute throughout) for a
+ * semantically identical index. Sorts object keys and coerces numeric-looking (non-zero) string
+ * scalars to numbers.
  * Conservative by design: boolean-vs-object, absent-vs-present, and string-"0"-vs-number-0
  * differences are all preserved, so a genuine change (`true` vs `{ type: 'HNSW' }`, an added/removed
  * option, a changed value) still triggers a rebuild. Persistence keys off the raw form, so the stored

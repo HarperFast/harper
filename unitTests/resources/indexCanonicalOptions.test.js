@@ -5,11 +5,11 @@
  * table() decides whether to rebuild a secondary index by comparing the new attribute's index
  * options against the persisted descriptor's. Previously that comparison used a raw JSON.stringify,
  * which is sensitive to option key order and string-vs-number scalars — so a representation-only
- * difference (e.g. `@indexed(...)` records options in source order as strings, while the operations
- * API can supply them reordered or as numbers) forced a needless full rebuild, 503-ing the attribute
- * for the duration. canonicalizeIndexOptions() sorts keys and coerces numeric-looking string scalars
- * so a semantically-identical index is recognized as unchanged. It is deliberately conservative: it
- * must NEVER mask a genuine change.
+ * difference (e.g. `@indexed(...)` records options in source order and can include quoted numeric
+ * strings, while the operations API can supply them reordered or as numbers) forced a needless full
+ * rebuild, 503-ing the attribute for the duration. canonicalizeIndexOptions() sorts keys and coerces
+ * numeric-looking string scalars so a semantically-identical index is recognized as unchanged. It is
+ * deliberately conservative: it must NEVER mask a genuine change.
  *
  * Two layers of coverage:
  *  - unit: canonicalizeIndexOptions() against the issue's exact test matrix + conservative edges.
