@@ -33,6 +33,7 @@ export const JOB_OWNER_ATTRIBUTES = ['owner_instance', 'owner_pid'] as const;
 const UNFINISHED_JOB_STATUSES = [hdbTerms.JOB_STATUS_ENUM.CREATED, hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS];
 
 export function stampJobOwner(job: any): void {
+	if (job == null || typeof job !== 'object') return;
 	job.owner_instance = JOB_OWNER_INSTANCE_ID;
 	job.owner_pid = process.pid;
 }
@@ -62,7 +63,7 @@ export async function reconcileInterruptedJobs(): Promise<number> {
 
 	let settled = 0;
 	for (const { id, owner_pid } of interrupted) {
-		const owner = owner_pid === undefined ? 'an earlier Harper process' : `Harper process ${owner_pid}`;
+		const owner = owner_pid == null ? 'an earlier Harper process' : `Harper process ${owner_pid}`;
 		try {
 			await updateJob({
 				id,
