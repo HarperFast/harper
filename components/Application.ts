@@ -2428,9 +2428,9 @@ async function clearUnsettledVerdict(deploymentDirPath: string, componentName: s
 		await syncDirectory(deploymentDirPath);
 	} catch (error) {
 		throw new Error(
-			`Settled the interrupted activation of ${componentName} but could not clear its unsettled ` +
-				`marker at ${join(deploymentDirPath, UNSETTLED_MARKER)}; the component stays failed closed on ` +
-				`every thread until that file can be removed: ${errorMessage(error)}`,
+			`Could not clear the stale unsettled marker of ${componentName} at ` +
+				`${join(deploymentDirPath, UNSETTLED_MARKER)}; the component stays failed closed on every thread ` +
+				`until that file can be removed: ${errorMessage(error)}`,
 			{ cause: error }
 		);
 	}
@@ -4388,32 +4388,35 @@ async function activateStagedArtifact(
 ): Promise<void> {
 	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, artifactId);
 	const candidateDirPath = candidateApplicationPath(application.dirPath, artifactId);
-	// The caller named something that is not there or is not theirs — a 4xx, not the 500 a bare Error gets
-	// from the operations error handler.
-	const unavailable = (why: string) =>
-		new ClientError(`Cannot deploy ${application.name} from deployment ${artifactId}: ${why}`, 404);
+	// 404 means only one thing — no artifact answers to this id here — so a caller can tell "never existed or
+	// already used" from "present, but not something this can activate", which is every other refusal below
+	// and a 409 like the rest of that family.
+	const refuse = (why: string, statusCode: number) =>
+		new ClientError(`Cannot deploy ${application.name} from deployment ${artifactId}: ${why}`, statusCode);
+	const missing = (why: string) => refuse(why, 404);
+	const unusable = (why: string) => refuse(why, 409);
 
 	const owner = await candidateComponentName(deploymentDirPath);
-	if (owner === undefined) throw unavailable('there is no staged build with that id on this node');
-	if (owner !== application.name) throw unavailable(`that staged build belongs to '${owner}'`);
+	if (owner === undefined) throw missing('there is no staged build with that id on this node');
+	if (owner !== application.name) throw unusable(`that staged build belongs to '${owner}'`);
 	if (!(await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER)))) {
-		throw unavailable('its build never completed');
+		throw unusable('its build never completed');
 	}
 	if (await presentOrAbsent(join(deploymentDirPath, UNSETTLED_MARKER))) {
-		throw unavailable('recovery could not settle it, so it is not safe to activate');
+		throw unusable('recovery could not settle it, so it is not safe to activate');
 	}
 	if (await presentOrAbsent(join(deploymentDirPath, ACTIVATION_JOURNAL))) {
-		throw unavailable('an activation of it is unsettled');
+		throw unusable('an activation of it is unsettled');
 	}
 	const candidateStat = await presentOrAbsent(candidateDirPath);
 	if (!candidateStat || !candidateStat.isDirectory()) {
 		// Unlike an immediate deploy, a symlink is refused: a `file:` directory is linked rather than
 		// copied, so what it points at now is not what was certified. Staging rejects the source for the
 		// same reason; this is the other end of the same rule, for an artifact staged by an older build.
-		throw unavailable('its build tree is missing or is a link rather than a copy');
+		throw unusable('its build tree is missing or is a link rather than a copy');
 	}
 	const descriptor = await readArtifactDescriptor(deploymentDirPath, application.name);
-	if (!descriptor) throw unavailable('it does not record what its build decided');
+	if (!descriptor) throw unusable('it does not record what its build decided');
 
 	await options.admitIsolation?.(descriptor);
 

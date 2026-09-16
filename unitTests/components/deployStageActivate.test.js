@@ -464,7 +464,12 @@ describe('activating a staged artifact', () => {
 			const root = await newRoot('reject-missing');
 			await writeLive(root, 'web', 'LIVE v1\n');
 
-			await assert.rejects(() => activate(root, 'web', 'nope'), /no staged build with that id/);
+			// The one 404: nothing here answers to that id. Every other refusal below is a 409, so a caller can
+			// tell "never existed or already used" from "present, but not activatable".
+			await assert.rejects(
+				() => activate(root, 'web', 'nope'),
+				(error) => /no staged build with that id/.test(error.message) && error.statusCode === 404
+			);
 			assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n');
 			await fs.rm(root, { recursive: true, force: true });
 		});
@@ -476,7 +481,10 @@ describe('activating a staged artifact', () => {
 			await writeLive(root, 'api', 'LIVE api\n');
 			await stage(root, 'api', 'a1', 'API STAGED\n');
 
-			await assert.rejects(() => activate(root, 'web', 'a1'), /belongs to 'api'/);
+			await assert.rejects(
+				() => activate(root, 'web', 'a1'),
+				(error) => /belongs to 'api'/.test(error.message) && error.statusCode === 409
+			);
 			assert.ok(existsSync(deploymentDir(root, 'a1')), "another component's artifact is not this request's to remove");
 			assert.strictEqual(await readLive(root, 'web'), 'LIVE web\n');
 			await fs.rm(root, { recursive: true, force: true });
@@ -510,7 +518,10 @@ describe('activating a staged artifact', () => {
 			await stage(root, 'web', 'a1', 'STAGED v2\n');
 			await fs.rm(path.join(deploymentDir(root, 'a1'), '.complete'));
 
-			await assert.rejects(() => activate(root, 'web', 'a1'), /its build never completed/);
+			await assert.rejects(
+				() => activate(root, 'web', 'a1'),
+				(error) => /its build never completed/.test(error.message) && error.statusCode === 409
+			);
 			assert.ok(existsSync(deploymentDir(root, 'a1')));
 			await fs.rm(root, { recursive: true, force: true });
 		});
