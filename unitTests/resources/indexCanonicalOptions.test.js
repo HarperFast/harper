@@ -65,6 +65,12 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		assert.equal(sameStructure({ flag: true }, { flag: 'true' }), false);
 		// Numeric HNSW zero representations are equivalent; non-numeric options retain truthiness distinctions.
 		assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: '0' }, { type: 'HNSW', optimizeRouting: 0 }), true);
+		assert.equal(
+			sameStructure({ type: 'HNSW', maxLagMilliseconds: '0' }, { type: 'HNSW', maxLagMilliseconds: 0 }),
+			true
+		);
+		assert.equal(sameStructure({ type: 'HNSW', nativePlane: 'true' }, { type: 'HNSW', nativePlane: true }), true);
+		assert.equal(sameStructure({ type: 'HNSW' }, { type: 'HNSW', nativePlane: false }), true);
 		assert.equal(sameStructure({ type: 'HNSW', nativePlane: '0' }, { type: 'HNSW', nativePlane: 0 }), false);
 		assert.equal(sameStructure({ type: 'HNSW', nativePlane: 'false' }, { type: 'HNSW', nativePlane: false }), false);
 		for (const value of [true, 'true', 1, '1'])
@@ -106,6 +112,7 @@ describe('index rebuild gating: representation-only options do not re-trigger a 
 		return table({
 			table: TABLE,
 			database: DB,
+			audit: false,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'vector', indexed: indexedOption, type: 'Array' },
@@ -122,6 +129,7 @@ describe('index rebuild gating: representation-only options do not re-trigger a 
 		let Tbl = table({
 			table: TABLE,
 			database: DB,
+			audit: false,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'vector', type: 'Array' },
@@ -144,6 +152,11 @@ describe('index rebuild gating: representation-only options do not re-trigger a 
 		// String-vs-number scalar: canonical form identical -> NO rebuild.
 		const stringly = reload(TABLE, { type: 'HNSW', M: '16' });
 		assert.equal(stringly.indexingOperation, buildOp, 'string-vs-number index options must NOT re-trigger a backfill');
+
+		// Explicit false is the durable spelling of the legacy JS-mode omission, not a mode change.
+		const optedOut = reload(TABLE, { type: 'HNSW', M: 16, nativePlane: false });
+		assert.equal(optedOut.indexingOperation, buildOp, 'explicit nativePlane false must NOT rebuild a legacy JS index');
+		assert.equal(findDescriptor(optedOut, 'vector').indexed.nativePlane, false);
 
 		// Genuine option change (M: 16 -> 32) -> rebuild.
 		const changed = reload(TABLE, { type: 'HNSW', M: 32 });

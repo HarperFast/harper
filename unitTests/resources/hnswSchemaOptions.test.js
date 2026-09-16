@@ -190,6 +190,13 @@ describe('HNSW GraphQL numeric options', () => {
 		assert.equal(Object.hasOwn(indexedOptions(tableName), 'nativePlane'), false);
 	});
 
+	it('does not default a same-call table creation from the global audit setting', async () => {
+		const tableName = 'HnswGlobalAuditCreate';
+		const index = await loadTable(tableName, '', 'type: "HNSW"');
+		assert.equal(index.postCommit, undefined);
+		assert.equal(Object.hasOwn(indexedOptions(tableName), 'nativePlane'), false);
+	});
+
 	it('falls back to the JS index for an ineligible replicated native declaration', () => {
 		const tableName = 'HnswReplicatedNativeFallback';
 		table({
@@ -198,7 +205,23 @@ describe('HNSW GraphQL numeric options', () => {
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
 		createdTables.push(tableName);
-		const Table = table({
+		let Table = table({
+			table: tableName,
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+			],
+		});
+		assert.equal(Table.indices.embedding.customIndex.postCommit, undefined);
+		assert.equal(indexedOptions(tableName).nativePlane, false);
+
+		Table.attributes.splice(
+			0,
+			Table.attributes.length,
+			...Table.attributes.filter((attribute) => attribute.name === 'id')
+		);
+		Table = table({
 			table: tableName,
 			origin: 'cluster',
 			attributes: [
@@ -289,6 +312,20 @@ describe('HNSW GraphQL numeric options', () => {
 
 			assert.equal(customIndex('HnswNativeQuotedM').nativePlaneMaxNodes, 1000);
 			assert.equal(typeof customIndex('HnswNativeQuotedM').nativePlaneMaxNodes, 'number');
+		});
+
+		it('keeps an unchanged unsupported legacy native-plane spelling loadable', async () => {
+			const tableName = 'HnswLegacyNumericNativePlane';
+			await loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlane: true');
+			const attribute = tables[tableName].attributes.find(({ name }) => name === 'embedding');
+			let descriptor = tables[tableName].dbisDB.getSync(`${tableName}/embedding`);
+			attribute.indexed.nativePlane = descriptor.indexed.nativePlane = '1';
+			tables[tableName].dbisDB.putSync(`${tableName}/embedding`, descriptor);
+
+			const index = await loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlane: 1');
+			descriptor = tables[tableName].dbisDB.getSync(`${tableName}/embedding`);
+			assert.equal(index.postCommit, true);
+			assert.equal(descriptor.indexed.nativePlane, '1');
 		});
 
 		it('keeps omitted native geometry defaults and auto-scaling flags unchanged', async () => {

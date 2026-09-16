@@ -2726,7 +2726,9 @@ and legacy string values retain their historical truthiness until an explicit de
 the mode and rebuilds the index. A replicated new attribute uses native mode only when the receiving
 node is independently audited and eligible, because the plane is node-local derived state. Set
 `HNSW_NO_NATIVE_DEFAULT=1` to keep newly omitted declarations on JS during rollout; it does not
-disable an explicit or already persisted native index.
+disable an explicit or already persisted native index. Set it before creating indexes when a
+rollback must remain cheap: an older release sees an omitted declaration against the persisted
+`nativePlane: true` decision as a mode change and rebuilds that index back to JS.
 
 The default accepts the native implementation's existing operational contract: maintenance is
 post-commit; writes receive retryable 503 responses after derived-index lag exceeds 30 seconds;

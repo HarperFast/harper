@@ -257,7 +257,9 @@ export class HierarchicalNavigableSmallWorld {
 		'optimizeRouting',
 		'filterExpansion',
 		'nativePlaneMaxNodes',
+		'maxLagMilliseconds',
 	]);
+	static truthyStructuralOptions = new Set(['nativePlane']);
 	static normalizeOptionValue(name: string, value: unknown): unknown {
 		if (name !== 'optimizeRouting') return value;
 		if (value === true || value === 'true') return 1;
