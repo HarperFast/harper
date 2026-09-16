@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 import {
 	FullTextDerivedIndexBackend,
+	HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES,
 	HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES,
 	type FullTextDerivedIndexBackendOptions,
 	type FullTextDerivedIndexEngine,
@@ -160,7 +161,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 export async function createNativeFullTextDerivedIndexBackend(
 	options: NativeFullTextDerivedIndexBackendOptions
 ): Promise<FullTextDerivedIndexBackend> {
-	const maxQueuedBytes = options.maxQueuedBytes ?? 64 * 1024 * 1024;
+	const maxQueuedBytes = options.maxQueuedBytes ?? HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES;
 	if (options.limits.maxBatchBytes > maxQueuedBytes)
 		throw new RangeError('Full-text maxBatchBytes must not exceed the backend maxQueuedBytes');
 	const lifecycle = new NativeFullTextDerivedIndexLifecycle({ ...options, indexId: options.id });
