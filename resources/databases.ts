@@ -2438,6 +2438,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		cacheControl,
 		isolatedApplicationOwner,
 	} = tableDefinition;
+	const auditExplicitlyEnabled = audit === true;
+	const auditExplicitlyDisabled = audit === false;
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	// Reject reserved names here too, not only at the operations API: a database
 	// is also created by schema authoring — a `schema.graphql` `@table(database:)`
@@ -2470,18 +2472,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
-	if (
-		attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) &&
-		audit !== true &&
-		// An explicit false must fail here even for an already-audited Table. Nothing clears the
-		// static, so the runtime would stay attached while the descriptor persists audit: false,
-		// and the next process start would fail catalog load on the derived-index attach.
-		(audit === false || Table?.audit !== true)
-	) {
-		throw new ClientError(
-			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using nativePlane because its transaction log is the derived-index recovery source`
-		);
-	}
 	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
 
@@ -2492,6 +2482,32 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			attribute.indexed = true;
 		} else attribute.attribute = attribute.name;
 		if (attribute.expiresAt) attribute.indexed = true;
+		if (attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane != null) {
+			try {
+				attribute.indexed.nativePlane = CUSTOM_INDEXES.HNSW.normalizeNativePlaneDeclaration(
+					attribute.indexed.nativePlane
+				);
+			} catch (error) {
+				if (origin !== 'cluster') throw error;
+			}
+		}
+	}
+	if (
+		origin !== 'cluster' &&
+		attributes.some((attribute) => {
+			if (attribute.indexed?.type !== 'HNSW') return false;
+			if (attribute.indexed.nativePlane != null) return Boolean(attribute.indexed.nativePlane);
+			const existingAttribute = Table?.attributes.find(
+				(existing: any) => existing.name === attribute.name && existing.indexed?.type === 'HNSW'
+			);
+			return Boolean(existingAttribute?.indexed.nativePlane);
+		}) &&
+		!auditExplicitlyEnabled &&
+		(auditExplicitlyDisabled || Table?.audit !== true)
+	) {
+		throw new ClientError(
+			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
+		);
 	}
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
@@ -2760,6 +2776,56 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					if (indexDbi) indicesToRemove.push(indexDbi);
 				}
 			}
+		}
+		let persistedPrimaryAttribute = attributesDbi.getSync(tableName + '/');
+		if (!persistedPrimaryAttribute) {
+			for (const { value } of attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })) {
+				if (value?.isPrimaryKey) {
+					persistedPrimaryAttribute = value;
+					break;
+				}
+			}
+		}
+		const auditEnabledForNativeDefault =
+			auditExplicitlyEnabled || (!auditExplicitlyDisabled && persistedPrimaryAttribute?.audit === true);
+		for (const attribute of attributes) {
+			const indexed = attribute.indexed;
+			if (!indexed || typeof indexed !== 'object' || indexed.type !== 'HNSW') continue;
+			const descriptor = attributesDbi.getSync(tableName + '/' + (attribute.name || ''));
+			const existingHnsw = descriptor?.indexed?.type === 'HNSW';
+			if (indexed.nativePlane == null) {
+				if (existingHnsw) {
+					if (Object.hasOwn(descriptor.indexed, 'nativePlane')) {
+						indexed.nativePlane = descriptor.indexed.nativePlane;
+					}
+				} else if (
+					origin !== 'cluster' &&
+					auditEnabledForNativeDefault &&
+					CUSTOM_INDEXES.HNSW.canDefaultToNativePlane(rootStore, indexed)
+				) {
+					indexed.nativePlane = true;
+				}
+			} else if (origin === 'cluster' && !existingHnsw && indexed.nativePlane) {
+				let canRunNative = false;
+				try {
+					canRunNative = auditEnabledForNativeDefault && CUSTOM_INDEXES.HNSW.canRunNativePlane(rootStore, indexed);
+				} catch {}
+				if (!canRunNative) {
+					logger.warn(
+						`Using the JS HNSW index for replicated attribute ${databaseName}.${tableName}.${attribute.name} because this node does not satisfy the nativePlane requirements`
+					);
+					indexed.nativePlane = false;
+				}
+			}
+		}
+		if (
+			attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) &&
+			!auditExplicitlyEnabled &&
+			(auditExplicitlyDisabled || Table.audit !== true)
+		) {
+			throw new ClientError(
+				`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
+			);
 		}
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed

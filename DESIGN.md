@@ -2710,11 +2710,29 @@ flowchart TD
 
 ## Native HNSW plane: a file-primary mmap graph on the derived-index runtime (`resources/indexes/HierarchicalNavigableSmallWorld.ts`, `resources/indexes/hnswDerivedIndex.ts`, `resources/indexes/hnswPlaneBinding.ts`)
 
-`@indexed(type: "HNSW", nativePlane: true)` replaces the RocksDB graph with a memory-mapped
-fixed-slot file owned by the native package `@harperfast/hnsw` (Rust, napi-rs, exact-pinned optional
+For a new locally declared HNSW index, Harper uses the native plane by default when the table's
+primary descriptor already stores `audit: true` (or the same declaration explicitly enables it),
+the native binding loads, RocksDB is in use, and the index has compatible geometry. An explicit
+`nativePlane: false` selects the JS graph. The native plane replaces the RocksDB graph with a
+memory-mapped fixed-slot file owned by `@harperfast/hnsw` (Rust, napi-rs, exact-pinned optional
 dependency; crate at HarperFast/hnsw). The file **is the index**: graph nodes, adjacency, the entry
 point, the id allocator and the freelist exist only there. RocksDB keeps the primary records, the
-`pk ↔ nodeId` mappings and the one durable replay cursor. Ordinary HNSW indexes are untouched.
+`pk ↔ nodeId` mappings and the one durable replay cursor.
+
+The decision belongs to the durable index-creation boundary, not `openIndex()` or the HNSW
+constructor: those are also catalog-reload paths. An existing descriptor is therefore authoritative
+when a later declaration omits `nativePlane`; legacy descriptors with no field stay on the JS graph,
+and legacy string values retain their historical truthiness until an explicit declaration changes
+the mode and rebuilds the index. A replicated new attribute uses native mode only when the receiving
+node is independently audited and eligible, because the plane is node-local derived state. Set
+`HNSW_NO_NATIVE_DEFAULT=1` to keep newly omitted declarations on JS during rollout; it does not
+disable an explicit or already persisted native index.
+
+The default accepts the native implementation's existing operational contract: maintenance is
+post-commit; writes receive retryable 503 responses after derived-index lag exceeds 30 seconds;
+per-query distance overrides are rejected; the default capacity is 16M nodes; and adding the index
+to a populated table keeps searches unavailable for the rebuild, which can take hours at large
+sizes. `nativePlane: false` is the durable per-index opt-out.
 
 Why the whole search loop is native and not just the distance kernel: at 5M nodes / ef 512, ~85% of
 a warm JS visit is object bookkeeping (candidate heap, visited `Set`, property access, GC), the int8
@@ -2811,14 +2829,14 @@ replaced the file cannot take out the replacement. Writer backpressure is the ru
 unique-key load above native insert throughput and then rebuilding at that same throughput cannot
 converge.
 
-### What `nativePlane: true` requires, and what it does not promise
+### What native-plane mode requires, and what it does not promise
 
-| requirement                                                                                                                                                                                     | enforcement                                                                                                                                           |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Explicit `audit: true` on the table — the transaction log is the recovery source, and a vector-index option must not silently widen the audit-readable surface by inheriting the global setting | `ClientError` from `table()` and `attachDerivedIndexes()`; enabling logs once that the audit API retains full record history for the retention window |
-| RocksDB; `M=16`, `efConstruction=200`, `mL=1/ln(16)`, `optimizeRouting=0.5`, int8 cosine (the package's standalone `insert` fixes this geometry)                                                | `ClientError` at index construction — never a silent rebuild under native defaults                                                                    |
-| `@harperfast/hnsw` loads on the platform                                                                                                                                                        | absence is 503, not degraded: there is no JS graph to fall back to                                                                                    |
-| The log retains entries back to the cursor                                                                                                                                                      | a cursor the log cannot resolve rebuilds from records; 503 for the rebuild's duration                                                                 |
+| requirement                                                                                                                                                                                                                                  | enforcement                                                                                                                                                                                                                      |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A primary descriptor with `audit: true`, or an explicit `audit: true` in the same local declaration — the transaction log is the recovery source, and the default must not widen the audit-readable surface by inheriting the global setting | The automatic default checks durable/explicit audit; explicit native mode is checked by `table()` and `attachDerivedIndexes()`; enabling logs warns once that the audit API retains full record history for the retention window |
+| RocksDB; `M=16`, `efConstruction=200`, `mL=1/ln(16)`, `optimizeRouting=0.5`, int8 cosine (the package's standalone `insert` fixes this geometry)                                                                                             | `ClientError` at index construction — never a silent rebuild under native defaults                                                                                                                                               |
+| `@harperfast/hnsw` loads on the platform                                                                                                                                                                                                     | absence is 503, not degraded: there is no JS graph to fall back to                                                                                                                                                               |
+| The log retains entries back to the cursor                                                                                                                                                                                                   | a cursor the log cannot resolve rebuilds from records; 503 for the rebuild's duration                                                                                                                                            |
 
 Not promised: a single total order across concurrent CRDT/source-resolution arrivals (both delivery
 and replay re-read the authoritative record, so the index converges on what the primary store

@@ -1,7 +1,9 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
-const { resetDatabases, tables } = require('#src/resources/databases');
+const { resetDatabases, table, tables } = require('#src/resources/databases');
+const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
+const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { ClientError } = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
@@ -13,6 +15,11 @@ function customIndex(tableName) {
 
 function indexedOptions(tableName) {
 	return tables[tableName].attributes.find((attribute) => attribute.name === 'embedding').indexed;
+}
+
+async function closeDerivedRuntime(Table) {
+	await Table.derivedIndexRuntime?.close();
+	Table.derivedIndexRuntime = undefined;
 }
 
 async function loadTable(tableName, tableArguments, indexArguments) {
@@ -107,8 +114,139 @@ describe('HNSW GraphQL numeric options', () => {
 		}
 	});
 
+	it('normalizes native-plane declaration booleans and rejects ambiguous values', async () => {
+		for (const [tableName, tableArguments, option] of [
+			['HnswBooleanNativeOptOut', '(audit: true)', 'nativePlane: false'],
+			['HnswQuotedNativeOptOut', '', 'nativePlane: "false"'],
+		]) {
+			const index = await loadTable(tableName, tableArguments, `type: "HNSW", ${option}`);
+			assert.equal(index.postCommit, undefined);
+			assert.equal(indexedOptions(tableName).nativePlane, false);
+		}
+
+		for (const [tableName, option] of [
+			['HnswNumericNativeOption', 'nativePlane: 1'],
+			['HnswQuotedZeroNativeOption', 'nativePlane: "0"'],
+		]) {
+			await assert.rejects(
+				loadTable(tableName, '(audit: true)', `type: "HNSW", ${option}`),
+				(error) => error instanceof ClientError && error.message === 'nativePlane must be true or false'
+			);
+		}
+	});
+
+	it('preserves legacy native-plane descriptor meanings until an explicit change', async () => {
+		const omittedTable = 'HnswLegacyOmittedNativePlane';
+		await loadTable(omittedTable, '(audit: true)', 'type: "HNSW", nativePlane: false');
+		let descriptor = tables[omittedTable].dbisDB.getSync(`${omittedTable}/embedding`);
+		delete descriptor.indexed.nativePlane;
+		tables[omittedTable].dbisDB.putSync(`${omittedTable}/embedding`, descriptor);
+		resetDatabases();
+		await loadTable(omittedTable, '(audit: true)', 'type: "HNSW"');
+		descriptor = tables[omittedTable].dbisDB.getSync(`${omittedTable}/embedding`);
+		assert.equal(customIndex(omittedTable).postCommit, undefined);
+		assert.equal(Object.hasOwn(descriptor.indexed, 'nativePlane'), false);
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+		const stringTable = 'HnswLegacyStringFalseNativePlane';
+		await loadTable(stringTable, '(audit: true)', 'type: "HNSW", nativePlane: true');
+		descriptor = tables[stringTable].dbisDB.getSync(`${stringTable}/embedding`);
+		descriptor.indexed.nativePlane = 'false';
+		tables[stringTable].dbisDB.putSync(`${stringTable}/embedding`, descriptor);
+		const legacyIndex = new HierarchicalNavigableSmallWorld(tables[stringTable].indices.embedding, descriptor.indexed);
+		assert.equal(legacyIndex.postCommit, true, 'legacy string false was historically native');
+		await closeDerivedRuntime(tables[stringTable]);
+		await loadTable(stringTable, '(audit: true)', 'type: "HNSW", nativePlane: "false"');
+		descriptor = tables[stringTable].dbisDB.getSync(`${stringTable}/embedding`);
+		assert.equal(customIndex(stringTable).postCommit, undefined);
+		assert.equal(descriptor.indexed.nativePlane, false);
+	});
+
+	it('does not default from an effective audit setting that is absent on disk', () => {
+		const tableName = 'HnswEffectiveAuditOnly';
+		let Table = table({
+			table: tableName,
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'embedding', type: 'Array' },
+			],
+		});
+		createdTables.push(tableName);
+		const primary = Table.dbisDB.getSync(`${tableName}/`);
+		delete primary.audit;
+		Table.dbisDB.putSync(`${tableName}/`, primary);
+		resetDatabases();
+		Table = tables[tableName];
+		Table.audit = true;
+		Table = table({
+			table: tableName,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'embedding', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+		assert.equal(Table.indices.embedding.customIndex.postCommit, undefined);
+		assert.equal(Object.hasOwn(indexedOptions(tableName), 'nativePlane'), false);
+	});
+
+	it('falls back to the JS index for an ineligible replicated native declaration', () => {
+		const tableName = 'HnswReplicatedNativeFallback';
+		table({
+			table: tableName,
+			audit: false,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		createdTables.push(tableName);
+		const Table = table({
+			table: tableName,
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+			],
+		});
+		assert.equal(Table.indices.embedding.customIndex.postCommit, undefined);
+		assert.equal(indexedOptions(tableName).nativePlane, false);
+	});
+
 	describe('native plane geometry', () => {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
+
+		it('defaults only when the native binding is available and persists that decision', async () => {
+			const tableName = 'HnswNativeDefaultEnabled';
+			const index = await loadTable(tableName, '(audit: true)', 'type: "HNSW", distance: "cosine"');
+			if (!getPlaneBinding()) {
+				assert.equal(index.postCommit, undefined);
+				assert.equal(Object.hasOwn(indexedOptions(tableName), 'nativePlane'), false);
+				return;
+			}
+			assert.equal(index.postCommit, true);
+			assert.equal(indexedOptions(tableName).nativePlane, true);
+
+			await closeDerivedRuntime(tables[tableName]);
+			resetDatabases();
+			assert.equal(customIndex(tableName).postCommit, true);
+			assert.equal(indexedOptions(tableName).nativePlane, true);
+		});
+
+		it('leaves incompatible and kill-switched new indexes in JS mode', async function () {
+			const incompatible = await loadTable('HnswNativeDefaultIncompatible', '(audit: true)', 'type: "HNSW", M: 12');
+			assert.equal(incompatible.postCommit, undefined);
+			assert.equal(Object.hasOwn(indexedOptions('HnswNativeDefaultIncompatible'), 'nativePlane'), false);
+
+			if (!getPlaneBinding()) return;
+			const previous = process.env.HNSW_NO_NATIVE_DEFAULT;
+			process.env.HNSW_NO_NATIVE_DEFAULT = 'true';
+			try {
+				const disabled = await loadTable('HnswNativeDefaultDisabled', '(audit: true)', 'type: "HNSW"');
+				assert.equal(disabled.postCommit, undefined);
+				assert.equal(Object.hasOwn(indexedOptions('HnswNativeDefaultDisabled'), 'nativePlane'), false);
+			} finally {
+				if (previous === undefined) delete process.env.HNSW_NO_NATIVE_DEFAULT;
+				else process.env.HNSW_NO_NATIVE_DEFAULT = previous;
+			}
+		});
 
 		it('accepts correct quoted or unquoted explicit values', async () => {
 			const nativeML = 1 / Math.log(16);
@@ -177,7 +315,8 @@ describe('HNSW GraphQL numeric options', () => {
 				),
 				(error) =>
 					error instanceof ClientError &&
-					error.message === 'nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5'
+					error.message ===
+						'nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5; set nativePlane: false to use the JS index'
 			);
 		});
 	});

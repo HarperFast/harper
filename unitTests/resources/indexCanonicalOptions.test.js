@@ -66,6 +66,7 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		// Numeric HNSW zero representations are equivalent; non-numeric options retain truthiness distinctions.
 		assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: '0' }, { type: 'HNSW', optimizeRouting: 0 }), true);
 		assert.equal(sameStructure({ type: 'HNSW', nativePlane: '0' }, { type: 'HNSW', nativePlane: 0 }), false);
+		assert.equal(sameStructure({ type: 'HNSW', nativePlane: 'false' }, { type: 'HNSW', nativePlane: false }), false);
 		for (const value of [true, 'true', 1, '1'])
 			assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: value }, { type: 'HNSW', optimizeRouting: 1 }), true);
 		for (const value of [false, 'false', 0, '0'])
