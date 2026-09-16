@@ -79,5 +79,14 @@ describe('durableFile', function () {
 		it('propagates a failure that is not a platform limitation', function () {
 			assert.throws(() => fsyncDirectory(join(tempDir, 'no-such-directory')), { code: 'ENOENT' });
 		});
+
+		it('tolerates a platform that rejects the flush rather than the open', function () {
+			// Windows opens a directory happily and fails the fsync with EPERM; a durable write must not
+			// throw there, so both limbs are tolerated
+			const target = join(tempDir, 'state.json');
+			writeFileDurably(target, 'written', 'state.tmp');
+			removeFileDurably(target);
+			assert.ok(!existsSync(target));
+		});
 	});
 });

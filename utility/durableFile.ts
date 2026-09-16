@@ -17,21 +17,27 @@ import { dirname, join } from 'node:path';
  *   now names it.
  */
 
+/** Codes that mean "this platform does not support flushing a directory", not "the write failed". */
+const DIRECTORY_FSYNC_UNSUPPORTED = new Set(['EPERM', 'EISDIR', 'ENOTSUP', 'EINVAL']);
+
 /**
- * fsync a directory so a create/unlink of an entry within it is durable. Best-effort: Windows (and
- * some filesystems) reject opening a directory for fsync with EPERM/EISDIR/ENOTSUP — the durability
- * flush is a POSIX nicety, so treat those as a no-op rather than failing the caller.
+ * fsync a directory so a create/unlink of an entry within it is durable. Best-effort: the flush is a
+ * POSIX nicety, and Windows (and some filesystems) reject it — at the open on some, and at the fsync
+ * on others, where opening a directory succeeds and only the flush fails. Both have to be tolerated,
+ * or every durable write throws there.
  */
 export function fsyncDirectory(directory: string): void {
 	let directoryFd: number;
 	try {
 		directoryFd = openSync(directory, 'r');
 	} catch (error: any) {
-		if (error.code === 'EPERM' || error.code === 'EISDIR' || error.code === 'ENOTSUP') return;
+		if (DIRECTORY_FSYNC_UNSUPPORTED.has(error?.code)) return;
 		throw error;
 	}
 	try {
 		fsyncSync(directoryFd);
+	} catch (error: any) {
+		if (!DIRECTORY_FSYNC_UNSUPPORTED.has(error?.code)) throw error;
 	} finally {
 		closeSync(directoryFd);
 	}
