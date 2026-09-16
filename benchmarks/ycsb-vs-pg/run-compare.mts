@@ -95,6 +95,8 @@ async function cpuBusyTicks(): Promise<number> {
  */
 const cpuFlag = (name: string): string | undefined =>
 	process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+/** Back Harper's plaintext HTTP port with uWebSockets.js instead of Node's http server (#914). */
+const USE_UWS = process.argv.includes('--uws');
 const SERVER_CPUS = cpuFlag('serverCpus');
 const DRIVER_CPUS = cpuFlag('driverCpus');
 /**
@@ -127,7 +129,14 @@ async function withHarper<T>(
 			analytics: { aggregatePeriod: -1 },
 			logging: { level: 'warn' },
 		},
-		env: { HARPER_STORAGE_ENGINE: options.engine },
+		env: {
+			HARPER_STORAGE_ENGINE: options.engine,
+			...(USE_UWS ? { HARPER_UWS_HTTP: '1' } : {}),
+			// Record-cache size sweep; unset uses weak-lru-cache's 32768-entry default.
+			...(process.env.HARPER_RECORD_CACHE_SIZE
+				? { HARPER_RECORD_CACHE_SIZE: process.env.HARPER_RECORD_CACHE_SIZE }
+				: {}),
+		},
 		startupTimeoutMs: options.startupTimeoutMs,
 	});
 	try {
@@ -382,6 +391,23 @@ function printComparison(results: TargetResult[]): void {
 	}
 
 	out.push('');
+	out.push('peak resident memory (MiB) held by the server, split by component');
+	out.push('-'.repeat(width));
+	for (const r of results) {
+		for (const wl of r.workloads) {
+			const parts = Object.entries(wl.resources.memoryBytes ?? {})
+				.filter(([, v]) => v > 0)
+				.map(([k, v]) => `${k} ${(v / 1048576).toFixed(0)}`)
+				.join('  ');
+			out.push(
+				`  ${`${r.target}/${wl.name}`.padEnd(20)} total ${((wl.resources.totalMemoryBytes ?? 0) / 1048576)
+					.toFixed(0)
+					.padStart(7)}   ${parts}`
+			);
+		}
+	}
+
+	out.push('');
 	out.push('server CPU-seconds per workload, split by component');
 	out.push('-'.repeat(width));
 	for (const r of results) {
@@ -472,7 +498,9 @@ async function main(): Promise<void> {
 			throw new Error(`unknown target "${target}" (expected ${ALL_TARGETS.join(', ')})`);
 	}
 	const shards = Number(shardsArg ?? 4);
-	const options = parseOptions(argv.filter((a) => !/^--(targets|shards|serverCpus|driverCpus|clock[A-Za-z]+)=/.test(a)));
+	const options = parseOptions(
+		argv.filter((a) => a !== '--uws' && !/^--(targets|shards|serverCpus|driverCpus|clock[A-Za-z]+)=/.test(a))
+	);
 
 	const { base } = await prepareDataDirs();
 	console.log(`Data directories under ${base} (real disk, single filesystem)`);
