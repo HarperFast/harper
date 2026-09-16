@@ -2556,6 +2556,7 @@ interface DerivedIndexBackend {
 	flush(reason: 'age' | 'threshold' | 'shutdown'): void | Promise<void>; // barrier request
 	shutdown(ownerEpoch: bigint): void | Promise<void>; // quiescence: nothing further applies or publishes for the epoch
 	onStateChange(wake: (change?: 'changed' | 'accepted-work-lost' | 'failed') => void): () => void;
+	getUnindexableRecords?(): number; // backend-local records omitted from the derived index
 	reset?(ownerEpoch: bigint): void | Promise<void>; // destroy state and cursor; first durable action invalidates the cursor
 }
 type DerivedIndexBatch = {
@@ -2575,7 +2576,8 @@ type DerivedIndexMutation = {
 };
 ```
 
-There is one contract; only `reset` is optional. What an ownership handoff has to fence is work
+There is one contract; only the metrics hook `getUnindexableRecords` and recovery hook `reset` are
+optional. What an ownership handoff has to fence is work
 that survives a method return — a queued apply, a barrier that completes later, a cursor that
 trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
 handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
@@ -2606,8 +2608,8 @@ the cursor while the earlier state stayed indexed. An oversized transaction is d
 chunks with `through` withheld until the chunk that contains its `endTxn`; nothing marks such a
 chunk because a backend can do nothing with the distinction, and query-visible atomicity of one
 transaction across chunks is not promised. `bytes` is an estimate from stored record sizes (or the
-log entry size), never a serialization; `maxChunkRecords` is the hard bound. All bounds are settable
-per registration.
+log entry size) plus the canonical key bytes charged for every mutation, never a serialization;
+`maxChunkRecords` is the hard bound. All bounds are settable per registration.
 
 ### Durability cadence
 

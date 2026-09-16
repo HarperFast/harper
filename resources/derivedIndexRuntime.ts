@@ -1765,7 +1765,7 @@ class DerivedIndexRunner {
 		for (const [tableId] of this.#registration.projections) {
 			for (const record of this.#scanRecords!(tableId)) {
 				if (this.#addScanRecord(chunk, tableId, record)) indexed++;
-				// Filtered entries (tombstones, symbol keys) count against the turn too: a long run of them
+				// Filtered entries (tombstones, non-record keys) count against the turn too: a long run of them
 				// must yield without delivering an empty chunk.
 				if (
 					chunk.batch.records.length >= options.maxChunkRecords ||
