@@ -11,6 +11,9 @@ const { waitFor } = require('../waitFor.js');
 // might want to enable an iteration with NATS being assigned as a source
 describe('CRUD operations with the Resource API', () => {
 	let CRUDTable, CRUDRelatedTable;
+	const PUBLISHED_MESSAGE_BYTES = 2048;
+	const FLUSH_RACE_BYTES = 987654;
+	let publishIteration = 0;
 
 	before(async function () {
 		setupTestDBPath();
@@ -21,7 +24,7 @@ describe('CRUD operations with the Resource API', () => {
 			relationship: { from: 'relatedId' },
 			definition: {},
 		};
-		analytics.analyticsDelay = 50; // flush analytics windows quickly so the assertions below don't wait a second
+		analytics.analyticsDelay = 50; // let's make this fast
 		analytics.setAnalyticsEnabled(true);
 		CRUDTable = table({
 			table: 'CRUDTable',
@@ -118,17 +121,11 @@ describe('CRUD operations with the Resource API', () => {
 		});
 		registerTests();
 	});
-	// The publish's own byte counts have to be distinguishable from every other CRUDTable write in
-	// this file (all under 100 bytes): a record id is stamped when the window is flushed, not when
-	// it closed, so a window that predates a test's `start` can still be returned to it.
-	const PUBLISHED_MESSAGE = 'A published message'.padEnd(2048, '.');
-	const PUBLISHED_MESSAGE_MIN_BYTES = 1024;
-	// A stored analytics record reports the MEAN of its aggregation window. The window is short here,
-	// but its flush is an unref'd timer: a loaded runner delays it past the writes of the next test,
-	// and one unrelated small write — a delete records 1 byte — then drags a correctly recorded large
-	// write under the threshold. What these assertions mean is "one operation recorded more than N
-	// bytes", which is the window's largest single value; the percentile distribution always carries
-	// it because the percentiles run to the 100th.
+	// A stored record reports the MEAN of its aggregation window, which a preceding test's small
+	// writes (a delete records 1 byte) can drag under the threshold when the window's unref'd flush
+	// timer slips. These assertions mean "one operation recorded more than N bytes": the window's
+	// largest single value, which the percentile distribution always carries because it runs to the
+	// 100th percentile.
 	function largestRecordedValue(metric) {
 		if (!Array.isArray(metric?.distribution)) return undefined;
 		let largest = -Infinity;
@@ -139,8 +136,6 @@ describe('CRUD operations with the Resource API', () => {
 		return largest === -Infinity ? undefined : largest;
 	}
 	it('reads the largest single write from a distribution rather than the window mean', function () {
-		// The record CI stored for the red `publishes and subscribes` run on main at f154c3876: the
-		// publish's own 23-byte write sharing a window with the two 1-byte deletes before it.
 		const diluted = { mean: 8.333333333333334, count: 3, distribution: [{ value: 1, count: 2 }, 23] };
 		assert(!(diluted.mean > 20));
 		assert.equal(largestRecordedValue(diluted), 23);
@@ -148,6 +143,18 @@ describe('CRUD operations with the Resource API', () => {
 		assert.equal(largestRecordedValue({ distribution: [44, { value: 78, count: 65 }, 79] }), 79);
 		assert.equal(largestRecordedValue({ distribution: [] }), undefined);
 		assert.equal(largestRecordedValue({ mean: 12 }), undefined);
+	});
+	it('keeps an analytics sample recorded while its window is being flushed', async function () {
+		const start = Date.now();
+		let sentinelRecorded = false;
+		analytics.addAnalyticsListener((metrics) => {
+			if (sentinelRecorded || !metrics.some((entry) => entry?.metric === 'db-write' && entry?.path === 'CRUDTable'))
+				return;
+			sentinelRecorded = true;
+			analytics.recordAction(FLUSH_RACE_BYTES, 'db-write', 'CRUDTable', null);
+		});
+		analytics.recordAction(64, 'db-write', 'CRUDTable', null);
+		await waitForAnalyticsMetrics(['db-write'], start, FLUSH_RACE_BYTES - 1, 5000);
 	});
 	async function waitForAnalyticsMetrics(metricNames, start, minBytes, timeout) {
 		const observed = [];
@@ -168,8 +175,9 @@ describe('CRUD operations with the Resource API', () => {
 							observed.push(`${entry.metric} max ${largest} (count ${entry.count}, mean ${entry.mean})`);
 							if (largest > minBytes) recorded.add(entry.metric);
 						}
+						if (metricNames.every((name) => recorded.has(name))) return true;
 					}
-					return metricNames.every((name) => recorded.has(name)) || undefined;
+					return undefined;
 				},
 				{ timeout, message: `${metricNames.join(' and ')} byte counts over ${minBytes} were recorded in analytics` }
 			);
@@ -247,13 +255,18 @@ describe('CRUD operations with the Resource API', () => {
 			subscription.on('data', (message) => {
 				messages.push(message);
 			});
+			// Each registerTests() run publishes a larger payload than the one before it. A record's id
+			// is stamped when its window is flushed rather than when it closed, so an earlier run's
+			// window can still be returned to this one; requiring more bytes than that run could have
+			// written is what ties the assertion below to this run's publish.
+			const payloadBytes = PUBLISHED_MESSAGE_BYTES * ++publishIteration;
 			await CRUDTable.publish('pubsub', {
 				id: 'pubsub',
-				name: PUBLISHED_MESSAGE,
+				name: 'A published message'.padEnd(payloadBytes, '.'),
 			});
 			await waitFor(() => messages.length >= 1);
 			assert.equal(messages.length, 1);
-			await waitForAnalyticsMetrics(['db-write', 'db-message'], start, PUBLISHED_MESSAGE_MIN_BYTES, 5000);
+			await waitForAnalyticsMetrics(['db-write', 'db-message'], start, payloadBytes, 5000);
 		});
 		it('create with auto-id', async function () {
 			let created = await CRUDTable.create({ relatedId: 1, name: 'constructed with auto-id' });

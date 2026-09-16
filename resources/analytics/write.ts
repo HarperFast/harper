@@ -157,6 +157,11 @@ function sendAnalytics() {
 	analyticsStart ||= performance.now();
 	sendAnalyticsTimeout = setTimeout(async () => {
 		sendAnalyticsTimeout = null;
+		// Close the window before summarizing it. The loop below yields between actions, and an action
+		// recorded in one of those turns would otherwise be folded into an entry that has already been
+		// reported, then dropped with the rest of the map when the window ends.
+		const reportingActions = activeActions;
+		activeActions = new Map();
 		const period = performance.now() - analyticsStart;
 		analyticsStart = 0;
 		const metrics = [];
@@ -166,7 +171,7 @@ function sendAnalytics() {
 			threadId,
 			metrics,
 		};
-		for (const [_name, action] of activeActions) {
+		for (const [_name, action] of reportingActions) {
 			if (action.values) {
 				const values = action.values.subarray(0, (action.values as any).index);
 				values.sort();
@@ -239,7 +244,6 @@ function sendAnalytics() {
 		for (const listener of analyticsListeners) {
 			listener(metrics);
 		}
-		activeActions = new Map();
 		if (parentPort)
 			parentPort.postMessage({
 				type: ANALYTICS_REPORT_TYPE,
