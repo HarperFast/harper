@@ -202,7 +202,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				this.#durableCursor = undefined;
 			}
 		}
-		return cloneCursor(this.#durableCursor);
+		return this.#durableCursor;
 	}
 
 	getUnindexableRecords(): number {

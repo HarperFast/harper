@@ -96,7 +96,7 @@ export interface DerivedIndexBackendHost {
 	getReadiness(): DerivedIndexReadiness;
 }
 
-/** A transient backend-state read failure that should release ownership and retry without rebuilding. */
+/** A transient first-read failure during owner acquisition; release ownership and retry without rebuilding. */
 export class DerivedIndexBackendRetryError extends Error {
 	constructor(message: string, cause?: unknown) {
 		super(message, cause === undefined ? undefined : { cause });
