@@ -38,6 +38,21 @@ function l2(a: Float32Array, b: Float32Array): number {
 	return sum;
 }
 
+function cosine(a: Float32Array, b: Float32Array): number {
+	let dot = 0;
+	let ma = 0;
+	let mb = 0;
+	for (let i = 0; i < a.length; i++) {
+		dot += a[i] * b[i];
+		ma += a[i] * a[i];
+		mb += b[i] * b[i];
+	}
+	return 1 - dot / (Math.sqrt(ma) * Math.sqrt(mb) || 1);
+}
+
+const METRICS = { euclidean: l2, cosine };
+export type Metric = keyof typeof METRICS;
+
 /**
  * Exact k nearest neighbours by brute force, cached to disk.
  *
@@ -45,10 +60,16 @@ function l2(a: Float32Array, b: Float32Array): number {
  * its own; using the shipped file on a subset would silently score against neighbours that are
  * not in the index.
  */
-export function groundTruth(base: Float32Array[], queries: Float32Array[], k: number): number[][] {
-	const cache = join(DATA_DIR, `gt-${base.length}-${queries.length}-${k}.json`);
+export function groundTruth(
+	base: Float32Array[],
+	queries: Float32Array[],
+	k: number,
+	metric: Metric = 'euclidean'
+): number[][] {
+	const cache = join(DATA_DIR, `gt-${metric}-${base.length}-${queries.length}-${k}.json`);
 	if (existsSync(cache)) return JSON.parse(readFileSync(cache, 'utf8'));
 
+	const distance = METRICS[metric];
 	const started = Date.now();
 	const result: number[][] = [];
 	for (const q of queries) {
@@ -56,7 +77,7 @@ export function groundTruth(base: Float32Array[], queries: Float32Array[], k: nu
 		const best: { i: number; d: number }[] = [];
 		let worst = Infinity;
 		for (let i = 0; i < base.length; i++) {
-			const d = l2(q, base[i]);
+			const d = distance(q, base[i]);
 			if (best.length < k || d < worst) {
 				best.push({ i, d });
 				best.sort((x, y) => x.d - y.d);

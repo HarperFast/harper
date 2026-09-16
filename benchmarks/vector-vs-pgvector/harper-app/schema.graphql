@@ -1,9 +1,18 @@
-# SIFT vector table. The embedding is HNSW-indexed with euclidean distance to match the
-# corpus (SIFT descriptors are compared under L2) and pgvector's vector_l2_ops index.
+# SIFT vector table, cosine distance.
 #
-# M and efConstruction are set explicitly rather than left to defaults so both systems build
-# structurally comparable graphs — pgvector defaults to ef_construction 64, Harper to 100.
-type items @table @export {
+# Cosine rather than SIFT's native L2 because the native HNSW plane stores int8 bins and computes
+# asymmetric cosine only; euclidean silently falls back to the JS index. Ground truth is
+# recomputed under cosine to match, so recall stays meaningful — it is simply not comparable to
+# published L2 SIFT recall figures.
+#
+# M/efConstruction/mL/optimizeRouting are deliberately NOT set: the native plane requires exactly
+# M=16, efConstruction=200, mL=1/ln(16), optimizeRouting=0.5, and rejects any explicit value that
+# differs. Directive arguments arrive as strings, so `M: "16"` fails that identity check against
+# the number 16 — omitting them lets the defaults (which already match) apply. pgvector is built
+# with the same m=16 / ef_construction=200.
+#
+# audit is required: the transaction log is the derived index's recovery source.
+type items @table(audit: true) @export {
 	id: ID @primaryKey
-	embedding: [Float] @indexed(type: "HNSW", distance: "euclidean", M: "16", efConstruction: "100")
+	embedding: [Float] @indexed(type: "HNSW", distance: "cosine", nativePlane: "true")
 }

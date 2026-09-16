@@ -1,0 +1,6 @@
+# Same index without nativePlane, for the native-vs-JS comparison. Swapped in by --jsPlane.
+# efConstruction is pinned to the 200 the native plane would use, so the two are comparable.
+type items @table(audit: true) @export {
+	id: ID @primaryKey
+	embedding: [Float] @indexed(type: "HNSW", distance: "cosine", efConstruction: "200")
+}

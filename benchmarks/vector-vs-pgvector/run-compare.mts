@@ -15,8 +15,9 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { mkdir } from 'node:fs/promises';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createHarperContext, setupHarperWithFixture, teardownHarper } from '@harperfast/integration-testing';
-import { readFvecs, groundTruth, recallAt, DATA_DIR } from './dataset.mts';
+import { readFvecs, groundTruth, recallAt, DATA_DIR, type Metric } from './dataset.mts';
 import { runQueries, percentile } from './queryDriver.mts';
 import { sampleResources, diffResources, pinProcesses, ClockProbe, parseCpuList, onlineCpus } from './resources.mts';
 
@@ -37,6 +38,13 @@ const { values } = parseArgs({
 		targets: { type: 'string', default: 'harper,pgvector' },
 		serverCpus: { type: 'string', default: '0-5' },
 		uws: { type: 'boolean', default: true },
+		// Cosine because the native HNSW plane is cosine-only; euclidean falls back to the JS index.
+		distance: { type: 'string', default: 'cosine' },
+		// Swap in the non-nativePlane schema, to separate the native module from the JS index.
+		jsPlane: { type: 'boolean', default: false },
+		// The native plane is maintained post-commit, so a query issued straight after the load can
+		// hit a plane that is still catching up. Wait before measuring.
+		settleMs: { type: 'string', default: '300000' },
 	},
 });
 const RECORDS = Number(values.records);
@@ -46,6 +54,7 @@ const EFS = (values.efs as string).split(',').map(Number);
 const CONCURRENCY = Number(values.concurrency);
 const REPEATS = Number(values.repeats);
 const THREADS = Number(values.threads);
+const METRIC = values.distance as Metric;
 
 interface SweepPoint {
 	ef: number;
@@ -84,10 +93,23 @@ async function waitFor(url: string, deadlineMs: number, init?: RequestInit): Pro
 
 async function withHarper<T>(body: (url: string, targets: any) => Promise<T>): Promise<T> {
 	const ctx = createHarperContext('vector-vs-pgvector');
-	console.log(`\n=== harper: starting (threads=${THREADS}, uws=${values.uws}) ===`);
+	// The two schemas differ only in nativePlane; swapping the file is simpler than templating
+	// the app directory and keeps both variants readable in the repo.
+	const appDir = join(import.meta.dirname, 'harper-app');
+	const active = join(appDir, 'schema.graphql');
+	const jsVariant = join(appDir, 'schema-js.graphql.disabled');
+	const savedNative = readFileSync(active, 'utf8');
+	if (values.jsPlane) writeFileSync(active, readFileSync(jsVariant, 'utf8'));
+	console.log(
+		`\n=== harper: starting (threads=${THREADS}, uws=${values.uws}, plane=${values.jsPlane ? 'js' : 'native'}) ===`
+	);
 	await setupHarperWithFixture(ctx, join(import.meta.dirname, 'harper-app'), {
 		harperBinPath: join(REPO_ROOT, 'dist', 'bin', 'harper.js'),
-		config: { threads: { count: THREADS }, analytics: { aggregatePeriod: -1 }, logging: { level: 'warn' } },
+		config: {
+			threads: { count: THREADS },
+			analytics: { aggregatePeriod: -1 },
+			logging: { level: 'warn', stdStreams: true },
+		},
 		env: {
 			HARPER_STORAGE_ENGINE: 'rocksdb',
 			...(values.uws ? { HARPER_UWS_HTTP: '1' } : {}),
@@ -102,6 +124,7 @@ async function withHarper<T>(body: (url: string, targets: any) => Promise<T>): P
 		return await body(ctx.harper.httpURL, { processes: { harper: 'dist/bin/harper.js' }, cgroups: {} });
 	} finally {
 		await teardownHarper(ctx);
+		if (values.jsPlane) writeFileSync(active, savedNative);
 	}
 }
 
@@ -135,7 +158,7 @@ function harperSender(url: string, ef: number) {
 			method: 'QUERY',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
-				sort: { attribute: 'embedding', target: Array.from(vector), distance: 'euclidean', ef },
+				sort: { attribute: 'embedding', target: Array.from(vector), distance: METRIC, ef },
 				limit: k,
 				select: ['id'],
 			}),
@@ -161,7 +184,22 @@ function pgSql(sql: string, stdinAfter?: string): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(
 			'docker',
-			[...COMPOSE, 'exec', '-T', 'postgres', 'psql', '-p', '5434', '-U', 'vec', '-d', 'vec', '-v', 'ON_ERROR_STOP=1', '-q'],
+			[
+				...COMPOSE,
+				'exec',
+				'-T',
+				'postgres',
+				'psql',
+				'-p',
+				'5434',
+				'-U',
+				'vec',
+				'-d',
+				'vec',
+				'-v',
+				'ON_ERROR_STOP=1',
+				'-q',
+			],
 			{ stdio: ['pipe', 'pipe', 'pipe'] }
 		);
 		let out = '';
@@ -169,7 +207,9 @@ function pgSql(sql: string, stdinAfter?: string): Promise<string> {
 		child.stdout.on('data', (c) => (out += c));
 		child.stderr.on('data', (c) => (err += c));
 		child.on('error', reject);
-		child.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(`psql exited ${code}: ${err.slice(0, 500)}`))));
+		child.on('close', (code) =>
+			code === 0 ? resolve(out) : reject(new Error(`psql exited ${code}: ${err.slice(0, 500)}`))
+		);
 		child.stdin.write(sql);
 		if (stdinAfter) child.stdin.write(stdinAfter);
 		child.stdin.end();
@@ -186,7 +226,19 @@ async function startPgvector(): Promise<void> {
 		try {
 			// TCP, not the unix socket: the image runs a socket-only temporary server during initdb,
 			// and probing that would race its shutdown.
-			await exec('docker', [...COMPOSE, 'exec', '-T', 'postgres', 'pg_isready', '-h', '127.0.0.1', '-p', '5434', '-U', 'vec']);
+			await exec('docker', [
+				...COMPOSE,
+				'exec',
+				'-T',
+				'postgres',
+				'pg_isready',
+				'-h',
+				'127.0.0.1',
+				'-p',
+				'5434',
+				'-U',
+				'vec',
+			]);
 			break;
 		} catch {
 			await delay(500);
@@ -197,12 +249,26 @@ async function startPgvector(): Promise<void> {
 
 let pgApp: ReturnType<typeof spawn> | undefined;
 async function startPgApp(efSearch: number): Promise<void> {
-	pgApp?.kill('SIGKILL');
+	// Wait for the previous instance to actually exit before rebinding. ef_search is applied at
+	// connection time, so each sweep point restarts the app, and racing the old listener's socket
+	// produces EADDRINUSE on every worker.
+	if (pgApp) {
+		const exited = new Promise<void>((resolve) => pgApp!.once('exit', () => resolve()));
+		pgApp.kill('SIGKILL');
+		await Promise.race([exited, delay(10_000)]);
+		pgApp = undefined;
+	}
 	pgApp = spawn(process.execPath, [PG_APP], {
 		stdio: ['ignore', 'inherit', 'inherit'],
-		env: { ...process.env, VEC_WORKERS: String(THREADS), VEC_EF_SEARCH: String(efSearch) },
+		env: {
+			...process.env,
+			VEC_WORKERS: String(THREADS),
+			VEC_EF_SEARCH: String(efSearch),
+			// Must match the index operator class chosen from METRIC, or the planner ignores the index.
+			VEC_OP: METRIC === 'cosine' ? '<=>' : '<->',
+		},
 	});
-    await waitFor('http://127.0.0.1:9941/health', 60_000);
+	await waitFor('http://127.0.0.1:9941/health', 60_000);
 	if (values.serverCpus) await pinProcesses('pgvector-app/server.mjs', values.serverCpus);
 }
 
@@ -229,10 +295,26 @@ async function loadPgvector(base: Float32Array[], dims: number): Promise<{ load:
 	const load = (Date.now() - loadStart) / 1000;
 
 	const indexStart = Date.now();
+	// Operator class must match the metric, and ef_construction matches the value the native
+	// plane pins Harper to, so both build comparable graphs.
+	const opclass = METRIC === 'cosine' ? 'vector_cosine_ops' : 'vector_l2_ops';
 	await pgSql(
-		`SET maintenance_work_mem='2GB';\nCREATE INDEX ON items USING hnsw (embedding vector_l2_ops) WITH (m=16, ef_construction=100);\n`
+		`SET maintenance_work_mem='2GB';\nCREATE INDEX ON items USING hnsw (embedding ${opclass}) WITH (m=16, ef_construction=200);\n`
 	);
 	const index = (Date.now() - indexStart) / 1000;
+
+	// Assert the planner actually uses the index. An operator that does not match the index's
+	// operator class silently degrades to a sequential scan, which reports near-100% recall at a
+	// fraction of the throughput — an exact search that looks like a catastrophically slow ANN
+	// one. Cheaper to fail loudly here than to publish that number.
+	const op = METRIC === 'cosine' ? '<=>' : '<->';
+	const plan = await pgSql(
+		`EXPLAIN SELECT id FROM items ORDER BY embedding ${op} '[${base[0].join(',')}]' LIMIT 10;\n`
+	);
+	if (!/Index Scan/i.test(plan)) {
+		throw new Error(`pgvector is not using the HNSW index (operator ${op} vs ${opclass}):\n${plan}`);
+	}
+	console.log(`  [pgvector] planner confirmed index scan with ${op}`);
 	return { load, index };
 }
 
@@ -298,8 +380,8 @@ async function main(): Promise<void> {
 	const { dims, vectors: base } = readFvecs(join(DATA_DIR, 'sift_base.fvecs'), RECORDS);
 	const { vectors: allQueries } = readFvecs(join(DATA_DIR, 'sift_query.fvecs'), N_QUERIES);
 	const queries = allQueries.slice(0, N_QUERIES);
-	console.log(`  ${base.length} base x ${dims} dims, ${queries.length} queries, k=${K}`);
-	const truth = groundTruth(base, queries, K);
+	console.log(`  ${base.length} base x ${dims} dims, ${queries.length} queries, k=${K}, metric=${METRIC}`);
+	const truth = groundTruth(base, queries, K, METRIC);
 
 	const targets = (values.targets as string).split(',');
 	const results: TargetResult[] = [];
@@ -308,18 +390,46 @@ async function main(): Promise<void> {
 		const r = await withHarper(async (url, resourceTargets) => {
 			const loadSeconds = await loadHarper(url, base);
 			console.log(`  [harper] load+index ${loadSeconds.toFixed(1)}s (${(base.length / loadSeconds).toFixed(0)} vec/s)`);
-			const mem = await sampleResources(resourceTargets);
-			const sweepPoints = await sweep(
-				(ef) => harperSender(url, ef),
-				undefined,
-				queries,
-				truth,
-				resourceTargets
+			// Time-to-queryable, not time-to-written. The native plane is maintained post-commit, so
+			// a load returning says nothing about the index being usable — and nothing in the query
+			// path signals that it is still building, it just returns quietly incomplete results
+			// (measured 32% recall straight after a load, rising to 100% once it caught up).
+			//
+			// Recall does not climb monotonically: it plateaus mid-build, so a short stability
+			// window declares victory early (a 3-poll window stopped at 44.6% here). Require a full
+			// minute with no improvement before calling it built.
+			const probe = queries.slice(0, 50);
+			const probeTruth = truth.slice(0, 50);
+			const settleStart = Date.now();
+			let indexSeconds = 0;
+			let best = 0;
+			let stable = 0;
+			const STABLE_POLLS = 12; // x 5s = 60s of no improvement
+			const deadline = Date.now() + Number(values.settleMs || '900000');
+			while (Date.now() < deadline) {
+				const r = await runQueries(harperSender(url, 40), probe, K, 8, 1);
+				const recall = r.ids.reduce((sum, got, i) => sum + recallAt(got, probeTruth[i]), 0) / probe.length;
+				if (recall > best + 0.005) {
+					best = recall;
+					stable = 0;
+					console.log(
+						`    [plane] ${((Date.now() - settleStart) / 1000).toFixed(0)}s probe recall ${(recall * 100).toFixed(1)}%`
+					);
+				} else if (++stable >= STABLE_POLLS) {
+					break;
+				}
+				await delay(5000);
+			}
+			indexSeconds = (Date.now() - settleStart) / 1000 - STABLE_POLLS * 5;
+			console.log(
+				`  [harper] index queryable after a further ${indexSeconds.toFixed(1)}s (probe recall ${(best * 100).toFixed(1)}%)`
 			);
+			const mem = await sampleResources(resourceTargets);
+			const sweepPoints = await sweep((ef) => harperSender(url, ef), undefined, queries, truth, resourceTargets);
 			return {
 				target: 'harper',
 				loadSeconds,
-				indexSeconds: 0,
+				indexSeconds,
 				memoryMiB: Object.values(mem.memoryBytes ?? {}).reduce((a, b) => a + b, 0) / 1048576,
 				sweep: sweepPoints,
 			};
@@ -332,14 +442,23 @@ async function main(): Promise<void> {
 		const { load, index } = await loadPgvector(base, dims);
 		console.log(`  [pgvector] load ${load.toFixed(1)}s + index build ${index.toFixed(1)}s`);
 		await startPgApp(EFS[0]);
-		const resourceTargets = { processes: { fastify: 'pgvector-app/server.mjs' }, cgroups: {} as Record<string, string> };
+		const resourceTargets = {
+			processes: { fastify: 'pgvector-app/server.mjs' },
+			cgroups: {} as Record<string, string>,
+		};
 		const { stdout } = await exec('docker', [...COMPOSE, 'ps', '-q', 'postgres']);
 		resourceTargets.cgroups.postgres = `/sys/fs/cgroup/system.slice/docker-${stdout.trim()}.scope`;
 		if (values.serverCpus) {
 			await exec('docker', ['update', `--cpuset-cpus=${values.serverCpus}`, stdout.trim()]);
 		}
 		const mem = await sampleResources(resourceTargets);
-		const sweepPoints = await sweep((ef) => pgSender(ef), (ef) => startPgApp(ef), queries, truth, resourceTargets);
+		const sweepPoints = await sweep(
+			(ef) => pgSender(ef),
+			(ef) => startPgApp(ef),
+			queries,
+			truth,
+			resourceTargets
+		);
 		pgApp?.kill('SIGKILL');
 		await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24 }).catch(() => {});
 		results.push({
@@ -357,7 +476,9 @@ async function main(): Promise<void> {
 	for (const r of results) {
 		console.log(
 			`\n${r.target}: load ${r.loadSeconds.toFixed(1)}s` +
-				(r.indexSeconds ? ` + index ${r.indexSeconds.toFixed(1)}s = ${(r.loadSeconds + r.indexSeconds).toFixed(1)}s total` : ' (indexed on write)') +
+				(r.indexSeconds
+					? ` + index ${r.indexSeconds.toFixed(1)}s = ${(r.loadSeconds + r.indexSeconds).toFixed(1)}s total`
+					: '') +
 				`, resident ${r.memoryMiB.toFixed(0)} MiB`
 		);
 		console.log('    ef     q/s   recall@10    p50ms    p99ms   q/CPU-Gcycle');

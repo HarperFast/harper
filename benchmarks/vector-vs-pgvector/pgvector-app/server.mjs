@@ -17,7 +17,13 @@ const EF_SEARCH = Number(process.env.VEC_EF_SEARCH || 40);
 
 if (cluster.isPrimary) {
 	for (let i = 0; i < WORKERS; i++) cluster.fork();
-	cluster.on('exit', () => cluster.fork());
+	// Deliberately no refork-on-exit. In a benchmark a worker that cannot start is a result, not
+	// something to paper over: reforking turned a port still held by a previous run into an
+	// unbounded EADDRINUSE loop that ran the measurement to completion against a dead server.
+	cluster.on('exit', (worker, code, signal) => {
+		console.error(`pgvector-app worker ${worker.process.pid} exited (code ${code}, signal ${signal})`);
+		process.exit(1);
+	});
 } else {
 	const pool = new pg.Pool({
 		connectionString: PG_URL,
@@ -27,12 +33,17 @@ if (cluster.isPrimary) {
 	});
 	const app = Fastify({ logger: false });
 
+	// The ORDER BY operator must match the index's operator class or Postgres cannot use the
+	// index at all: a cosine index (vector_cosine_ops) is only usable by <=>, and pairing it with
+	// <-> silently falls back to a sequential scan — which looks like ~100% recall at ~2% of the
+	// throughput, i.e. an exact search wearing an ANN benchmark's clothes.
+	const OP = process.env.VEC_OP || '<=>';
+	const SEARCH_SQL = `SELECT id FROM items ORDER BY embedding ${OP} $1 LIMIT $2`;
+
 	app.post('/search', async (request, reply) => {
 		const { vector, k } = request.body;
-		// pgvector's literal form is '[1,2,3]'; the <-> operator is L2 distance and is what the
-		// HNSW index is built for, so the ORDER BY must use it verbatim to hit the index.
-		const literal = `[${vector.join(',')}]`;
-		const { rows } = await pool.query('SELECT id FROM items ORDER BY embedding <-> $1 LIMIT $2', [literal, k]);
+		const literal = `[${vector.join(',')}]`; // pgvector's literal form
+		const { rows } = await pool.query(SEARCH_SQL, [literal, k]);
 		return reply.send(rows.map((r) => r.id));
 	});
 
