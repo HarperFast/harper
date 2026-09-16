@@ -66,9 +66,12 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		// Numeric HNSW zero representations are equivalent; non-numeric options retain truthiness distinctions.
 		assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: '0' }, { type: 'HNSW', optimizeRouting: 0 }), true);
 		assert.equal(sameStructure({ type: 'HNSW', nativePlane: '0' }, { type: 'HNSW', nativePlane: 0 }), false);
+		for (const value of [true, 'true', 1, '1'])
+			assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: value }, { type: 'HNSW', optimizeRouting: 1 }), true);
+		for (const value of [false, 'false', 0, '0'])
+			assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: value }, { type: 'HNSW', optimizeRouting: 0 }), true);
 		assert.equal(canonicalizeIndexOptions('0'), '0');
 		assert.equal(canonicalizeIndexOptions('0.0'), '0.0');
-		// non-zero numeric strings coerce as well
 		assert.equal(sameStructure({ optimizeRouting: '0.6' }, { optimizeRouting: 0.6 }), true);
 		// the canonical form of a scalar is the scalar; whitespace-padded numerics still coerce
 		assert.equal(canonicalizeIndexOptions('16'), 16);

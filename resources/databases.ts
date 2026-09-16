@@ -3214,11 +3214,13 @@ export function canonicalizeIndexOptions(value: any, coerceZero = false): any {
 	if (value && typeof value === 'object') {
 		const canonical: Record<string, any> = {};
 		const hnswOptions = value.type === 'HNSW';
-		for (const key of Object.keys(value).sort())
+		for (const key of Object.keys(value).sort()) {
+			const optionValue = hnswOptions ? CUSTOM_INDEXES.HNSW.normalizeOptionValue(key, value[key]) : value[key];
 			canonical[key] = canonicalizeIndexOptions(
-				value[key],
+				optionValue,
 				coerceZero || (hnswOptions && CUSTOM_INDEXES.HNSW.numericOptions.has(key))
 			);
+		}
 		return canonical;
 	}
 	// Coerce numeric-looking strings ("16" -> 16) so string-vs-number representations of the same

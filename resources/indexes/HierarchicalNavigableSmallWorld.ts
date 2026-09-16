@@ -142,7 +142,7 @@ const PLANE_ATTACH_RETRY_MS = 250;
 const NOT_A_PLANE_FAILURE = Symbol('notAPlaneFailure');
 
 function numericOption(name: string, value: unknown): number | undefined {
-	if (value === undefined) return undefined;
+	if (value === undefined || value === null) return undefined;
 	if ((typeof value !== 'number' && typeof value !== 'string') || (typeof value === 'string' && value.trim() === ''))
 		throw new ClientError(`${name} must be a finite number`);
 	const numericValue = Number(value);
@@ -245,6 +245,12 @@ export class HierarchicalNavigableSmallWorld {
 		'filterExpansion',
 		'nativePlaneMaxNodes',
 	]);
+	static normalizeOptionValue(name: string, value: unknown): unknown {
+		if (name !== 'optimizeRouting') return value;
+		if (value === true || value === 'true') return 1;
+		if (value === false || value === 'false') return 0;
+		return value;
+	}
 	// Index options that only affect search, not the stored graph — changing them must not trigger a
 	// reindex (databases.ts persists the new value but skips rebuilding). efConstructionSearch is the
 	// search-time candidate-list size; the build uses efConstruction/M/distance, which are structural.
@@ -317,13 +323,10 @@ export class HierarchicalNavigableSmallWorld {
 		const configuredEfConstruction = numericOption('efConstruction', options?.efConstruction);
 		const configuredEfConstructionSearch = numericOption('efConstructionSearch', options?.efConstructionSearch);
 		const configuredML = numericOption('mL', options?.mL);
-		const optimizeRouting = options?.optimizeRouting;
-		const configuredOptimizeRouting =
-			optimizeRouting === true || optimizeRouting === 'true'
-				? 1
-				: optimizeRouting === false || optimizeRouting === 'false'
-					? 0
-					: numericOption('optimizeRouting', optimizeRouting);
+		const configuredOptimizeRouting = numericOption(
+			'optimizeRouting',
+			HierarchicalNavigableSmallWorld.normalizeOptionValue('optimizeRouting', options?.optimizeRouting)
+		);
 		const configuredFilterExpansion = numericOption('filterExpansion', options?.filterExpansion);
 		this.int8 = options?.quantization !== 'none';
 		// Respect an explicitly-configured ef (efConstruction seeds the search ef too); otherwise auto-scale both.

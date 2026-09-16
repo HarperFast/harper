@@ -57,6 +57,7 @@ describe('HNSW GraphQL numeric options', () => {
 			'',
 			'type: "HNSW", optimizeRouting: "true"'
 		);
+		const nullDefault = await loadTable('HnswNullNumericOption', '', 'type: "HNSW", M: null');
 
 		assert.equal(indexedOptions('HnswQuotedNumericOptions').M, '12');
 		assert.equal(indexedOptions('HnswUnquotedNumericOptions').M, 12);
@@ -84,6 +85,8 @@ describe('HNSW GraphQL numeric options', () => {
 		}
 		assert.equal(quotedBooleanEnabled.optimizeRouting, 1);
 		assert.equal(typeof quotedBooleanEnabled.optimizeRouting, 'number');
+		assert.equal(nullDefault.M, 16);
+		assert.equal(typeof nullDefault.M, 'number');
 
 		resetDatabases();
 		const reloaded = customIndex('HnswQuotedBooleanDisabledRoutingOption');
@@ -116,15 +119,15 @@ describe('HNSW GraphQL numeric options', () => {
 				},
 				{
 					name: 'HnswNativeQuotedEfConstruction',
-					arguments: 'type: "HNSW", distance: "cosine", nativePlane: "true", efConstruction: "200"',
+					arguments: 'type: "HNSW", distance: "cosine", nativePlane: true, efConstruction: "200"',
 				},
 				{
 					name: 'HnswNativeQuotedML',
-					arguments: `type: "HNSW", distance: "cosine", nativePlane: "true", mL: "${nativeML}"`,
+					arguments: `type: "HNSW", distance: "cosine", nativePlane: true, mL: "${nativeML}"`,
 				},
 				{
 					name: 'HnswNativeQuotedOptimizeRouting',
-					arguments: 'type: "HNSW", distance: "cosine", nativePlane: "true", optimizeRouting: "0.5"',
+					arguments: 'type: "HNSW", distance: "cosine", nativePlane: true, optimizeRouting: "0.5"',
 				},
 				{
 					name: 'HnswNativeAllQuotedGeometry',
@@ -154,7 +157,7 @@ describe('HNSW GraphQL numeric options', () => {
 			const index = await loadTable(
 				'HnswNativeDefaultGeometry',
 				'(audit: true)',
-				'type: "HNSW", distance: "cosine", nativePlane: "true"'
+				'type: "HNSW", distance: "cosine", nativePlane: true'
 			);
 
 			assert.equal(index.M, 16);
@@ -170,7 +173,7 @@ describe('HNSW GraphQL numeric options', () => {
 				loadTable(
 					'HnswNativeBadGeometry',
 					'(audit: true)',
-					'type: "HNSW", distance: "cosine", nativePlane: "true", M: "32"'
+					'type: "HNSW", distance: "cosine", nativePlane: true, M: "32"'
 				),
 				(error) =>
 					error instanceof ClientError &&
