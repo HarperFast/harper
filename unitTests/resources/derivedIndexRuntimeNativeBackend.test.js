@@ -1243,7 +1243,8 @@ describe('DerivedIndexRuntime for native backends', () => {
 						},
 					],
 					rejected: [],
-					consumedRecords: 0,
+					consumedUpserts: 0,
+					consumedDeletes: 0,
 				};
 			}
 

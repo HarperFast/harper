@@ -2716,6 +2716,154 @@ flowchart TD
     K -->|no| U[publish unavailable, release lock]
 ```
 
+### Native Fulltext backend (`resources/FullTextDerivedIndexBackend.ts`)
+
+The Fulltext backend connects this runtime to `@harperfast/fulltext/native`. Tantivy files are
+node-local derived state; Harper records and transaction logs remain authoritative. Every source
+node and replica maintains its own index. Neither Harper nor Fulltext stores terms, postings,
+segments, or indexed documents in RocksDB.
+
+```text
+Harper records and committed logs
+                |
+                v
+       DerivedIndexRuntime
+       - elects one owner
+       - resolves record state
+       - replays/rebuilds
+                |
+                v
+   FullTextDerivedIndexBackend
+   - bounds and orders work
+   - maps canonical record ids
+   - fences the owner epoch
+                |
+                v
+ @harperfast/fulltext/native
+ - owns the Tantivy writer/readers
+ - atomically publishes segments + cursor
+ - inspects and resets native state
+```
+
+There is no Harper Fulltext store protocol, `CURRENT`, `STORE.json`, generation directory, or
+RocksDB transport. Harper supplies one deterministic directory,
+`<storePath>/<sha256(storeName)>.fulltext`, and a separately hashed source generation. Documents
+use `<decimal table id>.<base64url(canonical writeKeyId bytes)>`; the runtime already produced the
+canonical key, so the backend does not reinterpret customer IDs.
+
+#### Binding and writer lifecycle
+
+Harper validates native ABI 4, mutation-batch API 2, and the `native` storage capability before
+registration. ABI 4 is the Rust/Node boundary; mutation-batch API 2 separately identifies the
+resumable JavaScript partition contract.
+
+```ts
+interface NativeFullTextModule {
+	runtimeInfo(): Promise<{
+		packageVersion: string;
+		tantivyVersion: string;
+		nativeAbiVersion: 4;
+		mutationBatchApiVersion: 2;
+		storageBackends: readonly ['native'];
+	}>;
+	inspectNativeFullTextIndex(
+		options
+	):
+		| { state: 'missing' | 'cursorless' }
+		| { state: 'checkpointed'; committedPayload: string }
+		| { state: 'incompatible'; code: string };
+	openNativeFullTextIndex(options): Promise<{
+		readonly committedPayload?: string;
+		encodeMutationBatches(
+			batch,
+			options?: { maxTotalBytes?: number; allowPartial?: boolean }
+		): {
+			batches: Array<{ bytes: Uint8Array; mutationCount: number }>;
+			rejected: Array<{ operation: 'upsert' | 'delete'; index: number; code: string }>;
+			consumedUpserts: number;
+			consumedDeletes: number;
+		};
+		apply(frame: Uint8Array): Promise<number>;
+		publish(cursor: string): Promise<void>;
+		close(options?: { rollback?: boolean }): Promise<void>;
+	}>;
+	resetNativeFullTextIndex(options): Promise<{ state: 'missing' } | { state: 'reset'; retiredPath: string }>;
+}
+```
+
+Inspection is synchronous and read-only. It supplies the replay anchor without taking Tantivy's
+single writer. The backend opens the writer only when the FIFO reaches a mutation or publication
+barrier. Cursor-only traffic can therefore advance through the queue without holding every index's
+writer. Before first use, the opened handle's `committedPayload` is reconciled with the inspected
+cursor. A mismatch rollback-closes the handle, adopts the native cursor, discards accepted work,
+and asks the runtime to replay from that exact point.
+
+#### Bounded apply and publication
+
+`deliver()` only validates ownership and admits a retained batch. Queue count is a hard bound;
+estimated source bytes are a scheduling bound and allow one oversized batch when the queue is
+empty, matching HNSW and preventing one large record from permanently stalling the index. Exact
+wire limits belong to Fulltext.
+
+In one serialized drain, the wrapper encodes FTMB frames no larger than `maxBatchBytes`. Harper
+passes its queue-byte ceiling as `maxTotalBytes` and explicitly sets `allowPartial: true`. The
+wrapper returns separate `consumedUpserts` and `consumedDeletes`; Harper applies every returned
+frame and continues with each suffix. Other callers retain Fulltext's fail-loudly default for an
+incomplete logical batch. Harper validates progress, ordering, rejection metadata, and native
+applied counts before advancing.
+
+A wrapper-rejected upsert becomes a delete for the same derived document ID so an old searchable
+value cannot survive; it is also counted as unindexable. Rejected deletes, malformed rejection
+metadata, schema mismatch, and call-level encoding failures fail the backend. Replacement deletes
+use the same bounded-prefix loop.
+
+All frames and replacements for an accepted command remain staged in one writer window. One
+`publish(cursor)` makes them searchable and durable with the cursor. A failure after any staged
+frame rollback-closes the writer and replays from the prior durable cursor; a partial logical batch
+is never published.
+
+```mermaid
+sequenceDiagram
+    participant R as DerivedIndexRuntime
+    participant B as Fulltext backend
+    participant N as Native Fulltext
+    R->>B: deliver(batch, epoch)
+    B-->>R: accepted
+    B->>N: encode/apply bounded prefixes
+    R->>B: flush(reason)
+    B->>N: publish(cursor)
+    N-->>B: segments + cursor durable/searchable
+    B-->>R: durable progress changed
+```
+
+#### Failure, shutdown, and rebuild
+
+Apply or publish failure discards later commands and performs one rollback close. The runtime is
+not told accepted work was lost until close proves native quiescence. A permanent encoder or
+protocol violation enters the shared condemnation/rebuild budget rather than a Fulltext-specific
+recovery state machine.
+
+Shutdown drains accepted work, publishes when possible, closes the writer, and resolves only after
+no command from that owner epoch can touch the index. A close that cannot prove quiescence rejects,
+so the runtime keeps the runner lock and no successor can open the same writer.
+
+Reset runs only inside the shared rebuild sequence after condemnation is durable and the prior
+epoch is quiescent. Fulltext atomically retires the active directory. Harper accepts returned
+cleanup paths only under the expected `.fulltext-retired` sibling, refuses symbolic-link roots,
+retries bounded removal, and sweeps interrupted retirements during initialization.
+
+A restart reuses compatible files and replays from the cursor embedded in the Tantivy publication.
+A new replica, restore without local files, missing/corrupt/incompatible index, or condemned
+generation rebuilds from authoritative tables before serving Fulltext queries. Ordinary Harper
+reads and writes continue unless the optional derived-index lag policy is enabled and exceeded.
+
+The focused verification covers binding capabilities, deterministic identity, inspect-without-open,
+lazy cursor reconciliation, bounded multi-prefix application, rejected-record removal, rollback,
+handoff quiescence, symlink-safe retirement, restart replay, local rebuild, and absence of derived
+storage feedback into the authoritative log. Performance qualification must measure rebuild and
+incremental throughput, publication cost, memory, disk amplification, restart recovery, and search
+latency under concurrent catalog indexing.
+
 ## Native HNSW plane: a file-primary mmap graph on the derived-index runtime (`resources/indexes/HierarchicalNavigableSmallWorld.ts`, `resources/indexes/hnswDerivedIndex.ts`, `resources/indexes/hnswPlaneBinding.ts`)
 
 `@indexed(type: "HNSW", nativePlane: true)` replaces the RocksDB graph with a memory-mapped

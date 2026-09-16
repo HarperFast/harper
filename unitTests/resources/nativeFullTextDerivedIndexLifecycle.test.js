@@ -49,6 +49,7 @@ class FakeNativeModule {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 4,
+			mutationBatchApiVersion: 2,
 			storageBackends: ['native'],
 		};
 	}
@@ -71,7 +72,8 @@ class FakeNativeModule {
 						},
 					],
 					rejected: [],
-					consumedRecords: batch.upserts.length + batch.deletes.length,
+					consumedUpserts: batch.upserts.length,
+					consumedDeletes: batch.deletes.length,
 				};
 			},
 			async apply() {
@@ -213,6 +215,22 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.strictEqual(fs.existsSync(orphanedPath), false);
 	});
 
+	it('does not follow a symbolic-link retirement root', async () => {
+		const binding = new FakeNativeModule();
+		const target = path.join(storePath, 'retired-target');
+		const marker = path.join(target, 'must-remain');
+		fs.mkdirSync(target);
+		fs.writeFileSync(marker, 'retained');
+		fs.symlinkSync(
+			target,
+			path.join(storePath, '.fulltext-retired'),
+			process.platform === 'win32' ? 'junction' : 'dir'
+		);
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await lifecycle.initialize();
+		assert.strictEqual(fs.existsSync(marker), true);
+	});
+
 	it('preloads and validates the binding before returning a backend', async () => {
 		const binding = new FakeNativeModule();
 		let loaded = 0;
@@ -239,6 +257,19 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
 			nativeAbiVersion: 3,
+			mutationBatchApiVersion: 2,
+			storageBackends: ['native'],
+		});
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
+	});
+
+	it('rejects a wrapper without resumable mutation-batch support', async () => {
+		const binding = new FakeNativeModule();
+		binding.runtimeInfo = async () => ({
+			packageVersion: 'test',
+			tantivyVersion: 'test',
+			nativeAbiVersion: 4,
 			storageBackends: ['native'],
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));

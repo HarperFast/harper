@@ -31,7 +31,7 @@ export interface FullTextDerivedIndexEngine {
 	readonly committedPayload?: string;
 	encodeMutationBatches(
 		batch: FullTextMutationBatch,
-		options?: { maxTotalBytes?: number }
+		options?: { maxTotalBytes?: number; allowPartial?: boolean }
 	): FullTextEncodedMutationBatches;
 	/** Resolves to the number of mutation commands accepted; deleting an absent document still counts. */
 	apply(batch: Uint8Array): Promise<number>;
@@ -64,7 +64,8 @@ export type FullTextEncodedMutationBatches = {
 		index: number;
 		code: 'E_INVALID_ARGUMENT' | 'E_BATCH_TOO_LARGE';
 	}>;
-	consumedRecords: number;
+	consumedUpserts: number;
+	consumedDeletes: number;
 };
 
 export type FullTextDerivedIndexBackendOptions = {
@@ -257,7 +258,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			return DERIVED_INDEX_FAILED;
 		}
 		let bytes = batch.bytes;
-		if (!Number.isSafeInteger(bytes) || bytes <= 0) {
+		if (bytes === 0 && batch.records.length === 0) bytes = 1;
+		else if (!Number.isSafeInteger(bytes) || bytes <= 0) {
 			bytes = this.#maxQueuedBytes;
 			if (!this.#invalidEstimateWarned) {
 				this.#invalidEstimateWarned = true;
@@ -379,6 +381,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			while (this.#commands.length > 0 && !this.#failed) {
 				const next = this.#commands[0];
 				if ((next.type === 'barrier' || next.batch.records.length > 0) && !(await this.#ensureEngine())) return;
+				if (this.#commands[0] !== next) continue;
 				const command = this.#commands.shift()!;
 				if (command.type === 'apply') {
 					try {
@@ -454,17 +457,24 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		let applied = 0;
 		try {
 			while (mutationCount(logical) > 0) {
-				const { encoded, consumedRecords } = this.#encodePrefix(logical);
-				for (const batch of encoded.batches) {
-					this.#hasStagedMutations = true;
-					const count = await this.#engine!.apply(batch.bytes);
-					if (count !== batch.mutationCount)
-						throw new FullTextDerivedIndexProtocolError(
-							`Full-text engine applied ${count} of ${batch.mutationCount} frame mutations`
-						);
-					applied += count;
+				const { encoded, consumedUpserts, consumedDeletes, replacement } = this.#encodePrefix(logical);
+				applied += await this.#applyEncoded(encoded);
+				let remainingReplacement = replacement;
+				while (remainingReplacement && mutationCount(remainingReplacement) > 0) {
+					const replacementEncoded = this.#encode(
+						remainingReplacement,
+						'Failed to partition full-text replacement mutations'
+					);
+					if (replacementEncoded.rejected.length > 0)
+						throw new FullTextDerivedIndexProtocolError('Full-text replacement mutations were rejected');
+					applied += await this.#applyEncoded(replacementEncoded);
+					remainingReplacement = mutationSuffix(
+						remainingReplacement,
+						replacementEncoded.consumedUpserts,
+						replacementEncoded.consumedDeletes
+					);
 				}
-				logical = mutationSuffix(logical, consumedRecords);
+				logical = mutationSuffix(logical, consumedUpserts, consumedDeletes);
 			}
 			if (applied !== command.batch.records.length)
 				throw new FullTextDerivedIndexProtocolError(
@@ -482,37 +492,67 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		return true;
 	}
 
-	#encodePrefix(logical: FullTextMutationBatch): {
-		encoded: FullTextEncodedMutationBatches;
-		consumedRecords: number;
-	} {
-		let encoded: FullTextEncodedMutationBatches;
-		try {
-			encoded = this.#engine!.encodeMutationBatches(logical, { maxTotalBytes: this.#maxQueuedBytes });
-		} catch (error) {
-			throw new FullTextDerivedIndexEncodingError('Failed to partition a full-text mutation batch', error);
+	async #applyEncoded(encoded: FullTextEncodedMutationBatches): Promise<number> {
+		let applied = 0;
+		for (const batch of encoded.batches) {
+			this.#hasStagedMutations = true;
+			const count = await this.#engine!.apply(batch.bytes);
+			if (count !== batch.mutationCount)
+				throw new FullTextDerivedIndexProtocolError(
+					`Full-text engine applied ${count} of ${batch.mutationCount} frame mutations`
+				);
+			applied += count;
 		}
-		const total = mutationCount(logical);
-		if (
-			!Number.isSafeInteger(encoded.consumedRecords) ||
-			encoded.consumedRecords <= 0 ||
-			encoded.consumedRecords > total
-		)
-			throw new FullTextDerivedIndexProtocolError('Full-text encoder returned an invalid consumed record count');
-		const prefix = mutationPrefix(logical, encoded.consumedRecords);
-		if (encoded.rejected.length === 0) return { encoded, consumedRecords: encoded.consumedRecords };
-		const replacement = this.#replaceRejectedUpserts(prefix, encoded.rejected);
-		try {
-			encoded = this.#engine!.encodeMutationBatches(replacement, { maxTotalBytes: this.#maxQueuedBytes });
-		} catch (error) {
-			throw new FullTextDerivedIndexEncodingError('Failed to partition full-text replacement mutations', error);
-		}
-		if (encoded.rejected.length > 0 || encoded.consumedRecords !== mutationCount(replacement))
-			throw new FullTextDerivedIndexProtocolError('Full-text replacement mutations were not fully encoded');
-		return { encoded, consumedRecords: mutationCount(prefix) };
+		return applied;
 	}
 
-	#replaceRejectedUpserts(
+	#encodePrefix(logical: FullTextMutationBatch): {
+		encoded: FullTextEncodedMutationBatches;
+		consumedUpserts: number;
+		consumedDeletes: number;
+		replacement?: FullTextMutationBatch;
+	} {
+		const encoded = this.#encode(logical, 'Failed to partition a full-text mutation batch');
+		if (encoded.rejected.length === 0)
+			return {
+				encoded,
+				consumedUpserts: encoded.consumedUpserts,
+				consumedDeletes: encoded.consumedDeletes,
+			};
+		const prefix = mutationPrefix(logical, encoded.consumedUpserts, encoded.consumedDeletes);
+		return {
+			encoded,
+			consumedUpserts: encoded.consumedUpserts,
+			consumedDeletes: encoded.consumedDeletes,
+			replacement: this.#rejectedUpsertDeletes(prefix, encoded.rejected),
+		};
+	}
+
+	#encode(logical: FullTextMutationBatch, message: string): FullTextEncodedMutationBatches {
+		let encoded: FullTextEncodedMutationBatches;
+		try {
+			encoded = this.#engine!.encodeMutationBatches(logical, {
+				maxTotalBytes: this.#maxQueuedBytes,
+				allowPartial: true,
+			});
+		} catch (error) {
+			throw new FullTextDerivedIndexEncodingError(message, error);
+		}
+		if (
+			!Number.isSafeInteger(encoded.consumedUpserts) ||
+			!Number.isSafeInteger(encoded.consumedDeletes) ||
+			encoded.consumedUpserts < 0 ||
+			encoded.consumedDeletes < 0 ||
+			encoded.consumedUpserts > logical.upserts.length ||
+			encoded.consumedDeletes > logical.deletes.length ||
+			(encoded.consumedUpserts < logical.upserts.length && encoded.consumedDeletes !== 0) ||
+			encoded.consumedUpserts + encoded.consumedDeletes === 0
+		)
+			throw new FullTextDerivedIndexProtocolError('Full-text encoder returned invalid consumed mutation counts');
+		return encoded;
+	}
+
+	#rejectedUpsertDeletes(
 		batch: FullTextMutationBatch,
 		rejected: FullTextEncodedMutationBatches['rejected']
 	): FullTextMutationBatch {
@@ -523,17 +563,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				(rejection.code !== 'E_INVALID_ARGUMENT' && rejection.code !== 'E_BATCH_TOO_LARGE') ||
 				!Number.isSafeInteger(rejection.index)
 			)
-				throw new FullTextDerivedIndexError('Full-text encoder rejected an immutable document ID');
+				throw new FullTextDerivedIndexProtocolError('Full-text encoder rejected an immutable document ID');
 			if (rejection.index < 0 || rejection.index >= batch.upserts.length || indexes.has(rejection.index))
-				throw new FullTextDerivedIndexError('Full-text encoder returned an invalid rejection index');
+				throw new FullTextDerivedIndexProtocolError('Full-text encoder returned an invalid rejection index');
 			indexes.add(rejection.index);
 		}
-		const deletes = [...batch.deletes];
-		const upserts = batch.upserts.filter((upsert, index) => {
-			if (!indexes.has(index)) return true;
-			deletes.push(upsert.id);
-			return false;
-		});
+		const deletes = [...indexes].map((index) => batch.upserts[index].id);
 		if (!this.#unindexableWarned) {
 			this.#unindexableWarned = true;
 			logWarning(
@@ -542,7 +577,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			);
 		}
 		this.#stagedUnindexableRecords += indexes.size;
-		return { upserts, deletes };
+		return { upserts: [], deletes };
 	}
 
 	async #publish(command: BarrierCommand): Promise<boolean> {
@@ -746,17 +781,26 @@ function mutationCount(batch: FullTextMutationBatch): number {
 	return batch.upserts.length + batch.deletes.length;
 }
 
-function mutationPrefix(batch: FullTextMutationBatch, count: number): FullTextMutationBatch {
-	const upserts = batch.upserts.slice(0, count);
+function mutationPrefix(
+	batch: FullTextMutationBatch,
+	consumedUpserts: number,
+	consumedDeletes: number
+): FullTextMutationBatch {
 	return {
-		upserts,
-		deletes: batch.deletes.slice(0, Math.max(0, count - upserts.length)),
+		upserts: batch.upserts.slice(0, consumedUpserts),
+		deletes: batch.deletes.slice(0, consumedDeletes),
 	};
 }
 
-function mutationSuffix(batch: FullTextMutationBatch, count: number): FullTextMutationBatch {
-	if (count < batch.upserts.length) return { upserts: batch.upserts.slice(count), deletes: batch.deletes };
-	return { upserts: [], deletes: batch.deletes.slice(count - batch.upserts.length) };
+function mutationSuffix(
+	batch: FullTextMutationBatch,
+	consumedUpserts: number,
+	consumedDeletes: number
+): FullTextMutationBatch {
+	return {
+		upserts: batch.upserts.slice(consumedUpserts),
+		deletes: batch.deletes.slice(consumedDeletes),
+	};
 }
 
 function logWarning(message: string, error: unknown): void {
