@@ -151,7 +151,9 @@ describe('staging a build without activating it', () => {
 						await fs.symlink(outside, path.join(candidateDirPath, 'node_modules', 'dep'), 'dir');
 					},
 				}),
-			/links outside the build/
+			// A 4xx, not the 500 a bare Error gets from the operations handler: the operator asked to stage a
+			// component that cannot be staged, and the same component still deploys immediately.
+			(error) => /links outside the build/.test(error.message) && error.statusCode === 400
 		);
 		await fs.rm(root, { recursive: true, force: true });
 		await fs.rm(outside, { recursive: true, force: true });
@@ -477,7 +479,12 @@ describe('activating a staged artifact', () => {
 			// commit rename — and the post-swap repair runs past that point and can only warn.
 			await fs.symlink(root, path.join(deploymentDir(root, 'a1'), 'web', 'escape'), 'dir');
 
-			await assert.rejects(() => activate(root, 'web', 'a1'), /links outside the build/);
+			// 409 rather than the stage path's 400: the artifact exists and is this component's, but is no
+			// longer what was certified — and rather than the 500 a bare Error would have produced.
+			await assert.rejects(
+				() => activate(root, 'web', 'a1'),
+				(error) => /links outside the build/.test(error.message) && error.statusCode === 409
+			);
 			assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n', 'the previous version is still serving');
 			assert.ok(existsSync(deploymentDir(root, 'a1')), 'and a refusal never deletes what it refused');
 			await fs.rm(root, { recursive: true, force: true });

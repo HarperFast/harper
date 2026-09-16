@@ -1393,6 +1393,14 @@ async function assertOwnedArtifactTree(
 	componentName: string,
 	action: 'stage' | 'activate' = 'stage'
 ): Promise<void> {
+	// The operator supplied a component that cannot be staged (400); or the artifact they named exists and is
+	// theirs but is no longer what was certified (409). Neither is a server fault, and both reached the
+	// operations handler as a bare 500 until a live run showed what that looks like to a caller.
+	const refuse = (message: string) => {
+		const error: Error & { statusCode?: number } = new Error(message);
+		error.statusCode = action === 'stage' ? 400 : 409;
+		return error;
+	};
 	const ownedRoot = await realpath(candidateDirPath);
 	// The loader repairs the component's OWN `node_modules/harper`, not a copy nested inside a dependency,
 	// so only that one path is exempt. Matching the name at any depth would let `dep/node_modules/harper`
@@ -1413,7 +1421,7 @@ async function assertOwnedArtifactTree(
 			// it will resolve to by the time somebody activates it.
 			const target = await realpath(entryPath).catch(() => undefined);
 			if (target === undefined || (target !== ownedRoot && !target.startsWith(ownedRoot + sep))) {
-				throw new Error(
+				throw refuse(
 					`Cannot ${action} ${componentName}: ${entryPath} links outside the build to ${target ?? 'a missing target'}, ` +
 						`so the bytes activated later would not be the bytes this build certified`
 				);
@@ -1426,7 +1434,7 @@ async function assertOwnedArtifactTree(
 			// deploys immediately but cannot be staged until its links are relative.
 			const linkTarget = await readlink(entryPath);
 			if (isAbsolute(linkTarget)) {
-				throw new Error(
+				throw refuse(
 					`Cannot ${action} ${componentName}: ${entryPath} names its target inside the build by absolute path ` +
 						`(${linkTarget}), which activation moves. Re-link it relatively — on Windows, npm ` +
 						`writes absolute junctions for 'file:' and workspace dependencies, so those have to be relative ` +
@@ -1444,7 +1452,7 @@ async function assertOwnedArtifactTree(
 				if (segment === '' || segment === '.') continue;
 				prefix = await realpath(join(prefix, segment)).catch(() => join(prefix, segment));
 				if (prefix !== ownedRoot && !prefix.startsWith(ownedRoot + sep)) {
-					throw new Error(
+					throw refuse(
 						`Cannot ${action} ${componentName}: ${entryPath} reaches ${prefix} on its way to ${linkTarget}, ` +
 							`leaving the build — after activation moves the tree that path resolves somewhere else`
 					);
@@ -3159,10 +3167,13 @@ export async function buildCandidateApplication(
 		await rm(candidateDirPath, { recursive: true, force: true });
 		const resolved = await resolveApplicationTarball(application);
 		if (resolved.kind === 'link' && options.rejectLinkSource) {
-			throw new Error(
+			// What the operator asked for, not a server fault: the same component deploys immediately.
+			const refusal: Error & { statusCode?: number } = new Error(
 				`Cannot stage ${application.name} from ${application.packageIdentifier}: a 'file:' directory is linked ` +
 					`rather than copied, so the bytes activated later are not the bytes this build certified`
 			);
+			refusal.statusCode = 400;
+			throw refusal;
 		}
 		if (resolved.kind === 'link') {
 			// A `file:` directory becomes a symlink AT THE CANDIDATE PATH, so it is validated and swapped in
