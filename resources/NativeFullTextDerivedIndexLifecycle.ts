@@ -92,11 +92,11 @@ export class NativeFullTextDerivedIndexLifecycle {
 			const retiredRoot = join(dirname(this.#path), '.fulltext-retired');
 			if (!strictChild(retiredRoot, result.retiredPath)) {
 				logWarning(`Refused to remove invalid retired full-text path '${result.retiredPath}'`, undefined);
-				return;
+			} else {
+				await removeRetired(result.retiredPath).catch((error) =>
+					logWarning(`Could not remove retired full-text index '${result.retiredPath}'`, error)
+				);
 			}
-			await removeRetired(result.retiredPath).catch((error) =>
-				logWarning(`Could not remove retired full-text index '${result.retiredPath}'`, error)
-			);
 		}
 		await this.#reclaimRetired();
 	}
