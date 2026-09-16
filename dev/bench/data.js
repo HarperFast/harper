@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789550046959,
+  "lastUpdate": 1789550051135,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -21482,6 +21482,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 841.5,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1c312feb4d4005ffa9b46376f3961c1ade47ffcc",
+          "message": "Report replicated apply failures before consuming later events (#2630)\n\n* Report replicated apply failures before consuming later events\n\nExpose database-scoped listeners with origin log coordinates, await them at terminal apply failures and explicit drops, and preserve source continuation and retry behavior.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Preserve failure coordinates and ordering for queued and batched drops\n\nReport valueless writes before per-key queuing, inherit envelope coordinates without substituting record versions, drain concurrent notifications, and exercise real lock-release failures.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-09-16T00:11:27Z",
+          "url": "https://github.com/HarperFast/harper/commit/1c312feb4d4005ffa9b46376f3961c1ade47ffcc"
+        },
+        "date": 1789550049979,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 5614.28,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 5614.28,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 723.7,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 3134.8,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 4883.3,
             "unit": "ms"
           }
         ]
