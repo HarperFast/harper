@@ -303,6 +303,9 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 
 class FakeNativeFullTextModule {
 	constructor() {
+		this.NativeFullTextIndex = class {
+			encodeMutationBatches() {}
+		};
 		this.states = new Map();
 		this.opens = [];
 		this.resets = 0;
@@ -315,10 +318,6 @@ class FakeNativeFullTextModule {
 			nativeAbiVersion: 4,
 			storageBackends: ['native'],
 		};
-	}
-
-	encodeMutationBatch(batch) {
-		return Buffer.from(JSON.stringify(batch));
 	}
 
 	inspectNativeFullTextIndex(options) {
@@ -350,6 +349,17 @@ class FakeNativeFullTextModule {
 		}
 		return {
 			committedPayload: state.committedPayload,
+			encodeMutationBatches(batch) {
+				return {
+					batches: [
+						{
+							bytes: Buffer.from(JSON.stringify(batch)),
+							mutationCount: batch.upserts.length + batch.deletes.length,
+						},
+					],
+					rejected: [],
+				};
+			},
 			async apply(packed) {
 				const batch = JSON.parse(Buffer.from(packed).toString());
 				for (const document of batch.upserts) state.documents.set(document.id, document);

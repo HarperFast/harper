@@ -36,11 +36,13 @@ function options(storePath, binding, overrides = {}) {
 
 class FakeNativeModule {
 	constructor() {
+		this.NativeFullTextIndex = class {
+			encodeMutationBatches() {}
+		};
 		this.inspection = { state: 'missing' };
 		this.inspections = [];
 		this.opens = [];
 		this.resets = [];
-		this.encodes = [];
 	}
 
 	async runtimeInfo() {
@@ -61,6 +63,17 @@ class FakeNativeModule {
 		this.opens.push(openOptions);
 		return {
 			committedPayload: this.inspection.state === 'checkpointed' ? this.inspection.committedPayload : undefined,
+			encodeMutationBatches(batch) {
+				return {
+					batches: [
+						{
+							bytes: Buffer.from(JSON.stringify(batch)),
+							mutationCount: batch.upserts.length + batch.deletes.length,
+						},
+					],
+					rejected: [],
+				};
+			},
 			async apply() {
 				return 0;
 			},
@@ -74,11 +87,6 @@ class FakeNativeModule {
 	async resetNativeFullTextIndex(resetOptions) {
 		this.resets.push(resetOptions);
 		return this.resetResult ?? { state: 'missing' };
-	}
-
-	encodeMutationBatch(batch, maxBytes) {
-		this.encodes.push({ batch, maxBytes });
-		return Buffer.from(JSON.stringify(batch));
 	}
 }
 
@@ -163,15 +171,6 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await lifecycle.reset();
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.strictEqual(fs.existsSync(unrelatedPath), true);
-	});
-
-	it('uses the wrapper encoder and its configured batch limit', async () => {
-		const binding = new FakeNativeModule();
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
-		await lifecycle.initialize();
-		const batch = { upserts: [], deletes: ['one'] };
-		assert(lifecycle.encodeMutationBatch(batch) instanceof Uint8Array);
-		assert.deepStrictEqual(binding.encodes, [{ batch, maxBytes: limits.maxBatchBytes }]);
 	});
 
 	it('preloads and validates the binding before returning a backend', async () => {

@@ -33,7 +33,7 @@ authoritative Harper records
  - maps canonical Harper keys to document ids
  - reconciles native and cached cursors
           |
-          | packed native mutation batch
+          | exact packed native mutation frames
           v
  @harperfast/fulltext/native
  - owns the Tantivy writer and readers
@@ -66,6 +66,18 @@ binary.
 
 ```ts
 interface NativeFullTextModule {
+	NativeFullTextIndex: {
+		prototype: {
+			encodeMutationBatches(
+				batch,
+				options?
+			): {
+				batches: Array<{ bytes: Uint8Array; mutationCount: number }>;
+				rejected: Array<{ operation: 'upsert' | 'delete'; index: number; code: string }>;
+			};
+		};
+	};
+
 	runtimeInfo(): Promise<{
 		packageVersion: string;
 		tantivyVersion: string;
@@ -82,7 +94,6 @@ interface NativeFullTextModule {
 
 	openNativeFullTextIndex(options): Promise<FullTextDerivedIndexEngine>;
 	resetNativeFullTextIndex(options): Promise<{ state: 'missing' } | { state: 'reset'; retiredPath: string }>;
-	encodeMutationBatch(batch, maxBytes?): Uint8Array;
 }
 ```
 
@@ -140,10 +151,25 @@ then publishes the encoded cursor payload. Publication success updates the in-me
 and wakes the runtime. The payload is bounded, versioned JSON and rejects malformed formats,
 reserved log names, and non-positive or non-finite positions.
 
-Queue limits are independent count and estimated-byte bounds. Fulltext's packed-batch limit is
-enforced by the native encoder. A packed batch that cannot be represented fails the backend rather
-than being split or silently converted into a deletion; exact packed-byte partitioning can be added
-to the wrapper as a separate capability if production measurements require it.
+Queue limits are independent count and estimated-byte bounds. The runtime estimate includes source
+record size, canonical document-id bytes, and fixed mutation overhead; it protects scheduling but is
+not a wire-size calculation. In the drain, the opened Fulltext handle performs the exact FTMB
+encoding and greedily partitions one logical batch into frames bounded by its configured
+`maxBatchBytes`. Harper also passes its queue-byte ceiling as `maxTotalBytes`, so one encoding call
+cannot retain an unbounded set of frames.
+
+Harper applies every returned frame in order and verifies both each frame's mutation count and the
+logical batch's total count before crossing the publication barrier. The frames remain staged in one
+Tantivy writer and become durable with one `publish(cursor)` call. A failure after any frame causes
+rollback-close and replay from the previous durable cursor; Harper never publishes a partial logical
+batch.
+
+The wrapper may reject an individual upsert as invalid or too large for one frame. Harper replaces
+that upsert with a delete for the same derived document id, so a formerly indexed value cannot
+remain searchable, and records the event as unindexable. A rejected delete, duplicate or malformed
+rejection index, unknown rejection code, schema mismatch, or call-level encoding failure is a
+backend failure. Schema mismatch is deliberately call-level: configuration drift must never be
+misclassified as bad record data and converted into document removals.
 
 ## Lazy writer reconciliation
 
@@ -233,6 +259,9 @@ The focused test suites cover:
 - synchronous inspection without writer acquisition;
 - lazy writer open and inspection/open cursor reconciliation;
 - bounded delivery, cursor-only publication, and handoff close;
+- exact multi-frame application followed by one cursor publication;
+- per-record rejection replacement without treating schema drift as record data;
+- maximum-key delete chunk accounting and bounded encoded output;
 - apply failure, rollback quiescence, and replay notification;
 - native reset and constrained retired-path cleanup;
 - canonical document ids and non-text field omission;

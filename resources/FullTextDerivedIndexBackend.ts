@@ -29,6 +29,10 @@ const RESERVED_LOG_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 
 export interface FullTextDerivedIndexEngine {
 	readonly committedPayload?: string;
+	encodeMutationBatches(
+		batch: FullTextMutationBatch,
+		options?: { maxTotalBytes?: number }
+	): FullTextEncodedMutationBatches;
 	/** Resolves to the number of mutation commands accepted; deleting an absent document still counts. */
 	apply(batch: Uint8Array): Promise<number>;
 	/** Success proves the cursor payload and every preceding mutation are durably ordered together. */
@@ -52,10 +56,18 @@ export type FullTextMutationBatch = {
 	deletes: string[];
 };
 
+export type FullTextEncodedMutationBatches = {
+	batches: Array<{ bytes: Uint8Array; mutationCount: number }>;
+	rejected: Array<{
+		operation: 'upsert' | 'delete';
+		index: number;
+		code: 'E_INVALID_ARGUMENT' | 'E_BATCH_TOO_LARGE';
+	}>;
+};
+
 export type FullTextDerivedIndexBackendOptions = {
 	id: string;
 	lifecycle: FullTextDerivedIndexLifecycle;
-	encodeMutationBatch: (batch: FullTextMutationBatch) => Uint8Array;
 	maxQueuedBatches?: number;
 	maxQueuedBytes?: number;
 	maxCursorPayloadBytes?: number;
@@ -103,7 +115,6 @@ export class FullTextDerivedIndexError extends Error {
 export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	readonly id: string;
 	#lifecycle: FullTextDerivedIndexLifecycle;
-	#encodeMutationBatch: (batch: FullTextMutationBatch) => Uint8Array;
 	#maxQueuedBatches: number;
 	#maxQueuedBytes: number;
 	#maxCursorPayloadBytes: number;
@@ -116,7 +127,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
 	#durableCursor?: DerivedIndexCursor;
-	#inspected = false;
+	#inspectedEpoch?: bigint;
 	#activeEpoch?: bigint;
 	#commands: Command[] = [];
 	#retainedBatches = 0;
@@ -137,6 +148,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#failed = false;
 	#capacityDeferred = false;
 	#shutdown?: ShutdownRequest;
+	#unindexableRecords = 0;
+	#unindexableWarned = false;
 
 	constructor(options: FullTextDerivedIndexBackendOptions) {
 		if (!options.id) throw new TypeError('Full-text derived index id is required');
@@ -147,11 +160,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			typeof options.lifecycle.reset !== 'function'
 		)
 			throw new TypeError('Full-text derived index lifecycle must implement inspect(), open(), and reset()');
-		if (typeof options.encodeMutationBatch !== 'function')
-			throw new TypeError('Full-text derived index batch encoder is required');
 		this.id = options.id;
 		this.#lifecycle = options.lifecycle;
-		this.#encodeMutationBatch = options.encodeMutationBatch;
 		this.#maxQueuedBatches = positiveInteger(
 			options.maxQueuedBatches ?? DEFAULT_MAX_QUEUED_BATCHES,
 			'maxQueuedBatches'
@@ -190,14 +200,16 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	getDurableCursor(): DerivedIndexCursor | undefined {
-		if (!this.#inspected) {
+		this.#assertAttached();
+		const ownerEpoch = this.#host!.getReadiness().ownerEpoch;
+		if (this.#inspectedEpoch !== ownerEpoch) {
 			let inspection: FullTextDerivedIndexInspection;
 			try {
 				inspection = this.#lifecycle.inspect();
 			} catch (error) {
 				throw new DerivedIndexBackendRetryError('Full-text derived index state could not be inspected', error);
 			}
-			this.#inspected = true;
+			this.#inspectedEpoch = ownerEpoch;
 			if (inspection.state === 'checkpointed') {
 				try {
 					this.#durableCursor = decodeFullTextCursorPayload(inspection.committedPayload, this.#maxCursorPayloadBytes);
@@ -264,7 +276,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	shutdown(ownerEpoch: bigint): Promise<void> {
 		if (this.#shutdown?.epoch === ownerEpoch) return this.#shutdown.promise;
-		if (this.#activeEpoch !== ownerEpoch) return Promise.resolve();
+		if (this.#activeEpoch !== ownerEpoch) {
+			if (this.#inspectedEpoch === ownerEpoch) this.#inspectedEpoch = undefined;
+			return Promise.resolve();
+		}
 		this.#queueBarrier(ownerEpoch, 'shutdown');
 		let resolve: () => void;
 		let reject: (error: unknown) => void;
@@ -293,7 +308,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#failed = false;
 		await this.#lifecycle.reset();
 		this.#durableCursor = undefined;
-		this.#inspected = true;
+		this.#inspectedEpoch = ownerEpoch;
 		this.#assertSharedEpoch(ownerEpoch);
 		this.#activeEpoch = ownerEpoch;
 		this.#resetQueueState();
@@ -309,6 +324,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	#queueBarrier(epoch: bigint, reason: DerivedIndexFlushReason): void {
+		if (this.#lossPendingEpoch === epoch) return;
 		const horizon = this.#lastAcceptedSequence;
 		if (horizon === 0 || horizon <= this.#lastBarrierHorizon) return;
 		const hasMutations = this.#lastMutationSequence > this.#lastBarrierHorizon;
@@ -385,8 +401,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				new FullTextDerivedIndexError('Full-text cursor changed between inspection and writer open')
 			);
 			this.#durableCursor = actual;
-			this.#inspected = true;
+			this.#inspectedEpoch = epoch;
 			this.#discardCommands();
+			this.#rewindAcceptedWork();
 			this.#notify('accepted-work-lost');
 			return false;
 		}
@@ -415,16 +432,31 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			this.#lastAppliedSequence = command.sequence;
 			return true;
 		}
-		let packed: Uint8Array;
+		let logical = toFullTextMutationRecords(command.batch.records);
+		let encoded: FullTextEncodedMutationBatches;
 		try {
-			packed = this.#encodeMutationBatch(toFullTextMutationRecords(command.batch.records));
-			if (!(packed instanceof Uint8Array)) throw new TypeError('Full-text batch encoder must return a Uint8Array');
+			const encodingOptions = { maxTotalBytes: this.#maxQueuedBytes };
+			encoded = this.#engine!.encodeMutationBatches(logical, encodingOptions);
+			if (encoded.rejected.length > 0) {
+				logical = this.#replaceRejectedUpserts(logical, encoded.rejected);
+				encoded = this.#engine!.encodeMutationBatches(logical, encodingOptions);
+				if (encoded.rejected.length > 0)
+					throw new FullTextDerivedIndexError('Full-text replacement mutations were rejected');
+			}
 		} catch (error) {
-			throw new FullTextDerivedIndexError('Failed to encode a full-text mutation batch', error);
+			throw new FullTextDerivedIndexError('Failed to partition a full-text mutation batch', error);
 		}
-		this.#hasStagedMutations = true;
+		let applied = 0;
 		try {
-			const applied = await this.#engine!.apply(packed);
+			for (const batch of encoded.batches) {
+				this.#hasStagedMutations = true;
+				const count = await this.#engine!.apply(batch.bytes);
+				if (count !== batch.mutationCount)
+					throw new FullTextDerivedIndexError(
+						`Full-text engine applied ${count} of ${batch.mutationCount} frame mutations`
+					);
+				applied += count;
+			}
 			if (applied !== command.batch.records.length)
 				throw new FullTextDerivedIndexError(
 					`Full-text engine applied ${applied} of ${command.batch.records.length} mutations`
@@ -436,6 +468,39 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertCommandEpoch(command.epoch);
 		this.#lastAppliedSequence = command.sequence;
 		return true;
+	}
+
+	#replaceRejectedUpserts(
+		batch: FullTextMutationBatch,
+		rejected: FullTextEncodedMutationBatches['rejected']
+	): FullTextMutationBatch {
+		const indexes = new Set<number>();
+		for (const rejection of rejected) {
+			if (
+				rejection.operation !== 'upsert' ||
+				(rejection.code !== 'E_INVALID_ARGUMENT' && rejection.code !== 'E_BATCH_TOO_LARGE') ||
+				!Number.isSafeInteger(rejection.index)
+			)
+				throw new FullTextDerivedIndexError('Full-text encoder rejected an immutable document ID');
+			if (rejection.index < 0 || rejection.index >= batch.upserts.length || indexes.has(rejection.index))
+				throw new FullTextDerivedIndexError('Full-text encoder returned an invalid rejection index');
+			indexes.add(rejection.index);
+		}
+		const deletes = [...batch.deletes];
+		const upserts = batch.upserts.filter((upsert, index) => {
+			if (!indexes.has(index)) return true;
+			deletes.push(upsert.id);
+			return false;
+		});
+		const unindexableRecords = (this.#unindexableRecords += indexes.size);
+		if (!this.#unindexableWarned) {
+			this.#unindexableWarned = true;
+			logWarning(
+				`Full-text derived index '${this.id}' removed ${indexes.size} records that exceed native indexing limits (${unindexableRecords} since activation)`,
+				undefined
+			);
+		}
+		return { upserts, deletes };
 	}
 
 	async #publish(command: BarrierCommand): Promise<boolean> {
@@ -455,7 +520,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#lastPublishedSequence = command.horizon;
 		this.#hasStagedMutations = false;
 		this.#durableCursor = cloneCursor(cursor);
-		this.#inspected = true;
+		this.#inspectedEpoch = command.epoch;
+		this.#unindexableWarned = false;
 		if (!this.#shutdown) this.#notify('changed');
 		return true;
 	}
@@ -475,6 +541,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				new AggregateError([cause, error])
 			);
 		}
+		this.#rewindAcceptedWork();
 		this.#assertCommandEpoch(ownerEpoch);
 		this.#hasStagedMutations = false;
 		this.#notify('accepted-work-lost');
@@ -494,7 +561,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			}
 			this.#engine = undefined;
 			this.#activeEpoch = undefined;
-			this.#inspected = false;
+			this.#inspectedEpoch = undefined;
 			this.#resetQueueState();
 			if (this.#shutdown === request) this.#shutdown = undefined;
 			request.resolve();
@@ -527,6 +594,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#lastBarrierHorizon = this.#lastPublishedSequence;
 		this.#capacityDeferred = false;
 		this.#resetCursorOnlyFlushes();
+	}
+
+	#rewindAcceptedWork(): void {
+		this.#lastAcceptedSequence = this.#lastPublishedSequence;
+		this.#lastAppliedSequence = this.#lastPublishedSequence;
+		this.#lastBarrierHorizon = this.#lastPublishedSequence;
+		this.#lastMutationSequence = Math.min(this.#lastMutationSequence, this.#lastPublishedSequence);
+		this.#lastAcceptedCursor = cloneCursor(this.#durableCursor);
+		this.#hasStagedMutations = false;
 	}
 
 	#resetQueueState(): void {
