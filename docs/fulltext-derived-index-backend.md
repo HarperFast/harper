@@ -56,7 +56,9 @@ publication. Harper never advances its replay position from delivery alone. The 
 only after `publish(payload)` succeeds.
 
 After `shutdown(ownerEpoch)` resolves, no apply or publish from that epoch can touch the native
-index. Harper keeps the shared runner lock until this quiescence proof succeeds.
+index. This includes a malformed handle returned before the backend could adopt it: the lifecycle
+retains that handle until rollback close succeeds. Harper keeps the shared runner lock until this
+quiescence proof succeeds.
 
 ## Native binding boundary
 
@@ -107,9 +109,11 @@ adding a Fulltext-specific acquisition phase to the shared runtime.
 
 `resetNativeFullTextIndex()` is called only inside Harper's existing rebuild protocol: the old
 owner is quiescent, the condemnation marker is durable, and a new owner epoch has been minted. The
-native package first makes the active path unavailable and returns any retired path for asynchronous
+native package first makes the active path unavailable and returns any retired path for
 reclamation. Harper accepts cleanup paths only beneath the expected `.fulltext-retired` sibling
-directory.
+directory, removes them with bounded filesystem retries before reset returns, and sweeps that
+directory during initialization so a crash or transient cleanup failure does not strand old index
+copies indefinitely.
 
 ## Identity and path derivation
 
@@ -210,9 +214,11 @@ applied-count violation is rollback-closed before failure is reported; it is not
 transient loss because the same native contract violation would repeat indefinitely. The existing
 runtime condemnation and rebuild budget decide whether the index is rebuilt or becomes unavailable.
 
-Inspection failures throw to the runtime and are not cached, so a later owner can retry. A completed
-inspection that reports missing, cursorless, incompatible, or a malformed payload returns no
-durable cursor and enters the normal rebuild path.
+Inspection failures throw to the runtime and are not cached, so a later owner can retry. Before the
+owner releases its lock, the runtime changes shared readiness from any prior `ready` value to
+`unknown`; queries therefore fail closed while the durable native state cannot be inspected. A
+completed inspection that reports missing, cursorless, incompatible, or a malformed payload
+returns no durable cursor and enters the normal rebuild path.
 
 ## Shutdown and rebuild
 
@@ -266,7 +272,7 @@ The focused test suites cover:
 - per-record rejection replacement without treating schema drift as record data;
 - maximum-key delete chunk accounting and bounded encoded output;
 - apply failure, rollback quiescence, and replay notification;
-- native reset and constrained retired-path cleanup;
+- invalid-handle quiescence, native reset, and restart-safe constrained retired-path cleanup;
 - canonical document ids and non-text field omission;
 - rebuild and incremental replay through a real audited Harper RocksDB table; and
 - absence of derived-storage feedback into the authoritative transaction log.

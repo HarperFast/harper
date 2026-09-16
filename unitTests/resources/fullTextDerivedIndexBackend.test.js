@@ -459,6 +459,22 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(engine.closes.length, 3);
 	});
 
+	it('holds shutdown when a lifecycle-owned invalid handle is not quiescent', async () => {
+		const source = lifecycle({ state: 'missing' }, [new Error('invalid native handle')]);
+		let quiesceError = new Error('writer still active');
+		source.quiesce = async () => {
+			if (quiesceError) throw quiesceError;
+		};
+		const { backend } = makeBackend(source);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(batch(1n, [], cursor(20)));
+		await waitFor(() => changes.includes('failed'));
+		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
+		quiesceError = undefined;
+		await backend.shutdown(1n);
+	});
+
 	it('does not reinstall a writer closed while its epoch was revoked', async () => {
 		let releaseClose;
 		const engine = new FakeEngine();
