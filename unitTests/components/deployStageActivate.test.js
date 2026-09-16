@@ -259,7 +259,11 @@ describe('claiming a deployment id', () => {
 		await writeLive(root, 'web', 'LIVE v1\n');
 		await stage(root, 'web', 'a1', 'STAGED v2\n');
 
-		await assert.rejects(() => stage(root, 'web', 'a1', 'DIFFERENT v3\n'), /already holds a completed build/);
+		// 409, not the 500 a bare Error reaches the caller as: an id that is taken is the caller's to resolve.
+		await assert.rejects(
+			() => stage(root, 'web', 'a1', 'DIFFERENT v3\n'),
+			(error) => /already holds a completed build/.test(error.message) && error.statusCode === 409
+		);
 		assert.strictEqual(
 			await fs.readFile(path.join(deploymentDir(root, 'a1'), 'web', 'index.js'), 'utf8'),
 			'STAGED v2\n',
@@ -275,7 +279,10 @@ describe('claiming a deployment id', () => {
 		await writeLive(root, 'api', 'LIVE\n');
 		await stage(root, 'api', 'a1', 'API STAGED\n');
 
-		await assert.rejects(() => stage(root, 'web', 'a1', 'WEB STAGED\n'), /already holds a build of 'api'/);
+		await assert.rejects(
+			() => stage(root, 'web', 'a1', 'WEB STAGED\n'),
+			(error) => /already holds a build of 'api'/.test(error.message) && error.statusCode === 409
+		);
 		assert.strictEqual(await fs.readFile(path.join(deploymentDir(root, 'a1'), '.component'), 'utf8'), 'api');
 		await fs.rm(root, { recursive: true, force: true });
 	});
@@ -307,7 +314,10 @@ describe('claiming a deployment id', () => {
 		await fs.mkdir(dir, { recursive: true });
 		await fs.writeFile(path.join(dir, 'payload.tgz'), 'BEING BUILT\n');
 
-		await assert.rejects(() => stage(root, 'web', 'a1', 'WEB STAGED\n'), /has not named its component yet/);
+		await assert.rejects(
+			() => stage(root, 'web', 'a1', 'WEB STAGED\n'),
+			(error) => /has not named its component yet/.test(error.message) && error.statusCode === 409
+		);
 		assert.strictEqual(
 			await fs.readFile(path.join(dir, 'payload.tgz'), 'utf8'),
 			'BEING BUILT\n',
@@ -327,7 +337,10 @@ describe('claiming a deployment id', () => {
 		const dir = deploymentDir(root, 'a1');
 		await fs.mkdir(dir, { recursive: true });
 
-		await assert.rejects(() => stage(root, 'web', 'a1', 'WEB STAGED\n'), /has not named its component yet/);
+		await assert.rejects(
+			() => stage(root, 'web', 'a1', 'WEB STAGED\n'),
+			(error) => /has not named its component yet/.test(error.message) && error.statusCode === 409
+		);
 		assert.ok(existsSync(dir), 'the in-flight claim is left alone');
 		await fs.rm(root, { recursive: true, force: true });
 	});
@@ -559,7 +572,13 @@ describe('activating a staged artifact', () => {
 				await stage(root, 'web', 'a1', 'STAGED v2\n');
 				await fs.writeFile(path.join(deploymentDir(root, 'a1'), '.artifact.json'), contents);
 
-				await assert.rejects(() => activate(root, 'web', 'a1'), expected, contents);
+				// 409 throughout: the artifact exists and is this component's, but does not describe a build this
+				// can activate. A bare Error would reach the caller as a 500.
+				await assert.rejects(
+					() => activate(root, 'web', 'a1'),
+					(error) => expected.test(error.message) && error.statusCode === 409,
+					contents
+				);
 				assert.strictEqual(await readLive(root, 'web'), 'LIVE v1\n', 'nothing is swapped on a rejected descriptor');
 				await fs.rm(root, { recursive: true, force: true });
 			}

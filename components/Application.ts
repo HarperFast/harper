@@ -1336,6 +1336,13 @@ async function readArtifactDescriptor(
 	componentName: string
 ): Promise<ArtifactDescriptor | undefined> {
 	const descriptorPath = join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE);
+	// The artifact the caller named exists and is theirs, but does not describe a build this can activate —
+	// a conflict with what is on disk, not a server fault.
+	const unusable = (message: string) => {
+		const error: Error & { statusCode?: number } = new Error(message);
+		error.statusCode = 409;
+		return error;
+	};
 	const raw = await readFile(descriptorPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
 		if (error?.code === 'ENOENT') return undefined;
 		throw error;
@@ -1345,26 +1352,26 @@ async function readArtifactDescriptor(
 	try {
 		parsed = JSON.parse(raw);
 	} catch (error) {
-		throw new Error(`Artifact descriptor ${descriptorPath} is not readable JSON: ${errorMessage(error)}`);
+		throw unusable(`Artifact descriptor ${descriptorPath} is not readable JSON: ${errorMessage(error)}`);
 	}
 	if (!parsed || typeof parsed !== 'object' || parsed.v !== ARTIFACT_DESCRIPTOR_VERSION) {
-		throw new Error(`Artifact descriptor ${descriptorPath} is version ${parsed?.v}, which this build cannot activate`);
+		throw unusable(`Artifact descriptor ${descriptorPath} is version ${parsed?.v}, which this build cannot activate`);
 	}
 	if (!isJoinableComponentName(parsed.component) || parsed.component !== componentName) {
-		throw new Error(
+		throw unusable(
 			`Artifact descriptor ${descriptorPath} names component '${parsed.component}', not '${componentName}'`
 		);
 	}
 	if (typeof parsed.installationIsOpaque !== 'boolean' || typeof parsed.isolated !== 'boolean') {
-		throw new Error(`Artifact descriptor ${descriptorPath} does not record its build's runtime decisions`);
+		throw unusable(`Artifact descriptor ${descriptorPath} does not record its build's runtime decisions`);
 	}
 	if (parsed.rootConfig !== null && (typeof parsed.rootConfig !== 'object' || Array.isArray(parsed.rootConfig))) {
-		throw new Error(`Artifact descriptor ${descriptorPath} does not record a root-config entry or its absence`);
+		throw unusable(`Artifact descriptor ${descriptorPath} does not record a root-config entry or its absence`);
 	}
 	// Admission reads one field and publication writes the other, so two authorities that disagree would
 	// admit one isolation and then publish the opposite.
 	if (parsed.rootConfig && Boolean(parsed.rootConfig.isolated) !== parsed.isolated) {
-		throw new Error(
+		throw unusable(
 			`Artifact descriptor ${descriptorPath} admits isolated=${parsed.isolated} but publishes ` +
 				`isolated=${Boolean(parsed.rootConfig.isolated)}`
 		);
@@ -1652,13 +1659,20 @@ async function ensureSecureStagingDirectory(stagingDir: string): Promise<void> {
  * this lock's to touch.
  */
 async function claimDeploymentDirectory(deploymentDirPath: string, componentName: string): Promise<void> {
+	// Every refusal below is a conflict over an id that already exists, which is the caller's to resolve by
+	// naming a different one — not a server fault, and not the 500 a bare Error reaches the caller as.
+	const taken = (message: string) => {
+		const error: Error & { statusCode?: number } = new Error(message);
+		error.statusCode = 409;
+		return error;
+	};
 	try {
 		await mkdir(deploymentDirPath, { mode: 0o700 });
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
 		const owner = await candidateComponentName(deploymentDirPath);
 		if (owner !== undefined && owner !== componentName) {
-			throw new Error(
+			throw taken(
 				`Deployment id ${basename(deploymentDirPath)} already holds a build of '${owner}'; a deployment id ` +
 					`names one artifact for its lifetime`
 			);
@@ -1673,14 +1687,14 @@ async function claimDeploymentDirectory(deploymentDirPath: string, componentName
 		if (owner === undefined) {
 			await mkdir(deploymentDirPath, { mode: 0o700 }).catch((retry: NodeJS.ErrnoException) => {
 				if (retry?.code !== 'EEXIST') throw retry;
-				throw new Error(
+				throw taken(
 					`Deployment id ${basename(deploymentDirPath)} is already claimed by a build that has not named its ` +
 						`component yet`
 				);
 			});
 		} else {
 			if (await presentOrAbsent(join(deploymentDirPath, CANDIDATE_COMPLETE_MARKER))) {
-				throw new Error(
+				throw taken(
 					`Deployment id ${basename(deploymentDirPath)} already holds a completed build of '${componentName}'; ` +
 						`deploy it with deployment_id, or deploy again to build a new one`
 				);
