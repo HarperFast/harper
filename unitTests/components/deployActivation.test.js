@@ -15,6 +15,7 @@ testUtils.preTestPrep();
 
 const {
 	activateCandidateApplication,
+	markCandidateComplete,
 	prepareApplication,
 	recoverInterruptedActivations,
 	recoverInterruptedComponentExtraction,
@@ -36,6 +37,18 @@ async function writeTree(dirPath, marker) {
 	await fs.mkdir(dirPath, { recursive: true });
 	await fs.writeFile(path.join(dirPath, 'index.js'), marker);
 	return dirPath;
+}
+
+/**
+ * A candidate tree AND its certification — the state `activateCandidateApplication` is entered in.
+ * Certification belongs to the caller now that a staged build certifies once and is activated later, so a
+ * test that swaps an uncertified tree would exercise a sequence production never produces.
+ */
+async function writeCertifiedCandidate(liveDirPath, deploymentId, marker) {
+	const candidate = candidateApplicationPath(liveDirPath, deploymentId);
+	await writeTree(candidate, marker);
+	await markCandidateComplete(liveDirPath, deploymentId, path.basename(liveDirPath));
+	return candidate;
 }
 
 /** Build the on-disk state a crash at a given boundary would leave, without running a deploy. */
@@ -124,6 +137,63 @@ describe('interrupted activation recovery', () => {
 
 		assert.strictEqual(failures.size, 1, 'the component is reported, not silently skipped');
 		assert.match(failures.get('web').message, /neither a live tree/);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('returns a STAGED artifact to dormant instead of discarding it, in that same state', async () => {
+		// Same on-disk shape as the case below — live present, candidate present, no rollback record — but
+		// the deployment carries an artifact descriptor, so it is a build somebody staged deliberately and
+		// whose payload may already have been reclaimed. Deleting it would leave nothing to activate.
+		const root = await newRoot('preb1-staged');
+		const { deploymentDir } = await stageState(root, 'web', 'd1', {
+			live: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: true,
+		});
+		await fs.writeFile(
+			path.join(deploymentDir, '.artifact.json'),
+			JSON.stringify({ v: 1, component: 'web', rootConfig: null, installationIsOpaque: false, isolated: false })
+		);
+
+		await recoverInterruptedActivations(root);
+
+		assert.strictEqual(await readLive(root, 'web'), 'LIVE\n', 'the live tree is untouched');
+		assert.ok(existsSync(path.join(deploymentDir, '.complete')), 'the artifact survives');
+		assert.strictEqual(
+			existsSync(path.join(deploymentDir, '.activation.json')),
+			false,
+			'and is dormant again, so deployment_id can still activate it'
+		);
+		await fs.rm(root, { recursive: true, force: true });
+	});
+
+	it('clears an earlier failed recovery verdict when it returns a staged artifact to dormant', async () => {
+		// Returning the artifact to dormant while a stale `.unsettled` survives returns it to a state nothing
+		// can use: every worker fails the component closed on the marker, an activation refuses the id, and
+		// the next retention pass deletes the build as a stale unsettled one.
+		const root = await newRoot('preb1-staged-unsettled');
+		const { deploymentDir } = await stageState(root, 'web', 'd1', {
+			live: 'LIVE\n',
+			candidate: 'CANDIDATE\n',
+			complete: true,
+			journal: true,
+		});
+		await fs.writeFile(
+			path.join(deploymentDir, '.artifact.json'),
+			JSON.stringify({ v: 1, component: 'web', rootConfig: null, installationIsOpaque: false, isolated: false })
+		);
+		await fs.writeFile(path.join(deploymentDir, '.unsettled'), 'an earlier pass could not settle this');
+
+		await recoverInterruptedActivations(root);
+
+		assert.ok(existsSync(path.join(deploymentDir, '.complete')), 'the artifact survives');
+		assert.strictEqual(
+			existsSync(path.join(deploymentDir, '.unsettled')),
+			false,
+			'and carries no verdict that would have it refused and then pruned'
+		);
+		assert.strictEqual(existsSync(path.join(deploymentDir, '.activation.json')), false);
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
@@ -453,7 +523,7 @@ describe('activation transaction', () => {
 	it('swaps the candidate in and clears its own records', async () => {
 		const root = await newRoot('happy');
 		await writeTree(path.join(root, 'web'), 'LIVE\n');
-		await writeTree(candidateApplicationPath(path.join(root, 'web'), 'd1'), 'CANDIDATE\n');
+		await writeCertifiedCandidate(path.join(root, 'web'), 'd1', 'CANDIDATE\n');
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
 
@@ -479,6 +549,7 @@ describe('activation transaction', () => {
 		await writeTree(live, 'LIVE\n');
 		const candidate = candidateApplicationPath(live, 'd1');
 		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
 		const vendored = path.join(candidate, 'vendor', 'probe');
 		await fs.mkdir(vendored, { recursive: true });
 		await fs.writeFile(path.join(vendored, 'index.js'), 'module.exports = 1;\n');
@@ -512,6 +583,7 @@ describe('activation transaction', () => {
 		await writeTree(live, 'LIVE\n');
 		const candidate = candidateApplicationPath(live, 'd1');
 		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
 		// A real directory that merely SHARES a prefix with the candidate path.
 		const sibling = `${candidate}-shared`;
 		await fs.mkdir(sibling, { recursive: true });
@@ -595,7 +667,7 @@ describe('activation transaction', () => {
 		const live = path.join(root, 'web');
 		await writeTree(live, 'LIVE\n');
 		const deployment = path.dirname(candidateApplicationPath(live, 'd1'));
-		await writeTree(candidateApplicationPath(live, 'd1'), 'CANDIDATE\n');
+		await writeCertifiedCandidate(live, 'd1', 'CANDIDATE\n');
 		// Pre-created, so a read-only root blocks B1's rename rather than the staging mkdir ahead of it.
 		await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
 		const app = new Application({ name: 'web' });
@@ -628,7 +700,7 @@ describe('activation transaction', () => {
 		const root = await newRoot('b2-retry');
 		const live = path.join(root, 'web');
 		const deployment = path.dirname(candidateApplicationPath(live, 'd1'));
-		await writeTree(candidateApplicationPath(live, 'd1'), 'CANDIDATE\n');
+		await writeCertifiedCandidate(live, 'd1', 'CANDIDATE\n');
 		await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
 		const app = new Application({ name: 'web' });
 		app.dirPath = live;
@@ -664,6 +736,7 @@ describe('activation transaction', () => {
 			await writeTree(live, 'LIVE\n');
 			const candidate = candidateApplicationPath(live, 'd1');
 			await writeTree(candidate, 'CANDIDATE\n');
+			await markCandidateComplete(live, 'd1', 'web');
 			const deployment = path.dirname(candidate);
 			await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
 			const app = new Application({ name: 'web' });
@@ -705,6 +778,7 @@ describe('activation transaction', () => {
 		await writeTree(live, 'LIVE\n');
 		const candidate = candidateApplicationPath(live, 'd1');
 		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
 		const deployment = path.dirname(candidate);
 		await fs.mkdir(path.join(root, ASIDE_STAGING_DIR, 'web'), { recursive: true, mode: 0o700 });
 		const app = new Application({ name: 'web' });
@@ -763,6 +837,7 @@ describe('activation transaction', () => {
 		await writeTree(live, 'LIVE\n');
 		const candidate = candidateApplicationPath(live, 'd1');
 		await writeTree(candidate, 'CANDIDATE\n');
+		await markCandidateComplete(live, 'd1', 'web');
 		const app = new Application({ name: 'web' });
 		app.dirPath = live;
 
@@ -780,7 +855,7 @@ describe('activation transaction', () => {
 
 	it('activates a first-ever deploy, where there is no previous tree to move aside', async () => {
 		const root = await newRoot('firstever');
-		await writeTree(candidateApplicationPath(path.join(root, 'web'), 'd1'), 'CANDIDATE\n');
+		await writeCertifiedCandidate(path.join(root, 'web'), 'd1', 'CANDIDATE\n');
 		const app = new Application({ name: 'web' });
 		app.dirPath = path.join(root, 'web');
 
