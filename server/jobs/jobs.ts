@@ -26,6 +26,7 @@ import bulkDeleteValidator from '../../validation/bulkDeleteValidator.ts';
 import { deleteTransactionLogsBeforeValidator } from '../../validation/transactionLogValidator.ts';
 import { handleHDBError, ClientError } from '../../utility/errors/hdbError.ts';
 import { HTTP_STATUS_CODES } from '../../utility/errors/commonErrors.ts';
+import { JOB_OWNER_ATTRIBUTES, stampJobOwner } from './jobOwnership.ts';
 
 //Promisified functions
 const pSearchByValue = search.searchByValue;
@@ -42,6 +43,7 @@ export async function handleGetJob(jsonBody: any) {
 		if (result[0].request !== undefined) delete result[0].request;
 		delete result[0]['__createdtime__'];
 		delete result[0]['__updatedtime__'];
+		for (const attribute of JOB_OWNER_ATTRIBUTES) delete result[0][attribute];
 	}
 
 	return result;
@@ -63,6 +65,7 @@ export async function handleGetJobsByStartDate(jsonBody: any) {
 				if (currRes.request !== undefined) delete currRes.request;
 				delete currRes['__createdtime__'];
 				delete currRes['__updatedtime__'];
+				for (const attribute of JOB_OWNER_ATTRIBUTES) delete currRes[attribute];
 			}
 		}
 		return result;
@@ -198,6 +201,9 @@ export async function addJob(jsonBody: any) {
 	// We save the request so that the job process can get it and run the operation.
 	// Sending the request via IPC to the job process was causing some messages to be lost under load.
 	newJob.request = jsonBody;
+	// Stamped at creation, not at IN_PROGRESS: a row that never reaches its worker is stuck in exactly
+	// the same way as one whose worker died, and only an owner makes either recoverable at boot.
+	stampJobOwner(newJob);
 
 	let insertObject = new (Insert_Object as any)(
 		hdbTerms.SYSTEM_SCHEMA_NAME,
