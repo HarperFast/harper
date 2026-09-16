@@ -1,0 +1,24 @@
+# pgvector stack for the vector comparison. Mirrors the ycsb-vs-pg compose: real disk (an fsync
+# on tmpfs is free, which would quietly favour Postgres on any write-bearing phase), host
+# networking, and tuning generous enough that the index build is not disk-bound.
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    network_mode: host
+    shm_size: 2gb
+    environment:
+      POSTGRES_USER: vec
+      POSTGRES_PASSWORD: vec
+      POSTGRES_DB: vec
+    volumes:
+      - ${VECTOR_DATA_DIR_PG:-./data}/pgdata:/var/lib/postgresql/data
+    command: >
+      postgres -p 5434
+      -c shared_buffers=4GB
+      -c effective_cache_size=16GB
+      -c maintenance_work_mem=2GB
+      -c max_parallel_maintenance_workers=6
+      -c max_parallel_workers=6
+      -c max_parallel_workers_per_gather=0
+      -c max_connections=300
+      -c max_wal_size=8GB
