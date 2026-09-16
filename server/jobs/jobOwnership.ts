@@ -26,10 +26,10 @@ const JOB_OWNER_INSTANCE_ENV = 'HARPER_JOB_OWNER_INSTANCE';
 if (isMainThread) process.env[JOB_OWNER_INSTANCE_ENV] = randomUUID();
 export const JOB_OWNER_INSTANCE_ID = process.env[JOB_OWNER_INSTANCE_ENV] ?? randomUUID();
 
-/** Internal bookkeeping stamped on every job row; stripped from `get_job` responses. */
+/** Stripped from `get_job` responses. */
 export const JOB_OWNER_ATTRIBUTES = ['owner_instance', 'owner_pid'] as const;
 
-/** A job that has neither completed nor failed, so its owning process is still responsible for it. */
+/** Neither completed nor failed, so the owning process is still responsible for it. */
 const UNFINISHED_JOB_STATUSES = [hdbTerms.JOB_STATUS_ENUM.CREATED, hdbTerms.JOB_STATUS_ENUM.IN_PROGRESS];
 
 export function stampJobOwner(job: any): void {

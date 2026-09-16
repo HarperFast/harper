@@ -21,7 +21,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
  * refusing an unknown one is the intended answer.
  */
 
-/** Tar entry name of the manifest. First entry in the archive. */
+/** First entry in the archive. */
 export const ARCHIVE_MANIFEST_ENTRY = 'harper-backup.json';
 
 /** Bumped only when the document shape changes incompatibly; a reader refuses a version above its own. */
@@ -40,14 +40,13 @@ export const SUPPORTED_ARCHIVE_CAPABILITIES: readonly string[] = [
 
 export interface BackupArchiveManifest {
 	archive_schema_version: number;
-	/** Harper release that produced the archive. Recorded for operators and logs, never gated on. */
+	/** Never gated on; the capability list is. */
 	harper_version: string;
-	/** Binding version, which is what actually fixes the engine and transaction-log formats. */
+	/** What actually fixes the engine and transaction-log formats. */
 	rocksdb_js_version: string;
 	database: string;
 	blobs: boolean;
 	blob_root_count: number;
-	/** Capability tokens a reader must support; see the module note. */
 	requires: string[];
 	/**
 	 * Names of the roles that granted access to this database, or null when the producer could not
@@ -175,9 +174,8 @@ export function serializeArchiveManifest(manifest: BackupArchiveManifest): strin
 }
 
 /**
- * A malformed manifest is an error, not a silent "unidentified": an archive carrying an unreadable
- * manifest is a different situation from one that predates manifests, and only the second is
- * eligible for the operator's provenance override.
+ * A malformed manifest is an error, not a silent "unidentified": only an archive that predates
+ * manifests is eligible for the operator's provenance override.
  */
 export function parseArchiveManifest(contents: string): BackupArchiveManifest {
 	let parsed: any;
@@ -197,7 +195,7 @@ export function parseArchiveManifest(contents: string): BackupArchiveManifest {
 	return parsed as BackupArchiveManifest;
 }
 
-/** Refuse an archive this build cannot read. Both checks fail closed on the unknown. */
+/** Both checks fail closed on the unknown. */
 export function assertArchiveRestorable(manifest: BackupArchiveManifest): void {
 	if (manifest.archive_schema_version > ARCHIVE_SCHEMA_VERSION) {
 		throw new ClientError(
@@ -214,7 +212,7 @@ export function assertArchiveRestorable(manifest: BackupArchiveManifest): void {
 	}
 }
 
-/** How an archive's provenance should be reported back to the operator. */
+/** How an archive's provenance is reported back to the operator. */
 export function describeArchiveProvenance(manifest: BackupArchiveManifest | null): Record<string, unknown> {
 	if (!manifest) return { identified: false };
 	return {

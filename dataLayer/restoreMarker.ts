@@ -86,11 +86,8 @@ export type RestoreState = 'in-progress' | 'incomplete' | 'clear';
 export type BlockedRestoreState = Exclude<RestoreState, 'clear'>;
 
 /**
- * Whether a `.restoring` marker exists for a database. Cheaper than `checkRestoreState` and, unlike
- * it, safe to call while *this* thread holds the restore lock: `checkRestoreState` would re-probe
- * the lock (which reads as held from the same thread) and report 'in-progress' rather than telling
- * a caller that a *leftover* marker is present. `dropDatabase` uses this after acquiring the lock to
- * distinguish debris from a crashed restore.
+ * Cheaper than `checkRestoreState`, and safe to call while *this* thread holds the restore lock,
+ * where `checkRestoreState` would report 'in-progress' rather than "a leftover marker is present".
  */
 export function restoreMarkerPresent(dbPath: string): boolean {
 	return existsSync(restoringMarkerPath(dbPath));
@@ -168,7 +165,15 @@ export function withRestoreExclusion<T>(dbPath: string, open: () => T, blocked: 
 		// read, and which is what every caller did before.
 		return existsSync(restoringMarkerPath(dbPath)) ? blocked('incomplete') : open();
 	}
-	if (token === 0) return blocked('in-progress');
+	// A shared acquire fails only against an exclusive holder — a restore. If the lock file does not
+	// even exist, nothing can be holding it, so the failure is the filesystem's and the fallback
+	// applies rather than reporting every database under the root as being restored.
+	if (token === 0) {
+		if (!existsSync(restoreLockPath(dbPath))) {
+			return existsSync(restoringMarkerPath(dbPath)) ? blocked('incomplete') : open();
+		}
+		return blocked('in-progress');
+	}
 	try {
 		if (existsSync(restoringMarkerPath(dbPath))) return blocked('incomplete');
 		return open();
@@ -239,8 +244,11 @@ function publishRestoringMarker(dbPath: string): void {
  */
 export function beginRestore(dbPath: string): RestoreLock {
 	const markerPath = restoringMarkerPath(dbPath);
-	const preexisting = existsSync(markerPath);
 	const lock = acquireRestoreLock(dbPath);
+	// Sampled while holding the lock, not before it: a restore that waited out an earlier one would
+	// otherwise carry the earlier run's "no marker" reading, and on its own pre-destruction failure
+	// clear the marker protecting a directory that run had already half-purged.
+	const preexisting = existsSync(markerPath);
 	try {
 		if (!preexisting || !markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
 		// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
