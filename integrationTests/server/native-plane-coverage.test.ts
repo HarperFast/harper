@@ -71,6 +71,7 @@ test(
 					limit: 10,
 				});
 			await waitFor(async () => (await request('/PlaneStatus/')).body.readiness.state === 'ready', 30_000);
+			await waitFor(async () => (await query(0)).status === 200, 30_000);
 			for (let start = 0; start < records.length; start += 500) {
 				const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
 				assert(result.status < 300, JSON.stringify(result));

@@ -63,6 +63,7 @@ describe('native derived-index query coverage', function () {
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
 		});
 		index = Product.indices.vector.customIndex;
+		assert.equal((await current()).length, 0);
 		await Product.put('initial', { vector });
 		await current();
 	});

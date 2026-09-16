@@ -2088,6 +2088,11 @@ function readCommittedPositions(
 			// An earlier uncommitted transaction can hide later completed commits behind the readable prefix.
 			const committed = stats.lastCommittedPosition;
 			const next = stats.nextLogPosition;
+			if (next.sequence === 0 && next.offset === 0) {
+				// Opening an empty iterator seeds a header-position sentinel before any file has been written.
+				positions[name] = null;
+				continue;
+			}
 			if (committed ? committed.sequence !== next.sequence || committed.offset !== next.offset : next.offset !== 0)
 				return;
 			positions[name] = committed;
