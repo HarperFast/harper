@@ -221,14 +221,17 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await lifecycle.initialize();
 		await lifecycle.reset();
 		assert.deepStrictEqual(binding.resets, [{ path: lifecycle.path, indexId: 'products-title' }]);
-		assert.deepStrictEqual(binding.reclaims, [{ path: lifecycle.path }, { path: lifecycle.path }]);
+		assert.deepStrictEqual(binding.reclaims, [
+			{ path: lifecycle.path, retiredPath: undefined },
+			{ path: lifecycle.path, retiredPath: 'wrapper-owned' },
+		]);
 	});
 
 	it('asks the wrapper to reclaim retired storage during initialization', async () => {
 		const binding = new FakeNativeModule();
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await lifecycle.initialize();
-		assert.deepStrictEqual(binding.reclaims, [{ path: lifecycle.path }]);
+		assert.deepStrictEqual(binding.reclaims, [{ path: lifecycle.path, retiredPath: undefined }]);
 	});
 
 	it('preloads and validates the binding before returning a backend', async () => {

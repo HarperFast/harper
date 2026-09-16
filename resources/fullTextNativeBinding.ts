@@ -59,7 +59,10 @@ export interface NativeFullTextModule {
 		path: string;
 		indexId: string;
 	}): Promise<{ state: 'missing' } | { state: 'reset'; retiredPath: string }>;
-	reclaimRetiredNativeFullTextIndexes(options: { path: string }): Promise<{ removed: number; failed: number }>;
+	reclaimRetiredNativeFullTextIndexes(options: {
+		path: string;
+		retiredPath?: string;
+	}): Promise<{ removed: number; failed: number }>;
 }
 
 let bindingPromise: Promise<NativeFullTextModule> | undefined;

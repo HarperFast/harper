@@ -25,6 +25,7 @@ const DEFAULT_OPEN_RETRY_MILLISECONDS = 10;
 const DEFAULT_CURSOR_ONLY_PUBLISH_AFTER_FLUSHES = 1;
 const MAX_CURSOR_ONLY_PUBLISH_AFTER_FLUSHES = 16;
 const MAX_CURSOR_ONLY_PUBLISH_DELAY_MILLISECONDS = 60_000;
+const MAX_CONSECUTIVE_WRITER_FAILURES = 2;
 const RESERVED_LOG_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 
 export interface FullTextDerivedIndexEngine {
@@ -158,6 +159,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#unindexableRecords = 0;
 	#stagedUnindexableRecords = 0;
 	#invalidEstimateWarned = false;
+	#consecutiveWriterFailures = 0;
 
 	constructor(options: FullTextDerivedIndexBackendOptions) {
 		if (!options.id) throw new TypeError('Full-text derived index id is required');
@@ -601,6 +603,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#durableCursor = cloneCursor(cursor);
 		this.#inspectedEpoch = command.epoch;
 		this.#unindexableWarned = false;
+		this.#consecutiveWriterFailures = 0;
 		if (!this.#shutdown) this.#notify('changed');
 		return true;
 	}
@@ -624,8 +627,17 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertCommandEpoch(ownerEpoch);
 		this.#hasStagedMutations = false;
 		this.#stagedUnindexableRecords = 0;
-		if (notify) this.#notify('accepted-work-lost');
-		else this.#lossPendingEpoch = undefined;
+		if (!notify) {
+			this.#lossPendingEpoch = undefined;
+			return;
+		}
+		this.#consecutiveWriterFailures++;
+		if (this.#consecutiveWriterFailures >= MAX_CONSECUTIVE_WRITER_FAILURES) {
+			this.#lossPendingEpoch = undefined;
+			this.#failAndNotify(new FullTextDerivedIndexError('Full-text writer failed repeatedly', cause));
+			return;
+		}
+		this.#notify('accepted-work-lost');
 	}
 
 	async #closeForShutdown(request: ShutdownRequest): Promise<void> {
@@ -712,6 +724,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#capacityDeferred = false;
 		this.#lossPendingEpoch = undefined;
 		this.#invalidEstimateWarned = false;
+		this.#consecutiveWriterFailures = 0;
 		this.#resetCursorOnlyFlushes();
 	}
 
