@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789543610198,
+  "lastUpdate": 1789550046959,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -17997,6 +17997,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 3799,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1c312feb4d4005ffa9b46376f3961c1ade47ffcc",
+          "message": "Report replicated apply failures before consuming later events (#2630)\n\n* Report replicated apply failures before consuming later events\n\nExpose database-scoped listeners with origin log coordinates, await them at terminal apply failures and explicit drops, and preserve source continuation and retry behavior.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Preserve failure coordinates and ordering for queued and batched drops\n\nReport valueless writes before per-key queuing, inherit envelope coordinates without substituting record versions, drain concurrent notifications, and exercise real lock-release failures.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-09-16T00:11:27Z",
+          "url": "https://github.com/HarperFast/harper/commit/1c312feb4d4005ffa9b46376f3961c1ade47ffcc"
+        },
+        "date": 1789550044800,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 25116,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 19025,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 10547,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 30765120,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 2001,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 740420,
             "unit": "ops"
           }
         ]
