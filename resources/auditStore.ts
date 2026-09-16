@@ -895,12 +895,15 @@ export const REMOTE_SEQUENCE_UPDATE = 11;
  * returned by `RocksTransactionLogStore.getSync` ahead of that record's own audit entry and make
  * `_writeUpdate`'s keyed dedup drop the holder's write.
  *
- * Only the release entry exists. Nibbles 9 and 10 briefly held `lockRequest`/`lockGrant` for the
- * Ricart–Agrawala arbitration rule that `docs/record-lock-ownership.md` replaces; that rule never
- * shipped enabled, so they were retired rather than migrated — and 9 has since been taken by
- * eviction. 10 and 13 are spare; 14/15 are the width flags.
+ * Two entries exist: the release, and the barrier — a replicated no-op a member commits on request
+ * so its own log position can serve as the §7.2 recovery fence (harper#2625). Nibbles 9 and 10
+ * briefly held `lockRequest`/`lockGrant` for the Ricart–Agrawala arbitration rule that
+ * `docs/record-lock-ownership.md` replaces; that rule never shipped enabled, so they were retired
+ * rather than migrated — and 9 has since been taken by eviction. 10 is spare; 14/15 are the width
+ * flags.
  */
 export const LOCK_RELEASE = 12;
+export const LOCK_BARRIER = 13;
 export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
 export const HAS_ORIGINATING_OPERATION = 2048;
@@ -940,6 +943,8 @@ const EVENT_TYPES = {
 	[REMOTE_SEQUENCE_UPDATE]: 'remoteSequenceUpdate',
 	lockRelease: LOCK_RELEASE | HAS_RECORD,
 	[LOCK_RELEASE]: 'lockRelease',
+	lockBarrier: LOCK_BARRIER | HAS_RECORD,
+	[LOCK_BARRIER]: 'lockBarrier',
 };
 /**
  * The LMDB audit entry states the presence of its leading 8-byte previousVersion field with that
@@ -993,7 +998,7 @@ function isDecodableAction(action: number) {
  * paths, where the common answer is false on the first comparison.
  */
 export function isLockControlType(type: unknown): boolean {
-	return type === 'lockRelease';
+	return type === 'lockRelease' || type === 'lockBarrier';
 }
 const ORIGINATING_OPERATIONS = {
 	insert: 1,

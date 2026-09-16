@@ -399,6 +399,35 @@ inbound replication streams from every reachable member to the position each hel
 before admitting. `ClusterLockTransport.establishLockFreshness()` owns this operation, prefers a
 durable release when one remains available, and coalesces concurrent recovery snapshots across keys.
 
+**The fence is a `lockBarrier` control entry (harper#2625).** Nothing else on the log can name "the
+position each held at grant time": entries are appended in commit order, not key order (rocksdb-js
+`docs/transaction-log.md`, "Reading The Transaction Log"), so any highest-key head is satisfied on a
+receiver before an earlier-keyed, later-appended entry is applied; a receiver's own received tail is
+zero after its restart while a reachable member still holds committed, undelivered writes; and a
+marker the sender emits at end of stream races `transactionBroadcast`'s `setImmediate`-notified
+queue, so a durable commit can be unobserved when it is emitted. The transport therefore asks each
+reachable member to commit one — `writeLockBarrier(database, table, nonce)` resolves to the entry's
+own log position — and drains that member's stream until it has applied that entry.
+
+> **Invariant:** a barrier entry is appended after every transaction the writing node had committed
+> when the barrier was requested, so a peer that has applied that origin's log through the barrier
+> has applied all of them.
+
+"Through the barrier" means the barrier entry itself — identified by its origin and position, and by
+the nonce the requesting transport supplied, for the restart case where an origin reissues a clock
+reading — has been applied,
+not that some entry with a key at or past that position has: log keys are not in append order. And
+"applied" is the receiver's contiguous applied-and-visible cursor for that origin, which must not
+advance across an apply failure — core's replicated apply loop logs a terminal commit failure and
+carries on to the next transaction (`resources/Table.ts`, the `beginTxn` backpressure point), so a
+barrier can be present in a receiver's log while a transaction appended before it is absent. The
+entry names no key and no token, replicates exactly as the release does (it is not `LOCAL_ONLY`;
+being replicated is its whole purpose), and the coordinator ignores it on receipt. The transport is
+also handed the wait remaining on the lock's deadline, so it can bound the drain to the lock that
+asked instead of outliving it. **A recovery marker without a barrier fails closed:** a member that
+cannot produce one, or a transport without the operation, leaves the drain with no fence, and
+`lock()` rejects with the retryable 503 below rather than admit on a weaker one.
+
 That barrier is the strongest condition available without synchronous replication, and it is
 explicitly weaker in two ways that must be documented rather than implied: an unreachable member's
 committed writes may not be visible, and a predecessor's native commit submitted before expiry can
@@ -783,7 +812,11 @@ historically a fixed five-field tuple `[key, requester, generation, homeIncarnat
 now `[1, key, requester, generation, homeIncarnation, counter, dependencies]`. The decoder accepts
 the historical tuple as unknown lineage (therefore recovery), ignores unknown future versions, and
 still requires an exact fencing-token match before any release can clear a live grant. Harper-pro
-must advertise a new mutually exclusive capability level for this wire/API contract.
+must advertise a new mutually exclusive capability level for this wire/API contract. The barrier
+entry (§7.2; nibble 13, payload `[1, nonce]`) rides the same capability: a receiver that predates it
+resolves the nibble to no entry type at all and the replication sink treats it as an unknown
+operation, so such a peer must not be sent one — and a recovery drain that reaches a member which
+cannot produce a barrier has no fence and fails closed.
 
 **Merging the substrate is itself gated:** nothing that still wires RA arbitration may be reachable
 as the new protocol.

@@ -102,13 +102,15 @@ const DELEGATED_KEY_FILTER_WORDS = 65_536;
 const NON_DISTINCTIVE_NODE_NAMES = new Set(['127.0.0.1', '::1', 'localhost', '0.0.0.0']);
 
 /**
- * The only control entry left. `lockRequest`/`lockGrant` belonged to the Ricart–Agrawala rule the
+ * The two control entries. `lockRequest`/`lockGrant` belonged to the Ricart–Agrawala rule the
  * design note replaces; they never shipped enabled, so their nibbles were retired rather than
  * migrated (`auditStore.ts`). Delegation request/grant/recall are unicast over the transport, not
- * entries — only the release stays on the replicated log, because it is what orders a handoff behind
- * the delegate's own data writes.
+ * entries — the release stays on the replicated log because it is what orders a handoff behind the
+ * delegate's own data writes, and the barrier is on it because being replicated is its whole
+ * purpose (§7.2): a member commits one on request, and its position is the point a peer must have
+ * applied that origin through before a recovery-mode successor may admit.
  */
-export type LockControlType = 'lockRelease';
+export type LockControlType = 'lockRelease' | 'lockBarrier';
 
 /**
  * The operator-agreed map a key's home is derived from. Supplied by harper-pro; core never computes
@@ -163,8 +165,8 @@ function isFencingToken(value: unknown): value is FencingToken {
 	);
 }
 
-export interface LockControlEntry {
-	type: LockControlType;
+export interface LockReleaseEntry {
+	type: 'lockRelease';
 	/** The locked record's id. Control entries carry it here, never as the audit entry's recordId. */
 	key: any;
 	/** Node that held the delegation being released. */
@@ -183,6 +185,19 @@ export interface LockControlEntry {
 	 */
 	dependencies?: LockDependencySet | null;
 }
+
+/**
+ * The §7.2 recovery fence. It names no key and no token: it is appended after every transaction the
+ * writing node had committed when it was requested, so a peer that has applied that origin's log
+ * through this entry has applied all of them. The coordinator never acts on one.
+ */
+export interface LockBarrierEntry {
+	type: 'lockBarrier';
+	/** Supplied by the requesting transport; distinguishes barriers an origin stamped identically across a restart. */
+	nonce: number;
+}
+
+export type LockControlEntry = LockReleaseEntry | LockBarrierEntry;
 
 /**
  * What a home replies to a delegation request. One shape rather than a discriminated union: the
@@ -277,12 +292,18 @@ export interface ClusterLockTransport {
 	 * participants that were made visible; it may drain additional replication peers without carrying
 	 * them in the key's lineage. Clean waits may return void. Concurrent recovery snapshots should be
 	 * coalesced.
+	 *
+	 * Recovery asks each reachable member for a `lockBarrier` entry (`writeLockBarrier`) and drains
+	 * that member's stream through the position it returns. Core races this promise against the
+	 * lock's own deadline but cannot cancel it; `deadlineMs` is the wait remaining at the call, so the
+	 * transport can bound its own work to it instead of outliving the lock that asked.
 	 */
 	establishLockFreshness(
 		database: string,
 		table: string,
 		key: any,
-		dependencies: LockDependencySet | null
+		dependencies: LockDependencySet | null,
+		deadlineMs: number
 	): Promise<LockDependencySet | void>;
 	/** Emit a control entry and return the committed entry's local origin-log position when available. */
 	writeControl?(table: string, entry: LockControlEntry): Promise<number | void> | number | void;
@@ -307,6 +328,7 @@ let controlStructures: unknown[] = [];
 let controlPackr = new Packr({ structures: controlStructures });
 
 export function encodeLockControlPayload(entry: LockControlEntry): Uint8Array {
+	if (entry.type === 'lockBarrier') return controlPackr.pack([1, entry.nonce]);
 	const [generation, homeIncarnation, counter] = entry.token;
 	if (entry.dependencies === undefined)
 		return controlPackr.pack([entry.key, entry.requester, generation, homeIncarnation, counter]);
@@ -342,14 +364,20 @@ function isEncodableKey(value: unknown): boolean {
  * the sender did not intend.
  */
 export function decodeLockControlPayload(type: unknown, value: unknown): LockControlEntry | undefined {
-	if (type !== 'lockRelease') return undefined;
+	if (type !== 'lockRelease' && type !== 'lockBarrier') return undefined;
 	let tuple: unknown;
 	try {
 		tuple = value instanceof Uint8Array ? controlPackr.unpack(value) : value;
 	} catch {
 		return undefined;
 	}
-	if (!Array.isArray(tuple) || (tuple.length !== 5 && tuple.length !== 7)) return undefined;
+	if (!Array.isArray(tuple)) return undefined;
+	if (type === 'lockBarrier') {
+		if (tuple.length !== 2 || tuple[0] !== 1) return undefined;
+		const nonce = tuple[1];
+		return typeof nonce === 'number' && Number.isFinite(nonce) ? { type: 'lockBarrier', nonce } : undefined;
+	}
+	if (tuple.length !== 5 && tuple.length !== 7) return undefined;
 	try {
 		return decodeTuple(tuple);
 	} catch {
@@ -359,7 +387,7 @@ export function decodeLockControlPayload(type: unknown, value: unknown): LockCon
 	}
 }
 
-function decodeTuple(tuple: unknown[]): LockControlEntry | undefined {
+function decodeTuple(tuple: unknown[]): LockReleaseEntry | undefined {
 	const versioned = tuple.length === 7;
 	if (versioned && tuple[0] !== 1) return undefined;
 	const offset = versioned ? 1 : 0;
@@ -373,7 +401,7 @@ function decodeTuple(tuple: unknown[]): LockControlEntry | undefined {
 		if (rawDependencies === null) dependencies = null;
 		else dependencies = normalizeDependencies(rawDependencies);
 	}
-	const entry: LockControlEntry = {
+	const entry: LockReleaseEntry = {
 		type: 'lockRelease',
 		key,
 		requester,
@@ -1683,7 +1711,7 @@ export class LockCoordinator {
 		const remaining = deadlineMono - this.#monotonic();
 		if (remaining <= 0) throw new Error('the lock wait elapsed before its freshness barrier started');
 		const established = Promise.resolve().then(() =>
-			this.transport.establishLockFreshness(this.database, this.table, key, requirement)
+			this.transport.establishLockFreshness(this.database, this.table, key, requirement, remaining)
 		);
 		const timeout = delay(remaining);
 		established.then(
@@ -1912,7 +1940,7 @@ export class LockCoordinator {
 		// Capability, not just admission: anything this delegation admitted must be unable to commit
 		// before the home is told it may re-grant.
 		this.#revokeAll(delegation);
-		const entry: LockControlEntry = {
+		const entry: LockReleaseEntry = {
 			type: 'lockRelease',
 			key: delegation.key,
 			requester: this.nodeId,
@@ -1952,7 +1980,7 @@ export class LockCoordinator {
 		this.#clearGrant(keyId, grant);
 	}
 
-	async #writeControlSafely(entry: LockControlEntry): Promise<void> {
+	async #writeControlSafely(entry: LockReleaseEntry): Promise<void> {
 		try {
 			const position = await this.#writeControl(entry);
 			this.#authority().applyEntry(entry, this.nodeId, typeof position === 'number' ? position : undefined);
@@ -1999,14 +2027,46 @@ let coordinatorResolver: CoordinatorResolver | undefined;
 // for the delegation's whole deadline. Requests and recalls keep the transport-gated resolver: both
 // are answers to a live peer, and failing them closed while the transport is gone is the right shape.
 let admittingResolver: CoordinatorResolver | undefined;
+type ControlWriter = (entry: LockControlEntry) => Promise<number | void> | number | void;
+type ControlWriterResolver = (database: string, table: string) => ControlWriter | undefined;
+let controlWriterResolver: ControlWriterResolver | undefined;
 
 /** Installed by Table.ts so a transport can push received entries in without importing Table. */
 export function setLockCoordinatorResolver(
 	resolve: CoordinatorResolver,
-	resolveAdmitting: CoordinatorResolver = resolve
+	resolveAdmitting: CoordinatorResolver = resolve,
+	resolveControlWriter?: ControlWriterResolver
 ) {
 	coordinatorResolver = resolve;
 	admittingResolver = resolveAdmitting;
+	controlWriterResolver = resolveControlWriter;
+}
+
+/**
+ * Commit a `lockBarrier` entry for the table and resolve to its transaction-log position — the §7.2
+ * recovery fence, for a transport answering a peer's recovery probe. The entry is appended after
+ * every transaction this node had committed when the call was made, so a peer that has applied this
+ * origin's log through the returned position has applied all of them.
+ *
+ * The transport supplies the nonce it will match the entry on, since a position alone is not an
+ * identity: a restart after the wall clock moved backwards can reissue a log key, and a drain that
+ * matched the earlier entry at that key would declare this origin drained with its post-restart
+ * commits unapplied.
+ *
+ * Strictly this node's own commit, never the transport's `writeControl`: the fence is a position in
+ * THIS origin's log, and the caller is the transport itself — a relaying hook would answer with a
+ * position that is not local, or re-enter the operation that called here. A write that commits
+ * without a position rejects rather than resolve, since a barrier nobody can wait on is not a fence.
+ */
+export async function writeLockBarrier(database: string, table: string, nonce: number): Promise<number> {
+	if (!Number.isSafeInteger(nonce) || nonce < 0)
+		throw new ClientError('A lock barrier nonce must be a non-negative integer');
+	const write = controlWriterResolver?.(database, table);
+	if (!write) throw new ClientError(`Table ${database}.${table} does not exist`, 404);
+	const position = await write({ type: 'lockBarrier', nonce });
+	if (typeof position !== 'number' || !(position >= 0) || !Number.isFinite(position))
+		throw new LockUnavailableError(`the record lock barrier for ${database}.${table} committed without a log position`);
+	return position;
 }
 
 /**

@@ -392,14 +392,15 @@ round and then nothing, and the delegate is in practice the last writer. When an
 key, its home recalls the delegation; the delegate stops admitting, drains what is in flight, and
 writes the release.
 
-**One control entry, not three.** `LOCK_RELEASE = 12` is the only lock action nibble in
-`auditStore.ts`. `LOCK_REQUEST = 9` and `LOCK_GRANT = 10` belonged to the Ricart–Agrawala rule the
-design note replaces; that rule never shipped enabled, so those nibbles were **retired rather than
-migrated** — and 9 has since been taken by eviction, which is why a migration was never an option.
-Delegation request/grant/recall are unicast over the transport. Only the release stays on the
-replicated log, because it is what orders a handoff behind the delegate's own data writes.
+**Two control entries, not four.** `LOCK_RELEASE = 12` and `LOCK_BARRIER = 13` are the lock action
+nibbles in `auditStore.ts`. `LOCK_REQUEST = 9` and `LOCK_GRANT = 10` belonged to the Ricart–Agrawala
+rule the design note replaces; that rule never shipped enabled, so those nibbles were **retired
+rather than migrated** — and 9 has since been taken by eviction, which is why a migration was never
+an option. Delegation request/grant/recall are unicast over the transport. The release stays on the
+replicated log because it is what orders a handoff behind the delegate's own data writes; the
+barrier (the recovery fence below) is on it because its log position is the whole point.
 
-The entry is written in its own transaction, with no primary-store write, and — unlike the `reload`
+The release entry is written in its own transaction, with no primary-store write, and — unlike the `reload`
 marker it is otherwise modeled on — **not** `LOCAL_ONLY`, because replicating it IS the send. Its
 payload is `[key, requesterName, generation, homeIncarnation, counter]`, validated on exact tuple
 length: a future version that grows it must bump the type rather than widen this one, since a
@@ -535,6 +536,18 @@ and visible. Missing lineage selects that transport's weaker reachable-member re
 failure or timeout returns 503 and hands the grant back without discarding retained lineage. The
 cached-delegation branch does none of this work. Harper-pro's operator-agreed home map and transport
 implementation remain the enablement boundary (harper-pro#825 / companion work on #822).
+
+**Recovery fence.** The recovery barrier's position is a `lockBarrier` control entry (nibble 13,
+payload `[1, nonce]`, harper#2625): a replicated no-op the probed member commits after the probe, so
+it is appended after every transaction that member had committed — the one ordering no log-key head,
+received tail, or sender-emitted marker gives, since entries are appended in commit order rather than
+key order. `writeLockBarrier(database, table, nonce)` in `recordLockCoordinator.ts` writes one — strictly
+this node's own commit through `Table.writeLockControlEntry`, never the transport's `writeControl`
+hook, since the caller is the transport and the fence must be a position in this origin's log — and
+resolves to the entry's log position; the transport supplies the nonce it will match the entry on.
+The coordinator ignores the entry on receipt, and every `isLockControlType` exclusion above covers it. `establishLockFreshness()` receives the wait remaining
+on the lock deadline. The harper-pro operation and drain are harper-pro#822's; a recovery marker with
+no barrier fails closed.
 
 ## A transaction is joinable as a scope only if it stages its writes (`transaction`/`Resource`/`Table`)
 

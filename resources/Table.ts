@@ -578,7 +578,12 @@ function isPlainOptions(value: unknown): boolean {
 // importing Table (which would be a cycle through databases.ts).
 setLockCoordinatorResolver(
 	(database: string, tableName: string) => (databases as any)[database]?.[tableName]?.lockCoordinator,
-	(database: string, tableName: string) => (databases as any)[database]?.[tableName]?.admittingCoordinator
+	(database: string, tableName: string) => (databases as any)[database]?.[tableName]?.admittingCoordinator,
+	(database: string, tableName: string) => {
+		const Table = (databases as any)[database]?.[tableName];
+		if (typeof Table?.writeLockControlEntry !== 'function') return undefined;
+		return (entry: LockControlEntry) => Table.writeLockControlEntry(entry);
+	}
 );
 
 export function makeTable(options) {

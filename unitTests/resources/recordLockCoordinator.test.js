@@ -148,8 +148,8 @@ class FakeCluster {
 				ownsCoordination: () => node.owns,
 				requestDelegation: (target, database, table, request) => this.#deliverRequest(name, target, request),
 				recallDelegation: (target, database, table, recall) => this.#deliverRecall(name, target, recall),
-				establishLockFreshness: (database, table, key, dependencies) =>
-					this.#establishFreshness(name, database, table, key, dependencies),
+				establishLockFreshness: (database, table, key, dependencies, deadlineMs) =>
+					this.#establishFreshness(name, database, table, key, dependencies, deadlineMs),
 			},
 			writeControl: this.writeControlFor(name),
 			keyIdOf: (key) => String(key),
@@ -224,9 +224,9 @@ class FakeCluster {
 		return target.coordinator.onDelegationRecall(recall);
 	}
 
-	async #establishFreshness(name, database, table, key, dependencies) {
+	async #establishFreshness(name, database, table, key, dependencies, deadlineMs) {
 		const node = this.node(name);
-		node.freshnessCalls.push({ database, table, key, dependencies });
+		node.freshnessCalls.push({ database, table, key, dependencies, deadlineMs });
 		if (this.beforeFreshness) await this.beforeFreshness(name, key, dependencies);
 		if (node.freshnessError) throw node.freshnessError;
 		return dependencies === null ? this.homes.map((origin) => [origin, 0]) : undefined;
@@ -690,6 +690,70 @@ describe('record lock delegations', () => {
 			assert.deepStrictEqual(calls, [null]);
 			coordinator.release('cold-key', round.admissionId);
 			coordinator.close();
+		});
+
+		it('hands the transport the wait remaining on the lock deadline', async () => {
+			// On a fixed clock the remaining wait is the whole wait.
+			const calls = [];
+			const coordinator = coldCoordinator(() => 5_000, {
+				grantableAfterMono: -Infinity,
+				establishLockFreshness: async (_database, _table, _key, dependencies, deadlineMs) => {
+					calls.push({ dependencies, deadlineMs });
+					return [];
+				},
+			});
+			coordinator.close();
+			const successor = coldCoordinator(() => 5_000, {
+				database: coordinator.database,
+				table: coordinator.table,
+				grantableAfterMono: -Infinity,
+				establishLockFreshness: async (_database, _table, _key, dependencies, deadlineMs) => {
+					calls.push({ dependencies, deadlineMs });
+					return [];
+				},
+			});
+			const round = await successor.acquire('deadline-key', LEASE, 7_500);
+			assert.deepStrictEqual(calls, [{ dependencies: null, deadlineMs: 7_500 }]);
+			successor.release('deadline-key', round.admissionId);
+			successor.close();
+		});
+
+		it('admits a recovery-marked grant once the transport has written a barrier and drained to it', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const alpha = cluster.node('alpha');
+			const home = cluster.node('gamma').coordinator;
+			const held = await home.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			const predecessorWrite = ++cluster.tsCounter;
+			alpha.written.push({ type: 'put', key, position: predecessorWrite });
+			home.applyEntry(
+				{ type: 'lockRelease', key, requester: 'alpha', token: held.token, dependencies: 'lost' },
+				'alpha',
+				++cluster.tsCounter
+			);
+
+			const beta = cluster.node('beta');
+			const applied = { alpha: 0, beta: 0, gamma: 0 };
+			cluster.beforeFreshness = async (name, _key, dependencies) => {
+				if (name !== 'beta' || dependencies !== null) return;
+				for (const origin of cluster.homes) {
+					const position = await cluster.writeControlFor(origin)({ type: 'lockBarrier', nonce: 1 });
+					for (const entry of cluster.node(origin).written)
+						if (entry.position <= position) applied[origin] = Math.max(applied[origin], entry.position);
+				}
+			};
+			const successor = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null, 'the grant carried the recovery marker');
+			assert.ok(applied.alpha >= predecessorWrite, 'the drain reached the predecessor’s write');
+			const alphaBarrier = alpha.written.find((entry) => entry.type === 'lockBarrier');
+			assert.ok(alphaBarrier.position > predecessorWrite, 'the barrier is ordered after the write');
+			for (const node of cluster.nodes.values())
+				assert.strictEqual(
+					node.coordinator.stats.granted,
+					node.name === 'gamma' ? 1 : 0,
+					`${node.name} acted on a barrier`
+				);
+			beta.coordinator.release(key, successor.admissionId);
 		});
 
 		it('takes recovery after a delegate expires without a clean release', async () => {
@@ -2272,6 +2336,42 @@ describe('record lock delegations', () => {
 			const beta = cluster.node('beta');
 			const successor = await beta.coordinator.acquire(key, LEASE, WAIT);
 			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
+			beta.coordinator.release(key, successor.admissionId);
+		});
+
+		it('round-trips the barrier entry and refuses every other shape of it', () => {
+			const barrier = { type: 'lockBarrier', nonce: 281_474_976_710_655 };
+			assert.deepStrictEqual(decodeLockControlPayload('lockBarrier', encodeLockControlPayload(barrier)), barrier);
+			assert.deepStrictEqual(decodeLockControlPayload('lockBarrier', [1, 0]), { type: 'lockBarrier', nonce: 0 });
+			assert.strictEqual(decodeLockControlPayload('lockBarrier', [2, 7]), undefined);
+			for (const malformed of [[1], [1, 7, 8], [1, 'nonce'], [1, Infinity], ['1', 7], 'not a tuple', 7])
+				assert.strictEqual(decodeLockControlPayload('lockBarrier', malformed), undefined, JSON.stringify(malformed));
+			assert.strictEqual(decodeLockControlPayload('lockRelease', encodeLockControlPayload(barrier)), undefined);
+			assert.strictEqual(decodeLockControlPayload('lockRelease', [1, 7]), undefined);
+			const release = { type: 'lockRelease', key: 'k', requester: 'alpha', token: [1, 1, 1] };
+			assert.strictEqual(decodeLockControlPayload('lockBarrier', encodeLockControlPayload(release)), undefined);
+		});
+
+		it('applies a barrier as a no-op: the grant and its lineage survive', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			const home = cluster.node('gamma').coordinator;
+			const granted = await home.onDelegationRequest({ key, requester: 'alpha', generation: 1, leaseMs: LEASE });
+			assert.strictEqual(home.stats.granted, 1);
+			home.applyEntry({ type: 'lockBarrier', nonce: 1 }, 'alpha', 50);
+			assert.strictEqual(home.stats.granted, 1, 'a barrier from the delegate cleared its grant');
+
+			home.applyEntry(
+				{ type: 'lockRelease', key, requester: 'alpha', token: granted.token, dependencies: [] },
+				'alpha',
+				60
+			);
+			assert.strictEqual(home.stats.granted, 0);
+			// A later barrier from the same origin must not advance or drop the retained lineage.
+			home.applyEntry({ type: 'lockBarrier', nonce: 2 }, 'alpha', 70);
+			const beta = cluster.node('beta');
+			const successor = await beta.coordinator.acquire(key, LEASE, WAIT);
+			assert.deepStrictEqual(beta.freshnessCalls.at(-1).dependencies, [['alpha', 60]]);
 			beta.coordinator.release(key, successor.admissionId);
 		});
 
