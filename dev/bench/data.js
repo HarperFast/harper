@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789463673610,
+  "lastUpdate": 1789543606806,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -5981,6 +5981,63 @@ window.BENCHMARK_DATA = {
           {
             "name": "workload E — Short ranges (95% scan / 5% insert)",
             "value": 963.7,
+            "unit": "ops/sec"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1c312feb4d4005ffa9b46376f3961c1ade47ffcc",
+          "message": "Report replicated apply failures before consuming later events (#2630)\n\n* Report replicated apply failures before consuming later events\n\nExpose database-scoped listeners with origin log coordinates, await them at terminal apply failures and explicit drops, and preserve source continuation and retry behavior.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n* Preserve failure coordinates and ordering for queued and batched drops\n\nReport valueless writes before per-key queuing, inherit envelope coordinates without substituting record versions, drain concurrent notifications, and exercise real lock-release failures.\n\nCo-Authored-By: GPT-5 Codex <noreply@openai.com>\n\n---------\n\nCo-authored-by: GPT-5 Codex <noreply@openai.com>",
+          "timestamp": "2026-09-16T00:11:27Z",
+          "url": "https://github.com/HarperFast/harper/commit/1c312feb4d4005ffa9b46376f3961c1ade47ffcc"
+        },
+        "date": 1789543605085,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "load — bulk insert",
+            "value": 6206.8,
+            "unit": "records/sec"
+          },
+          {
+            "name": "workload C — Read only (100% read)",
+            "value": 8190.37,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload B — Read mostly (95% read / 5% update)",
+            "value": 8007.7,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload A — Update heavy (50% read / 50% update)",
+            "value": 6102.27,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload F — Read-modify-write (50% read / 50% read-modify-write)",
+            "value": 4459.52,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload D — Read latest (95% read / 5% insert), read recently inserted",
+            "value": 8128.86,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "workload E — Short ranges (95% scan / 5% insert)",
+            "value": 963.47,
             "unit": "ops/sec"
           }
         ]
