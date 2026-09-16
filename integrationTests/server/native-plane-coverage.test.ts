@@ -78,7 +78,7 @@ test(
 				const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
 				assert(result.status < 300, JSON.stringify(result));
 			}
-			for (const path of ['/PlaneProbe/', '/MappedPlane/']) {
+			for (const path of ['/PlaneProbe/', '/MappedPlane/', '/ConcatenatedPlane/']) {
 				const shortWait = await query(1_000_000, 1, target, path);
 				if (shortWait.status === 503) {
 					assert.equal(shortWait.body.code, 'DERIVED_INDEX_LAGGING');
@@ -143,7 +143,12 @@ test(
 						const vector = records[sequence].vector;
 						const written = await request(`/PlaneProbe/${id}`, 'PUT', { vector });
 						assert(written.status < 300, JSON.stringify(written));
-						const result = await query(undefined, 20_000, vector, sequence % 2 ? '/MappedPlane/' : '/PlaneProbe/');
+						const result = await query(
+							undefined,
+							20_000,
+							vector,
+							['/PlaneProbe/', '/MappedPlane/', '/ConcatenatedPlane/'][sequence % 3]
+						);
 						assert.equal(result.status, 200, JSON.stringify(result));
 						assert.equal(result.coverage, 'current; lag=0; tolerance=3000');
 						assert(

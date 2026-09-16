@@ -602,7 +602,10 @@ export function searchByIndex(
 					if ((searched as any).indexAdmission) reportCoverage(entries);
 					return loaded;
 				});
-				if ((searched as any).indexAdmission) admissions?.push(pending);
+				if ((searched as any).indexAdmission) {
+					Object.defineProperty(pending, 'cancelAdmission', { value: (searched as any).cancelAdmission });
+					admissions?.push(pending);
+				}
 				// A consumer may abandon this lazy iterable without calling next().
 				pending.catch(() => {});
 				const results: any = new ExtendedIterable();

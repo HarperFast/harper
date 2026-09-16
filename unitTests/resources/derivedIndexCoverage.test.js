@@ -255,6 +255,77 @@ describe('native derived-index query coverage', function () {
 		}
 		await current();
 	});
+	it('admits a waiting concat operand before returning an ordinary or mapped prefix', async () => {
+		for (const mapped of [false, true]) {
+			class Concatenated extends Product {
+				static loadAsInstance = false;
+				search(target) {
+					let prefix = super.search({ limit: 1 });
+					if (mapped) prefix = prefix.map((record) => record);
+					return prefix.concat(super.search(target));
+				}
+			}
+			await current();
+			await Product.put('concat-' + mapped, { vector });
+			const transaction = new DatabaseTransaction();
+			try {
+				await assert.rejects(
+					Promise.resolve().then(() =>
+						Concatenated.search(
+							{
+								sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: Number.MIN_VALUE },
+								limit: 10,
+							},
+							{ transaction }
+						)
+					),
+					{ code: 'DERIVED_INDEX_LAGGING' }
+				);
+				await transaction.commit();
+				assert.equal(transaction.readTxnsUsed, 0);
+			} finally {
+				transaction.abort();
+			}
+			await current();
+		}
+	});
+	it('cancels sibling admissions and settles them before releasing the query', async () => {
+		await current();
+		await Product.put('sibling-wait', { vector });
+		const transaction = new DatabaseTransaction();
+		const responseHeaders = new Headers();
+		try {
+			await assert.rejects(
+				Promise.resolve().then(() =>
+					Product.search(
+						{
+							operator: 'or',
+							conditions: [Number.MIN_VALUE, 10_000].map((waitForIndexMilliseconds) => ({
+								attribute: 'vector',
+								comparator: 'lt',
+								value: 2,
+								target: vector,
+								waitForIndexMilliseconds,
+							})),
+							limit: 10,
+						},
+						{ transaction, responseHeaders }
+					)
+				),
+				{ code: 'DERIVED_INDEX_LAGGING' }
+			);
+			assert.equal(transaction.pendingReads, 0);
+			await current();
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.equal(
+				responseHeaders.get('Harper-Index-Coverage'),
+				null,
+				'a sibling published coverage after admission failed'
+			);
+		} finally {
+			transaction.abort();
+		}
+	});
 	it('shares concurrent waits while cancelling only the disconnected caller', async () => {
 		await Product.put('shared-wait', { vector });
 		const controller = new AbortController();

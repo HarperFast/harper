@@ -1788,19 +1788,26 @@ export class HierarchicalNavigableSmallWorld {
 			const current = this.derivedHost?.coverage(0);
 			const host = this.derivedHost;
 			if (!host || host.readiness().state !== 'ready') return searchNative();
-			const searched =
-				current?.state === 'current'
-					? searchNative({ ...current, maxLagMilliseconds: maxIndexLagMilliseconds })
-					: host.waitForCoverage(started, waitForIndexMilliseconds, context.signal).then(() => {
-							context.signal?.throwIfAborted();
-							return searchNative({
-								state: 'current',
-								maxLagMilliseconds: maxIndexLagMilliseconds,
-								lagUpperBoundMilliseconds: 0,
-							});
-						});
+			let searched;
+			let cancelAdmission: (reason: unknown) => void;
+			if (current?.state === 'current') {
+				searched = searchNative({ ...current, maxLagMilliseconds: maxIndexLagMilliseconds });
+			} else {
+				const controller = new AbortController();
+				const signal = context.signal ? AbortSignal.any([context.signal, controller.signal]) : controller.signal;
+				cancelAdmission = (reason) => controller.abort(reason);
+				searched = host.waitForCoverage(started, waitForIndexMilliseconds, signal).then(() => {
+					signal.throwIfAborted();
+					return searchNative({
+						state: 'current',
+						maxLagMilliseconds: maxIndexLagMilliseconds,
+						lagUpperBoundMilliseconds: 0,
+					});
+				});
+			}
 			if (searched instanceof Promise) {
 				Object.defineProperty(searched, 'indexAdmission', { value: searched });
+				if (cancelAdmission) Object.defineProperty(searched, 'cancelAdmission', { value: cancelAdmission });
 				searched.catch(() => {});
 			}
 			return searched;

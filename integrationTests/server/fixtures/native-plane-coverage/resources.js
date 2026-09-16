@@ -43,3 +43,13 @@ export class MappedPlane extends tables.PlaneProbe {
 		return super.search(query ?? target).map((record) => record);
 	}
 }
+
+export class ConcatenatedPlane extends tables.PlaneProbe {
+	static loadAsInstance = false;
+	search(target, query) {
+		return super
+			.search({ limit: 1 })
+			.map((record) => record)
+			.concat(super.search(query ?? target));
+	}
+}

@@ -394,7 +394,58 @@ const MAX_OUT_OF_ORDER_AUDIT_DEPTH = 1000;
 const MAX_PREVIOUS_COUNT_SCAN = 10_000;
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
-const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
+const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'flatMap', 'slice', 'mapError'];
+
+type SearchAdmission = Promise<unknown> & { cancelAdmission?: (reason: unknown) => void };
+
+function settleSearchAdmissions(admissions: SearchAdmission[]): SearchAdmission {
+	const cancelAdmission = (reason: unknown) => {
+		for (const admission of admissions) admission.cancelAdmission?.(reason);
+	};
+	let failed = false;
+	let failure: unknown;
+	const pending = admissions.map((admission) =>
+		admission.catch((error) => {
+			if (!failed) {
+				failed = true;
+				failure = error;
+				cancelAdmission(error);
+			}
+		})
+	);
+	const result = Promise.all(pending).then(() => {
+		if (failed) throw failure;
+	});
+	Object.defineProperty(result, 'cancelAdmission', { value: cancelAdmission });
+	return result;
+}
+
+// Admission is a property of both operands, including when the receiver has no gate.
+// The shared adapter also covers ordinary prefixes transformed before concat, without
+// installing transform closures on every ordinary Table query.
+const concatIterable = ExtendedIterable.prototype.concat;
+ExtendedIterable.prototype.concat = function (other) {
+	const result = concatIterable.call(this, other);
+	if (this[SEARCH_AUTHORIZATION]) propagateSearchGate(result, SEARCH_AUTHORIZATION, this[SEARCH_AUTHORIZATION], this);
+	const first = this[SEARCH_ADMISSION];
+	const second = other?.[SEARCH_ADMISSION];
+	if (first || second) {
+		const pending = first && second ? settleSearchAdmissions([first, second]) : (first ?? second);
+		const admission = pending.catch(async (error) => {
+			await Promise.allSettled(
+				[this, other].map(async (operand) => {
+					const iterator = operand[Symbol.asyncIterator]?.() ?? operand[Symbol.iterator]?.();
+					await iterator?.return?.();
+				})
+			);
+			throw error;
+		});
+		Object.defineProperty(admission, 'cancelAdmission', { value: pending.cancelAdmission });
+		admission.catch(() => {});
+		propagateSearchGate(result, SEARCH_ADMISSION, admission, this);
+	}
+	return result;
+};
 
 function propagateSearchGate(iterable: any, gate: symbol, promise: Promise<any>, source?: any) {
 	if (!iterable || typeof iterable !== 'object') return iterable;
@@ -4667,9 +4718,12 @@ export function makeTable(options) {
 				recordAccess,
 				admissions
 			);
-			const admission = admissions.length
-				? (context.transaction ?? txn).keepReadActiveUntil(Promise.all(admissions))
-				: undefined;
+			let admission: SearchAdmission;
+			if (admissions.length) {
+				const pending = settleSearchAdmissions(admissions);
+				admission = (context.transaction ?? txn).keepReadActiveUntil(pending);
+				Object.defineProperty(admission, 'cancelAdmission', { value: pending.cancelAdmission });
+			}
 			const ensure_loaded = (target as any).ensureLoaded !== false;
 			// The guards inside executeConditions evaluate the
 			// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
