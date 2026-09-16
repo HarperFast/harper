@@ -2507,6 +2507,26 @@ describe('quiesceDelegations (harper-pro#856)', () => {
 		coordinator.close();
 	});
 
+	it('an empty sweep is not a proof: a table nothing has touched has no coordinator to sweep', async () => {
+		// No coordinator, no transport attestation — the sweep sees nothing and must say so rather than
+		// reporting a clean drain that would let an orchestrator skip the interval.
+		const result = await quiesceDelegations('never-touched', 1000);
+		assert.deepStrictEqual(result.outstanding.length > 0 || result.complete === false, true);
+		assert.strictEqual(result.complete, false, 'an unattested, unswept database cannot be proven quiesced');
+	});
+
+	it('never reports complete alongside outstanding work', async () => {
+		const coordinator = homeWithPeer('q7', 'T', async () => {
+			throw new Error('unreachable');
+		});
+		const [key] = keysHomedHere('q7', 'T', 1);
+		await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 });
+		const result = await quiesceDelegations('q7', 300);
+		assert.ok(result.outstanding.length > 0);
+		assert.strictEqual(result.complete, false);
+		coordinator.close();
+	});
+
 	/** Keys are homed by rendezvous hash, so a test that needs THIS node to be the home must pick one. */
 	function keysHomedHere(database, table, count, homes = ['alpha', 'beta']) {
 		const found = [];

@@ -712,6 +712,13 @@ const tickingCoordinators = new Set<LockCoordinator>();
  * enumerate: they answer a name you already have.
  */
 const liveCoordinators = new Set<LockCoordinator>();
+/**
+ * When this process started, on the monotonic clock. Nothing a previous incarnation of this process
+ * granted can be ruled out until a full delegation lease has passed from here — and that is a
+ * per-process fact, not a per-table one, which is why it is what `complete` rests on rather than the
+ * set of coordinators that happen to have been built.
+ */
+const PROCESS_START_MONO = performance.now();
 let tickTimer: ReturnType<typeof setInterval> | undefined;
 function ensureTicking() {
 	if (tickTimer || tickingCoordinators.size === 0) return;
@@ -783,6 +790,10 @@ export class LockCoordinator {
 	 * delegate-side generation check in `#liveDelegation` is what stops the old delegate.
 	 */
 	#grantableAfterMono: number;
+	/** Whether the transport attested that no previous incarnation of this process ever delegated. */
+	get quarantineWaived(): boolean {
+		return this.#grantableAfterMono === -Infinity;
+	}
 	/**
 	 * When this coordinator was last observed to own coordination, and `undefined` while it does not.
 	 *
@@ -1443,6 +1454,7 @@ export class LockCoordinator {
 		// saying so is the whole contract. The quarantine's own end IS the drain the operator would have
 		// waited for, so reporting it lets them wait exactly that long and no longer.
 		if (this.#monotonic() < this.#grantableAfterMono) {
+			result.complete = false;
 			result.outstanding.push({
 				table: this.table,
 				key: undefined,
@@ -2137,6 +2149,16 @@ export interface QuiesceOutstanding {
 }
 
 export interface QuiesceResult {
+	/**
+	 * Whether this result is a PROOF of quiescence, or merely a report of what was swept.
+	 *
+	 * A sweep can only visit coordinators that exist on this thread, and they are built lazily — a
+	 * table nothing has touched since a restart has none, so an empty `outstanding` would otherwise
+	 * read as "nothing is live" when the previous incarnation's delegations are still running
+	 * elsewhere. An orchestrator must require `complete && outstanding.length === 0`; anything else
+	 * means fall back to the drain interval for this node.
+	 */
+	complete: boolean;
 	/** Delegations this node held and gave up, so it can no longer admit under them. */
 	surrendered: number;
 	/** Grants this node issued whose delegate confirmed it stopped admitting. */
@@ -2171,13 +2193,37 @@ export interface QuiesceResult {
  * or to fence externally — this never claims a drain it did not get, and never throws for one grant.
  */
 export async function quiesceDelegations(database: string, deadlineMs: number): Promise<QuiesceResult> {
-	const result: QuiesceResult = { surrendered: 0, recalled: 0, outstanding: [] };
+	const result: QuiesceResult = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
 	const coordinators = [...liveCoordinators].filter((coordinator) => coordinator.database === database);
 	const deadline = Date.now() + Math.max(0, deadlineMs);
 	const remaining = () => Math.max(0, deadline - Date.now());
+	let attested = typeof clusterLockTransports.get(database)?.grantableAfterMono === 'number';
 	for (const coordinator of coordinators) {
+		// A waived quarantine IS the transport's attestation that no previous incarnation of this
+		// process ever delegated for this database; the waiver is per transport, not per table.
+		if (coordinator.quarantineWaived) attested = true;
 		await coordinator.quiesce(result, remaining);
 	}
+	// A sweep proves quiescence only if it could have seen everything. Coordinators are built lazily,
+	// so a database with none — or a process that restarted recently without that attestation — has
+	// authority this sweep cannot rule out, whatever `outstanding` says.
+	const sinceStart = performance.now() - PROCESS_START_MONO;
+	const restartHorizon = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS;
+	if (!attested && sinceStart < restartHorizon) {
+		result.outstanding.push({
+			table: '*',
+			key: undefined,
+			reason: `this process started ${Math.round(sinceStart)}ms ago; delegations a previous incarnation issued cannot be ruled out for another ${Math.ceil(restartHorizon - sinceStart)}ms`,
+		});
+	} else if (coordinators.length === 0 && !attested) {
+		result.outstanding.push({
+			table: '*',
+			key: undefined,
+			reason:
+				'no lock coordinator exists for this database on this thread, so there is nothing to prove quiescence from',
+		});
+	}
+	if (result.outstanding.length > 0) result.complete = false;
 	return result;
 }
 
