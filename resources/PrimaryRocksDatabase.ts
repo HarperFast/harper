@@ -37,7 +37,13 @@ export class PrimaryRocksDatabase extends RocksDatabase {
 		const enableCache = (options as any)?.cache === true;
 		super(pathOrStore, enableCache ? { ...options, verificationTable: true } : options);
 		if (enableCache) {
-			this.#cache = new WeakLRUCache();
+			// weak-lru-cache holds `cacheSize` entries strongly (4 LRU generations of cacheSize/4)
+			// and lets everything beyond that live on WeakRefs until GC. The default is 32768
+			// entries, which on a table larger than that caps how much of the working set stays
+			// strongly reachable. Its expirer is a module-level singleton, so the first cache
+			// constructed in a thread fixes the size for every store in that thread.
+			const cacheSize = Number(process.env.HARPER_RECORD_CACHE_SIZE) || undefined;
+			this.#cache = new WeakLRUCache(cacheSize ? { cacheSize } : undefined);
 		}
 	}
 
