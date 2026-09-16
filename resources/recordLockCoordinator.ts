@@ -787,14 +787,20 @@ export class LockCoordinator {
 	 * How long until this coordinator can rule out authority issued before it took over — 0 when it
 	 * already can. Non-mutating, unlike `#ownershipHorizon`, which records ownership as a side effect.
 	 *
-	 * A waived quarantine is the transport's attestation that no previous incarnation of this process
-	 * ever delegated, which is the one case where "before it took over" has nothing in it.
+	 * The waiver is deliberately NOT consulted. `grantableAfterMono` attests that no previous
+	 * INCARNATION OF THIS PROCESS delegated; it says nothing about a sibling thread that was
+	 * coordinating until this instant, and a coordinator built while already owning keeps the waiver
+	 * without ever observing that handoff — which let a takeover worker in a first-incarnation process
+	 * report a clean drain while the previous owner's delegates were still admitting.
+	 *
+	 * The cost is that a freshly built coordinator cannot prove quiescence for a full lease. That falls
+	 * only on the case that does not need the proof: a node with no delegations yet is bootstrapping
+	 * generation 1, where there is nothing to drain and no interval to skip.
 	 */
 	unprovenOwnershipMs(): number {
-		if (this.#quarantineWaived) return 0;
-		const now = this.#monotonic();
-		if (this.#ownedSinceMono === undefined) return DELEGATION_LEASE_MS + this.#skewMs;
-		return Math.max(0, this.#ownedSinceMono + DELEGATION_LEASE_MS + this.#skewMs - now);
+		const horizon = DELEGATION_LEASE_MS + this.#skewMs;
+		if (this.#ownedSinceMono === undefined) return horizon;
+		return Math.max(0, this.#ownedSinceMono + horizon - this.#monotonic());
 	}
 	/**
 	 * When this coordinator was last observed to own coordination, and `undefined` while it does not.

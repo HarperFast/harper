@@ -2476,7 +2476,11 @@ describe('record lock delegations', () => {
 describe('quiesceDelegations (harper-pro#856)', () => {
 	/** A coordinator that is a HOME for `alpha` and can grant to a peer, with a scriptable recall. */
 	function homeWithPeer(database, table, recall) {
-		return new LockCoordinator({
+		// Ownership continuity is what proves quiescence, so a coordinator has to have owned for a full
+		// lease before a sweep is a proof. These tests are about the sweep itself, so they start the
+		// clock past that horizon; the handoff test below is the one that exercises the horizon.
+		const clock = { now: DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1 };
+		const coordinator = new LockCoordinator({
 			database,
 			table,
 			nodeId: 'alpha',
@@ -2492,10 +2496,13 @@ describe('quiesceDelegations (harper-pro#856)', () => {
 			writeControl: () => {},
 			keyIdOf: (key) => String(key),
 			nextTimestamp: () => 1,
-			monotonic: () => Date.now(),
+			monotonic: () => clock.now,
 			grantableAfterMono: -Infinity,
 			autoTick: false,
 		});
+		// Ownership was recorded at construction on this clock; move past its horizon.
+		clock.now += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+		return coordinator;
 	}
 
 	it('reports a clean database as quiesced with nothing outstanding', async () => {
