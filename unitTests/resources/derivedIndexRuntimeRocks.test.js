@@ -193,14 +193,17 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			options: { flushAfterMutations: 1, maxFlushAgeMilliseconds: 10 },
 		});
 		try {
+			await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', 10_000);
+			const state = binding.states.get(binding.opens.at(-1).generation);
+			assert(state, 'the seeded rebuild opened the native writer');
+			const initialApplications = state.applications;
+			const initialPublications = state.publications;
+			const initialSourceLogEntries = [...Product.auditStore.getRange({ start: 1 })].length;
 			await Product.put('p1', { title: 'first product' });
 			const p1Cursor = [...Product.auditStore.getRange({ start: anchor })]
 				.filter((entry) => entry.tableId === Product.tableId && entry.recordId === 'p1')
 				.at(-1).txnLogKey;
-			await waitFor(
-				() => binding.states.size > 0 && [...binding.states.values()].some((state) => state.publications === 1),
-				10_000
-			);
+			await waitFor(() => state.publications >= initialPublications + 1, 10_000);
 			await new Promise((resolve) => setImmediate(resolve));
 
 			await unregister();
@@ -209,7 +212,6 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			await reopened.initialize();
 			const inspection = reopened.inspect();
 			assert.strictEqual(inspection.state, 'checkpointed');
-			const state = binding.states.get(binding.opens.at(-1).generation);
 			const documentId = `${Product.tableId}.${Buffer.from('p1').toString('base64url')}`;
 			assert.deepStrictEqual(state.documents.get(documentId), {
 				id: documentId,
@@ -218,7 +220,8 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			const storedCursor = decodeFullTextCursorPayload(inspection.committedPayload);
 			assert.strictEqual(storedCursor.logs.local, p1Cursor);
 			assert(storedCursor.logs.local > anchor, 'the durable cursor advanced beyond the seeded anchor');
-			assert.strictEqual(state.applications, 1);
+			assert.strictEqual(state.applications, initialApplications + 1);
+			assert.strictEqual([...Product.auditStore.getRange({ start: 1 })].length, initialSourceLogEntries + 1);
 		} finally {
 			if (unregister) await unregister();
 			await runtime.stop();

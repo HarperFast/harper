@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { lstat, readdir, rm } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { lstat, readdir, realpath, rm } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { loggerWithTag } from '../utility/logging/logger.ts';
 import {
 	FullTextDerivedIndexBackend,
@@ -92,10 +92,19 @@ export class NativeFullTextDerivedIndexLifecycle {
 		});
 		if (result.state === 'reset') {
 			const retiredRoot = join(dirname(this.#path), '.fulltext-retired');
-			if (!strictChild(retiredRoot, result.retiredPath)) {
+			let removablePath;
+			try {
+				removablePath = await canonicalRetiredPath(retiredRoot, result.retiredPath);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+					logWarning(`Could not validate retired full-text path '${result.retiredPath}'`, error);
+				await this.#reclaimRetired();
+				return;
+			}
+			if (!removablePath) {
 				logWarning(`Refused to remove invalid retired full-text path '${result.retiredPath}'`, undefined);
 			} else {
-				await removeRetired(result.retiredPath).catch((error) =>
+				await removeRetired(removablePath).catch((error) =>
 					logWarning(`Could not remove retired full-text index '${result.retiredPath}'`, error)
 				);
 			}
@@ -112,6 +121,7 @@ export class NativeFullTextDerivedIndexLifecycle {
 
 	async #reclaimRetired(): Promise<void> {
 		const retiredRoot = join(dirname(this.#path), '.fulltext-retired');
+		let canonicalRoot;
 		let entries;
 		try {
 			const stats = await lstat(retiredRoot);
@@ -119,7 +129,8 @@ export class NativeFullTextDerivedIndexLifecycle {
 				logWarning(`Refused to inspect invalid retired full-text root '${retiredRoot}'`, undefined);
 				return;
 			}
-			entries = await readdir(retiredRoot, { withFileTypes: true });
+			canonicalRoot = await realpath(retiredRoot);
+			entries = await readdir(canonicalRoot, { withFileTypes: true });
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
 			logWarning(`Could not inspect retired full-text indexes in '${retiredRoot}'`, error);
@@ -127,8 +138,8 @@ export class NativeFullTextDerivedIndexLifecycle {
 		}
 		await Promise.all(
 			entries.map((entry) =>
-				removeRetired(join(retiredRoot, entry.name)).catch((error) =>
-					logWarning(`Could not remove retired full-text index '${join(retiredRoot, entry.name)}'`, error)
+				removeRetired(join(canonicalRoot, entry.name)).catch((error) =>
+					logWarning(`Could not remove retired full-text index '${join(canonicalRoot, entry.name)}'`, error)
 				)
 			)
 		);
@@ -188,6 +199,14 @@ function digest(value: string): string {
 function strictChild(parent: string, child: string): boolean {
 	const suffix = relative(resolve(parent), resolve(child));
 	return suffix !== '' && suffix !== '..' && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix);
+}
+
+async function canonicalRetiredPath(retiredRoot: string, candidate: string): Promise<string | undefined> {
+	const stats = await lstat(retiredRoot);
+	if (!stats.isDirectory() || stats.isSymbolicLink()) return;
+	const [canonicalRoot, canonicalParent] = await Promise.all([realpath(retiredRoot), realpath(dirname(candidate))]);
+	const canonicalCandidate = join(canonicalParent, basename(candidate));
+	if (strictChild(canonicalRoot, canonicalCandidate)) return canonicalCandidate;
 }
 
 function removeRetired(path: string): Promise<void> {
