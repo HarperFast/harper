@@ -10,7 +10,7 @@ import { createGzip } from 'node:zlib';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pack as tarPack, type Pack } from 'tar-stream';
 import { RocksDatabase, backups, registryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
-import { getDatabases, resolveDatabasePath } from '../resources/databases.ts';
+import { databases, getDatabases, resolveDatabasePath } from '../resources/databases.ts';
 import {
 	type BlobCaptureDisposition,
 	classifyBlobFileForCapture,
@@ -27,6 +27,7 @@ import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import { beginRestore, completeRestore, abandonRestore, checkRestoreState, type RestoreLock } from './restoreMarker.ts';
 import { assertBackupsUnpinned, pinBackup, unpinBackup, withBackupRepositoryLock } from './backupRepository.ts';
+import { ARCHIVE_MANIFEST_ENTRY, buildArchiveManifest, serializeArchiveManifest } from './backupArchiveManifest.ts';
 import {
 	assertBlobSnapshotRestorable,
 	assertEngineOnlyRestoreAllowed,
@@ -332,7 +333,8 @@ async function finalizeBackup(
 	blobs: boolean
 ): Promise<void> {
 	try {
-		if (blobs) await snapshotBlobs(backupDir, backupId, getBlobPathsForDatabaseName(databaseName));
+		const blobRoots = getBlobPathsForDatabaseName(databaseName);
+		if (blobs) await snapshotBlobs(backupDir, backupId, blobRoots);
 		// The engine backup was created outside this lock (db.backup takes only the binding's own) and
 		// the blob snapshot above can take a while, so a purge can have removed the engine files by now.
 		// The manifest is what publishes a backup as usable, so writing one for engine files that are
@@ -342,7 +344,17 @@ async function finalizeBackup(
 				`Backup ${backupId} of database '${databaseName}' was removed while it was being finalized; rerun create_backup`
 			);
 		}
-		await writeBackupManifest(backupDir, backupId, blobs);
+		await writeBackupManifest(
+			backupDir,
+			backupId,
+			blobs,
+			buildArchiveManifest({
+				databaseName,
+				blobs,
+				blobRootCount: blobs ? blobRoots.length : 0,
+				roles: await collectDatabaseRoleNames(databaseName),
+			})
+		);
 	} catch (error) {
 		await deleteBackupManifest(backupDir, backupId).catch(() => {});
 		await deleteBlobSnapshot(backupDir, backupId).catch(() => {});
@@ -753,14 +765,10 @@ export function createBackupStream(
 		['content-disposition', `attachment; filename="${filename}"`],
 	]);
 	stream.noCompression = true;
-	if (excludeBlobs) {
-		// engine-only: the binding produces (and gzips) the whole archive directly
-		rootStore
-			.backup(Writable.toWeb(stream) as any, { gzip, transactionLogs: true })
-			.catch((error) => stream.destroy(error));
-		return stream;
-	}
-	streamBackupWithBlobs(rootStore, databaseName, gzip, stream).catch((error) => {
+	// Both engine-only and with-blobs archives go through the same assembly. The binding can produce
+	// (and gzip) a complete archive on its own, but only a plain tar can have an entry prepended, and
+	// every archive needs its manifest first.
+	streamBackupArchive(rootStore, databaseName, gzip, excludeBlobs, stream).catch((error) => {
 		// the consumer aborting (destroying the response) is the common case, not an error to re-raise
 		if (!stream.destroyed) stream.destroy(error);
 	});
@@ -774,22 +782,25 @@ export function createBackupStream(
 const TAR_TRAILER_BYTES = 1024;
 
 /**
- * Stream a full-snapshot tar of the database followed by its blob roots as one archive. The native
- * (plain) tar is streamed with its end-of-archive trailer stripped, blob files are appended as
- * `blobs/<rootIndex>/<relpath>` entries via tar-stream, and the combined plain tar is gzipped here
- * when requested (the binding is asked for a plain tar so we can append before compressing).
+ * Stream one archive: the manifest entry, then the database's live files, then (unless excluded) its
+ * blob roots, then the READMEs. The binding is asked for a plain tar so entries can be placed on
+ * both sides of it, and the combined tar is gzipped here when requested.
  */
-async function streamBackupWithBlobs(
+async function streamBackupArchive(
 	rootStore: RocksDatabase,
 	databaseName: string,
 	gzip: boolean,
+	excludeBlobs: boolean,
 	out: PassThrough
 ): Promise<void> {
+	const blobRoots = excludeBlobs ? [] : getBlobPathsForDatabaseName(databaseName);
 	const plain = new PassThrough(); // the combined, uncompressed tar
 	const nativeTar = new PassThrough(); // native (plain) tar, before its trailer is stripped
 	// consumer side: gzip the combined archive (or pass it through) into the response stream
 	const consumed = gzip ? pipeline(plain, createGzip(), out) : pipeline(plain, out);
-	// producer side: native plain tar → nativeTar, copied into `plain` minus its trailer
+	// Producer side: native plain tar → nativeTar, copied into `plain` minus its trailer. Started
+	// before anything is awaited, so the snapshot is taken on the caller's tick — a caller that hands
+	// us a database and then closes it must not race the manifest lookup.
 	const nativeDone = rootStore.backup(Writable.toWeb(nativeTar) as any, { gzip: false, transactionLogs: true });
 	// A consumer that aborts (destroys `out`) rejects `consumed` before we reach the `await` below, so
 	// attach silent observers now to close the unhandled-rejection window; the awaits/allSettled still
@@ -797,16 +808,29 @@ async function streamBackupWithBlobs(
 	consumed.catch(() => {});
 	nativeDone.catch(() => {});
 	try {
+		// the manifest is the archive's FIRST entry, so a reader can identify it after inflating a few KB
+		const manifest = buildArchiveManifest({
+			databaseName,
+			blobs: !excludeBlobs,
+			blobRootCount: blobRoots.length,
+			roles: await collectDatabaseRoleNames(databaseName),
+		});
+		await writeWithBackpressure(
+			plain,
+			await tarEntryPrefix(ARCHIVE_MANIFEST_ENTRY, serializeArchiveManifest(manifest))
+		);
+
 		await copyDroppingTarTrailer(nativeTar, plain);
-		await nativeDone; // surface any native backup error before we append blobs
+		await nativeDone; // surface any native backup error before we append anything else
 
 		const pack = tarPack();
-		const packed = pipeline(pack, plain); // ends `plain` once the blob entries + trailer are written
-		const blobRoots = getBlobPathsForDatabaseName(databaseName);
-		await appendBlobEntries(pack, blobRoots);
-		// generate the same self-documenting READMEs a managed backup writes to disk, on the fly
-		await addTextEntry(pack, 'README.md', streamedBackupReadme(databaseName));
-		await addTextEntry(pack, 'blobs/README.md', blobsReadmeContent(blobRoots, { variant: 'archive' }));
+		const packed = pipeline(pack, plain); // ends `plain` once the trailing entries + trailer are written
+		if (!excludeBlobs) {
+			await appendBlobEntries(pack, blobRoots);
+			await addTextEntry(pack, 'blobs/README.md', blobsReadmeContent(blobRoots, { variant: 'archive' }));
+		}
+		// generate the same self-documenting README a managed backup writes to disk, on the fly
+		await addTextEntry(pack, 'README.md', streamedBackupReadme(databaseName, !excludeBlobs));
 		pack.finalize();
 		await packed;
 		await consumed;
@@ -818,6 +842,51 @@ async function streamBackupWithBlobs(
 		await Promise.allSettled([consumed, nativeDone]);
 		throw error;
 	}
+}
+
+/**
+ * The roles that grant access to this database, for the archive manifest. Best effort by design: it
+ * reads the already-loaded `system` database rather than calling `getDatabases()`, because the
+ * offline CLI runs with nothing loaded and a scan there would open — and lock — every database on
+ * the instance. Null means "not recorded", which a reader must not confuse with "no roles".
+ */
+async function collectDatabaseRoleNames(databaseName: string): Promise<string[] | null> {
+	const roleTable = (databases as any).system?.hdb_role;
+	if (!roleTable) return null;
+	try {
+		const names: string[] = [];
+		for await (const role of roleTable.search([])) {
+			if (role?.permission && Object.hasOwn(role.permission, databaseName)) names.push(role.role ?? role.id);
+		}
+		return names.sort();
+	} catch (error) {
+		logger.warn(`Could not enumerate roles for the backup manifest of database '${databaseName}'`, error);
+		return null;
+	}
+}
+
+/**
+ * A tar holding exactly one text entry, with its end-of-archive trailer removed so more entries can
+ * follow. This is how an entry is placed *before* the binding's own tar, which is a stream we cannot
+ * insert into.
+ */
+async function tarEntryPrefix(name: string, content: string): Promise<Buffer> {
+	const pack = tarPack();
+	const chunks: Buffer[] = [];
+	const collected = new Promise<void>((resolvePromise, reject) => {
+		pack.on('data', (chunk: Buffer) => chunks.push(chunk));
+		pack.on('end', () => resolvePromise());
+		pack.on('error', reject);
+	});
+	await addTextEntry(pack, name, content);
+	pack.finalize();
+	await collected;
+	const packed = Buffer.concat(chunks);
+	const trailer = packed.subarray(packed.length - TAR_TRAILER_BYTES);
+	if (packed.length <= TAR_TRAILER_BYTES || trailer.some((byte) => byte !== 0)) {
+		throw new Error(`Unexpected tar framing while building the ${name} entry`);
+	}
+	return packed.subarray(0, packed.length - TAR_TRAILER_BYTES);
 }
 
 /**
@@ -960,21 +1029,27 @@ async function addTextEntry(pack: Pack, name: string, content: string): Promise<
  * repository (which is restored in place via `restore_backup`), this is a raw snapshot tar restored
  * by extracting its files back into the database directory and blob roots.
  */
-function streamedBackupReadme(databaseName: string): string {
+function streamedBackupReadme(databaseName: string, blobs: boolean): string {
 	return `# Harper backup archive — database "${databaseName}"
 
 A full point-in-time snapshot of the "${databaseName}" database, produced by \`get_backup\`:
+  - ${ARCHIVE_MANIFEST_ENTRY} — machine-readable identification of what produced this archive and
+    what a reader needs to open it (always the first entry in the tar)
   - the RocksDB data and manifest at the archive root (CURRENT, MANIFEST-*, *.sst, OPTIONS-*)
   - transaction_logs/ — the transaction log snapshot
-  - blobs/ — the database's file-backed blobs, unless this archive was created with exclude_blobs
-    (see blobs/README.md for the layout and the root-index mapping)
+${
+	blobs
+		? `  - blobs/ — the database's file-backed blobs (see blobs/README.md for the layout and the
+    root-index mapping)`
+		: `  - no blobs/ — this archive was created with exclude_blobs, so it carries engine data only`
+}
 
 ## Restoring
 
 This is a raw snapshot archive, not a managed backup repository. To restore it, stop Harper and lay
 the files back down in two places:
-  1. The RocksDB files — everything except blobs/ — go into the database's directory
-     (typically <rootPath>/database/${databaseName}).
+  1. The RocksDB files — everything except blobs/ and ${ARCHIVE_MANIFEST_ENTRY} — go into the
+     database's directory (typically <rootPath>/database/${databaseName}).
   2. Each blobs/<rootIndex>/ tree goes into the matching blob root — the index maps to
      storage.blobPaths[n], or <rootPath>/blobs/${databaseName} when blobPaths is not configured
      (see blobs/README.md). Then start Harper.
