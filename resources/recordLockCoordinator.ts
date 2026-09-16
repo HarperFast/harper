@@ -1437,14 +1437,24 @@ export class LockCoordinator {
 	 */
 	async quiesce(result: QuiesceResult, remaining: () => number): Promise<void> {
 		if (this.#closed) return;
+		// A sweep can only see what THIS coordinator holds. Inside the restart quarantine a previous
+		// incarnation of this process may have granted delegations that are still live on other nodes,
+		// and nothing in memory records them — so an empty sweep here is not evidence of quiescence, and
+		// saying so is the whole contract. The quarantine's own end IS the drain the operator would have
+		// waited for, so reporting it lets them wait exactly that long and no longer.
+		if (this.#monotonic() < this.#grantableAfterMono) {
+			result.outstanding.push({
+				table: this.table,
+				key: undefined,
+				reason: `this node restarted and is inside its grant quarantine for another ${Math.ceil(this.#grantableAfterMono - this.#monotonic())}ms; delegations a previous incarnation issued may still be live elsewhere`,
+			});
+			return;
+		}
 		// Delegate side first: this is what admits, and surrendering is purely local — it cannot be
 		// refused by an unreachable peer, so it succeeds even when the recalls below do not.
 		for (const delegation of [...this.#delegations.values()]) {
 			try {
-				await withDeadline(
-					this.onDelegationRecall({ key: delegation.key, token: delegation.token }),
-					remaining()
-				);
+				await withDeadline(this.onDelegationRecall({ key: delegation.key, token: delegation.token }), remaining());
 				result.surrendered++;
 			} catch (error) {
 				result.outstanding.push({
@@ -2131,7 +2141,11 @@ export interface QuiesceResult {
 	surrendered: number;
 	/** Grants this node issued whose delegate confirmed it stopped admitting. */
 	recalled: number;
-	/** What is still live; empty means this node is provably quiesced for the database. */
+	/**
+	 * What is still live, or unprovable. Empty means this node is provably quiesced for the database —
+	 * and ONLY then, which is why a coordinator still inside its restart quarantine contributes an
+	 * entry here rather than reporting a clean sweep it cannot back.
+	 */
 	outstanding: QuiesceOutstanding[];
 }
 
