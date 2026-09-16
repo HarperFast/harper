@@ -112,6 +112,8 @@ export class FullTextDerivedIndexError extends Error {
 	}
 }
 
+class FullTextDerivedIndexProtocolError extends FullTextDerivedIndexError {}
+
 export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	readonly id: string;
 	#lifecycle: FullTextDerivedIndexLifecycle;
@@ -452,17 +454,19 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				this.#hasStagedMutations = true;
 				const count = await this.#engine!.apply(batch.bytes);
 				if (count !== batch.mutationCount)
-					throw new FullTextDerivedIndexError(
+					throw new FullTextDerivedIndexProtocolError(
 						`Full-text engine applied ${count} of ${batch.mutationCount} frame mutations`
 					);
 				applied += count;
 			}
 			if (applied !== command.batch.records.length)
-				throw new FullTextDerivedIndexError(
+				throw new FullTextDerivedIndexProtocolError(
 					`Full-text engine applied ${applied} of ${command.batch.records.length} mutations`
 				);
 		} catch (error) {
-			await this.#loseAcceptedWork(command.epoch, error);
+			const protocolFailure = error instanceof FullTextDerivedIndexProtocolError;
+			await this.#loseAcceptedWork(command.epoch, error, !protocolFailure);
+			if (protocolFailure) this.#failAndNotify(error);
 			return false;
 		}
 		this.#assertCommandEpoch(command.epoch);
@@ -526,7 +530,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		return true;
 	}
 
-	async #loseAcceptedWork(ownerEpoch: bigint, cause: unknown): Promise<void> {
+	async #loseAcceptedWork(ownerEpoch: bigint, cause: unknown, notify = true): Promise<void> {
 		this.#lossPendingEpoch = ownerEpoch;
 		this.#discardCommands();
 		const engine = this.#engine;
@@ -544,7 +548,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#rewindAcceptedWork();
 		this.#assertCommandEpoch(ownerEpoch);
 		this.#hasStagedMutations = false;
-		this.#notify('accepted-work-lost');
+		if (notify) this.#notify('accepted-work-lost');
+		else this.#lossPendingEpoch = undefined;
 	}
 
 	async #closeForShutdown(request: ShutdownRequest): Promise<void> {

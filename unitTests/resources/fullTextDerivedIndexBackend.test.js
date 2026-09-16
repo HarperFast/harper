@@ -220,6 +220,54 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('rolls back every staged frame when a later frame fails', async () => {
+		const engine = new FakeEngine();
+		engine.encodeResult = (value) => ({
+			batches: value.upserts.map((upsert) => ({
+				bytes: Buffer.from(JSON.stringify({ upserts: [upsert], deletes: [] })),
+				mutationCount: 1,
+			})),
+			rejected: [],
+		});
+		engine.apply = async function (bytes) {
+			const value = JSON.parse(Buffer.from(bytes).toString());
+			this.applied.push(value);
+			if (this.applied.length === 2) throw new Error('second frame failed');
+			return 1;
+		};
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(
+			batch(
+				1n,
+				['a', 'b'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
+				cursor(20)
+			)
+		);
+		backend.flush();
+		await waitFor(() => changes.includes('accepted-work-lost'));
+		assert.strictEqual(engine.applied.length, 2);
+		assert.strictEqual(engine.publications.length, 0);
+		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
+		await backend.shutdown(1n);
+	});
+
+	it('fails permanently after rolling back an applied-count contract violation', async () => {
+		const engine = new FakeEngine();
+		engine.appliedCount = 0;
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
+		backend.flush();
+		await waitFor(() => changes.includes('failed'));
+		assert(!changes.includes('accepted-work-lost'));
+		assert.strictEqual(engine.publications.length, 0);
+		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
+		await backend.shutdown(1n);
+	});
+
 	it('replaces only wrapper-rejected upserts with removals', async () => {
 		const engine = new FakeEngine();
 		engine.encodeResult = (value) => {

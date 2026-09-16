@@ -1327,7 +1327,7 @@ class DerivedIndexRunner {
 			return record;
 		}
 		const recordKey = derivedIndexRecordKey(key);
-		chunk.batch.bytes += Buffer.byteLength(recordKey, 'latin1') + DERIVED_INDEX_MUTATION_OVERHEAD_BYTES;
+		chunk.batch.bytes += recordKey.length + DERIVED_INDEX_MUTATION_OVERHEAD_BYTES;
 		const current = this.#resolveRecord(tableId, collectedKey.recordId);
 		const state: DerivedIndexState = current
 			? this.#project(chunk, tableId, current.value, current.version, current.size ?? collectedKey.sizeHint)
@@ -1795,7 +1795,7 @@ class DerivedIndexRunner {
 		if (!byRecord) chunk.resolved.set(tableId, (byRecord = new Map()));
 		if (byRecord.has(key)) return;
 		const recordKey = derivedIndexRecordKey(key);
-		chunk.batch.bytes += Buffer.byteLength(recordKey, 'latin1') + DERIVED_INDEX_MUTATION_OVERHEAD_BYTES;
+		chunk.batch.bytes += recordKey.length + DERIVED_INDEX_MUTATION_OVERHEAD_BYTES;
 		const mutation: DerivedIndexMutation = {
 			tableId,
 			recordId: record.recordId,

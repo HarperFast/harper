@@ -149,6 +149,20 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.deepStrictEqual(binding.opens[0].limits, limits);
 	});
 
+	it('rollback-closes an opened handle that does not implement the engine contract', async () => {
+		const binding = new FakeNativeModule();
+		const closes = [];
+		binding.openNativeFullTextIndex = async () => ({
+			async close(closeOptions) {
+				closes.push(closeOptions);
+			},
+		});
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
+		await lifecycle.initialize();
+		await assert.rejects(lifecycle.open(), /invalid index handle/);
+		assert.deepStrictEqual(closes, [{ mode: 'rollback' }]);
+	});
+
 	it('delegates reset and reclaims the wrapper-retired directory asynchronously', async () => {
 		const binding = new FakeNativeModule();
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
