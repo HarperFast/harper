@@ -182,6 +182,22 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('fails after exhausting the bounded writer-open retry budget', async () => {
+		const source = lifecycle({ state: 'missing' }, [
+			new Error('open failed'),
+			new Error('open failed'),
+			new Error('open failed'),
+		]);
+		const { backend } = makeBackend(source, { openAttempts: 3 });
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
+		await waitFor(() => changes.includes('failed'));
+		assert.strictEqual(source.openCalls, 3);
+		await backend.shutdown(1n);
+	});
+
 	it('delegates one logical batch to the wrapper before publishing its cursor', async () => {
 		const engine = new FakeEngine();
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
@@ -219,6 +235,22 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
 		assert.strictEqual(backend.getUnindexableRecords(), 1);
+		await backend.shutdown(1n);
+	});
+
+	it('accepts a valid wrapper result with a custom prototype', async () => {
+		const engine = new FakeEngine();
+		engine.applyResult = (value) =>
+			Object.assign(Object.create({ wrapperResult: true }), {
+				processed: value.upserts.length + value.deletes.length,
+				rejected: [],
+				encodedBytes: 1,
+				frames: 1,
+			});
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		backend.deliver(batch(1n, [mutation('a', { kind: 'absent' })], cursor(20)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
 		await backend.shutdown(1n);
 	});
 
@@ -602,12 +634,18 @@ describe('FullTextDerivedIndexBackend', () => {
 	});
 
 	it('omits non-text projection values', () => {
+		const projection = Object.assign(Object.create({ inherited: 'ignored' }), {
+			title: 'shoe',
+			tags: ['red', 'sale'],
+			price: 12,
+			mixed: ['red', 12],
+		});
 		const converted = toFullTextMutationBatch(
 			batch(1n, [
 				mutation('a', {
 					kind: 'record',
 					version: 1,
-					projection: { title: 'shoe', tags: ['red', 'sale'], price: 12, mixed: ['red', 12] },
+					projection,
 				}),
 			])
 		);

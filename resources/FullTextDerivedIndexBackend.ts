@@ -431,7 +431,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		mutationCount: number
 	): void {
 		if (
-			!plainObject(result) ||
+			!result ||
+			typeof result !== 'object' ||
 			!Number.isSafeInteger(result.processed) ||
 			result.processed !== mutationCount ||
 			!Array.isArray(result.rejected)
@@ -721,7 +722,7 @@ export function decodeFullTextCursorPayload(
 
 function fullTextFields(projection: unknown): Record<string, string | string[]> {
 	const fields: Record<string, string | string[]> = Object.create(null);
-	if (!plainObject(projection)) return fields;
+	if (!projection || typeof projection !== 'object' || Array.isArray(projection)) return fields;
 	for (const name in projection) {
 		if (!Object.hasOwn(projection, name)) continue;
 		const value = projection[name];
