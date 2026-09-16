@@ -892,10 +892,6 @@ describe('Caching', () => {
 	});
 
 	it('Source throw error', async function () {
-		const previousTTL = {
-			expiration: IndexedCachingTable.expirationMS / 1000,
-			eviction: IndexedCachingTable.evictionMS / 1000,
-		};
 		try {
 			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 100 });
 			await IndexedCachingTable.invalidate(30);
@@ -936,7 +932,7 @@ describe('Caching', () => {
 		} finally {
 			return_error = false;
 			sourceExpiresAt = undefined;
-			IndexedCachingTable.setTTLExpiration(previousTTL);
+			IndexedCachingTable.setTTLExpiration({ expiration: 0.005, eviction: 0.01 });
 		}
 	});
 
