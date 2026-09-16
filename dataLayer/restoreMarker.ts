@@ -190,12 +190,14 @@ export function releaseRestoreLock(lock: RestoreLock): void {
 }
 
 /**
- * Whether a marker on disk is one `scanBlockedRestores` will honor — it selects on a non-empty
- * first line, so that is exactly what "still blocking" means here.
+ * Whether a marker on disk still blocks the database it belongs to. `scanBlockedRestores` maps a
+ * marker to a database by its first line, so the line has to be the whole name: a torn write that
+ * left a prefix of it ("ord" for "orders") is non-empty and reads as valid, but blocks a database
+ * that does not exist while the real one loads.
  */
-function markerIsIntact(markerPath: string): boolean {
+function markerIsIntact(markerPath: string, dbPath: string): boolean {
 	try {
-		return readFileSync(markerPath, 'utf8').split('\n', 1)[0].length > 0;
+		return readFileSync(markerPath, 'utf8').split('\n', 1)[0] === basename(dbPath);
 	} catch {
 		return false;
 	}
@@ -249,7 +251,11 @@ export function beginRestore(dbPath: string): RestoreLock {
 	const preexisting = existsSync(markerPath);
 	const lock = acquireRestoreLock(dbPath);
 	try {
-		if (!preexisting || !markerIsIntact(markerPath)) publishRestoringMarker(dbPath);
+		if (!preexisting || !markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
+		// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
+		// have been interrupted between the rename and this flush, which would leave the directory
+		// entry — the thing the startup scan reads — still only in the page cache.
+		else fsyncDir(restoreMetaDir(dbPath));
 	} catch (error) {
 		fileLockRelease(lock.token);
 		throw error;
