@@ -642,7 +642,6 @@ describe('rocksdbBackup', function () {
 			} finally {
 				database.close();
 			}
-			const backupDir = backupDirForDatabase(PINNED);
 			// stand in for a purge admitted while the blob snapshot is being written
 			const original = blobBackupModule.snapshotBlobs;
 			blobBackupModule.snapshotBlobs = async (dir) => {
