@@ -2559,6 +2559,26 @@ describe('quiesceDelegations (harper-pro#856)', () => {
 		coordinator.close();
 	});
 
+	it("a closed coordinator's remote grants are still reported, though no live coordinator holds them", async () => {
+		// close() parks the latest deadline of grants issued to OTHER nodes and clears its own table, so
+		// the delegates keep admitting with nothing live to sweep. Reporting only what is live would call
+		// that quiesced.
+		const coordinator = homeWithPeer('retired1', 'T', async () => {});
+		const [key] = keysHomedHere('retired1', 'T', 1);
+		assert.strictEqual(
+			(await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: MAX_LOCK_LEASE_MS }))
+				.granted,
+			true
+		);
+		coordinator.close();
+		const result = await quiesceDelegations('retired1', 100);
+		assert.strictEqual(result.complete, false, "a closed coordinator's grants outlive it on their delegates");
+		assert.ok(
+			result.outstanding.some((entry) => /closed coordinator/.test(entry.reason)),
+			JSON.stringify(result.outstanding)
+		);
+	});
+
 	it('never reports complete alongside outstanding work', async () => {
 		const coordinator = homeWithPeer('q7', 'T', async () => {
 			throw new Error('unreachable');

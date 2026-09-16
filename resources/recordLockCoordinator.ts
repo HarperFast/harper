@@ -2220,6 +2220,26 @@ export async function quiesceDelegations(database: string, deadlineMs: number): 
 				reason: `this thread has not coordinated ${database}.${coordinator.table} long enough to rule out authority issued before it took over; ${Math.ceil(unproven)}ms remain`,
 			});
 	}
+	// A coordinator that closed parked the latest deadline of the grants it had issued to OTHER nodes
+	// here and then cleared its own table (`close`). Those grants are still valid on their delegates and
+	// no live coordinator holds them, so a sweep that ignored this would miss them entirely — the table
+	// may not even have a coordinator any more.
+	//
+	// `performance.now()` because a retired entry outlives the coordinator whose injected clock produced
+	// its deadline: production passes that same clock (the transport's `monotonicNow`), so the domains
+	// agree where it matters, and a test on an artificial clock only ever reads the deadline as further
+	// away — conservative, never a false clean.
+	const now = performance.now();
+	for (const [key, retired] of retiredCoordinators) {
+		const separator = key.indexOf('\u0000');
+		if (separator < 0 || key.slice(0, separator) !== database) continue;
+		if (!(retired.grantableAfterMono > now)) continue;
+		result.outstanding.push({
+			table: key.slice(separator + 1),
+			key: undefined,
+			reason: `a closed coordinator for this table issued grants that remain valid on their delegates for another ${Math.ceil(retired.grantableAfterMono - now)}ms`,
+		});
+	}
 	if (result.outstanding.length > 0) result.complete = false;
 	return result;
 }
