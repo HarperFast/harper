@@ -225,6 +225,18 @@ describe('restoreMarker', function () {
 			assert.deepStrictEqual(scanBlockedRestores(tempDir), [[basename(dbPath), 'incomplete']]);
 		});
 
+		it('repairs a marker whose database name was torn mid-write', function () {
+			// Non-empty but truncated. The scan resolves the name it reads back to a *different* metadata
+			// key, so a torn name blocks nothing at all while the real database loads.
+			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+			writeFileSync(restoringMarkerPath(dbPath), `${basename(dbPath).slice(0, 3)}`);
+			assert.deepStrictEqual(scanBlockedRestores(tempDir), [], 'precondition: a torn name blocks nothing');
+
+			abandonRestore(beginRestore(dbPath));
+
+			assert.deepStrictEqual(scanBlockedRestores(tempDir), [[basename(dbPath), 'incomplete']]);
+		});
+
 		it('publishes the marker by rename, leaving no temp file behind', function () {
 			const lock = beginRestore(dbPath);
 			try {
