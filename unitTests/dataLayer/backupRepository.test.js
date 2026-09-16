@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -113,6 +113,15 @@ describe('backupRepository', function () {
 		it('rejects a pin id that would escape the pins directory', function () {
 			assert.throws(() => pinBackup(backupDir, '../escape', 1, 'nope'), /Invalid backup pin id/);
 			assert.throws(() => unpinBackup(backupDir, 'a/b'), /Invalid backup pin id/);
+		});
+
+		it('treats a pin unlinked mid-read as the released claim it is', function () {
+			// readdir lists it, the read fails: a concurrent unpin, not a torn file
+			mkdirSync(backupPinsDir(backupDir), { recursive: true });
+			symlinkSync(join(backupDir, 'no-such-target'), join(backupPinsDir(backupDir), 'released.json'));
+
+			assert.deepStrictEqual(readBackupPins(backupDir), []);
+			assertBackupsUnpinned(backupDir, [1], 'somedb');
 		});
 
 		it('has no pins before anything claims one', function () {

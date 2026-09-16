@@ -37,7 +37,8 @@ const { getBlobPathsForDatabaseName } = require('#src/resources/blob');
 // in the online-operation tests below must therefore carry a super_user role.
 const SU = { hdb_user: { role: { permission: { super_user: true } } } };
 const { beginRestore, completeRestore, checkRestoreState } = require('#src/dataLayer/restoreMarker');
-const { pinBackup, unpinBackup } = require('#src/dataLayer/backupRepository');
+const { pinBackup, readBackupPins, unpinBackup } = require('#src/dataLayer/backupRepository');
+const { backups } = require('@harperfast/rocksdb-js');
 const { closeLoadedDatabases } = require('#src/resources/databases');
 
 const DB_NAME = 'rocksdb-backup-unit-test';
@@ -615,6 +616,62 @@ describe('rocksdbBackup', function () {
 				(error) => error.statusCode === 409 && new RegExp(`backup ${first.backup_id}`).test(error.message)
 			);
 			assert.strictEqual((await listBackupsInDir(backupDir)).length, 2, 'a refused purge must remove nothing');
+		});
+
+		it('purges exactly the backups it admitted, so a concurrent create is not swept up', async function () {
+			this.timeout(30000);
+			const { first, second } = await seedTwoBackups();
+			const backupDir = backupDirForDatabase(PINNED);
+			// keep_count=1 admits {first}; a third backup created before the engine call must survive,
+			// because "keep the newest 1" evaluated later would have dropped `second` instead
+			const purged = await purgeBackupsOffline(PINNED, 1);
+
+			const surviving = (await listBackupsInDir(backupDir)).map((backup) => backup.backupId);
+			assert.deepStrictEqual(surviving, [second.backup_id]);
+			assert.ok(!surviving.includes(first.backup_id));
+			assert.strictEqual(purged.remaining, 1);
+		});
+
+		it('reconciles blob snapshots the engine no longer has, even ones it did not delete itself', async function () {
+			this.timeout(30000);
+			const { first, second } = await seedTwoBackups();
+			const backupDir = backupDirForDatabase(PINNED);
+			// an engine backup removed without Harper's cleanup — what a delete that threw partway
+			// through leaves behind
+			await backups.delete(backupDir, first.backup_id);
+			assert.ok(existsSync(blobSnapshotDir(backupDir, first.backup_id)), 'precondition: snapshot is orphaned');
+
+			await deleteBackupOffline(PINNED, second.backup_id);
+
+			assert.ok(
+				!existsSync(blobSnapshotDir(backupDir, first.backup_id)),
+				'an orphaned snapshot must not keep charging the quota'
+			);
+		});
+
+		it('releases its claim on the source once a restore finishes', async function () {
+			this.timeout(30000);
+			const { second } = await seedTwoBackups();
+			const backupDir = backupDirForDatabase(PINNED);
+
+			await restoreBackupOffline(PINNED, second.backup_id);
+			assert.deepStrictEqual(readBackupPins(backupDir), [], 'a finished restore must not hold the backup');
+		});
+
+		it('releases its claim when the restore is refused', async function () {
+			this.timeout(30000);
+			const { second } = await seedTwoBackups();
+			const backupDir = backupDirForDatabase(PINNED);
+			const occupied = `${PINNED}-occupied-target`;
+			mkdirSync(join(storageDir, occupied), { recursive: true });
+			writeFileSync(join(storageDir, occupied, 'CURRENT'), 'x');
+
+			try {
+				await assert.rejects(restoreBackupOffline(PINNED, second.backup_id, occupied), /already exists/);
+				assert.deepStrictEqual(readBackupPins(backupDir), [], 'a refused restore must not leak a pin');
+			} finally {
+				rmSync(join(storageDir, occupied), { recursive: true, force: true });
+			}
 		});
 
 		it('allows a purge that keeps every pinned backup', async function () {
