@@ -150,7 +150,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#failed = false;
 	#capacityDeferred = false;
 	#shutdown?: ShutdownRequest;
-	#unindexableRecords = 0;
 	#unindexableWarned = false;
 
 	constructor(options: FullTextDerivedIndexBackendOptions) {
@@ -496,11 +495,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			deletes.push(upsert.id);
 			return false;
 		});
-		const unindexableRecords = (this.#unindexableRecords += indexes.size);
 		if (!this.#unindexableWarned) {
 			this.#unindexableWarned = true;
 			logWarning(
-				`Full-text derived index '${this.id}' removed ${indexes.size} records that exceed native indexing limits (${unindexableRecords} since activation)`,
+				`Full-text derived index '${this.id}' removed ${indexes.size} records rejected by native record or frame limits`,
 				undefined
 			);
 		}
