@@ -27,6 +27,7 @@ import { SchemaEventMsg } from '../server/threads/itc.js';
 import { beginRestore, completeRestore, abandonRestore, checkRestoreState, type RestoreLock } from './restoreMarker.ts';
 import {
 	assertBlobSnapshotRestorable,
+	assertEngineOnlyRestoreAllowed,
 	blobSnapshotDir,
 	blobsReadmeContent,
 	deleteBlobSnapshot,
@@ -439,6 +440,10 @@ the backup (blobs are restored automatically). Restore the latest backup in plac
 
     harper restore_backup database=${databaseName} backup_id=<id>
 
+A backup created with \`exclude_blobs\` carries no blobs. Restoring one **in place** over a database
+that still has blob files is refused, because the restored records would address whichever blobs are
+on disk now; pass \`allow_engine_only=true\` to accept that, or restore into a new database instead.
+
 A database held open by a loaded component — and always the \`system\` database — cannot be restored
 while Harper is running; stop the server and run the same command offline. Offline you can also
 restore into a *copy*, leaving the original untouched:
@@ -491,6 +496,7 @@ export async function verifyBackup(request: any) {
 
 export async function validateRestoreBackup(request: any) {
 	requireSuperUser(request, OPERATIONS_ENUM.RESTORE_BACKUP);
+	requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
 	const databaseName = getDatabaseName(request);
 	if (databaseName === 'system') {
 		throw new ClientError(
@@ -558,7 +564,14 @@ export async function restoreBackup(request: any) {
 			: resolveDatabasePath(databaseName);
 	// reject a backup with more blob roots than the current config *before* anything destructive —
 	// restoring it would mis-address blobs (records persist their root index)
-	await assertBlobSnapshotRestorable(backupDir, backupId, getBlobPathsForDatabaseName(databaseName));
+	const blobRoots = getBlobPathsForDatabaseName(databaseName);
+	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
+	const allowEngineOnly = requireBooleanOption(request.allow_engine_only, 'allow_engine_only');
+	await assertEngineOnlyRestoreAllowed(databaseName, blobRoots, {
+		backupHasBlobs: manifest.blobs,
+		inPlace: true,
+		allowEngineOnly,
+	});
 	const lock = beginRestoreForDatabase(databaseDir, databaseName);
 	let destructionStarted = false;
 	try {
@@ -603,7 +616,7 @@ export async function restoreBackup(request: any) {
 	completeRestore(lock);
 	// signal again: with the marker gone, every thread's rescan reloads the restored database
 	await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.RESTORE_BACKUP, databaseName));
-	return { database: databaseName, backup_id: backupId };
+	return { database: databaseName, backup_id: backupId, ...(allowEngineOnly ? { allow_engine_only: true } : {}) };
 }
 
 // After the close broadcast is acknowledged, every worker thread has released its Harper-managed
@@ -996,7 +1009,12 @@ export async function createBackupOffline(databaseName: string, excludeBlobs = f
  * server start. `targetDatabase` restores into a different database directory (non-destructive
  * for the source database); the server picks it up on next start via normal engine detection.
  */
-export async function restoreBackupOffline(databaseName: string, backupId?: number, targetDatabase?: string) {
+export async function restoreBackupOffline(
+	databaseName: string,
+	backupId?: number,
+	targetDatabase?: string,
+	allowEngineOnly = false
+) {
 	validateDatabaseName(databaseName);
 	const backupDir = backupDirForDatabase(databaseName);
 	// resolve to the latest complete backup (or the requested id, rejected if incomplete)
@@ -1014,7 +1032,13 @@ export async function restoreBackupOffline(databaseName: string, backupId?: numb
 	}
 	// reject a backup with more blob roots than the target's current config before anything
 	// destructive (records persist their root index, so collapsing would mis-address blobs)
-	await assertBlobSnapshotRestorable(backupDir, backupId, getBlobPathsForDatabaseName(targetDatabase ?? databaseName));
+	const blobRoots = getBlobPathsForDatabaseName(targetDatabase ?? databaseName);
+	await assertBlobSnapshotRestorable(backupDir, backupId, blobRoots);
+	await assertEngineOnlyRestoreAllowed(targetDatabase ?? databaseName, blobRoots, {
+		backupHasBlobs: manifest.blobs,
+		inPlace: targetDatabase === undefined || targetDatabase === databaseName,
+		allowEngineOnly,
+	});
 	// Take the restore lock + marker BEFORE probing so a server that starts after this point sees the
 	// marker and refuses to load the database (closing the window between the probe and the purge).
 	const lock = beginRestoreForDatabase(databaseDir, targetDatabase ?? databaseName);
@@ -1069,7 +1093,12 @@ export async function restoreBackupOffline(databaseName: string, backupId?: numb
 		throw error;
 	}
 	completeRestore(lock);
-	return { database: databaseName, backup_id: backupId, restored_to: databaseDir };
+	return {
+		database: databaseName,
+		backup_id: backupId,
+		restored_to: databaseDir,
+		...(allowEngineOnly ? { allow_engine_only: true } : {}),
+	};
 }
 
 function isMissingOrEmptyDir(path: string): boolean {
