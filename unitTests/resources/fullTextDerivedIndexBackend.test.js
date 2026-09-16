@@ -129,8 +129,11 @@ describe('FullTextDerivedIndexBackend', () => {
 	it('inspects the durable cursor without opening a writer', () => {
 		const source = lifecycle({ state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) });
 		const { backend } = makeBackend(source);
-		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(10).logs);
-		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(10).logs);
+		const durable = backend.getDurableCursor();
+		assert.deepStrictEqual({ ...durable.logs }, cursor(10).logs);
+		assert.strictEqual(backend.getDurableCursor(), durable);
+		assert(Object.isFrozen(durable));
+		assert(Object.isFrozen(durable.logs));
 		assert.strictEqual(source.inspectCalls, 1);
 		assert.strictEqual(source.openCalls, 0);
 	});
