@@ -2827,7 +2827,7 @@ Harper records and committed logs
  @harperfast/fulltext/native
  - owns the Tantivy writer/readers
  - atomically publishes segments + cursor
- - inspects and resets native state
+ - validates, inspects, resets, and reclaims native state
 ```
 
 There is no Harper Fulltext store protocol, `CURRENT`, `STORE.json`, generation directory, or
@@ -2838,10 +2838,11 @@ canonical key, so the backend does not reinterpret customer IDs.
 
 #### Binding and writer lifecycle
 
-Harper validates native ABI 4, mutation-batch API 2, and the `native` storage capability before
-registration. ABI 4 is the Rust/Node boundary; mutation-batch API 2 separately identifies the
-resumable JavaScript partition contract. Harper also caps cursor payloads at Fulltext's 64 KiB
-native commit-payload limit during backend construction.
+Harper validates lifecycle API 1, mutation-batch API 2, the `native` storage capability, and the
+wrapper-reported commit-payload capacity before registration. The native ABI remains an internal
+Rust/Node compatibility check enforced by the wrapper's own loader; Harper does not couple itself
+to that implementation version. Harper keeps its cursor format ceiling at 64 KiB and refuses to
+activate if the wrapper cannot carry that configured value.
 
 ```ts
 type EncodedMutationBatches = {
@@ -2862,10 +2863,13 @@ interface NativeFullTextModule {
 	runtimeInfo(): Promise<{
 		packageVersion: string;
 		tantivyVersion: string;
-		nativeAbiVersion: 4;
+		nativeAbiVersion: number;
+		lifecycleApiVersion: 1;
 		mutationBatchApiVersion: 2;
 		storageBackends: ReadonlyArray<'native'>;
+		limits: { maxCommitPayloadBytes: number };
 	}>;
+	validateNativeFullTextIndexOptions(options): void;
 	inspectNativeFullTextIndex(
 		options
 	):
@@ -2877,11 +2881,16 @@ interface NativeFullTextModule {
 		encodeMutationBatches(batch, options?: { maxTotalBytes?: number; allowPartial?: boolean }): EncodedMutationBatches;
 		apply(frame: Uint8Array): Promise<number>;
 		publish(cursor: string): Promise<bigint>;
-		close(options?: { mode?: 'require-clean' | 'rollback' }): Promise<void>;
+		close(options?: { mode?: 'require-clean' | 'rollback' }): Promise<{ cleanupError?: unknown }>;
 	}>;
 	resetNativeFullTextIndex(options): Promise<{ state: 'missing' } | { state: 'reset'; retiredPath: string }>;
+	reclaimRetiredNativeFullTextIndexes(options: { path: string }): Promise<{ removed: number; failed: number }>;
 }
 ```
+
+Native configuration validation belongs to the wrapper because it must stay identical to open's
+Rust decoder and Tantivy limits. Harper calls the validation-only operation at activation; it does
+not duplicate field, analyzer, or writer-limit rules.
 
 Inspection is synchronous and read-only. It supplies the replay anchor without taking Tantivy's
 single writer. The backend opens the writer only when the FIFO reaches a mutation or publication
@@ -2941,36 +2950,31 @@ protocol violation enters the shared condemnation/rebuild budget rather than a F
 recovery state machine.
 
 Shutdown drains accepted work, publishes when possible, closes the writer, and resolves only after
-no command from that owner epoch can touch the index. A close that cannot prove quiescence rejects,
-so the runtime keeps the runner lock and no successor can open the same writer.
-Fulltext's `E_CLOSE_FAILED` is distinct: it reports cleanup trouble after native resources were
-released, so Harper logs it and completes handoff. `E_QUIESCENCE_FAILED` and unknown close failures
-still reject and retain the runner lock.
+no command from that owner epoch can touch the index. The wrapper returns a structured close result:
+a `cleanupError` means resources are quiescent despite an operational cleanup problem, so Harper
+logs it and completes handoff. A rejected close means quiescence was not proven (or clean close was
+refused for uncommitted data), so the runtime keeps the runner lock and no successor can open the
+same writer. Harper does not classify native error codes to infer quiescence.
 
 Reset runs only inside the shared rebuild sequence after condemnation is durable and the prior
-epoch is quiescent. Fulltext atomically retires the active directory. Harper accepts returned
-cleanup paths only under the expected `.fulltext-retired` sibling, refuses symbolic-link roots,
-retries bounded removal, and sweeps interrupted retirements during initialization.
-
-The cleanup checks fail closed when the retirement root is a symbolic link or is not a directory,
-canonicalize candidate parents before recursive removal, and accept both canonical and alias-form
-paths beneath a symlinked store ancestor. Harper's storage directory permissions remain the trust
-boundary: Node does not provide the descriptor-relative recursive removal needed to defend against a
-local actor concurrently replacing the checked directory between filesystem operations.
-
-The retirement root is shared by every native full-text index under the same `storePath`.
-Initialization sweeps all entries because every directory there has already been atomically retired;
-concurrent per-index removals are safe and a bounded-removal warning leaves residue for the next sweep.
+epoch is quiescent. Fulltext atomically retires the active directory and owns the naming and safe
+removal mechanism for those wrapper-created trees. Harper chooses the existing cleanup points—once
+during lifecycle initialization and again after reset—and calls the wrapper reclaimer with the live
+index path. It neither interprets `retiredPath` nor recursively removes native files itself. The
+wrapper limits removal to generated names for that one index, ignores unrelated entries and other
+indices sharing `.fulltext-retired`, and reports failed removals for Harper to log and retry on a
+later lifecycle pass.
 
 A restart reuses compatible files and replays from the cursor embedded in the Tantivy publication.
 A new replica, restore without local files, missing/corrupt/incompatible index, or condemned
 generation rebuilds from authoritative tables before serving Fulltext queries. Ordinary Harper
 reads and writes continue unless the optional derived-index lag policy is enabled and exceeded.
 
-The focused verification covers binding capabilities, deterministic identity, inspect-without-open,
-lazy cursor reconciliation, bounded multi-prefix application, rejected-record removal, rollback,
-handoff quiescence, symlink-safe retirement, restart replay, local rebuild, and absence of derived
-storage feedback into the authoritative log. Performance qualification must measure rebuild and
+The focused verification covers binding capabilities, delegated validation and reclamation,
+deterministic identity, inspect-without-open, lazy cursor reconciliation, bounded multi-prefix
+application, rejected-record removal, rollback, handoff quiescence, restart replay, local rebuild,
+and absence of derived storage feedback into the authoritative log. Wrapper tests own the
+filesystem safety matrix for retirement. Performance qualification must measure rebuild and
 incremental throughput, publication cost, memory, disk amplification, restart recovery, and search
 latency under concurrent catalog indexing.
 

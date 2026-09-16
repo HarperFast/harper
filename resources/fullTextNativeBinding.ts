@@ -1,9 +1,6 @@
 import type { FullTextDerivedIndexEngine } from './FullTextDerivedIndexBackend.ts';
 
-const FULLTEXT_NATIVE_ABI_VERSION = 4;
-export const FULLTEXT_NATIVE_MAX_FIELDS = 1_024;
-export const FULLTEXT_MUTATION_BATCH_HEADER_BYTES = 14;
-export const FULLTEXT_NATIVE_MAX_CURSOR_PAYLOAD_BYTES = 64 * 1024;
+const FULLTEXT_LIFECYCLE_API_VERSION = 1;
 
 export interface NativeFullTextIndexConfiguration {
 	fields: Array<{ name: string; weight?: number }>;
@@ -29,9 +26,18 @@ export interface NativeFullTextModule {
 		packageVersion: string;
 		tantivyVersion: string;
 		nativeAbiVersion: number;
+		lifecycleApiVersion: number;
 		mutationBatchApiVersion: number;
 		storageBackends: ReadonlyArray<'native'>;
+		limits: { maxCommitPayloadBytes: number };
 	}>;
+	validateNativeFullTextIndexOptions(
+		options: NativeFullTextIndexConfiguration & {
+			path: string;
+			indexId: string;
+			generation: string;
+		}
+	): void;
 	openNativeFullTextIndex(
 		options: NativeFullTextIndexConfiguration & {
 			path: string;
@@ -53,6 +59,7 @@ export interface NativeFullTextModule {
 		path: string;
 		indexId: string;
 	}): Promise<{ state: 'missing' } | { state: 'reset'; retiredPath: string }>;
+	reclaimRetiredNativeFullTextIndexes(options: { path: string }): Promise<{ removed: number; failed: number }>;
 }
 
 let bindingPromise: Promise<NativeFullTextModule> | undefined;
@@ -78,10 +85,14 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 			?.encodeMutationBatches !== 'function' ||
 		!('openNativeFullTextIndex' in module) ||
 		typeof module.openNativeFullTextIndex !== 'function' ||
+		!('validateNativeFullTextIndexOptions' in module) ||
+		typeof module.validateNativeFullTextIndexOptions !== 'function' ||
 		!('inspectNativeFullTextIndex' in module) ||
 		typeof module.inspectNativeFullTextIndex !== 'function' ||
 		!('resetNativeFullTextIndex' in module) ||
-		typeof module.resetNativeFullTextIndex !== 'function'
+		typeof module.resetNativeFullTextIndex !== 'function' ||
+		!('reclaimRetiredNativeFullTextIndexes' in module) ||
+		typeof module.reclaimRetiredNativeFullTextIndexes !== 'function'
 	)
 		throw new TypeError('@harperfast/fulltext/native does not implement the required Harper binding contract');
 	const binding = module as NativeFullTextModule;
@@ -90,10 +101,14 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		!info ||
 		typeof info.packageVersion !== 'string' ||
 		typeof info.tantivyVersion !== 'string' ||
-		info.nativeAbiVersion !== FULLTEXT_NATIVE_ABI_VERSION ||
+		!Number.isSafeInteger(info.nativeAbiVersion) ||
+		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
 		info.mutationBatchApiVersion !== 2 ||
 		!Array.isArray(info.storageBackends) ||
-		!info.storageBackends.includes('native')
+		!info.storageBackends.includes('native') ||
+		!info.limits ||
+		!Number.isSafeInteger(info.limits.maxCommitPayloadBytes) ||
+		info.limits.maxCommitPayloadBytes <= 0
 	)
 		throw new TypeError('@harperfast/fulltext/native reported incompatible runtime capabilities');
 	return binding;

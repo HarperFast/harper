@@ -1258,7 +1258,9 @@ describe('DerivedIndexRuntime for native backends', () => {
 				return 1n;
 			}
 
-			async close() {}
+			async close() {
+				return {};
+			}
 		}
 		const opened = [new Engine(), new Engine()];
 		let finishReset;

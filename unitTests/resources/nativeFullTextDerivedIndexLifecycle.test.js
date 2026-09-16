@@ -42,16 +42,25 @@ class FakeNativeModule {
 		this.inspections = [];
 		this.opens = [];
 		this.resets = [];
+		this.validations = [];
+		this.reclaims = [];
 	}
 
 	async runtimeInfo() {
 		return {
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 4,
+			nativeAbiVersion: 5,
+			lifecycleApiVersion: 1,
 			mutationBatchApiVersion: 2,
 			storageBackends: ['native'],
+			limits: { maxCommitPayloadBytes: 64 * 1024 },
 		};
+	}
+
+	validateNativeFullTextIndexOptions(validateOptions) {
+		this.validations.push(validateOptions);
+		if (this.validationError) throw this.validationError;
 	}
 
 	inspectNativeFullTextIndex(inspectOptions) {
@@ -82,13 +91,20 @@ class FakeNativeModule {
 			async publish() {
 				return 1n;
 			},
-			async close() {},
+			async close() {
+				return {};
+			},
 		};
 	}
 
 	async resetNativeFullTextIndex(resetOptions) {
 		this.resets.push(resetOptions);
 		return this.resetResult ?? { state: 'missing' };
+	}
+
+	async reclaimRetiredNativeFullTextIndexes(reclaimOptions) {
+		this.reclaims.push(reclaimOptions);
+		return this.reclaimResult ?? { removed: 0, failed: 0 };
 	}
 }
 
@@ -157,6 +173,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.openNativeFullTextIndex = async () => ({
 			async close(closeOptions) {
 				closes.push(closeOptions);
+				return {};
 			},
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
@@ -171,6 +188,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.openNativeFullTextIndex = async () => ({
 			async close() {
 				if (++closes === 1) throw new Error('writer still active');
+				return {};
 			},
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
@@ -186,7 +204,7 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.openNativeFullTextIndex = async () => ({
 			async close() {
 				closes++;
-				throw Object.assign(new Error('native cleanup failed after release'), { code: 'E_CLOSE_FAILED' });
+				return { cleanupError: new Error('native cleanup failed after release') };
 			},
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
@@ -196,153 +214,21 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		assert.strictEqual(closes, 1);
 	});
 
-	it('delegates reset and reclaims the wrapper-retired directory before returning', async () => {
+	it('delegates reset and asks the wrapper to reclaim retired storage', async () => {
 		const binding = new FakeNativeModule();
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
-		const retiredPath = path.join(storePath, '.fulltext-retired', 'retired-index');
-		fs.mkdirSync(retiredPath, { recursive: true });
-		binding.resetResult = { state: 'reset', retiredPath };
+		binding.resetResult = { state: 'reset', retiredPath: 'wrapper-owned' };
 		await lifecycle.initialize();
 		await lifecycle.reset();
 		assert.deepStrictEqual(binding.resets, [{ path: lifecycle.path, indexId: 'products-title' }]);
-		assert.strictEqual(fs.existsSync(retiredPath), false);
+		assert.deepStrictEqual(binding.reclaims, [{ path: lifecycle.path }, { path: lifecycle.path }]);
 	});
 
-	it('reclaims retired indexes left by an interrupted earlier reset during initialization', async () => {
-		const binding = new FakeNativeModule();
-		const retiredPath = path.join(storePath, '.fulltext-retired', 'orphaned-index');
-		fs.mkdirSync(retiredPath, { recursive: true });
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
-		await lifecycle.initialize();
-		assert.strictEqual(fs.existsSync(retiredPath), false);
-	});
-
-	it('does not remove a retirement path outside the wrapper retirement root', async () => {
-		const binding = new FakeNativeModule();
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
-		const unrelatedPath = path.join(storePath, 'unrelated');
-		const orphanedPath = path.join(storePath, '.fulltext-retired', 'orphaned-index');
-		fs.mkdirSync(unrelatedPath);
-		binding.resetResult = { state: 'reset', retiredPath: unrelatedPath };
-		await lifecycle.initialize();
-		fs.mkdirSync(orphanedPath, { recursive: true });
-		await lifecycle.reset();
-		assert.strictEqual(fs.existsSync(unrelatedPath), true);
-		assert.strictEqual(fs.existsSync(orphanedPath), false);
-	});
-
-	it('does not follow a symbolic-link retirement root', async () => {
-		const binding = new FakeNativeModule();
-		const target = path.join(storePath, 'retired-target');
-		const marker = path.join(target, 'must-remain');
-		fs.mkdirSync(target);
-		fs.writeFileSync(marker, 'retained');
-		fs.symlinkSync(
-			target,
-			path.join(storePath, '.fulltext-retired'),
-			process.platform === 'win32' ? 'junction' : 'dir'
-		);
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
-		await lifecycle.initialize();
-		assert.strictEqual(fs.existsSync(marker), true);
-	});
-
-	it('refuses a retirement root that is not a directory', async () => {
-		const binding = new FakeNativeModule();
-		const retiredRoot = path.join(storePath, '.fulltext-retired');
-		fs.writeFileSync(retiredRoot, 'not a directory');
-		binding.resetResult = { state: 'reset', retiredPath: path.join(retiredRoot, 'retired-index') };
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
-		await lifecycle.initialize();
-		await lifecycle.reset();
-		assert.strictEqual(fs.readFileSync(retiredRoot, 'utf8'), 'not a directory');
-	});
-
-	it('removes a symbolic-link retirement entry without following it', async () => {
-		const binding = new FakeNativeModule();
-		const target = path.join(storePath, 'retired-target');
-		const marker = path.join(target, 'must-remain');
-		const retiredRoot = path.join(storePath, '.fulltext-retired');
-		const retiredLink = path.join(retiredRoot, 'retired-link');
-		fs.mkdirSync(target);
-		fs.mkdirSync(retiredRoot);
-		fs.writeFileSync(marker, 'retained');
-		fs.symlinkSync(target, retiredLink, process.platform === 'win32' ? 'junction' : 'dir');
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
-		await lifecycle.initialize();
-		assert.strictEqual(fs.existsSync(marker), true);
-		assert.strictEqual(fs.existsSync(retiredLink), false);
-	});
-
-	it('does not remove a reset path through an intermediate symbolic link outside the retirement root', async () => {
+	it('asks the wrapper to reclaim retired storage during initialization', async () => {
 		const binding = new FakeNativeModule();
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await lifecycle.initialize();
-		const target = path.join(storePath, 'outside-target');
-		const targetPath = path.join(target, 'retired-index');
-		const marker = path.join(targetPath, 'must-remain');
-		const retiredRoot = path.join(storePath, '.fulltext-retired');
-		const escapeLink = path.join(retiredRoot, 'escape');
-		const retiredPath = path.join(escapeLink, 'retired-index');
-		fs.mkdirSync(targetPath, { recursive: true });
-		fs.mkdirSync(retiredRoot);
-		fs.writeFileSync(marker, 'retained');
-		fs.symlinkSync(target, escapeLink, process.platform === 'win32' ? 'junction' : 'dir');
-		binding.resetResult = { state: 'reset', retiredPath };
-		await lifecycle.reset();
-		assert.strictEqual(fs.existsSync(marker), true);
-		assert.strictEqual(fs.existsSync(escapeLink), false);
-	});
-
-	it('does not remove a reset path through a symbolic-link retirement root', async () => {
-		const binding = new FakeNativeModule();
-		const target = path.join(storePath, 'retired-target');
-		const targetPath = path.join(target, 'retired-index');
-		const retiredPath = path.join(storePath, '.fulltext-retired', 'retired-index');
-		const marker = path.join(targetPath, 'must-remain');
-		fs.mkdirSync(targetPath, { recursive: true });
-		fs.writeFileSync(marker, 'retained');
-		fs.symlinkSync(
-			target,
-			path.join(storePath, '.fulltext-retired'),
-			process.platform === 'win32' ? 'junction' : 'dir'
-		);
-		binding.resetResult = { state: 'reset', retiredPath };
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
-		await lifecycle.initialize();
-		assert.strictEqual(fs.existsSync(marker), true);
-		await lifecycle.reset();
-		assert.strictEqual(fs.existsSync(marker), true);
-	});
-
-	it('accepts a canonical reset path when the configured store path has a symbolic-link ancestor', async () => {
-		const binding = new FakeNativeModule();
-		const actualStorePath = path.join(storePath, 'actual');
-		const aliasStorePath = path.join(storePath, 'alias');
-		fs.mkdirSync(actualStorePath);
-		fs.symlinkSync(actualStorePath, aliasStorePath, process.platform === 'win32' ? 'junction' : 'dir');
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(aliasStorePath, binding));
-		await lifecycle.initialize();
-		const retiredPath = path.join(actualStorePath, '.fulltext-retired', 'retired-index');
-		fs.mkdirSync(retiredPath, { recursive: true });
-		binding.resetResult = { state: 'reset', retiredPath };
-		await lifecycle.reset();
-		assert.strictEqual(fs.existsSync(retiredPath), false);
-	});
-
-	it('accepts an alias-form reset path when the configured store path has a symbolic-link ancestor', async () => {
-		const binding = new FakeNativeModule();
-		const actualStorePath = path.join(storePath, 'actual');
-		const aliasStorePath = path.join(storePath, 'alias');
-		fs.mkdirSync(actualStorePath);
-		fs.symlinkSync(actualStorePath, aliasStorePath, process.platform === 'win32' ? 'junction' : 'dir');
-		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(aliasStorePath, binding));
-		await lifecycle.initialize();
-		const retiredPath = path.join(aliasStorePath, '.fulltext-retired', 'retired-index');
-		fs.mkdirSync(retiredPath, { recursive: true });
-		binding.resetResult = { state: 'reset', retiredPath };
-		await lifecycle.reset();
-		assert.strictEqual(fs.existsSync(retiredPath), false);
+		assert.deepStrictEqual(binding.reclaims, [{ path: lifecycle.path }]);
 	});
 
 	it('preloads and validates the binding before returning a backend', async () => {
@@ -378,14 +264,16 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		await assert.rejects(lifecycle.initialize(), /required Harper binding contract/);
 	});
 
-	it('rejects an incompatible ABI before activation', async () => {
+	it('rejects an incompatible lifecycle API before activation', async () => {
 		const binding = new FakeNativeModule();
 		binding.runtimeInfo = async () => ({
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 3,
+			nativeAbiVersion: 5,
+			lifecycleApiVersion: 2,
 			mutationBatchApiVersion: 2,
 			storageBackends: ['native'],
+			limits: { maxCommitPayloadBytes: 64 * 1024 },
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
@@ -396,44 +284,25 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		binding.runtimeInfo = async () => ({
 			packageVersion: 'test',
 			tantivyVersion: 'test',
-			nativeAbiVersion: 4,
+			nativeAbiVersion: 5,
+			lifecycleApiVersion: 1,
 			storageBackends: ['native'],
+			limits: { maxCommitPayloadBytes: 64 * 1024 },
 		});
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		await assert.rejects(lifecycle.initialize(), /incompatible runtime capabilities/);
 	});
 
-	it('validates native configuration without touching storage', () => {
-		assert.throws(
-			() => new NativeFullTextDerivedIndexLifecycle(options(storePath, new FakeNativeModule(), { fields: [] })),
-			/fields must contain/
-		);
-		assert.throws(
-			() =>
-				new NativeFullTextDerivedIndexLifecycle(
-					options(storePath, new FakeNativeModule(), { limits: { ...limits, writerMemoryBytes: 1 } })
-				),
-			/Tantivy limits/
-		);
+	it('delegates native configuration validation without touching storage', async () => {
+		const binding = new FakeNativeModule();
+		binding.validationError = new TypeError('invalid native configuration');
+		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding, { fields: [] }));
+		await assert.rejects(lifecycle.initialize(), /invalid native configuration/);
+		assert.strictEqual(binding.validations.length, 1);
+		assert.strictEqual(binding.opens.length, 0);
 		assert.throws(
 			() => new NativeFullTextDerivedIndexLifecycle(options('relative', new FakeNativeModule())),
 			/storePath must be absolute/
-		);
-		assert.throws(
-			() =>
-				new NativeFullTextDerivedIndexLifecycle(
-					options(storePath, new FakeNativeModule(), {
-						fields: Array.from({ length: 1025 }, (_, index) => ({ name: `field-${index}` })),
-					})
-				),
-			/fields must contain/
-		);
-		assert.throws(
-			() =>
-				new NativeFullTextDerivedIndexLifecycle(
-					options(storePath, new FakeNativeModule(), { limits: { ...limits, maxBatchBytes: 14 } })
-				),
-			/mutation batch header/
 		);
 	});
 

@@ -19,7 +19,7 @@ const logger = loggerWithTag('fulltext-derived-index');
 
 const DEFAULT_MAX_QUEUED_BATCHES = 16;
 const DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
-const DEFAULT_MAX_CURSOR_PAYLOAD_BYTES = 64 * 1024;
+export const HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES = 64 * 1024;
 const DEFAULT_OPEN_ATTEMPTS = 3;
 const DEFAULT_OPEN_RETRY_MILLISECONDS = 10;
 const DEFAULT_CURSOR_ONLY_PUBLISH_AFTER_FLUSHES = 1;
@@ -37,7 +37,7 @@ export interface FullTextDerivedIndexEngine {
 	apply(batch: Uint8Array): Promise<number>;
 	/** Success proves the cursor payload and every preceding mutation are durably ordered together. */
 	publish(payload: string): Promise<bigint>;
-	close(options?: { mode?: 'require-clean' | 'rollback' }): Promise<void>;
+	close(options?: { mode?: 'require-clean' | 'rollback' }): Promise<{ cleanupError?: unknown }>;
 }
 
 export type FullTextDerivedIndexInspection =
@@ -50,7 +50,6 @@ export interface FullTextDerivedIndexLifecycle {
 	open(): Promise<FullTextDerivedIndexEngine>;
 	reset(): Promise<void>;
 	quiesce?(): void | Promise<void>;
-	isQuiescedCloseError?(error: unknown): boolean;
 }
 
 export type FullTextMutationBatch = {
@@ -177,7 +176,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		);
 		this.#maxQueuedBytes = positiveInteger(options.maxQueuedBytes ?? DEFAULT_MAX_QUEUED_BYTES, 'maxQueuedBytes');
 		this.#maxCursorPayloadBytes = positiveInteger(
-			options.maxCursorPayloadBytes ?? DEFAULT_MAX_CURSOR_PAYLOAD_BYTES,
+			options.maxCursorPayloadBytes ?? HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES,
 			'maxCursorPayloadBytes'
 		);
 		this.#openAttempts = positiveInteger(options.openAttempts ?? DEFAULT_OPEN_ATTEMPTS, 'openAttempts');
@@ -660,12 +659,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		engine: FullTextDerivedIndexEngine,
 		options: { mode: 'require-clean' | 'rollback' }
 	): Promise<void> {
-		try {
-			await engine.close(options);
-		} catch (error) {
-			if (!this.#lifecycle.isQuiescedCloseError?.(error)) throw error;
-			logWarning(`Full-text derived index '${this.id}' closed with a native cleanup error`, error);
-		}
+		const result = await engine.close(options);
+		if (result.cleanupError)
+			logWarning(`Full-text derived index '${this.id}' closed with a native cleanup error`, result.cleanupError);
 	}
 
 	async #open(ownerEpoch: bigint): Promise<FullTextDerivedIndexEngine> {
@@ -830,7 +826,7 @@ function log(level: 'warn' | 'error', message: string, error: unknown): void {
 
 export function encodeFullTextCursorPayload(
 	cursor: DerivedIndexCursor | undefined,
-	maxBytes = DEFAULT_MAX_CURSOR_PAYLOAD_BYTES
+	maxBytes = HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES
 ): string {
 	const normalized = cursor && normalizedCursor(cursor);
 	const payload = JSON.stringify({
@@ -851,7 +847,7 @@ export function encodeFullTextCursorPayload(
 
 export function decodeFullTextCursorPayload(
 	payload: string | null | undefined,
-	maxBytes = DEFAULT_MAX_CURSOR_PAYLOAD_BYTES
+	maxBytes = HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES
 ): DerivedIndexCursor | undefined {
 	if (payload == null) return;
 	if (typeof payload !== 'string' || Buffer.byteLength(payload) > maxBytes)
