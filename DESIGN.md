@@ -2656,6 +2656,9 @@ Synchronous/non-native indexes ignore the option. For example, an HTTP QUERY bod
 }
 ```
 
+When a vector condition also provides the sort order, its explicit tolerance takes precedence; if it
+has none, it inherits the sort's tolerance. The query planner must preserve that option when combining them.
+
 A successful native query certifies coverage **at admission**. `Harper-Index-Coverage` is either
 `current; lag=0; tolerance=0` (with the actual requested tolerance), or
 `bounded; lag=<upper-bound-ms>; tolerance=<requested-ms>`. Bounded coverage can omit recent committed
@@ -2667,6 +2670,13 @@ promise: setting it after native traversal is too late because REST can already 
 An unknown or excessive bound produces `DERIVED_INDEX_LAGGING` / HTTP 503, with the tolerance and
 last certified age (when known) in the message. These admission failures never invalidate a healthy
 plane; existing unavailable/rebuilding checks still take precedence.
+
+Multiple native searches in one response append one coverage entry per admission. The response has
+current coverage only if every entry is current; a bounded entry means part of it may omit recent writes.
+The header describes admission of successful results, not the outcome of a later traversal failure.
+File-primary node-to-record mappings are read from current storage, just like the native graph itself:
+an older record snapshot must not hide mappings published after a record already visible in that snapshot.
+Record filtering and materialization retain the request's snapshot; the native graph is not an MVCC index.
 
 The runner captures `process.hrtime.bigint()` before listing physical logs and polling their committed
 prefixes. It synchronously adds discovered logs to the audit store's worker-local map. A capture is
@@ -2683,6 +2693,18 @@ registered mutations, including unanchored chunks, are absent. Thus a queued rel
 be skipped by a later unrelated commit. Publication is owner/epoch fenced. The physical vector is an
 optional `coverage` field in the existing durable cursor value, preserved by later cursor writes and
 removed with the cursor before reset. No native file format changes.
+
+Persisted coverage rewrites are limited to the flush cadence, including unrelated-table traffic. The
+shared time can refresh sooner once its prefix is durable. A coverage-only write failure logs and skips
+publication instead of rebuilding the healthy graph. Strict queries may wait for the next persisted proof.
+
+Restart identity relies on the existing storage durability ordering: these index column families disable
+WAL, and [RocksDB's database-flush callback](https://github.com/HarperFast/rocksdb-js/blob/v2.9.1/src/binding/transaction_log/transaction_log_store.cpp#L1080-L1111)
+flushes transaction-log files before their index-store flush can become durable. Under successful storage
+flushes, surviving coverage cannot refer to a lost, reusable log tail. Recovery also protects the flushed
+prefix. [Age-based rotation runs on a write](https://github.com/HarperFast/rocksdb-js/blob/v2.9.1/src/binding/transaction_log/transaction_log_store.cpp#L947-L963),
+so an ordinary idle log does not advance its head merely because time passed. These are dependency
+contracts, not a guarantee against externally replacing log files or failed storage durability.
 
 The monotonic time lives only in the process-wide shared readiness buffer and is cleared on non-ready
 health transitions. An owner refreshes idle coverage at its flush cadence without extending its idle

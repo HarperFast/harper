@@ -560,6 +560,8 @@ export class HierarchicalNavigableSmallWorld {
 		options: any
 	): Promise<any[]> {
 		const query = Float32Array.from(target);
+		// Native mappings are published after record commits, so a record snapshot can hide covered nodes.
+		const mappingOptions = this.filePrimary ? undefined : options;
 		let resultPromise: Promise<{ id: number; distance: number }[]>;
 		let predicateError: unknown;
 		if (filter && filterState) {
@@ -568,7 +570,7 @@ export class HierarchicalNavigableSmallWorld {
 				if (predicateError !== undefined) return verdicts; // already failed — deny remaining batches cheaply
 				try {
 					for (let i = 0; i < ids.length; i++) {
-						const primaryKey = this.safeGetSync(ids[i], options)?.primaryKey;
+						const primaryKey = this.safeGetSync(ids[i], mappingOptions)?.primaryKey;
 						if (primaryKey !== undefined && this.admit(filter, filterState, primaryKey)) verdicts[i] = 1;
 					}
 				} catch (error) {
@@ -598,7 +600,7 @@ export class HierarchicalNavigableSmallWorld {
 			const entries: any[] = [];
 			try {
 				for (const hit of hits) {
-					const mapping = this.safeGetSync(hit.id, options);
+					const mapping = this.safeGetSync(hit.id, mappingOptions);
 					if (mapping?.pending) continue;
 					const primaryKey = mapping?.primaryKey;
 					if (primaryKey === undefined) continue; // deleted/reused id raced the search

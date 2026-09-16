@@ -508,6 +508,7 @@ class DerivedIndexRunner {
 	#idleTimer?: NodeJS.Timeout;
 	#flushTimer?: NodeJS.Timeout;
 	#coverageTimer?: NodeJS.Timeout;
+	#lastPersistedCoverageTime = 0n;
 	#rebuildTimer?: NodeJS.Timeout;
 	#unflushedBytes = 0;
 	#unflushedMutations = 0;
@@ -1507,8 +1508,15 @@ class DerivedIndexRunner {
 	#publishCoverage(capture: CoverageCapture) {
 		if (!this.#owned || this.#rebuilding || Atomics.load(this.#shared().epoch, 0) !== this.#ownerEpoch) return;
 		if (capture.time <= Atomics.load(this.#shared().coverage, 0)) return;
-		// The capture precedes the log poll; publication follows durability of its offered cursor.
-		this.#registration.backend.publishCoverage!(capture.positions, this.#ownerEpoch!);
+		if (Number(capture.time - this.#lastPersistedCoverageTime) / 1e6 >= this.#options.maxFlushAgeMilliseconds) {
+			try {
+				this.#registration.backend.publishCoverage!(capture.positions, this.#ownerEpoch!);
+				this.#lastPersistedCoverageTime = capture.time;
+			} catch (error) {
+				logger.warn?.(`Derived index '${this.id}' could not persist query coverage`, error);
+				return;
+			}
+		}
 		Atomics.store(this.#shared().coverage, 0, capture.time);
 	}
 
@@ -1672,6 +1680,7 @@ class DerivedIndexRunner {
 	#discardProgress() {
 		if (this.#coverageTimer) clearTimeout(this.#coverageTimer);
 		this.#coverageTimer = undefined;
+		this.#lastPersistedCoverageTime = 0n;
 		for (const offered of this.#offeredCursors) delete offered.coverage;
 		this.#generation++;
 		this.#stalledSince = undefined;

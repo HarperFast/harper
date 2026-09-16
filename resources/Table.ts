@@ -4576,7 +4576,11 @@ export function makeTable(options) {
 								404
 							);
 					}
-					if (orderAlignedCondition) orderAlignedCondition.descending = Boolean(sort.descending);
+					if (orderAlignedCondition) {
+						orderAlignedCondition.descending = Boolean(sort.descending);
+						if (orderAlignedCondition.maxIndexLagMilliseconds === undefined)
+							orderAlignedCondition.maxIndexLagMilliseconds = sort.maxIndexLagMilliseconds;
+					}
 				}
 			}
 			conditions = orderConditions(conditions, operator);

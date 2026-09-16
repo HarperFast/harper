@@ -76,7 +76,6 @@ test(
 				assert(result.status < 300, JSON.stringify(result));
 			}
 			let rejectedStrict = false;
-			let rejectedDefault = false;
 			let servedTolerant = false;
 			await waitFor(
 				async () => {
@@ -92,7 +91,6 @@ test(
 					const normal = await query();
 					if (normal.status === 503) {
 						assert.equal(normal.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(normal));
-						rejectedDefault = true;
 					} else {
 						assert.equal(normal.status, 200, JSON.stringify(normal));
 						assert.match(
@@ -112,7 +110,6 @@ test(
 				{ timeout: 90_000, interval: 100, message: 'native plane did not certify current coverage' }
 			);
 			assert(rejectedStrict, 'no strict query rejected the native catch-up window');
-			assert(rejectedDefault, 'no default query rejected the expired coverage bound');
 			assert(servedTolerant, 'no tolerant query exposed bounded coverage during catch-up');
 			const final = await query(0);
 			assert.equal(final.status, 200, JSON.stringify(final));

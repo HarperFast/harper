@@ -225,6 +225,7 @@ export type Conditions<Record extends object = any> = Condition<Record>[];
 
 export interface Sort<Record extends object = any> {
 	attribute: keyof Record;
+	/** Native HNSW coverage tolerance in milliseconds; defaults to 3000, with 0 requiring current coverage. */
 	maxIndexLagMilliseconds?: number;
 	descending?: boolean;
 	next?: Sort<Record>;
