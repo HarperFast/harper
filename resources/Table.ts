@@ -71,6 +71,7 @@ import {
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
 import { databases, table } from './databases.ts';
+import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
 	searchByIndex,
 	findAttribute,
@@ -186,6 +187,9 @@ type MaybePromise<T> = T | Promise<T>;
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
+const sourceWriteTypes = new Set(['put', 'patch', 'delete', 'publish', 'message', 'invalidate', 'relocate']);
+const isSourceWriteType = (type: string) => sourceWriteTypes.has(type);
+const SOURCE_APPLY_POSITION = Symbol('sourceApplyPosition');
 const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const MAX_DATE_TIMESTAMP = 8.64e15;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
@@ -994,12 +998,32 @@ export function makeTable(options) {
 			(async () => {
 				let userRoleUpdate = false;
 				let lastSequenceId;
+				let pendingApplyFailures: Promise<void> | undefined;
+				const reportDroppedWrite = (event, context, error) => {
+					const position =
+						event === context ? context[SOURCE_APPLY_POSITION] : (event.timestamp ?? context[SOURCE_APPLY_POSITION]);
+					const notification = notifyReplicatedApplyFailure(
+						databaseName,
+						{
+							nodeId: event.nodeId ?? context.nodeId,
+							table: event.table ?? context.table,
+							localTime: event.localTime ?? context.localTime,
+						},
+						position,
+						error,
+						tableName
+					);
+					pendingApplyFailures = pendingApplyFailures
+						? Promise.all([pendingApplyFailures, notification]).then(noop)
+						: notification;
+					return notification;
+				};
 				/** Cluster lock coordination entries (harper#483 Phase 1) describe no record. */
-				const applyLockControlEvent = (event) => {
+				const applyLockControlEvent = (event, context) => {
 					const entry = decodeLockControlPayload(event.type, event.value);
 					if (!entry) {
 						logger.warn?.('discarding a malformed record lock control entry from', event.nodeId, event.type);
-						return;
+						return reportDroppedWrite(event, context, new Error('Malformed record lock control entry'));
 					}
 					const target = event.table ? databases[databaseName]?.[event.table] : TableResource;
 					try {
@@ -1015,7 +1039,7 @@ export function makeTable(options) {
 						const author = getNodeNameForId(auditStore, event.nodeId, true);
 						if (!author) {
 							logger.warn?.('discarding a record lock control entry whose origin node could not be resolved');
-							return;
+							return reportDroppedWrite(event, context, new Error('Record lock control origin could not be resolved'));
 						}
 						// The coordinator getter fails closed on an unusable node identity. That is right for
 						// an acquire and wrong here: rejecting out of this sink stalls the apply loop for
@@ -1027,11 +1051,12 @@ export function makeTable(options) {
 						target?.admittingCoordinator?.applyEntry(entry, author, event.timestamp);
 					} catch (error) {
 						logger.warn?.('dropping a record lock control entry: the coordinator is unavailable', error);
+						return reportDroppedWrite(event, context, error);
 					}
 				};
 				// perform the write of an individual write event
 				const writeUpdate = async (event, context) => {
-					if (isLockControlType(event.type)) return applyLockControlEvent(event);
+					if (isLockControlType(event.type)) return applyLockControlEvent(event, context);
 					const value = event.value;
 					const Table = event.table ? databases[databaseName][event.table] : TableResource;
 					if (
@@ -1063,6 +1088,14 @@ export function makeTable(options) {
 						async: true,
 					};
 					const id = event.id;
+					if (!isSourceWriteType(event.type)) {
+						logger.error?.('Unknown operation', event.type, event.id);
+						const notification = reportDroppedWrite(event, context, new Error('Unknown source operation'));
+						if (event.finished) await event.finished;
+						return notification;
+					}
+					if (Table && event.type === 'put' && value == null && !shouldRevalidateEvents)
+						await reportDroppedWrite(event, context, new Error('Source-applied put has no record content'));
 					const resource: TableResource = await Table.getResource(id, context, options);
 					if (event.finished) await event.finished;
 					switch (event.type) {
@@ -1083,15 +1116,18 @@ export function makeTable(options) {
 							return resource._writeInvalidate(id, value, options);
 						case 'relocate':
 							return resource._writeRelocate(id, options);
-						default:
-							logger.error?.('Unknown operation', event.type, event.id);
 					}
 				};
 
 				/** Keeps the writes to any one key in arrival order; see DESIGN.md (harper#2211). */
 				const stageWrite = (event, context) => {
 					// A grant must not queue behind whatever the key it names is doing.
-					if (isLockControlType(event.type)) return writeUpdate(event, context);
+					if (
+						isLockControlType(event.type) ||
+						!isSourceWriteType(event.type) ||
+						(event.type === 'put' && event.value == null && !shouldRevalidateEvents)
+					)
+						return writeUpdate(event, context);
 					let chainKey: string | undefined;
 					try {
 						const Table = event.table ? databases[databaseName][event.table] : TableResource;
@@ -1138,7 +1174,11 @@ export function makeTable(options) {
 						let txnInProgress;
 						// we listen for events by iterating through the async iterator provided by the subscription
 						for await (const event of subscription) {
+							let failureEvent = event;
+							let failurePosition: number | undefined;
+							let applied = false;
 							try {
+								failurePosition = event?.timestamp;
 								if (!event || typeof event !== 'object') {
 									logger.error?.('Bad subscription event', event);
 									continue;
@@ -1146,6 +1186,13 @@ export function makeTable(options) {
 								const firstWrite = event.type === 'transaction' ? event.writes[0] : event;
 								if (!firstWrite) {
 									logger.error?.('Bad subscription event', event);
+									await notifyReplicatedApplyFailure(
+										databaseName,
+										event,
+										failurePosition,
+										new Error('Subscription transaction has no writes'),
+										tableName
+									);
 									continue;
 								}
 								event.source = source;
@@ -1154,11 +1201,16 @@ export function makeTable(options) {
 								// there is no re-subscribe / sequence-id-resume path to recover it. Mark the context so the
 								// commit retries such conflicts without a cap (see DatabaseTransaction commit).
 								event.sourceApply = true;
+								event[SOURCE_APPLY_POSITION] = failurePosition;
 								if (event.type === 'end_txn') {
 									// Capture the in-progress transaction in a stable local: the loop variable is reset
 									// once this transaction completes (below), but the seq-id closure and the commit await
 									// still need to reference it afterward.
 									const committingTxn = txnInProgress;
+									if (committingTxn) {
+										failureEvent = committingTxn;
+										failurePosition = committingTxn[SOURCE_APPLY_POSITION];
+									}
 									committingTxn?.resolve();
 									let updateRecordedSequenceId: () => MaybePromise<void>;
 									if (event.localTime && lastSequenceId !== event.localTime) {
@@ -1248,6 +1300,7 @@ export function makeTable(options) {
 									let committed;
 									try {
 										committed = committingTxn ? await committingTxn.committed : undefined;
+										applied = true;
 										if (event.onCommit) {
 											// the onCommit callback can be async and carry associated work (e.g. blob
 											// transfer); wait for it too before recording the sequence id. Pass the commit
@@ -1281,6 +1334,13 @@ export function makeTable(options) {
 											// than rethrow) so the current beginTxn still starts a fresh transaction with
 											// correct boundaries instead of having its writes applied as standalone ones.
 											logger.error?.('source-applied transaction commit failed during apply', error);
+											await notifyReplicatedApplyFailure(
+												databaseName,
+												txnInProgress,
+												txnInProgress[SOURCE_APPLY_POSITION],
+												error,
+												tableName
+											);
 										} finally {
 											// Clear it regardless of outcome so a rejected commit isn't re-awaited on the
 											// next beginTxn (which would brick the apply loop).
@@ -1363,6 +1423,7 @@ export function makeTable(options) {
 										// standalone write: backpressure on the commit before pulling the next event,
 										// and pass the commit resolution through to the callback.
 										const committed = commitResolution ? await commitResolution : undefined;
+										applied = true;
 										await event.onCommit(committed);
 									}
 								} else if (commitResolution && !txnInProgress) {
@@ -1371,6 +1432,14 @@ export function makeTable(options) {
 								}
 							} catch (error) {
 								logger.error?.('error in subscription handler', error);
+								if (!applied)
+									await notifyReplicatedApplyFailure(databaseName, failureEvent, failurePosition, error, tableName);
+							} finally {
+								while (pendingApplyFailures) {
+									const notification = pendingApplyFailures;
+									pendingApplyFailures = undefined;
+									await notification;
+								}
 							}
 						}
 					}

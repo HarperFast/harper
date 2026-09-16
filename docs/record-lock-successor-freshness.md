@@ -70,3 +70,16 @@ The release-entry position replaces an earlier per-write commit-hook design. It 
 callback, covers every write that remains authorized when the release is committed, and cannot sort
 behind a replication cursor that has already advanced. Cold-state trust is discarded whenever
 history may have been missed, and pending grants remain recallable before admission.
+
+## Applied-prefix holes
+
+An origin's committed `lockBarrier` proves its preceding prefix only up to holes reported to the
+transport. A later barrier cannot turn a terminally failed and skipped replicated transaction
+into an applied write. Core's `registerReplicatedApplyFailureListener(database, listener)` reports
+the failed audit-header origin `nodeId` and origin transaction-log `position`, and awaits every
+registered listener before pulling another event (or staging the new `beginTxn` that closed the
+failed transaction). The transport must durably record that discontinuity before its listener
+resolves and reject freshness proofs crossing it until its own recovery rule clears the hole.
+Registration is per apply worker; listener failures remain log-and-continue, so the transport
+also owns failing closed when it cannot persist hole state. Core supplies the observation and
+ordering hook; durable poison records and their clearing policy belong to the transport.

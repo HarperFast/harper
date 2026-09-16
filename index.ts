@@ -9,6 +9,12 @@ if (!workerThreads.isMainThread) {
 // Regular exports (don't require the same initialization as the globals at the end of this file do)
 export { RequestTarget } from './resources/RequestTarget.ts';
 export { flushDatabases } from './resources/databases.ts';
+export {
+	registerReplicatedApplyFailureListener,
+	unregisterReplicatedApplyFailureListener,
+	type ReplicatedApplyFailure,
+	type ReplicatedApplyFailureListener,
+} from './resources/replicatedApplyFailure.ts';
 export { getContext, getResponse, getUser } from './security/jsLoader.ts';
 // Code-first schema authoring: declare a table as a TypeScript value; the returned
 // handle is the live, registered table class with per-verb shapes inferred from the definition.
