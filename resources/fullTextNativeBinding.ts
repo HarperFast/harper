@@ -18,19 +18,21 @@ export interface NativeFullTextIndexConfiguration {
 	};
 }
 
+export type NativeFullTextRuntimeInfo = {
+	packageVersion: string;
+	tantivyVersion: string;
+	nativeAbiVersion: number;
+	lifecycleApiVersion: number;
+	mutationBatchApiVersion: number;
+	storageBackends: ReadonlyArray<'native'>;
+	limits: { maxCommitPayloadBytes: number };
+};
+
 export interface NativeFullTextModule {
 	NativeFullTextIndex: {
-		prototype: Pick<FullTextDerivedIndexEngine, 'encodeMutationBatches'>;
+		prototype: Pick<FullTextDerivedIndexEngine, 'applyMutationBatch' | 'publish' | 'close'>;
 	};
-	runtimeInfo(): Promise<{
-		packageVersion: string;
-		tantivyVersion: string;
-		nativeAbiVersion: number;
-		lifecycleApiVersion: number;
-		mutationBatchApiVersion: number;
-		storageBackends: ReadonlyArray<'native'>;
-		limits: { maxCommitPayloadBytes: number };
-	}>;
+	runtimeInfo(): Promise<NativeFullTextRuntimeInfo>;
 	validateNativeFullTextIndexOptions(
 		options: NativeFullTextIndexConfiguration & {
 			path: string;
@@ -66,6 +68,7 @@ export interface NativeFullTextModule {
 }
 
 let bindingPromise: Promise<NativeFullTextModule> | undefined;
+const validatedRuntimeInfo = new WeakMap<NativeFullTextModule, NativeFullTextRuntimeInfo>();
 
 export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule> {
 	if (!bindingPromise) {
@@ -77,6 +80,8 @@ export async function loadFullTextNativeBinding(): Promise<NativeFullTextModule>
 }
 
 export async function validateFullTextNativeBinding(module: unknown): Promise<NativeFullTextModule> {
+	const prototype = (module as { NativeFullTextIndex?: { prototype?: Partial<FullTextDerivedIndexEngine> } })
+		?.NativeFullTextIndex?.prototype;
 	if (
 		!module ||
 		typeof module !== 'object' ||
@@ -84,8 +89,9 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		typeof module.runtimeInfo !== 'function' ||
 		!('NativeFullTextIndex' in module) ||
 		typeof module.NativeFullTextIndex !== 'function' ||
-		typeof (module.NativeFullTextIndex as { prototype?: { encodeMutationBatches?: unknown } }).prototype
-			?.encodeMutationBatches !== 'function' ||
+		typeof prototype?.applyMutationBatch !== 'function' ||
+		typeof prototype.publish !== 'function' ||
+		typeof prototype.close !== 'function' ||
 		!('openNativeFullTextIndex' in module) ||
 		typeof module.openNativeFullTextIndex !== 'function' ||
 		!('validateNativeFullTextIndexOptions' in module) ||
@@ -106,7 +112,7 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		typeof info.tantivyVersion !== 'string' ||
 		!Number.isSafeInteger(info.nativeAbiVersion) ||
 		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
-		info.mutationBatchApiVersion !== 2 ||
+		info.mutationBatchApiVersion !== 3 ||
 		!Array.isArray(info.storageBackends) ||
 		!info.storageBackends.includes('native') ||
 		!info.limits ||
@@ -114,5 +120,12 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		info.limits.maxCommitPayloadBytes <= 0
 	)
 		throw new TypeError('@harperfast/fulltext/native reported incompatible runtime capabilities');
+	validatedRuntimeInfo.set(binding, info);
 	return binding;
+}
+
+export function getValidatedFullTextRuntimeInfo(binding: NativeFullTextModule): NativeFullTextRuntimeInfo {
+	const info = validatedRuntimeInfo.get(binding);
+	if (!info) throw new Error('Full-text native binding has not been validated');
+	return info;
 }

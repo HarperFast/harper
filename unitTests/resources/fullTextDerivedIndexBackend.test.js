@@ -20,37 +20,24 @@ class FakeEngine {
 	constructor(committedPayload) {
 		this.committedPayload = committedPayload;
 		this.applied = [];
-		this.encoded = [];
-		this.encodingOptions = [];
+		this.applyOptions = [];
 		this.publications = [];
 		this.closes = [];
 	}
 
-	encodeMutationBatches(batch, options) {
-		this.encoded.push(batch);
-		this.encodingOptions.push(options);
-		this.onEncode?.(batch, options);
-		if (this.encodeError) throw this.encodeError;
-		if (this.encodeResult) return this.encodeResult(batch);
-		return {
-			batches: [
-				{
-					bytes: Buffer.from(JSON.stringify(batch)),
-					mutationCount: batch.upserts.length + batch.deletes.length,
-				},
-			],
-			rejected: [],
-			consumedUpserts: batch.upserts.length,
-			consumedDeletes: batch.deletes.length,
-		};
-	}
-
-	async apply(bytes) {
-		const batch = JSON.parse(Buffer.from(bytes).toString());
+	async applyMutationBatch(batch, options) {
 		this.applied.push(batch);
+		this.applyOptions.push(options);
+		this.onApply?.(batch, options);
 		if (this.applyError) throw this.applyError;
 		if (this.applyWait) await this.applyWait;
-		return this.appliedCount ?? batch.upserts.length + batch.deletes.length;
+		if (this.applyResult) return this.applyResult(batch, options);
+		return {
+			processed: batch.upserts.length + batch.deletes.length,
+			rejected: [],
+			encodedBytes: 1,
+			frames: 1,
+		};
 	}
 
 	async publish(payload) {
@@ -101,9 +88,6 @@ function makeBackend(lifecycleValue, options = {}) {
 		maxQueuedBytes: options.maxQueuedBytes,
 		openAttempts: options.openAttempts ?? 1,
 		openRetryMilliseconds: options.openRetryMilliseconds ?? 0,
-		cursorOnlyPublishAfterFlushes: options.cursorOnlyPublishAfterFlushes,
-		maxCursorOnlyPublishDelayMilliseconds: options.maxCursorOnlyPublishDelayMilliseconds,
-		now: options.now,
 	});
 	backend.attach({
 		isOwnerEpoch: (candidate) => candidate === epoch,
@@ -198,268 +182,64 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
-	it('applies every exact wrapper partition before publishing one cursor', async () => {
+	it('delegates one logical batch to the wrapper before publishing its cursor', async () => {
 		const engine = new FakeEngine();
-		engine.encodeResult = (value) => ({
-			batches: value.upserts.map((upsert) => ({
-				bytes: Buffer.from(JSON.stringify({ upserts: [upsert], deletes: [] })),
-				mutationCount: 1,
-			})),
-			rejected: [],
-			consumedUpserts: value.upserts.length,
-			consumedDeletes: value.deletes.length,
-		});
-		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), { maxQueuedBytes: 128 });
-		backend.deliver(
-			batch(
-				1n,
-				['a', 'b', 'c'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
-				cursor(20)
-			)
-		);
-		backend.flush();
-		await waitFor(() => engine.publications.length === 1);
-		assert.strictEqual(engine.applied.length, 3);
-		assert.strictEqual(engine.applied.flatMap((value) => value.upserts).length, 3);
-		assert.deepStrictEqual(engine.encodingOptions, [{ maxTotalBytes: 128, allowPartial: true }]);
-		await backend.shutdown(1n);
-	});
-
-	it('continues consumed mutation prefixes behind one publication barrier', async () => {
-		const engine = new FakeEngine();
-		engine.encodeResult = (value) => {
-			const prefix =
-				value.upserts.length > 0
-					? { upserts: value.upserts.slice(0, 1), deletes: [] }
-					: { upserts: [], deletes: value.deletes.slice(0, 1) };
-			return {
-				batches: [{ bytes: Buffer.from(JSON.stringify(prefix)), mutationCount: 1 }],
-				rejected: [],
-				consumedUpserts: prefix.upserts.length,
-				consumedDeletes: prefix.deletes.length,
-			};
-		};
-		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), { maxQueuedBytes: 128 });
-		backend.deliver(
-			batch(
-				1n,
-				[
-					mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } }),
-					mutation('b', { kind: 'absent' }),
-					mutation('c', { kind: 'absent' }),
-				],
-				cursor(20)
-			)
-		);
-		backend.flush();
-		await waitFor(() => engine.publications.length === 1);
-		assert.strictEqual(engine.encoded.length, 3);
-		assert.deepStrictEqual(
-			engine.applied.map((value) => [value.upserts.length, value.deletes.length]),
-			[
-				[1, 0],
-				[0, 1],
-				[0, 1],
-			]
-		);
-		await backend.shutdown(1n);
-	});
-
-	it('rolls back staged prefixes when a later prefix cannot be encoded', async () => {
-		const engine = new FakeEngine();
-		let encodes = 0;
-		engine.encodeResult = (value) => {
-			if (++encodes === 2) throw new Error('later prefix failed');
-			const prefix = { upserts: value.upserts.slice(0, 1), deletes: [] };
-			return {
-				batches: [{ bytes: Buffer.from(JSON.stringify(prefix)), mutationCount: 1 }],
-				rejected: [],
-				consumedUpserts: 1,
-				consumedDeletes: 0,
-			};
-		};
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
-		const changes = [];
-		backend.onStateChange((change) => changes.push(change));
 		backend.deliver(
 			batch(
 				1n,
-				['a', 'b'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
+				[mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } }), mutation('b', { kind: 'absent' })],
 				cursor(20)
 			)
 		);
 		backend.flush();
-		await waitFor(() => changes.includes('failed'));
+		await waitFor(() => engine.publications.length === 1);
 		assert.strictEqual(engine.applied.length, 1);
-		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
-		assert(!changes.includes('accepted-work-lost'));
+		assert.deepStrictEqual(engine.applyOptions, [{ assumeDistinctIds: true, rejectedUpsert: 'delete' }]);
+		assert.deepStrictEqual([engine.applied[0].upserts.length, engine.applied[0].deletes.length], [1, 1]);
 		await backend.shutdown(1n);
 	});
 
-	it('rolls back every staged frame when a later frame fails', async () => {
+	it('publishes the wrapper count of rejected upserts as unindexable', async () => {
 		const engine = new FakeEngine();
-		engine.encodeResult = (value) => ({
-			batches: value.upserts.map((upsert) => ({
-				bytes: Buffer.from(JSON.stringify({ upserts: [upsert], deletes: [] })),
-				mutationCount: 1,
-			})),
-			rejected: [],
-			consumedUpserts: value.upserts.length,
-			consumedDeletes: value.deletes.length,
+		engine.applyResult = (value) => ({
+			processed: value.upserts.length,
+			rejected: [{ operation: 'upsert', index: 1, code: 'E_BATCH_TOO_LARGE' }],
+			encodedBytes: 16,
+			frames: 2,
 		});
-		engine.apply = async function (bytes) {
-			const value = JSON.parse(Buffer.from(bytes).toString());
-			this.applied.push(value);
-			if (this.applied.length === 2) throw new Error('second frame failed');
-			return 1;
-		};
-		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
-		const changes = [];
-		backend.onStateChange((change) => changes.push(change));
-		backend.deliver(
-			batch(
-				1n,
-				['a', 'b'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
-				cursor(20)
-			)
-		);
-		backend.flush();
-		await waitFor(() => changes.includes('accepted-work-lost'));
-		assert.strictEqual(engine.applied.length, 2);
-		assert.strictEqual(engine.publications.length, 0);
-		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
-		await backend.shutdown(1n);
-	});
-
-	it('fails permanently after rolling back an applied-count contract violation', async () => {
-		const engine = new FakeEngine();
-		engine.appliedCount = 0;
-		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
-		const changes = [];
-		backend.onStateChange((change) => changes.push(change));
-		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
-		backend.flush();
-		await waitFor(() => changes.includes('failed'));
-		assert(!changes.includes('accepted-work-lost'));
-		assert.strictEqual(engine.publications.length, 0);
-		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
-		await backend.shutdown(1n);
-	});
-
-	it('replaces only wrapper-rejected upserts with removals', async () => {
-		const engine = new FakeEngine();
-		engine.encodeResult = (value) => {
-			const rejectedIndex = value.upserts.findIndex((upsert) => upsert.fields.title === 'too large');
-			if (rejectedIndex !== -1)
-				return {
-					batches: [
-						{
-							bytes: Buffer.from(
-								JSON.stringify({
-									upserts: value.upserts.filter((_, index) => index !== rejectedIndex),
-									deletes: value.deletes,
-								})
-							),
-							mutationCount: value.upserts.length + value.deletes.length - 1,
-						},
-					],
-					rejected: [{ operation: 'upsert', index: rejectedIndex, code: 'E_BATCH_TOO_LARGE' }],
-					consumedUpserts: value.upserts.length,
-					consumedDeletes: value.deletes.length,
-				};
-			return {
-				batches: [
-					{
-						bytes: Buffer.from(JSON.stringify(value)),
-						mutationCount: value.upserts.length + value.deletes.length,
-					},
-				],
-				rejected: [],
-				consumedUpserts: value.upserts.length,
-				consumedDeletes: value.deletes.length,
-			};
-		};
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
 		backend.deliver(
 			batch(
 				1n,
-				[
-					mutation('good', { kind: 'record', version: 1, projection: { title: 'good' } }),
-					mutation('bad', { kind: 'record', version: 1, projection: { title: 'too large' } }),
-				],
+				['good', 'bad'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
 				cursor(20)
 			)
 		);
 		backend.flush();
 		await waitFor(() => engine.publications.length === 1);
-		assert.strictEqual(engine.applied.length, 2);
-		assert.strictEqual(engine.applied[0].upserts.length, 1);
-		assert.strictEqual(engine.applied[1].deletes.length, 1);
-		assert.strictEqual(engine.applied[1].deletes[0], engine.encoded[0].upserts[1].id);
 		assert.strictEqual(backend.getUnindexableRecords(), 1);
 		await backend.shutdown(1n);
 	});
 
-	it('fails permanently on invalid wrapper rejection metadata', async () => {
+	it('fails permanently after rolling back an invalid wrapper result', async () => {
 		const engine = new FakeEngine();
-		engine.encodeResult = () => ({
-			batches: [],
-			rejected: [{ operation: 'delete', index: 0, code: 'E_INVALID_ARGUMENT' }],
-			consumedUpserts: 0,
-			consumedDeletes: 1,
-		});
+		engine.applyResult = () => ({ processed: 0, rejected: [], encodedBytes: 1, frames: 1 });
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
 		const changes = [];
 		backend.onStateChange((change) => changes.push(change));
-		backend.deliver(batch(1n, [mutation('a', { kind: 'absent' })], cursor(20)));
-		backend.flush();
+		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })]));
 		await waitFor(() => changes.includes('failed'));
 		assert(!changes.includes('accepted-work-lost'));
+		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
 		await backend.shutdown(1n);
 	});
 
-	it('continues rejected-upsert removals that exceed one encoded prefix', async () => {
-		const engine = new FakeEngine();
-		engine.encodeResult = (value) => {
-			if (value.upserts.length > 0)
-				return {
-					batches: [],
-					rejected: value.upserts.map((_, index) => ({
-						operation: 'upsert',
-						index,
-						code: 'E_BATCH_TOO_LARGE',
-					})),
-					consumedUpserts: value.upserts.length,
-					consumedDeletes: 0,
-				};
-			const prefix = { upserts: [], deletes: value.deletes.slice(0, 1) };
-			return {
-				batches: [{ bytes: Buffer.from(JSON.stringify(prefix)), mutationCount: 1 }],
-				rejected: [],
-				consumedUpserts: 0,
-				consumedDeletes: 1,
-			};
-		};
-		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
-		backend.deliver(
-			batch(
-				1n,
-				['a', 'b', 'c'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: 'too large' } })),
-				cursor(20)
-			)
-		);
-		backend.flush();
-		await waitFor(() => engine.publications.length === 1);
-		assert.strictEqual(engine.applied.length, 3);
-		assert.strictEqual(backend.getUnindexableRecords(), 3);
-		await backend.shutdown(1n);
-	});
-
-	it('defers at queue bounds without encoding in deliver', async () => {
+	it('defers at queue bounds without applying in deliver', async () => {
 		let releaseApply;
-		let encoded = 0;
+		let applyCalls = 0;
 		const engine = new FakeEngine();
-		engine.onEncode = () => encoded++;
+		engine.onApply = () => applyCalls++;
 		engine.applyWait = new Promise((resolve) => (releaseApply = resolve));
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
 			maxQueuedBatches: 1,
@@ -469,9 +249,9 @@ describe('FullTextDerivedIndexBackend', () => {
 		backend.onStateChange((change) => changes.push(change));
 		const value = batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20));
 		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
-		assert.strictEqual(encoded, 0);
+		assert.strictEqual(applyCalls, 0);
 		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_DEFERRED);
-		await waitFor(() => encoded === 1);
+		await waitFor(() => applyCalls === 1);
 		releaseApply();
 		await waitFor(() => changes.includes('changed'));
 		await backend.shutdown(1n);
@@ -501,11 +281,16 @@ describe('FullTextDerivedIndexBackend', () => {
 		const firstWait = new Promise((resolve) => (releaseFirst = resolve));
 		const secondWait = new Promise((resolve) => (releaseSecond = resolve));
 		const engine = new FakeEngine();
-		engine.apply = async function (bytes) {
-			const value = JSON.parse(Buffer.from(bytes).toString());
+		engine.applyMutationBatch = async function (value, options) {
 			this.applied.push(value);
+			this.applyOptions.push(options);
 			await (this.applied.length === 1 ? firstWait : secondWait);
-			return value.upserts.length + value.deletes.length;
+			return {
+				processed: value.upserts.length + value.deletes.length,
+				rejected: [],
+				encodedBytes: 1,
+				frames: 1,
+			};
 		};
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
 			maxQueuedBatches: 2,
@@ -524,15 +309,12 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
-	it('publishes cursor-only progress without encoding mutations', async () => {
+	it('publishes cursor-only progress without applying mutations', async () => {
 		const engine = new FakeEngine();
-		let encoded = 0;
-		engine.onEncode = () => encoded++;
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
 		backend.deliver(batch(1n, [], cursor(20)));
 		backend.flush('age');
 		await waitFor(() => engine.publications.length === 1);
-		assert.strictEqual(encoded, 0);
 		assert.strictEqual(engine.applied.length, 0);
 		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, cursor(20).logs);
 		await backend.shutdown(1n);
@@ -676,23 +458,6 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(2n);
 	});
 
-	it('holds shutdown when a lifecycle-owned invalid handle is not quiescent', async () => {
-		const source = lifecycle({ state: 'missing' }, [new Error('invalid native handle')]);
-		let quiesceError = new Error('writer still active');
-		source.quiesce = async () => {
-			if (quiesceError) throw quiesceError;
-		};
-		const { backend } = makeBackend(source);
-		const changes = [];
-		backend.onStateChange((change) => changes.push(change));
-		backend.deliver(batch(1n, [], cursor(20)));
-		backend.flush();
-		await waitFor(() => changes.includes('failed'));
-		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
-		quiesceError = undefined;
-		await backend.shutdown(1n);
-	});
-
 	it('does not reinstall a writer closed while its epoch was revoked', async () => {
 		let releaseClose;
 		const engine = new FakeEngine();
@@ -725,18 +490,6 @@ describe('FullTextDerivedIndexBackend', () => {
 		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
 		assert.strictEqual(engine.closes.length, 2);
 		engine.closeError = undefined;
-		await backend.shutdown(1n);
-	});
-
-	it('fails permanently when encoding cannot represent an accepted batch', async () => {
-		const engine = new FakeEngine();
-		engine.encodeError = Object.assign(new Error('too large'), { code: 'E_BATCH_TOO_LARGE' });
-		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
-		const changes = [];
-		backend.onStateChange((change) => changes.push(change));
-		backend.deliver(batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20)));
-		await waitFor(() => changes.includes('failed'));
-		assert.strictEqual(backend.deliver(batch(1n, [], cursor(30))), DERIVED_INDEX_FAILED);
 		await backend.shutdown(1n);
 	});
 

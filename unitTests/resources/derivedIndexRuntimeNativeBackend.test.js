@@ -1224,7 +1224,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
-	it('charges the rebuild budget when the full-text encoder violates its progress contract', async () => {
+	it('charges the rebuild budget when the full-text wrapper returns an invalid mutation result', async () => {
 		const records = new Map([['1:a', { version: 20, value: { title: 'oversized' }, size: 32 }]]);
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]), {
 			logEntries: new Map([['local', [audit({ timestamp: 20, recordId: 'a' })]]]),
@@ -1234,23 +1234,13 @@ describe('DerivedIndexRuntime for native backends', () => {
 				this.committedPayload = committedPayload;
 			}
 
-			encodeMutationBatches(batch) {
+			async applyMutationBatch() {
 				return {
-					batches: [
-						{
-							bytes: Buffer.from(JSON.stringify(batch)),
-							mutationCount: batch.upserts.length + batch.deletes.length,
-						},
-					],
+					processed: 0,
 					rejected: [],
-					consumedUpserts: 0,
-					consumedDeletes: 0,
+					encodedBytes: 1,
+					frames: 1,
 				};
-			}
-
-			async apply(bytes) {
-				const batch = JSON.parse(Buffer.from(bytes).toString());
-				return batch.upserts.length + batch.deletes.length;
 			}
 
 			async publish(payload) {

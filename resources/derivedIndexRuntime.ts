@@ -1452,11 +1452,13 @@ class DerivedIndexRunner {
 		this.#settleReady();
 		if (this.#idleTimer) return;
 		this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
+		const generation = this.#generation;
+		const offered = cloneCursor(this.#offered);
 		this.#idleTimer = setTimeout(() => {
 			this.#idleTimer = undefined;
-			if (this.#stopped) return;
+			if (this.#stopped || generation !== this.#generation || !sameCursor(offered, this.#offered)) return;
 			try {
-				if (sameCursor(this.#registration.backend.getDurableCursor(), this.#offered!)) this.#release();
+				if (sameCursor(this.#registration.backend.getDurableCursor(), offered)) this.#release();
 			} catch (error) {
 				this.#fail('backend cursor read threw at idle release', error, 'backend-failed');
 			}
