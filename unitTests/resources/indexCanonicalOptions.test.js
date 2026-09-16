@@ -20,6 +20,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases, canonicalizeIndexOptions } = require('#src/resources/databases');
+const { CUSTOM_INDEXES } = require('#src/resources/indexes/customIndexes');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // Mirror how databases.ts uses the canonicalizer (canonicalIndexKey): structural equality is
@@ -56,6 +57,15 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		assert.equal(sameStructure({ type: 'HNSW' }, { type: 'hnsw' }), false);
 	});
 
+	it('supports registered custom indexes without an option normalizer', () => {
+		CUSTOM_INDEXES.TestIndex = { numericOptions: new Set(['size']) };
+		try {
+			assert.equal(sameStructure({ type: 'TestIndex', size: '0' }, { type: 'TestIndex', size: 0 }), true);
+		} finally {
+			delete CUSTOM_INDEXES.TestIndex;
+		}
+	});
+
 	it('does not over-coerce: only genuinely numeric strings become numbers', () => {
 		// "16abc" is not numeric-looking -> stays a string -> differs from the number 16
 		assert.equal(sameStructure({ M: '16abc' }, { M: 16 }), false);
@@ -63,7 +73,6 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		assert.equal(sameStructure({ x: '' }, { x: 0 }), false);
 		// booleans and numeric-looking strings are distinct (no boolean coercion)
 		assert.equal(sameStructure({ flag: true }, { flag: 'true' }), false);
-		// Numeric HNSW zero representations are equivalent; non-numeric options retain truthiness distinctions.
 		assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: '0' }, { type: 'HNSW', optimizeRouting: 0 }), true);
 		assert.equal(
 			sameStructure({ type: 'HNSW', maxLagMilliseconds: '0' }, { type: 'HNSW', maxLagMilliseconds: 0 }),

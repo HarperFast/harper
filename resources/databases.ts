@@ -3299,7 +3299,9 @@ export function canonicalizeIndexOptions(value: any, coerceZero = false): any {
 				if (value[key]) canonical[key] = true;
 				continue;
 			}
-			const optionValue = customIndex ? customIndex.normalizeOptionValue(key, value[key]) : value[key];
+			const optionValue = customIndex?.normalizeOptionValue
+				? customIndex.normalizeOptionValue(key, value[key])
+				: value[key];
 			canonical[key] = canonicalizeIndexOptions(
 				optionValue,
 				coerceZero || Boolean(customIndex?.numericOptions?.has(key))
@@ -3307,8 +3309,6 @@ export function canonicalizeIndexOptions(value: any, coerceZero = false): any {
 		}
 		return canonical;
 	}
-	// Coerce numeric-looking strings ("16" -> 16) so string-vs-number representations of the same
-	// option compare equal. Leave non-numeric strings, booleans, null, etc. intact.
 	if (typeof value === 'string' && value.trim() !== '') {
 		const numeric = Number(value);
 		if ((numeric !== 0 || coerceZero) && Number.isFinite(numeric)) return numeric;

@@ -2813,7 +2813,8 @@ node is independently audited and eligible, because the plane is node-local deri
 `HNSW_NO_NATIVE_DEFAULT=1` to keep newly omitted declarations on JS during rollout; it does not
 disable an explicit or already persisted native index. Set it before creating indexes when a
 rollback must remain cheap: an older release sees an omitted declaration against the persisted
-`nativePlane: true` decision as a mode change and rebuilds that index back to JS.
+`nativePlane: true` decision as a mode change and rebuilds that index back to JS. In a cluster, keep
+the switch enabled on every node until all nodes run a release with the replicated-attribute fallback.
 
 The default accepts the native implementation's existing operational contract: maintenance is
 post-commit; writes receive retryable 503 responses after derived-index lag exceeds 30 seconds;
