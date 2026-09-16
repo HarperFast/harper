@@ -202,12 +202,14 @@ describe('NativeFullTextDerivedIndexLifecycle', () => {
 		const binding = new FakeNativeModule();
 		const lifecycle = new NativeFullTextDerivedIndexLifecycle(options(storePath, binding));
 		const unrelatedPath = path.join(storePath, 'unrelated');
+		const orphanedPath = path.join(storePath, '.fulltext-retired', 'orphaned-index');
 		fs.mkdirSync(unrelatedPath);
 		binding.resetResult = { state: 'reset', retiredPath: unrelatedPath };
 		await lifecycle.initialize();
+		fs.mkdirSync(orphanedPath, { recursive: true });
 		await lifecycle.reset();
-		await new Promise((resolve) => setImmediate(resolve));
 		assert.strictEqual(fs.existsSync(unrelatedPath), true);
+		assert.strictEqual(fs.existsSync(orphanedPath), false);
 	});
 
 	it('preloads and validates the binding before returning a backend', async () => {
