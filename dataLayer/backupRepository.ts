@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileLockRelease, tryFileLock } from '@harperfast/rocksdb-js';
 import { ClientError } from '../utility/errors/hdbError.ts';
-import { removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
+import { fsyncDirectory, removeFileDurably, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
  * Harper-level coordination for a backup repository: one exclusive management lock, and pins that
@@ -98,9 +98,11 @@ export function readBackupPins(backupDir: string): BackupPin[] {
 		let parsed: any;
 		try {
 			parsed = JSON.parse(readFileSync(join(pinsDir, entry.name), 'utf8'));
-		} catch {
-			// A pin that cannot be read still means something claimed a backup. Fail closed by reporting
-			// it against every id: a torn pin file must not become permission to delete the source.
+		} catch (error: any) {
+			// A released claim, unlinked between the readdir and the read. Anything else still means
+			// something claimed a backup: fail closed against every id, because a torn pin file must not
+			// become permission to delete whatever it was protecting.
+			if (error?.code === 'ENOENT') continue;
 			pins.push({ pin_id: pinId, backup_id: Number.NaN, reason: 'unreadable pin', created_at: 0 });
 			continue;
 		}
@@ -120,7 +122,11 @@ export function readBackupPins(backupDir: string): BackupPin[] {
  */
 export function pinBackup(backupDir: string, pinId: string, backupId: number, reason: string): void {
 	const path = pinPath(backupDir, pinId);
-	mkdirSync(backupPinsDir(backupDir), { recursive: true });
+	const pinsDir = backupPinsDir(backupDir);
+	const created = mkdirSync(pinsDir, { recursive: true });
+	// writeFileDurably flushes the pins directory, but on the first pin that directory's own entry is
+	// new too — without this the whole directory, and so the pin, can be lost to a power cut.
+	if (created !== undefined) fsyncDirectory(backupDir);
 	const pin: BackupPin = { pin_id: pinId, backup_id: backupId, reason, created_at: Date.now() };
 	writeFileDurably(path, JSON.stringify(pin), `${pinId}.tmp`);
 }

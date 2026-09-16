@@ -205,7 +205,7 @@ export function beginRestore(dbPath: string): RestoreLock {
 		// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
 		// have been interrupted between the rename and this flush, which would leave the directory
 		// entry — the thing the startup scan reads — still only in the page cache.
-		else fsyncDir(restoreMetaDir(dbPath));
+		else fsyncDirectory(restoreMetaDir(dbPath));
 	} catch (error) {
 		fileLockRelease(lock.token);
 		throw error;
