@@ -156,8 +156,18 @@ export function checkRestoreState(dbPath: string): RestoreState {
  * on-demand open) and skipping (the startup scan).
  */
 export function withRestoreExclusion<T>(dbPath: string, open: () => T, blocked: (state: BlockedRestoreState) => T): T {
-	mkdirSync(restoreMetaDir(dbPath), { recursive: true });
-	const token = tryFileLock(restoreLockPath(dbPath), true);
+	let token = 0;
+	try {
+		const metaDir = restoreMetaDir(dbPath);
+		if (!existsSync(metaDir)) mkdirSync(metaDir, { recursive: true });
+		token = tryFileLock(restoreLockPath(dbPath), true);
+	} catch {
+		// The exclusion needs a writable metadata directory, and a databases root Harper cannot write
+		// to is not a reason to refuse to load anything from it — that is a strictly worse outcome than
+		// the check-then-open this replaces. Fall back to the marker check alone, which needs only a
+		// read, and which is what every caller did before.
+		return existsSync(restoringMarkerPath(dbPath)) ? blocked('incomplete') : open();
+	}
 	if (token === 0) return blocked('in-progress');
 	try {
 		if (existsSync(restoringMarkerPath(dbPath))) return blocked('incomplete');
