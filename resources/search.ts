@@ -9,6 +9,7 @@ import { lastMetadata } from './RecordEncoder.ts';
 import { writeKeyId } from './DatabaseTransaction.ts';
 import { recordAction } from './analytics/write';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
+import { appendHeader } from '../server/serverHelpers/Headers.ts';
 
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
@@ -553,6 +554,16 @@ export function searchByIndex(
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
 			const searched = index.customIndex.search(searchCondition, context, { filter: recordFilter, minResults });
+			const coverage = (searched as any).indexCoverage;
+			if (coverage && context?.responseHeaders) {
+				appendHeader(
+					context.responseHeaders,
+					'Harper-Index-Coverage',
+					`${coverage.state}; lag=${coverage.lagUpperBoundMilliseconds}; tolerance=${coverage.maxLagMilliseconds}`,
+					true
+				);
+				appendHeader(context.responseHeaders, 'Access-Control-Expose-Headers', 'Harper-Index-Coverage', true);
+			}
 			const processEntries = (entries: any[]) => {
 				const loaded = entries
 					.map((entry) => {

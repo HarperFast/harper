@@ -91,7 +91,7 @@ describe('HNSW native plane file-primary delivery', function () {
 				try {
 					return await nativeSearch(target, filter);
 				} catch (error) {
-					if (/rebuilding/.test(error.message)) return false;
+					if (/rebuilding/.test(error.message) || error.code === 'DERIVED_INDEX_LAGGING') return false;
 					throw error;
 				}
 			},

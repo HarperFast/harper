@@ -7,11 +7,15 @@ import {
 	DERIVED_INDEX_DEFERRED,
 	DerivedIndexRuntime,
 	readDerivedIndexReadiness,
+	readDerivedIndexCoverage,
+	sameDerivedIndexPositions,
 	type DerivedIndexBackend,
 	type DerivedIndexBackendHost,
 	type DerivedIndexBackendStateChange,
 	type DerivedIndexBatch,
 	type DerivedIndexCursor,
+	type DerivedIndexCoverage,
+	type DerivedIndexPositions,
 	type DerivedIndexDeliveryResult,
 	type DerivedIndexFlushReason,
 	type DerivedIndexMutation,
@@ -22,6 +26,13 @@ const logger = loggerWithTag('HNSW');
 
 /** The one durable cursor vector of a file-primary HNSW index, stored beside its node mappings. */
 export const DERIVED_INDEX_CURSOR_KEY = Symbol.for('derived-index-cursor');
+export const DEFAULT_MAX_INDEX_LAG_MILLISECONDS = 3000;
+
+export type DerivedNativeIndexHost = {
+	readiness: () => DerivedIndexReadiness;
+	coverage: (maxLagMilliseconds: number) => DerivedIndexCoverage;
+	requestRebuild: () => boolean;
+};
 
 // Bounds on the queue between the runtime's delivery and the native applier. The runtime already
 // chunks a delivery by records and estimated bytes; this caps how many chunks may wait.
@@ -41,7 +52,7 @@ export interface DerivedNativeIndex {
 	flushDerived(): Promise<void>;
 	resetDerivedStorage(): void;
 	assertDerivedValue(vector: unknown, label: string): void;
-	attachDerivedHost(host: { readiness: () => DerivedIndexReadiness; requestRebuild: () => boolean }): void;
+	attachDerivedHost(host: DerivedNativeIndexHost): void;
 }
 
 /**
@@ -87,6 +98,14 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	getDurableCursor(): DerivedIndexCursor | undefined {
 		const cursor = this.#index.indexStore.getSync(DERIVED_INDEX_CURSOR_KEY);
 		return cursor === undefined ? undefined : (cursor as DerivedIndexCursor);
+	}
+
+	publishCoverage(positions: DerivedIndexPositions, ownerEpoch: bigint): void {
+		if (!this.#host?.isOwnerEpoch(ownerEpoch)) return;
+		const cursor = this.getDurableCursor();
+		if (!cursor) throw new Error('Cannot publish native index coverage without a durable cursor');
+		if (cursor.coverage && sameDerivedIndexPositions(cursor.coverage, positions)) return;
+		this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, { ...cursor, coverage: positions });
 	}
 
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult {
@@ -215,7 +234,10 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		this.#flushing = (async () => {
 			await this.#index.flushDerived();
 			if (epoch !== undefined && !host.isOwnerEpoch(epoch)) return;
-			if (cursor) this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, cursor);
+			if (cursor) {
+				const coverage = this.getDurableCursor()?.coverage;
+				this.#index.indexStore.putSync(DERIVED_INDEX_CURSOR_KEY, coverage ? { ...cursor, coverage } : cursor);
+			}
 		})();
 		this.#flushing.then(
 			() => {
@@ -298,6 +320,13 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 		const label = `Vector for attribute "${attribute.name}"`;
 		index.attachDerivedHost({
 			readiness: () => registered.runtime.getReadiness(id),
+			coverage: (maxLagMilliseconds) =>
+				readDerivedIndexCoverage(
+					auditStore,
+					id,
+					() => indexStore.getSync(DERIVED_INDEX_CURSOR_KEY),
+					maxLagMilliseconds
+				),
 			requestRebuild: () => registered.runtime.requestRebuild(id),
 		});
 		releases.push(

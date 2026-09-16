@@ -2,8 +2,9 @@ import { closeSync, existsSync, openSync, rmSync, statSync, unlinkSync } from 'n
 import { cosineDistance, euclideanDistance, dotProductDistance } from './vector.ts';
 import { FLOAT32_OPTIONS } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ServerError, DerivedIndexLagError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
+import { DEFAULT_MAX_INDEX_LAG_MILLISECONDS, type DerivedNativeIndexHost } from './hnswDerivedIndex.ts';
 import type { DerivedIndexReadiness } from '../derivedIndexRuntime.ts';
 import { SKIP } from '@harperfast/extended-iterable';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
@@ -282,7 +283,7 @@ export class HierarchicalNavigableSmallWorld {
 	private nativePlaneMaxNodes = PLANE_MAX_NODES;
 	// Installed by attachDerivedIndexes on every worker: shared readiness of the index and the way
 	// to ask its owner for a rebuild. Only the owning worker's runtime ever destroys native state.
-	private derivedHost?: { readiness: () => DerivedIndexReadiness; requestRebuild: () => boolean };
+	private derivedHost?: DerivedNativeIndexHost;
 	private pendingDerivedMappings = new Map<
 		Id,
 		{ id?: number; signature?: string; version?: number; pending?: boolean }
@@ -621,8 +622,21 @@ export class HierarchicalNavigableSmallWorld {
 		});
 	}
 
-	attachDerivedHost(host: { readiness: () => DerivedIndexReadiness; requestRebuild: () => boolean }): void {
+	attachDerivedHost(host: DerivedNativeIndexHost): void {
 		this.derivedHost = host;
+	}
+
+	private queryCoverage(maxLagMilliseconds: number) {
+		const coverage = this.derivedHost?.coverage(maxLagMilliseconds);
+		if (!coverage || coverage.state === 'unknown') {
+			const age = coverage?.lagUpperBoundMilliseconds;
+			throw new DerivedIndexLagError(
+				`Cannot certify native HNSW index coverage within ${maxLagMilliseconds} ms` +
+					(age === undefined ? '; freshness is unknown' : `; last certified ${Math.ceil(age)} ms ago`) +
+					'; retry this query'
+			);
+		}
+		return coverage;
 	}
 
 	/**
@@ -1576,6 +1590,7 @@ export class HierarchicalNavigableSmallWorld {
 			comparator,
 			ef,
 			filterExpansion,
+			maxIndexLagMilliseconds = DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
 		}: {
 			target: number[];
 			value: number;
@@ -1584,6 +1599,7 @@ export class HierarchicalNavigableSmallWorld {
 			comparator: string;
 			ef?: number;
 			filterExpansion?: number;
+			maxIndexLagMilliseconds?: number;
 		},
 		context: any,
 		{
@@ -1628,6 +1644,13 @@ export class HierarchicalNavigableSmallWorld {
 		else distanceFunction = this.distance;
 		if (!target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
+		if (
+			this.filePrimary &&
+			(typeof maxIndexLagMilliseconds !== 'number' ||
+				!Number.isFinite(maxIndexLagMilliseconds) ||
+				maxIndexLagMilliseconds < 0)
+		)
+			throw new ClientError('maxIndexLagMilliseconds must be a finite nonnegative number');
 
 		const txnOptions = context.transaction; // should have a nested RocksDB transaction
 		// Resolve search ef: per-query ef wins; else use the schema-pinned value (from either ef option);
@@ -1687,15 +1710,23 @@ export class HierarchicalNavigableSmallWorld {
 			// a non-file-primary query whose dimensionality differs from the graph's takes the JS
 			// path, which tolerates the mismatch, rather than disabling the healthy plane
 			if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {
+				const coverage = this.filePrimary ? this.queryCoverage(maxIndexLagMilliseconds) : undefined;
 				try {
-					return this.searchPlane(plane, target, effectiveEf, filter, filterState, txnOptions).catch((error) => {
-						// the query failed for a reason outside the traversal: re-raise instead of disabling the file
-						if (error?.[NOT_A_PLANE_FAILURE]) throw error;
-						// There is no JS graph behind a file-primary index: it stays unavailable until
-						// its audit-backed rebuild succeeds.
-						this.disablePlane(error);
-						throw new ServerError('The native HNSW index is rebuilding', 503);
-					});
+					const searched = this.searchPlane(plane, target, effectiveEf, filter, filterState, txnOptions)
+						.catch((error) => {
+							// the query failed for a reason outside the traversal: re-raise instead of disabling the file
+							if (error?.[NOT_A_PLANE_FAILURE]) throw error;
+							// There is no JS graph behind a file-primary index: it stays unavailable until
+							// its audit-backed rebuild succeeds.
+							this.disablePlane(error);
+							throw new ServerError('The native HNSW index is rebuilding', 503);
+						})
+						.then((entries) => {
+							if (coverage) Object.defineProperty(entries, 'indexCoverage', { value: coverage });
+							return entries;
+						});
+					if (coverage) Object.defineProperty(searched, 'indexCoverage', { value: coverage });
+					return searched;
 				} catch (error) {
 					// Handle a throw raised before the asynchronous native search returns its promise.
 					this.disablePlane(error);
@@ -1719,7 +1750,9 @@ export class HierarchicalNavigableSmallWorld {
 				this.derivedHost?.requestRebuild();
 				throw new ServerError('The native HNSW index is rebuilding', 503);
 			}
-			return withStats([], filterState);
+			const entries = withStats([], filterState);
+			Object.defineProperty(entries, 'indexCoverage', { value: this.queryCoverage(maxIndexLagMilliseconds) });
+			return entries;
 		}
 		let entryPoint = this.getEntryPoint(txnOptions);
 		if (!entryPoint) return withStats([], filterState);

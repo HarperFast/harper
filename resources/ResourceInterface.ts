@@ -201,6 +201,8 @@ interface TypedDirectCondition<Record extends object, Property extends keyof Rec
 	search_type?: Comparator;
 	value?: Record[Property] | Record[Property][];
 	search_value?: Record[Property] | Record[Property][];
+	/** Native HNSW coverage tolerance in milliseconds; defaults to 3000, with 0 requiring current coverage. */
+	maxIndexLagMilliseconds?: number;
 	/**
 	 * If true, the condition is negated. Phase 1: filter-only — forces a
 	 * full scan unless paired with another indexed condition.
@@ -223,6 +225,7 @@ export type Conditions<Record extends object = any> = Condition<Record>[];
 
 export interface Sort<Record extends object = any> {
 	attribute: keyof Record;
+	maxIndexLagMilliseconds?: number;
 	descending?: boolean;
 	next?: Sort<Record>;
 }

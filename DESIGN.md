@@ -2636,6 +2636,63 @@ then publish `unavailable` and release; the attempt count travels in shared memo
 honours an exhausted budget. `requestRebuild()` from any worker sets a request word the owner
 consumes at its next wake.
 
+### Native HNSW query coverage
+
+Generation readiness and read freshness are separate. A `ready` native index can still be applying
+committed mutations. Native vector sort/threshold conditions accept `maxIndexLagMilliseconds`:
+**3000 ms by default**, `0` for strict coverage, or an explicit finite nonnegative number. This default
+allows three ordinary 1000 ms flush ages; it does not change the separate writer backpressure budget.
+Synchronous/non-native indexes ignore the option. For example, an HTTP QUERY body can contain:
+
+```json
+{
+	"sort": {
+		"attribute": "vector",
+		"target": [1, 0, 0, 0],
+		"distance": "cosine",
+		"maxIndexLagMilliseconds": 0
+	},
+	"limit": 10
+}
+```
+
+A successful native query certifies coverage **at admission**. `Harper-Index-Coverage` is either
+`current; lag=0; tolerance=0` (with the actual requested tolerance), or
+`bounded; lag=<upper-bound-ms>; tolerance=<requested-ms>`. Bounded coverage can omit recent committed
+mutations; it is not a claim that the index is incomplete, nor an ANN recall guarantee. The header is
+exposed to CORS clients. Record arrays retain their existing shape. Direct custom-index callers can
+read the same `indexCoverage` property on the result array and, for asynchronous searches, on the
+returned promise before awaiting it. The query adapter sets the header **synchronously** from that
+promise: setting it after native traversal is too late because REST can already have started streaming.
+An unknown or excessive bound produces `DERIVED_INDEX_LAGGING` / HTTP 503, with the tolerance and
+last certified age (when known) in the message. These admission failures never invalidate a healthy
+plane; existing unavailable/rebuilding checks still take precedence.
+
+The runner captures `process.hrtime.bigint()` before listing physical logs and polling their committed
+prefixes. It synchronously adds discovered logs to the audit store's worker-local map. A capture is
+usable only when each stats snapshot's committed position equals its written head: an earlier unfinished
+transaction can hide later committed transactions behind the readable prefix. The native statistics
+counter alone is insufficient here (it can remain nonzero at an equal head). Positions include both file
+sequence and byte offset; cursor timestamps and origin clocks are never ordered or subtracted to prove
+freshness.
+
+After a poll reaches the end with no undelivered records, the capture is associated with its offered
+cursor. Reconciliation publishes it only when that cursor, or a later entry in the ordered offered queue,
+is durable. Unrelated-only progress may publish without a new barrier only if **all** non-durable
+registered mutations, including unanchored chunks, are absent. Thus a queued relevant mutation cannot
+be skipped by a later unrelated commit. Publication is owner/epoch fenced. The physical vector is an
+optional `coverage` field in the existing durable cursor value, preserved by later cursor writes and
+removed with the cursor before reset. No native file format changes.
+
+The monotonic time lives only in the process-wide shared readiness buffer and is cleared on non-ready
+health transitions. An owner refreshes idle coverage at its flush cadence without extending its idle
+release deadline. A query within the certified age bound reads only shared memory and the monotonic
+clock; strict or older queries compare the persisted vector with current physical positions. This also
+certifies an unchanged index after owner release or process restart, when no usable time proof remains.
+The strict/ownerless path costs a cursor read and stats per physical log. If a database-wide backlog
+prevents the owner from inspecting unrelated writes, coverage can conservatively become unprovable
+for an otherwise unaffected index; queries do not scan logs to classify that backlog.
+
 ### Handoff fencing
 
 Release drops ownership, calls `flush('shutdown')` then `shutdown(epoch)`, and unlocks only when

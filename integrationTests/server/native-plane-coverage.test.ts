@@ -1,0 +1,148 @@
+/** Native HNSW coverage admission and response metadata through REST with six HTTP workers. */
+import { test } from 'node:test';
+import assert from 'node:assert';
+import { resolve } from 'node:path';
+import {
+	createHarperContext,
+	setupHarperWithFixture,
+	teardownHarper,
+	killHarper,
+	startHarper,
+} from '@harperfast/integration-testing';
+import { waitFor } from '../../unitTests/waitFor.js';
+
+test(
+	'native queries expose bounded coverage and reject expired or strict catch-up lag',
+	{ timeout: 180_000 },
+	async () => {
+		const ctx = createHarperContext('native-plane-coverage');
+		let seed = 42;
+		const records = Array.from({ length: 20_000 }, (_, id) => {
+			const vector = Array.from({ length: 128 }, () => {
+				seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+				return (seed / 4294967296) * 2 - 1;
+			});
+			const length = Math.hypot(...vector);
+			return { id, vector: vector.map((value) => value / length) };
+		});
+		const target = records.at(-1)!.vector;
+		const expected = records
+			.map(({ id, vector }) => ({
+				id,
+				dot: vector.reduce((sum, value, i) => sum + value * target[i], 0),
+			}))
+			.sort((a, b) => b.dot - a.dot)
+			.slice(0, 10)
+			.map(({ id }) => id);
+		try {
+			await setupHarperWithFixture(ctx, resolve(import.meta.dirname, 'fixtures/native-plane-coverage'), {
+				config: { threads: { count: 6 }, logging: { level: 'warn' } },
+				env: { HARPER_STORAGE_ENGINE: 'rocksdb' },
+				harperBinPath: resolve('dist/bin/harper.js'),
+			});
+			const headers = {
+				'Authorization': `Basic ${Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64')}`,
+				'Content-Type': 'application/json',
+				'Connection': 'close',
+			};
+			async function request(path: string, method = 'GET', body?: unknown) {
+				const response = await fetch(`${ctx.harper.httpURL}${path}`, {
+					method,
+					headers,
+					body: body === undefined ? undefined : JSON.stringify(body),
+					signal: AbortSignal.timeout(30_000),
+				});
+				return {
+					status: response.status,
+					coverage: response.headers.get('harper-index-coverage'),
+					body: await response.json(),
+				};
+			}
+			const query = (tolerance?: unknown) =>
+				request('/PlaneProbe/', 'QUERY', {
+					sort: {
+						attribute: 'vector',
+						target,
+						distance: 'cosine',
+						ef: 200,
+						...(tolerance === undefined ? {} : { maxIndexLagMilliseconds: tolerance }),
+					},
+					select: ['id', '$distance'],
+					limit: 10,
+				});
+			await waitFor(async () => (await request('/PlaneStatus/')).body.readiness.state === 'ready', 30_000);
+			for (let start = 0; start < records.length; start += 500) {
+				const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
+				assert(result.status < 300, JSON.stringify(result));
+			}
+			let rejectedStrict = false;
+			let rejectedDefault = false;
+			let servedTolerant = false;
+			await waitFor(
+				async () => {
+					const before = (await request('/PlaneStatus/')).body;
+					const strict = await query(0);
+					if (strict.status === 503) {
+						assert.equal(strict.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(strict));
+						rejectedStrict = true;
+					} else {
+						assert.equal(strict.status, 200, JSON.stringify(strict));
+						assert.match(strict.coverage ?? '', /^current; lag=0; tolerance=0$/);
+					}
+					const normal = await query();
+					if (normal.status === 503) {
+						assert.equal(normal.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(normal));
+						rejectedDefault = true;
+					} else {
+						assert.equal(normal.status, 200, JSON.stringify(normal));
+						assert.match(
+							normal.coverage ?? '',
+							/^(current|bounded); lag=[0-9.e+-]+; tolerance=3000$/,
+							JSON.stringify(normal)
+						);
+					}
+					const tolerant = await query(1_000_000);
+					if (tolerant.status === 200) {
+						assert(Array.isArray(tolerant.body));
+						assert.match(tolerant.coverage ?? '', /^(current|bounded); lag=[0-9.e+-]+; tolerance=1000000$/);
+						if (before.mappings < records.length && tolerant.coverage?.startsWith('bounded')) servedTolerant = true;
+					} else assert.equal(tolerant.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(tolerant));
+					return before.mappings === records.length && strict.status === 200;
+				},
+				{ timeout: 90_000, interval: 100, message: 'native plane did not certify current coverage' }
+			);
+			assert(rejectedStrict, 'no strict query rejected the native catch-up window');
+			assert(rejectedDefault, 'no default query rejected the expired coverage bound');
+			assert(servedTolerant, 'no tolerant query exposed bounded coverage during catch-up');
+			const final = await query(0);
+			assert.equal(final.status, 200, JSON.stringify(final));
+			const ids = final.body.map((record: { id: number }) => record.id);
+			assert(ids.includes(records.length - 1), 'the newest vector is missing after catch-up');
+			assert(expected.filter((id) => ids.includes(id)).length >= 9, 'recall@10 fell below 90% after catch-up');
+			for (const invalid of [-1, null, '1000']) {
+				const result = await query(invalid);
+				assert.equal(result.status, 400, JSON.stringify(result));
+				assert.match(result.body.title, /maxIndexLagMilliseconds/);
+			}
+			await killHarper(ctx);
+			await startHarper(ctx, {
+				config: { threads: { count: 6 }, logging: { level: 'warn' } },
+				env: { HARPER_STORAGE_ENGINE: 'rocksdb' },
+				harperBinPath: resolve('dist/bin/harper.js'),
+			});
+			await waitFor(
+				async () => {
+					const result = await query(0);
+					if (result.status === 503) return false;
+					assert.equal(result.status, 200, JSON.stringify(result));
+					assert.equal(result.coverage, 'current; lag=0; tolerance=0');
+					assert(result.body.some(({ id }: { id: number }) => id === records.length - 1));
+					return true;
+				},
+				{ timeout: 30_000, message: 'restarted native index did not certify its persisted coverage' }
+			);
+		} finally {
+			await teardownHarper(ctx);
+		}
+	}
+);

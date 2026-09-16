@@ -66,11 +66,7 @@ export class ServerError extends Error {
 	}
 }
 
-/**
- * Thrown when a write targets a table whose derived index has fallen further behind than its
- * registration allows. A distinct, retryable 503 so writers back off before the index's cursor is
- * lost to transaction-log retention, rather than reading a generic 503 as a permanent failure.
- */
+/** Retryable admission failure when a derived index cannot meet a write or query lag budget. */
 export class DerivedIndexLagError extends ServerError {
 	code: string;
 	retryable: boolean;
