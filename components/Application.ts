@@ -1,6 +1,7 @@
 import { type Logger } from '../utility/logging/logger.ts';
 import { getConfigObj, getConfigValue, getConfigPath } from '../config/configUtils.ts';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { ClientError } from '../utility/errors/hdbError.ts';
 import logger, { errorForLog } from '../utility/logging/harper_logger.ts';
 import { broadcastDeployStart, broadcastDeployEnd } from './deployLifecycle.ts';
 import { ComponentPreparationLockTimeoutError, withComponentPreparationLock } from './componentPreparationLock.ts';
@@ -1338,11 +1339,7 @@ async function readArtifactDescriptor(
 	const descriptorPath = join(deploymentDirPath, CANDIDATE_ARTIFACT_FILE);
 	// The artifact the caller named exists and is theirs, but does not describe a build this can activate —
 	// a conflict with what is on disk, not a server fault.
-	const unusable = (message: string) => {
-		const error: Error & { statusCode?: number } = new Error(message);
-		error.statusCode = 409;
-		return error;
-	};
+	const unusable = (message: string) => new ClientError(message, 409);
 	const raw = await readFile(descriptorPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
 		if (error?.code === 'ENOENT') return undefined;
 		throw error;
@@ -1403,11 +1400,7 @@ async function assertOwnedArtifactTree(
 	// The operator supplied a component that cannot be staged (400); or the artifact they named exists and is
 	// theirs but is no longer what was certified (409). Neither is a server fault, and both reached the
 	// operations handler as a bare 500 until a live run showed what that looks like to a caller.
-	const refuse = (message: string) => {
-		const error: Error & { statusCode?: number } = new Error(message);
-		error.statusCode = action === 'stage' ? 400 : 409;
-		return error;
-	};
+	const refuse = (message: string) => new ClientError(message, action === 'stage' ? 400 : 409);
 	const ownedRoot = await realpath(candidateDirPath);
 	// The loader repairs the component's OWN `node_modules/harper`, not a copy nested inside a dependency,
 	// so only that one path is exempt. Matching the name at any depth would let `dep/node_modules/harper`
@@ -1661,11 +1654,7 @@ async function ensureSecureStagingDirectory(stagingDir: string): Promise<void> {
 async function claimDeploymentDirectory(deploymentDirPath: string, componentName: string): Promise<void> {
 	// Every refusal below is a conflict over an id that already exists, which is the caller's to resolve by
 	// naming a different one — not a server fault, and not the 500 a bare Error reaches the caller as.
-	const taken = (message: string) => {
-		const error: Error & { statusCode?: number } = new Error(message);
-		error.statusCode = 409;
-		return error;
-	};
+	const taken = (message: string) => new ClientError(message, 409);
 	try {
 		await mkdir(deploymentDirPath, { mode: 0o700 });
 	} catch (error) {
@@ -3182,12 +3171,10 @@ export async function buildCandidateApplication(
 		const resolved = await resolveApplicationTarball(application);
 		if (resolved.kind === 'link' && options.rejectLinkSource) {
 			// What the operator asked for, not a server fault: the same component deploys immediately.
-			const refusal: Error & { statusCode?: number } = new Error(
+			throw new ClientError(
 				`Cannot stage ${application.name} from ${application.packageIdentifier}: a 'file:' directory is linked ` +
 					`rather than copied, so the bytes activated later are not the bytes this build certified`
 			);
-			refusal.statusCode = 400;
-			throw refusal;
 		}
 		if (resolved.kind === 'link') {
 			// A `file:` directory becomes a symlink AT THE CANDIDATE PATH, so it is validated and swapped in
@@ -4401,15 +4388,10 @@ async function activateStagedArtifact(
 ): Promise<void> {
 	const deploymentDirPath = candidateDeploymentDirPath(application.dirPath, artifactId);
 	const candidateDirPath = candidateApplicationPath(application.dirPath, artifactId);
-	const unavailable = (why: string) => {
-		// The caller named something that is not there or is not theirs — a 4xx, not the 500 a bare Error
-		// gets from the operations error handler.
-		const error: Error & { statusCode?: number } = new Error(
-			`Cannot deploy ${application.name} from deployment ${artifactId}: ${why}`
-		);
-		error.statusCode = 404;
-		return error;
-	};
+	// The caller named something that is not there or is not theirs — a 4xx, not the 500 a bare Error gets
+	// from the operations error handler.
+	const unavailable = (why: string) =>
+		new ClientError(`Cannot deploy ${application.name} from deployment ${artifactId}: ${why}`, 404);
 
 	const owner = await candidateComponentName(deploymentDirPath);
 	if (owner === undefined) throw unavailable('there is no staged build with that id on this node');
