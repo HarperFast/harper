@@ -63,8 +63,7 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		assert.equal(sameStructure({ x: '' }, { x: 0 }), false);
 		// booleans and numeric-looking strings are distinct (no boolean coercion)
 		assert.equal(sameStructure({ flag: true }, { flag: 'true' }), false);
-		// Only known HNSW numeric parameters opt into zero coercion; other zero strings remain distinct
-		// because generic consumers may branch on truthiness.
+		// Numeric HNSW zero representations are equivalent; non-numeric options retain truthiness distinctions.
 		assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: '0' }, { type: 'HNSW', optimizeRouting: 0 }), true);
 		assert.equal(sameStructure({ type: 'HNSW', nativePlane: '0' }, { type: 'HNSW', nativePlane: 0 }), false);
 		assert.equal(canonicalizeIndexOptions('0'), '0');

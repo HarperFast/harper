@@ -3203,22 +3203,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
  * while the operations API and config objects can supply them reordered or as numbers; without
  * canonicalizing, such a representation-only difference flips the structural comparison and forces
  * a needless full rebuild (clearing + rebuilding the index, 503-ing the attribute throughout) for a
- * semantically identical index. Sorts object keys and coerces numeric-looking non-zero strings to
- * numbers. Known HNSW numeric options also coerce zero because their consumer normalizes before use;
- * other zero strings remain distinct because a generic consumer may branch on truthiness. Boolean-vs-
- * object and absent-vs-present differences are preserved, so a genuine change (`true` vs
- * `{ type: 'HNSW' }`, an added/removed option, a changed value) still triggers a rebuild. Persistence
- * keys off the raw form, so the stored descriptor self-heals toward this shape over time. harper#1357
+ * semantically identical index. Numerically equivalent HNSW option representations compare equal;
+ * ambiguous zero values for other option sets remain distinct. Boolean-vs-object and absent-vs-
+ * present differences are preserved, so a genuine change (`true` vs `{ type: 'HNSW' }`, an
+ * added/removed option, a changed value) still triggers a rebuild. Persistence keys off the raw form,
+ * so the stored descriptor self-heals toward this shape over time. harper#1357
  */
-const HNSW_NUMERIC_OPTIONS = new Set([
-	'M',
-	'efConstruction',
-	'efConstructionSearch',
-	'mL',
-	'optimizeRouting',
-	'filterExpansion',
-	'nativePlaneMaxNodes',
-]);
 export function canonicalizeIndexOptions(value: any, coerceZero = false): any {
 	if (Array.isArray(value)) return value.map((item) => canonicalizeIndexOptions(item, coerceZero));
 	if (value && typeof value === 'object') {
@@ -3227,7 +3217,7 @@ export function canonicalizeIndexOptions(value: any, coerceZero = false): any {
 		for (const key of Object.keys(value).sort())
 			canonical[key] = canonicalizeIndexOptions(
 				value[key],
-				coerceZero || (hnswOptions && HNSW_NUMERIC_OPTIONS.has(key))
+				coerceZero || (hnswOptions && CUSTOM_INDEXES.HNSW.numericOptions.has(key))
 			);
 		return canonical;
 	}

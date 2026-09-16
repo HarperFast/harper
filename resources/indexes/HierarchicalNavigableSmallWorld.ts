@@ -236,6 +236,15 @@ type Node = {
  */
 export class HierarchicalNavigableSmallWorld {
 	static useObjectStore = true;
+	static numericOptions = new Set([
+		'M',
+		'efConstruction',
+		'efConstructionSearch',
+		'mL',
+		'optimizeRouting',
+		'filterExpansion',
+		'nativePlaneMaxNodes',
+	]);
 	// Index options that only affect search, not the stored graph — changing them must not trigger a
 	// reindex (databases.ts persists the new value but skips rebuilding). efConstructionSearch is the
 	// search-time candidate-list size; the build uses efConstruction/M/distance, which are structural.
