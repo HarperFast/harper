@@ -2186,10 +2186,11 @@ export interface QuiesceResult {
  * next generation may be activated immediately. Anything left is a node to fall back to the timer for,
  * or to fence externally — this never claims a drain it did not get, and never throws for one grant.
  */
-export async function quiesceDelegations(database: string, deadlineMs: number): Promise<QuiesceResult> {
+export async function quiesceDelegations(database: string, budgetMs: number): Promise<QuiesceResult> {
 	const result: QuiesceResult = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
 	const coordinators = [...liveCoordinators].filter((coordinator) => coordinator.database === database);
-	const deadline = Date.now() + Math.max(0, deadlineMs);
+	// A DURATION, not an absolute deadline: the whole sweep gets this long, measured from here.
+	const deadline = Date.now() + Math.max(0, budgetMs);
 	const remaining = () => Math.max(0, deadline - Date.now());
 	for (const coordinator of coordinators) {
 		await coordinator.quiesce(result, remaining);
