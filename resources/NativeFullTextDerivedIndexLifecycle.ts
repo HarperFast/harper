@@ -63,10 +63,20 @@ export class NativeFullTextDerivedIndexLifecycle {
 	}
 
 	async open(): Promise<FullTextDerivedIndexEngine> {
-		return this.#requireBinding().openNativeFullTextIndex({
+		const engine = await this.#requireBinding().openNativeFullTextIndex({
 			...this.#nativeOptions(),
 			limits: this.#options.limits,
 		});
+		if (validEngine(engine)) return engine;
+		const error = new TypeError('@harperfast/fulltext/native returned an invalid index handle');
+		if (engine && typeof (engine as { close?: unknown }).close === 'function') {
+			try {
+				await (engine as { close(options: { mode: 'rollback' }): Promise<void> }).close({ mode: 'rollback' });
+			} catch (closeError) {
+				throw new AggregateError([error, closeError], 'Invalid full-text index handle could not be closed');
+			}
+		}
+		throw error;
 	}
 
 	async reset(): Promise<void> {
@@ -143,6 +153,17 @@ function plainObject(value: unknown): value is Record<string, unknown> {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const prototype = Object.getPrototypeOf(value);
 	return prototype === Object.prototype || prototype === null;
+}
+
+function validEngine(value: unknown): value is FullTextDerivedIndexEngine {
+	if (!value || typeof value !== 'object') return false;
+	const engine = value as Partial<Record<keyof FullTextDerivedIndexEngine, unknown>>;
+	return (
+		typeof engine.encodeMutationBatches === 'function' &&
+		typeof engine.apply === 'function' &&
+		typeof engine.publish === 'function' &&
+		typeof engine.close === 'function'
+	);
 }
 
 function validateNativeConfiguration(options: NativeFullTextDerivedIndexLifecycleOptions): void {

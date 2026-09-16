@@ -60,9 +60,11 @@ index. Harper keeps the shared runner lock until this quiescence proof succeeds.
 
 ## Native binding boundary
 
-Harper validates ABI 4 and the native storage capability before registering the backend. The
-binding contract is structural so tests can use a deterministic fake without loading a platform
-binary.
+Harper validates native ABI 4 and the native storage capability before registering the backend.
+ABI 4 describes the Rust/Node binary boundary, which this integration does not change. Harper
+separately validates the JavaScript module surface during activation and the opened engine surface
+before accepting a handle. The binding contract is structural so tests can use a deterministic
+fake without loading a platform binary.
 
 ```ts
 interface NativeFullTextModule {
@@ -203,9 +205,10 @@ does not run a separate close/reopen recovery state machine; the next accepted d
 writer through the normal lazy path and reconciles ambiguous publication outcomes.
 
 An encoder error, invalid cursor, open failure after bounded retries, applied-count contract
-violation that cannot be reconciled, or failure to prove writer quiescence reports a permanent
-backend failure. The existing runtime condemnation and rebuild budget decide whether the index is
-rebuilt or becomes unavailable.
+violation, or failure to prove writer quiescence reports a permanent backend failure. An
+applied-count violation is rollback-closed before failure is reported; it is not retried as a
+transient loss because the same native contract violation would repeat indefinitely. The existing
+runtime condemnation and rebuild budget decide whether the index is rebuilt or becomes unavailable.
 
 Inspection failures throw to the runtime and are not cached, so a later owner can retry. A completed
 inspection that reports missing, cursorless, incompatible, or a malformed payload returns no
