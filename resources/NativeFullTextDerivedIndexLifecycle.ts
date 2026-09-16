@@ -10,6 +10,7 @@ import {
 } from './FullTextDerivedIndexBackend.ts';
 import {
 	FULLTEXT_MUTATION_BATCH_HEADER_BYTES,
+	FULLTEXT_NATIVE_MAX_CURSOR_PAYLOAD_BYTES,
 	FULLTEXT_NATIVE_MAX_FIELDS,
 	loadFullTextNativeBinding,
 	type NativeFullTextIndexConfiguration,
@@ -115,8 +116,17 @@ export class NativeFullTextDerivedIndexLifecycle {
 	async quiesce(): Promise<void> {
 		const handle = this.#invalidHandle;
 		if (!handle) return;
-		await handle.close({ mode: 'rollback' });
+		try {
+			await handle.close({ mode: 'rollback' });
+		} catch (error) {
+			if (!this.isQuiescedCloseError(error)) throw error;
+			logWarning('Invalid full-text index handle closed with a native cleanup error', error);
+		}
 		if (this.#invalidHandle === handle) this.#invalidHandle = undefined;
+	}
+
+	isQuiescedCloseError(error: unknown): boolean {
+		return errorCode(error) === 'E_CLOSE_FAILED';
 	}
 
 	async #reclaimRetired(): Promise<void> {
@@ -183,6 +193,11 @@ export async function createNativeFullTextDerivedIndexBackend(
 	const maxQueuedBytes = options.maxQueuedBytes ?? 64 * 1024 * 1024;
 	if (options.limits.maxBatchBytes > maxQueuedBytes)
 		throw new RangeError('Full-text maxBatchBytes must not exceed the backend maxQueuedBytes');
+	if (
+		(options.maxCursorPayloadBytes ?? FULLTEXT_NATIVE_MAX_CURSOR_PAYLOAD_BYTES) >
+		FULLTEXT_NATIVE_MAX_CURSOR_PAYLOAD_BYTES
+	)
+		throw new RangeError(`Full-text maxCursorPayloadBytes must not exceed ${FULLTEXT_NATIVE_MAX_CURSOR_PAYLOAD_BYTES}`);
 	const lifecycle = new NativeFullTextDerivedIndexLifecycle({ ...options, indexId: options.id });
 	await lifecycle.initialize();
 	return new FullTextDerivedIndexBackend({
@@ -217,6 +232,10 @@ function plainObject(value: unknown): value is Record<string, unknown> {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const prototype = Object.getPrototypeOf(value);
 	return prototype === Object.prototype || prototype === null;
+}
+
+function errorCode(error: unknown): unknown {
+	return error && typeof error === 'object' && 'code' in error ? error.code : undefined;
 }
 
 function validEngine(value: unknown): value is FullTextDerivedIndexEngine {
