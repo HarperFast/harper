@@ -56,13 +56,14 @@ export interface BackupArchiveManifest {
 	created_at: number;
 }
 
+/**
+ * Read from Harper's own dependency pin rather than resolving the installed package: the binding
+ * exports no version, and a `require` here is a ReferenceError under ESM while working under the
+ * CommonJS build — so the value would silently differ by runtime. The pin is exact, so this is the
+ * version that shipped.
+ */
 function rocksdbJsVersion(): string {
-	const declared = packageJson.dependencies?.['@harperfast/rocksdb-js'] ?? '';
-	try {
-		return require('@harperfast/rocksdb-js/package.json').version ?? declared;
-	} catch {
-		return declared;
-	}
+	return packageJson.dependencies?.['@harperfast/rocksdb-js'] ?? '';
 }
 
 export function buildArchiveManifest({
@@ -104,8 +105,10 @@ export function parseArchiveManifest(contents: string): BackupArchiveManifest {
 	let parsed: any;
 	try {
 		parsed = JSON.parse(contents);
-	} catch (error: any) {
-		throw new ClientError(`Archive manifest ${ARCHIVE_MANIFEST_ENTRY} is not valid JSON: ${error.message}`);
+	} catch {
+		// deliberately not quoting the parse error: reading a property off an arbitrary thrown value is
+		// its own failure mode, and the entry name is what identifies the problem
+		throw new ClientError(`Archive manifest ${ARCHIVE_MANIFEST_ENTRY} is not valid JSON`);
 	}
 	if (!parsed || typeof parsed !== 'object' || !Number.isInteger(parsed.archive_schema_version)) {
 		throw new ClientError(`Archive manifest ${ARCHIVE_MANIFEST_ENTRY} is missing 'archive_schema_version'`);
