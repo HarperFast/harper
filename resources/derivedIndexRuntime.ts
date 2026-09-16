@@ -125,6 +125,7 @@ export interface DerivedIndexBackend {
 	 */
 	shutdown(ownerEpoch: bigint): void | Promise<void>;
 	onStateChange(wake: (change?: DerivedIndexBackendStateChange) => void): () => void;
+	getUnindexableRecords?(): number;
 	/**
 	 * Destroy index state and the durable cursor; `getDurableCursor()` must return `undefined`
 	 * afterwards. Crash safety is the backend's: its first durable action must invalidate the cursor
@@ -678,7 +679,7 @@ class DerivedIndexRunner {
 			oldestAcceptedAgeMilliseconds: oldestAcceptedAt === undefined ? 0 : Math.max(0, now - oldestAcceptedAt),
 			cursorLagMilliseconds: cursorLag,
 			stalledMilliseconds: this.#stalledSince === undefined ? 0 : Math.max(0, now - this.#stalledSince),
-			unindexableRecords: this.#unindexableRecords,
+			unindexableRecords: this.#unindexableRecords + (this.#registration.backend.getUnindexableRecords?.() ?? 0),
 			rebuildAttempts: this.#rebuildAttempts,
 			rebuiltRecords: this.#rebuiltRecords,
 			quiescenceAgeMilliseconds:
