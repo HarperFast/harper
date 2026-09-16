@@ -109,6 +109,11 @@ export function readBackupPins(backupDir: string): BackupPin[] {
 		let parsed: any;
 		try {
 			parsed = JSON.parse(readFileSync(join(pinsDir, entry.name), 'utf8'));
+			// JSON.parse happily returns null, a number or a string; reading a field off one of those
+			// would throw past this catch and fail the whole delete with a 500 instead of failing closed
+			if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+				throw new Error('pin file is not an object');
+			}
 		} catch (error: any) {
 			// A released claim, unlinked between the readdir and the read. Anything else still means
 			// something claimed a backup: fail closed against every id, because a torn pin file must not

@@ -1199,7 +1199,10 @@ export async function deleteBackupOffline(databaseName: string, backupId: number
 			// The engine's delete leaves the Harper-managed blob snapshot + manifest behind, and it can
 			// fail after removing engine files — so reconcile against what survives rather than assuming
 			// this id was the only thing that changed.
-			await reconcileHarperManagedBackupFiles(backupDir);
+			// A throw from here would replace the engine error, which is the one worth reporting.
+			await reconcileHarperManagedBackupFiles(backupDir).catch((error) =>
+				logger.warn(`Could not reconcile Harper-managed backup files in ${backupDir}`, error)
+			);
 		}
 		return { ok: true };
 	});
@@ -1236,7 +1239,10 @@ export async function purgeBackupsOffline(databaseName: string, keepCount: numbe
 			// Reconciled from what actually survives, in a finally: an engine failure partway through still
 			// removed engine backups, and their blob snapshots would otherwise be orphaned on disk — invisible
 			// to list_backups and still charged to the tenant's quota.
-			await reconcileHarperManagedBackupFiles(backupDir);
+			// A throw from here would replace the engine error, which is the one worth reporting.
+			await reconcileHarperManagedBackupFiles(backupDir).catch((error) =>
+				logger.warn(`Could not reconcile Harper-managed backup files in ${backupDir}`, error)
+			);
 		}
 		// Counted from the deletes themselves: a create landing mid-purge (its engine phase takes no
 		// lock) would make a before/after length comparison under-report, or report zero.
