@@ -1067,6 +1067,7 @@ describe('test MQTT connections and commands', function () {
 			);
 			const deliverySettled = Promise.all([messageReceived, acknowledged]);
 			deliverySettled.catch(() => undefined);
+			let deliveryComplete = false;
 			try {
 				// Wait for the broker to finish processing (and durably persisting) our ack of this
 				// message, not just for the client to have sent it — see `session.acknowledge()`.
@@ -1080,10 +1081,13 @@ describe('test MQTT connections and commands', function () {
 					}
 				);
 				await deliverySettled;
+				deliveryComplete = true;
 			} finally {
 				acknowledgementAbort.abort();
 				client.off('message', onMessage);
-				await endDurableSession(client, 'test-client1').catch(() => undefined);
+				const teardown = endDurableSession(client, 'test-client1');
+				if (deliveryComplete) await teardown;
+				else await teardown.catch(() => undefined);
 			}
 			await clientV5.publishAsync(
 				'SimpleRecord/41',
