@@ -1,13 +1,3 @@
-/**
- * Pins `@relationship` foreign-key index consistency across a previous-minor → current upgrade.
- * A read-only LMDB handle compares raw index pairs with the records written by this test because
- * REST relationship traversal joins through the primary store and cannot expose dangling entries.
- * The final test plants both a dangling entry and a wrong-key entry to prove the oracle detects
- * each failure mode.
- *
- * Set HARPER_PREVIOUS_MINOR_PATH to the previous-minor package root. The suite intentionally skips
- * when it is unset, matching minor-upgrade.test.ts.
- */
 import { suite, test, before, after } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { resolve, join } from 'node:path';
