@@ -105,15 +105,10 @@ describe('agent/inspectorTool — live CDP round-trip', () => {
 	let port;
 	let savedStackTraceLimit;
 	before(() => {
-		// `mocha/lib/cli/cli.js` sets `Error.stackTraceLimit = Infinity` for its own failure
-		// diagnostics. On node 26.9.0 that is fatal to this suite: evaluating a throwing
-		// expression over the inspector while the limit is Infinity aborts the process with
-		// `# Fatal error ... Check failed: new_capacity > 0.` (SIGTRAP, exit 133), killing the
-		// whole `test:unit:main` step partway through rather than failing a test. It reproduces
-		// on node 26.9.0 only (26.7.0/26.8.0/26.8.1 are fine) and with no Harper code involved —
-		// mocha + node:inspector + `Runtime.evaluate('throw new Error(\"boom\")')` is enough.
-		// Harper itself never assigns Error.stackTraceLimit, so this is a test-harness trigger,
-		// not a product defect; a finite limit is what a production worker would carry anyway.
+		// mocha sets `Error.stackTraceLimit = Infinity`; on node 26.9.0 (26.8.1 and earlier are
+		// fine) evaluating a throwing expression over the inspector under that limit aborts the
+		// process — `Check failed: new_capacity > 0.` — instead of returning exceptionDetails,
+		// which takes the whole `test:unit:main` step down with it. Any finite value avoids it.
 		savedStackTraceLimit = Error.stackTraceLimit;
 		Error.stackTraceLimit = 50;
 		// node:inspector is a single process-wide agent — at most one active session per thread. In a
@@ -127,13 +122,15 @@ describe('agent/inspectorTool — live CDP round-trip', () => {
 		port = Number(new URL(inspector.url()).port);
 	});
 	after(async () => {
+		// First, so no later teardown failure can strand the pinned limit on the suites that
+		// share this mocha process.
+		Error.stackTraceLimit = savedStackTraceLimit;
 		// Close our CDP client. Note: we deliberately do NOT call inspector.close() here — it blocks
 		// until all inspector connections drop, which deadlocks against our own still-closing client
 		// (and, if we merely reused a pre-existing session above, closing it isn't ours to do anyway).
 		// A brief tick lets the ws close frames flush; mocha's --exit tears down the open inspector.
 		_closeInspectorSessions();
 		await new Promise((r) => setTimeout(r, 50));
-		Error.stackTraceLimit = savedStackTraceLimit;
 	});
 
 	// startingPort + workerIndex(0) === this process's inspector port; getWorkerCount 1 keeps it in range.
