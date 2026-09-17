@@ -143,8 +143,8 @@ describe('EntryHandler', () => {
 		assert.ok(addDirArg.stats !== undefined, 'addDir event argument `stats` should be defined');
 		assert.ok(addDirArg.stats.isDirectory(), 'addDir event argument `stats` should be a directory');
 
-		const canonicalNewDirPath = realpathSync.native(newDirPath);
-		await waitFor(() => entryHandler._watchedDirectoriesForTests.includes(canonicalNewDirPath), {
+		const watchedNewDirPath = process.platform === 'win32' ? realpathSync.native(newDirPath) : newDirPath;
+		await waitFor(() => entryHandler._watchedDirectoriesForTests.includes(watchedNewDirPath), {
 			message: 'timed out waiting for the new directory watch to arm',
 		});
 		const newFileInDirPath = join(newDirPath, 'y');
