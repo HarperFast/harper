@@ -2903,9 +2903,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			? [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })]
 			: [];
 		const catalogRowsToRemove = [];
-		// Remove derived handles before any source mutation. Catalog rows are individually durable on
-		// RocksDB, so every crash point may leave an unused source but never a handle naming a missing or
-		// newly incompatible source.
+		// Remove obsolete handles before any source mutation. Retargeted handles are replaced between
+		// their new sources and obsolete source changes below.
 		durableAttributeRows.sort(
 			(left, right) => Number(Boolean(right.value?.fullText)) - Number(Boolean(left.value?.fullText))
 		);
@@ -2921,19 +2920,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
-			const retargetedFullTextHandle =
-				value.fullText &&
-				attribute?.fullText &&
-				JSON.stringify(value.fullText.fields) !== JSON.stringify(attribute.fullText.fields);
 			// rows already present under a create are aborted state
 			const staleRow = !attribute || Boolean(deferredPrimaryRow);
-			if (staleRow || removeIndex || retargetedFullTextHandle) {
+			if (staleRow || removeIndex) {
 				exclusiveLock();
 				hasChanges = true;
 				if (staleRow) {
 					if (deferredPrimaryRow || value.fullText) attributesDbi.remove(key);
 					else catalogRowsToRemove.push(key);
-				} else if (retargetedFullTextHandle) attributesDbi.remove(key);
+				}
 				if (removeIndex) {
 					const indexDbi = Table.indices[attributeTableName];
 					if (indexDbi) indicesToRemove.push(indexDbi);
@@ -2942,11 +2937,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
-		// Sources must be durable before a handle can reference them. Existing-table removals land
-		// after both groups, so retargeting a handle can crash only with an unused old source left over.
+		// A replacement handle's sources land first, then the handle, then fields it no longer uses.
+		// Existing-table removals land last, so every crash point leaves every durable handle valid.
+		const fullTextSourceNames = new Set(
+			attributes.flatMap((attribute) => attribute.fullText?.fields.map(({ name }) => name) ?? [])
+		);
 		const attributesForPersistence = [
-			...attributes.filter((attribute) => !attribute.fullText),
+			...attributes.filter((attribute) => !attribute.fullText && fullTextSourceNames.has(attribute.name)),
 			...attributes.filter((attribute) => attribute.fullText),
+			...attributes.filter((attribute) => !attribute.fullText && !fullTextSourceNames.has(attribute.name)),
 		];
 		for (const attribute of attributesForPersistence) {
 			if (attribute.relationship) {

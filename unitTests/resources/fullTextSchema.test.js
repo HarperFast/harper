@@ -353,7 +353,7 @@ describe('@fullText schema declaration', () => {
 		);
 	});
 
-	it('removes a retargeted handle before changing its old source type', async () => {
+	it('persists a retargeted handle before changing its old source type', async () => {
 		await loadGQLSchema(`
 			type FullTextRetargetedSourceType @table {
 				id: ID @primaryKey
@@ -404,11 +404,41 @@ describe('@fullText schema declaration', () => {
 		const removeHandle = operations.indexOf('remove:FullTextRetargetedSourceType/search');
 		const updateOldSource = operations.indexOf('put:FullTextRetargetedSourceType/oldSource');
 		const replaceHandle = operations.indexOf('put:FullTextRetargetedSourceType/search');
-		assert(removeHandle >= 0, `missing early handle removal: ${operations}`);
 		assert(updateOldSource >= 0, `missing old source update: ${operations}`);
 		assert(replaceHandle >= 0, `missing replacement handle write: ${operations}`);
-		assert(removeHandle < updateOldSource);
-		assert(updateOldSource < replaceHandle);
+		assert.strictEqual(removeHandle, -1, `retarget unnecessarily removed the handle: ${operations}`);
+		assert(replaceHandle < updateOldSource);
+	});
+
+	it('updates full-text weights without removing the durable handle', async () => {
+		await loadGQLSchema(`
+			type FullTextWeightChange @table {
+				id: ID @primaryKey
+				text: String
+				search: FullText @fullText(fields: [{ name: "text", weight: 1 }])
+			}
+		`);
+		const Table = tables.FullTextWeightChange;
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		const removals = [];
+		const databasePrototype = Object.getPrototypeOf(Table.dbisDB);
+		const removeSync = databasePrototype.removeSync;
+		databasePrototype.removeSync = function (key, ...args) {
+			removals.push(String(key));
+			return removeSync.call(this, key, ...args);
+		};
+		try {
+			await loadGQLSchema(`
+				type FullTextWeightChange @table {
+					id: ID @primaryKey
+					text: String
+					search: FullText @fullText(fields: [{ name: "text", weight: 2 }])
+				}
+			`);
+		} finally {
+			databasePrototype.removeSync = removeSync;
+		}
+		assert.strictEqual(removals.includes('FullTextWeightChange/search'), false);
 	});
 
 	it('removes a handle before persisting an incompatible source type', async () => {
