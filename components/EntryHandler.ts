@@ -625,9 +625,11 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	get _watchedDirectoriesForTests(): string[] {
-		return Object.keys(this.#watcher?.getWatched() ?? {}).map((directory) =>
-			isAbsolute(directory) ? directory : join(this.directory, directory)
-		);
+		const watchDirectory = resolveWatchTarget(this.directory).path;
+		return Object.keys(this.#watcher?.getWatched() ?? {}).map((directory) => {
+			const absoluteDirectory = isAbsolute(directory) ? directory : join(watchDirectory, directory);
+			return resolveWatchTarget(absoluteDirectory).path;
+		});
 	}
 
 	close(): Promise<this> {
