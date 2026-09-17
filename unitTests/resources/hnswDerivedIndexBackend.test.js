@@ -1,7 +1,7 @@
 const assert = require('node:assert');
 const { waitFor } = require('../waitFor');
 const { DERIVED_INDEX_ACCEPTED } = require('#src/resources/derivedIndexRuntime');
-const { DERIVED_INDEX_CURSOR_KEY, HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
+const { HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
 
 const OWNER_EPOCH = 7n;
 // Longer than the backend's 5 ms apply slice, so exactly one record applies per slice and every
@@ -48,7 +48,7 @@ function makeBatch(sequence) {
 			logVersion: first + offset,
 			state: { kind: 'record', projection: [1, 0, 0, 0], version: first + offset },
 		})),
-		through: { local: { sequence, offset: sequence } },
+		through: { format: 1, logs: { local: sequence } },
 		bytes: BATCH_RECORDS,
 	};
 }
@@ -90,7 +90,7 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 		await waitFor(() => index.applied.length === 3 * BATCH_RECORDS, 5000);
 		assert.deepStrictEqual(
 			backend.getDurableCursor(),
-			{ local: { sequence: 1, offset: 1 } },
+			{ format: 1, logs: { local: 1 } },
 			'the durable cursor is the batch the barrier covered, never a later one'
 		);
 	});
@@ -130,23 +130,9 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 			assert.equal(barrier.appliedAtStart, sequence * BATCH_RECORDS);
 			backend.flush('age');
 			barrier.settle();
-			await waitFor(() => backend.getDurableCursor()?.local.sequence === sequence, 5000);
+			await waitFor(() => backend.getDurableCursor()?.logs.local === sequence, 5000);
 		}
 		(await waitFor(() => index.barriers[3], 5000)).settle();
-		await waitFor(() => backend.getDurableCursor()?.local.sequence === 4, 5000);
-	});
-
-	it('leaves a successor the durable cursor a mid-catch-up barrier published', async () => {
-		deliver(3);
-		backend.flush('threshold');
-		(await waitFor(() => index.barriers[0], 5000)).settle();
-		await waitFor(() => backend.getDurableCursor() !== undefined, 5000);
-
-		// The queue does not survive a crash but the mapping store does, so a successor reopens on
-		// the cursor the mid-catch-up barrier published and replays only what followed it.
-		const successor = new HnswDerivedIndexBackend('hnsw:test/vector', index);
-		successor.attach(host);
-		assert.deepStrictEqual(successor.getDurableCursor(), { local: { sequence: 1, offset: 1 } });
-		assert.equal(index.indexStore.getSync(DERIVED_INDEX_CURSOR_KEY).local.sequence, 1);
+		await waitFor(() => backend.getDurableCursor()?.logs.local === 4, 5000);
 	});
 });

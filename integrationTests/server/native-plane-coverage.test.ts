@@ -74,6 +74,7 @@ test(
 				});
 			await waitFor(async () => (await request('/PlaneStatus/')).body.readiness.state === 'ready', 30_000);
 			await waitFor(async () => (await query(0)).status === 200, 30_000);
+			const coverageBeforeWrites = JSON.stringify((await request('/PlaneStatus/')).body.cursor?.coverage ?? null);
 			for (let start = 0; start < records.length; start += 500) {
 				const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
 				assert(result.status < 300, JSON.stringify(result));
@@ -89,13 +90,14 @@ test(
 				} else assert(shortWait.body.some(({ id }: { id: number }) => id === records.length - 1));
 			}
 			let progress: unknown;
-			const partialCoverage: unknown[] = [];
+			const midCatchUpCoverage: string[] = [];
 			try {
 				await waitFor(
 					async () => {
 						const before = (await request('/PlaneStatus/')).body;
 						progress = before;
-						if (before.mappings > 0 && before.mappings < records.length) partialCoverage.push(before.cursor);
+						if (before.mappings < records.length)
+							midCatchUpCoverage.push(JSON.stringify(before.cursor?.coverage ?? null));
 						const strict = await query(0);
 						if (strict.status === 503) {
 							assert.equal(strict.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(strict));
@@ -127,9 +129,12 @@ test(
 			} catch (error) {
 				throw new Error(`Native catch-up failed; last progress: ${JSON.stringify(progress)}`, { cause: error });
 			}
+			// 20 000 native inserts cannot complete inside one poll interval, so the loop always samples
+			// the catch-up: a barrier must advance coverage past where the writes found it, rather than
+			// leaving every reader blind until the last record lands.
 			assert(
-				partialCoverage.some((cursor: any) => cursor?.coverage?.local),
-				`catch-up published no durable coverage before it finished: ${JSON.stringify(partialCoverage.slice(0, 4))}`
+				midCatchUpCoverage.some((coverage) => coverage !== coverageBeforeWrites && JSON.parse(coverage)?.local != null),
+				`catch-up never advanced durable coverage before it finished (was ${coverageBeforeWrites}): ${JSON.stringify(midCatchUpCoverage.slice(0, 4))}`
 			);
 			const final = await query(0);
 			assert.equal(final.status, 200, JSON.stringify(final));
