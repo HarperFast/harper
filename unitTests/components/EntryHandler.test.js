@@ -5,6 +5,7 @@ const { join, basename, sep } = require('node:path');
 const { tmpdir } = require('node:os');
 const { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { writeFile, mkdir } = require('node:fs/promises');
+const { setImmediate: nextTurn } = require('node:timers/promises');
 const { spy } = require('sinon');
 const { waitFor } = require('../waitFor.js');
 
@@ -143,37 +144,24 @@ describe('EntryHandler', () => {
 		assert.ok(addDirArg.stats !== undefined, 'addDir event argument `stats` should be defined');
 		assert.ok(addDirArg.stats.isDirectory(), 'addDir event argument `stats` should be a directory');
 
-		let newFileInDirPath;
+		await nextTurn();
+		const newFileInDirPath = join(newDirPath, 'y');
+		await writeFile(newFileInDirPath, 'y');
 		let addFileInDirArg;
-		let candidate = 0;
-		const candidateFilePaths = new Set();
 		await waitFor(
-			async () => {
+			() => {
 				addFileInDirArg = addHandlerSpy
 					.getCalls()
-					.slice(8)
 					.map((call) => call.args[0])
-					.find((entry) => entry.absolutePath.startsWith(`${newDirPath}${sep}`));
-				if (addFileInDirArg) {
-					newFileInDirPath = addFileInDirArg.absolutePath;
-					return true;
-				}
-				const fileName = candidate++ === 0 ? 'y' : `y-${candidate}`;
-				const candidatePath = join(newDirPath, fileName);
-				candidateFilePaths.add(candidatePath);
-				await writeFile(candidatePath, 'y');
-				return false;
+					.find((entry) => entry.absolutePath === newFileInDirPath);
+				return addFileInDirArg;
 			},
 			{
-				timeout: 6000,
-				interval: 50,
-				message: 'timed out waiting for the new directory to receive a nested file add event',
+				message: 'timed out waiting for the nested file add event',
 			}
 		);
-		assert.ok(addHandlerSpy.callCount >= 9, 'add event should be triggered for the new file in a new directory');
-		assert.ok(newFileInDirPath, 'the nested file event should identify its absolute path');
+		assert.equal(addHandlerSpy.callCount, 9, 'add event should be triggered for the new file in a new directory');
 		assert.ok(addFileInDirArg, 'the nested file event should carry an entry');
-		assert.ok(candidateFilePaths.has(newFileInDirPath), 'the nested file event should identify a file the test wrote');
 		assert.equal(
 			addFileInDirArg.absolutePath,
 			newFileInDirPath,
@@ -186,47 +174,28 @@ describe('EntryHandler', () => {
 		);
 		assert.equal(addFileInDirArg.entryType, 'file', 'add event argument `entryType` should be `file`');
 		assert.equal(addFileInDirArg.eventType, 'add', 'add event argument `eventType` should be `add`');
-		assert.equal(
-			addFileInDirArg.urlPath,
-			`/fuzz/${basename(newFileInDirPath)}`,
-			'add event argument `urlPath` should be file name'
-		);
+		assert.equal(addFileInDirArg.urlPath, '/fuzz/y', 'add event argument `urlPath` should be file name');
 		assert.ok(addFileInDirArg.stats !== undefined, 'add event argument `stats` should be defined');
 		assert.ok(addFileInDirArg.stats.isFile(), 'add event argument `stats` should be a file');
 
-		let newDirInDirPath;
+		await nextTurn();
+		const newDirInDirPath = join(newDirPath, 'buzz');
+		await mkdir(newDirInDirPath);
 		let addDirInDirArg;
-		let directoryCandidate = 0;
-		const candidateDirectoryPaths = new Set();
 		await waitFor(
-			async () => {
+			() => {
 				addDirInDirArg = addDirHandlerSpy
 					.getCalls()
 					.map((call) => call.args[0])
-					.find((entry) => candidateDirectoryPaths.has(entry.absolutePath));
-				if (addDirInDirArg) {
-					newDirInDirPath = addDirInDirArg.absolutePath;
-					return true;
-				}
-				const directoryName = directoryCandidate++ === 0 ? 'buzz' : `buzz-${directoryCandidate}`;
-				const candidatePath = join(newDirPath, directoryName);
-				candidateDirectoryPaths.add(candidatePath);
-				await mkdir(candidatePath);
-				return false;
+					.find((entry) => entry.absolutePath === newDirInDirPath);
+				return addDirInDirArg;
 			},
 			{
-				timeout: 6000,
-				interval: 50,
 				message: 'timed out waiting for the nested directory add event',
 			}
 		);
-		assert.ok(addDirHandlerSpy.callCount >= 5, 'addDir event should be triggered for the nested directory');
-		assert.ok(newDirInDirPath, 'the nested directory event should identify its absolute path');
+		assert.equal(addDirHandlerSpy.callCount, 5, 'addDir event should be triggered for the nested directory');
 		assert.ok(addDirInDirArg, 'the nested directory event should carry an entry');
-		assert.ok(
-			candidateDirectoryPaths.has(newDirInDirPath),
-			'the nested directory event should identify a directory the test created'
-		);
 		assert.equal(
 			addDirInDirArg.absolutePath,
 			newDirInDirPath,
@@ -234,11 +203,7 @@ describe('EntryHandler', () => {
 		);
 		assert.equal(addDirInDirArg.entryType, 'directory', 'addDir event argument `entryType` should be `directory`');
 		assert.equal(addDirInDirArg.eventType, 'addDir', 'addDir event argument `eventType` should be `addDir`');
-		assert.equal(
-			addDirInDirArg.urlPath,
-			`/fuzz/${basename(newDirInDirPath)}`,
-			'addDir event argument `urlPath` should be the directory name'
-		);
+		assert.equal(addDirInDirArg.urlPath, '/fuzz/buzz', 'addDir event argument `urlPath` should be the directory name');
 		assert.ok(addDirInDirArg.stats !== undefined, 'addDir event argument `stats` should be defined');
 		assert.ok(addDirInDirArg.stats.isDirectory(), 'addDir event argument `stats` should be a directory');
 
@@ -284,11 +249,7 @@ describe('EntryHandler', () => {
 		);
 		assert.equal(unlinkDirArg.entryType, 'directory', 'unlinkDir event argument `entryType` should be `directory`');
 		assert.equal(unlinkDirArg.eventType, 'unlinkDir', 'unlinkDir event argument `eventType` should be `unlinkDir`');
-		assert.equal(
-			unlinkDirArg.urlPath,
-			`/fuzz/${basename(newDirInDirPath)}`,
-			'unlinkDir event argument `urlPath` should be the directory name'
-		);
+		assert.equal(unlinkDirArg.urlPath, '/fuzz/buzz', 'unlinkDir event argument `urlPath` should be the directory name');
 		assert.equal(unlinkDirArg.content, undefined, 'unlinkDir event argument `content` should not be defined');
 		assert.equal(unlinkDirArg.stats, undefined, 'unlinkDir event argument `stats` should not be defined');
 
