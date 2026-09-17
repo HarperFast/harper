@@ -990,6 +990,7 @@ describe('HNSW GraphQL numeric options', () => {
 			createdTables.push(tableName);
 			resetDatabases();
 			Table = databases.data[tableName];
+			const staleDropRuntime = Table.derivedIndexRuntime;
 			const alias = databases.dev[tableName];
 			assert.ok(alias?.derivedIndexRuntime, 'the configured database alias must share the physical table');
 			const backendId = `hnsw:${Table.indices.embedding.name}`;
@@ -1017,6 +1018,11 @@ describe('HNSW GraphQL numeric options', () => {
 					{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
 				],
 			});
+			assert.equal(
+				staleDropRuntime.restoreAfterFailedDrop(),
+				undefined,
+				'a stale drop recovery must not replace the recreated generation'
+			);
 			let staleAliasCleaned = false;
 			const cleanupStaleAlias = alias.cleanup;
 			alias.cleanup = () => {

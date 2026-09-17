@@ -347,6 +347,7 @@ export function attachDerivedIndexes(Table: any):
 	}
 	const releases: Array<() => Promise<void>> = [];
 	const backendIds: string[] = [];
+	const registeredBackends = new Map<string, RegisteredBackend>();
 	for (const attribute of attributes) {
 		const indexStore = Table.indices[attribute.name];
 		const index = indexStore.customIndex as DerivedNativeIndex & { postCommit: true };
@@ -401,11 +402,18 @@ export function attachDerivedIndexes(Table: any):
 			tableId: Table.tableId,
 			settle: () => {
 				if (settling) return settling;
-				const attempt = Promise.all([settlePredecessor(), release()]).then(() => {
-					if (registered.backends.get(id) === registeredBackend) registered.backends.delete(id);
-					const tableBackends = registered.tableBackends.get(Table.tableId);
-					tableBackends?.delete(registeredBackend);
-					if (tableBackends?.size === 0) registered.tableBackends.delete(Table.tableId);
+				const attempt = Promise.allSettled([settlePredecessor(), release()]).then((results) => {
+					if (results[1].status === 'fulfilled') {
+						if (registered.backends.get(id) === registeredBackend) registered.backends.delete(id);
+						const tableBackends = registered.tableBackends.get(Table.tableId);
+						tableBackends?.delete(registeredBackend);
+						if (tableBackends?.size === 0) registered.tableBackends.delete(Table.tableId);
+					}
+					const failures = results
+						.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+						.map((result) => result.reason);
+					if (failures.length === 1) throw failures[0];
+					if (failures.length) throw new AggregateError(failures, `Could not settle HNSW backend '${id}'`);
 				});
 				settling = attempt;
 				attempt.catch(() => {
@@ -418,6 +426,7 @@ export function attachDerivedIndexes(Table: any):
 		if (!tableBackends) registered.tableBackends.set(Table.tableId, (tableBackends = new Set()));
 		tableBackends.add(registeredBackend);
 		registered.backends.set(id, registeredBackend);
+		registeredBackends.set(id, registeredBackend);
 		const retryUnavailable = consumeUnavailableRetry(registered, auditStore, id);
 		if (retryUnavailable && registered.runtime.getReadiness(id).state === 'unavailable')
 			registered.runtime.requestRebuild(id);
@@ -450,6 +459,10 @@ export function attachDerivedIndexes(Table: any):
 		},
 		restoreAfterFailedDrop() {
 			registered.droppingTables.delete(Table.tableId);
+			for (const [id, registeredBackend] of registeredBackends) {
+				const current = registered.backends.get(id);
+				if (current && current !== registeredBackend) return;
+			}
 			return attachDerivedIndexes(Table);
 		},
 		completeDrop(dropped = true) {

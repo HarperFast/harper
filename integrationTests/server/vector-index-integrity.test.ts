@@ -57,7 +57,6 @@ function makeSchemaWithIndex(typeName: string, database: string): string {
 		`type ${typeName} @table(database: "${database}") @sealed @export {`,
 		'\tid: ID! @primaryKey',
 		'\ttag: String',
-		// These reachability cases guard the mutable JS graph.
 		'\tembedding: [Float] @indexed(type: "HNSW", distance: "cosine", nativePlane: false)',
 		'}',
 		'',

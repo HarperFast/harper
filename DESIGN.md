@@ -2828,7 +2828,10 @@ originally came from the global audit setting. In
 contrast, a new table and its omitted-mode index in the same declaration do not qualify unless that
 declaration explicitly enables audit, because audit was not durable at the index-creation boundary.
 A replicated new attribute uses native mode only when the receiving node is independently audited
-and eligible, because the plane is node-local derived state. Set
+and eligible, because the plane is node-local derived state. An ineligible receiver persists its
+fallback as `nativePlane: false` in the local catalog, so installing the binding or changing storage
+later does not switch that index automatically; redeclare it locally with `nativePlane: true` after
+the node becomes eligible. Set
 `HNSW_NO_NATIVE_DEFAULT=1` to keep newly omitted declarations on JS during rollout; it does not
 disable an explicit or already persisted native index. Set it before creating indexes when a
 rollback must remain cheap: an older release sees an omitted declaration against the persisted

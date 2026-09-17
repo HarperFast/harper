@@ -1902,10 +1902,21 @@ export function makeTable(options) {
 			// backend must have quiesced before its stores and native file are destroyed, and a
 			// same-name recreate must not race an owner still applying to the old generation.
 			const derivedIndexRuntime = TableResource.derivedIndexRuntime;
+			const restoreDerivedIndexesAfterFailedDrop = () => {
+				try {
+					TableResource.derivedIndexRuntime = derivedIndexRuntime?.restoreAfterFailedDrop?.();
+				} catch (restoreError) {
+					TableResource.derivedIndexRuntime = undefined;
+					logger.error?.(
+						`Could not restore derived indexes after failed drop of ${databaseName}.${TableResource.tableName}`,
+						restoreError
+					);
+				}
+			};
 			try {
 				await derivedIndexRuntime?.close(true);
 			} catch (error) {
-				TableResource.derivedIndexRuntime = derivedIndexRuntime?.restoreAfterFailedDrop?.();
+				restoreDerivedIndexesAfterFailedDrop();
 				throw error;
 			}
 			const abortStaleDrop = () => {
@@ -1964,7 +1975,7 @@ export function makeTable(options) {
 						if (typeof tombstoneWrite?.then === 'function') await tombstoneWrite;
 					}
 				} catch (error) {
-					TableResource.derivedIndexRuntime = derivedIndexRuntime?.restoreAfterFailedDrop?.();
+					restoreDerivedIndexesAfterFailedDrop();
 					throw error;
 				}
 			}
