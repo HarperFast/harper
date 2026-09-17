@@ -915,6 +915,7 @@ export function makeTable(options) {
 		static tableId = tableId;
 		static indices = indices;
 		static derivedIndexRuntime: { close(): Promise<void> } | undefined;
+		static schemaChangeOperation: Promise<void> | undefined;
 		static audit = audit;
 		static databasePath = databasePath;
 		static databaseName = databaseName;

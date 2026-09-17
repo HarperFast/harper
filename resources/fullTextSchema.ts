@@ -114,11 +114,15 @@ export function compileFullTextDefinition(
 			throw schemaError(
 				`@fullText source field "${source.name}" must be String, [String], or Blob; got "${displayType(attribute)}"`
 			);
+		if (attribute.computed || attribute.relationship)
+			throw schemaError(
+				`@fullText source field "${source.name}" must be stored record data and cannot use @computed or @relationship`
+			);
 		const weight = source.weight === undefined ? 1 : source.weight;
 		if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0)
 			throw schemaError(`@fullText source field "${source.name}" requires a finite weight greater than zero`);
 		const highlight = source.highlight;
-		if (highlight !== undefined && typeof highlight !== 'boolean')
+		if (highlight !== undefined && highlight !== null && typeof highlight !== 'boolean')
 			throw schemaError(`@fullText source field "${source.name}" requires a Boolean "highlight" value`);
 		sourceNames.add(source.name);
 		const compiled: FullTextSource = { name: source.name, weight };
@@ -177,8 +181,9 @@ function compileHighlighting(value: unknown, targetName: string): FullTextHighli
 	if (value == null) return;
 	const highlighting = requireObject(value, `@fullText highlighting on "${targetName}"`);
 	assertKnownKeys(highlighting, HIGHLIGHTING_ARGUMENTS, `@fullText highlighting on "${targetName}"`);
-	const maxFragments = highlighting.maxFragments ?? DEFAULT_MAX_FRAGMENTS;
-	const fragmentLength = highlighting.fragmentLength ?? DEFAULT_FRAGMENT_LENGTH;
+	const maxFragments = highlighting.maxFragments === undefined ? DEFAULT_MAX_FRAGMENTS : highlighting.maxFragments;
+	const fragmentLength =
+		highlighting.fragmentLength === undefined ? DEFAULT_FRAGMENT_LENGTH : highlighting.fragmentLength;
 	if (typeof maxFragments !== 'number' || !Number.isSafeInteger(maxFragments) || maxFragments <= 0)
 		throw schemaError(`@fullText highlighting.maxFragments on "${targetName}" must be a positive integer`);
 	if (typeof fragmentLength !== 'number' || !Number.isSafeInteger(fragmentLength) || fragmentLength <= 0)

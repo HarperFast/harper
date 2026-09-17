@@ -159,6 +159,48 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert.strictEqual(restored.hidden, true);
 	});
 
+	it('rejects a peer full-text handle when the local source type is incompatible', () => {
+		const Local = table({
+			table: 'ClusterMergeInvalidFullText',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'Int' },
+			],
+		});
+		assert.throws(
+			() =>
+				table({
+					table: 'ClusterMergeInvalidFullText',
+					database: 'test',
+					schemaDefined: true,
+					origin: 'cluster',
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'title', type: 'String' },
+						{
+							name: 'search',
+							type: 'FullText',
+							fullText: {
+								fields: [{ name: 'title', weight: 1 }],
+								analyzer: 'english@1',
+								stopWords: true,
+								positions: true,
+								surfaceTerms: true,
+								synonyms: [],
+							},
+						},
+					],
+				}),
+			/String, \[String\], or Blob/
+		);
+		assert.strictEqual(
+			Local.attributes.some(({ name }) => name === 'search'),
+			false
+		);
+	});
+
 	it('persists a hidden-only declaration change without rebuilding an index', async () => {
 		const Hidden = table({
 			table: 'ClusterMergeHidden',

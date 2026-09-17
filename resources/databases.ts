@@ -59,7 +59,7 @@ import { attachDerivedIndexes } from './indexes/hnswDerivedIndex.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
-import { assertFullTextSourcesRemain } from './fullTextSchema.ts';
+import { assertFullTextSourcesRemain, compileFullTextDefinition } from './fullTextSchema.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 import {
 	acquireRestoreLock,
@@ -438,9 +438,9 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
-// Restore every durable field whose runtime behavior must not depend on a stale peer snapshot.
-// In particular, preserve `indexNulls: false` so an index that excludes nulls is not reopened as
-// though it contains them.
+// Keep this list in sync with every durable field compared by `commonChanged` below, plus `indexed`,
+// `indexNulls`, and persist-only metadata such as `hidden`. In particular, preserve `indexNulls: false`
+// so an index that excludes nulls is not reopened as though it contains them.
 const PEER_REDEFINABLE_FIELDS = [
 	'type',
 	'indexed',
@@ -2640,6 +2640,27 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 				attributes = merged;
 			}
+			for (const attribute of attributes) {
+				if (!attribute.fullText) continue;
+				attribute.fullText = compileFullTextDefinition(attribute, attribute.fullText, attributes);
+				attribute.hidden = true;
+			}
+			if (origin !== 'cluster') {
+				const storedFieldReplacement = attributes.find((attribute) => {
+					if (!attribute.fullText) return false;
+					const descriptor = Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
+					return descriptor && !descriptor.fullText;
+				});
+				if (storedFieldReplacement) {
+					for (const _entry of Table.primaryStore.getRange({ start: true })) {
+						throw new ClientError(
+							`Cannot redefine stored attribute '${storedFieldReplacement.name}' as a FullText query handle while table ` +
+								`'${databaseName}.${tableName}' contains records. Declare a new FullText field name instead.`,
+							400
+						);
+					}
+				}
+			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
 			// Re-assert from the live declaration so a stale value on disk (replicated event,
 			// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
@@ -2808,9 +2829,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
 		// reconciliation is reserved for local schema authoring; on a create the rows can only be aborted state.
 		const reconcileRemovals = origin !== 'cluster' || Boolean(deferredPrimaryRow);
-		for (const { key, value } of reconcileRemovals
-			? attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })
-			: []) {
+		const durableAttributeRows = reconcileRemovals
+			? [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })]
+			: [];
+		// Remove derived handles before their sources. Catalog rows are individually durable on RocksDB,
+		// so a crash between removals may leave an unused source but must not leave a handle naming a
+		// source that is already gone.
+		durableAttributeRows.sort(
+			(left, right) => Number(Boolean(right.value?.fullText)) - Number(Boolean(left.value?.fullText))
+		);
+		for (const { key, value } of durableAttributeRows) {
 			if (value == null) continue;
 			let [attributeTableName, attribute_name] = key.toString().split('/');
 			if (attribute_name === '') attribute_name = value.name; // primary key
@@ -2951,6 +2979,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributeDescriptor.enumerable !== attribute.enumerable ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
+				// An embed declaration changes how writes populate the stored vector even when its HNSW
+				// options are unchanged, so it belongs in the common durable-schema comparison.
 				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed) ||
 				JSON.stringify(attributeDescriptor.fullText) !== JSON.stringify(attribute.fullText);
 			// any metadata difference (drives persistence)
@@ -3173,7 +3203,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			markSettled
 		);
 	} else if (hasChanges)
-		signalling.signalSchemaChange(
+		Table.schemaChangeOperation = signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
 		);
 	void Table.derivedIndexRuntime?.close();

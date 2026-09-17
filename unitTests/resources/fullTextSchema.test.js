@@ -135,6 +135,16 @@ describe('@fullText schema declaration', () => {
 			/String, \[String\], or Blob/,
 		],
 		[
+			'computed source',
+			'derived: String @computed(from: "text")\nsearch: FullText @fullText(fields: [{ name: "derived" }])',
+			/must be stored record data/,
+		],
+		[
+			'relationship source',
+			'related: String @relationship(from: "text")\nsearch: FullText @fullText(fields: [{ name: "related" }])',
+			/must be stored record data/,
+		],
+		[
 			'duplicate source',
 			'search: FullText @fullText(fields: [{ name: "text" }, { name: "text" }])',
 			/declares source field "text" more than once/,
@@ -170,6 +180,11 @@ describe('@fullText schema declaration', () => {
 			'duplicate nested option',
 			'search: FullText @fullText(fields: [{ name: "text", name: "count" }])',
 			/declares "name" more than once/,
+		],
+		[
+			'null non-null highlighting limit',
+			'search: FullText @fullText(fields: [{ name: "text" }], highlighting: { maxFragments: null })',
+			/highlighting.maxFragments/,
 		],
 		[
 			'created-time lifecycle conflict',
@@ -211,6 +226,70 @@ describe('@fullText schema declaration', () => {
 			);
 		});
 	}
+
+	it('treats a nullable source highlight as unspecified', async () => {
+		await loadGQLSchema(`
+			type FullTextNullableHighlight @table {
+				id: ID @primaryKey
+				text: String
+				search: FullText @fullText(fields: [{ name: "text", highlight: null }])
+			}
+		`);
+		assert.deepStrictEqual(
+			tables.FullTextNullableHighlight.attributes.find(({ name }) => name === 'search').fullText.fields,
+			[{ name: 'text', weight: 1 }]
+		);
+	});
+
+	it('rejects replacing a populated stored field with a FullText query handle', async () => {
+		await loadGQLSchema(`
+			type FullTextStoredReplacement @table {
+				id: ID @primaryKey
+				text: String
+				search: String
+			}
+		`);
+		await tables.FullTextStoredReplacement.put({ id: 'one', text: 'source', search: 'stored' });
+		await assert.rejects(
+			loadGQLSchema(`
+				type FullTextStoredReplacement @table {
+					id: ID @primaryKey
+					text: String
+					search: FullText @fullText(fields: [{ name: "text" }])
+				}
+			`),
+			/Declare a new FullText field name instead/
+		);
+	});
+
+	it('removes a FullText handle before a simultaneously removed source', async () => {
+		await loadGQLSchema(`
+			type FullTextRemovalOrder @table {
+				id: ID @primaryKey
+				aSource: String
+				zSearch: FullText @fullText(fields: [{ name: "aSource" }])
+			}
+		`);
+		const Table = tables.FullTextRemovalOrder;
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		const removals = [];
+		const databasePrototype = Object.getPrototypeOf(Table.dbisDB);
+		const removeSync = databasePrototype.removeSync;
+		databasePrototype.removeSync = function (key, ...args) {
+			removals.push(String(key));
+			return removeSync.call(this, key, ...args);
+		};
+		try {
+			await loadGQLSchema(`
+				type FullTextRemovalOrder @table {
+					id: ID @primaryKey
+				}
+			`);
+		} finally {
+			databasePrototype.removeSync = removeSync;
+		}
+		assert.deepStrictEqual(removals.slice(0, 2), ['FullTextRemovalOrder/zSearch', 'FullTextRemovalOrder/aSource']);
+	});
 
 	it('rejects a FullText field without an index declaration', async () => {
 		await assert.rejects(

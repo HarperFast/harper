@@ -438,6 +438,11 @@ async function processGraphQLSchema(
 				);
 		}
 	}
+	await Promise.all(
+		tables
+			.map((typeDef) => typeDef.tableClass?.schemaChangeOperation)
+			.filter((operation): operation is Promise<void> => operation != null)
+	);
 	function createComputedFrom(computedFrom: string, arg: any, attributes: any) {
 		// Create a function from a computed "from" directive. This can look like:
 		// @computed(from: "fieldOne + fieldTwo")
