@@ -2640,8 +2640,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 				attributes = merged;
 			}
+			const hasFullText = attributes.some((attribute) => attribute.fullText);
+			if (hasFullText) exclusiveLock();
 			const fullTextValidationAttributes =
-				origin === 'cluster'
+				origin === 'cluster' && hasFullText
 					? attributes.map((attribute) => {
 							const descriptor = Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
 							if (!descriptor) return attribute;
@@ -2662,7 +2664,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attribute.hidden = true;
 			}
 			if (origin !== 'cluster') {
-				if (attributes.some((attribute) => attribute.fullText)) exclusiveLock();
 				const storedFieldReplacement = attributes.find((attribute) => {
 					if (!attribute.fullText) return false;
 					const descriptor = Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
