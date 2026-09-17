@@ -5,7 +5,6 @@ const { join, basename, sep } = require('node:path');
 const { tmpdir } = require('node:os');
 const { chmodSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
 const { writeFile, mkdir } = require('node:fs/promises');
-const { setImmediate: nextTurn } = require('node:timers/promises');
 const { spy } = require('sinon');
 const { waitFor } = require('../waitFor.js');
 
@@ -144,7 +143,9 @@ describe('EntryHandler', () => {
 		assert.ok(addDirArg.stats !== undefined, 'addDir event argument `stats` should be defined');
 		assert.ok(addDirArg.stats.isDirectory(), 'addDir event argument `stats` should be a directory');
 
-		await nextTurn();
+		await waitFor(() => entryHandler._watchedDirectoriesForTests.includes(newDirPath), {
+			message: 'timed out waiting for the new directory watch to arm',
+		});
 		const newFileInDirPath = join(newDirPath, 'y');
 		await writeFile(newFileInDirPath, 'y');
 		let addFileInDirArg;
@@ -178,7 +179,6 @@ describe('EntryHandler', () => {
 		assert.ok(addFileInDirArg.stats !== undefined, 'add event argument `stats` should be defined');
 		assert.ok(addFileInDirArg.stats.isFile(), 'add event argument `stats` should be a file');
 
-		await nextTurn();
 		const newDirInDirPath = join(newDirPath, 'buzz');
 		await mkdir(newDirInDirPath);
 		let addDirInDirArg;

@@ -1350,18 +1350,28 @@ describe('OptionsWatcher', () => {
 		const readySpy = spy();
 		options.on('ready', readySpy);
 		try {
-			await waitFor(
-				async () => {
-					if (readySpy.callCount > 0) return true;
-					await writeFile(configFilePath, stringify(expected), 'utf-8');
-					return false;
-				},
-				{
+			// Node 26.9 can drop the first add for a path absent at watch construction. Other runtime
+			// lanes retain the one-write contract while this lane still verifies eventual delivery.
+			if (process.versions.node.startsWith('26.9.')) {
+				await waitFor(
+					async () => {
+						if (readySpy.callCount > 0) return true;
+						await writeFile(configFilePath, stringify(expected), 'utf-8');
+						return false;
+					},
+					{
+						timeout: 6000,
+						interval: 50,
+						message: 'timed out waiting for the missing config path to detect a source file',
+					}
+				);
+			} else {
+				await writeFile(configFilePath, stringify(expected), 'utf-8');
+				await waitFor(() => readySpy.callCount === 1, {
 					timeout: 6000,
-					interval: 50,
 					message: 'timed out waiting for the missing config path to detect a source file',
-				}
-			);
+				});
+			}
 			assert.equal(readySpy.callCount, 1);
 			assert.deepEqual(
 				readySpy.getCall(0).args,

@@ -624,6 +624,12 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		return this.#liveWatchers.size;
 	}
 
+	get _watchedDirectoriesForTests(): string[] {
+		return Object.keys(this.#watcher?.getWatched() ?? {}).map((directory) =>
+			isAbsolute(directory) ? directory : join(this.directory, directory)
+		);
+	}
+
 	close(): Promise<this> {
 		this.#watchGeneration++;
 		this.#closed = true;
