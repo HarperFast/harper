@@ -61,21 +61,49 @@ async function subscribeAllowingSubackError(client, topic, options) {
 async function connectWithMessageListener(brokerUrl, options, listener) {
 	const client = connect(brokerUrl, options);
 	client.on('message', listener);
-	await once(client, 'connect');
-	return client;
+	try {
+		await once(client, 'connect');
+		return client;
+	} catch (error) {
+		client.off('message', listener);
+		client.end(true);
+		throw error;
+	}
 }
 
 // Waits for a server-side MQTT session event (see `server/mqtt.ts` `emitEvent`) for a specific
 // clientId, rather than guessing with a fixed delay for the broker to finish some async step.
-function waitForMqttSessionEvent(eventName, clientId) {
-	return new Promise((resolve) => {
-		function onEvent(session) {
-			if (session?.sessionId === clientId) {
-				global.server.mqtt.events.off(eventName, onEvent);
-				resolve();
+function waitForMqttSessionEvent(eventName, clientId, matches = () => true, timeoutMs = 8000, signal) {
+	return new Promise((resolve, reject) => {
+		let timeout;
+		function cleanup() {
+			clearTimeout(timeout);
+			global.server.mqtt.events.off(eventName, onEvent);
+			signal?.removeEventListener('abort', onAbort);
+		}
+		function onAbort() {
+			cleanup();
+			reject(signal.reason);
+		}
+		function onEvent(session, ...args) {
+			if (session?.sessionId !== clientId) return;
+			try {
+				if (matches(...args)) {
+					cleanup();
+					resolve();
+				}
+			} catch (error) {
+				cleanup();
+				reject(error);
 			}
 		}
 		global.server.mqtt.events.on(eventName, onEvent);
+		if (signal?.aborted) return onAbort();
+		signal?.addEventListener('abort', onAbort, { once: true });
+		timeout = setTimeout(() => {
+			cleanup();
+			reject(new Error(`Timed out waiting for MQTT ${eventName} event for client ${clientId}`));
+		}, timeoutMs);
 	});
 }
 
@@ -83,20 +111,12 @@ function waitForMqttSessionEvent(eventName, clientId) {
 // broker to process the disconnect and tear down the session — so callers that immediately
 // reconnect with the same clientId can otherwise race the broker's teardown.
 async function endDurableSession(client, clientId) {
-	let onDisconnected;
-	const torn_down = new Promise((resolve) => {
-		onDisconnected = (session) => {
-			if (session?.sessionId === clientId) resolve();
-		};
-		global.server.mqtt.events.on('disconnected', onDisconnected);
-	});
+	const abortController = new AbortController();
+	const tornDown = waitForMqttSessionEvent('disconnected', clientId, undefined, undefined, abortController.signal);
 	try {
-		await client.endAsync();
-		await torn_down;
+		await Promise.all([client.endAsync(), tornDown]);
 	} finally {
-		// Always clean up the listener, even if endAsync() rejects or the event never fires,
-		// so a failed disconnect doesn't leak a listener on the shared event emitter.
-		global.server.mqtt.events.off('disconnected', onDisconnected);
+		abortController.abort();
 	}
 }
 
@@ -457,6 +477,7 @@ describe('test MQTT connections and commands', function () {
 		client.end();
 	});
 	it('subscribe to retained record with patch operations', async function () {
+		this.timeout(30000);
 		let path = 'SimpleRecord/78';
 		let client = await connectAsync(mqttUrl, {
 			clean: false,
@@ -467,37 +488,62 @@ describe('test MQTT connections and commands', function () {
 			'Content-Type': 'application/json',
 		};
 
-		await new Promise(async (resolve) => {
-			let messages = [];
-			const onMessage = (topic, payload) => {
-				let record = JSON.parse(payload);
-				messages.push(record);
-				if (messages.length === 2) {
-					assert.equal(messages[0].name, 'a starting point');
-					assert.equal(messages[0].count, 2);
-					assert.equal(messages[1].count, 3);
-					assert.equal(messages[1].name, 'an updated name');
-					assert.equal(messages[1].newProperty, 'new value');
-					resolve();
-					client.off('message', onMessage);
+		let lastOnlineMessageId;
+		const onlinePhaseAbort = new AbortController();
+		const lastOnlineMessageAcknowledged = waitForMqttSessionEvent(
+			'acknowledged',
+			'with-patches',
+			(acknowledgement) => acknowledgement?.messageId === lastOnlineMessageId,
+			undefined,
+			onlinePhaseAbort.signal
+		);
+		let onMessage;
+		const onlineMessagesReceived = new Promise((resolve, reject) => {
+			const messages = [];
+			onMessage = (topic, payload, packet) => {
+				try {
+					const record = JSON.parse(payload);
+					messages.push(record);
+					if (messages.length === 2) {
+						assert.equal(messages[0].name, 'a starting point');
+						assert.equal(messages[0].count, 2);
+						assert.equal(messages[1].count, 3);
+						assert.equal(messages[1].name, 'an updated name');
+						assert.equal(messages[1].newProperty, 'new value');
+						lastOnlineMessageId = packet.messageId;
+						resolve();
+					}
+				} catch (error) {
+					reject(error);
 				}
 			};
-			client.on('message', onMessage);
-			await client.subscribeAsync(path, { qos: 1 });
-			await axios.put(`${baseUrl}/SimpleRecord/78`, { name: 'a starting point', count: 2 }, { headers });
-			// Small delay so the PUT notification is delivered before the PATCH; without this the
-			// two messages can arrive out of order on a loaded CI runner.
-			await delay(20);
-			await axios.patch(
-				`${baseUrl}/SimpleRecord/78`,
-				{ name: 'an updated name', newProperty: 'new value', count: { __op__: 'add', value: 1 } },
-				{ headers }
-			);
 		});
-		await client.endAsync();
-		// Give the broker time to fully process the disconnect before we make more patches,
-		// so those patches are queued for the offline client rather than delivered live.
-		await delay(50);
+		client.on('message', onMessage);
+		let onlinePhaseComplete = false;
+		try {
+			await Promise.all([
+				(async () => {
+					await client.subscribeAsync(path, { qos: 1 });
+					await axios.put(`${baseUrl}/SimpleRecord/78`, { name: 'a starting point', count: 2 }, { headers });
+					// Small delay so the PUT notification is delivered before the PATCH; without this the
+					// two messages can arrive out of order on a loaded CI runner.
+					await delay(20);
+					await axios.patch(
+						`${baseUrl}/SimpleRecord/78`,
+						{ name: 'an updated name', newProperty: 'new value', count: { __op__: 'add', value: 1 } },
+						{ headers }
+					);
+				})(),
+				onlineMessagesReceived,
+				lastOnlineMessageAcknowledged,
+			]);
+			onlinePhaseComplete = true;
+		} finally {
+			onlinePhaseAbort.abort();
+			client.off('message', onMessage);
+			if (!onlinePhaseComplete) await endDurableSession(client, 'with-patches').catch(() => undefined);
+		}
+		await endDurableSession(client, 'with-patches');
 		await axios.patch(
 			`${baseUrl}/SimpleRecord/78`,
 			{ name: 'update 2', newProperty: 'newer value', count: { __op__: 'add', value: 1 } },
@@ -508,8 +554,38 @@ describe('test MQTT connections and commands', function () {
 			{ name: 'update 3', count: { __op__: 'add', value: 1 } },
 			{ headers }
 		);
-		await new Promise(async (resolve, reject) => {
-			let messages = [];
+		const reconnectMessages = [];
+		let reconnectTimeout;
+		let onReconnectError;
+		let onReconnectMessage;
+		const reconnectMessagesReceived = new Promise((resolve, reject) => {
+			onReconnectError = reject;
+			onReconnectMessage = (topic, payload) => {
+				try {
+					const record = JSON.parse(payload);
+					reconnectMessages.push(record);
+					if (reconnectMessages.length == 3) {
+						assert.equal(reconnectMessages[0].name, 'update 2');
+						assert.equal(reconnectMessages[0].count, 4);
+						assert.equal(reconnectMessages[1].newProperty, 'newer value');
+						assert.equal(reconnectMessages[1].name, 'update 3');
+						assert.equal(reconnectMessages[1].count, 5);
+						assert.equal(reconnectMessages[2].name, 'update 4');
+						assert.equal(reconnectMessages[2].count, 6);
+						resolve();
+					}
+				} catch (error) {
+					reject(error);
+				}
+			};
+			reconnectTimeout = setTimeout(
+				() => reject(new Error('Timed out waiting for retained patch messages after reconnect')),
+				8000
+			);
+		});
+		reconnectMessagesReceived.catch(() => undefined);
+		client = undefined;
+		try {
 			client = await connectWithMessageListener(
 				mqttUrl,
 				{
@@ -517,30 +593,23 @@ describe('test MQTT connections and commands', function () {
 					clientId: 'with-patches',
 					protocolVersion: 4,
 				},
-				(topic, payload, _packet) => {
-					let record = JSON.parse(payload);
-					messages.push(record);
-					if (messages.length == 3) {
-						assert.equal(messages[0].name, 'update 2');
-						assert.equal(messages[0].count, 4);
-						assert.equal(messages[1].newProperty, 'newer value');
-						assert.equal(messages[1].name, 'update 3');
-						assert.equal(messages[1].count, 5);
-						assert.equal(messages[2].name, 'update 4');
-						assert.equal(messages[2].count, 6);
-						resolve();
-					}
-				}
+				onReconnectMessage
 			);
-			client.on('error', reject);
+			client.on('error', onReconnectError);
 			await axios.patch(
 				`${baseUrl}/SimpleRecord/78`,
 				{ name: 'update 4', count: { __op__: 'add', value: 1 } },
 				{ headers }
 			);
-		});
-
-		client.end();
+			await reconnectMessagesReceived;
+		} finally {
+			clearTimeout(reconnectTimeout);
+			if (client) {
+				client.off('error', onReconnectError);
+				client.off('message', onReconnectMessage);
+				await endDurableSession(client, 'with-patches').catch(() => undefined);
+			}
+		}
 	});
 	it('subscribe twice', async function () {
 		let client = await connectAsync(mqttUrl, {
@@ -943,15 +1012,30 @@ describe('test MQTT connections and commands', function () {
 				clientId: 'test-client1',
 				protocolVersion: 4,
 			});
-			await new Promise((resolve) => {
+			let onMessage;
+			const messageReceived = new Promise((resolve, reject) => {
+				onMessage = (topic, payload) => {
+					try {
+						JSON.parse(payload);
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				};
+				client.once('message', onMessage);
+			});
+			const acknowledgementAbort = new AbortController();
+			const acknowledged = waitForMqttSessionEvent(
+				'acknowledged',
+				'test-client1',
+				undefined,
+				undefined,
+				acknowledgementAbort.signal
+			);
+			const deliverySettled = Promise.all([messageReceived, acknowledged]);
+			try {
 				// Wait for the broker to finish processing (and durably persisting) our ack of this
 				// message, not just for the client to have sent it — see `session.acknowledge()`.
-				const acknowledged = waitForMqttSessionEvent('acknowledged', 'test-client1');
-				client.on('message', (topic, payload) => {
-					JSON.parse(payload);
-					resolve(acknowledged);
-				});
-
 				client.publish(
 					'SimpleRecord/41',
 					JSON.stringify({
@@ -961,7 +1045,11 @@ describe('test MQTT connections and commands', function () {
 						qos: 1,
 					}
 				);
-			});
+				await deliverySettled;
+			} finally {
+				acknowledgementAbort.abort();
+				client.off('message', onMessage);
+			}
 			await endDurableSession(client, 'test-client1');
 			await clientV5.publishAsync(
 				'SimpleRecord/41',
