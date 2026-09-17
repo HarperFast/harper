@@ -23,16 +23,16 @@
  *      reports `Long`/`Any` with `count` still indexed.
  *   4. old-record fidelity — every seeded record reads back byte-identical, value AND type, through
  *      both REST and the ops-API `search_by_hash` path, each against the value it was written with.
- *   5. the widened type's new reach — 2^31 and 5e9 now round-trip; exactly 2^53 is accepted and
- *      2^53+2 rejected (Harper caps `Long` at abs(2^53) in `resources/tracked.ts:115` and
- *      `resources/Table.ts:6049`); a real BigInt written in-worker, so no float64 transport rounds it
- *      first, is refused at any magnitude including an in-bounds 2^53, because the same check tests
- *      `typeof value !== 'number'` before it tests the range; and `label` now takes objects and numbers.
+ *   5. the widened type's new reach — 2^31 and 5e9 now round-trip; exactly 2^53 is accepted and 2^53+2
+ *      rejected (Harper caps `Long` at abs(2^53) in `resources/tracked.ts`'s `Long` setter and in
+ *      `resources/Table.ts`'s `Long` case); a real BigInt written in-worker, so no float64 transport
+ *      rounds it first, is refused at any magnitude including an in-bounds 2^53, because that same
+ *      case tests `typeof value !== 'number'` before the range; and `label` takes objects and numbers.
  *   6. index consistency, at both layers. The `@indexed count` secondary index must hold exactly the
  *      eleven value/primary-key entries the stored rows imply, old-encoded (id 1-6) and new-encoded
  *      (id 7-9, 30, 31) interleaved by value; and the `greater_than` range query over it must return
  *      exactly the five rows above the threshold, in ascending order. Both, because
- *      `resources/search.ts:485` answers a range query by full scan when an attribute is unindexed,
+ *      `resources/search.ts` answers a range query by full scan when an attribute has no usable index,
  *      so the query result alone does not show the index survived the widening, while the index dump
  *      alone does not show the planner reads it.
  *   7. multi-worker + a second restart — each of the four workers is asked individually, by thread
@@ -267,7 +267,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						{
 							type: attribute.type,
 							// A GraphQL `@indexed` records its (empty) argument set rather than `true`
-							// (resources/graphql.ts:223), so the flag has to be read as a truthiness.
+							// (`resources/graphql.ts`), so the flag has to be read as a truthiness.
 							indexed: Boolean(attribute.indexed),
 							primaryKey: attribute.is_primary_key === true,
 						},
@@ -445,7 +445,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 
 			test('the widened Long refuses a real BigInt whatever its magnitude, un-rounded', async () => {
 				// Written in-worker as BigInt literals (the fixture's PutBigInt), so no float64 transport
-				// rounds them before Harper sees them. `resources/Table.ts:6049` tests `typeof value !==
+				// rounds them before Harper sees them. `resources/Table.ts`'s `Long` case tests `typeof value !==
 				// 'number'` before it tests the range, so even the in-bounds 2^53 probe is refused: the
 				// widened Long holds JS numbers, not 64-bit integers.
 				for (const { id, probe, value } of BIGINT_PROBES) {
@@ -485,7 +485,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 			});
 
 			test('the widened @indexed attribute keeps one index spanning both encodings', async () => {
-				// The only layer that distinguishes a surviving index from `resources/search.ts:485`'s silent
+				// The only layer that distinguishes a surviving index from `resources/search.ts`'s silent
 				// full-scan fallback, which would answer the range query below either way.
 				deepStrictEqual(
 					await indexEntries(),

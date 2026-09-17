@@ -38,8 +38,8 @@ export class StorageEngineInfo extends Resource {
 export class IndexDump extends Resource {
 	static loadAsInstance = false;
 
-	// The index's own entries, no primary-store join: resources/search.ts:485 answers a range query by
-	// full scan when an attribute is unindexed, so only this can show the index survived the widening.
+	// The index's own entries, no primary-store join: resources/search.ts answers a range query by full
+	// scan when an attribute has no usable index, so only this can show the index survived the widening.
 	async get() {
 		const index = MeteredEvent.indices.count;
 		if (!index) throw new Error('MeteredEvent.count carries no secondary index');
