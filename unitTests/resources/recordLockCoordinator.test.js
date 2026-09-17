@@ -10,6 +10,11 @@ const {
 	homeFor,
 	quiesceDelegations,
 	ringKeyFor,
+	acquireForRelay,
+	releaseForRelay,
+	revokeRelayedAdmission,
+	fenceRelayedAdmissions,
+	setLockCoordinatorResolver,
 } = require('#src/resources/recordLockCoordinator');
 const { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS, makeKeyLockHandle } = require('#src/resources/recordLock');
 const { toBufferKey } = require('ordered-binary');
@@ -2668,5 +2673,416 @@ describe('quiesceDelegations (harper-pro#856)', () => {
 		b.close();
 		assert.strictEqual((await quiesceDelegations('q6', 1000)).recalled, 0, 'closed coordinators are deregistered');
 		a.close();
+	});
+});
+
+// harper-pro#852: the "owner" and "caller" are two coordinators in one process, wired the way the
+// transport wires them, so the remote-admission lifecycle is exercised without a real worker mesh.
+describe('relayed admissions across worker threads (harper-pro#852)', () => {
+	function makeCoordinator(database, transport, overrides = {}) {
+		return new LockCoordinator({
+			database,
+			table: 'T',
+			nodeId: 'alpha',
+			transport,
+			writeControl: () => {},
+			keyIdOf: (key) => String(key),
+			nextTimestamp: () => 1,
+			monotonic: () => performance.now(),
+			grantableAfterMono: -Infinity,
+			autoTick: false,
+			...overrides,
+		});
+	}
+
+	/** An owner coordinator (self-home, owns coordination) and a caller coordinator that relays its
+	 * acquires to the owner exactly as the transport does: the owner mints and registers a revoker that
+	 * fences the caller's handle, the caller records the round under a fresh LOCAL id. `acquire()`
+	 * returns both the local round the handle uses and the owner id the wire's release/revoke name. */
+	function relaySetup(database) {
+		const ownerMap = { generation: 1, homes: ['alpha'], homeIncarnation: 1 };
+		const owner = makeCoordinator(database, {
+			homeMap: () => ownerMap,
+			ownsCoordination: () => true,
+			establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+			requestDelegation: () => {
+				throw new Error('a single-node home must not request');
+			},
+			recallDelegation: () => {
+				throw new Error('a single-node home must not recall');
+			},
+		});
+		const released = [];
+		let caller;
+		caller = makeCoordinator(database, {
+			homeMap: () => ownerMap,
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: async (_db, _table, key, lease, wait) => {
+				const round = await owner.acquire(key, lease, wait);
+				owner.registerAdmission(round.admissionId, () => caller.revokeRemoteAdmission(round.admissionId));
+				return round;
+			},
+			releaseOnOwner: (_db, _table, key, ownerAdmissionId) => {
+				released.push(ownerAdmissionId);
+				return owner.release(key, ownerAdmissionId);
+			},
+		});
+		return { owner, caller, released };
+	}
+
+	afterEach(() => setLockCoordinatorResolver(() => undefined));
+
+	it('mints on the owner, records a LOCAL id on the caller, and never reuses the owner id', async () => {
+		const { owner, caller } = relaySetup('r1');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		assert.ok(round && typeof round.admissionId === 'number');
+		assert.strictEqual(caller.stats.relayedAdmissions, 1, 'the caller counts a relayed admission');
+		assert.strictEqual(caller.stats.admitted, 0, 'the caller holds no local delegation');
+		assert.strictEqual(owner.stats.admitted, 1, 'the owner holds the admission');
+	});
+
+	it('fails closed off the owner when the transport cannot relay', async () => {
+		const noRelay = makeCoordinator('r2', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+		});
+		await assert.rejects(noRelay.acquire('k', LEASE, WAIT), /not owned by this worker thread/);
+	});
+
+	it('installs the handle revoker and fences it on a revoke, resolving the ack', async () => {
+		const { caller } = relaySetup('r3');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		// The wire names the OWNER id; here owner and caller share the id space (single-node self-home),
+		// so the round's own id is the owner's.
+		await caller.revokeRemoteAdmission(round.admissionId);
+		assert.strictEqual(fenced, 1, 'the handle was fenced and the ack resolved');
+	});
+
+	it('resolves the ack only after the handle is fenced when the revoke lands before the handle registers', async () => {
+		const { caller } = relaySetup('r4');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		let acked = false;
+		// A revoke arrives before Table.lock installs the real revoker: the ack must NOT resolve yet.
+		const ack = caller.revokeRemoteAdmission(round.admissionId).then(() => (acked = true));
+		await Promise.resolve();
+		assert.strictEqual(acked, false, 'the ack resolved before the handle was fenced');
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		await ack;
+		assert.strictEqual(fenced, 1, 'the latched revoke fenced the handle the instant it joined');
+		assert.strictEqual(acked, true, 'the ack resolved once the fence landed');
+	});
+
+	it('waits for an ASYNC revoker registered after a latched revoke before resolving the ack', async () => {
+		// Same race as above, but the handle's revoker is asynchronous. The ack the owner is waiting on
+		// must not resolve until that promise settles: the owner writes the delegation release the moment
+		// it is acked, so an early ack puts a successor in against a handle that is still committable.
+		const { caller } = relaySetup('r4-async');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let releaseFence;
+		let acked = false;
+		const ack = caller.revokeRemoteAdmission(round.admissionId).then(() => (acked = true));
+		await Promise.resolve();
+		caller.registerAdmission(round.admissionId, () => new Promise((resolve) => (releaseFence = resolve)));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(acked, false, 'the ack resolved before the async fence settled');
+		releaseFence();
+		await ack;
+		assert.strictEqual(acked, true, 'the ack resolves once the async fence settles');
+	});
+
+	it('latches a revoke that arrives before the admission is even installed', async () => {
+		// The owner registers its revoker before it posts the grant reply, so a recall in that window can
+		// fire the revoke before `#acquireFromOwner` has recorded the entry. The ack must wait for the
+		// eventual fence, never resolve against a handle that does not exist yet.
+		const { caller } = relaySetup('r4b');
+		let acked = false;
+		// Owner id 1 is what a single-node self-home mints first; revoke it before acquiring.
+		const ack = caller.revokeRemoteAdmission(1).then(() => (acked = true));
+		await Promise.resolve();
+		assert.strictEqual(acked, false, 'a pre-install revoke resolved with no handle to fence');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		await ack;
+		assert.strictEqual(fenced, 1, 'the pre-install revoke fenced the handle once it installed and registered');
+		assert.strictEqual(acked, true);
+	});
+
+	it('separates the local id the handle uses from the owner id the wire names', async () => {
+		// The id-collision guard: the caller records a relayed admission under a FRESH local id, and the
+		// wire's release names the OWNER's id. Advancing the owner's own admission counter first makes the
+		// two ids differ, so a test would catch the caller confusing them.
+		const { owner, caller, released } = relaySetup('r5');
+		const throwaway = await owner.acquire('warm', LEASE, WAIT); // advance the owner's admission counter
+		owner.release('warm', throwaway.admissionId);
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		await caller.release('k', round.admissionId);
+		assert.strictEqual(released.length, 1, 'exactly one release reached the owner');
+		assert.notStrictEqual(round.admissionId, released[0], 'the local handle id and the owner id are distinct');
+		assert.strictEqual(owner.stats.admitted, 0, 'the owner dropped the relayed admission, not the warm-up one');
+	});
+
+	it('forwards a release to the owner and keeps the entry until lease', async () => {
+		const { owner, caller, released } = relaySetup('r6');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		caller.registerAdmission(round.admissionId, () => {});
+		await caller.release('k', round.admissionId);
+		assert.strictEqual(released.length, 1, 'the release reached the owner');
+		assert.strictEqual(owner.stats.admitted, 0, 'the owner dropped the admission');
+	});
+
+	it('does not raise an unhandled rejection when a fire-and-forget revoke rejects', async () => {
+		// `close()`/`tick()` discard the revoke outcomes, so a relayed revoker that rejects (a dead sibling
+		// port) — or a handle revoker that throws synchronously — must not become an unhandled rejection,
+		// which Node's default policy turns into a worker exit.
+		const rejections = [];
+		const onUnhandled = (reason) => rejections.push(reason);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			const owner = makeCoordinator('reject-cl', {
+				homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+				ownsCoordination: () => true,
+				establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+				requestDelegation: () => {
+					throw new Error('unused');
+				},
+				recallDelegation: () => {
+					throw new Error('unused');
+				},
+			});
+			const key = 'k';
+			const round = await owner.acquire(key, LEASE, WAIT);
+			// A revoker that rejects, as a cross-thread relay revoker would on a dead port.
+			owner.registerAdmission(round.admissionId, () => Promise.reject(new Error('sibling port gone')));
+			owner.close();
+			// A throwing revoker on another admission, via a second owner.
+			const owner2 = makeCoordinator('reject-cl2', {
+				homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+				ownsCoordination: () => true,
+				establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+				requestDelegation: () => {
+					throw new Error('unused');
+				},
+				recallDelegation: () => {
+					throw new Error('unused');
+				},
+			});
+			const round2 = await owner2.acquire(key, LEASE, WAIT);
+			owner2.registerAdmission(round2.admissionId, () => {
+				throw new Error('revokeLease threw');
+			});
+			owner2.close();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.deepStrictEqual(rejections, [], `a fire-and-forget revoke rejection escaped: ${rejections}`);
+		} finally {
+			process.removeListener('unhandledRejection', onUnhandled);
+		}
+	});
+
+	it('fences a remote handle when the caller coordinator closes', async () => {
+		const { caller } = relaySetup('r7');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		caller.close();
+		assert.strictEqual(fenced, 1, 'closing fenced the relayed handle');
+	});
+
+	it('fences every remote handle when the owner is declared gone', async () => {
+		const { caller } = relaySetup('r8');
+		const first = await caller.acquire('k1', LEASE, WAIT);
+		const second = await caller.acquire('k2', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(first.admissionId, () => fenced++);
+		caller.registerAdmission(second.admissionId, () => fenced++);
+		caller.fenceAllRemoteAdmissions();
+		assert.strictEqual(fenced, 2, 'both relayed handles were fenced fail-closed');
+	});
+
+	it('fences a stale relayed handle when a replacement owner reuses an admission id', async () => {
+		// A replacement owner restarts its admission counter, so it can mint an id a departed owner's
+		// still-live entry already holds. On the collision, the old entry must be fenced fail-closed
+		// before the new one takes the id, so a later revoke for the id can only reach the live handle.
+		let nextOwnerId = 5;
+		const caller = makeCoordinator('reuse', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: async (_db, _table, _key, _lease) => ({
+				tsR: 1,
+				mintedMono: performance.now(),
+				admissionId: nextOwnerId,
+			}),
+			releaseOnOwner: () => {},
+		});
+		const first = await caller.acquire('k', LEASE, WAIT);
+		let staleFenced = 0;
+		caller.registerAdmission(first.admissionId, () => staleFenced++);
+		// The replacement owner mints the SAME id 5 for a new grant on the same key.
+		nextOwnerId = 5;
+		const second = await caller.acquire('k', LEASE, WAIT);
+		assert.strictEqual(staleFenced, 1, 'the stale relayed handle was not fenced when the owner reused its id');
+		assert.notStrictEqual(first.admissionId, second.admissionId, 'the two grants share a local id');
+		// A revoke naming owner id 5 now reaches only the live (second) handle.
+		let liveFenced = 0;
+		caller.registerAdmission(second.admissionId, () => liveFenced++);
+		await caller.revokeRemoteAdmission(5);
+		assert.strictEqual(liveFenced, 1, 'the revoke did not reach the live handle');
+		assert.strictEqual(staleFenced, 1, 'the stale handle was fenced a second time');
+	});
+
+	it('carries a remote admission to a successor across a transport swap', async () => {
+		const { caller } = relaySetup('r9');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		const successor = makeCoordinator('r9', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: async () => {
+				throw new Error('unused');
+			},
+			releaseOnOwner: () => {},
+		});
+		caller.handOffTo(successor);
+		await successor.revokeRemoteAdmission(round.admissionId);
+		assert.strictEqual(fenced, 1, 'the successor drove the fence for the carried admission');
+	});
+
+	it('drives the exported owner-side entry points (acquireForRelay / releaseForRelay)', async () => {
+		const owner = makeCoordinator('r10', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => true,
+			establishLockFreshness: async (_d, _t, _k, dep) => dep ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+		});
+		setLockCoordinatorResolver(() => owner);
+		let revoked = 0;
+		const round = await acquireForRelay('r10', 'T', 'k', LEASE, WAIT, () => () => revoked++);
+		assert.ok(round && typeof round.admissionId === 'number', 'acquireForRelay returned a round');
+		assert.strictEqual(owner.stats.admitted, 1);
+		await releaseForRelay('r10', 'T', 'k', round.admissionId);
+		assert.strictEqual(owner.stats.admitted, 0, 'releaseForRelay ended the admission');
+	});
+
+	it('drives the exported caller-side entry points (revokeRelayedAdmission / fenceRelayedAdmissions)', async () => {
+		const { caller } = relaySetup('r11');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fenced = 0;
+		caller.registerAdmission(round.admissionId, () => fenced++);
+		setLockCoordinatorResolver(() => caller);
+		await revokeRelayedAdmission('r11', 'T', round.admissionId);
+		assert.strictEqual(fenced, 1, 'revokeRelayedAdmission fenced through the resolver');
+		const second = await caller.acquire('k2', LEASE, WAIT);
+		caller.registerAdmission(second.admissionId, () => fenced++);
+		fenceRelayedAdmissions('r11', 'T');
+		assert.strictEqual(fenced, 2, 'fenceRelayedAdmissions fenced the remaining handle');
+	});
+
+	it('does not write the delegation release until the relayed handle confirms it is fenced', async () => {
+		// The invariant the whole relay exists to keep: an unlocked-but-staged write on another worker
+		// is still committable, so the owner must fence it BEFORE it writes the release that lets the
+		// home re-grant. Modeled with an admission whose revoke resolves only when the test says so.
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const key = cluster.keyHomedOn('gamma');
+		const alpha = cluster.node('alpha').coordinator;
+		const round = await alpha.acquire(key, LEASE, WAIT);
+		let releaseFence;
+		const fenced = new Promise((resolve) => (releaseFence = resolve));
+		// A relayed handle: its revoke is asynchronous and settles only on the caller's ack.
+		alpha.registerAdmission(round.admissionId, () => fenced);
+		alpha.release(key, round.admissionId); // the caller unlocked, but the staged write can still commit
+
+		let betaAdmitted = false;
+		const betaAcquire = cluster
+			.node('beta')
+			.coordinator.acquire(key, LEASE, WAIT)
+			.then(() => (betaAdmitted = true));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.ok(
+			cluster.recalls.some((r) => r.to === 'alpha'),
+			'the home recalled the holder'
+		);
+		assert.strictEqual(
+			cluster.node('alpha').written.some((entry) => entry.type === 'lockRelease'),
+			false,
+			'the release was written before the relayed handle was fenced'
+		);
+		assert.strictEqual(betaAdmitted, false, 'the successor was admitted before the fence');
+		releaseFence();
+		await betaAcquire;
+		assert.ok(
+			cluster.node('alpha').written.some((entry) => entry.type === 'lockRelease'),
+			'the release is written once the fence confirms'
+		);
+		assert.strictEqual(betaAdmitted, true);
+	});
+
+	it('refuses a grant that lands after the owner worker was declared gone', async () => {
+		// The owner can grant and then die before the reply is processed. `fenceAllRemoteAdmissions` fails
+		// the existing grants closed, but the in-flight one resolves AFTERWARDS. Installing it would let
+		// this thread write under an admission the replacement owner — which starts empty — knows nothing
+		// about, while that owner grants the same key to another worker. Two writers, silently.
+		let grant;
+		const released = [];
+		const caller = makeCoordinator('r-generation', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: () => new Promise((resolve) => (grant = resolve)),
+			releaseOnOwner: (_db, _table, _key, ownerAdmissionId) => {
+				released.push(ownerAdmissionId);
+			},
+		});
+		const acquiring = caller.acquire('k', LEASE, WAIT);
+		await new Promise((resolve) => setImmediate(resolve)); // let the acquire reach the transport
+		caller.fenceAllRemoteAdmissions(); // the owner worker is declared gone, mid-flight
+		grant({ tsR: 1, mintedMono: performance.now(), admissionId: 77 });
+		await assert.rejects(acquiring, /coordinating worker changed/);
+		assert.deepEqual(released, [77], 'the orphaned grant must be handed straight back to the owner');
+		assert.strictEqual(caller.stats.relayedAdmissions, 0, 'no orphaned admission may be installed');
 	});
 });
