@@ -1016,7 +1016,27 @@ describe('HNSW GraphQL numeric options', () => {
 				timeout: 15_000,
 			});
 
-			const nativeRuntime = Table.derivedIndexRuntime;
+			const backendId = `hnsw:${Table.indices.embedding.name}`;
+			const readiness = Table.auditStore.getUserSharedBuffer(
+				`derived-index:${backendId}:readiness`,
+				new ArrayBuffer(READINESS_BYTES)
+			);
+			const readinessWords = new Int32Array(readiness, 0, 6);
+			Atomics.store(readinessWords, 0, 4);
+			Atomics.store(readinessWords, 3, 0);
+			assert.equal(derivedIndexReadiness(Table.auditStore, Table.indices.embedding.name).state, 'unavailable');
+
+			Table = table({
+				table: tableName,
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+				],
+			});
+			assert.equal(Atomics.load(readinessWords, 3), 0, 'routine re-registration must not reset the failure budget');
+
+			const unavailableRuntime = Table.derivedIndexRuntime;
 			Table = table({
 				table: tableName,
 				audit: true,
@@ -1025,14 +1045,7 @@ describe('HNSW GraphQL numeric options', () => {
 					{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: false }, type: 'Array' },
 				],
 			});
-			await nativeRuntime.close();
-			const backendId = `hnsw:${Table.indices.embedding.name}`;
-			const readiness = Table.auditStore.getUserSharedBuffer(
-				`derived-index:${backendId}:readiness`,
-				new ArrayBuffer(READINESS_BYTES)
-			);
-			Atomics.store(new Int32Array(readiness, 0, 6), 0, 4);
-			assert.equal(derivedIndexReadiness(Table.auditStore, Table.indices.embedding.name).state, 'unavailable');
+			await unavailableRuntime.close();
 
 			Table = table({
 				table: tableName,

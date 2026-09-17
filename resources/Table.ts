@@ -915,7 +915,7 @@ export function makeTable(options) {
 			| {
 					close(dropping?: boolean): Promise<void>;
 					restoreAfterFailedDrop?(): typeof TableResource.derivedIndexRuntime;
-					completeDrop?(): void;
+					completeDrop?(dropped?: boolean): void;
 			  }
 			| undefined;
 		static audit = audit;
@@ -1963,7 +1963,7 @@ export function makeTable(options) {
 				}
 			}
 			if (!dropIdentityConfirmed) {
-				derivedIndexRuntime?.completeDrop?.();
+				derivedIndexRuntime?.completeDrop?.(false);
 				if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
 				return;
 			}
@@ -2083,7 +2083,7 @@ export function makeTable(options) {
 					// plus the same tombstone-guarded catalog removal.
 					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
-						derivedIndexRuntime?.completeDrop?.();
+						derivedIndexRuntime?.completeDrop?.(false);
 						return;
 					}
 					const drops = [];

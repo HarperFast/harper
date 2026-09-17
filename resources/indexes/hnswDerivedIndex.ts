@@ -244,6 +244,7 @@ type Registered = {
 	backends: Map<string, RegisteredBackend>;
 	tableBackends: Map<number, Set<RegisteredBackend>>;
 	droppingTables: Set<number>;
+	retryUnavailable: Set<string>;
 };
 const runtimes = new WeakMap<object, Registered>();
 
@@ -271,6 +272,7 @@ function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
 		backends: new Map(),
 		tableBackends: new Map(),
 		droppingTables: new Set(),
+		retryUnavailable: new Set(),
 	};
 	runtimes.set(auditStore, registered);
 	return registered;
@@ -287,14 +289,14 @@ export function attachDerivedIndexes(Table: any):
 	| {
 			close(dropping?: boolean): Promise<void>;
 			restoreAfterFailedDrop(): ReturnType<typeof attachDerivedIndexes>;
-			completeDrop(): void;
+			completeDrop(dropped?: boolean): void;
 	  }
 	| undefined {
-	const attributes = Table.attributes.filter(
-		(attribute: any) => Table.indices[attribute.name]?.customIndex?.postCommit
+	const hnswAttributes = Table.attributes.filter(
+		(attribute: any) => attribute.indexed?.type === 'HNSW' && Table.indices[attribute.name]?.customIndex
 	);
-	if (Table.audit !== true) {
-		if (attributes.length === 0) return;
+	const attributes = hnswAttributes.filter((attribute: any) => Table.indices[attribute.name]?.customIndex?.postCommit);
+	if (Table.audit !== true && attributes.length > 0) {
 		throw new ClientError(
 			`Table '${Table.databaseName}.${Table.tableName}' must enable audit logging before using a post-commit derived index`
 		);
@@ -303,6 +305,17 @@ export function attachDerivedIndexes(Table: any):
 	const auditStore = Table.auditStore as RocksTransactionLogStore;
 	const registered = runtimeFor(auditStore);
 	if (registered.droppingTables.has(Table.tableId)) return;
+	for (const attribute of hnswAttributes) {
+		const indexStore = Table.indices[attribute.name];
+		const id = `hnsw:${indexStore.name}`;
+		// A transient JS-backed declaration can precede the first native registration while a
+		// schema is being installed. Only an explicit transition away from an already-registered
+		// native backend should make a later native registration eligible to rearm an exhausted
+		// rebuild budget.
+		if (attribute.indexed.nativePlane === false && !indexStore.customIndex.postCommit && registered.backends.has(id))
+			registered.retryUnavailable.add(id);
+	}
+	if (attributes.length === 0) return;
 	const installed = { Table };
 	let registeredTable = registered.tables.get(Table.tableId);
 	if (registeredTable) {
@@ -313,6 +326,7 @@ export function attachDerivedIndexes(Table: any):
 		registered.tables.set(Table.tableId, registeredTable);
 	}
 	const releases: Array<() => Promise<void>> = [];
+	const backendIds: string[] = [];
 	for (const attribute of attributes) {
 		const indexStore = Table.indices[attribute.name];
 		const index = indexStore.customIndex as DerivedNativeIndex & { postCommit: true };
@@ -384,7 +398,10 @@ export function attachDerivedIndexes(Table: any):
 		if (!tableBackends) registered.tableBackends.set(Table.tableId, (tableBackends = new Set()));
 		tableBackends.add(registeredBackend);
 		registered.backends.set(id, registeredBackend);
-		if (registered.runtime.getReadiness(id).state === 'unavailable') registered.runtime.requestRebuild(id);
+		const retryUnavailable = registered.retryUnavailable.delete(id);
+		if (retryUnavailable && registered.runtime.getReadiness(id).state === 'unavailable')
+			registered.runtime.requestRebuild(id);
+		backendIds.push(id);
 		releases.push(() => registeredBackend.settle());
 	}
 	return {
@@ -408,8 +425,9 @@ export function attachDerivedIndexes(Table: any):
 			registered.droppingTables.delete(Table.tableId);
 			return attachDerivedIndexes(Table);
 		},
-		completeDrop() {
+		completeDrop(dropped = true) {
 			registered.droppingTables.delete(Table.tableId);
+			if (dropped) for (const id of backendIds) registered.retryUnavailable.add(id);
 		},
 	};
 }
