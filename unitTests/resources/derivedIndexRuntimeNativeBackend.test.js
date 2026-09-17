@@ -1237,6 +1237,147 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('shares inspection retry state across workers and clears it after another owner succeeds', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		let firstInspections = 0;
+		const firstBackend = new FullTextDerivedIndexBackend({
+			id: 'shared-inspection-retry',
+			lifecycle: {
+				inspect() {
+					firstInspections++;
+					throw new Error('worker one cannot inspect');
+				},
+				async open() {
+					throw new Error('writer should not open');
+				},
+				async reset() {
+					throw new Error('index should not reset');
+				},
+			},
+		});
+		const { runtime: firstRuntime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		firstRuntime.register(registration(firstBackend, { lockRetryMilliseconds: 250 }));
+		await waitFor(() => firstInspections === 2, { timeout: 5000 });
+		await firstRuntime.stop();
+
+		let secondInspections = 0;
+		const secondBackend = new FullTextDerivedIndexBackend({
+			id: firstBackend.id,
+			lifecycle: {
+				inspect() {
+					secondInspections++;
+					return { state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) };
+				},
+				async open() {
+					throw new Error('writer should not open');
+				},
+				async reset() {
+					throw new Error('index should not reset');
+				},
+			},
+		});
+		const { runtime: secondRuntime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		secondRuntime.register(registration(secondBackend));
+		await waitFor(() => secondRuntime.getReadiness(secondBackend.id).state === 'ready');
+		assert.strictEqual(secondInspections, 1);
+		await secondRuntime.stop();
+
+		let resets = 0;
+		const thirdBackend = new FullTextDerivedIndexBackend({
+			id: firstBackend.id,
+			lifecycle: {
+				inspect() {
+					throw new Error('worker three cannot inspect');
+				},
+				async open() {
+					throw new Error('writer should not open');
+				},
+				async reset() {
+					resets++;
+				},
+			},
+		});
+		const { runtime: thirdRuntime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		thirdRuntime.register(registration(thirdBackend, { lockRetryMilliseconds: 1000 }));
+		await waitFor(
+			() =>
+				thirdRuntime.getReadiness(thirdBackend.id).state === 'unknown' &&
+				thirdRuntime.getReadiness(thirdBackend.id).reason === 'backend-failed'
+		);
+		assert.strictEqual(resets, 0, 'the successful worker must rearm the shared recovery allowance');
+		await thirdRuntime.stop();
+	});
+
+	it('counts inspection failures across workers before starting one recovery rebuild', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		let firstInspections = 0;
+		const firstBackend = new FullTextDerivedIndexBackend({
+			id: 'shared-inspection-escalation',
+			lifecycle: {
+				inspect() {
+					firstInspections++;
+					throw new Error('worker one cannot inspect');
+				},
+				async open() {
+					throw new Error('writer should not open');
+				},
+				async reset() {
+					throw new Error('index should not reset');
+				},
+			},
+		});
+		const { runtime: firstRuntime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		firstRuntime.register(registration(firstBackend, { lockRetryMilliseconds: 250 }));
+		await waitFor(() => firstInspections === 2, { timeout: 5000 });
+		await firstRuntime.stop();
+
+		let secondInspections = 0;
+		let resets = 0;
+		let finishReset;
+		const engine = {
+			committedPayload: undefined,
+			async applyMutationBatch(batch) {
+				return {
+					processed: batch.upserts.length + batch.deletes.length,
+					rejected: [],
+					encodedBytes: 1,
+					frames: 1,
+				};
+			},
+			async publish(payload) {
+				this.committedPayload = payload;
+				return 1n;
+			},
+			async close() {
+				return {};
+			},
+		};
+		const secondBackend = new FullTextDerivedIndexBackend({
+			id: firstBackend.id,
+			lifecycle: {
+				inspect() {
+					secondInspections++;
+					throw new Error('worker two cannot inspect');
+				},
+				async open() {
+					return engine;
+				},
+				reset() {
+					resets++;
+					return new Promise((resolve) => (finishReset = resolve));
+				},
+			},
+			openAttempts: 1,
+		});
+		const { runtime: secondRuntime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		secondRuntime.register(registration(secondBackend, { lockRetryMilliseconds: 250 }));
+		await waitFor(() => resets === 1, { timeout: 5000 });
+		assert.strictEqual(secondInspections, 1, 'the third process-wide failure must start recovery');
+		finishReset();
+		await waitFor(() => secondRuntime.getReadiness(secondBackend.id).state === 'ready', { timeout: 5000 });
+		await secondRuntime.stop();
+	});
+
 	it('rebuilds after repeated full-text inspection failures instead of retrying forever', async () => {
 		const store = new FakeLogStore(new Map([[10, []]]), {
 			logEntries: new Map([['local', [audit({ timestamp: 10, recordId: 'a' })]]]),

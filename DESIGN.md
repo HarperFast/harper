@@ -2822,11 +2822,13 @@ cursor. A mismatch rollback-closes the handle, adopts the native cursor, discard
 and asks the runtime to replay from that exact point.
 
 An inspection exception is retried across owner epochs without condemning valid native state. The
-third consecutive exception enters the normal condemnation and rebuild path. One successful rebuild
-is allowed for that uninterrupted inspection outage; if inspection still fails three times after it,
-reset refuses another catalog rebuild and the runtime exhausts its bounded rebuild attempts into
-`unavailable`. A successful inspection rearms that recovery allowance. An unrelated reset clears a
-partial failure streak so a rebuilt index still receives the full transient retry grace.
+failure streak and recovery allowance live in the process-shared readiness buffer, so ownership
+moving between workers cannot reset or duplicate them. The third consecutive exception enters the
+normal condemnation and rebuild path. One rebuild is allowed process-wide for that uninterrupted
+inspection outage; if inspection still fails three times afterward, the shared state becomes
+`unavailable` without another catalog rebuild. A successful inspection by any owner clears the
+streak and rearms the allowance. An unrelated rebuild clears a partial failure streak but does not
+rearm an already spent inspection-recovery rebuild.
 
 #### Bounded apply and publication
 

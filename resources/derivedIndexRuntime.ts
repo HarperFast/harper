@@ -251,7 +251,12 @@ const READINESS_REASONS: DerivedIndexReadinessReason[] = [
 ];
 const CONDEMNED_MARKER = new Uint8Array([1]);
 const DERIVED_INDEX_MUTATION_OVERHEAD_BYTES = 16;
-// One shared allocation per backend: five independently read Int32 words, then the owner-epoch
+const INSPECTION_FAILURE_LIMIT = 3;
+const INSPECTION_STATE_RADIX = 4;
+const INSPECTION_RECOVERY_NONE = 0;
+const INSPECTION_RECOVERY_REQUESTED = 1;
+const INSPECTION_RECOVERY_ATTEMPTED = 2;
+// One shared allocation per backend: six independently read Int32 words, then the owner-epoch
 // counter. Each word is self-consistent on its own; nothing needs to observe two of them atomically.
 const READINESS_WORDS = 6;
 const READINESS_EPOCH_OFFSET = READINESS_WORDS * 4;
@@ -261,6 +266,7 @@ const READINESS_REASON = 1;
 const READINESS_ATTEMPTS = 2;
 const READINESS_REBUILD_REQUEST = 3;
 const READINESS_LAG_EXCEEDED = 4;
+const READINESS_INSPECTION = 5;
 
 /** A failure raised inside the collector that already knows its shareable reason. */
 class RunnerError extends Error {
@@ -927,9 +933,23 @@ class DerivedIndexRunner {
 				return;
 			}
 			this.#resetFromDurableCursor();
+			// Inspection recovery is coordinated process-wide. Only a normal acquisition proves that
+			// native state is inspectable again; rebuild revival reuses the backend's reset state.
+			if (!reviving) this.#clearInspectionState();
 			if (this.#owned && !this.#rebuilding) this.#drain();
 		} catch (error) {
 			if (error instanceof DerivedIndexBackendRetryError) {
+				const inspection = this.#recordInspectionFailure();
+				if (inspection.failures >= INSPECTION_FAILURE_LIMIT) {
+					if (inspection.recovery === INSPECTION_RECOVERY_ATTEMPTED) {
+						this.#rebuildAttempts = Math.max(1, this.#rebuildAttempts);
+						this.#becomeUnavailable('backend state remained uninspectable after rebuild', 'backend-failed', error);
+						return;
+					}
+					this.#requestInspectionRecovery();
+					this.#fail('backend state repeatedly could not be inspected', error, 'backend-failed');
+					return;
+				}
 				logger.warn?.(`Derived index '${this.id}' could not inspect backend state; retrying`, error);
 				this.status = { state: 'idle' };
 				this.#publishReadiness('unknown', 'backend-failed');
@@ -943,6 +963,38 @@ class DerivedIndexRunner {
 				error instanceof DerivedIndexBackendError ? 'backend-failed' : 'runner-failed'
 			);
 		}
+	}
+
+	#recordInspectionFailure(): { failures: number; recovery: number } {
+		const words = this.#shared().words;
+		const state = Atomics.load(words, READINESS_INSPECTION);
+		const recovery = Math.floor(state / INSPECTION_STATE_RADIX);
+		const failures = Math.min(INSPECTION_FAILURE_LIMIT, (state % INSPECTION_STATE_RADIX) + 1);
+		Atomics.store(words, READINESS_INSPECTION, recovery * INSPECTION_STATE_RADIX + failures);
+		return { failures, recovery };
+	}
+
+	#requestInspectionRecovery() {
+		const words = this.#shared().words;
+		const state = Atomics.load(words, READINESS_INSPECTION);
+		const recovery = Math.floor(state / INSPECTION_STATE_RADIX);
+		if (recovery === INSPECTION_RECOVERY_NONE)
+			Atomics.store(words, READINESS_INSPECTION, INSPECTION_RECOVERY_REQUESTED * INSPECTION_STATE_RADIX);
+	}
+
+	#clearInspectionState() {
+		Atomics.store(this.#shared().words, READINESS_INSPECTION, 0);
+	}
+
+	#beginInspectionRecovery() {
+		const words = this.#shared().words;
+		const state = Atomics.load(words, READINESS_INSPECTION);
+		const recovery = Math.floor(state / INSPECTION_STATE_RADIX);
+		Atomics.store(
+			words,
+			READINESS_INSPECTION,
+			(recovery === INSPECTION_RECOVERY_REQUESTED ? INSPECTION_RECOVERY_ATTEMPTED : recovery) * INSPECTION_STATE_RADIX
+		);
 	}
 
 	#mintEpoch(): bigint {
@@ -1730,6 +1782,9 @@ class DerivedIndexRunner {
 			this.#becomeUnavailable('rebuild budget exhausted by a previous owner', 'rebuild-exhausted');
 			return;
 		}
+		// The shared state follows ownership across workers. Clearing the partial streak here makes an
+		// unrelated rebuild a fresh inspection attempt without restoring an already-spent recovery.
+		this.#beginInspectionRecovery();
 		const generation = this.#generation;
 		this.status = { state: 'rebuilding', ownerEpoch: this.#ownerEpoch };
 		this.#rebuildAttempts++;

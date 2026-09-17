@@ -23,7 +23,6 @@ export const HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
 export const HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES = 64 * 1024;
 const DEFAULT_OPEN_ATTEMPTS = 3;
 const DEFAULT_OPEN_RETRY_MILLISECONDS = 10;
-const MAX_CONSECUTIVE_INSPECTION_FAILURES = 3;
 const MAX_CONSECUTIVE_WRITER_FAILURES = 2;
 const UNSAFE_LOG_NAMES = new Set(['__proto__', 'constructor']);
 
@@ -139,10 +138,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#unindexableRecords = 0;
 	#stagedUnindexableRecords = 0;
 	#invalidEstimateWarned = false;
-	#consecutiveInspectionFailures = 0;
-	// One destructive recovery per uninterrupted inspection outage; a successful inspect rearms it.
-	#inspectionEscalated = false;
-	#inspectionRecoveryAttempted = false;
 	#consecutiveWriterFailures = 0;
 	// A failed deliver() result and its delayed state callback report the same backend fault.
 	#failedDeliveryObserved = false;
@@ -191,16 +186,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			try {
 				inspection = this.#lifecycle.inspect();
 			} catch (error) {
-				if (++this.#consecutiveInspectionFailures >= MAX_CONSECUTIVE_INSPECTION_FAILURES) {
-					this.#consecutiveInspectionFailures = 0;
-					this.#inspectionEscalated = true;
-					throw new FullTextDerivedIndexError('Full-text derived index state repeatedly could not be inspected', error);
-				}
 				throw new DerivedIndexBackendRetryError('Full-text derived index state could not be inspected', error);
 			}
-			this.#consecutiveInspectionFailures = 0;
-			this.#inspectionEscalated = false;
-			this.#inspectionRecoveryAttempted = false;
 			this.#inspectedEpoch = ownerEpoch;
 			if (inspection.state === 'checkpointed') {
 				try {
@@ -305,9 +292,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		)
 			throw new FullTextDerivedIndexError('Full-text derived index backend is not quiescent at reset');
 		this.#assertSharedEpoch(ownerEpoch);
-		if (this.#inspectionEscalated && this.#inspectionRecoveryAttempted)
-			throw new FullTextDerivedIndexError('Full-text derived index state remained uninspectable after rebuild');
-		const inspectionRecovery = this.#inspectionEscalated;
 		this.#shutdown = undefined;
 		this.#failed = false;
 		await this.#lifecycle.reset();
@@ -316,10 +300,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertSharedEpoch(ownerEpoch);
 		this.#activeEpoch = ownerEpoch;
 		this.#resetQueueState();
-		if (inspectionRecovery) {
-			this.#inspectionEscalated = false;
-			this.#inspectionRecoveryAttempted = true;
-		}
 	}
 
 	onStateChange(wake: (change?: DerivedIndexBackendStateChange) => void): () => void {
@@ -614,7 +594,6 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#capacityDeferred = false;
 		this.#lossPendingEpoch = undefined;
 		this.#invalidEstimateWarned = false;
-		this.#consecutiveInspectionFailures = 0;
 		this.#consecutiveWriterFailures = 0;
 		this.#failedDeliveryObserved = false;
 	}
