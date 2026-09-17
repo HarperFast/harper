@@ -1886,9 +1886,14 @@ export function makeTable(options) {
 			// Release post-commit derived-index delivery before any destructive work: the runner's
 			// backend must have quiesced before its stores and native file are destroyed, and a
 			// same-name recreate must not race an owner still applying to the old generation.
-			const derivedIndexRuntime = TableResource.derivedIndexRuntime;
-			await derivedIndexRuntime?.close();
-			if (TableResource.derivedIndexRuntime === derivedIndexRuntime) TableResource.derivedIndexRuntime = undefined;
+			const quiesceDerivedIndexes = async () => {
+				while (TableResource.derivedIndexRuntime) {
+					const derivedIndexRuntime = TableResource.derivedIndexRuntime;
+					await derivedIndexRuntime.close();
+					if (TableResource.derivedIndexRuntime === derivedIndexRuntime) TableResource.derivedIndexRuntime = undefined;
+				}
+			};
+			await quiesceDerivedIndexes();
 			const rootStore = primaryStore.rootStore;
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
@@ -1934,6 +1939,9 @@ export function makeTable(options) {
 					if (typeof tombstoneWrite?.then === 'function') await tombstoneWrite;
 				}
 			}
+			// LMDB can await its tombstone write above. Re-capture in case a schema refresh installed
+			// another handle during that wait; the live-catalog removal below is synchronous.
+			await quiesceDerivedIndexes();
 			// A get() against a sourcedFrom table resolves to its caller before the resolved
 			// record's cache write has committed (see getFromSource) - the write lands "in the
 			// background" for latency reasons. Flip this BEFORE removing the table from the

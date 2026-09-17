@@ -668,6 +668,40 @@ describe('audit cleanup retirement on teardown', () => {
 		assert.strictEqual(databases.derivedindextableretry.DerivedIndexTableRetryProbe, undefined);
 	});
 
+	it('quiesces a replacement derived-index handle installed while a table drop waits', async function () {
+		const Probe = table({
+			table: 'DerivedIndexTableReplacementProbe',
+			database: 'derivedindextablereplacement',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await new Promise(setImmediate);
+		let release;
+		let firstCloseStarted = false;
+		const firstClosed = new Promise((resolve) => (release = resolve));
+		Probe.derivedIndexRuntime = {
+			close() {
+				firstCloseStarted = true;
+				return firstClosed;
+			},
+		};
+		let replacementCloses = 0;
+		const replacement = {
+			close() {
+				replacementCloses++;
+				return Promise.resolve();
+			},
+		};
+
+		const drop = Probe.dropTable();
+		await waitFor(() => firstCloseStarted, { timeout: 1000, message: 'initial derived-index close never started' });
+		Probe.derivedIndexRuntime = replacement;
+		release();
+		await drop;
+
+		assert.strictEqual(replacementCloses, 1);
+		assert.strictEqual(databases.derivedindextablereplacement.DerivedIndexTableReplacementProbe, undefined);
+	});
+
 	it('reactivates a quiesced derived index when another table prevents the database drop', async function () {
 		const Reactivated = table({
 			table: 'Reactivated',

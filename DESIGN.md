@@ -2739,11 +2739,11 @@ that cannot prove its queue quiescent must not hand the index to another owner. 
 every backend to settle. An unregister cleanup returns the current release attempt; calling the same
 cleanup again retries a held release after a transient shutdown failure. Database removal leaves the
 table and storage registrations intact until every cleanup succeeds, and a table drop retains its
-handle until that release succeeds so the same operation can be retried. A table handle applies the same
-rule to its individual index registrations: if one index fails to stop, sibling registrations that
+handle until that release succeeds so the same operation can be retried. Table and database drops
+re-capture after each await until a concurrent schema refresh has left no replacement handle. A table
+handle applies the same rule to its individual index registrations: if one index fails to stop, sibling registrations that
 already quiesced are installed again before the handle rejects. The database drop likewise reinstalls
-every table handle that closed before another table failed, and repeats its capture after each await
-until no schema refresh has left a replacement handle. If registration fails partway through handle
+every table handle that closed before another table failed. If registration fails partway through handle
 construction, the table retains a cleanup handle that retries any release which could not quiesce.
 The drop therefore remains retryable without serving a live database through a stopped index, and it
 cannot close storage while a backend may still be draining into it.
