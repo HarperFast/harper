@@ -1014,7 +1014,7 @@ function initStores(
 	{ defaultTable, auditPath, isLegacy, destination, storeName, openedStores }: InitStoresOptions = {}
 ) {
 	// a store with no tables never reaches the per-table loop below, and blob roots resolve from this
-	rootStore.databaseName = storeName ?? databaseName;
+	rootStore.databaseName ??= storeName ?? databaseName;
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	const internalDbiInit = createOpenDBIObject(false);
 	let attributesDbi = rootStore.dbisDb;
