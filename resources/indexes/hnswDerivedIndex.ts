@@ -243,6 +243,7 @@ type Registered = {
 	tables: Map<number, RegisteredTable>;
 	backends: Map<string, RegisteredBackend>;
 	tableBackends: Map<number, Set<RegisteredBackend>>;
+	lastTableIds: Map<string, number>;
 	droppingTables: Set<number>;
 };
 const runtimes = new WeakMap<object, Registered>();
@@ -265,7 +266,14 @@ function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
 					.map(({ key, value, version }) => ({ recordId: key, version, value })),
 		}
 	);
-	registered = { runtime, tables, backends: new Map(), tableBackends: new Map(), droppingTables: new Set() };
+	registered = {
+		runtime,
+		tables,
+		backends: new Map(),
+		tableBackends: new Map(),
+		lastTableIds: new Map(),
+		droppingTables: new Set(),
+	};
 	runtimes.set(auditStore, registered);
 	return registered;
 }
@@ -305,7 +313,7 @@ export function attachDerivedIndexes(Table: any):
 		registeredTable = { current: installed, owners: new Set([installed]) };
 		registered.tables.set(Table.tableId, registeredTable);
 	}
-	const releases: Array<(dropping: boolean) => Promise<void>> = [];
+	const releases: Array<() => Promise<void>> = [];
 	for (const attribute of attributes) {
 		const indexStore = Table.indices[attribute.name];
 		const index = indexStore.customIndex as DerivedNativeIndex & { postCommit: true };
@@ -325,7 +333,8 @@ export function attachDerivedIndexes(Table: any):
 		});
 		let predecessor = registered.backends.get(id);
 		const inherited = predecessor;
-		const generationChanged = predecessor !== undefined && predecessor.tableId !== Table.tableId;
+		const previousTableId = registered.lastTableIds.get(id);
+		const generationChanged = previousTableId !== undefined && previousTableId !== Table.tableId;
 		const settlePredecessor = () => {
 			const current = predecessor;
 			if (!current) return Promise.resolve();
@@ -378,20 +387,17 @@ export function attachDerivedIndexes(Table: any):
 		if (!tableBackends) registered.tableBackends.set(Table.tableId, (tableBackends = new Set()));
 		tableBackends.add(registeredBackend);
 		registered.backends.set(id, registeredBackend);
+		registered.lastTableIds.set(id, Table.tableId);
 		if (generationChanged && registered.runtime.getReadiness(id).state === 'unavailable')
 			registered.runtime.requestRebuild(id);
-		releases.push(async (dropping) => {
-			const active = registered.backends.get(id);
-			if (dropping && active) await active.settle();
-			else await registeredBackend.settle();
-		});
+		releases.push(() => registeredBackend.settle());
 	}
 	return {
 		async close(dropping = false) {
 			if (dropping) registered.droppingTables.add(Table.tableId);
 			const settled = dropping
 				? Promise.all([...(registered.tableBackends.get(Table.tableId) ?? [])].map((backend) => backend.settle()))
-				: Promise.all(releases.map((release) => release(false)));
+				: Promise.all(releases.map((release) => release()));
 			const tableRegistration = registered.tables.get(Table.tableId);
 			if (tableRegistration) {
 				tableRegistration.owners.delete(installed);
