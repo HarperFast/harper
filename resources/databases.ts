@@ -2640,9 +2640,25 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 				attributes = merged;
 			}
+			const fullTextValidationAttributes =
+				origin === 'cluster'
+					? attributes.map((attribute) => {
+							const descriptor = Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
+							if (!descriptor) return attribute;
+							const durableAttribute = { ...attribute };
+							applyDurableDeclaration(durableAttribute, descriptor);
+							return durableAttribute;
+						})
+					: attributes;
 			for (const attribute of attributes) {
 				if (!attribute.fullText) continue;
-				attribute.fullText = compileFullTextDefinition(attribute, attribute.fullText, attributes);
+				const validationAttribute =
+					fullTextValidationAttributes.find(({ name }) => name === attribute.name) ?? attribute;
+				attribute.fullText = compileFullTextDefinition(
+					validationAttribute,
+					validationAttribute.fullText,
+					fullTextValidationAttributes
+				);
 				attribute.hidden = true;
 			}
 			if (origin !== 'cluster') {

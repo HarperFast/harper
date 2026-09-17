@@ -201,6 +201,53 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 	});
 
+	it('validates a peer full-text handle against a newer durable source type', async () => {
+		const Local = table({
+			table: 'ClusterMergeDurableInvalidFullText',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+		});
+		await catalogFlushed(Local);
+		const sourceKey = 'ClusterMergeDurableInvalidFullText/title';
+		const written = Local.dbisDB.put(sourceKey, { ...Local.dbisDB.getSync(sourceKey), type: 'Int' });
+		if (written?.then) await written;
+		assert.throws(
+			() =>
+				table({
+					table: 'ClusterMergeDurableInvalidFullText',
+					database: 'test',
+					schemaDefined: true,
+					origin: 'cluster',
+					attributes: [
+						{ name: 'id', type: 'ID', isPrimaryKey: true },
+						{ name: 'title', type: 'String' },
+						{
+							name: 'search',
+							type: 'FullText',
+							fullText: {
+								fields: [{ name: 'title', weight: 1 }],
+								analyzer: 'english@1',
+								stopWords: true,
+								positions: true,
+								surfaceTerms: true,
+								synonyms: [],
+							},
+						},
+					],
+				}),
+			/String, \[String\], or Blob/
+		);
+		assert.strictEqual(
+			Local.attributes.some(({ name }) => name === 'search'),
+			false
+		);
+		assert.strictEqual(Local.dbisDB.getSync('ClusterMergeDurableInvalidFullText/search'), undefined);
+	});
+
 	it('persists a hidden-only declaration change without rebuilding an index', async () => {
 		const Hidden = table({
 			table: 'ClusterMergeHidden',
