@@ -10,6 +10,7 @@ const { DERIVED_INDEX_CURSOR_KEY, HnswDerivedIndexBackend } = require('#src/reso
 const {
 	READINESS_BYTES,
 	DerivedIndexRuntime,
+	derivedIndexTime,
 	readDerivedIndexCoverage,
 } = require('#src/resources/derivedIndexRuntime');
 const { RocksDatabase, Transaction } = require('@harperfast/rocksdb-js');
@@ -132,7 +133,7 @@ describe('native derived-index query coverage', function () {
 		assert.equal(search(undefined, 0).indexAdmission, undefined);
 	});
 	it('keeps a fixed certified boundary after later unrelated writes', async () => {
-		const since = process.hrtime.bigint();
+		const since = derivedIndexTime(Product.auditStore.rootStore);
 		await index.derivedHost.waitForCoverage(since, 10_000);
 		await Other.put('after-wait-boundary', { value: 1 });
 		await index.derivedHost.waitForCoverage(since, 10_000);
@@ -143,7 +144,7 @@ describe('native derived-index query coverage', function () {
 		await current();
 	});
 	it('accepts a published fixed-boundary proof on the final deadline check', async () => {
-		const since = process.hrtime.bigint();
+		const since = derivedIndexTime(Product.auditStore.rootStore);
 		await index.derivedHost.waitForCoverage(since, 10_000);
 		await index.derivedHost.waitForCoverage(since, Number.MIN_VALUE);
 	});
@@ -693,11 +694,11 @@ describe('native derived-index query coverage', function () {
 			);
 			producing = true;
 			commit();
-			await runtime.waitForCoverage(id, process.hrtime.bigint(), 500);
+			await runtime.waitForCoverage(id, derivedIndexTime(Product.auditStore.rootStore), 500);
 			assert(delivered > 0);
 		} finally {
 			producing = false;
-			await runtime.waitForCoverage(id, process.hrtime.bigint(), 10_000);
+			await runtime.waitForCoverage(id, derivedIndexTime(Product.auditStore.rootStore), 10_000);
 			await runtime.stop();
 		}
 	});
@@ -716,7 +717,7 @@ describe('native derived-index query coverage', function () {
 		try {
 			runtime.register({ backend, projections: new Map([[Product.tableId, (record) => record.vector]]) });
 			await waitFor(() => runtime.getStatus(id).ownerEpoch !== undefined);
-			await runtime.waitForCoverage(id, process.hrtime.bigint(), 10_000);
+			await runtime.waitForCoverage(id, derivedIndexTime(Product.auditStore.rootStore), 10_000);
 			const buffer = Product.auditStore.getUserSharedBuffer(
 				`derived-index:${id}:readiness`,
 				new ArrayBuffer(READINESS_BYTES)

@@ -141,8 +141,15 @@ test(
 						const sequence = start + offset;
 						const id = records.length + sequence;
 						const vector = records[sequence].vector;
-						const written = await request(`/PlaneProbe/${id}`, 'PUT', { vector });
-						assert(written.status < 300, JSON.stringify(written));
+						await waitFor(
+							async () => {
+								const written = await request(`/PlaneProbe/${id}`, 'PUT', { vector });
+								if (written.status === 503 && written.body.code === 'DERIVED_INDEX_LAGGING') return false;
+								assert(written.status < 300, JSON.stringify(written));
+								return true;
+							},
+							{ timeout: 30_000, interval: 100, message: `write ${id} stayed backpressured` }
+						);
 						const result = await query(
 							undefined,
 							20_000,

@@ -2703,7 +2703,8 @@ File-primary node-to-record mappings are read from current storage, just like th
 an older record snapshot must not hide mappings published after a record already visible in that snapshot.
 Record filtering and materialization retain the request's snapshot; the native graph is not an MVCC index.
 
-The runner captures `process.hrtime.bigint()` before listing physical logs and polling their committed
+The runner captures the RocksDB process-wide transaction clock (`getMonotonicTimestamp()`) before listing
+physical logs and polling their committed
 prefixes. It synchronously adds discovered logs to the audit store's worker-local map. A capture is
 usable only when each stats snapshot's committed position equals its written head: an earlier unfinished
 transaction can hide later committed transactions behind the readable prefix. The native statistics
@@ -2730,6 +2731,10 @@ flushes, surviving coverage cannot refer to a lost, reusable log tail. Recovery 
 prefix. [Age-based rotation runs on a write](https://github.com/HarperFast/rocksdb-js/blob/v2.9.1/src/binding/transaction_log/transaction_log_store.cpp#L947-L963),
 so an ordinary idle log does not advance its head merely because time passed. These are dependency
 contracts, not a guarantee against externally replacing log files or failed storage durability.
+
+Bun gives each worker a different `process.hrtime.bigint()` origin, so it cannot certify cross-worker
+coverage. The transaction clock is shared across workers; its milliseconds are encoded as integer
+nanoseconds without multiplying the full epoch-sized floating-point value.
 
 The monotonic time lives only in the process-wide shared readiness buffer and is cleared on non-ready
 health transitions. An owner refreshes idle coverage at its flush cadence without extending its idle

@@ -9,7 +9,7 @@ import {
 	MAX_WAIT_FOR_INDEX_MILLISECONDS,
 	type DerivedNativeIndexHost,
 } from './hnswDerivedIndex.ts';
-import type { DerivedIndexReadiness, DerivedIndexCoverage } from '../derivedIndexRuntime.ts';
+import { derivedIndexTime, type DerivedIndexReadiness, type DerivedIndexCoverage } from '../derivedIndexRuntime.ts';
 import { SKIP } from '@harperfast/extended-iterable';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { createHash } from 'node:crypto';
@@ -1626,7 +1626,8 @@ export class HierarchicalNavigableSmallWorld {
 			minResults?: number;
 		} = {}
 	) {
-		const started = this.filePrimary && waitForIndexMilliseconds > 0 ? process.hrtime.bigint() : undefined;
+		const started =
+			this.filePrimary && waitForIndexMilliseconds > 0 ? derivedIndexTime(this.indexStore.rootStore) : undefined;
 		let limit: number | undefined; // only set for threshold comparators; 0 is a valid threshold (e.g. dotProduct)
 		let limitInclusive = false; // true for `le`, false for `lt`
 		switch (comparator) {

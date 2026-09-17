@@ -1,3 +1,4 @@
+import type { RocksDatabase } from '@harperfast/rocksdb-js';
 import type { Id } from './ResourceInterface.ts';
 import type { AuditRecord } from './auditStore.ts';
 import type { RocksTransactionLogStore, TransactionLogIterable } from './RocksTransactionLogStore.ts';
@@ -28,6 +29,18 @@ export type DerivedIndexCoverage = {
 	maxLagMilliseconds: number;
 	lagUpperBoundMilliseconds?: number;
 };
+
+export function derivedIndexTime(store: RocksDatabase): bigint {
+	// Bun's hrtime origin is worker-local; the transaction clock is shared by every worker.
+	let milliseconds: number;
+	try {
+		milliseconds = store.getMonotonicTimestamp();
+	} catch {
+		throw new ServerError('The derived index coverage clock is unavailable', 503);
+	}
+	const whole = Math.trunc(milliseconds);
+	return BigInt(whole) * 1_000_000n + BigInt(Math.round((milliseconds - whole) * 1_000_000));
+}
 
 type CoverageCapture = { time: bigint; positions: DerivedIndexPositions };
 type CoverageWaiter = { since: bigint; deadline: bigint; finish: (error?: unknown) => void };
@@ -413,7 +426,7 @@ export class DerivedIndexRuntime {
 					`The native HNSW index is ${after.state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
 					503
 				);
-			const now = process.hrtime.bigint();
+			const now = derivedIndexTime(this.#logStore.rootStore);
 			let delay = 25;
 			for (const waiter of group.waiters) {
 				if (before.state === 'ready' && before.ownerEpoch === after.ownerEpoch && time >= waiter.since) waiter.finish();
@@ -1102,7 +1115,7 @@ class DerivedIndexRunner {
 		const now = this.#options.now();
 		this.#publishLag();
 		try {
-			const captureTime = process.hrtime.bigint();
+			const captureTime = derivedIndexTime(this.#logStore.rootStore);
 			if (!this.#checkNewLogs() || !this.#checkRangeHealth()) return;
 			const positions = this.#registration.backend.publishCoverage
 				? readCommittedPositions(this.#logStore, this.#knownLogs)
@@ -2226,7 +2239,7 @@ export function readDerivedIndexCoverage(
 		if (readiness.state !== 'ready') return unknown;
 		const time = Atomics.load(views.coverage, 0);
 		if (time > 0n) {
-			const age = Number(process.hrtime.bigint() - time) / 1e6;
+			const age = Number(derivedIndexTime(logStore.rootStore) - time) / 1e6;
 			if (age >= 0) {
 				unknown.lagUpperBoundMilliseconds = age;
 				if (maxLagMilliseconds > 0 && age <= maxLagMilliseconds) return { ...unknown, state: 'bounded' };
