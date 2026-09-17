@@ -450,6 +450,8 @@ const PEER_REDEFINABLE_FIELDS = [
 	'elements',
 	'properties',
 	'embed',
+	'fullText',
+	'hidden',
 ];
 // `indexNulls` is derived from the durable descriptor, never sent by a peer, so naming it in the
 // discard warn would blame the peer for a field it did not write.
@@ -2937,7 +2939,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributeDescriptor.enumerable !== attribute.enumerable ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
-				// Derived declarations participate in the durable schema descriptor.
 				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed) ||
 				JSON.stringify(attributeDescriptor.fullText) !== JSON.stringify(attribute.fullText);
 			// any metadata difference (drives persistence)

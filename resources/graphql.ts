@@ -40,8 +40,15 @@ function coerceDirectiveValue(node: ValueNode): any {
 			return null;
 		case 'ListValue':
 			return node.values.map(coerceDirectiveValue);
-		case 'ObjectValue':
-			return Object.fromEntries(node.fields.map((field) => [field.name.value, coerceDirectiveValue(field.value)]));
+		case 'ObjectValue': {
+			const value: Record<string, unknown> = Object.create(null);
+			for (const field of node.fields) {
+				if (Object.hasOwn(value, field.name.value))
+					throw new ClientError(`Directive object declares "${field.name.value}" more than once`, 400);
+				value[field.name.value] = coerceDirectiveValue(field.value);
+			}
+			return value;
+		}
 		default:
 			return (node as { value?: unknown }).value;
 	}
@@ -354,10 +361,11 @@ async function processGraphQLSchema(
 						if (!typeDef.table)
 							throw new ClientError(`@fullText on "${prop.name}" is only supported on a @table type`, 400);
 						prop.fullText = compileFullTextDefinition(prop, prop.fullText, attributes);
-						// The target is a query handle, not record data. Keep it in Table.attributes for
-						// schema diffing and describe metadata while excluding it from generated record APIs.
+						// The target stays in Table.attributes for query planning and schema diffing, but is
+						// suppressed from generated introspection surfaces.
 						prop.hidden = true;
-					}
+					} else if (prop.type === 'FullText')
+						throw new ClientError(`FullText field "${prop.name}" requires an @fullText declaration`, 400);
 				}
 				// Project the array form into the canonical `properties` Record (JSON-Schema-shaped,
 				// keyed by attribute name). Both shapes are co-populated in this single pass;

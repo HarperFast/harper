@@ -119,6 +119,46 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 	});
 
+	it('restores a durable full-text declaration over a stale peer snapshot', async () => {
+		const definition = {
+			fields: [{ name: 'title', weight: 1 }],
+			analyzer: 'english@1',
+			stopWords: true,
+			positions: true,
+			surfaceTerms: true,
+			synonyms: [],
+		};
+		const FullText = table({
+			table: 'ClusterMergeFullText',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'search', type: 'FullText', fullText: definition, hidden: true },
+			],
+		});
+		await catalogFlushed(FullText);
+		const stale = FullText.attributes.find((attribute) => attribute.name === 'search');
+		delete stale.fullText;
+		delete stale.hidden;
+
+		const Restored = table({
+			table: 'ClusterMergeFullText',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'search', type: 'FullText' },
+			],
+			origin: 'cluster',
+		});
+		const restored = Restored.attributes.find((attribute) => attribute.name === 'search');
+		assert.deepStrictEqual(restored.fullText, definition);
+		assert.strictEqual(restored.hidden, true);
+	});
+
 	it('logs every peer difference it discards, not only a type conflict', async () => {
 		const storageLogger = forComponent('storage');
 		const originalWarn = storageLogger.warn;

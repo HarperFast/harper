@@ -52,6 +52,9 @@ type SchemaAttribute = {
 	embed?: unknown;
 	relationship?: unknown;
 	isPrimaryKey?: boolean;
+	assignCreatedTime?: boolean;
+	assignUpdatedTime?: boolean;
+	expiresAt?: boolean;
 };
 
 export function compileFullTextDefinition(
@@ -62,7 +65,15 @@ export function compileFullTextDefinition(
 	if (target.type !== 'FullText')
 		throw schemaError(`@fullText on "${target.name}" requires the FullText scalar type; got "${displayType(target)}"`);
 	if (target.indexed) throw schemaError(`@fullText on "${target.name}" cannot be combined with @indexed`);
-	if (target.computed || target.embed || target.relationship || target.isPrimaryKey)
+	if (
+		target.computed ||
+		target.embed ||
+		target.relationship ||
+		target.isPrimaryKey ||
+		target.assignCreatedTime ||
+		target.assignUpdatedTime ||
+		target.expiresAt
+	)
 		throw schemaError(`@fullText on "${target.name}" cannot be combined with another field-lifecycle directive`);
 	const definition = requireObject(value, `@fullText on "${target.name}"`);
 	assertKnownKeys(definition, FULL_TEXT_ARGUMENTS, `@fullText on "${target.name}"`);
@@ -144,7 +155,6 @@ function compileSynonyms(value: unknown, targetName: string): FullTextSynonymRul
 }
 
 function compileHighlighting(value: unknown, targetName: string): FullTextHighlighting | undefined {
-	// Highlighting is opt-in. Supplying the object enables it; omission or null leaves it disabled.
 	if (value == null) return;
 	const highlighting = requireObject(value, `@fullText highlighting on "${targetName}"`);
 	assertKnownKeys(highlighting, HIGHLIGHTING_ARGUMENTS, `@fullText highlighting on "${targetName}"`);

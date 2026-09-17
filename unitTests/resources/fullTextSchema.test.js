@@ -3,6 +3,7 @@
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
+const { storedFieldsOnly } = require('#src/resources/RecordEncoder');
 
 describe('@fullText schema declaration', () => {
 	before(() => setupTestDBPath());
@@ -163,6 +164,26 @@ describe('@fullText schema declaration', () => {
 			'search: FullText @fullText(fields: [{ name: "text" }], highlighting: { maxFragments: 0 })',
 			/highlighting.maxFragments/,
 		],
+		[
+			'duplicate nested option',
+			'search: FullText @fullText(fields: [{ name: "text", name: "count" }])',
+			/declares "name" more than once/,
+		],
+		[
+			'created-time lifecycle conflict',
+			'search: FullText @createdTime @fullText(fields: [{ name: "text" }])',
+			/field-lifecycle directive/,
+		],
+		[
+			'updated-time lifecycle conflict',
+			'search: FullText @updatedTime @fullText(fields: [{ name: "text" }])',
+			/field-lifecycle directive/,
+		],
+		[
+			'expiry lifecycle conflict',
+			'search: FullText @expiresAt @fullText(fields: [{ name: "text" }])',
+			/field-lifecycle directive/,
+		],
 	]) {
 		it(`rejects ${name}`, async () => {
 			await assert.rejects(
@@ -182,6 +203,18 @@ describe('@fullText schema declaration', () => {
 			);
 		});
 	}
+
+	it('rejects a FullText field without an index declaration', async () => {
+		await assert.rejects(
+			loadGQLSchema(`
+				type FullTextMissingDeclaration @table {
+					id: ID @primaryKey
+					search: FullText
+				}
+			`),
+			/requires an @fullText declaration/
+		);
+	});
 
 	it('rejects a full-text declaration outside a table', async () => {
 		await assert.rejects(
@@ -208,5 +241,11 @@ describe('@fullText schema declaration', () => {
 			() => instance.validate({ id: 'one', text: 'hello', search: 'not record data' }),
 			/Full-text query property search may not be directly assigned/
 		);
+		const stored = storedFieldsOnly(tables.FullTextWriteGuard.primaryStore.encoder, {
+			id: 'one',
+			text: 'hello',
+			search: 'source or replay data',
+		});
+		assert.strictEqual(Object.hasOwn(stored, 'search'), false, 'storage projection must remove the query handle');
 	});
 });

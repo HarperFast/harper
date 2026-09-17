@@ -6467,7 +6467,10 @@ export function makeTable(options) {
 				if (attribute.embed && !TableResource.userSetEmbedders.has(attribute.name)) {
 					this.userEmbedders[attribute.name] = createDefaultEmbedder(attribute.embed);
 				}
-				if (relationship) {
+				if (attribute.fullText) {
+					propertyResolvers[attribute.name] = attribute.resolve = () => undefined;
+					attribute.resolve.directReturn = true;
+				} else if (relationship) {
 					if (attribute.indexed) {
 						console.error(
 							`A relationship property can not be directly indexed, (but you may want to index the foreign key attribute)`
