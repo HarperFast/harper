@@ -224,7 +224,7 @@ class FakeCluster {
 	}
 
 	async #deliverRecall(from, to, recall) {
-		this.recalls.push({ from, to, key: recall.key });
+		this.recalls.push({ from, to, key: recall.key, token: recall.token });
 		const target = this.node(to);
 		if (!target || !target.alive) throw new Error(`${to} is unreachable`);
 		return target.coordinator.onDelegationRecall(recall);
@@ -3094,6 +3094,66 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 			'the release is written once the fence confirms'
 		);
 		assert.strictEqual(betaAdmitted, true);
+	});
+
+	it('writes one release for a delegation recalled twice, and not before the fence', async () => {
+		// The home re-sends a recall RECALL_RETRY_MS after its own recall call failed — far inside a
+		// delegation lease — so two recalls for the same token can both be parked on the drain and
+		// resume together. The second must not find the admissions the first already emptied and write
+		// the release while that first surrender is still waiting for the relayed handle's fence.
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const key = cluster.keyHomedOn('gamma');
+		const alpha = cluster.node('alpha').coordinator;
+		const round = await alpha.acquire(key, LEASE, WAIT);
+		let releaseFence;
+		const fenced = new Promise((resolve) => (releaseFence = resolve));
+		alpha.registerAdmission(round.admissionId, () => fenced);
+
+		const betaAcquire = cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const recall = cluster.recalls.find((r) => r.to === 'alpha');
+		assert.ok(recall, 'the home recalled the holder');
+		const retried = alpha.onDelegationRecall({ key, token: recall.token });
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		alpha.release(key, round.admissionId); // the caller unlocks: both recalls drain together
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.strictEqual(
+			cluster.node('alpha').written.some((entry) => entry.type === 'lockRelease'),
+			false,
+			'the retried recall wrote the release before the relayed handle was fenced'
+		);
+		releaseFence();
+		await Promise.all([betaAcquire, retried]);
+		assert.strictEqual(
+			cluster.node('alpha').written.filter((entry) => entry.type === 'lockRelease').length,
+			1,
+			'one handoff must write exactly one release entry'
+		);
+	});
+
+	it('waits out the handle lease rather than releasing when the relayed fence rejects', async () => {
+		// The owner half of the same invariant: a fence that failed is not a fence, so `#revokeAllAndSettle`
+		// must fall through to the admission's own lease before `#surrender` publishes the release.
+		const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+		const key = cluster.keyHomedOn('gamma');
+		const alpha = cluster.node('alpha').coordinator;
+		const shortLease = 300;
+		const round = await alpha.acquire(key, shortLease, WAIT);
+		alpha.registerAdmission(round.admissionId, () => Promise.reject(new Error('sibling port gone')));
+		alpha.release(key, round.admissionId); // unlocked, but the staged write is still committable
+
+		const betaAcquire = cluster.node('beta').coordinator.acquire(key, LEASE, WAIT);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.strictEqual(
+			cluster.node('alpha').written.some((entry) => entry.type === 'lockRelease'),
+			false,
+			'a rejected fence was treated as a fence and released the delegation'
+		);
+		await betaAcquire;
+		assert.ok(
+			cluster.node('alpha').written.some((entry) => entry.type === 'lockRelease'),
+			'the release is written once the handle lease has run out'
+		);
 	});
 
 	it('refuses a grant that lands after the owner worker was declared gone', async () => {

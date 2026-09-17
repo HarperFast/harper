@@ -585,6 +585,8 @@ interface Delegation {
 	sweepAtSize: number;
 	/** Resolvers waiting for the drain to finish, so recall can reply once rather than poll. */
 	drained?: (() => void)[];
+	/** The one in-flight `#surrender` for this delegation; see there for why it is memoized. */
+	surrendering?: Promise<void>;
 }
 
 /**
@@ -599,10 +601,10 @@ interface RemoteAdmission {
 	/** The owner's admission id, echoed on release and matched by an inbound revoke. */
 	ownerAdmissionId: number;
 	key: any;
-	/** The caller-side handle fence — always `Table.lock`'s `() => handle.revokeLease()`, which is
-	 * synchronous and total (`revokeLease` cannot throw), so a fence here always succeeds and its ack
-	 * resolves synchronously. Never the owner-side async relay revoker, which lives on a delegation
-	 * `Admission` instead. */
+	/** The caller-side handle fence — today always `Table.lock`'s `() => handle.revokeLease()`, which is
+	 * synchronous and total, never the owner-side async relay revoker (that lives on a delegation
+	 * `Admission` instead). `registerAdmission` accepts an async revoker all the same, so the ack paths
+	 * here settle on the outcome rather than assuming this one. */
 	revoke: () => void;
 	/** Monotonic deadline of the handle's own lease; the entry is dropped once past it. */
 	expiresMono: number;
@@ -753,8 +755,8 @@ const retiredCoordinators = new Map<string, { grantableAfterMono: number; counte
 const highestGeneration = new Map<string, number>();
 
 /** Bound one drain step so a single unresponsive delegate cannot consume the whole transition budget. */
-function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
-	if (!(ms > 0)) return Promise.reject(new Error('the quiesce deadline elapsed'));
+function withDeadline<T>(work: Promise<T>, ms: number, message = 'the quiesce deadline elapsed'): Promise<T> {
+	if (!(ms > 0)) return Promise.reject(new Error(message));
 	const timer = delay(ms);
 	work.then(
 		() => timer.cancel(),
@@ -763,7 +765,7 @@ function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
 	return Promise.race([
 		work,
 		timer.promise.then<T>(() => {
-			throw new Error('the quiesce deadline elapsed');
+			throw new Error(message);
 		}),
 	]);
 }
@@ -1140,8 +1142,9 @@ export class LockCoordinator {
 			admitted,
 			revocable,
 			droppedOffOwner: this.#droppedOffOwner,
-			// Admissions this thread obtained from the owner worker (harper-pro#852): the count is what
-			// makes an off-owner `lock()` visible in `cluster_status`.
+			// Admissions this thread has obtained from the owner worker (harper-pro#852), cumulative
+			// rather than current: what it makes visible in `cluster_status` is that off-owner `lock()`s
+			// are being served here at all.
 			relayedAdmissions: this.#relayedAdmissions,
 		};
 	}
@@ -1382,15 +1385,16 @@ export class LockCoordinator {
 	/**
 	 * Obtain an admission from the owner worker for a `lock()` served on a non-owner thread
 	 * (harper-pro#852), recorded under a LOCAL id so `registerAdmission`/`release` can never collide it
-	 * with a live local admission. `acquireOnOwner` is bounded by the transport (the caller's `waitMs`
-	 * plus its hop allowance); a `waitMs`-deadline race here is core's own backstop against a transport
-	 * that never answers, so `lock()` cannot hang past the wait it was given.
+	 * with a live local admission. `acquireOnOwner` is bounded by the transport, inside the caller's
+	 * `waitMs`; the race here is core's own backstop against a transport that never answers, so `lock()`
+	 * cannot hang far past the wait it was given.
 	 */
 	async #acquireFromOwner(key: any, leaseMs: number, waitMs: number): Promise<LockRound> {
 		// The transport bounds this wait (harper-pro's acquire has its own `waitMs`-scaled timeout); the
-		// core-side race is a last-resort backstop set strictly beyond that bound (`REMOTE_ACQUIRE_BACKSTOP_MS`
-		// > the transport's hop allowance), so it fires only if the transport never returns, never ahead of
-		// the transport's own timeout. Without it a wedged owner would hang `lock()` past its `waitMs`.
+		// core-side race is a last-resort backstop set strictly beyond that bound — the transport is asked
+		// for `waitMs - hop` and core's deadline is `waitMs + REMOTE_ACQUIRE_BACKSTOP_MS` — so it fires only
+		// if the transport never returns, never ahead of the transport's own timeout. Without it a wedged
+		// owner would hang `lock()` past its `waitMs`.
 		// Sampled BEFORE the request goes out, on the authority that will install the result.
 		const startGeneration = this.#authority().#relayGeneration;
 		// The hop allowance comes OUT of the caller's budget, never on top of it: `lock()` holds the native
@@ -1399,7 +1403,12 @@ export class LockCoordinator {
 		// core's deadline is the caller's `waitMs` plus a small net that fires only if the transport never
 		// answers at all.
 		const hop = Math.min(REMOTE_ACQUIRE_HOP_MS, Math.floor(waitMs / 2));
-		const acquire = this.transport.acquireOnOwner!(this.database, this.table, key, leaseMs, waitMs - hop);
+		// A transport that throws SYNCHRONOUSLY (a sibling port already gone) must still reach the
+		// normalization below: escaping raw gives the caller a 500 where it needs the retryable 503.
+		// `#beginRecall` wraps its transport call for the same reason.
+		const acquire = Promise.resolve().then(() =>
+			this.transport.acquireOnOwner!(this.database, this.table, key, leaseMs, waitMs - hop)
+		);
 		let backstopWon = false;
 		// If the backstop wins the race, the owner may still grant afterward: release that grant back so it
 		// does not sit `holding` on the owner for its whole lease. (The transport releases a late reply too;
@@ -1410,7 +1419,11 @@ export class LockCoordinator {
 			},
 			() => {}
 		);
-		const round = await withDeadline(acquire, waitMs + REMOTE_ACQUIRE_BACKSTOP_MS).catch((error) => {
+		const round = await withDeadline(
+			acquire,
+			waitMs + REMOTE_ACQUIRE_BACKSTOP_MS,
+			'the coordinating worker did not answer'
+		).catch((error) => {
 			backstopWon = true;
 			throw error instanceof LockUnavailableError
 				? error
@@ -1571,9 +1584,8 @@ export class LockCoordinator {
 	}
 
 	/**
-	 * Forward a release to the owner without ever letting a failure escape onto the caller's path. The
-	 * transport call is invoked INSIDE the `.then` so a synchronous throw is caught too — `Promise.resolve(fn())`
-	 * evaluates `fn()` first and a sync throw would slip past the `.catch`.
+	 * Forward a release to the owner without ever letting a failure escape onto the caller's path —
+	 * a synchronous throw from the transport as much as a rejected promise.
 	 */
 	/**
 	 * Forward a release to the owner, naming the admission by the OWNER's id. Core deliberately carries no
@@ -1649,7 +1661,10 @@ export class LockCoordinator {
 	 * is harmless. Not set for a fence-drop: the owner is already surrendering that delegation.
 	 */
 	#dropRemoteAdmission(localId: number, remote: RemoteAdmission, forwardRelease = false): void {
-		this.#remoteAdmissions!.delete(localId);
+		// Optional: an asynchronous fence can settle after `fenceAllRemoteAdmissions`, `close` or a
+		// handoff has already cleared the map, and a TypeError here would reject an ack whose handle is
+		// in fact fenced, making the owner wait out the lease for nothing.
+		this.#remoteAdmissions?.delete(localId);
 		this.#remoteByOwnerId?.delete(remote.ownerAdmissionId);
 		// The handle's own lease has elapsed, so it fences itself; a still-pending ack may resolve.
 		this.#settleFenceWaiters(remote);
@@ -2534,8 +2549,19 @@ export class LockCoordinator {
 			});
 	}
 
-	/** Give up a delegation: stop admitting, then write the release that lets the home re-grant. */
-	async #surrender(keyId: unknown, delegation: Delegation): Promise<void> {
+	/**
+	 * Give up a delegation: stop admitting, then write the release that lets the home re-grant. One
+	 * surrender per delegation, memoized: the home re-sends a recall `RECALL_RETRY_MS` after its own
+	 * recall call failed, which is far inside a delegation lease, so two recalls for the same token can
+	 * both be waiting on the drain and resume together. Without the memo the second finds the
+	 * admissions the first already emptied, has no fence to wait for, and writes the release while the
+	 * first is still waiting for a relayed handle to confirm it is fenced.
+	 */
+	#surrender(keyId: unknown, delegation: Delegation): Promise<void> {
+		return (delegation.surrendering ??= this.#surrenderOnce(keyId, delegation));
+	}
+
+	async #surrenderOnce(keyId: unknown, delegation: Delegation): Promise<void> {
 		if (this.#delegations.get(keyId) === delegation) this.#delegations.delete(keyId);
 		// Capability, not just admission: anything this delegation admitted must be unable to commit
 		// before the home is told it may re-grant. A handle admitted on another worker thread revokes
@@ -2596,8 +2622,8 @@ export class LockCoordinator {
 	async #revokeAllAndSettle(delegation: Delegation): Promise<void> {
 		const outcomes = this.#revokeAll(delegation);
 		// ONE shared lease timer for the whole settle, not one per admission: a recall of a delegation
-		// holding thousands of relayed admissions would otherwise allocate thousands of closures and
-		// timers at exactly the moment it is handing off. The shared deadline is the LATEST lease among
+		// holding thousands of relayed admissions would otherwise arm thousands of timers at exactly the
+		// moment it is handing off. The shared deadline is the LATEST lease among
 		// them, which bounds every handle in the set — waiting past a shorter lease only ever errs
 		// towards holding the release longer, never towards writing it early.
 		let latestExpiry = -Infinity;
