@@ -417,6 +417,9 @@ export class DerivedIndexRuntime {
 }
 
 export type DerivedIndexRegistrationRelease = () => Promise<void>;
+export interface DerivedIndexRegistrationHandle {
+	close(): Promise<void>;
+}
 
 /**
  * Group registrations behind one table lifecycle handle without making a partial close visible.
@@ -424,24 +427,20 @@ export type DerivedIndexRegistrationRelease = () => Promise<void>;
  */
 export function createDerivedIndexRegistrationHandle(
 	registrations: ReadonlyArray<() => DerivedIndexRegistrationRelease>,
-	onClosed: () => void
-): { close(): Promise<void> } {
+	onClosed: () => void,
+	onRegistrationFailure: (handle: DerivedIndexRegistrationHandle) => void
+): DerivedIndexRegistrationHandle {
 	const releases: DerivedIndexRegistrationRelease[] = [];
-	try {
-		for (const register of registrations) releases.push(register());
-	} catch (error) {
-		void settleRegistrationReleases(releases);
-		throw error;
-	}
 	let closing: Promise<void> | undefined;
 	let closed = false;
+	let initialized = false;
 
 	const close = async () => {
 		const results = await settleRegistrationReleases(releases);
 		const failures = results
 			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
 			.map((result) => result.reason);
-		if (failures.length) {
+		if (failures.length && initialized) {
 			for (let i = 0; i < results.length; i++) {
 				if (results[i].status !== 'fulfilled') continue;
 				try {
@@ -450,6 +449,8 @@ export function createDerivedIndexRegistrationHandle(
 					failures.push(error);
 				}
 			}
+		}
+		if (failures.length) {
 			if (failures.length === 1) throw failures[0];
 			throw new AggregateError(failures, 'derived index registrations failed to shut down or reactivate');
 		}
@@ -457,7 +458,7 @@ export function createDerivedIndexRegistrationHandle(
 		onClosed();
 	};
 
-	return {
+	const handle: DerivedIndexRegistrationHandle = {
 		close() {
 			if (closed) return Promise.resolve();
 			if (closing) return closing;
@@ -474,6 +475,21 @@ export function createDerivedIndexRegistrationHandle(
 			return attempt;
 		},
 	};
+
+	try {
+		for (const register of registrations) releases.push(register());
+		initialized = true;
+	} catch (error) {
+		try {
+			onRegistrationFailure(handle);
+		} catch (notificationError) {
+			void handle.close().catch(() => {});
+			throw new AggregateError([error, notificationError], 'derived index registration and cleanup tracking failed');
+		}
+		void handle.close().catch(() => {});
+		throw error;
+	}
+	return handle;
 }
 
 function settleRegistrationReleases(releases: ReadonlyArray<DerivedIndexRegistrationRelease>) {

@@ -345,7 +345,11 @@ describe('DerivedIndexRuntime for native backends', () => {
 				active[index]--;
 			};
 		});
-		const handle = createDerivedIndexRegistrationHandle(registrations, () => closed++);
+		const handle = createDerivedIndexRegistrationHandle(
+			registrations,
+			() => closed++,
+			() => {}
+		);
 
 		const firstClose = handle.close();
 		assert.deepStrictEqual(active, [0, 1], 'release hooks must run in the close call turn');
@@ -361,24 +365,35 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(closed, 1);
 	});
 
-	it('releases registrations installed before a later registration throws', async () => {
+	it('exposes retryable cleanup when a later registration throws', async () => {
 		let released = false;
+		let releaseAttempts = 0;
+		let canRelease = false;
+		let cleanupHandle;
 		assert.throws(
 			() =>
 				createDerivedIndexRegistrationHandle(
 					[
 						() => async () => {
+							releaseAttempts++;
+							if (!canRelease) throw new Error('first registration did not stop');
 							released = true;
 						},
 						() => {
 							throw new Error('second registration failed');
 						},
 					],
-					() => {}
+					() => {},
+					(handle) => (cleanupHandle = handle)
 				),
 			/second registration failed/
 		);
-		await waitFor(() => released);
+		await waitFor(() => releaseAttempts === 1);
+		assert.ok(cleanupHandle);
+		await assert.rejects(cleanupHandle.close(), /first registration did not stop/);
+		canRelease = true;
+		await cleanupHandle.close();
+		assert.strictEqual(released, true);
 	});
 
 	it('coalesces repeated keys into one last-write-wins record beside the unchanged transactions', async () => {

@@ -2021,47 +2021,58 @@ export async function dropDatabase(databaseName) {
 
 		// A database drop bypasses each Table's dropTable() path, so retire every derived-index
 		// registration here before its source stores or native files can be closed and removed.
-		const derivedIndexTables = new Map<any, any[]>();
-		for (const table of Object.values(dbTables) as any[]) {
-			const runtime = table.derivedIndexRuntime;
-			if (!runtime) continue;
-			const runtimeTables = derivedIndexTables.get(runtime);
-			if (runtimeTables) runtimeTables.push(table);
-			else derivedIndexTables.set(runtime, [table]);
-		}
-		const derivedIndexEntries = [...derivedIndexTables].map(([runtime, runtimeTables]) => ({ runtime, runtimeTables }));
-		const derivedIndexClosures = derivedIndexEntries.map(({ runtime }) =>
-			Promise.resolve().then(() => runtime.close())
-		);
-		const derivedIndexResults = await Promise.allSettled(derivedIndexClosures);
-		const derivedIndexFailures = derivedIndexResults
-			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-			.map((result) => result.reason);
-		if (derivedIndexFailures.length) {
-			const reactivationFailures: unknown[] = [];
-			for (let i = 0; i < derivedIndexResults.length; i++) {
-				if (derivedIndexResults[i].status !== 'fulfilled') continue;
-				const { runtime, runtimeTables } = derivedIndexEntries[i];
-				for (const table of runtimeTables) {
-					if (table.derivedIndexRuntime !== runtime) continue;
-					try {
-						table.derivedIndexRuntime = attachDerivedIndexes(table);
-					} catch (error) {
-						reactivationFailures.push(error);
+		while (true) {
+			const derivedIndexTables = new Map<any, any[]>();
+			for (const table of Object.values(dbTables) as any[]) {
+				const runtime = table.derivedIndexRuntime;
+				if (!runtime) continue;
+				const runtimeTables = derivedIndexTables.get(runtime);
+				if (runtimeTables) runtimeTables.push(table);
+				else derivedIndexTables.set(runtime, [table]);
+			}
+			if (derivedIndexTables.size === 0) break;
+
+			const derivedIndexEntries = [...derivedIndexTables].map(([runtime, runtimeTables]) => ({
+				runtime,
+				runtimeTables,
+			}));
+			const derivedIndexClosures = derivedIndexEntries.map(({ runtime }) => {
+				try {
+					return Promise.resolve(runtime.close());
+				} catch (error) {
+					return Promise.reject(error);
+				}
+			});
+			const derivedIndexResults = await Promise.allSettled(derivedIndexClosures);
+			const derivedIndexFailures = derivedIndexResults
+				.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+				.map((result) => result.reason);
+			if (derivedIndexFailures.length) {
+				const reactivationFailures: unknown[] = [];
+				for (let i = 0; i < derivedIndexResults.length; i++) {
+					if (derivedIndexResults[i].status !== 'fulfilled') continue;
+					const { runtime, runtimeTables } = derivedIndexEntries[i];
+					for (const table of runtimeTables) {
+						if (table.derivedIndexRuntime !== runtime) continue;
+						try {
+							table.derivedIndexRuntime = attachDerivedIndexes(table);
+						} catch (error) {
+							reactivationFailures.push(error);
+						}
 					}
 				}
+				const failures = [...derivedIndexFailures, ...reactivationFailures];
+				if (failures.length === 1) throw failures[0];
+				throw new AggregateError(
+					failures,
+					'derived index backends failed to shut down or reactivate after database drop'
+				);
 			}
-			const failures = [...derivedIndexFailures, ...reactivationFailures];
-			if (failures.length === 1) throw failures[0];
-			throw new AggregateError(
-				failures,
-				'derived index backends failed to shut down or reactivate after database drop'
-			);
-		}
 
-		for (const { runtime, runtimeTables } of derivedIndexEntries)
-			for (const table of runtimeTables)
-				if (table.derivedIndexRuntime === runtime) table.derivedIndexRuntime = undefined;
+			for (const { runtime, runtimeTables } of derivedIndexEntries)
+				for (const table of runtimeTables)
+					if (table.derivedIndexRuntime === runtime) table.derivedIndexRuntime = undefined;
+		}
 
 		for (const tableName in dbTables) {
 			const table = dbTables[tableName];

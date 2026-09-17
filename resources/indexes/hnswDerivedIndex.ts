@@ -268,6 +268,7 @@ const warnedAuditIndexes = new Set<string>();
  * on every worker; the runtime elects one owner per index.
  */
 export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | undefined {
+	const previousHandle = Table.derivedIndexRuntime;
 	const attributes = Table.attributes.filter(
 		(attribute: any) => Table.indices[attribute.name]?.customIndex?.postCommit
 	);
@@ -319,9 +320,38 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 			});
 		});
 	}
-	return createDerivedIndexRegistrationHandle(registrations, () => {
-		if (registered.tables.get(Table.tableId) === installed) registered.tables.delete(Table.tableId);
-	});
+	return createDerivedIndexRegistrationHandle(
+		registrations,
+		() => {
+			if (registered.tables.get(Table.tableId) === installed) registered.tables.delete(Table.tableId);
+		},
+		(partialHandle) => {
+			Table.derivedIndexRuntime = combineDerivedIndexHandles(
+				previousHandle && previousHandle !== partialHandle ? [previousHandle, partialHandle] : [partialHandle]
+			);
+		}
+	);
+}
+
+function combineDerivedIndexHandles(handles: Array<{ close(): Promise<void> }>): { close(): Promise<void> } {
+	return {
+		async close() {
+			const results = await Promise.allSettled(
+				handles.map((handle) => {
+					try {
+						return Promise.resolve(handle.close());
+					} catch (error) {
+						return Promise.reject(error);
+					}
+				})
+			);
+			const failures = results
+				.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+				.map((result) => result.reason);
+			if (failures.length === 1) throw failures[0];
+			if (failures.length) throw new AggregateError(failures, 'derived index cleanup failed');
+		},
+	};
 }
 
 /** Shared readiness of an index on any worker, registered or not. */

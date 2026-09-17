@@ -2742,9 +2742,11 @@ table and storage registrations intact until every cleanup succeeds, and a table
 handle until that release succeeds so the same operation can be retried. A table handle applies the same
 rule to its individual index registrations: if one index fails to stop, sibling registrations that
 already quiesced are installed again before the handle rejects. The database drop likewise reinstalls
-every table handle that closed before another table failed. The drop therefore remains retryable
-without serving a live database through a stopped index, and it cannot close storage while a backend
-may still be draining into it.
+every table handle that closed before another table failed, and repeats its capture after each await
+until no schema refresh has left a replacement handle. If registration fails partway through handle
+construction, the table retains a cleanup handle that retries any release which could not quiesce.
+The drop therefore remains retryable without serving a live database through a stopped index, and it
+cannot close storage while a backend may still be draining into it.
 `isOwnerEpoch(epoch)` is an `Atomics.load` of the shared counter; a backend checks it before each
 apply, after each await and in barrier completions, and drops work for a superseded epoch. The
 runner tracks a generation that changes on every acquisition, discard, reset and release and
