@@ -2486,9 +2486,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			const persisted = Table.dbisDB?.getSync(`${tableName}/${attribute.name || attribute.attribute || ''}`)?.indexed;
 			if (persisted?.type !== 'HNSW') return false;
 			if (Object.hasOwn(persisted, 'nativePlane') && typeof persisted.nativePlane !== 'boolean') return true;
-			return [...CUSTOM_INDEXES.HNSW.numericOptions].some(
-				(name) => Object.hasOwn(persisted, name) && typeof persisted[name] !== 'number'
-			);
+			for (const name of CUSTOM_INDEXES.HNSW.numericOptions)
+				if (Object.hasOwn(persisted, name) && typeof persisted[name] !== 'number') return true;
+			return false;
 		});
 	try {
 		if (
