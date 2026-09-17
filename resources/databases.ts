@@ -2563,17 +2563,20 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		releaseLock();
 		throw error;
 	}
-	const validateNativeDefaultOptions = (catalog?: any) => {
+	const validateHnswOptions = (catalog: any, auditQualifiesDefault: boolean) => {
 		for (const attribute of attributes) {
 			const indexed = attribute.indexed;
-			if (indexed?.type !== 'HNSW' || indexed.nativePlane != null) continue;
+			if (indexed?.type !== 'HNSW') continue;
+			if (indexed.nativePlane) {
+				CUSTOM_INDEXES.HNSW.validateNativePlaneOptions(rootStore, indexed);
+				continue;
+			}
+			if (indexed.nativePlane != null || !auditQualifiesDefault) continue;
 			const persistedIndexed = catalog?.getSync(`${tableName}/${attribute.name || ''}`)?.indexed;
 			if (persistedIndexed?.type !== 'HNSW') CUSTOM_INDEXES.HNSW.canDefaultToNativePlane(rootStore, indexed);
 		}
 	};
-	// A create with explicit audit has no competing catalog state; reject a bad native-only capacity
-	// before opening its stores. Existing tables repeat the check under their schema lock below.
-	if (!Table && origin !== 'cluster' && auditExplicitlyEnabled) validateNativeDefaultOptions();
+	if (!Table && origin !== 'cluster') validateHnswOptions(undefined, auditExplicitlyEnabled);
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
 	let refreshedLiveAttributes = false;
@@ -2625,8 +2628,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					: undefined;
 				const persistedAuditUnderLock =
 					persistedPrimaryUnderLock?.audit ?? lockedAttributesDbi.getSync(`${tableName}/`)?.audit;
-				if (auditExplicitlyEnabled || (!auditExplicitlyDisabled && persistedAuditUnderLock === true))
-					validateNativeDefaultOptions(lockedAttributesDbi);
+				validateHnswOptions(
+					lockedAttributesDbi,
+					auditExplicitlyEnabled || (!auditExplicitlyDisabled && persistedAuditUnderLock === true)
+				);
 			}
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;

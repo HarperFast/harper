@@ -431,6 +431,48 @@ describe('HNSW GraphQL numeric options', () => {
 				['id', 'kept']
 			);
 			assert.strictEqual(AtomicTable.dbisDB.getSync(`${atomicTableName}/embedding`), undefined);
+			assert.throws(
+				() =>
+					table({
+						table: atomicTableName,
+						audit: true,
+						attributes: [
+							{ name: 'id', isPrimaryKey: true },
+							{
+								name: 'embedding',
+								type: 'Array',
+								indexed: { type: 'HNSW', nativePlane: true, M: 32 },
+							},
+						],
+					}),
+				/nativePlane requires M=16/
+			);
+			assert.deepStrictEqual(
+				AtomicTable.attributes.map(({ name }) => name),
+				['id', 'kept']
+			);
+			assert.strictEqual(AtomicTable.dbisDB.getSync(`${atomicTableName}/embedding`), undefined);
+
+			const failedCreateName = 'HnswExplicitNativeGeometryAtomic';
+			assert.throws(
+				() =>
+					table({
+						table: failedCreateName,
+						audit: true,
+						attributes: [
+							{ name: 'id', isPrimaryKey: true },
+							{
+								name: 'embedding',
+								type: 'Array',
+								indexed: { type: 'HNSW', nativePlane: true, M: 32 },
+							},
+						],
+					}),
+				/nativePlane requires M=16/
+			);
+			assert.strictEqual(tables[failedCreateName], undefined);
+			assert.strictEqual(AtomicTable.dbisDB.getSync(`${failedCreateName}/`), undefined);
+			assert.strictEqual(AtomicTable.dbisDB.getSync(`${failedCreateName}/embedding`), undefined);
 		} finally {
 			if (previous === undefined) delete process.env.HNSW_NO_NATIVE_DEFAULT;
 			else process.env.HNSW_NO_NATIVE_DEFAULT = previous;
@@ -582,7 +624,7 @@ describe('HNSW GraphQL numeric options', () => {
 			);
 		});
 
-		it('persists an audit upgrade before a failing native index open', () => {
+		it('rejects invalid native geometry before persisting an audit upgrade', () => {
 			const tableName = 'HnswAuditUpgradeOrdering';
 			table({
 				table: tableName,
@@ -610,7 +652,7 @@ describe('HNSW GraphQL numeric options', () => {
 					}),
 				(error) => error instanceof ClientError && error.message.startsWith('nativePlane requires M=16')
 			);
-			assert.equal(tables[tableName].dbisDB.getSync(`${tableName}/`).audit, true);
+			assert.equal(tables[tableName].dbisDB.getSync(`${tableName}/`).audit, false);
 			assert.equal(tables[tableName].dbisDB.getSync(`${tableName}/embedding`).indexed, undefined);
 		});
 

@@ -311,6 +311,37 @@ export class HierarchicalNavigableSmallWorld {
 		if (value === false || value === 'false') return false;
 		throw new ClientError('nativePlane must be true or false');
 	}
+	static validateNativePlaneOptions(rootStore: unknown, options: any) {
+		if (!(rootStore instanceof RocksDatabase)) {
+			throw new ClientError(
+				'nativePlane requires the RocksDB storage engine; set nativePlane: false to use the JS index'
+			);
+		}
+		const nativeM = numericOption('M', options?.M);
+		const nativeEfConstruction = numericOption('efConstruction', options?.efConstruction);
+		const nativeML = numericOption('mL', options?.mL);
+		const nativeOptimizeRouting = numericOption(
+			'optimizeRouting',
+			normalizeOptimizeRoutingDeclaration(options?.optimizeRouting)
+		);
+		if (
+			(nativeM !== undefined && nativeM !== 16) ||
+			(nativeEfConstruction !== undefined && nativeEfConstruction !== 200) ||
+			(nativeML !== undefined && nativeML !== 1 / Math.log(16)) ||
+			(nativeOptimizeRouting !== undefined && nativeOptimizeRouting !== 0.5)
+		) {
+			throw new ClientError(
+				'nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5; set nativePlane: false to use the JS index'
+			);
+		}
+		const maxNodes = nativePlaneMaxNodes(options);
+		if (options?.quantization === 'none' || options?.distance === 'euclidean' || options?.distance === 'dotProduct') {
+			throw new ClientError(
+				'nativePlane requires an int8-quantized cosine HNSW index; set nativePlane: false to use the JS index'
+			);
+		}
+		return { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes };
+	}
 	static canRunNativePlane(rootStore: unknown, options: any, warnForMissingBinding = true): boolean {
 		if (!(rootStore instanceof RocksDatabase) || getPlaneBinding(warnForMissingBinding) == null) return false;
 		if (
@@ -442,34 +473,13 @@ export class HierarchicalNavigableSmallWorld {
 			if (configuredFilterExpansion !== undefined) this.filterExpansion = configuredFilterExpansion;
 		}
 		if (options?.nativePlane) {
-			if (!(indexStore?.rootStore instanceof RocksDatabase)) {
-				throw new ClientError(
-					'nativePlane requires the RocksDB storage engine; set nativePlane: false to use the JS index'
-				);
-			}
-			const nativeM = numericOption('M', configuredM);
-			const nativeEfConstruction = numericOption('efConstruction', configuredEfConstruction);
-			const nativeML = numericOption('mL', configuredML);
-			const nativeOptimizeRouting = numericOption(
-				'optimizeRouting',
-				normalizeOptimizeRoutingDeclaration(configuredOptimizeRouting)
-			);
-			const defaultNativeML = 1 / Math.log(16);
-			if (
-				(nativeM !== undefined && nativeM !== 16) ||
-				(nativeEfConstruction !== undefined && nativeEfConstruction !== 200) ||
-				(nativeML !== undefined && nativeML !== defaultNativeML) ||
-				(nativeOptimizeRouting !== undefined && nativeOptimizeRouting !== 0.5)
-			) {
-				throw new ClientError(
-					'nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5; set nativePlane: false to use the JS index'
-				);
-			}
+			const { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes } =
+				HierarchicalNavigableSmallWorld.validateNativePlaneOptions(indexStore?.rootStore, options);
 			if (nativeM !== undefined) this.M = nativeM;
 			if (nativeML !== undefined) this.mL = nativeML;
 			if (nativeOptimizeRouting !== undefined) this.optimizeRouting = nativeOptimizeRouting;
 			this.efConstruction = nativeEfConstruction ?? 200;
-			this.nativePlaneMaxNodes = nativePlaneMaxNodes(options);
+			this.nativePlaneMaxNodes = maxNodes;
 			// The plane stores int8 bins and computes asymmetric cosine only, so the flag is a
 			// no-op for float (quantization: "none") and non-cosine indexes; a graph whose derived
 			// layer-0 cap exceeds the plane maximum is refused rather than silently truncated.
