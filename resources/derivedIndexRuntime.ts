@@ -1115,7 +1115,7 @@ class DerivedIndexRunner {
 		const now = this.#options.now();
 		this.#publishLag();
 		try {
-			const captureTime = derivedIndexTime(this.#logStore.rootStore);
+			const captureTime = this.#registration.backend.publishCoverage ? derivedIndexTime(this.#logStore.rootStore) : 0n;
 			if (!this.#checkNewLogs() || !this.#checkRangeHealth()) return;
 			const positions = this.#registration.backend.publishCoverage
 				? readCommittedPositions(this.#logStore, this.#knownLogs)
