@@ -4,6 +4,7 @@ const { MeteredEvent } = tables;
 
 // Only exact as BigInt literals: no float64 carries these, so JSON transport would round them first.
 const BIGINT_PROBES = {
+	'2^53': 9007199254740992n,
 	'2^53+1': 9007199254740993n,
 	'2^63-1': 9223372036854775807n,
 };

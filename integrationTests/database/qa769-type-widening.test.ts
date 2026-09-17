@@ -25,9 +25,9 @@
  *      both REST and the ops-API `search_by_hash` path, each against the value it was written with.
  *   5. the widened type's new reach — 2^31 and 5e9 now round-trip; exactly 2^53 is accepted and
  *      2^53+2 rejected (Harper caps `Long` at abs(2^53) in `resources/tracked.ts:115` and
- *      `resources/Table.ts:6049`); genuine 64-bit magnitudes, handed in as real BigInt literals
- *      in-worker so no float64 transport rounds them first, reach that cap at full precision and are
- *      refused by it; and `label` now takes objects and numbers.
+ *      `resources/Table.ts:6049`); a real BigInt written in-worker, so no float64 transport rounds it
+ *      first, is refused at any magnitude including an in-bounds 2^53, because the same check tests
+ *      `typeof value !== 'number'` before it tests the range; and `label` now takes objects and numbers.
  *   6. index consistency, at both layers. The `@indexed count` secondary index must hold exactly the
  *      eleven value/primary-key entries the stored rows imply, old-encoded (id 1-6) and new-encoded
  *      (id 7-9, 30, 31) interleaved by value; and the `greater_than` range query over it must return
@@ -120,7 +120,7 @@ const ABOVE_THRESHOLD = [
 ];
 
 // Every stored id and the `typeof` its label decodes to in-worker. The rejected writes (10, 20, 21,
-// 40, 41) are absent, and only the two `label: Any` writes may have left `string`.
+// 22, 40, 41) are absent, and only the two `label: Any` writes may have left `string`.
 const STORED_LABEL_TYPES = new Map([
 	[1, 'string'],
 	[2, 'string'],
@@ -155,6 +155,9 @@ const INDEX_ENTRIES = [
 // Real 64-bit magnitudes, written in-worker as BigInt literals. `value` is the decimal Harper must
 // echo back un-rounded, which is the proof the bigint reached the range check without a float64.
 const BIGINT_PROBES = [
+	// In bounds for Long as a magnitude, so its refusal is what shows the gate is the JS type and not
+	// the range; the other two are above the ceiling as well.
+	{ id: 22, probe: '2^53', value: '9007199254740992' },
 	{ id: 20, probe: '2^53+1', value: '9007199254740993' },
 	{ id: 21, probe: '2^63-1', value: '9223372036854775807' },
 ];
@@ -440,7 +443,11 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				strictEqual((await restGet(10)).status, 404, 'the over-cap record must not have been stored');
 			});
 
-			test('a genuine 64-bit magnitude reaches the Long range check un-rounded and is refused', async () => {
+			test('the widened Long refuses a real BigInt whatever its magnitude, un-rounded', async () => {
+				// Written in-worker as BigInt literals (the fixture's PutBigInt), so no float64 transport
+				// rounds them before Harper sees them. `resources/Table.ts:6049` tests `typeof value !==
+				// 'number'` before it tests the range, so even the in-bounds 2^53 probe is refused: the
+				// widened Long holds JS numbers, not 64-bit integers.
 				for (const { id, probe, value } of BIGINT_PROBES) {
 					const response = await fetch(`${ctx.harper.httpURL}/PutBigInt/`, {
 						method: 'POST',
