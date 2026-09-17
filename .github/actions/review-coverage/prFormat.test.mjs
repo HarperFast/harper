@@ -354,9 +354,17 @@ test('the coverage footer must be pinned to the current head; the review-need pi
 });
 
 test('a review-need footer carrying decision slugs is a valid footer', () => {
-	const decorated = body().replace(/<sub>Human-Review-Need: (\d)/, '<sub>Human-Review-Need: $1 (decisions: api-naming, delete-semantics)');
+	const decorated = body().replace(
+		/<sub>Human-Review-Need: (\d)/,
+		'<sub>Human-Review-Need: $1 (decisions: api-naming, delete-semantics)'
+	);
 	assert.notEqual(decorated, body(), 'fixture carries a review-need footer to decorate');
-	const result = evaluatePrFormat(pr({ body: decorated }), { mode: 'enforce', repo: REPO, number: NUMBER, prFiles: PR_FILES });
+	const result = evaluatePrFormat(pr({ body: decorated }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
 	assert.doesNotMatch(result.problems.join('\n'), /Human-Review-Need/);
 	assert.strictEqual(result.compliant, true);
 });
