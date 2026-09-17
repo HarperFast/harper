@@ -242,6 +242,7 @@ type Registered = {
 	runtime: DerivedIndexRuntime;
 	tables: Map<number, RegisteredTable>;
 	backends: Map<string, RegisteredBackend>;
+	tableBackends: Map<number, Set<RegisteredBackend>>;
 	droppingTables: Set<number>;
 };
 const runtimes = new WeakMap<object, Registered>();
@@ -264,7 +265,7 @@ function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
 					.map(({ key, value, version }) => ({ recordId: key, version, value })),
 		}
 	);
-	registered = { runtime, tables, backends: new Map(), droppingTables: new Set() };
+	registered = { runtime, tables, backends: new Map(), tableBackends: new Map(), droppingTables: new Set() };
 	runtimes.set(auditStore, registered);
 	return registered;
 }
@@ -361,6 +362,9 @@ export function attachDerivedIndexes(Table: any):
 				if (settling) return settling;
 				const attempt = Promise.all([settlePredecessor(), release()]).then(() => {
 					if (registered.backends.get(id) === registeredBackend) registered.backends.delete(id);
+					const tableBackends = registered.tableBackends.get(Table.tableId);
+					tableBackends?.delete(registeredBackend);
+					if (tableBackends?.size === 0) registered.tableBackends.delete(Table.tableId);
 				});
 				settling = attempt;
 				attempt.catch(() => {
@@ -369,6 +373,9 @@ export function attachDerivedIndexes(Table: any):
 				return attempt;
 			},
 		};
+		let tableBackends = registered.tableBackends.get(Table.tableId);
+		if (!tableBackends) registered.tableBackends.set(Table.tableId, (tableBackends = new Set()));
+		tableBackends.add(registeredBackend);
 		registered.backends.set(id, registeredBackend);
 		if (generationChanged) registered.runtime.requestRebuild(id);
 		releases.push(async (dropping) => {
@@ -381,11 +388,7 @@ export function attachDerivedIndexes(Table: any):
 		async close(dropping = false) {
 			if (dropping) registered.droppingTables.add(Table.tableId);
 			const settled = dropping
-				? Promise.all(
-						[...registered.backends.values()]
-							.filter((backend) => backend.tableId === Table.tableId)
-							.map((backend) => backend.settle())
-					)
+				? Promise.all([...(registered.tableBackends.get(Table.tableId) ?? [])].map((backend) => backend.settle()))
 				: Promise.all(releases.map((release) => release(false)));
 			const tableRegistration = registered.tables.get(Table.tableId);
 			if (tableRegistration) {
