@@ -441,6 +441,48 @@ describe('@fullText schema declaration', () => {
 		assert.strictEqual(removals.includes('FullTextWeightChange/search'), false);
 	});
 
+	it('removes a replaced handle before changing its former source type', async () => {
+		await loadGQLSchema(`
+			type FullTextToStoredOrder @table {
+				id: ID @primaryKey
+				text: String
+				value: FullText @fullText(fields: [{ name: "text" }])
+			}
+		`);
+		const Table = tables.FullTextToStoredOrder;
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		const operations = [];
+		const databasePrototype = Object.getPrototypeOf(Table.dbisDB);
+		const putSync = databasePrototype.putSync;
+		const removeSync = databasePrototype.removeSync;
+		databasePrototype.putSync = function (key, ...args) {
+			operations.push(`put:${String(key)}`);
+			return putSync.call(this, key, ...args);
+		};
+		databasePrototype.removeSync = function (key, ...args) {
+			operations.push(`remove:${String(key)}`);
+			return removeSync.call(this, key, ...args);
+		};
+		try {
+			await loadGQLSchema(`
+				type FullTextToStoredOrder @table {
+					id: ID @primaryKey
+					text: Int
+					value: String
+				}
+			`);
+		} finally {
+			databasePrototype.putSync = putSync;
+			databasePrototype.removeSync = removeSync;
+		}
+		const removeHandle = operations.indexOf('remove:FullTextToStoredOrder/value');
+		const updateFormerSource = operations.indexOf('put:FullTextToStoredOrder/text');
+		assert(removeHandle >= 0, `missing replaced handle removal: ${operations}`);
+		assert(updateFormerSource >= 0, `missing former source update: ${operations}`);
+		assert(removeHandle < updateFormerSource);
+		assert.strictEqual(Table.dbisDB.getSync('FullTextToStoredOrder/value').fullText, undefined);
+	});
+
 	it('removes a handle before persisting an incompatible source type', async () => {
 		await loadGQLSchema(`
 			type FullTextSourceTypeChange @table {

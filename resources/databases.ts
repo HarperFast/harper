@@ -2643,11 +2643,26 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					);
 				}
 			}
+			const liveAttributesByName = new Map(Table.attributes.map((attribute) => [attribute.name, attribute]));
+			const schemaShapeChanged =
+				origin !== 'cluster' &&
+				(attributes.length !== Table.attributes.length ||
+					attributes.some((attribute) => {
+						const liveAttribute = liveAttributesByName.get(attribute.name);
+						return (
+							!liveAttribute ||
+							liveAttribute.type !== attribute.type ||
+							JSON.stringify(liveAttribute.elements) !== JSON.stringify(attribute.elements) ||
+							JSON.stringify(liveAttribute.fullText) !== JSON.stringify(attribute.fullText) ||
+							Boolean(liveAttribute.relationship) !== Boolean(attribute.relationship) ||
+							Boolean(liveAttribute.computed) !== Boolean(attribute.computed)
+						);
+					}));
 			// Acquire before the first mutation of the live Table below, so a lost race leaves no
 			// attributes this worker describes but never persisted. Only the RocksDB acquire is bounded
 			// and can throw, and only it is cheap when uncontended: LMDB's exclusiveLock() opens an
 			// environment-wide write transaction that cannot time out, so it generally stays lazy.
-			if (rootStore instanceof RocksDatabase) exclusiveLock();
+			if (rootStore instanceof RocksDatabase || schemaShapeChanged) exclusiveLock();
 			if (removedAttributes?.length) {
 				exclusiveLock();
 				const removedAttributeNames = new Set(removedAttributes);
@@ -2920,15 +2935,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
+			const replacedFullTextHandle = value.fullText && attribute && !attribute.fullText;
 			// rows already present under a create are aborted state
 			const staleRow = !attribute || Boolean(deferredPrimaryRow);
-			if (staleRow || removeIndex) {
+			if (staleRow || removeIndex || replacedFullTextHandle) {
 				exclusiveLock();
 				hasChanges = true;
 				if (staleRow) {
 					if (deferredPrimaryRow || value.fullText) attributesDbi.remove(key);
 					else catalogRowsToRemove.push(key);
-				}
+				} else if (replacedFullTextHandle) attributesDbi.remove(key);
 				if (removeIndex) {
 					const indexDbi = Table.indices[attributeTableName];
 					if (indexDbi) indicesToRemove.push(indexDbi);
