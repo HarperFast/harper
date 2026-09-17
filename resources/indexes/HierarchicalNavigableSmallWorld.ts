@@ -379,8 +379,9 @@ export class HierarchicalNavigableSmallWorld {
 	// Index options that only affect search, not the stored graph — changing them must not trigger a
 	// reindex (databases.ts persists the new value but skips rebuilding). efConstructionSearch is the
 	// search-time candidate-list size; the build uses efConstruction/M/distance, which are structural.
-	// filterExpansion is the visit-budget multiplier for predicate-aware (filtered) traversal.
-	static searchOnlyOptions = ['efConstructionSearch', 'filterExpansion'];
+	// filterExpansion is the visit-budget multiplier for predicate-aware (filtered) traversal;
+	// maxLagMilliseconds controls delivery admission rather than the graph itself.
+	static searchOnlyOptions = ['efConstructionSearch', 'filterExpansion', 'maxLagMilliseconds'];
 	// Signals to search.ts that this index accepts a per-record predicate in search() and applies it
 	// during traversal (predicate-aware / ACORN-style filtering), so companion conditions and RBAC can
 	// be pushed down instead of post-filtering an under-filled candidate set (#1241).

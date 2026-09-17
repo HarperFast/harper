@@ -180,6 +180,11 @@ describe('index rebuild gating: representation-only options do not re-trigger a 
 		assert.equal(optedOut.indexingOperation, buildOp, 'explicit nativePlane false must NOT rebuild a legacy JS index');
 		assert.equal(findDescriptor(optedOut, 'vector').indexed.nativePlane, false);
 
+		// Delivery lag changes write admission, not graph structure.
+		const tunedLag = reload(TABLE, { type: 'HNSW', M: 16, nativePlane: false, maxLagMilliseconds: 60_000 });
+		assert.equal(tunedLag.indexingOperation, buildOp, 'changing maxLagMilliseconds must NOT re-trigger a backfill');
+		assert.equal(findDescriptor(tunedLag, 'vector').indexed.maxLagMilliseconds, 60_000);
+
 		// Genuine option change (M: 16 -> 32) -> rebuild.
 		const changed = reload(TABLE, { type: 'HNSW', M: 32 });
 		assert.notStrictEqual(changed.indexingOperation, buildOp, 'a genuine option change must re-trigger a backfill');

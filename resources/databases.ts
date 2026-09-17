@@ -2516,7 +2516,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			hasHnswAtEntry || (Table && Table.audit !== true)
 				? persistedPrimaryDescriptor(Table?.dbisDB).descriptor?.audit
 				: undefined;
-		if (persistedAuditAtEntry === true && Table?.audit !== true) Table.enableAuditing();
+		if (!auditExplicitlyDisabled && persistedAuditAtEntry === true && Table?.audit !== true) Table.enableAuditing();
 		for (const attribute of attributes) {
 			if (attribute.attribute && !attribute.name) {
 				// there is some legacy code that calls the attribute's name the attribute's attribute
@@ -3379,7 +3379,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (release) release();
 	}
 }
-/** Stable structural form for deciding whether an index must be rebuilt. */
+/** Stable structural form for deciding whether an index must be rebuilt; `coerceZero` extends numeric coercion to zero. */
 export function canonicalizeIndexOptions(value: any, coerceZero = false): any {
 	if (Array.isArray(value)) return value.map((item) => canonicalizeIndexOptions(item, coerceZero));
 	if (value && typeof value === 'object') {

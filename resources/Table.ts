@@ -1964,6 +1964,8 @@ export function makeTable(options) {
 			}
 			if (!dropIdentityConfirmed) {
 				derivedIndexRuntime?.completeDrop?.(false);
+				TableResource.derivedIndexRuntime = undefined;
+				TableResource.cleanup();
 				if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
 				return;
 			}

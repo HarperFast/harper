@@ -332,6 +332,34 @@ describe('HNSW GraphQL numeric options', () => {
 		assert.equal(Table.indices.embedding.customIndex.postCommit, true);
 	});
 
+	it('does not enable a stale class while explicitly disabling durable audit', () => {
+		const tableName = 'HnswDurableAuditDisable';
+		let Table = table({
+			table: tableName,
+			audit: false,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: false }, type: 'Array' },
+			],
+		});
+		createdTables.push(tableName);
+		const primary = Table.dbisDB.getSync(`${tableName}/`);
+		primary.audit = true;
+		Table.dbisDB.putSync(`${tableName}/`, primary);
+		assert.equal(Table.audit, false);
+
+		Table = table({
+			table: tableName,
+			audit: false,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: false }, type: 'Array' },
+			],
+		});
+		assert.equal(Table.audit, false);
+		assert.equal(Table.dbisDB.getSync(`${tableName}/`).audit, false);
+	});
+
 	it('pins effective audit before persisting explicit native mode', function () {
 		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
 		const tableName = 'HnswExplicitNativePinsAudit';
@@ -983,7 +1011,14 @@ describe('HNSW GraphQL numeric options', () => {
 					{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
 				],
 			});
+			let staleAliasCleaned = false;
+			const cleanupStaleAlias = alias.cleanup;
+			alias.cleanup = () => {
+				staleAliasCleaned = true;
+				cleanupStaleAlias();
+			};
 			await alias.dropTable();
+			assert.equal(staleAliasCleaned, true, 'a retired stale alias must release its process-wide registrations');
 			assert.strictEqual(databases.data[tableName], Table, 'a stale alias must not drop the recreated generation');
 			await Table.put('recreated', { embedding: [1, 0] });
 			await waitFor(

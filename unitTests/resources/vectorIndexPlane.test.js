@@ -57,6 +57,7 @@ describe('HNSW native plane file-primary delivery', function () {
 	this.timeout(30_000);
 	let PlaneTest;
 	const vectors = new Map();
+	const nativeDefaultSwitch = process.env.HNSW_NO_NATIVE_DEFAULT;
 
 	function defineTable() {
 		return table({
@@ -125,6 +126,7 @@ describe('HNSW native plane file-primary delivery', function () {
 	}
 
 	before(async () => {
+		delete process.env.HNSW_NO_NATIVE_DEFAULT;
 		setupTestDBPath();
 		setMainIsWorker(true);
 		PlaneTest = defineTable();
@@ -154,6 +156,11 @@ describe('HNSW native plane file-primary delivery', function () {
 			{ timeout: 15_000, message: 'post-commit native delivery did not drain' }
 		);
 		await waitForCursors();
+	});
+
+	after(() => {
+		if (nativeDefaultSwitch === undefined) delete process.env.HNSW_NO_NATIVE_DEFAULT;
+		else process.env.HNSW_NO_NATIVE_DEFAULT = nativeDefaultSwitch;
 	});
 
 	it('stores only primary-key mappings and cursors in RocksDB', () => {
