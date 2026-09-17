@@ -71,10 +71,16 @@ describe('cluster-origin schema definitions are additive-only', () => {
 			],
 		});
 		const definition = { tableClass: class Related {} };
+		const relationshipMarker = Symbol('catalog relationship');
 		Object.defineProperty(
 			Local.attributes.find(({ name }) => name === 'related'),
 			'definition',
 			{ value: definition, configurable: true }
+		);
+		Object.defineProperty(
+			Local.attributes.find(({ name }) => name === 'related'),
+			relationshipMarker,
+			{ value: true }
 		);
 
 		const Merged = table({
@@ -90,6 +96,8 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		const related = Merged.attributes.find(({ name }) => name === 'related');
 		assert.strictEqual(related.definition, definition);
 		assert.strictEqual(Object.getOwnPropertyDescriptor(related, 'definition').enumerable, false);
+		assert.strictEqual(related[relationshipMarker], true);
+		assert.strictEqual(Object.getOwnPropertyDescriptor(related, relationshipMarker).enumerable, false);
 	});
 
 	it('a cluster definition cannot flip the local schemaDefined declaration, live or durable', async () => {
