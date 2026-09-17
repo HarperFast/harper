@@ -525,7 +525,7 @@ describe('cluster-origin schema definitions are additive-only', () => {
 					origin: 'cluster',
 					attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
 				}),
-			/String, \[String\], or Blob/
+			/String or \[String\]/
 		);
 		assert.strictEqual(Local.attributes.find(({ name }) => name === 'search').fullText, undefined);
 	});

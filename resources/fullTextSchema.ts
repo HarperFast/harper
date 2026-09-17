@@ -112,7 +112,7 @@ export function compileFullTextDefinition(
 		if (!attribute) throw schemaError(`@fullText on "${target.name}" references unknown source field "${source.name}"`);
 		if (!isSupportedSource(attribute))
 			throw schemaError(
-				`@fullText source field "${source.name}" must be String, [String], or Blob; got "${displayType(attribute)}"`
+				`@fullText source field "${source.name}" must be String or [String]; got "${displayType(attribute)}"`
 			);
 		if (attribute.computed || attribute.relationship)
 			throw schemaError(
@@ -204,11 +204,7 @@ function booleanOption(
 }
 
 function isSupportedSource(attribute: SchemaAttribute): boolean {
-	return (
-		attribute.type === 'String' ||
-		attribute.type === 'Blob' ||
-		(attribute.type === 'array' && attribute.elements?.type === 'String')
-	);
+	return attribute.type === 'String' || (attribute.type === 'array' && attribute.elements?.type === 'String');
 }
 
 function displayType(attribute: SchemaAttribute): string {

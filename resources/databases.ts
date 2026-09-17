@@ -2736,7 +2736,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (origin !== 'cluster') {
 				const storedFieldReplacement = attributes.find((attribute) => {
 					if (!attribute.fullText) return false;
-					const descriptor = Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
+					const namedDescriptor = Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
+					const primaryDescriptor = Table.dbisDB.getSync(`${tableName}/`);
+					const descriptor =
+						namedDescriptor ?? (primaryDescriptor?.name === attribute.name ? primaryDescriptor : undefined);
 					return descriptor && !descriptor.fullText;
 				});
 				if (storedFieldReplacement)

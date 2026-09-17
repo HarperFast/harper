@@ -16,7 +16,7 @@ describe('@fullText schema declaration', () => {
 				id: ID @primaryKey
 				title: String
 				tags: [String]
-				manual: Blob
+				manual: String
 				search: FullText @fullText(fields: [
 					{ name: "title", weight: 3.0 }
 					{ name: "tags", highlight: false }
@@ -129,10 +129,11 @@ describe('@fullText schema declaration', () => {
 		['missing fields', 'search: FullText @fullText', /non-empty "fields"/],
 		['empty fields', 'search: FullText @fullText(fields: [])', /non-empty "fields"/],
 		['unknown source', 'search: FullText @fullText(fields: [{ name: "missing" }])', /unknown source field/],
+		['unsupported source type', 'search: FullText @fullText(fields: [{ name: "count" }])', /String or \[String\]/],
 		[
-			'unsupported source type',
-			'search: FullText @fullText(fields: [{ name: "count" }])',
-			/String, \[String\], or Blob/,
+			'Blob source without extraction',
+			'manual: Blob\nsearch: FullText @fullText(fields: [{ name: "manual" }])',
+			/String or \[String\]/,
 		],
 		[
 			'computed source',
@@ -259,6 +260,23 @@ describe('@fullText schema declaration', () => {
 				}
 			`),
 			/Declare a new FullText field name instead/
+		);
+	});
+
+	it('rejects replacing a canonical primary-key field with a FullText query handle', async () => {
+		await loadGQLSchema(`
+			type FullTextPrimaryReplacement @table {
+				id: String @primaryKey
+			}
+		`);
+		await assert.rejects(
+			loadGQLSchema(`
+				type FullTextPrimaryReplacement @table {
+					newId: String @primaryKey
+					id: FullText @fullText(fields: [{ name: "newId" }])
+				}
+			`),
+			/Cannot redefine stored attribute 'id' as a FullText query handle/
 		);
 	});
 
