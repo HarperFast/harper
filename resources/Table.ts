@@ -152,7 +152,7 @@ import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rock
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
 import { contentTypes } from '../server/serverHelpers/contentTypes';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
-import type { FullTextDefinition } from './fullTextSchema.ts';
+import { assertFullTextSourcesRemain, type FullTextDefinition } from './fullTextSchema.ts';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -6196,21 +6196,14 @@ export function makeTable(options) {
 		static async removeAttributes(names: string[]) {
 			TableResource.assertSchemaMutable('remove attributes');
 			const removed = new Set(names);
-			for (const attribute of TableResource.attributes) {
-				if (removed.has(attribute.name) || !attribute.fullText) continue;
-				const source = attribute.fullText.fields.find((field) => removed.has(field.name));
-				if (source)
-					throw new ClientError(
-						`Cannot remove attribute '${source.name}' while @fullText field '${attribute.name}' references it`,
-						400
-					);
-			}
+			assertFullTextSourcesRemain(TableResource.attributes, removed);
 			const new_attributes = TableResource.attributes.filter((attribute) => !names.includes(attribute.name));
 			table({
 				table: tableName,
 				database: databaseName,
 				schemaDefined,
 				attributes: new_attributes,
+				removedAttributes: names,
 			});
 			return (TableResource as any).indexingOperation;
 		}
@@ -6428,6 +6421,8 @@ export function makeTable(options) {
 		 * When attributes have been changed, we update the accessors that are assigned to this table
 		 */
 		static updatedAttributes() {
+			for (const name of primaryStore.encoder.resolvedAttributeNamesList ?? [])
+				delete primaryStore.encoder.structPrototype[name];
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
@@ -6916,11 +6911,11 @@ export function makeTable(options) {
 	}
 	const validateWithoutFullText = TableResource.prototype.validate;
 	const validateWithFullText = function (this: InstanceType<typeof TableResource>, record: any, patch?: boolean) {
-		const errors: ValidationIssue[] = [];
+		let errors: ValidationIssue[] | undefined;
 		for (let i = 0, l = fullTextAttributes.length; i < l; i++) {
 			const name = fullTextAttributes[i].name;
 			if (Object.hasOwn(record, name))
-				errors.push({
+				(errors ||= []).push({
 					path: name,
 					code: 'full_text',
 					message: `Full-text query property ${name} may not be directly assigned a value`,
@@ -6929,10 +6924,10 @@ export function makeTable(options) {
 		try {
 			validateWithoutFullText.call(this, record, patch);
 		} catch (error) {
-			if (!(error instanceof ValidationError) || errors.length === 0) throw error;
-			errors.push(...error.errors);
+			if (!(error instanceof ValidationError) || !errors) throw error;
+			for (const issue of error.errors) errors.push(issue);
 		}
-		if (errors.length > 0) throw new ValidationError(errors, errors.map((issue) => issue.message).join('. '));
+		if (errors) throw new ValidationError(errors, errors.map((issue) => issue.message).join('. '));
 	};
 	const throttledCallToSource = throttle(
 		async (source, id, sourceContext, existingEntry) => {

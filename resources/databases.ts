@@ -59,6 +59,7 @@ import { attachDerivedIndexes } from './indexes/hnswDerivedIndex.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
+import { assertFullTextSourcesRemain } from './fullTextSchema.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 import {
 	acquireRestoreLock,
@@ -1813,6 +1814,8 @@ interface TableDefinition {
 	cacheControl?: string | null;
 	/** Internal: this declaration came from the application owned by the current dedicated worker. */
 	isolatedApplicationOwner?: boolean;
+	/** Internal: names an attribute-removal operation so locked invariants can be checked against disk. */
+	removedAttributes?: string[];
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
@@ -2498,6 +2501,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		hidden,
 		cacheControl,
 		isolatedApplicationOwner,
+		removedAttributes,
 	} = tableDefinition;
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	// Reject reserved names here too, not only at the operations API: a database
@@ -2598,6 +2602,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// and can throw, and only it is cheap when uncontended: LMDB's exclusiveLock() opens an
 			// environment-wide write transaction that cannot time out, so it stays lazy.
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
+			if (removedAttributes?.length) {
+				exclusiveLock();
+				const durableAttributes = [];
+				for (const { value } of Table.dbisDB.getRange({ start: tableName + '/', end: tableName + '0' })) {
+					if (value?.name) durableAttributes.push(value);
+				}
+				assertFullTextSourcesRemain(durableAttributes, new Set(removedAttributes));
+			}
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
 			if (origin === 'cluster') {

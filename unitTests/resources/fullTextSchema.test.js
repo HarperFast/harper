@@ -5,6 +5,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { storedFieldsOnly } = require('#src/resources/RecordEncoder');
 const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
+const { table } = require('#src/resources/databases');
 
 describe('@fullText schema declaration', () => {
 	before(() => setupTestDBPath());
@@ -268,6 +269,29 @@ describe('@fullText schema declaration', () => {
 		assert.strictEqual(Object.hasOwn(stored, 'search'), false, 'storage projection must remove the query handle');
 	});
 
+	it('aggregates query-handle and ordinary validation errors', async () => {
+		await loadGQLSchema(`
+			type FullTextWriteErrors @table {
+				id: ID @primaryKey
+				text: String
+				search: FullText @fullText(fields: [{ name: "text" }])
+			}
+		`);
+		assert.throws(
+			() => new tables.FullTextWriteErrors().validate({ id: 'one', text: 5, search: 'not record data' }),
+			(error) => {
+				assert.deepStrictEqual(
+					error.errors.map(({ path, code }) => [path, code]),
+					[
+						['search', 'full_text'],
+						['text', 'type'],
+					]
+				);
+				return true;
+			}
+		);
+	});
+
 	it('prevents removing a source while its full-text declaration remains', async () => {
 		await loadGQLSchema(`
 			type FullTextSourceRemoval @table {
@@ -281,6 +305,48 @@ describe('@fullText schema declaration', () => {
 			/Cannot remove attribute 'text' while @fullText field 'search' references it/
 		);
 		await assert.doesNotReject(tables.FullTextSourceRemoval.removeAttributes(['text', 'search']));
+	});
+
+	it('checks source removal against the locked durable declaration', async () => {
+		await loadGQLSchema(`
+			type FullTextDurableSourceRemoval @table {
+				id: ID @primaryKey
+				text: String
+				search: FullText @fullText(fields: [{ name: "text" }])
+			}
+		`);
+		const Table = tables.FullTextDurableSourceRemoval;
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		assert.throws(
+			() =>
+				table({
+					database: 'data',
+					table: 'FullTextDurableSourceRemoval',
+					schemaDefined: true,
+					attributes: Table.attributes.filter(({ name }) => name !== 'text' && name !== 'search'),
+					removedAttributes: ['text'],
+				}),
+			/Cannot remove attribute 'text' while @fullText field 'search' references it/
+		);
+	});
+
+	it('removes stale resolved accessors when a query handle becomes stored data', async () => {
+		await loadGQLSchema(`
+			type FullTextToStored @table {
+				id: ID @primaryKey
+				text: String
+				value: FullText @fullText(fields: [{ name: "text" }])
+			}
+		`);
+		await loadGQLSchema(`
+			type FullTextToStored @table {
+				id: ID @primaryKey
+				text: String
+				value: String
+			}
+		`);
+		await tables.FullTextToStored.put({ id: 'one', text: 'source', value: 'stored' });
+		assert.strictEqual((await tables.FullTextToStored.get('one')).value, 'stored');
 	});
 
 	it('rejects full-text descriptors added outside the schema compiler', async () => {

@@ -57,7 +57,22 @@ type SchemaAttribute = {
 	expiresAt?: boolean;
 	enumerable?: boolean;
 	nullable?: boolean;
+	fullText?: FullTextDefinition;
 };
+
+export function assertFullTextSourcesRemain(
+	attributes: readonly SchemaAttribute[],
+	removed: ReadonlySet<string>
+): void {
+	for (const attribute of attributes) {
+		if (removed.has(attribute.name) || !attribute.fullText) continue;
+		const source = attribute.fullText.fields.find((field) => removed.has(field.name));
+		if (source)
+			throw schemaError(
+				`Cannot remove attribute '${source.name}' while @fullText field '${attribute.name}' references it`
+			);
+	}
+}
 
 export function compileFullTextDefinition(
 	target: SchemaAttribute,
