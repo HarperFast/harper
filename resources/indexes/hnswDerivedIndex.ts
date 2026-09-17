@@ -292,6 +292,7 @@ export function attachDerivedIndexes(Table: any):
 			`Table '${Table.databaseName}.${Table.tableName}' must enable audit logging before using a post-commit derived index`
 		);
 	}
+	if (!Table.auditStore) return;
 	const auditStore = Table.auditStore as RocksTransactionLogStore;
 	const registered = runtimeFor(auditStore);
 	if (registered.droppingTables.has(Table.tableId)) return;
@@ -377,7 +378,8 @@ export function attachDerivedIndexes(Table: any):
 		if (!tableBackends) registered.tableBackends.set(Table.tableId, (tableBackends = new Set()));
 		tableBackends.add(registeredBackend);
 		registered.backends.set(id, registeredBackend);
-		if (generationChanged) registered.runtime.requestRebuild(id);
+		if (generationChanged && registered.runtime.getReadiness(id).state === 'unavailable')
+			registered.runtime.requestRebuild(id);
 		releases.push(async (dropping) => {
 			const active = registered.backends.get(id);
 			if (dropping && active) await active.settle();

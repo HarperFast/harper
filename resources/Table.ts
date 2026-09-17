@@ -1919,7 +1919,7 @@ export function makeTable(options) {
 				let tombstoneWrite: any;
 				const writeTombstone = () => {
 					const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
-					if (!primaryMeta || primaryMeta.tableId !== tableId) return false;
+					if (!primaryMeta || (primaryMeta.tableId != null && primaryMeta.tableId !== tableId)) return false;
 					if (primaryMeta.dropping) return true;
 					primaryMeta.dropping = true;
 					// Stamps this drop's identity so the interrupted-drop retry budget in
@@ -1936,9 +1936,7 @@ export function makeTable(options) {
 				try {
 					if (rootStore instanceof RocksDatabase) {
 						// withUpdateAttributesLock's locked section cannot be held across an await, so a durable
-						// tombstone depends on put being rebound to putSync for RocksDB primary stores (see
-						// createOpenDBIObject). Check that BEFORE writing anything: a tombstone left behind by a
-						// refused drop would delete the table on the next load.
+						// tombstone depends on put being rebound to putSync for RocksDB primary stores.
 						dropIdentityConfirmed = withUpdateAttributesLock(
 							rootStore,
 							`drop table '${databaseName}.${TableResource.tableName}'`,
@@ -2030,7 +2028,8 @@ export function makeTable(options) {
 				// catalog rows, and clobbering those would orphan the new table.
 				const removeTombstonedCatalog = () => {
 					const currentPrimary = (dbisDb as any).getSync(TableResource.tableName + '/');
-					if (!currentPrimary?.dropping || currentPrimary.tableId !== tableId) return false;
+					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
+						return false;
 					for (const attribute of attributes) {
 						dbisDb.remove(TableResource.tableName + '/' + attribute.name);
 					}
@@ -2048,7 +2047,8 @@ export function makeTable(options) {
 					// event loop can never resolve, burning its full deadline before failing.
 					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
 						const currentPrimary = (dbisDb as any).getSync(TableResource.tableName + '/');
-						if (!currentPrimary?.dropping || currentPrimary.tableId !== tableId) return false;
+						if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
+							return false;
 						for (const attribute of attributes) {
 							const index = indices[attribute.name];
 							if (index)
@@ -2072,7 +2072,8 @@ export function makeTable(options) {
 					// transactional rather than this spin lock, so keep the awaited drop
 					// plus the same tombstone-guarded catalog removal.
 					const currentPrimary = (dbisDb as any).getSync(TableResource.tableName + '/');
-					if (!currentPrimary?.dropping || currentPrimary.tableId !== tableId) return;
+					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
+						return;
 					const drops = [];
 					for (const attribute of attributes) {
 						const index = indices[attribute.name];
