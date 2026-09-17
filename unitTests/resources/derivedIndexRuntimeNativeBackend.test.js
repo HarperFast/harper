@@ -771,6 +771,27 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(store.locks.size, 1);
 	});
 
+	it('retries a failed shutdown when the same unregister cleanup is called again', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const backend = new AsyncBackend('retry-unregister', { cursor: cursor(10) });
+		let canSettle = false;
+		let shutdowns = 0;
+		backend.shutdown = async () => {
+			shutdowns++;
+			if (!canSettle) throw new Error('native queue did not drain');
+		};
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		const unregister = runtime.register(registration(backend));
+		await waitFor(() => store.locks.size === 1);
+		await assert.rejects(unregister(), /native queue did not drain/);
+
+		canSettle = true;
+		await unregister();
+		assert.strictEqual(shutdowns, 2);
+		assert.strictEqual(store.locks.size, 0);
+		await runtime.stop();
+	});
+
 	it('delivers a peer rebuild request to an owner parked on backend backpressure', async () => {
 		const records = new Map([['1:a', { version: 20, value: { title: 'a' } }]]);
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]), {
@@ -1946,6 +1967,11 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(runtime.getMetrics('scan-rejected').rebuiltRecords, 5);
 		assert.strictEqual(runtime.getMetrics('scan-rejected').rebuildAttempts, 0);
 		assert.strictEqual(backend.applied.size, 0);
+		assert.strictEqual(runtime.requestRebuild('scan-rejected'), true);
+		await waitFor(() => backend.resets.length === 2 && runtime.getReadiness('scan-rejected').state === 'ready', {
+			timeout: 5000,
+		});
+		assert.strictEqual(runtime.getMetrics('scan-rejected').unindexableRecords, 5);
 		await runtime.stop();
 	});
 

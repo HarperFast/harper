@@ -330,6 +330,8 @@ export class DerivedIndexRuntime {
 				this.#runners.delete(registration.backend.id);
 				this.#stopListeningIfIdle();
 			}
+			const held = this.#heldRunners.get(registration.backend.id);
+			if (held?.runner === runner) return this.#retryHeldRelease(held);
 			return this.#track(runner, runner.stop());
 		};
 	}
@@ -366,21 +368,25 @@ export class DerivedIndexRuntime {
 	/** Force a rebuild (or retry one that became `unavailable`). Returns false when the backend cannot be rebuilt by the runtime. */
 	requestRebuild(backendId: string): boolean {
 		const held = this.#heldRunners.get(backendId);
-		if (held) {
-			const released = held.runner.retryRelease();
-			this.#pendingStops.add(released);
-			released.then(
-				() => {
-					this.#pendingStops.delete(released);
-					this.#pendingStops.delete(held.stopped);
-					if (this.#heldRunners.get(backendId) === held) this.#heldRunners.delete(backendId);
-				},
-				() => {}
-			);
-		}
+		if (held) this.#retryHeldRelease(held);
 		const runner = this.#runners.get(backendId);
 		if (runner) return runner.requestRebuild();
 		return held !== undefined;
+	}
+
+	#retryHeldRelease(held: { runner: DerivedIndexRunner; stopped: Promise<void> }): Promise<void> {
+		const released = held.runner.retryRelease();
+		this.#pendingStops.delete(held.stopped);
+		held.stopped = released;
+		this.#pendingStops.add(released);
+		released.then(
+			() => {
+				this.#pendingStops.delete(released);
+				if (this.#heldRunners.get(held.runner.id) === held) this.#heldRunners.delete(held.runner.id);
+			},
+			() => {}
+		);
+		return released;
 	}
 
 	/** Resolves once every runner has released ownership and its backend shutdown has settled. */
@@ -1828,6 +1834,8 @@ class DerivedIndexRunner {
 			this.#resetting = undefined;
 		}
 		if (!this.#live(generation)) return;
+		this.#unindexableRecords = 0;
+		this.#allUnindexableWarned = false;
 		if (backend.getDurableCursor() !== undefined) throw new Error('backend kept a durable cursor after reset');
 		const boundary = await this.#captureBoundary(generation);
 		if (!boundary || !this.#live(generation)) return;

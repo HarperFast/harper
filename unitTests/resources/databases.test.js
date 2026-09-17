@@ -570,12 +570,42 @@ describe('audit cleanup retirement on teardown', () => {
 
 		const drop = dropDatabase('derivedindexdrain').then(() => (dropped = true));
 		await waitFor(() => closeStarted, { timeout: 1000, message: 'derived-index shutdown never started' });
-		await delay(25);
+		await new Promise(setImmediate);
 		assert.strictEqual(dropped, false, 'database storage must stay live until derived-index shutdown settles');
 
 		release();
 		await drop;
 		assert.strictEqual(dropped, true);
+	});
+
+	it('keeps a failed derived-index shutdown reachable for a later drop retry', async function () {
+		const Probe = table({
+			table: 'DerivedIndexRetryProbe',
+			database: 'derivedindexretry',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await new Promise(setImmediate);
+		let closeAttempts = 0;
+		let closing;
+		const runtime = {
+			close() {
+				if (closing) return closing;
+				closeAttempts++;
+				closing = closeAttempts === 1 ? Promise.reject(new Error('native writer did not stop')) : Promise.resolve();
+				closing.catch(() => (closing = undefined));
+				return closing;
+			},
+		};
+		Probe.derivedIndexRuntime = runtime;
+
+		await assert.rejects(dropDatabase('derivedindexretry'), /native writer did not stop/);
+		assert.strictEqual(closeAttempts, 1);
+		assert.strictEqual(databases.derivedindexretry.DerivedIndexRetryProbe, Probe);
+		assert.strictEqual(Probe.derivedIndexRuntime, runtime);
+
+		await dropDatabase('derivedindexretry');
+		assert.strictEqual(closeAttempts, 2);
+		assert.strictEqual(databases.derivedindexretry, undefined);
 	});
 
 	// The legacy per-table drop has no sibling coverage, and the store it retires is the one makeTable()

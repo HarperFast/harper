@@ -15,6 +15,7 @@ const {
 const { waitFor } = require('../waitFor');
 
 const cursor = (timestamp) => ({ format: 1, logs: { local: timestamp } });
+const cursorForLogs = (entries) => ({ format: 1, logs: Object.fromEntries(entries) });
 
 class FakeEngine {
 	constructor(committedPayload) {
@@ -112,6 +113,16 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(decodeFullTextCursorPayload(encodeFullTextCursorPayload(undefined)), undefined);
 		assert.throws(() => decodeFullTextCursorPayload('{"format":1,"cursor":{"format":1,"logs":{"local":0}}}'));
 		assert.throws(() => decodeFullTextCursorPayload('x'.repeat(32), 16));
+		const specialCursor = cursorForLogs([
+			['constructor', 15],
+			['__proto__', 10],
+		]);
+		const specialPayload = encodeFullTextCursorPayload(specialCursor);
+		assert.strictEqual(specialPayload, '{"format":1,"cursor":{"format":1,"logs":{"__proto__":10,"constructor":15}}}');
+		const specialLogs = decodeFullTextCursorPayload(specialPayload).logs;
+		assert.strictEqual(Object.hasOwn(specialLogs, '__proto__'), true);
+		assert.strictEqual(specialLogs.__proto__, 10);
+		assert.strictEqual(specialLogs.constructor, 15);
 	});
 
 	it('maps canonical Harper keys to unambiguous document ids', () => {
@@ -227,7 +238,8 @@ describe('FullTextDerivedIndexBackend', () => {
 			encodedBytes: 16,
 			frames: 2,
 		});
-		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
+		const source = lifecycle({ state: 'missing' }, [engine]);
+		const { backend, setEpoch } = makeBackend(source);
 		backend.deliver(
 			batch(
 				1n,
@@ -239,6 +251,10 @@ describe('FullTextDerivedIndexBackend', () => {
 		await waitFor(() => engine.publications.length === 1);
 		assert.strictEqual(backend.getUnindexableRecords(), 1);
 		await backend.shutdown(1n);
+		setEpoch(2n);
+		await backend.reset(2n);
+		assert.strictEqual(backend.getUnindexableRecords(), 0);
+		await backend.shutdown(2n);
 	});
 
 	it('accepts a valid wrapper result with a custom prototype', async () => {
@@ -347,12 +363,15 @@ describe('FullTextDerivedIndexBackend', () => {
 	it('publishes cursor-only progress without applying mutations', async () => {
 		const engine = new FakeEngine();
 		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]));
-		const prototypeCursor = { format: 1, logs: { prototype: 20 } };
+		const prototypeCursor = cursorForLogs([
+			['constructor', 20],
+			['__proto__', 21],
+		]);
 		backend.deliver(batch(1n, [], prototypeCursor));
 		backend.flush('age');
 		await waitFor(() => engine.publications.length === 1);
 		assert.strictEqual(engine.applied.length, 0);
-		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, prototypeCursor.logs);
+		assert.deepStrictEqual({ ...backend.getDurableCursor().logs }, { ...prototypeCursor.logs });
 		await backend.shutdown(1n);
 	});
 

@@ -2017,8 +2017,6 @@ export async function dropDatabase(databaseName) {
 			const table = dbTables[tableName];
 			rootStore = table.primaryStore.rootStore;
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
-			lmdbDatabaseEnvs.delete(rootStore.path);
-			rocksdbDatabaseEnvs.delete(rootStore.path);
 		}
 
 		// A database drop bypasses each Table's dropTable() path, so retire every derived-index
@@ -2043,6 +2041,12 @@ export async function dropDatabase(databaseName) {
 		if (derivedIndexFailures.length === 1) throw derivedIndexFailures[0];
 		if (derivedIndexFailures.length)
 			throw new AggregateError(derivedIndexFailures, 'derived index backends failed to shut down for database drop');
+
+		for (const tableName in dbTables) {
+			const table = dbTables[tableName];
+			lmdbDatabaseEnvs.delete(table.primaryStore.rootStore.path);
+			rocksdbDatabaseEnvs.delete(table.primaryStore.rootStore.path);
+		}
 
 		for (const tableName in dbTables) {
 			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
