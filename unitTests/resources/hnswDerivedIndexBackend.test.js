@@ -4,8 +4,8 @@ const { DERIVED_INDEX_ACCEPTED } = require('#src/resources/derivedIndexRuntime')
 const { HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
 
 const OWNER_EPOCH = 7n;
-// Longer than the backend's 5 ms apply slice, so exactly one record applies per slice and every
-// barrier below starts at a known batch boundary rather than wherever the slice happened to end.
+// Must exceed the backend's 5 ms apply slice: one record per slice is what makes every barrier
+// below land on a known batch boundary.
 const APPLY_MILLIS = 6;
 const BATCH_RECORDS = 2;
 
@@ -81,8 +81,6 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 		assert.equal(barrier.appliedAtStart, BATCH_RECORDS, 'the barrier covers one completed batch, not the queue');
 		assert.deepStrictEqual(backend.getDurableCursor(), undefined, 'the cursor lands only once the plane is durable');
 
-		// Application stays paused for the whole barrier, so the barrier cannot publish a mapping it
-		// did not cover.
 		await settled();
 		assert.equal(index.applied.length, BATCH_RECORDS);
 
