@@ -1061,8 +1061,8 @@ describe('test MQTT connections and commands', function () {
 			} finally {
 				acknowledgementAbort.abort();
 				client.off('message', onMessage);
+				await endDurableSession(client, 'test-client1').catch(() => undefined);
 			}
-			await endDurableSession(client, 'test-client1');
 			await clientV5.publishAsync(
 				'SimpleRecord/41',
 				JSON.stringify({
