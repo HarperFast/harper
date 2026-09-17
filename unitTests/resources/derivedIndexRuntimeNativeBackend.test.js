@@ -1361,7 +1361,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.strictEqual(runtime.getStatus(backend.id).state, 'rebuilding');
 		const attempts = runtime.getMetrics(backend.id).rebuildAttempts;
-		assert(attempts >= 1);
+		assert.strictEqual(attempts, 1);
 		assert.strictEqual(readDerivedIndexReadiness(store, backend.id).rebuildAttempts, attempts);
 
 		records.clear();
