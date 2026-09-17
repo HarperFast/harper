@@ -1584,10 +1584,6 @@ export class LockCoordinator {
 	}
 
 	/**
-	 * Forward a release to the owner without ever letting a failure escape onto the caller's path —
-	 * a synchronous throw from the transport as much as a rejected promise.
-	 */
-	/**
 	 * Forward a release to the owner, naming the admission by the OWNER's id. Core deliberately carries no
 	 * owner epoch of its own: a release for an id a replacement owner has since reused is rejected by the
 	 * transport, which stamps every release with the owner session captured when the admission was minted
@@ -2623,9 +2619,9 @@ export class LockCoordinator {
 		const outcomes = this.#revokeAll(delegation);
 		// ONE shared lease timer for the whole settle, not one per admission: a recall of a delegation
 		// holding thousands of relayed admissions would otherwise arm thousands of timers at exactly the
-		// moment it is handing off. The shared deadline is the LATEST lease among
-		// them, which bounds every handle in the set — waiting past a shorter lease only ever errs
-		// towards holding the release longer, never towards writing it early.
+		// moment it is handing off. The shared deadline is the LATEST lease among them, which bounds every
+		// handle in the set — waiting past a shorter lease only ever errs towards holding the release
+		// longer, never towards writing it early.
 		let latestExpiry = -Infinity;
 		let anyAsync = false;
 		for (const { outcome, expiresMono } of outcomes) {

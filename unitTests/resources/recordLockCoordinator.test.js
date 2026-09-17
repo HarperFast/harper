@@ -2713,6 +2713,8 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 			},
 		});
 		const released = [];
+		/** Every admission id the OWNER minted, in order, so a test can name the id the wire uses. */
+		const minted = [];
 		let caller;
 		caller = makeCoordinator(database, {
 			homeMap: () => ownerMap,
@@ -2726,6 +2728,7 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 			},
 			acquireOnOwner: async (_db, _table, key, lease, wait) => {
 				const round = await owner.acquire(key, lease, wait);
+				minted.push(round.admissionId);
 				owner.registerAdmission(round.admissionId, () => caller.revokeRemoteAdmission(round.admissionId));
 				return round;
 			},
@@ -2734,7 +2737,7 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 				return owner.release(key, ownerAdmissionId);
 			},
 		});
-		return { owner, caller, released };
+		return { owner, caller, released, minted };
 	}
 
 	afterEach(() => setLockCoordinatorResolver(() => undefined));
@@ -3044,12 +3047,17 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 	});
 
 	it('drives the exported caller-side entry points (revokeRelayedAdmission / fenceRelayedAdmissions)', async () => {
-		const { caller } = relaySetup('r11');
+		const { owner, caller, minted } = relaySetup('r11');
+		// Advance the owner's counter first, so the entry point is proven to address the OWNER's id
+		// rather than passing because a fresh owner and caller both happen to start at 1.
+		const throwaway = await owner.acquire('warm', LEASE, WAIT);
+		owner.release('warm', throwaway.admissionId);
 		const round = await caller.acquire('k', LEASE, WAIT);
 		let fenced = 0;
 		caller.registerAdmission(round.admissionId, () => fenced++);
 		setLockCoordinatorResolver(() => caller);
-		await revokeRelayedAdmission('r11', 'T', round.admissionId);
+		assert.notStrictEqual(minted[0], round.admissionId, 'the owner id and the local id must differ here');
+		await revokeRelayedAdmission('r11', 'T', minted[0]);
 		assert.strictEqual(fenced, 1, 'revokeRelayedAdmission fenced through the resolver');
 		const second = await caller.acquire('k2', LEASE, WAIT);
 		caller.registerAdmission(second.admissionId, () => fenced++);
