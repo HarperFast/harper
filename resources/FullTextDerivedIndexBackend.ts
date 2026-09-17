@@ -22,6 +22,7 @@ export const HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
 export const HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES = 64 * 1024;
 const DEFAULT_OPEN_ATTEMPTS = 3;
 const DEFAULT_OPEN_RETRY_MILLISECONDS = 10;
+const MAX_CONSECUTIVE_INSPECTION_FAILURES = 3;
 const MAX_CONSECUTIVE_WRITER_FAILURES = 2;
 const UNSAFE_LOG_NAMES = new Set(['__proto__', 'constructor']);
 
@@ -137,6 +138,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#unindexableRecords = 0;
 	#stagedUnindexableRecords = 0;
 	#invalidEstimateWarned = false;
+	#consecutiveInspectionFailures = 0;
 	#consecutiveWriterFailures = 0;
 
 	constructor(options: FullTextDerivedIndexBackendOptions) {
@@ -183,8 +185,13 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			try {
 				inspection = this.#lifecycle.inspect();
 			} catch (error) {
+				if (++this.#consecutiveInspectionFailures >= MAX_CONSECUTIVE_INSPECTION_FAILURES) {
+					this.#consecutiveInspectionFailures = 0;
+					throw new FullTextDerivedIndexError('Full-text derived index state repeatedly could not be inspected', error);
+				}
 				throw new DerivedIndexBackendRetryError('Full-text derived index state could not be inspected', error);
 			}
+			this.#consecutiveInspectionFailures = 0;
 			this.#inspectedEpoch = ownerEpoch;
 			if (inspection.state === 'checkpointed') {
 				try {
