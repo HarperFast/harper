@@ -1025,7 +1025,7 @@ describe('test MQTT connections and commands', function () {
 	(process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? it.skip : it)(
 		'subscribe with QoS=1 and reconnect with non-clean session',
 		async function () {
-			this.timeout(20000); // needs more than the suite-level 10 s on loaded runners
+			this.timeout(60000); // allows each bounded lifecycle phase to report its own failure
 			// this first connection is a tear down to remove any previous durable session with this id
 			let client = await connectAsync(mqttUrl, {
 				clean: true,
