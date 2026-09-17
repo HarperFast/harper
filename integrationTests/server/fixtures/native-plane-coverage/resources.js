@@ -9,8 +9,9 @@ export class PlaneStatus extends Resource {
 		const readiness = index.derivedHost.readiness();
 		let mappings = 0;
 		let pending = 0;
-		for (const { key, value } of store.getRange()) {
-			if (typeof key !== 'number') continue;
+		// primary-key mappings ({ id, ... }); the store holds no node-id keys since the plane carries the key
+		for (const { value } of store.getRange()) {
+			if (!value || typeof value !== 'object' || typeof value.id !== 'number') continue;
 			if (value.pending) pending++;
 			else mappings++;
 		}
