@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789629688062,
+  "lastUpdate": 1789636511230,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -18183,6 +18183,58 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw write ops",
             "value": 740420,
+            "unit": "ops"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "979084769ae7165b4bffd59b174c5e6ca0f082f6",
+          "message": "Keep an analytics sample recorded while its window is being flushed (#2662)\n\n* Assert the largest recorded write, not the window mean, in the CRUD analytics tests\n\n`Unit Test (Node.js v26)` went red on main at f154c3876 in\n`unitTests/resources/crud.test.js` \"publishes and subscribes\", one leg only:\n\n    db-write and db-message byte counts were recorded in analytics;\n    observed db-write means: 8.333333333333334; db-message means: 55\n\nf154c3876 is innocent — its four files are all under\nintegrationTests/database/qa685-blob-upload-stall*, which the unit suite never\nloads.\n\nThe assertions ask whether one operation recorded more than N bytes, but read\nthe MEAN of the analytics aggregation window. `sendAnalytics()` buckets every\nwrite to a table under one `metric-path` action and flushes it on an unref'd\ntimer, so a flush delayed past the next test leaves that test's writes in the\nsame window — and a delete records 1 byte. 8.333333333333334 is (23 + 1 + 1)/3:\nthe publish's own write averaged with the two tombstones from the `deletes`\ntest before it.\n\nRead the window's largest single value instead, which the stored percentile\n`distribution` always carries because the percentiles run to the 100th. The\nthree raw-analytics assertions in this file now share one helper that polls\nuntil every named metric shows such a write, rather than asserting on whichever\nrecord happened to be found first, and reports the observed maxima, counts and\nmeans on timeout. The published payload is padded so the publish's byte counts\ncannot be impersonated by an older CRUDTable window, whose id is stamped when\nit is flushed rather than when it closed.\n\nVerified by setting `analyticsDelay` to its production 1000ms, which makes the\ndelayed flush deterministic: all three suites fail on the base test with\n`db-write means: 13.25` ((23 + 1 + 1 + 28)/4) and pass with this change.\n\nDispatch-Task: main-red-kriszyp_harper_f154c3876_4d7eefda\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Keep an analytics sample recorded while its window is being flushed\n\nThe Node 26 red on main at f154c3876 was the publish's own `db-write` sample\ngoing missing, not only the window mean reading low. `sendAnalytics()`'s timer\ncallback summarizes `activeActions` with an `await rest()` between entries and\nreplaces the map only at the end, so a sample recorded during those turns is\nfolded into an entry that has already been reported and is then dropped with\nthe map. A sample under a NEW key survives — a `Map` iterator visits entries\nadded while it is running — which is exactly the shape CI stored: `db-message`\n(a new key for that window) present at 55 bytes, `db-write` showing only the\npreceding `update` and `deletes` writes at (23 + 1 + 1)/3 = 8.333333333333334,\nwith the publish's own 28-byte write nowhere in the 5s the test waited.\n\nClose the window before summarizing it, so anything recorded during the flush\nstarts the next one instead of being discarded.\n\n`keeps an analytics sample recorded while its window is being flushed` drives\nthat race directly: an analytics listener runs inside the flush, after the\naction it targets has been summarized, and records a sentinel into it. On the\nbase it is never stored; the test times out reporting the window it did find.\n\nAlso from the pre-push review of the first commit: each `registerTests()` run\nnow publishes a larger payload than the run before it, because a record's id is\nstamped when its window is flushed rather than when it closed and an earlier\nrun's window can still be returned to this one; the metric scan stops once every\nrequested metric is satisfied; and the comments are trimmed back to the\nstatistic being read.\n\nDispatch-Task: main-red-kriszyp_harper_f154c3876_4d7eefda\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Trim the added comments to the rule each one is there for\n\nDispatch-Task: main-red-kriszyp_harper_f154c3876_4d7eefda\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Make the analytics byte threshold inclusive\n\nAn exclusive bound made the publish assertion depend on the recorded byte count\ncarrying encoding overhead above the padded payload, and forced the flush-race\ntest to ask for one byte less than the sentinel it records.\n\nDispatch-Task: main-red-kriszyp_harper_f154c3876_4d7eefda\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n* Disarm the flush-race analytics listener when its test ends\n\naddAnalyticsListener has no removal counterpart, so a listener left armed by a\nfailed run of this test would fire during a later suite and inject its 987654-byte\nsentinel into that suite's window. Guarding on an armed flag cleared in a finally\nmakes the closure inert the moment the test settles, pass or fail.\n\nDispatch-Task: pr-maint-79dda0fa0747c9c2c400f37bd1e81008\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T04:33:22Z",
+          "url": "https://github.com/HarperFast/harper/commit/979084769ae7165b4bffd59b174c5e6ca0f082f6"
+        },
+        "date": 1789636508451,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "indexed-write baseline",
+            "value": 15214,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed3",
+            "value": 12710,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "indexed-write indexed5",
+            "value": 10600,
+            "unit": "ops/sec"
+          },
+          {
+            "name": "ttl-churn total inserts",
+            "value": 19336960,
+            "unit": "records"
+          },
+          {
+            "name": "concurrent-rw read ops",
+            "value": 1316,
+            "unit": "ops"
+          },
+          {
+            "name": "concurrent-rw write ops",
+            "value": 771320,
             "unit": "ops"
           }
         ]
