@@ -976,7 +976,7 @@ describe('HNSW GraphQL numeric options', () => {
 			assert.equal(indexedOptions(tableName).optimizeRouting, '0.5');
 		});
 
-		it('hands a shared physical runner to a recreated table generation', async function () {
+		it('recovers a shared physical runner through failed drop, recreate, and stale alias cleanup', async function () {
 			if (!getPlaneBinding()) this.skip();
 			const tableName = 'HnswNativeAliasRecreate';
 			let Table = table({
@@ -1000,7 +1000,15 @@ describe('HNSW GraphQL numeric options', () => {
 			Atomics.store(new Int32Array(readiness, 0, 6), 0, 4);
 			assert.equal(derivedIndexReadiness(Table.auditStore, Table.indices.embedding.name).state, 'unavailable');
 
-			await Table.dropTable();
+			const originalPrimaryDrop = Table.primaryStore.dropSync;
+			Table.primaryStore.dropSync = () => {
+				throw new Error('injected native drop failure');
+			};
+			try {
+				await assert.rejects(() => Table.dropTable(), /injected native drop failure/);
+			} finally {
+				Table.primaryStore.dropSync = originalPrimaryDrop;
+			}
 			Table = table({
 				table: tableName,
 				audit: true,

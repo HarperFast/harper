@@ -247,6 +247,26 @@ type Registered = {
 	retryUnavailable: Set<string>;
 };
 const runtimes = new WeakMap<object, Registered>();
+const retryUnavailableByStore = new Set<string>();
+
+function retryUnavailableKey(auditStore: RocksTransactionLogStore, backendId: string): string {
+	return `${auditStore.rootStore.path}\0${backendId}`;
+}
+
+function markUnavailableRetry(registered: Registered, auditStore: RocksTransactionLogStore, backendId: string): void {
+	registered.retryUnavailable.add(backendId);
+	retryUnavailableByStore.add(retryUnavailableKey(auditStore, backendId));
+}
+
+function consumeUnavailableRetry(
+	registered: Registered,
+	auditStore: RocksTransactionLogStore,
+	backendId: string
+): boolean {
+	const local = registered.retryUnavailable.delete(backendId);
+	const storeScoped = retryUnavailableByStore.delete(retryUnavailableKey(auditStore, backendId));
+	return local || storeScoped;
+}
 
 function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
 	let registered = runtimes.get(auditStore);
@@ -313,7 +333,7 @@ export function attachDerivedIndexes(Table: any):
 		// native backend should make a later native registration eligible to rearm an exhausted
 		// rebuild budget.
 		if (attribute.indexed.nativePlane === false && !indexStore.customIndex.postCommit && registered.backends.has(id))
-			registered.retryUnavailable.add(id);
+			markUnavailableRetry(registered, auditStore, id);
 	}
 	if (attributes.length === 0) return;
 	const installed = { Table };
@@ -398,7 +418,7 @@ export function attachDerivedIndexes(Table: any):
 		if (!tableBackends) registered.tableBackends.set(Table.tableId, (tableBackends = new Set()));
 		tableBackends.add(registeredBackend);
 		registered.backends.set(id, registeredBackend);
-		const retryUnavailable = registered.retryUnavailable.delete(id);
+		const retryUnavailable = consumeUnavailableRetry(registered, auditStore, id);
 		if (retryUnavailable && registered.runtime.getReadiness(id).state === 'unavailable')
 			registered.runtime.requestRebuild(id);
 		backendIds.push(id);
@@ -434,7 +454,7 @@ export function attachDerivedIndexes(Table: any):
 		},
 		completeDrop(dropped = true) {
 			registered.droppingTables.delete(Table.tableId);
-			if (dropped) for (const id of backendIds) registered.retryUnavailable.add(id);
+			if (dropped) for (const id of backendIds) markUnavailableRetry(registered, auditStore, id);
 		},
 	};
 }

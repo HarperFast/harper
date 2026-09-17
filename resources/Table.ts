@@ -2016,15 +2016,21 @@ export function makeTable(options) {
 				]);
 				clearTimeout(timer);
 				if (result === timedOut) {
+					derivedIndexRuntime?.completeDrop?.();
 					throw new Error(
 						`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.length} in-flight source-populated cache write(s) on ${tableName} to settle; refusing to drop the column families out from under a write that may still be staged. The drop tombstone is durable, so this will be retried on the next load.`
 					);
 				}
 			}
-			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
-				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
-					deleteBlobsInObject(entry.value);
+			try {
+				for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
+					if (entry.metadataFlags & HAS_BLOBS && entry.value) {
+						deleteBlobsInObject(entry.value);
+					}
 				}
+			} catch (error) {
+				derivedIndexRuntime?.completeDrop?.();
+				throw error;
 			}
 			if (databaseName === databasePath) {
 				// part of a database.
@@ -2060,62 +2066,78 @@ export function makeTable(options) {
 					// completeInterruptedDrop does), never an awaited drop(), or a
 					// concurrent create's wait would be stuck on a drop that the blocked
 					// event loop can never resolve, burning its full deadline before failing.
-					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
-						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
-						if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
-							return false;
-						for (const attribute of attributes) {
-							const index = indices[attribute.name];
-							if (index)
-								try {
-									index.customIndex?.resetDerivedStorage?.();
-									index.dropSync();
-								} catch (error) {
-									ignoreAlreadyDropped(error);
-								}
-						}
-						try {
-							primaryStore.dropSync();
-						} catch (error) {
-							ignoreAlreadyDropped(error);
-						}
-						return removeTombstonedCatalog();
-					});
+					let removed: boolean;
+					try {
+						removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
+							const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+							if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
+								return false;
+							for (const attribute of attributes) {
+								const index = indices[attribute.name];
+								if (index)
+									try {
+										index.customIndex?.resetDerivedStorage?.();
+										index.dropSync();
+									} catch (error) {
+										ignoreAlreadyDropped(error);
+									}
+							}
+							try {
+								primaryStore.dropSync();
+							} catch (error) {
+								ignoreAlreadyDropped(error);
+							}
+							return removeTombstonedCatalog();
+						});
+						if (removed) await dbisDb.committed;
+					} catch (error) {
+						derivedIndexRuntime?.completeDrop?.();
+						throw error;
+					}
 					if (!removed) {
 						abortStaleDrop();
 						return;
 					}
-					if (removed) await dbisDb.committed;
 				} else {
 					// LMDB: no shared column-family double-drop, and its engine lock is
 					// transactional rather than this spin lock, so keep the awaited drop
 					// plus the same tombstone-guarded catalog removal.
-					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
-					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
-						abortStaleDrop();
-						return;
-					}
-					const drops = [];
-					for (const attribute of attributes) {
-						const index = indices[attribute.name];
-						if (index) {
-							index.customIndex?.resetDerivedStorage?.();
-							drops.push(index.drop().catch(ignoreAlreadyDropped));
+					try {
+						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+						if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
+							abortStaleDrop();
+							return;
 						}
+						const drops = [];
+						for (const attribute of attributes) {
+							const index = indices[attribute.name];
+							if (index) {
+								index.customIndex?.resetDerivedStorage?.();
+								drops.push(index.drop().catch(ignoreAlreadyDropped));
+							}
+						}
+						drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
+						await Promise.all(drops);
+						if (removeTombstonedCatalog()) await dbisDb.committed;
+					} catch (error) {
+						derivedIndexRuntime?.completeDrop?.();
+						throw error;
 					}
-					drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
-					await Promise.all(drops);
-					if (removeTombstonedCatalog()) await dbisDb.committed;
 				}
 			} else {
 				// legacy table per database. The store to retire is this table's own audit store: nothing
 				// assigns `primaryStore.auditStore` — openAuditStore() assigns `rootStore.auditStore`, and
 				// this is the reference makeTable() was handed. Awaited so a pass suspended mid-removal has
 				// released the primary DBI before it is closed and unlinked.
-				await auditStore?.stopAuditCleanup?.();
-				removeStorageReclamation(primaryStore.path);
-				await primaryStore.close();
-				fs.unlinkSync(primaryStore.path);
+				try {
+					await auditStore?.stopAuditCleanup?.();
+					removeStorageReclamation(primaryStore.path);
+					await primaryStore.close();
+					fs.unlinkSync(primaryStore.path);
+				} catch (error) {
+					derivedIndexRuntime?.completeDrop?.();
+					throw error;
+				}
 			}
 			derivedIndexRuntime?.completeDrop?.();
 			signalling.signalSchemaChange(
