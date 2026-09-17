@@ -55,6 +55,8 @@ type SchemaAttribute = {
 	assignCreatedTime?: boolean;
 	assignUpdatedTime?: boolean;
 	expiresAt?: boolean;
+	enumerable?: boolean;
+	nullable?: boolean;
 };
 
 export function compileFullTextDefinition(
@@ -65,6 +67,8 @@ export function compileFullTextDefinition(
 	if (target.type !== 'FullText')
 		throw schemaError(`@fullText on "${target.name}" requires the FullText scalar type; got "${displayType(target)}"`);
 	if (target.indexed) throw schemaError(`@fullText on "${target.name}" cannot be combined with @indexed`);
+	if (target.enumerable) throw schemaError(`@fullText on "${target.name}" cannot be combined with @enumerable`);
+	if (target.nullable === false) throw schemaError(`@fullText on "${target.name}" must be nullable`);
 	if (
 		target.computed ||
 		target.embed ||

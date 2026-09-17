@@ -681,6 +681,7 @@ export function makeTable(options) {
 	// the definition (set early, during connectPropertyType) rather than its `.tableClass` (assigned later, so
 	// unset for self/forward refs at collection time); `.tableClass` is resolved lazily at detection.
 	let enumerableAttributeNames: string[] = [];
+	let fullTextAttributes: Attribute[] = [];
 	const enumerableRelationDefs = new Set<any>();
 	// True when the table surfaces any non-table @computed attribute. A resolver can return a live (possibly
 	// cyclic) entity at runtime regardless of its declared scalar type, and the static edge graph can't see
@@ -6021,14 +6022,12 @@ export function makeTable(options) {
 						const properties = attribute.properties;
 						for (let i = 0, l = properties.length; i < l; i++) {
 							const attribute = properties[i];
-							if (attribute.relationship || attribute.computed || attribute.fullText) {
+							if (attribute.relationship || attribute.computed) {
 								if (record.hasOwnProperty(attribute.name)) {
 									addError(
 										`${name}.${attribute.name}`,
-										attribute.fullText ? 'full_text' : 'computed',
-										attribute.fullText
-											? `Full-text query property ${name}.${attribute.name} may not be directly assigned a value`
-											: `Computed property ${name}.${attribute.name} may not be directly assigned a value`
+										'computed',
+										`Computed property ${name}.${attribute.name} may not be directly assigned a value`
 									);
 								}
 								continue;
@@ -6141,16 +6140,22 @@ export function makeTable(options) {
 					addError(name, 'required', `Property ${name} is required (and not does not allow null values)`);
 				}
 			};
+			for (const attribute of fullTextAttributes) {
+				if (Object.hasOwn(record, attribute.name))
+					addError(
+						attribute.name,
+						'full_text',
+						`Full-text query property ${attribute.name} may not be directly assigned a value`
+					);
+			}
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
-				if (attribute.relationship || attribute.computed || attribute.fullText) {
+				if (attribute.relationship || attribute.computed) {
 					if (Object.hasOwn(record, attribute.name)) {
 						addError(
 							attribute.name,
-							attribute.fullText ? 'full_text' : 'computed',
-							attribute.fullText
-								? `Full-text query property ${attribute.name} may not be directly assigned a value`
-								: `Computed property ${attribute.name} may not be directly assigned a value`
+							'computed',
+							`Computed property ${attribute.name} may not be directly assigned a value`
 						);
 					}
 					continue;
@@ -6181,6 +6186,8 @@ export function makeTable(options) {
 			const new_attributes = attributes.slice(0);
 			for (const attribute of attributesToAdd) {
 				if (!attribute.name) throw new ClientError('Attribute name is required');
+				if (attribute.type === 'FullText' || attribute.fullText)
+					throw new ClientError('Full-text attributes must be declared with @fullText in schema.graphql', 400);
 				if (attribute.name.match(/[`/]/))
 					throw new ClientError('Attribute names cannot include backticks or forward slashes');
 				validateAttribute(attribute.name);
@@ -6432,6 +6439,7 @@ export function makeTable(options) {
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
+			fullTextAttributes = this.attributes.filter((attribute) => attribute.fullText);
 			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
 			// Drop registry entries for attributes that are no longer `@embed`, so a dropped
 			// directive doesn't leave a stale embedder or block a default refresh on re-add.

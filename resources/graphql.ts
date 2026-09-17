@@ -225,7 +225,10 @@ async function processGraphQLSchema(
 					const property = getProperty(field.type);
 					property.name = field.name.value;
 					if (property.type === 'array' && containsType(property, 'FullText'))
-						throw new ClientError(`FullText field "${property.name}" must be a scalar with an @fullText declaration`, 400);
+						throw new ClientError(
+							`FullText field "${property.name}" must be a scalar with an @fullText declaration`,
+							400
+						);
 					if (field.description?.value) property.description = field.description.value;
 					attributes.push(property);
 					attributesObject[property.name] = undefined; // this is used as a backup scope for computed properties

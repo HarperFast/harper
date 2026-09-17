@@ -184,6 +184,12 @@ describe('@fullText schema declaration', () => {
 			'search: FullText @expiresAt @fullText(fields: [{ name: "text" }])',
 			/field-lifecycle directive/,
 		],
+		[
+			'enumerable conflict',
+			'search: FullText @enumerable @fullText(fields: [{ name: "text" }])',
+			/cannot be combined with @enumerable/,
+		],
+		['non-null query handle', 'search: FullText! @fullText(fields: [{ name: "text" }])', /must be nullable/],
 	]) {
 		it(`rejects ${name}`, async () => {
 			await assert.rejects(
@@ -274,5 +280,44 @@ describe('@fullText schema declaration', () => {
 			/Cannot remove attribute 'text' while @fullText field 'search' references it/
 		);
 		await assert.doesNotReject(tables.FullTextSourceRemoval.removeAttributes(['text', 'search']));
+	});
+
+	it('rejects full-text descriptors added outside the schema compiler', async () => {
+		await loadGQLSchema(`
+			type FullTextAddAttributeGuard @table {
+				id: ID @primaryKey
+			}
+		`);
+		await assert.rejects(
+			tables.FullTextAddAttributeGuard.addAttributes([{ name: 'search', type: 'FullText' }]),
+			/must be declared with @fullText/
+		);
+		await assert.rejects(
+			tables.FullTextAddAttributeGuard.addAttributes([
+				{ name: 'search', type: 'String', fullText: { fields: [{ name: 'missing' }] } },
+			]),
+			/must be declared with @fullText/
+		);
+	});
+
+	it('does not inspect full-text metadata while validating an ordinary table write', async () => {
+		await loadGQLSchema(`
+			type FullTextOrdinaryWrite @table {
+				id: ID @primaryKey
+				text: String
+			}
+		`);
+		const text = tables.FullTextOrdinaryWrite.attributes.find((attribute) => attribute.name === 'text');
+		Object.defineProperty(text, 'fullText', {
+			configurable: true,
+			get() {
+				throw new Error('ordinary write inspected full-text metadata');
+			},
+		});
+		try {
+			assert.doesNotThrow(() => new tables.FullTextOrdinaryWrite().validate({ id: 'one', text: 'hello' }));
+		} finally {
+			delete text.fullText;
+		}
 	});
 });
