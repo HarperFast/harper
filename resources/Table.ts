@@ -6140,15 +6140,6 @@ export function makeTable(options) {
 					addError(name, 'required', `Property ${name} is required (and not does not allow null values)`);
 				}
 			};
-			for (let i = 0, l = fullTextAttributes.length; i < l; i++) {
-				const attribute = fullTextAttributes[i];
-				if (Object.hasOwn(record, attribute.name))
-					addError(
-						attribute.name,
-						'full_text',
-						`Full-text query property ${attribute.name} may not be directly assigned a value`
-					);
-			}
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
 				if (attribute.relationship || attribute.computed) {
@@ -6441,6 +6432,7 @@ export function makeTable(options) {
 			// class-construction snapshot would otherwise go stale.
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
 			fullTextAttributes = this.attributes.filter((attribute) => attribute.fullText);
+			TableResource.prototype.validate = fullTextAttributes.length ? validateWithFullText : validateWithoutFullText;
 			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
 			// Drop registry entries for attributes that are no longer `@embed`, so a dropped
 			// directive doesn't leave a stale embedder or block a default refresh on re-add.
@@ -6922,6 +6914,26 @@ export function makeTable(options) {
 			return txnForContext(context).getReadTxn();
 		}
 	}
+	const validateWithoutFullText = TableResource.prototype.validate;
+	const validateWithFullText = function (this: InstanceType<typeof TableResource>, record: any, patch?: boolean) {
+		const errors: ValidationIssue[] = [];
+		for (let i = 0, l = fullTextAttributes.length; i < l; i++) {
+			const name = fullTextAttributes[i].name;
+			if (Object.hasOwn(record, name))
+				errors.push({
+					path: name,
+					code: 'full_text',
+					message: `Full-text query property ${name} may not be directly assigned a value`,
+				});
+		}
+		try {
+			validateWithoutFullText.call(this, record, patch);
+		} catch (error) {
+			if (!(error instanceof ValidationError) || errors.length === 0) throw error;
+			errors.push(...error.errors);
+		}
+		if (errors.length > 0) throw new ValidationError(errors, errors.map((issue) => issue.message).join('. '));
+	};
 	const throttledCallToSource = throttle(
 		async (source, id, sourceContext, existingEntry) => {
 			// call the data source if it exists and will fulfill our request for data
