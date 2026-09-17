@@ -2821,6 +2821,13 @@ writer. Before first use, the opened handle's `committedPayload` is reconciled w
 cursor. A mismatch rollback-closes the handle, adopts the native cursor, discards accepted work,
 and asks the runtime to replay from that exact point.
 
+An inspection exception is retried across owner epochs without condemning valid native state. The
+third consecutive exception enters the normal condemnation and rebuild path. One successful rebuild
+is allowed for that uninterrupted inspection outage; if inspection still fails three times after it,
+reset refuses another catalog rebuild and the runtime exhausts its bounded rebuild attempts into
+`unavailable`. A successful inspection rearms that recovery allowance. An unrelated reset clears a
+partial failure streak so a rebuilt index still receives the full transient retry grace.
+
 #### Bounded apply and publication
 
 `deliver()` only validates ownership and admits a retained batch. Queue count is a hard bound;

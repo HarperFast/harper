@@ -96,8 +96,11 @@ export interface DerivedIndexBackendHost {
 	getReadiness(): DerivedIndexReadiness;
 }
 
+/** A fault originating inside a derived-index backend rather than the delivery runtime. */
+export class DerivedIndexBackendError extends Error {}
+
 /** A transient first-read failure during owner acquisition; release ownership and retry without rebuilding. */
-export class DerivedIndexBackendRetryError extends Error {
+export class DerivedIndexBackendRetryError extends DerivedIndexBackendError {
 	constructor(message: string, cause?: unknown) {
 		super(message, cause === undefined ? undefined : { cause });
 		this.name = 'DerivedIndexBackendRetryError';
@@ -934,7 +937,11 @@ class DerivedIndexRunner {
 				this.#armLockRetry(this.#options.lockRetryMilliseconds);
 				return;
 			}
-			this.#fail('failed to initialize the runner', error);
+			this.#fail(
+				'failed to initialize the runner',
+				error,
+				error instanceof DerivedIndexBackendError ? 'backend-failed' : 'runner-failed'
+			);
 		}
 	}
 
@@ -1209,14 +1216,22 @@ class DerivedIndexRunner {
 					// is met exactly once: here, before the rebuild it demands.
 					throw new RunnerError('reload', `table ${entry.tableId} requires a derived-index rebuild`);
 				} else if (ELIGIBLE_ACTIONS.has(entry.type)) {
-					const key = writeKeyId(entry.recordId);
+					let recordId;
+					try {
+						recordId = entry.recordId;
+					} catch {
+						throw new RunnerError('log-corrupt', 'transaction log yielded an undecodable record id');
+					}
+					if (recordId === undefined)
+						throw new RunnerError('log-corrupt', 'transaction log yielded an undecodable record id');
+					const key = writeKeyId(recordId);
 					if (typeof key === 'string') {
 						let byRecord = current.keys.get(entry.tableId);
 						if (!byRecord) current.keys.set(entry.tableId, (byRecord = new Map()));
 						const known = byRecord.get(key);
 						if (known) known.logVersion = entry.version;
 						else {
-							byRecord.set(key, { recordId: entry.recordId, logVersion: entry.version, sizeHint: entry.size });
+							byRecord.set(key, { recordId, logVersion: entry.version, sizeHint: entry.size });
 							current.keyCount++;
 							keyCount++;
 						}

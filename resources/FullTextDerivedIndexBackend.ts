@@ -11,6 +11,7 @@ import {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
 	DERIVED_INDEX_FAILED,
+	DerivedIndexBackendError,
 	DerivedIndexBackendRetryError,
 } from './derivedIndexRuntime.ts';
 import { loggerWithTag } from '../utility/logging/logger.ts';
@@ -93,7 +94,7 @@ type ShutdownRequest = {
 	closing: boolean;
 };
 
-export class FullTextDerivedIndexError extends Error {
+export class FullTextDerivedIndexError extends DerivedIndexBackendError {
 	statusCode = 500;
 
 	constructor(message: string, cause?: unknown) {
@@ -139,7 +140,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#stagedUnindexableRecords = 0;
 	#invalidEstimateWarned = false;
 	#consecutiveInspectionFailures = 0;
+	// One destructive recovery per uninterrupted inspection outage; a successful inspect rearms it.
+	#inspectionEscalated = false;
+	#inspectionRecoveryAttempted = false;
 	#consecutiveWriterFailures = 0;
+	// A failed deliver() result and its delayed state callback report the same backend fault.
+	#failedDeliveryObserved = false;
 
 	constructor(options: FullTextDerivedIndexBackendOptions) {
 		if (!options.id) throw new TypeError('Full-text derived index id is required');
@@ -187,11 +193,14 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			} catch (error) {
 				if (++this.#consecutiveInspectionFailures >= MAX_CONSECUTIVE_INSPECTION_FAILURES) {
 					this.#consecutiveInspectionFailures = 0;
+					this.#inspectionEscalated = true;
 					throw new FullTextDerivedIndexError('Full-text derived index state repeatedly could not be inspected', error);
 				}
 				throw new DerivedIndexBackendRetryError('Full-text derived index state could not be inspected', error);
 			}
 			this.#consecutiveInspectionFailures = 0;
+			this.#inspectionEscalated = false;
+			this.#inspectionRecoveryAttempted = false;
 			this.#inspectedEpoch = ownerEpoch;
 			if (inspection.state === 'checkpointed') {
 				try {
@@ -217,7 +226,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	deliver(batch: DerivedIndexBatch): DerivedIndexDeliveryResult {
-		if (this.#failed || !this.#host?.isOwnerEpoch(batch.ownerEpoch)) return DERIVED_INDEX_FAILED;
+		if (this.#failed) {
+			if (this.#host?.isOwnerEpoch(batch.ownerEpoch)) this.#failedDeliveryObserved = true;
+			return DERIVED_INDEX_FAILED;
+		}
+		if (!this.#host?.isOwnerEpoch(batch.ownerEpoch)) return DERIVED_INDEX_FAILED;
 		if (this.#settlingWriter || this.#lossPendingEpoch === batch.ownerEpoch) return DERIVED_INDEX_DEFERRED;
 		if (this.#shutdown) {
 			if (this.#shutdown.epoch === batch.ownerEpoch || this.#activeEpoch !== undefined) return DERIVED_INDEX_FAILED;
@@ -292,6 +305,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		)
 			throw new FullTextDerivedIndexError('Full-text derived index backend is not quiescent at reset');
 		this.#assertSharedEpoch(ownerEpoch);
+		if (this.#inspectionEscalated && this.#inspectionRecoveryAttempted)
+			throw new FullTextDerivedIndexError('Full-text derived index state remained uninspectable after rebuild');
+		const inspectionRecovery = this.#inspectionEscalated;
 		this.#shutdown = undefined;
 		this.#failed = false;
 		await this.#lifecycle.reset();
@@ -300,6 +316,10 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertSharedEpoch(ownerEpoch);
 		this.#activeEpoch = ownerEpoch;
 		this.#resetQueueState();
+		if (inspectionRecovery) {
+			this.#inspectionEscalated = false;
+			this.#inspectionRecoveryAttempted = true;
+		}
 	}
 
 	onStateChange(wake: (change?: DerivedIndexBackendStateChange) => void): () => void {
@@ -594,12 +614,15 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#capacityDeferred = false;
 		this.#lossPendingEpoch = undefined;
 		this.#invalidEstimateWarned = false;
+		this.#consecutiveInspectionFailures = 0;
 		this.#consecutiveWriterFailures = 0;
+		this.#failedDeliveryObserved = false;
 	}
 
 	#markFailed(error: unknown): boolean {
 		if (this.#failed) return false;
 		this.#failed = true;
+		this.#failedDeliveryObserved = false;
 		this.#discardCommands();
 		logError('Full-text derived index backend failed', error);
 		return true;
@@ -631,6 +654,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			return;
 		}
 		setImmediate(() => {
+			if (change === 'failed' && this.#failedDeliveryObserved) return;
 			if (this.#activeEpoch !== activeEpoch || this.#wake !== wake) {
 				if (change === 'accepted-work-lost' && this.#lossPendingEpoch === activeEpoch)
 					this.#lossPendingEpoch = undefined;

@@ -4,6 +4,7 @@ const { waitFor } = require('../waitFor');
 const {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
+	DerivedIndexBackendError,
 	DerivedIndexRuntime,
 } = require('#src/resources/derivedIndexRuntime');
 
@@ -269,6 +270,20 @@ describe('DerivedIndexRuntime', () => {
 		assert.strictEqual(backend.deliveries.length, 0);
 		assert.strictEqual(store.locks.size, 0);
 		runtime.stop();
+	});
+
+	it('classifies a backend-owned initialization error as a backend failure', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		const backend = new FakeBackend('backend-initialization-failure', cursor(10));
+		backend.getDurableCursor = () => {
+			throw new DerivedIndexBackendError('inspection failed');
+		};
+		const { runtime } = runtimeFor(store, new Map());
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'needs-rebuild');
+		assert.strictEqual(runtime.getReadiness(backend.id).reason, 'backend-failed');
+		await runtime.stop();
 	});
 
 	for (const [name, mutateRange, reason] of [
