@@ -143,6 +143,9 @@ describe('HNSW GraphQL numeric options', () => {
 		const unchanged = await loadTable(exactTableName, '', 'type: "HNSW", optimizeRouting: "0.0"');
 		assert.equal(unchanged.optimizeRouting, '0.0');
 		assert.equal(indexedOptions(exactTableName).optimizeRouting, '0.0');
+		const equivalentUnquoted = await loadTable(exactTableName, '', 'type: "HNSW", optimizeRouting: 0');
+		assert.equal(equivalentUnquoted.optimizeRouting, '0.0');
+		assert.equal(indexedOptions(exactTableName).optimizeRouting, '0.0');
 	});
 
 	it('rejects options that are not finite numeric values', async () => {
@@ -202,6 +205,11 @@ describe('HNSW GraphQL numeric options', () => {
 		await closeDerivedRuntime(tables[stringTable]);
 		await loadTable(stringTable, '(audit: true)', 'type: "HNSW", nativePlane: "false"');
 		descriptor = tables[stringTable].dbisDB.getSync(`${stringTable}/embedding`);
+		assert.equal(customIndex(stringTable).postCommit, true);
+		assert.equal(descriptor.indexed.nativePlane, 'false');
+		await closeDerivedRuntime(tables[stringTable]);
+		await loadTable(stringTable, '(audit: true)', 'type: "HNSW", nativePlane: false');
+		descriptor = tables[stringTable].dbisDB.getSync(`${stringTable}/embedding`);
 		assert.equal(customIndex(stringTable).postCommit, undefined);
 		assert.equal(descriptor.indexed.nativePlane, false);
 	});
@@ -249,6 +257,33 @@ describe('HNSW GraphQL numeric options', () => {
 
 		resetDatabases();
 		assert.equal(tables[tableName].audit, true);
+	});
+
+	it('refreshes durable audit on a peer declaration without an HNSW index', () => {
+		const tableName = 'HnswPeerAuditRefresh';
+		let Table = table({
+			table: tableName,
+			audit: false,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'label', type: 'String' },
+			],
+		});
+		createdTables.push(tableName);
+		const primary = Table.dbisDB.getSync(`${tableName}/`);
+		primary.audit = true;
+		Table.dbisDB.putSync(`${tableName}/`, primary);
+		assert.equal(Table.audit, false);
+
+		Table = table({
+			table: tableName,
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'label', type: 'String' },
+			],
+		});
+		assert.equal(Table.audit, true);
 	});
 
 	it('refreshes durable audit before opening native mode on a stale class', function () {
@@ -314,18 +349,26 @@ describe('HNSW GraphQL numeric options', () => {
 	});
 
 	it('validates native-only capacity only after base native eligibility', async () => {
-		const tableName = 'HnswIneligibleNativeCapacity';
-		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !getPlaneBinding()) {
-			const index = await loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlaneMaxNodes: 0');
-			assert.equal(index.postCommit, undefined);
-			assert.equal(Object.hasOwn(indexedOptions(tableName), 'nativePlane'), false);
-			return;
+		const previous = process.env.HNSW_NO_NATIVE_DEFAULT;
+		delete process.env.HNSW_NO_NATIVE_DEFAULT;
+		try {
+			const tableName = 'HnswIneligibleNativeCapacity';
+			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !getPlaneBinding()) {
+				const index = await loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlaneMaxNodes: 0');
+				assert.equal(index.postCommit, undefined);
+				assert.equal(Object.hasOwn(indexedOptions(tableName), 'nativePlane'), false);
+				return;
+			}
+			await assert.rejects(
+				loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlaneMaxNodes: 0'),
+				(error) =>
+					error instanceof ClientError &&
+					error.message === 'nativePlaneMaxNodes must be a positive integer below 2^32-1'
+			);
+		} finally {
+			if (previous === undefined) delete process.env.HNSW_NO_NATIVE_DEFAULT;
+			else process.env.HNSW_NO_NATIVE_DEFAULT = previous;
 		}
-		await assert.rejects(
-			loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlaneMaxNodes: 0'),
-			(error) =>
-				error instanceof ClientError && error.message === 'nativePlaneMaxNodes must be a positive integer below 2^32-1'
-		);
 	});
 
 	it('falls back to the JS index for an ineligible replicated native declaration', () => {
@@ -419,7 +462,7 @@ describe('HNSW GraphQL numeric options', () => {
 			assert.equal(index.postCommit, true);
 			assert.equal(indexedOptions(tableName).nativePlane, true);
 
-			await closeDerivedRuntime(tables[tableName]);
+			for (const createdTableName of createdTables) await closeDerivedRuntime(tables[createdTableName]);
 			resetDatabases();
 			assert.equal(customIndex(tableName).postCommit, true);
 			assert.equal(indexedOptions(tableName).nativePlane, true);
@@ -483,6 +526,63 @@ describe('HNSW GraphQL numeric options', () => {
 			);
 			assert.equal(tables[tableName].dbisDB.getSync(`${tableName}/`).audit, true);
 			assert.equal(tables[tableName].dbisDB.getSync(`${tableName}/embedding`).indexed, undefined);
+		});
+
+		it('persists a native opt-out before disabling audit', function () {
+			if (!getPlaneBinding()) this.skip();
+			const tableName = 'HnswAuditDisableOrdering';
+			let Table = table({
+				table: tableName,
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+				],
+			});
+			createdTables.push(tableName);
+			const catalogPrototype = Object.getPrototypeOf(Table.dbisDB);
+			const writes = [];
+			const patched = [];
+			for (const method of ['put', 'putSync']) {
+				const original = catalogPrototype[method];
+				if (typeof original !== 'function') continue;
+				catalogPrototype[method] = function (key, ...rest) {
+					if (key === `${tableName}/` || key === `${tableName}/embedding`) writes.push(key);
+					return original.call(this, key, ...rest);
+				};
+				patched.push([method, original]);
+			}
+			try {
+				Table = table({
+					table: tableName,
+					audit: false,
+					attributes: [
+						{ name: 'id', isPrimaryKey: true },
+						{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: false }, type: 'Array' },
+					],
+				});
+			} finally {
+				for (const [method, original] of patched) catalogPrototype[method] = original;
+			}
+			assert(
+				writes.lastIndexOf(`${tableName}/embedding`) < writes.lastIndexOf(`${tableName}/`),
+				`the index opt-out must be durable before audit is disabled: ${writes}`
+			);
+			assert.equal(Table.dbisDB.getSync(`${tableName}/embedding`).indexed.nativePlane, false);
+			assert.equal(Table.dbisDB.getSync(`${tableName}/`).audit, false);
+			assert.throws(
+				() =>
+					table({
+						table: tableName,
+						attributes: [
+							{ name: 'id', isPrimaryKey: true },
+							{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+						],
+					}),
+				(error) => error instanceof ClientError && error.message.includes('must enable audit logging')
+			);
+			assert.equal(Table.dbisDB.getSync(`${tableName}/embedding`).indexed.nativePlane, false);
+			assert.equal(Table.dbisDB.getSync(`${tableName}/`).audit, false);
 		});
 
 		it('leaves incompatible and kill-switched new indexes in JS mode', async function () {

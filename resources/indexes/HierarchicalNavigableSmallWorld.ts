@@ -282,6 +282,16 @@ export class HierarchicalNavigableSmallWorld {
 			if (options[name] === undefined) continue;
 			if (persistedOptions && Object.hasOwn(persistedOptions, name) && Object.is(options[name], persistedOptions[name]))
 				continue;
+			if (name === 'optimizeRouting' && typeof persistedOptions?.[name] === 'string') {
+				try {
+					const declared = numericOption(name, normalizeOptimizeRoutingDeclaration(options[name]));
+					const persisted = numericOption(name, normalizeOptimizeRoutingDeclaration(persistedOptions[name]));
+					if (Object.is(declared, persisted)) {
+						options[name] = persistedOptions[name];
+						continue;
+					}
+				} catch {}
+			}
 			if (options[name] === null) {
 				delete options[name];
 				continue;

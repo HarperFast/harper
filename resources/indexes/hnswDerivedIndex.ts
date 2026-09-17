@@ -233,28 +233,37 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	}
 }
 
-type Registered = { runtime: DerivedIndexRuntime; tables: Map<number, { Table: any }> };
+// Multiple logical database names can resolve to one physical RocksDB database. They share the
+// audit store and plane file, so one runner must serve every class instead of applying each log
+// entry repeatedly; ownership keeps that runner alive until the last class releases it.
+type RegisteredTable = { current: { Table: any }; owners: Set<{ Table: any }> };
+type RegisteredBackend = { references: Set<object>; release: () => Promise<void> };
+type Registered = {
+	runtime: DerivedIndexRuntime;
+	tables: Map<number, RegisteredTable>;
+	backends: Map<string, RegisteredBackend>;
+};
 const runtimes = new WeakMap<object, Registered>();
 
 function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
 	let registered = runtimes.get(auditStore);
 	if (registered) return registered;
-	const tables = new Map<number, { Table: any }>();
+	const tables = new Map<number, RegisteredTable>();
 	const runtime = new DerivedIndexRuntime(
 		auditStore,
 		(tableId, recordId) => {
-			const entry = tables.get(tableId)?.Table.primaryStore.getEntry(recordId);
+			const entry = tables.get(tableId)?.current.Table.primaryStore.getEntry(recordId);
 			return entry?.value == null ? undefined : { version: entry.version, value: entry.value };
 		},
 		{
 			scanRecords: (tableId) =>
 				tables
 					.get(tableId)!
-					.Table.primaryStore.getRange({ versions: true, snapshot: false })
+					.current.Table.primaryStore.getRange({ versions: true, snapshot: false })
 					.map(({ key, value, version }) => ({ recordId: key, version, value })),
 		}
 	);
-	registered = { runtime, tables };
+	registered = { runtime, tables, backends: new Map() };
 	runtimes.set(auditStore, registered);
 	return registered;
 }
@@ -278,10 +287,15 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 	}
 	const auditStore = Table.auditStore as RocksTransactionLogStore;
 	const registered = runtimeFor(auditStore);
-	// A redefinition registers the same class again before the previous registration's release has
-	// settled, so the release must only remove what it installed, not whatever is current.
 	const installed = { Table };
-	registered.tables.set(Table.tableId, installed);
+	let registeredTable = registered.tables.get(Table.tableId);
+	if (registeredTable) {
+		registeredTable.owners.add(installed);
+		registeredTable.current = installed;
+	} else {
+		registeredTable = { current: installed, owners: new Set([installed]) };
+		registered.tables.set(Table.tableId, registeredTable);
+	}
 	const releases: Array<() => Promise<void>> = [];
 	for (const attribute of attributes) {
 		const indexStore = Table.indices[attribute.name];
@@ -300,28 +314,48 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 			readiness: () => registered.runtime.getReadiness(id),
 			requestRebuild: () => registered.runtime.requestRebuild(id),
 		});
-		releases.push(
-			registered.runtime.register({
-				backend: new HnswDerivedIndexBackend(id, index),
-				projections: new Map([
-					[
-						Table.tableId,
-						(record: any) => {
-							const vector = resolver ? resolver(record) : record[attribute.name];
-							if (vector == null) return undefined;
-							index.assertDerivedValue(vector, label);
-							return vector;
-						},
-					],
-				]),
-				options: { maxLagMilliseconds: attribute.indexed?.maxLagMilliseconds ?? DEFAULT_MAX_LAG_MILLISECONDS },
-			})
-		);
+		let registeredBackend = registered.backends.get(id);
+		const reference = {};
+		if (!registeredBackend) {
+			registeredBackend = {
+				references: new Set(),
+				release: registered.runtime.register({
+					backend: new HnswDerivedIndexBackend(id, index),
+					projections: new Map([
+						[
+							Table.tableId,
+							(record: any) => {
+								const vector = resolver ? resolver(record) : record[attribute.name];
+								if (vector == null) return undefined;
+								index.assertDerivedValue(vector, label);
+								return vector;
+							},
+						],
+					]),
+					options: { maxLagMilliseconds: attribute.indexed?.maxLagMilliseconds ?? DEFAULT_MAX_LAG_MILLISECONDS },
+				}),
+			};
+			registered.backends.set(id, registeredBackend);
+		}
+		registeredBackend.references.add(reference);
+		releases.push(async () => {
+			if (!registeredBackend.references.delete(reference)) return;
+			if (registeredBackend.references.size > 0) return;
+			if (registered.backends.get(id) === registeredBackend) registered.backends.delete(id);
+			await registeredBackend.release();
+		});
 	}
 	return {
 		async close() {
 			await Promise.all(releases.map((release) => release()));
-			if (registered.tables.get(Table.tableId) === installed) registered.tables.delete(Table.tableId);
+			const tableRegistration = registered.tables.get(Table.tableId);
+			if (!tableRegistration) return;
+			tableRegistration.owners.delete(installed);
+			if (tableRegistration.owners.size === 0) {
+				registered.tables.delete(Table.tableId);
+			} else if (tableRegistration.current === installed) {
+				tableRegistration.current = tableRegistration.owners.values().next().value;
+			}
 		},
 	};
 }

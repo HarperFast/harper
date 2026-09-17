@@ -44,6 +44,10 @@ describe('HNSW index format migration', () => {
 
 	// Reload the table WITH the index (resetDatabases first so table() re-opens from disk). A rebuild
 	// is detected by table() installing a new indexingOperation promise.
+	// `nativePlane: false` pins the JS graph: indexFormat describes the custom-index object store,
+	// which the native plane does not use (its graph lives in the mmap file), and a native index
+	// rejects the per-query euclidean distance the search assertions below rely on. Without the pin
+	// these declarations would take the native default on an audited RocksDB table.
 	function reload(TABLE, indexedOption) {
 		resetDatabases();
 		return table({
@@ -51,7 +55,7 @@ describe('HNSW index format migration', () => {
 			database: DB,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
-				{ name: 'vector', indexed: indexedOption, type: 'Array' },
+				{ name: 'vector', indexed: { nativePlane: false, ...indexedOption }, type: 'Array' },
 			],
 		});
 	}
