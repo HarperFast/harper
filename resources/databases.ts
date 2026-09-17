@@ -2655,9 +2655,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			const fullTextValidationAttributes =
 				origin === 'cluster' && hasFullText
 					? attributes.map((attribute) => {
-							const descriptor = Table.dbisDB.getSync(
-								attribute.isPrimaryKey ? `${tableName}/` : `${tableName}/${attribute.name}`
-							);
+							const descriptor = attribute.isPrimaryKey
+								? (Table.dbisDB.getSync(`${tableName}/${attribute.name}`) ?? Table.dbisDB.getSync(`${tableName}/`))
+								: Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
 							if (!descriptor) return attribute;
 							const durableAttribute = { ...attribute };
 							applyDurableDeclaration(durableAttribute, descriptor);

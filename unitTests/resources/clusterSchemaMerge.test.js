@@ -417,6 +417,38 @@ describe('cluster-origin schema definitions are additive-only', () => {
 			false
 		);
 		assert.strictEqual(Local.dbisDB.getSync('ClusterMergePrimarySource/search'), undefined);
+
+		const legacyDescriptor = { ...Local.dbisDB.getSync('ClusterMergePrimarySource/'), name: 'id', type: 'Int' };
+		const removed = Local.dbisDB.remove('ClusterMergePrimarySource/');
+		if (removed?.then) await removed;
+		const legacyWritten = Local.dbisDB.put('ClusterMergePrimarySource/id', legacyDescriptor);
+		if (legacyWritten?.then) await legacyWritten;
+		table({
+			table: 'ClusterMergePrimarySource',
+			database: 'test',
+			schemaDefined: true,
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', type: 'String', isPrimaryKey: true },
+				{
+					name: 'legacySearch',
+					type: 'FullText',
+					fullText: {
+						fields: [{ name: 'id', weight: 1 }],
+						analyzer: 'english@1',
+						stopWords: true,
+						positions: true,
+						surfaceTerms: true,
+						synonyms: [],
+					},
+				},
+			],
+		});
+		assert.strictEqual(
+			Local.attributes.some(({ name }) => name === 'legacySearch'),
+			false
+		);
+		assert.strictEqual(Local.dbisDB.getSync('ClusterMergePrimarySource/legacySearch'), undefined);
 	});
 
 	it('validates a durable-only restored handle against current source descriptors', async () => {
