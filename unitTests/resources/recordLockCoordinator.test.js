@@ -2774,6 +2774,47 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 		assert.strictEqual(fenced, 1, 'the handle was fenced and the ack resolved');
 	});
 
+	it('holds the ack until an asynchronous fence actually lands', async () => {
+		const { caller } = relaySetup('r3a');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let landFence;
+		let acked = false;
+		caller.registerAdmission(round.admissionId, () => new Promise((resolve) => (landFence = resolve)));
+		const ack = caller.revokeRemoteAdmission(round.admissionId).then(() => (acked = true));
+		await Promise.resolve();
+		assert.strictEqual(acked, false, 'the ack resolved before the async fence landed');
+		landFence();
+		await ack;
+		assert.strictEqual(acked, true, 'the ack resolved once the fence landed');
+	});
+
+	it('fails the ack when the fence does, so the owner waits out the lease instead of releasing', async () => {
+		// The owner writes the delegation release the moment this ack resolves. A revoker that rejects —
+		// a cross-thread relay revoker on a dead sibling port — has NOT fenced the handle, so resolving
+		// would admit a successor over a writer that can still commit.
+		const { caller } = relaySetup('r3b');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		let fired = 0;
+		caller.registerAdmission(round.admissionId, () => {
+			fired++;
+			return Promise.reject(new Error('sibling port gone'));
+		});
+		await assert.rejects(caller.revokeRemoteAdmission(round.admissionId), /sibling port gone/);
+		// The entry is kept rather than dropped: the handle is still committable until its own lease, and
+		// a retried revoke has to be able to fire the revoker again.
+		await assert.rejects(caller.revokeRemoteAdmission(round.admissionId), /sibling port gone/);
+		assert.strictEqual(fired, 2, 'the retried revoke did not reach the handle');
+	});
+
+	it('rejects rather than throwing synchronously when the revoker throws', async () => {
+		const { caller } = relaySetup('r3c');
+		const round = await caller.acquire('k', LEASE, WAIT);
+		caller.registerAdmission(round.admissionId, () => {
+			throw new Error('revoker exploded');
+		});
+		await assert.rejects(caller.revokeRemoteAdmission(round.admissionId), /revoker exploded/);
+	});
+
 	it('resolves the ack only after the handle is fenced when the revoke lands before the handle registers', async () => {
 		const { caller } = relaySetup('r4');
 		const round = await caller.acquire('k', LEASE, WAIT);

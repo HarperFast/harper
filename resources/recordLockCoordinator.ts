@@ -1482,8 +1482,9 @@ export class LockCoordinator {
 	 * fenced — its `revokeLease` has run — so the owner's ack cannot claim a fence the handle has not
 	 * taken; the owner waits on this before writing the release. A revoke that arrives before the handle
 	 * is installed, or before `registerAdmission` supplies the real revoker, resolves only when the fence
-	 * finally lands. A revoker that throws leaves the promise unresolved, so the owner falls back to its
-	 * own lease bound rather than being told the fence succeeded.
+	 * finally lands. A revoker that throws, or whose promise rejects, fails this promise rather than
+	 * resolving it, so the owner falls back to its own lease bound rather than being told the fence
+	 * succeeded.
 	 */
 	revokeRemoteAdmission(ownerAdmissionId: number): Promise<void> {
 		const localId = this.#remoteByOwnerId?.get(ownerAdmissionId);
@@ -1507,21 +1508,41 @@ export class LockCoordinator {
 			// The handle has not registered its revoker yet; resolve when `registerAdmission` fences it.
 			return new Promise<void>((resolve) => remote.fenceWaiters.push(resolve));
 		}
-		// Fence, then drop (the handle can no longer commit), then resolve the ack. Unlike a plain release,
-		// which retains the entry because a staged write is still committable until the lease.
-		// `registerAdmission` accepts an async revoker, so the ack must not resolve until the returned
-		// promise settles: resolving early would tell the owner the handle is fenced while it still is not,
-		// and the owner would write the release and admit a successor over a live writer.
-		const fenced = remote.revoke();
-		if (isPromiseLike(fenced)) {
-			return Promise.resolve(fenced)
-				.catch((error) => warnOnce('a relayed record lock fence failed; the handle lease still bounds it', error))
-				.then(() => {
-					this.#dropRemoteAdmission(localId, remote);
-				});
+		return Promise.resolve(this.#fenceRemoteAdmission(localId, remote));
+	}
+
+	/**
+	 * Fire a remote admission's revoker and report when the handle is PROVABLY fenced. `registerAdmission`
+	 * accepts an async revoker, so an outcome that is promise-like is not a fence until it fulfils: the
+	 * entry is dropped — and any ack waiting on it settled — only then. A rejection is not a fence at all,
+	 * so it propagates and the entry is LEFT for the lease sweep: a retry can fire the revoker again, and
+	 * the owner either sees the failure or waits its own lease bound out rather than writing the release
+	 * and admitting a successor over a live writer. Unlike a plain release, which retains the entry
+	 * because a staged write is still committable until the lease.
+	 */
+	#fenceRemoteAdmission(localId: number, remote: RemoteAdmission): void | Promise<void> {
+		let fenced: void | Promise<void>;
+		try {
+			fenced = remote.revoke();
+		} catch (error) {
+			// A synchronous throw is not a fence either, and it must not escape past the promise this
+			// function's callers hand to the owner: surface it as a rejection instead.
+			warnOnce('a relayed record lock fence failed; the handle lease still bounds it', error);
+			return Promise.reject(error);
 		}
-		this.#dropRemoteAdmission(localId, remote);
-		return Promise.resolve();
+		if (!isPromiseLike(fenced)) {
+			this.#dropRemoteAdmission(localId, remote);
+			return;
+		}
+		return fenced.then(
+			() => {
+				this.#dropRemoteAdmission(localId, remote);
+			},
+			(error) => {
+				warnOnce('a relayed record lock fence failed; the handle lease still bounds it', error);
+				throw error;
+			}
+		);
 	}
 
 	/**
@@ -2215,18 +2236,12 @@ export class LockCoordinator {
 				// A revoke latched before this registration: fence now, then drop the entry and release the
 				// ack that was waiting on the fence. `#dropRemoteAdmission` is what resolves that ack, so an
 				// async revoker must settle FIRST — resolving it early would tell the owner this handle is
-				// fenced while it still is not, and the owner would write the release over a live writer.
-				let fenced: void | Promise<void>;
-				try {
-					fenced = revoke();
-				} catch (error) {
-					warnOnce('a record lock handle revoker threw while fencing a latched revoke', error);
-				}
-				if (isPromiseLike(fenced))
-					fenced
-						.catch((error) => warnOnce('a relayed record lock fence failed; the handle lease still bounds it', error))
-						.then(() => this.#dropRemoteAdmission(admissionId, remote));
-				else this.#dropRemoteAdmission(admissionId, remote);
+				// fenced while it still is not, and the owner would write the release over a live writer. A fence
+				// that FAILS settles nothing: the entry is left for the lease sweep, which resolves the ack once
+				// the handle is provably dead. The failure is warned about inside and has nobody here to go to,
+				// so it is absorbed rather than left to Node's unhandled-rejection policy.
+				const fenced = this.#fenceRemoteAdmission(admissionId, remote);
+				if (isPromiseLike(fenced)) fenced.catch(() => {});
 			}
 			return;
 		}
