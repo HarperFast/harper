@@ -90,7 +90,7 @@ function waitForMqttSessionEvent(eventName, clientId, matches = () => true, time
 		}
 		function onAbort() {
 			cleanup();
-			reject(signal.reason);
+			reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'));
 		}
 		function onEvent(session, ...args) {
 			if (session?.sessionId !== clientId) return;
