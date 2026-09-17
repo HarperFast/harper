@@ -988,6 +988,62 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
+	describe('Test path setter keeps closeLogFile bound to the current file', () => {
+		const PATH_SETTER_TEST_DIR = path.join(__dirname, 'pathSetterCloseLogFileTest');
+		const fsSpies = sinon.createSandbox();
+
+		before(() => {
+			fs.mkdirpSync(PATH_SETTER_TEST_DIR);
+		});
+
+		afterEach(() => {
+			fsSpies.restore();
+		});
+
+		after(() => {
+			fs.removeSync(PATH_SETTER_TEST_DIR);
+		});
+
+		it('closes the fd of the path the logger currently points at, not the one it was created with', async () => {
+			const firstPath = path.join(PATH_SETTER_TEST_DIR, 'first.log');
+			const secondPath = path.join(PATH_SETTER_TEST_DIR, 'second.log');
+			const logger = createLogger({ path: firstPath, level: 'info' });
+
+			const openSyncSpy = fsSpies.spy(fs, 'openSync');
+			const closeSyncSpy = fsSpies.spy(fs, 'closeSync');
+
+			logger.info('into first');
+			await waitFor(() => fs.existsSync(firstPath) && fs.readFileSync(firstPath, 'utf8').includes('into first'));
+
+			logger.path = secondPath;
+			logger.info('into second');
+			await waitFor(() => fs.existsSync(secondPath) && fs.readFileSync(secondPath, 'utf8').includes('into second'));
+
+			// Map every fd opened for either path back to its path so the closeSync call below can be
+			// attributed to a path rather than a bare number.
+			const fdToPath = new Map();
+			for (const call of openSyncSpy.getCalls()) {
+				if (call.args[0] === firstPath || call.args[0] === secondPath) fdToPath.set(call.returnValue, call.args[0]);
+			}
+
+			logger.closeLogFile();
+
+			expect(closeSyncSpy.calledOnce, 'closeLogFile() should close exactly one fd').to.be.true;
+			const closedPath = fdToPath.get(closeSyncSpy.firstCall.args[0]);
+			expect(closedPath, 'the closed fd should belong to the path the logger currently points at').to.equal(secondPath);
+
+			fsSpies.restore();
+
+			// A write after close must still land in the current (second) file, never the one the
+			// logger was created with.
+			logger.info('after close');
+			await waitFor(() => fs.readFileSync(secondPath, 'utf8').includes('after close'));
+			expect(fs.readFileSync(firstPath, 'utf8')).to.not.include('after close');
+
+			logger.closeLogFile();
+		});
+	});
+
 	describe('Test external/component logger rotation inheritance (#1877)', () => {
 		const ROTATION_TEST_DIR = path.join(__dirname, 'rotationInheritanceTest');
 		let loggersToCleanup, rotationCaseDir;
