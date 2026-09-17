@@ -77,7 +77,7 @@ test(
 			await waitFor(async () => (await request('/PlaneStatus/')).body.readiness.state === 'ready', 30_000);
 			await waitFor(async () => (await query(0)).status === 200, 30_000);
 			const coverageBeforeWrites = JSON.stringify((await request('/PlaneStatus/')).body.cursor?.coverage ?? null);
-			const midCatchUpCoverage: string[] = [];
+			const midCatchUpCoverage: Array<[number, string]> = [];
 			let samplerFailures = 0;
 			sampling = true;
 			sampler = (async () => {
@@ -85,11 +85,9 @@ test(
 				while (sampling && failures < 5) {
 					try {
 						const status = (await request('/PlaneStatus/')).body;
-						// Between the first staged mapping and the last published one: before that the
-						// sample is still `coverageBeforeWrites`, after it there is no catch-up left.
 						if (status.mappings + status.pending > 0 && status.mappings < records.length)
-							midCatchUpCoverage.push(JSON.stringify(status.cursor?.coverage ?? null));
-						failures = 0;
+							midCatchUpCoverage.push([Date.now(), JSON.stringify(status.cursor?.coverage ?? null)]);
+						failures = samplerFailures = 0;
 					} catch {
 						samplerFailures = ++failures;
 					}
@@ -150,13 +148,15 @@ test(
 				sampling = false;
 				await sampler;
 			}
-			// A sampler that lost requests or never caught the window says nothing about the index.
-			if (samplerFailures === 0 && midCatchUpCoverage.length > 0)
+			// Several barrier cadences (`maxFlushAgeMilliseconds` is 1000) have to fall inside the window
+			// the sampler actually watched before "coverage never advanced" means anything.
+			const observed = midCatchUpCoverage.length ? midCatchUpCoverage.at(-1)![0] - midCatchUpCoverage[0][0] : 0;
+			if (samplerFailures === 0 && observed >= 4_000)
 				assert(
 					midCatchUpCoverage.some(
-						(coverage) => coverage !== coverageBeforeWrites && JSON.parse(coverage)?.local != null
+						([, coverage]) => coverage !== coverageBeforeWrites && JSON.parse(coverage)?.local != null
 					),
-					`catch-up never advanced durable coverage before it finished (was ${coverageBeforeWrites}): ${JSON.stringify(midCatchUpCoverage.slice(0, 4))}`
+					`catch-up never advanced durable coverage over ${observed} ms (was ${coverageBeforeWrites}): ${JSON.stringify(midCatchUpCoverage.slice(0, 4))}`
 				);
 			const final = await query(0);
 			assert.equal(final.status, 200, JSON.stringify(final));
