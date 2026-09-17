@@ -416,6 +416,60 @@ export class DerivedIndexRuntime {
 	}
 }
 
+export type DerivedIndexRegistrationRelease = () => Promise<void>;
+
+/**
+ * Group registrations behind one table lifecycle handle without making a partial close visible.
+ * If one release fails, registrations that already quiesced are installed again before close rejects.
+ */
+export function createDerivedIndexRegistrationHandle(
+	registrations: ReadonlyArray<() => DerivedIndexRegistrationRelease>,
+	onClosed: () => void
+): { close(): Promise<void> } {
+	let releases = registrations.map((register) => register());
+	let closing: Promise<void> | undefined;
+	let closed = false;
+
+	const close = async () => {
+		const results = await Promise.allSettled(releases.map((release) => Promise.resolve().then(release)));
+		const failures = results
+			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+			.map((result) => result.reason);
+		if (failures.length) {
+			for (let i = 0; i < results.length; i++) {
+				if (results[i].status !== 'fulfilled') continue;
+				try {
+					releases[i] = registrations[i]();
+				} catch (error) {
+					failures.push(error);
+				}
+			}
+			if (failures.length === 1) throw failures[0];
+			throw new AggregateError(failures, 'derived index registrations failed to shut down or reactivate');
+		}
+		closed = true;
+		onClosed();
+	};
+
+	return {
+		close() {
+			if (closed) return Promise.resolve();
+			if (closing) return closing;
+			const attempt = close();
+			closing = attempt;
+			attempt.then(
+				() => {
+					if (closing === attempt) closing = undefined;
+				},
+				() => {
+					if (closing === attempt) closing = undefined;
+				}
+			);
+			return attempt;
+		},
+	};
+}
+
 function resolveRunnerOptions(
 	options: DerivedIndexRunnerOptions | undefined,
 	defaults?: Required<DerivedIndexRunnerOptions>

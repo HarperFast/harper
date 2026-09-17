@@ -2030,7 +2030,9 @@ export async function dropDatabase(databaseName) {
 			else derivedIndexTables.set(runtime, [table]);
 		}
 		const derivedIndexEntries = [...derivedIndexTables].map(([runtime, runtimeTables]) => ({ runtime, runtimeTables }));
-		const derivedIndexClosures = derivedIndexEntries.map(({ runtime }) => runtime.close());
+		const derivedIndexClosures = derivedIndexEntries.map(({ runtime }) =>
+			Promise.resolve().then(() => runtime.close())
+		);
 		const derivedIndexResults = await Promise.allSettled(derivedIndexClosures);
 		const derivedIndexFailures = derivedIndexResults
 			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')

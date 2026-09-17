@@ -6,6 +6,7 @@ import {
 	DERIVED_INDEX_ACCEPTED,
 	DERIVED_INDEX_DEFERRED,
 	DerivedIndexRuntime,
+	createDerivedIndexRegistrationHandle,
 	readDerivedIndexReadiness,
 	type DerivedIndexBackend,
 	type DerivedIndexBackendHost,
@@ -282,7 +283,7 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 	// settled, so the release must only remove what it installed, not whatever is current.
 	const installed = { Table };
 	registered.tables.set(Table.tableId, installed);
-	const releases: Array<() => Promise<void>> = [];
+	const registrations: Array<() => () => Promise<void>> = [];
 	for (const attribute of attributes) {
 		const indexStore = Table.indices[attribute.name];
 		const index = indexStore.customIndex as DerivedNativeIndex & { postCommit: true };
@@ -296,12 +297,12 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 		}
 		const resolver = Table.propertyResolvers?.[attribute.name];
 		const label = `Vector for attribute "${attribute.name}"`;
-		index.attachDerivedHost({
-			readiness: () => registered.runtime.getReadiness(id),
-			requestRebuild: () => registered.runtime.requestRebuild(id),
-		});
-		releases.push(
-			registered.runtime.register({
+		registrations.push(() => {
+			index.attachDerivedHost({
+				readiness: () => registered.runtime.getReadiness(id),
+				requestRebuild: () => registered.runtime.requestRebuild(id),
+			});
+			return registered.runtime.register({
 				backend: new HnswDerivedIndexBackend(id, index),
 				projections: new Map([
 					[
@@ -315,15 +316,12 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 					],
 				]),
 				options: { maxLagMilliseconds: attribute.indexed?.maxLagMilliseconds ?? DEFAULT_MAX_LAG_MILLISECONDS },
-			})
-		);
+			});
+		});
 	}
-	return {
-		async close() {
-			await Promise.all(releases.map((release) => release()));
-			if (registered.tables.get(Table.tableId) === installed) registered.tables.delete(Table.tableId);
-		},
-	};
+	return createDerivedIndexRegistrationHandle(registrations, () => {
+		if (registered.tables.get(Table.tableId) === installed) registered.tables.delete(Table.tableId);
+	});
 }
 
 /** Shared readiness of an index on any worker, registered or not. */

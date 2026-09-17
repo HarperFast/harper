@@ -14,6 +14,7 @@ const {
 	DERIVED_INDEX_DEFERRED,
 	DerivedIndexRuntime,
 	READINESS_BYTES,
+	createDerivedIndexRegistrationHandle,
 	readDerivedIndexReadiness,
 } = require('#src/resources/derivedIndexRuntime');
 const {
@@ -328,6 +329,34 @@ describe('DerivedIndexRuntime for native backends', () => {
 	after(() => process.off('unhandledRejection', onRejection));
 	afterEach(() => {
 		assert.deepStrictEqual(rejections, [], 'runtime work must settle without unhandled rejections');
+	});
+
+	it('reactivates successful sibling registrations when one release fails', async () => {
+		const active = [0, 0];
+		let failSecond = true;
+		let closed = 0;
+		const registrations = [0, 1].map((index) => () => {
+			active[index]++;
+			let released = false;
+			return async () => {
+				if (released) return;
+				if (index === 1 && failSecond) throw new Error('second registration did not stop');
+				released = true;
+				active[index]--;
+			};
+		});
+		const handle = createDerivedIndexRegistrationHandle(registrations, () => closed++);
+
+		await assert.rejects(handle.close(), /second registration did not stop/);
+		assert.deepStrictEqual(active, [1, 1]);
+		assert.strictEqual(closed, 0);
+
+		failSecond = false;
+		await handle.close();
+		assert.deepStrictEqual(active, [0, 0]);
+		assert.strictEqual(closed, 1);
+		await handle.close();
+		assert.strictEqual(closed, 1);
 	});
 
 	it('coalesces repeated keys into one last-write-wins record beside the unchanged transactions', async () => {
