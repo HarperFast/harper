@@ -9,6 +9,7 @@ const { DatabaseTransaction } = require('#src/resources/DatabaseTransaction');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { DERIVED_INDEX_CURSOR_KEY, derivedIndexReadiness } = require('#src/resources/indexes/hnswDerivedIndex');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { pack } = require('msgpackr');
 
 /** Shared readiness the owning worker publishes for a table's vector index, readable on any worker. */
 function indexReady(Table) {
@@ -52,6 +53,10 @@ describe('HNSW native plane file-primary delivery', function () {
 	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') return;
 	if (!getPlaneBinding()) {
 		it.skip('skipped: @harperfast/hnsw native module is unavailable', () => {});
+		return;
+	}
+	if (!('keyCap' in getPlaneBinding().prototype)) {
+		it.skip('skipped: the installed @harperfast/hnsw predates 0.3.0 (no key support)', () => {});
 		return;
 	}
 	this.timeout(30_000);
@@ -143,7 +148,7 @@ describe('HNSW native plane file-primary delivery', function () {
 		await waitFor(
 			() => {
 				let mappings = 0;
-				for (const { key } of PlaneTest.indices.vector.getRange()) if (typeof key === 'number') mappings++;
+				for (const { value } of PlaneTest.indices.vector.getRange()) if (typeof value?.id === 'number') mappings++;
 				return mappings >= N;
 			},
 			{ timeout: 15_000, message: 'post-commit native delivery did not drain' }
@@ -155,12 +160,12 @@ describe('HNSW native plane file-primary delivery', function () {
 		assert.ok(fs.existsSync(customIndex().planeFilePath()));
 		let mappings = 0;
 		for (const { key, value } of PlaneTest.indices.vector.getRange()) {
-			if (typeof key !== 'number') continue;
+			assert.notEqual(typeof key, 'number', 'node ids map back to primary keys inside the plane, not in the CF');
+			if (!value || typeof value.id !== 'number') continue;
 			mappings++;
 			assert.equal(value.level, undefined, 'the CF must not retain HNSW graph nodes');
 			assert.equal(value.vector, undefined, 'the CF must not retain graph vectors');
 			assert.equal(value.pending, undefined, 'published mappings must follow the native durability barrier');
-			assert.notEqual(value.primaryKey, undefined, 'numeric entries are native-id to primary-key mappings');
 		}
 		assert.ok(mappings >= N);
 	});
@@ -193,17 +198,63 @@ describe('HNSW native plane file-primary delivery', function () {
 		assert.equal(plane.idHighWater(), highWater, 'an aborted write must allocate no native node');
 	});
 
-	it('keeps repeated same-key replay mappings pending until the native flush', async () => {
+	it('keeps naming the last published node across chained applies until the flush', async () => {
+		const id = 50_002;
+		const index = customIndex();
+		const mapping = () => PlaneTest.indices.vector.getSync([Symbol.for('key'), id]);
+		index.applyDerivedValue(id, makeVector(id), 1);
+		await index.flushDerived();
+		const published = mapping().id;
+		index.applyDerivedValue(id, makeVector(id + 1), 2);
+		index.applyDerivedValue(id, makeVector(id + 2), 3);
+		assert.equal(mapping().previousId, published, 'the second pending replacement still names the published node');
+		index.applyDerivedValue(id, undefined, 4);
+		assert.equal(mapping().previousId, published, 'a pending clear still names the published node');
+		assert.equal(mapping().cleared, true);
+		index.applyDerivedValue(id, makeVector(id + 3), 5);
+		assert.ok((await nativeSearch(makeVector(id + 3))).some((entry) => entry.key === id));
+		index.applyDerivedValue(id, undefined, 6);
+		await index.flushDerived();
+		assert.equal(mapping(), undefined);
+		assert.ok(!(await nativeSearch(makeVector(id))).some((entry) => entry.key === id));
+	});
+
+	it('replays a pending clear from the store after a restart', async () => {
+		const id = 50_003;
+		const vector = makeVector(id);
+		const index = customIndex();
+		const mapping = () => PlaneTest.indices.vector.getSync([Symbol.for('key'), id]);
+		index.applyDerivedValue(id, vector, 1);
+		await index.flushDerived();
+		index.applyDerivedValue(id, undefined, 2);
+		assert.equal(mapping().cleared, true);
+		index.pendingDerivedMappings.clear();
+		index.applyDerivedValue(id, undefined, 2);
+		assert.ok(!(await nativeSearch(vector)).some((entry) => entry.key === id));
+		index.applyDerivedValue(id, vector, 3);
+		assert.equal((await nativeSearch(vector)).filter((entry) => entry.key === id).length, 1);
+		index.applyDerivedValue(id, undefined, 4);
+		await index.flushDerived();
+		assert.equal(mapping(), undefined);
+	});
+
+	it('searches a replayed node at once and publishes its mapping only at the native flush', async () => {
 		const id = 50_001;
 		const vector = makeVector(id);
 		const index = customIndex();
+		const mapping = () => PlaneTest.indices.vector.getSync([Symbol.for('key'), id]);
 		index.applyDerivedValue(id, vector, 1);
 		index.applyDerivedValue(id, vector, 2);
-		assert.ok(!(await nativeSearch(vector)).some((entry) => entry.key === id));
+		const hits = (await nativeSearch(vector)).filter((entry) => entry.key === id);
+		assert.equal(hits.length, 1, 'the node is searchable before the flush, once');
+		assert.equal(mapping().pending, true, 'the mapping is pending until the flush');
 		await index.flushDerived();
+		assert.equal(mapping().pending, undefined, 'the flush publishes the mapping');
 		assert.ok((await nativeSearch(vector)).some((entry) => entry.key === id));
 		index.applyDerivedValue(id, undefined, 3);
+		assert.ok(!(await nativeSearch(vector)).some((entry) => entry.key === id), 'a removal is visible at once');
 		await index.flushDerived();
+		assert.equal(mapping(), undefined);
 	});
 
 	it('ignores unrelated field changes and applies committed update/delete', async () => {
@@ -225,8 +276,6 @@ describe('HNSW native plane file-primary delivery', function () {
 		});
 	});
 
-	// ef sizes the beam; the candidates handed back for exact reranking are bounded by the rows
-	// the query will consume, so a wide ef does not turn into a record load per candidate.
 	it('returns a rerank window sized by offset + limit, not by ef', async () => {
 		const target = vectors.get(42);
 		await readySearch(target);
@@ -544,6 +593,45 @@ describe('HNSW native plane file-primary delivery', function () {
 		});
 		await waitForKey(42, vectors.get(42));
 		assert.ok(fs.existsSync(planePath));
+	});
+
+	it('carries string, UUID and overflow-length primary keys through the plane', async () => {
+		const Keyed = table({
+			table: 'PlaneKeyed',
+			database: DB,
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', indexed: { type: 'HNSW', nativePlane: true, efConstruction: 200 }, type: 'Array' },
+			],
+		});
+		await Keyed.indexingOperation;
+		const index = Keyed.indices.vector.customIndex;
+		const keys = ['a', '3f2504e0-4f89-11d3-9a0c-0305e82c3301', 'k'.repeat(80)];
+		assert.deepEqual(
+			keys.map((key) => pack(key).length),
+			[2, 38, 82],
+			'inline, inline, overflow'
+		);
+		const probe = makeVector(7);
+		for (const key of keys) await Keyed.put(key, { vector: probe });
+		const hits = await waitFor(
+			async () => {
+				if (!indexReady(Keyed)) return false;
+				const found = await index.search(
+					{ target: probe, comparator: 'sort', distance: 'cosine', ef: EF },
+					{ transaction: undefined }
+				);
+				return found.length === keys.length ? found : false;
+			},
+			{ timeout: 15_000, message: 'keyed records did not become searchable' }
+		);
+		assert.deepEqual(new Set(hits.map((hit) => hit.key)), new Set(keys));
+		const rows = await fromAsync(
+			Keyed.search({ sort: { attribute: 'vector', target: probe, distance: 'cosine' }, select: ['id'], limit: 5 })
+		);
+		assert.deepEqual(new Set(rows.map((row) => row.id)), new Set(keys));
+		await Keyed.dropTable();
 	});
 
 	it('answers an empty index with no results instead of a rebuilding 503', async () => {

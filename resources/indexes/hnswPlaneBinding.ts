@@ -4,17 +4,26 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const logger = loggerWithTag('HNSW');
 
-/** Parallel arrays, ascending by distance: hit i is (ids[i], distances[i]). */
+/**
+ * Parallel arrays, ascending by distance: hit i is (ids[i], distances[i]) with its host key at
+ * keys.subarray(keyEnds[i - 1] ?? 0, keyEnds[i]); an empty key means the node vanished mid-query.
+ */
 export interface PlaneSearchHits {
 	ids: Uint32Array;
 	distances: Float32Array;
+	keys: Buffer;
+	keyEnds: Uint32Array;
 }
+
+/** A predicate batch: candidate ids and their host keys, laid out as in PlaneSearchHits. */
+export type PlanePredicate = (ids: number[], keys: Buffer, keyEnds: Uint32Array) => Uint8Array;
 
 /** NAPI surface of the native file-primary HNSW index (`@harperfast/hnsw`). */
 export interface HnswPlane {
 	readonly dims: number;
 	readonly layer0Cap: number;
-	insert(vector: Float32Array): number;
+	readonly keyCap: number;
+	insert(vector: Float32Array, key?: Buffer): number;
 	remove(id: number): void;
 	writeNodeRaw(
 		id: number,
@@ -39,7 +48,7 @@ export interface HnswPlane {
 		vector: Float32Array,
 		k: number,
 		ef: number,
-		predicate: (ids: number[]) => Uint8Array,
+		predicate: PlanePredicate,
 		filterExpansion?: number | null,
 		visitBudget?: number | null
 	): Promise<PlaneSearchHits>;
@@ -64,7 +73,8 @@ export interface HnswPlane {
 }
 
 export interface HnswPlaneConstructor {
-	create(path: string, dims: number, layer0Cap: number, maxNodes: number): HnswPlane;
+	readonly prototype: HnswPlane;
+	create(path: string, dims: number, layer0Cap: number, maxNodes: number, keyCap?: number): HnswPlane;
 	open(path: string): HnswPlane;
 }
 
