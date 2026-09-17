@@ -551,6 +551,33 @@ describe('audit cleanup retirement on teardown', () => {
 		assert.equal(closedBeforeRelease, false, 'dropDatabase must not close the root store under a suspended pass');
 	});
 
+	it('makes dropDatabase wait for derived-index backends to quiesce', async function () {
+		const Probe = table({
+			table: 'DerivedIndexDrainProbe',
+			database: 'derivedindexdrain',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		let release;
+		let closeStarted = false;
+		let dropped = false;
+		const closed = new Promise((resolve) => (release = resolve));
+		Probe.derivedIndexRuntime = {
+			close() {
+				closeStarted = true;
+				return closed;
+			},
+		};
+
+		const drop = dropDatabase('derivedindexdrain').then(() => (dropped = true));
+		await waitFor(() => closeStarted, { timeout: 1000, message: 'derived-index shutdown never started' });
+		await delay(25);
+		assert.strictEqual(dropped, false, 'database storage must stay live until derived-index shutdown settles');
+
+		release();
+		await drop;
+		assert.strictEqual(dropped, true);
+	});
+
 	// The legacy per-table drop has no sibling coverage, and the store it retires is the one makeTable()
 	// was handed - not `primaryStore.auditStore`, which nothing assigns.
 	it('retires the legacy per-table drop against the table its own audit store, before closing it', async function () {

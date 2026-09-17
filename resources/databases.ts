@@ -2021,6 +2021,29 @@ export async function dropDatabase(databaseName) {
 			rocksdbDatabaseEnvs.delete(rootStore.path);
 		}
 
+		// A database drop bypasses each Table's dropTable() path, so retire every derived-index
+		// registration here before its source stores or native files can be closed and removed.
+		const derivedIndexTables = new Map<any, any[]>();
+		for (const table of Object.values(dbTables) as any[]) {
+			const runtime = table.derivedIndexRuntime;
+			if (!runtime) continue;
+			const runtimeTables = derivedIndexTables.get(runtime);
+			if (runtimeTables) runtimeTables.push(table);
+			else derivedIndexTables.set(runtime, [table]);
+		}
+		const derivedIndexClosures = [...derivedIndexTables].map(async ([runtime, runtimeTables]) => {
+			await runtime.close();
+			for (const table of runtimeTables)
+				if (table.derivedIndexRuntime === runtime) table.derivedIndexRuntime = undefined;
+		});
+		const derivedIndexResults = await Promise.allSettled(derivedIndexClosures);
+		const derivedIndexFailures = derivedIndexResults
+			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+			.map((result) => result.reason);
+		if (derivedIndexFailures.length === 1) throw derivedIndexFailures[0];
+		if (derivedIndexFailures.length)
+			throw new AggregateError(derivedIndexFailures, 'derived index backends failed to shut down for database drop');
+
 		for (const tableName in dbTables) {
 			databaseEventsEmitter.emit('dropTable', tableName, databaseName);
 		}

@@ -22,7 +22,7 @@ class FakeLogStore {
 
 	getRange(options) {
 		this.rangeCalls.push(options);
-		const start = options.startByLog.get('local');
+		const start = options.startByLog.get('local') ?? options.startByLog.values().next().value;
 		const iterable = (this.entriesByCursor.get(start) ?? []).map((entry) => ({ ...entry }));
 		iterable.corruptFrameStop = { breaks: 0, truncatedVersions: new Set(), midLogBreak: false };
 		iterable.failedLogs = new Set();
@@ -104,6 +104,11 @@ class FakeBackend {
 }
 
 const cursor = (timestamp) => ({ format: 1, logs: { local: timestamp } });
+const cursorForLog = (logName, timestamp) => {
+	const logs = {};
+	Object.defineProperty(logs, logName, { value: timestamp, writable: true, enumerable: true, configurable: true });
+	return { format: 1, logs };
+};
 const audit = ({ timestamp, recordId, tableId = 1, version = timestamp, type = 'put', endTxn = true }) => ({
 	logName: 'local',
 	txnLogKey: timestamp,
@@ -617,5 +622,35 @@ describe('DerivedIndexRuntime', () => {
 		await waitFor(() => runtime.getStatus('removed-log')?.state === 'needs-rebuild');
 		assert.match(runtime.getStatus('removed-log').reason, /saved transaction log 'local' is missing/);
 		runtime.stop();
+	});
+
+	it('does not mistake inherited cursor properties for retained physical logs', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]), ['local', 'toString']);
+		store.rootStore.useLog = (name) => ({
+			name,
+			getStats: () => ({ fileCount: 1, oldestSequenceNumber: name === 'toString' ? 2 : 1 }),
+		});
+		const backend = new FakeBackend('inherited-log-name', cursor(10));
+		const { runtime } = runtimeFor(store, new Map());
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'needs-rebuild');
+		assert.strictEqual(runtime.getReadiness(backend.id).reason, 'log-retention');
+		assert.match(runtime.getStatus(backend.id).reason, /transaction log 'toString'.*retains its beginning/);
+		await runtime.stop();
+	});
+
+	it('advances a physical log whose name is an object prototype setter', async () => {
+		const entry = { ...audit({ timestamp: 20, recordId: 'a' }), logName: '__proto__' };
+		const store = new FakeLogStore(new Map([[10, [entry]]]), ['__proto__']);
+		const backend = new FakeBackend('prototype-setter-log', cursorForLog('__proto__', 10));
+		const { runtime } = runtimeFor(store, new Map([['1:a', { version: 20, value: { title: 'a' } }]]));
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.deliveries.length === 1);
+		const through = backend.deliveries[0].through;
+		assert.strictEqual(Object.hasOwn(through.logs, '__proto__'), true);
+		assert.strictEqual(through.logs.__proto__, 20);
+		await runtime.stop();
 	});
 });

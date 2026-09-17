@@ -703,7 +703,7 @@ class DerivedIndexRunner {
 		const durable = this.#offeredCursors[0]?.cursor;
 		if (durable) {
 			for (const [logName, latest] of this.#latestSeen) {
-				const position = durable.logs[logName];
+				const position = Object.hasOwn(durable.logs, logName) ? durable.logs[logName] : undefined;
 				if (position !== undefined && latest > position) cursorLag = Math.max(cursorLag, latest - position);
 			}
 		}
@@ -953,6 +953,7 @@ class DerivedIndexRunner {
 				logger.warn?.(`Derived index '${this.id}' could not inspect backend state; retrying`, error);
 				this.status = { state: 'idle' };
 				this.#publishReadiness('unknown', 'backend-failed');
+				this.#lockBackoff = true;
 				this.#release();
 				this.#armLockRetry(this.#options.lockRetryMilliseconds);
 				return;
@@ -1054,7 +1055,7 @@ class DerivedIndexRunner {
 		}
 		this.#knownLogs = current;
 		for (const logName of currentLogs) {
-			if (cursor.logs[logName] !== undefined) continue;
+			if (Object.hasOwn(cursor.logs, logName)) continue;
 			if (!this.#retainsBeginning(logName)) {
 				this.#needsRebuild(`new transaction log '${logName}' no longer retains its beginning`, 'log-retention');
 				return;
@@ -1353,7 +1354,7 @@ class DerivedIndexRunner {
 				break;
 			}
 			if (transaction.complete) {
-				through.logs[transaction.logName] = transaction.timestamp;
+				setCursorLog(through.logs, transaction.logName, transaction.timestamp);
 				completed++;
 				if (mutations.length)
 					chunk.batch.transactions.push({ logName: transaction.logName, timestamp: transaction.timestamp, mutations });
@@ -1828,7 +1829,8 @@ class DerivedIndexRunner {
 		}
 		if (!this.#live(generation)) return;
 		if (backend.getDurableCursor() !== undefined) throw new Error('backend kept a durable cursor after reset');
-		const boundary = this.#captureBoundary();
+		const boundary = await this.#captureBoundary(generation);
+		if (!boundary || !this.#live(generation)) return;
 		const options = this.#options;
 		let chunk = this.#newChunk(true);
 		let indexed = 0;
@@ -1923,12 +1925,28 @@ class DerivedIndexRunner {
 	 * during the scan, which then demands its own rebuild. A log with no committed transaction is left
 	 * out of the cursor and read from its beginning, which it must still retain.
 	 */
-	#captureBoundary(): DerivedIndexCursor {
+	async #captureBoundary(generation: number): Promise<DerivedIndexCursor | undefined> {
 		const boundary: DerivedIndexCursor = { format: 1, logs: {} };
+		const options = this.#options;
+		let entriesThisTurn = 0;
+		let turnStarted = options.now();
 		for (const logName of this.#logStore.rootStore.listLogs()) {
 			let tail: number | undefined;
 			const range = this.#logStore.getRange({ log: logName, start: 0 });
-			for (const entry of range) if (entry.endTxn) tail = entry.txnLogKey;
+			for (const entry of range) {
+				if (entry.endTxn) tail = entry.txnLogKey;
+				entriesThisTurn++;
+				if (
+					(entriesThisTurn & 15) === 0 &&
+					(entriesThisTurn >= options.maxTransactionsPerTurn ||
+						options.now() - turnStarted >= options.maxMillisecondsPerTurn)
+				) {
+					await new Promise<void>((resolve) => setImmediate(resolve));
+					if (!this.#live(generation)) return;
+					entriesThisTurn = 0;
+					turnStarted = options.now();
+				}
+			}
 			if (range.corruptFrameStop.breaks > 0 || range.failedLogs.size > 0)
 				throw new RunnerError('log-corrupt', `transaction log '${logName}' cannot be read to its committed tail`);
 			if (tail === undefined) {
@@ -1939,7 +1957,7 @@ class DerivedIndexRunner {
 					);
 				continue;
 			}
-			boundary.logs[logName] = tail;
+			setCursorLog(boundary.logs, logName, tail);
 		}
 		return boundary;
 	}
@@ -2130,6 +2148,17 @@ function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is Derive
 
 function cloneCursor(cursor: DerivedIndexCursor): DerivedIndexCursor {
 	return { format: 1, logs: { ...cursor.logs } };
+}
+
+function setCursorLog(logs: Record<string, number>, name: string, timestamp: number) {
+	if (name === '__proto__') {
+		Object.defineProperty(logs, name, {
+			value: timestamp,
+			writable: true,
+			enumerable: true,
+			configurable: true,
+		});
+	} else logs[name] = timestamp;
 }
 
 function sameCursor(left: DerivedIndexCursor | undefined, right: DerivedIndexCursor | undefined): boolean {

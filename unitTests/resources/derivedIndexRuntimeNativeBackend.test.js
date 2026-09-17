@@ -1220,7 +1220,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 			},
 		});
 		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
-		runtime.register(registration(backend, { lockRetryMilliseconds: 20 }));
+		runtime.register(registration(backend, { lockRetryMilliseconds: 100 }));
 
 		await waitFor(
 			() =>
@@ -1229,6 +1229,9 @@ describe('DerivedIndexRuntime for native backends', () => {
 				runtime.getReadiness(backend.id).reason
 		);
 		assert.strictEqual(runtime.getReadiness(backend.id).reason, 'backend-failed');
+		for (let i = 0; i < 20; i++) store.rootStore.emit('committed');
+		await sleep(25);
+		assert.strictEqual(inspections, 1, 'commit wakes must not bypass the inspection retry delay');
 		inspectionAvailable = true;
 		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready');
 		assert(inspections >= 2);
@@ -1943,6 +1946,44 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(runtime.getMetrics('scan-rejected').rebuiltRecords, 5);
 		assert.strictEqual(runtime.getMetrics('scan-rejected').rebuildAttempts, 0);
 		assert.strictEqual(backend.applied.size, 0);
+		await runtime.stop();
+	});
+
+	it('yields the event loop while capturing a large retained-log boundary', async () => {
+		const entries = Array.from({ length: 2000 }, (_, index) => audit({ timestamp: index + 1, recordId: `r${index}` }));
+		let clock = 0;
+		let yielded = false;
+		let yieldedBefore = -1;
+		let visited = 0;
+		const store = new FakeLogStore(new Map([[entries.length, []]]), {
+			logEntries: new Map([['local', entries]]),
+			onNext(entry) {
+				if (!entry) return;
+				if (visited++ === 0) setImmediate(() => (yielded = true));
+				if (yielded && yieldedBefore < 0) yieldedBefore = visited;
+				clock++;
+			},
+		});
+		const backend = new AsyncBackend('boundary-yield', { applyDelay: 1 });
+		const { runtime } = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 60_000,
+			now: () => clock,
+			scanRecords: () => [],
+		});
+		runtime.register(
+			registration(backend, {
+				maxTransactionsPerTurn: 256,
+				maxMillisecondsPerTurn: 5,
+				maxFlushAgeMilliseconds: 5,
+			})
+		);
+
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 5000 });
+		assert(
+			yieldedBefore > 0 && yieldedBefore < entries.length,
+			`boundary scan held the event loop for ${visited} entries`
+		);
+		assert.strictEqual(backend.cursor.logs.local, entries.length);
 		await runtime.stop();
 	});
 
