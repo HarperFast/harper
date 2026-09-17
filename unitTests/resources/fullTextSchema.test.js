@@ -291,6 +291,68 @@ describe('@fullText schema declaration', () => {
 		assert.deepStrictEqual(removals.slice(0, 2), ['FullTextRemovalOrder/zSearch', 'FullTextRemovalOrder/aSource']);
 	});
 
+	it('persists a replacement source and handle before removing the old source', async () => {
+		await loadGQLSchema(`
+			type FullTextRetargetOrder @table {
+				id: ID @primaryKey
+				oldSource: String
+				search: FullText @fullText(fields: [{ name: "oldSource" }])
+			}
+		`);
+		const Table = tables.FullTextRetargetOrder;
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		const operations = [];
+		const databasePrototype = Object.getPrototypeOf(Table.dbisDB);
+		const putSync = databasePrototype.putSync;
+		const removeSync = databasePrototype.removeSync;
+		databasePrototype.putSync = function (key, ...args) {
+			operations.push(`put:${String(key)}`);
+			return putSync.call(this, key, ...args);
+		};
+		databasePrototype.removeSync = function (key, ...args) {
+			operations.push(`remove:${String(key)}`);
+			return removeSync.call(this, key, ...args);
+		};
+		const currentSearch = Table.attributes.find(({ name }) => name === 'search');
+		const retargetedSearch = Object.create(
+			Object.getPrototypeOf(currentSearch),
+			Object.getOwnPropertyDescriptors(currentSearch)
+		);
+		retargetedSearch.fullText = {
+			...currentSearch.fullText,
+			fields: [{ name: 'newSource', weight: 1 }],
+		};
+		try {
+			table({
+				table: 'FullTextRetargetOrder',
+				database: 'data',
+				schemaDefined: true,
+				removedAttributes: ['oldSource'],
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'newSource', type: 'String' },
+					retargetedSearch,
+				],
+			});
+		} finally {
+			databasePrototype.putSync = putSync;
+			databasePrototype.removeSync = removeSync;
+		}
+		for (const expected of [
+			'put:FullTextRetargetOrder/newSource',
+			'put:FullTextRetargetOrder/search',
+			'remove:FullTextRetargetOrder/oldSource',
+		])
+			assert(operations.includes(expected), `missing catalog operation ${expected}: ${operations}`);
+		assert(
+			operations.indexOf('put:FullTextRetargetOrder/newSource') < operations.indexOf('put:FullTextRetargetOrder/search')
+		);
+		assert(
+			operations.indexOf('put:FullTextRetargetOrder/search') <
+				operations.indexOf('remove:FullTextRetargetOrder/oldSource')
+		);
+	});
+
 	it('rejects a FullText field without an index declaration', async () => {
 		await assert.rejects(
 			loadGQLSchema(`

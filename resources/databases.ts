@@ -2604,11 +2604,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
 			if (removedAttributes?.length) {
 				exclusiveLock();
+				const removedAttributeNames = new Set(removedAttributes);
+				const proposedAttributes = new Map(attributes.map((attribute) => [attribute.name, attribute]));
 				const durableAttributes = [];
 				for (const { value } of Table.dbisDB.getRange({ start: tableName + '/', end: tableName + '0' })) {
-					if (value?.name) durableAttributes.push(value);
+					if (!value?.name || removedAttributeNames.has(value.name)) continue;
+					durableAttributes.push(proposedAttributes.get(value.name) ?? value);
 				}
-				assertFullTextSourcesRemain(durableAttributes, new Set(removedAttributes));
+				assertFullTextSourcesRemain(durableAttributes, removedAttributeNames);
 			}
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
@@ -2869,6 +2872,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		const durableAttributeRows = reconcileRemovals
 			? [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })]
 			: [];
+		const catalogRowsToRemove = [];
 		// Remove derived handles before their sources. Catalog rows are individually durable on RocksDB,
 		// so a crash between removals may leave an unused source but must not leave a handle naming a
 		// source that is already gone.
@@ -2892,7 +2896,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (staleRow || removeIndex) {
 				exclusiveLock();
 				hasChanges = true;
-				if (staleRow) attributesDbi.remove(key);
+				if (staleRow) {
+					if (deferredPrimaryRow) attributesDbi.remove(key);
+					else catalogRowsToRemove.push(key);
+				}
 				if (removeIndex) {
 					const indexDbi = Table.indices[attributeTableName];
 					if (indexDbi) indicesToRemove.push(indexDbi);
@@ -2901,7 +2908,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
-		for (const attribute of attributes || []) {
+		// Sources must be durable before a handle can reference them. Existing-table removals land
+		// after both groups, so retargeting a handle can crash only with an unused old source left over.
+		const attributesForPersistence = [
+			...attributes.filter((attribute) => !attribute.fullText),
+			...attributes.filter((attribute) => attribute.fullText),
+		];
+		for (const attribute of attributesForPersistence) {
 			if (attribute.relationship) {
 				refreshRelationshipAttributes = true;
 				continue;
@@ -3188,6 +3201,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
+		for (const key of catalogRowsToRemove) attributesDbi.remove(key);
 		// The primary row is what makes a table loadable, so it lands last: a scan on another thread that
 		// runs mid-create skips the table instead of building (and announcing) a partial one. It already
 		// carries this table's relationships (set on primaryKeyAttribute above), so the persistence block
