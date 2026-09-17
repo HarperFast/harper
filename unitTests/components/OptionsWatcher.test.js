@@ -1330,26 +1330,31 @@ describe('OptionsWatcher', () => {
 
 		const name = 'jsResource';
 		const options = new OptionsWatcher(name, join(fixture, 'config.yaml'));
-		await options.ready;
-
-		assert.deepEqual(options.getRoot(), DEFAULT_CONFIG, 'should return the default config if the file does not exist');
-		assert.deepEqual(
-			options.getAll(),
-			DEFAULT_CONFIG[name],
-			'should return the default config if the file does not exist'
-		);
-
-		const expected = { jsResource: { files: 'foo.js' } };
-
-		// The scope booted on its own truthy default, which leaves it *unconfigured*, so the file
-		// arriving is the unconfigured → configured transition `#applyScopedConfig` reports as a
-		// second `ready` — not the merge a scope with a prior source value would take.
 		let changed = 0;
 		const countChanges = () => changed++;
-		options.on('change', countChanges);
 		const readySpy = spy();
-		options.on('ready', readySpy);
+		const removeSpy = spy();
 		try {
+			await options.ready;
+
+			assert.deepEqual(
+				options.getRoot(),
+				DEFAULT_CONFIG,
+				'should return the default config if the file does not exist'
+			);
+			assert.deepEqual(
+				options.getAll(),
+				DEFAULT_CONFIG[name],
+				'should return the default config if the file does not exist'
+			);
+
+			const expected = { jsResource: { files: 'foo.js' } };
+
+			// The scope booted on its own truthy default, which leaves it *unconfigured*, so the file
+			// arriving is the unconfigured → configured transition `#applyScopedConfig` reports as a
+			// second `ready` — not the merge a scope with a prior source value would take.
+			options.on('change', countChanges);
+			options.on('ready', readySpy);
 			// Node 26.9 can drop the first add for a path absent at watch construction. Other runtime
 			// lanes retain the one-write contract while this lane still verifies eventual delivery.
 			if (process.versions.node.startsWith('26.9.')) {
@@ -1381,23 +1386,21 @@ describe('OptionsWatcher', () => {
 			assert.equal(changed, 0, 'a truthy boot fallback is not a prior source value to merge against');
 			assert.deepEqual(options.getRoot(), expected, 'should return the updated config after writing a new file');
 			assert.deepEqual(options.getAll(), expected[name], 'should return the configuration after file recreation');
+
+			options.on('remove', removeSpy);
+			await rm(configFilePath, { force: true });
+			await waitFor(() => removeSpy.callCount === 1, {
+				timeout: 6000,
+				message: 'timed out waiting for the config file unlink event',
+			});
+			assert.deepEqual(options.getRoot(), DEFAULT_CONFIG, 'should return the default config after file removal');
+			assert.deepEqual(options.getAll(), DEFAULT_CONFIG[name], 'should return the default config after file removal');
 		} finally {
 			options.removeListener('ready', readySpy);
+			options.removeListener('change', countChanges);
+			options.removeListener('remove', removeSpy);
+			await teardown({ fixture, options });
 		}
-		options.removeListener('change', countChanges);
-
-		const removeSpy = spy();
-		options.on('remove', removeSpy);
-		await rm(configFilePath, { force: true });
-		await waitFor(() => removeSpy.callCount === 1, {
-			timeout: 6000,
-			message: 'timed out waiting for the config file unlink event',
-		});
-		assert.deepEqual(options.getRoot(), DEFAULT_CONFIG, 'should return the default config after file removal');
-		assert.deepEqual(options.getAll(), DEFAULT_CONFIG[name], 'should return the default config after file removal');
-		options.removeListener('remove', removeSpy);
-
-		await teardown({ fixture, options });
 	}).timeout(10000);
 
 	describe('polling fallback on watcher exhaustion', () => {
