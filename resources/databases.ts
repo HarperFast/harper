@@ -2478,8 +2478,26 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let releaseExclusiveLock: (() => void) | undefined;
 
 	const hasHnswAtEntry = attributes.some((attribute) => attribute.indexed?.type === 'HNSW');
+	const hasLegacyHnswStateAtEntry =
+		Table &&
+		origin !== 'cluster' &&
+		attributes.some((attribute) => {
+			if (attribute.indexed?.type !== 'HNSW') return false;
+			const persisted = Table.dbisDB?.getSync(`${tableName}/${attribute.name || attribute.attribute || ''}`)?.indexed;
+			if (persisted?.type !== 'HNSW') return false;
+			if (Object.hasOwn(persisted, 'nativePlane') && typeof persisted.nativePlane !== 'boolean') return true;
+			return [...CUSTOM_INDEXES.HNSW.numericOptions].some(
+				(name) => Object.hasOwn(persisted, name) && typeof persisted[name] !== 'number'
+			);
+		});
 	try {
-		if (Table && hasHnswAtEntry && origin !== 'cluster') exclusiveLock();
+		if (
+			Table &&
+			hasHnswAtEntry &&
+			origin !== 'cluster' &&
+			(rootStore instanceof RocksDatabase || hasLegacyHnswStateAtEntry)
+		)
+			exclusiveLock();
 		const persistedPrimaryKeyAtEntry =
 			hasHnswAtEntry || (Table && Table.audit !== true)
 				? Table?.dbisDB?.getSync(`${tableName}/${Table.primaryKey}`)
