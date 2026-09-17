@@ -2522,8 +2522,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		auditExplicitlyEnabled ||
 		(!auditExplicitlyDisabled &&
 			(persistedAuditAtEntry === true || (persistedAuditAtEntry == null && Table?.audit === true)));
-	const auditEnabledForNativeDefaultAtEntry =
-		auditExplicitlyEnabled || (!auditExplicitlyDisabled && persistedAuditAtEntry === true);
 	if (
 		origin !== 'cluster' &&
 		attributes.some((attribute) => {
@@ -2540,18 +2538,17 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			`Table '${databaseName}.${tableName}' must enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
 		);
 	}
-	// The default-native capacity check can reject. Run it before acquiring a schema lock or replacing
-	// the live attribute list so a rejected declaration cannot leave an existing table partly updated.
-	if (origin !== 'cluster' && auditEnabledForNativeDefaultAtEntry) {
+	const validateNativeDefaultOptions = (catalog?: any) => {
 		for (const attribute of attributes) {
 			const indexed = attribute.indexed;
 			if (indexed?.type !== 'HNSW' || indexed.nativePlane != null) continue;
-			const existingAttribute = Table?.attributes.find((existing: any) => existing.name === attribute.name);
-			const persistedIndexed =
-				Table?.dbisDB?.getSync(`${tableName}/${attribute.name || ''}`)?.indexed ?? existingAttribute?.indexed;
+			const persistedIndexed = catalog?.getSync(`${tableName}/${attribute.name || ''}`)?.indexed;
 			if (persistedIndexed?.type !== 'HNSW') CUSTOM_INDEXES.HNSW.canDefaultToNativePlane(rootStore, indexed);
 		}
-	}
+	};
+	// A create with explicit audit has no competing catalog state; reject a bad native-only capacity
+	// before opening its stores. Existing tables repeat the check under their schema lock below.
+	if (!Table && origin !== 'cluster' && auditExplicitlyEnabled) validateNativeDefaultOptions();
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
 	let refreshedLiveAttributes = false;
@@ -2596,6 +2593,17 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// and can throw, and only it is cheap when uncontended: LMDB's exclusiveLock() opens an
 			// environment-wide write transaction that cannot time out, so it stays lazy.
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
+			if (origin !== 'cluster') {
+				const lockedAttributesDbi = Table.dbisDB;
+				const declaredPrimaryKey = attributes.find((attribute) => attribute.isPrimaryKey)?.name;
+				const persistedPrimaryUnderLock = declaredPrimaryKey
+					? lockedAttributesDbi.getSync(`${tableName}/${declaredPrimaryKey}`)
+					: undefined;
+				const persistedAuditUnderLock =
+					persistedPrimaryUnderLock?.audit ?? lockedAttributesDbi.getSync(`${tableName}/`)?.audit;
+				if (auditExplicitlyEnabled || (!auditExplicitlyDisabled && persistedAuditUnderLock === true))
+					validateNativeDefaultOptions(lockedAttributesDbi);
+			}
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
 			if (origin === 'cluster') {
