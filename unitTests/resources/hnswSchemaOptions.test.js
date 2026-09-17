@@ -5,6 +5,7 @@ const { loadGQLSchema } = require('#src/resources/graphql');
 const { databases, resetDatabases, table, tables } = require('#src/resources/databases');
 const { HierarchicalNavigableSmallWorld } = require('#src/resources/indexes/HierarchicalNavigableSmallWorld');
 const { derivedIndexReadiness } = require('#src/resources/indexes/hnswDerivedIndex');
+const { READINESS_BYTES } = require('#src/resources/derivedIndexRuntime');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
 const { ClientError } = require('#src/utility/errors/hdbError');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
@@ -452,6 +453,48 @@ describe('HNSW GraphQL numeric options', () => {
 				['id', 'kept']
 			);
 			assert.strictEqual(AtomicTable.dbisDB.getSync(`${atomicTableName}/embedding`), undefined);
+
+			const legacyAtomicTableName = 'HnswNativeCapacityLegacyAtomic';
+			const LegacyAtomicTable = table({
+				table: legacyAtomicTableName,
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'kept', type: 'String' },
+				],
+			});
+			createdTables.push(legacyAtomicTableName);
+			const legacyPrimary = LegacyAtomicTable.dbisDB.getSync(`${legacyAtomicTableName}/`);
+			LegacyAtomicTable.dbisDB.putSync(`${legacyAtomicTableName}/id`, {
+				...legacyPrimary,
+				name: 'id',
+				attribute: 'id',
+				isPrimaryKey: true,
+				audit: true,
+			});
+			LegacyAtomicTable.dbisDB.putSync(`${legacyAtomicTableName}/`, {
+				tableId: legacyPrimary.tableId,
+				audit: false,
+			});
+			assert.throws(
+				() =>
+					table({
+						table: legacyAtomicTableName,
+						attributes: [
+							{
+								name: 'embedding',
+								type: 'Array',
+								indexed: { type: 'HNSW', nativePlaneMaxNodes: 0 },
+							},
+						],
+					}),
+				/nativePlaneMaxNodes must be a positive integer/
+			);
+			assert.deepStrictEqual(
+				LegacyAtomicTable.attributes.map(({ name }) => name),
+				['id', 'kept']
+			);
+			assert.strictEqual(LegacyAtomicTable.dbisDB.getSync(`${legacyAtomicTableName}/embedding`), undefined);
 
 			const failedCreateName = 'HnswExplicitNativeGeometryAtomic';
 			assert.throws(
@@ -955,6 +998,53 @@ describe('HNSW GraphQL numeric options', () => {
 				},
 				{ timeout: 15_000, message: 'the recreated table generation did not receive derived-index writes' }
 			);
+		});
+
+		it('rebuilds an unavailable native index when it is re-enabled on the same table generation', async function () {
+			if (!getPlaneBinding()) this.skip();
+			const tableName = 'HnswNativeSameGenerationReenable';
+			let Table = table({
+				table: tableName,
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+				],
+			});
+			createdTables.push(tableName);
+			await waitFor(() => derivedIndexReadiness(Table.auditStore, Table.indices.embedding.name).state === 'ready', {
+				timeout: 15_000,
+			});
+
+			const nativeRuntime = Table.derivedIndexRuntime;
+			Table = table({
+				table: tableName,
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: false }, type: 'Array' },
+				],
+			});
+			await nativeRuntime.close();
+			const backendId = `hnsw:${Table.indices.embedding.name}`;
+			const readiness = Table.auditStore.getUserSharedBuffer(
+				`derived-index:${backendId}:readiness`,
+				new ArrayBuffer(READINESS_BYTES)
+			);
+			Atomics.store(new Int32Array(readiness, 0, 6), 0, 4);
+			assert.equal(derivedIndexReadiness(Table.auditStore, Table.indices.embedding.name).state, 'unavailable');
+
+			Table = table({
+				table: tableName,
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+				],
+			});
+			await waitFor(() => derivedIndexReadiness(Table.auditStore, Table.indices.embedding.name).state === 'ready', {
+				timeout: 15_000,
+			});
 		});
 
 		it('keeps an unchanged unsupported legacy native-plane spelling loadable', async () => {

@@ -2482,6 +2482,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let releaseExclusiveLock: (() => void) | undefined;
 
 	const hasHnswAtEntry = attributes.some((attribute) => attribute.indexed?.type === 'HNSW');
+	const persistedPrimaryDescriptor = (catalog: any) => {
+		const declaredPrimaryKey = attributes.find((attribute) => attribute.isPrimaryKey)?.name ?? Table?.primaryKey;
+		if (declaredPrimaryKey) {
+			const key = `${tableName}/${declaredPrimaryKey}`;
+			const descriptor = catalog?.getSync(key);
+			if (descriptor?.isPrimaryKey) return { key, descriptor };
+		}
+		const key = `${tableName}/`;
+		return { key, descriptor: catalog?.getSync(key) };
+	};
 	const hasLegacyHnswStateAtEntry =
 		Table &&
 		origin !== 'cluster' &&
@@ -2502,13 +2512,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			(rootStore instanceof RocksDatabase || hasLegacyHnswStateAtEntry)
 		)
 			exclusiveLock();
-		const persistedPrimaryKeyAtEntry =
-			hasHnswAtEntry || (Table && Table.audit !== true)
-				? Table?.dbisDB?.getSync(`${tableName}/${Table.primaryKey}`)
-				: undefined;
 		const persistedAuditAtEntry =
-			persistedPrimaryKeyAtEntry?.audit ??
-			(hasHnswAtEntry || (Table && Table.audit !== true) ? Table?.dbisDB?.getSync(`${tableName}/`)?.audit : undefined);
+			hasHnswAtEntry || (Table && Table.audit !== true)
+				? persistedPrimaryDescriptor(Table?.dbisDB).descriptor?.audit
+				: undefined;
 		if (persistedAuditAtEntry === true && Table?.audit !== true) Table.enableAuditing();
 		for (const attribute of attributes) {
 			if (attribute.attribute && !attribute.name) {
@@ -2634,12 +2641,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
 			if (origin !== 'cluster') {
 				const lockedAttributesDbi = Table.dbisDB;
-				const declaredPrimaryKey = attributes.find((attribute) => attribute.isPrimaryKey)?.name;
-				const persistedPrimaryUnderLock = declaredPrimaryKey
-					? lockedAttributesDbi.getSync(`${tableName}/${declaredPrimaryKey}`)
-					: undefined;
-				const persistedAuditUnderLock =
-					persistedPrimaryUnderLock?.audit ?? lockedAttributesDbi.getSync(`${tableName}/`)?.audit;
+				const persistedAuditUnderLock = persistedPrimaryDescriptor(lockedAttributesDbi).descriptor?.audit;
 				validateHnswOptions(
 					lockedAttributesDbi,
 					auditExplicitlyEnabled || (!auditExplicitlyDisabled && persistedAuditUnderLock === true)
@@ -2877,10 +2879,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 		}
 		const hasHnswDeclaration = attributes.some((attribute) => attribute.indexed?.type === 'HNSW');
-		const persistedPrimaryAttribute = hasHnswDeclaration ? attributesDbi.getSync(primaryDescriptorKey()) : undefined;
-		const persistedAudit = hasHnswDeclaration
-			? (persistedPrimaryAttribute?.audit ?? attributesDbi.getSync(`${tableName}/`)?.audit)
-			: undefined;
+		const persistedAudit = hasHnswDeclaration ? persistedPrimaryDescriptor(attributesDbi).descriptor?.audit : undefined;
 		// A cluster declaration can apply audit on a create, but deliberately cannot rewrite an existing
 		// table's primary row. Do not let an incoming audit value qualify a replicated native descriptor
 		// that this node would then persist beside its durable audit:false row.
@@ -3308,8 +3307,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	logger.trace(`${tableName} table loaded`);
 
 	return Table as TableResourceType;
-	// dropTable() tombstones the bare table row, which is not the row a legacy catalog keeps the
-	// table's settings in, so a drop in flight has to be checked on both.
+	// A migrated catalog can retain a named primary descriptor beside a bare table tombstone, so a
+	// drop in flight has to be checked on both representations.
 	function tableIsDropping(descriptor: any, descriptorKey: string) {
 		if (descriptor?.dropping) return true;
 		return descriptorKey !== tableName + '/' && attributesDbi.getSync(tableName + '/')?.dropping;
@@ -3317,12 +3316,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// The catalog row initStores() reads a table's settings from: the primary key's own row when it
 	// has one, and the bare table row otherwise.
 	function primaryDescriptorKey() {
-		const declaredPrimaryKey = attributes?.find((attribute) => attribute.isPrimaryKey)?.name ?? Table?.primaryKey;
-		if (declaredPrimaryKey) {
-			const attributeKey = tableName + '/' + declaredPrimaryKey;
-			if (attributesDbi.getSync(attributeKey)?.isPrimaryKey) return attributeKey;
-		}
-		return tableName + '/';
+		return persistedPrimaryDescriptor(attributesDbi).key;
 	}
 	// The catalog of a published table stays, but a class the registration never accepted is
 	// unreachable, so release what makeTable() registered process-wide instead of leaving its timers

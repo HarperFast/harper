@@ -915,6 +915,7 @@ export function makeTable(options) {
 			| {
 					close(dropping?: boolean): Promise<void>;
 					restoreAfterFailedDrop?(): typeof TableResource.derivedIndexRuntime;
+					completeDrop?(): void;
 			  }
 			| undefined;
 		static audit = audit;
@@ -1908,6 +1909,7 @@ export function makeTable(options) {
 				throw error;
 			}
 			let dropIdentityConfirmed = databaseName !== databasePath;
+			let primaryCatalogKey = TableResource.tableName + '/';
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
 				// destructive work. If the process dies or a column family drop fails
@@ -1915,10 +1917,17 @@ export function makeTable(options) {
 				// the next startup (or a same-name create) completes the drop via
 				// completeInterruptedDrop in databases.ts instead of resurrecting
 				// the table.
-				const primaryCatalogKey = TableResource.tableName + '/';
 				let tombstoneWrite: any;
 				const writeTombstone = () => {
-					const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
+					let primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
+					if (!primaryMeta && primaryKey) {
+						const legacyPrimaryKey = `${TableResource.tableName}/${primaryKey}`;
+						const legacyPrimaryMeta = (dbisDb as any).getSync(legacyPrimaryKey);
+						if (legacyPrimaryMeta?.isPrimaryKey) {
+							primaryCatalogKey = legacyPrimaryKey;
+							primaryMeta = legacyPrimaryMeta;
+						}
+					}
 					if (!primaryMeta || (primaryMeta.tableId != null && primaryMeta.tableId !== tableId)) return false;
 					if (primaryMeta.dropping) return true;
 					primaryMeta.dropping = true;
@@ -1954,6 +1963,7 @@ export function makeTable(options) {
 				}
 			}
 			if (!dropIdentityConfirmed) {
+				derivedIndexRuntime?.completeDrop?.();
 				if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
 				return;
 			}
@@ -2027,13 +2037,13 @@ export function makeTable(options) {
 				// same-name create completes the interrupted drop and writes fresh
 				// catalog rows, and clobbering those would orphan the new table.
 				const removeTombstonedCatalog = () => {
-					const currentPrimary = (dbisDb as any).getSync(TableResource.tableName + '/');
+					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
 						return false;
 					for (const attribute of attributes) {
 						dbisDb.remove(TableResource.tableName + '/' + attribute.name);
 					}
-					dbisDb.remove(TableResource.tableName + '/');
+					dbisDb.remove(primaryCatalogKey);
 					return true;
 				};
 				if (rootStore instanceof RocksDatabase) {
@@ -2046,7 +2056,7 @@ export function makeTable(options) {
 					// concurrent create's wait would be stuck on a drop that the blocked
 					// event loop can never resolve, burning its full deadline before failing.
 					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
-						const currentPrimary = (dbisDb as any).getSync(TableResource.tableName + '/');
+						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 						if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
 							return false;
 						for (const attribute of attributes) {
@@ -2071,9 +2081,11 @@ export function makeTable(options) {
 					// LMDB: no shared column-family double-drop, and its engine lock is
 					// transactional rather than this spin lock, so keep the awaited drop
 					// plus the same tombstone-guarded catalog removal.
-					const currentPrimary = (dbisDb as any).getSync(TableResource.tableName + '/');
-					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
+					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
+						derivedIndexRuntime?.completeDrop?.();
 						return;
+					}
 					const drops = [];
 					for (const attribute of attributes) {
 						const index = indices[attribute.name];
@@ -2096,6 +2108,7 @@ export function makeTable(options) {
 				await primaryStore.close();
 				fs.unlinkSync(primaryStore.path);
 			}
+			derivedIndexRuntime?.completeDrop?.();
 			signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName)
 			);

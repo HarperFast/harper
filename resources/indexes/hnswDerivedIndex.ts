@@ -243,7 +243,6 @@ type Registered = {
 	tables: Map<number, RegisteredTable>;
 	backends: Map<string, RegisteredBackend>;
 	tableBackends: Map<number, Set<RegisteredBackend>>;
-	lastTableIds: Map<string, number>;
 	droppingTables: Set<number>;
 };
 const runtimes = new WeakMap<object, Registered>();
@@ -271,7 +270,6 @@ function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
 		tables,
 		backends: new Map(),
 		tableBackends: new Map(),
-		lastTableIds: new Map(),
 		droppingTables: new Set(),
 	};
 	runtimes.set(auditStore, registered);
@@ -289,6 +287,7 @@ export function attachDerivedIndexes(Table: any):
 	| {
 			close(dropping?: boolean): Promise<void>;
 			restoreAfterFailedDrop(): ReturnType<typeof attachDerivedIndexes>;
+			completeDrop(): void;
 	  }
 	| undefined {
 	const attributes = Table.attributes.filter(
@@ -333,8 +332,6 @@ export function attachDerivedIndexes(Table: any):
 		});
 		let predecessor = registered.backends.get(id);
 		const inherited = predecessor;
-		const previousTableId = registered.lastTableIds.get(id);
-		const generationChanged = previousTableId !== undefined && previousTableId !== Table.tableId;
 		const settlePredecessor = () => {
 			const current = predecessor;
 			if (!current) return Promise.resolve();
@@ -387,9 +384,7 @@ export function attachDerivedIndexes(Table: any):
 		if (!tableBackends) registered.tableBackends.set(Table.tableId, (tableBackends = new Set()));
 		tableBackends.add(registeredBackend);
 		registered.backends.set(id, registeredBackend);
-		registered.lastTableIds.set(id, Table.tableId);
-		if (generationChanged && registered.runtime.getReadiness(id).state === 'unavailable')
-			registered.runtime.requestRebuild(id);
+		if (registered.runtime.getReadiness(id).state === 'unavailable') registered.runtime.requestRebuild(id);
 		releases.push(() => registeredBackend.settle());
 	}
 	return {
@@ -412,6 +407,9 @@ export function attachDerivedIndexes(Table: any):
 		restoreAfterFailedDrop() {
 			registered.droppingTables.delete(Table.tableId);
 			return attachDerivedIndexes(Table);
+		},
+		completeDrop() {
+			registered.droppingTables.delete(Table.tableId);
 		},
 	};
 }
