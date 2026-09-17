@@ -57,16 +57,19 @@ working set; the cache cannot know about it.
 | Different layer | Have the cache (`lmdb-js`/`weak-lru-cache`) keep entries strong while a query holds them | The cache is process-shared with a fixed LRU budget and no notion of a query's lifetime; re-strengthening an expired entry (`entry.value = record`) would pin it outside the LRU forever (no slot to displace it from). The lifetime belongs to the ordering. |
 | Deeper cause | Pin each loaded record in a `Map<entry, record>` for the lifetime of the ordering so `deref()` cannot fail | Contradicts the recorded intent at `Table.ts:4917` that records may be collected before the sort completes: an ordering over N rows would hold N records regardless of the cache's memory bound, which is the bound the weak cache exists to keep. Also still resolves the sort attribute 2·n·log n times. |
 | Do less | Test-only: loosen the `< 25` bound or assert the plan via `explain` | The extra reads are a real product cost (a sort over N rows under memory pressure costs up to N·log N extra store reads plus N reloads); accept-and-detect leaves it in place. |
-| **Chosen** | Decorate-sort-undecorate: resolve each entry's comparable sort keys once, at collection time, and compare those | `ordered` holds `{ entry, keys }` where `keys[i]` is `convertToComparableKeys(getAttributeValue(entry, order_i.attribute, …))` for each link of the sort chain; the comparator compares keys and never touches a record; `sortedArrayIterator` yields the entry to `transformToRecord`, whose existing "value being GC'ed" branch reloads at most once. `enqueuedEntryForNextGroup` and the `dbOrderedAttribute` grouping keep working on entries. n resolver calls instead of 2·n·log n, records stay collectable, one function changed, no new API. |
+| Higher layer (planner) | Drive the query from the sort-aligned `name` index and filter `relatedId` per row, or require a compound index | Scans every row of the sort index instead of the narrow condition's rows (100 reads here instead of 20; the test at `query.test.js:966-978` exists to pin the opposite), and depends on schema. Recorded on the planning reviewer's request; not a fix for the ordering path. |
+| **Chosen** | Decorate-sort-undecorate: resolve each entry's comparable sort keys once, at collection time, and compare those | As each entry is collected, `convertToComparableKeys(getAttributeValue(entry, clause.attribute, …))` is pushed onto one sidecar key array per sort clause; a position array is sorted by comparing those keys and yields entries to `transformToRecord`, whose existing "value being GC'ed" branch reloads at most once. Sidecar arrays rather than a `{ entry, keys }` object per row (planning review: two allocations per row on a hot path). `enqueuedEntryForNextGroup` and the `dbOrderedAttribute` grouping keep working on entries. n resolver calls instead of 2·n·log n, records stay collectable, one function changed, no new API. |
 
 ### Verification
 
-Regression test in `query.test.js`: wrap `QueryTable.primaryStore.getEntry` so each returned
-entry is a `WeakRef`-shaped object whose `deref()` answers only on its first call (a record
-collected after load), run the same query, and assert the read delta is at most two per returned
-record (20 loads plus at most 20 post-sort reloads). Fails on base (the comparator re-reads per
-comparison, delta ≥ 53 for 20 rows), passes with the decorated sort; engine-agnostic. Existing
-`< 25` assertion kept.
+Regression test in `query.test.js` against the real table and store, no method replaced: the 20
+matching records are copied and handed to `transformToOrderedSelect` as real `WeakRef` entries
+through an async source that drops its pins, crosses a macrotask boundary and calls `global.gc()`
+after the last entry is collected (mocha runs with `--expose-gc`), so every record is dead by the
+time the sort runs. Asserts count, the exact two-clause order (`relatedId` tie, `name` descending)
+against the ordinary `search`, and that store reads stay within materialization (at most two per
+row through the prefetch path). Fails on base with 96-97 reads for 20 rows on both engines; passes
+with the decorated sort. Existing `< 25` assertion kept.
 
 ## B. A multi-store commit cascade is exposed to the idle limit after its pre-commit phase
 
@@ -101,24 +104,41 @@ impossible, and the outcome is the atomicity loss #1407 exists to prevent.
 ### Owning invariant
 
 Once a chain enters `commit()` its write set is sealed and the caller is awaiting the commit; the
-idle limit polices an application holding a transaction open, so the cascade after pre-commit work
-must start with a full idle window, not the remainder the pre-commit phase happened to leave.
+idle limit polices an application holding a transaction open. Every link therefore starts each hop
+of the cascade with a full idle window of its own engine, never with the remainder the pre-commit
+phase or an earlier hop happened to leave. The bound is per hop: a native commit that stalls for a
+whole window still lets the monitor reap the waiting links, and this change does not add crash or
+cross-store atomicity beyond what the cascade already had.
 
 ### Approaches considered
 
 | Axis | Candidate | Disqualifier / fact |
 |---|---|---|
-| Different layer | Keep `committing` (the spare) set until the cascade has called every link's `commit()` | Overloads the pre-commit-phase concept: the spare keeps consuming `COMMIT_PHASE_GRACE` ticks and logs "waiting on pre-commit work" for an ordinary store write, and the phase's exit is inside an async `then` chain per engine (`LMDBTransaction.ts:294`, `DatabaseTransaction.ts:1302`) rather than one place. |
-| Deeper cause | New chain state ("sealed") that the monitor's abort branch skips once `commit()` has been entered | Removes the bound: a stalled store commit would hold write intents forever, which the bounded grace and the idle window deliberately prevent. The re-arm keeps the bound (one full window). |
+| Different layer | Keep `committing` (the spare) set until the cascade has called every link's `commit()` | The spare is bounded by `COMMIT_PHASE_GRACE` ticks shared by the chain, so a long cascade would exhaust it and be reaped mid-cascade anyway; and the phase's exit is inside an async `then` chain per engine (`LMDBTransaction.ts:294`, `DatabaseTransaction.ts:1302`) rather than one place. |
+| Deeper cause | New chain state ("sealed") that the monitor's abort branch skips once `commit()` has been entered | Removes the bound: a stalled store commit would hold write intents forever, which the bounded grace and the idle window deliberately prevent. A per-hop re-arm keeps the bound (one full window per hop). |
 | Do less | Test-only: force the grace ticks explicitly and give the test a budget the cascade cannot outrun | Leaves the product exposure (partial commit) in place; the test would then pass by hiding the window it was written to exercise. |
-| **Chosen** | `setCommitPhase(false)` re-arms every link's `timeout` to `Math.max(txnExpiration, timeoutBudget)` | One place, both engines (`DatabaseTransaction.ts:642`), bounded by one idle window, no new state. Existing behavior for a read-only chain, a source apply, or a replay is untouched (they never enter the phase or are spared indefinitely). |
+| One-shot re-arm at phase exit | `setCommitPhase(false)` re-arms every link once | The first plan. Rejected on the planning review's fact: the links' clocks all start at phase exit while `this.next.commit()` is only reached after each predecessor's native commit settles, so three links each taking 80 ms under a 200 ms window still lose the third; and the shared base method would arm an LMDB link from the RocksDB expiration (`LMDBTransaction.ts` keeps its own, with its own test setter). |
+| **Chosen** | Engine-owned `renewIdleTimeout()` on each transaction class, and `renewChainForNativeCommit()` called by each link as it hands its sealed writes to the store | `DatabaseTransaction.commit` (before it closes the head for the native commit) and `LMDBTransaction.commit` (before the optimistic write path) renew every remaining open, unpoisoned link from that link's own engine limit. Each hop starts with a full window; a stalled native commit is still bounded by one; nothing clears `timedOut` or reopens a closed link; read-only chains, source applies and replays never reach the abort branch and are unaffected. |
 
 ### Verification
 
-Regression test next to the existing one: same multi-store blob commit, but the head store's
-commit is deferred asynchronously past the remaining window after the phase ends; asserts the
-commit resolves and both stores hold the record. Fails on base with the CI trace and the partial
-commit; passes with the re-arm. Engine-aware like the surrounding tests.
+Three tests next to the existing one, engine-aware like their neighbors: the LMDB class re-arms
+from the LMDB expiration (base: no method); the CI shape, where the pre-commit phase is left to
+decay the window to ≤150 ms and the head's native commit is then deferred 250 ms (LMDB
+`ifVersion`, RocksDB `transaction.commit`), asserting every link was armed to the full 400 ms
+budget at the handoff and both records committed; and a three-link cascade whose every native
+commit is deferred 150 ms under a 200 ms window, which only a per-hop re-arm survives. On base
+the last two fail with the CI trace on both engines.
+
+## Planning review
+
+`prepush-review.mjs --mode plan` (graded leg: Codex; Gemini not selected for planning) returned
+`Framing-Verdict: better-alternative-exists`. Adopted: sidecar key arrays instead of one object per
+row; per-hop, engine-owned re-arm instead of a one-shot re-arm at phase exit (its three-link
+counter-example is the third test above); the real-`WeakRef` regression instead of a replaced store
+method; the atomicity claim narrowed to one window per hop; the planner-level option recorded. The
+"keep the spare through the cascade" rejection was restated on the grace bound rather than on
+terminology.
 
 ## Out of scope, recorded as findings
 
