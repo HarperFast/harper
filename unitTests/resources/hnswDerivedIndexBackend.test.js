@@ -8,7 +8,6 @@ const SLOW_APPLY_MILLIS = 6; // exceeds the backend's 5 ms apply slice, so a sli
 
 const BATCH_RECORDS = 2;
 
-// The native plane and its mapping store, reduced to what the backend drives.
 class ControlledIndex {
 	applied = [];
 	barriers = [];

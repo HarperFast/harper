@@ -34,6 +34,8 @@ test(
 			.sort((a, b) => b.dot - a.dot)
 			.slice(0, 10)
 			.map(({ id }) => id);
+		let sampling = false;
+		let sampler: Promise<void> | undefined;
 		try {
 			await setupHarperWithFixture(ctx, resolve(import.meta.dirname, 'fixtures/native-plane-coverage'), {
 				config: { threads: { count: 6 }, logging: { level: 'warn' } },
@@ -76,15 +78,16 @@ test(
 			await waitFor(async () => (await query(0)).status === 200, 30_000);
 			const coverageBeforeWrites = JSON.stringify((await request('/PlaneStatus/')).body.cursor?.coverage ?? null);
 			const midCatchUpCoverage: string[] = [];
-			let sampling = true;
 			let samplerFailures = 0;
-			const sampler = (async () => {
+			sampling = true;
+			sampler = (async () => {
 				let failures = 0;
-				// A run torn down by an earlier assertion never clears `sampling`.
 				while (sampling && failures < 5) {
 					try {
 						const status = (await request('/PlaneStatus/')).body;
-						if (status.mappings < records.length)
+						// Between the first staged mapping and the last published one: before that the
+						// sample is still `coverageBeforeWrites`, after it there is no catch-up left.
+						if (status.mappings + status.pending > 0 && status.mappings < records.length)
 							midCatchUpCoverage.push(JSON.stringify(status.cursor?.coverage ?? null));
 						failures = 0;
 					} catch {
@@ -147,8 +150,7 @@ test(
 				sampling = false;
 				await sampler;
 			}
-			// Corroborates the deterministic unit proof end-to-end. A sampler that lost requests or never
-			// caught the window says nothing about the index, so it must not fail the run.
+			// A sampler that lost requests or never caught the window says nothing about the index.
 			if (samplerFailures === 0 && midCatchUpCoverage.length > 0)
 				assert(
 					midCatchUpCoverage.some(
@@ -228,6 +230,8 @@ test(
 				{ timeout: 30_000, message: 'restarted native index did not certify its persisted coverage' }
 			);
 		} finally {
+			sampling = false;
+			await sampler;
 			await teardownHarper(ctx);
 		}
 	}

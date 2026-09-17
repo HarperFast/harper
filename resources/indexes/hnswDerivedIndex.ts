@@ -200,8 +200,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			if (batch.through) {
 				this.#appliedCursor = batch.through;
 				advancedCursor = true;
-				// A catch-up never reaches the drain that would otherwise run the barrier. A rebuild
-				// chunk has no cursor to advance, so interrupting a slice for one buys nothing.
+				// A catch-up never reaches the drain that would otherwise run the barrier.
 				if (this.#flushRequested) break;
 			}
 		}
