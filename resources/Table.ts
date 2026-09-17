@@ -4841,9 +4841,8 @@ export function makeTable(options) {
 			if (sort) {
 				// there might be some situations where we don't need to transform to entries for sorting, not sure
 				entries = transformToEntries(entries, select, context, readTxn, null);
-				// The sort clauses are resolved once per entry as it is collected (below), so comparison never
-				// touches a record: a cached entry only weakly references its record, and one collected between
-				// collection and comparison would otherwise be re-read from the store on every comparison.
+				// Sort keys are resolved as entries are collected, so comparison never dereferences a record: a
+				// cached entry holds its record only weakly, and a re-read per comparison is what this avoids.
 				const clauses: Sort[] = [];
 				for (let order = sort; order; order = order.next) clauses.push(order);
 				const clauseCount = clauses.length;
@@ -4939,8 +4938,8 @@ export function makeTable(options) {
 							if ((sort as any).isGrouped) {
 								// TODO: Return grouped results
 							}
-							sortedPositions = new Array(ordered.length);
-							for (let i = 0; i < ordered.length; i++) sortedPositions[i] = i;
+							sortedPositions = [];
+							for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
 							sortedPositions.sort(comparePositions);
 							sortedIndex = 0;
 							iteration = nextSorted();

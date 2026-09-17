@@ -206,7 +206,7 @@ export class LMDBTransaction extends DatabaseTransaction {
 				throw error;
 			}
 		}
-		this.renewChainForNativeCommit();
+		if (!retries && this.writes.some((write) => write)) this.renewChainForNativeCommit();
 		// release the read snapshot so we don't keep it open longer than necessary
 		if (!retries) this.doneReadTxn();
 		this.open = options?.doneWriting ? TRANSACTION_STATE.LINGERING : TRANSACTION_STATE.OPEN;
