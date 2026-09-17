@@ -334,6 +334,37 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert(Local.attributes.some(({ name }) => name === 'extra'));
 	});
 
+	it('validates full-text handles before creating a table from a cluster definition', async () => {
+		const Created = table({
+			table: 'ClusterCreateInvalidFullText',
+			database: 'test',
+			schemaDefined: true,
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'Int' },
+				{
+					name: 'search',
+					type: 'FullText',
+					fullText: {
+						fields: [{ name: 'title', weight: 1 }],
+						analyzer: 'english@1',
+						stopWords: true,
+						positions: true,
+						surfaceTerms: true,
+						synonyms: [],
+					},
+				},
+			],
+		});
+		await catalogFlushed(Created);
+		assert.strictEqual(
+			Created.attributes.some(({ name }) => name === 'search'),
+			false
+		);
+		assert.strictEqual(Created.dbisDB.getSync('ClusterCreateInvalidFullText/search'), undefined);
+	});
+
 	it('discards a peer full-text handle that conflicts with a newer durable source type', async () => {
 		const Local = table({
 			table: 'ClusterMergeDurableInvalidFullText',

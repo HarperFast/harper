@@ -353,6 +353,64 @@ describe('@fullText schema declaration', () => {
 		);
 	});
 
+	it('removes a retargeted handle before changing its old source type', async () => {
+		await loadGQLSchema(`
+			type FullTextRetargetedSourceType @table {
+				id: ID @primaryKey
+				oldSource: String
+				newSource: String
+				search: FullText @fullText(fields: [{ name: "oldSource" }])
+			}
+		`);
+		const Table = tables.FullTextRetargetedSourceType;
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		const operations = [];
+		const databasePrototype = Object.getPrototypeOf(Table.dbisDB);
+		const putSync = databasePrototype.putSync;
+		const removeSync = databasePrototype.removeSync;
+		databasePrototype.putSync = function (key, ...args) {
+			operations.push(`put:${String(key)}`);
+			return putSync.call(this, key, ...args);
+		};
+		databasePrototype.removeSync = function (key, ...args) {
+			operations.push(`remove:${String(key)}`);
+			return removeSync.call(this, key, ...args);
+		};
+		const currentSearch = Table.attributes.find(({ name }) => name === 'search');
+		const retargetedSearch = Object.create(
+			Object.getPrototypeOf(currentSearch),
+			Object.getOwnPropertyDescriptors(currentSearch)
+		);
+		retargetedSearch.fullText = {
+			...currentSearch.fullText,
+			fields: [{ name: 'newSource', weight: 1 }],
+		};
+		try {
+			table({
+				table: 'FullTextRetargetedSourceType',
+				database: 'data',
+				schemaDefined: true,
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'oldSource', type: 'Int' },
+					{ name: 'newSource', type: 'String' },
+					retargetedSearch,
+				],
+			});
+		} finally {
+			databasePrototype.putSync = putSync;
+			databasePrototype.removeSync = removeSync;
+		}
+		const removeHandle = operations.indexOf('remove:FullTextRetargetedSourceType/search');
+		const updateOldSource = operations.indexOf('put:FullTextRetargetedSourceType/oldSource');
+		const replaceHandle = operations.indexOf('put:FullTextRetargetedSourceType/search');
+		assert(removeHandle >= 0, `missing early handle removal: ${operations}`);
+		assert(updateOldSource >= 0, `missing old source update: ${operations}`);
+		assert(replaceHandle >= 0, `missing replacement handle write: ${operations}`);
+		assert(removeHandle < updateOldSource);
+		assert(updateOldSource < replaceHandle);
+	});
+
 	it('removes a handle before persisting an incompatible source type', async () => {
 		await loadGQLSchema(`
 			type FullTextSourceTypeChange @table {

@@ -467,6 +467,42 @@ function applyDurableDeclaration(attribute: any, descriptor: any) {
 	}
 }
 
+function compileFullTextDeclarations(
+	attributes: any[],
+	validationAttributes: any[],
+	origin: string | undefined,
+	peerAddedAttributeNames: Set<string>,
+	databaseName: string,
+	tableName: string
+) {
+	for (let attributeIndex = 0; attributeIndex < attributes.length; attributeIndex++) {
+		let attribute = attributes[attributeIndex];
+		const validationAttribute = validationAttributes.find(({ name }) => name === attribute.name) ?? attribute;
+		if (!attribute.fullText && !validationAttribute.fullText && attribute.type !== 'FullText') continue;
+		if (validationAttribute !== attribute && validationAttribute.type !== 'FullText') {
+			attributes[attributeIndex] = validationAttribute;
+			continue;
+		}
+		if (validationAttribute !== attribute) attributes[attributeIndex] = attribute = validationAttribute;
+		try {
+			attribute.fullText = compileFullTextDefinition(
+				validationAttribute,
+				validationAttribute.fullText,
+				validationAttributes
+			);
+		} catch (error) {
+			if (origin !== 'cluster' || !peerAddedAttributeNames.has(attribute.name) || !(error instanceof ClientError))
+				throw error;
+			logger.warn(
+				`Ignoring invalid peer full-text declaration ${databaseName}.${tableName}.${attribute.name}: ${error.message}`
+			);
+			attributes.splice(attributeIndex--, 1);
+			continue;
+		}
+		attribute.hidden = true;
+	}
+}
+
 /**
  * True when a descriptor claims an index build no live operation in this process can own. The PID and
  * worker generation cannot answer that alone: a container reuses PID 1 and starts the in-memory
@@ -2558,6 +2594,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		} else attribute.attribute = attribute.name;
 		if (attribute.expiresAt) attribute.indexed = true;
 	}
+	if (!Table) {
+		compileFullTextDeclarations(
+			attributes,
+			attributes,
+			origin,
+			origin === 'cluster' ? new Set(attributes.map(({ name }) => name)) : new Set(),
+			databaseName,
+			tableName
+		);
+	}
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
 	let refreshedLiveAttributes = false;
@@ -2664,33 +2710,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							return durableAttribute;
 						})
 					: attributes;
-			for (let attributeIndex = 0; attributeIndex < attributes.length; attributeIndex++) {
-				let attribute = attributes[attributeIndex];
-				const validationAttribute =
-					fullTextValidationAttributes.find(({ name }) => name === attribute.name) ?? attribute;
-				if (!attribute.fullText && !validationAttribute.fullText && attribute.type !== 'FullText') continue;
-				if (validationAttribute !== attribute && validationAttribute.type !== 'FullText') {
-					attributes[attributeIndex] = validationAttribute;
-					continue;
-				}
-				if (validationAttribute !== attribute) attributes[attributeIndex] = attribute = validationAttribute;
-				try {
-					attribute.fullText = compileFullTextDefinition(
-						validationAttribute,
-						validationAttribute.fullText,
-						fullTextValidationAttributes
-					);
-				} catch (error) {
-					if (origin !== 'cluster' || !peerAddedAttributeNames.has(attribute.name) || !(error instanceof ClientError))
-						throw error;
-					logger.warn(
-						`Ignoring invalid peer full-text declaration ${databaseName}.${tableName}.${attribute.name}: ${error.message}`
-					);
-					attributes.splice(attributeIndex--, 1);
-					continue;
-				}
-				attribute.hidden = true;
-			}
+			compileFullTextDeclarations(
+				attributes,
+				fullTextValidationAttributes,
+				origin,
+				peerAddedAttributeNames,
+				databaseName,
+				tableName
+			);
 			if (origin !== 'cluster') {
 				const storedFieldReplacement = attributes.find((attribute) => {
 					if (!attribute.fullText) return false;
@@ -2894,15 +2921,19 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
+			const retargetedFullTextHandle =
+				value.fullText &&
+				attribute?.fullText &&
+				JSON.stringify(value.fullText.fields) !== JSON.stringify(attribute.fullText.fields);
 			// rows already present under a create are aborted state
 			const staleRow = !attribute || Boolean(deferredPrimaryRow);
-			if (staleRow || removeIndex) {
+			if (staleRow || removeIndex || retargetedFullTextHandle) {
 				exclusiveLock();
 				hasChanges = true;
 				if (staleRow) {
 					if (deferredPrimaryRow || value.fullText) attributesDbi.remove(key);
 					else catalogRowsToRemove.push(key);
-				}
+				} else if (retargetedFullTextHandle) attributesDbi.remove(key);
 				if (removeIndex) {
 					const indexDbi = Table.indices[attributeTableName];
 					if (indexDbi) indicesToRemove.push(indexDbi);
