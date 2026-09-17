@@ -161,7 +161,8 @@ const BIGINT_PROBES = [
 	{ id: 20, probe: '2^53+1', value: '9007199254740993' },
 	{ id: 21, probe: '2^63-1', value: '9223372036854775807' },
 ];
-const LONG_RANGE_MESSAGE = 'must be an integer (from -9007199254740992 to 9007199254740992)';
+// The one message `resources/Table.ts`'s `Long` case emits, for the type half and the range half alike.
+const LONG_GUARD_MESSAGE = 'must be an integer (from -9007199254740992 to 9007199254740992)';
 
 interface DumpedRow {
 	id: number;
@@ -445,9 +446,9 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 
 			test('the widened Long refuses a real BigInt whatever its magnitude, un-rounded', async () => {
 				// Written in-worker as BigInt literals (the fixture's PutBigInt), so no float64 transport
-				// rounds them before Harper sees them. `resources/Table.ts`'s `Long` case tests `typeof value !==
-				// 'number'` before it tests the range, so even the in-bounds 2^53 probe is refused: the
-				// widened Long holds JS numbers, not 64-bit integers.
+				// rounds them before Harper sees them. `resources/Table.ts`'s `Long` case is a single
+				// `typeof value !== 'number' || …range…` predicate behind one message, so the in-bounds 2^53
+				// probe is refused by its type half: the widened Long holds JS numbers, not 64-bit integers.
 				for (const { id, probe, value } of BIGINT_PROBES) {
 					const response = await fetch(`${ctx.harper.httpURL}/PutBigInt/`, {
 						method: 'POST',
@@ -457,12 +458,12 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					const text = await response.text();
 					strictEqual(response.status, 400, `BigInt probe ${probe} was not refused: ${response.status} ${text}`);
 					// The echoed value is the load-bearing part: a float64 would have rounded 2^53+1 down to
-					// 2^53 (which the Long cap ACCEPTS) long before the range check ran.
+					// 2^53, which the Long cap accepts, long before Harper saw it.
 					const failure = JSON.parse(text);
 					deepStrictEqual(
 						{ code: failure.code, title: failure.title },
-						{ code: 'ValidationError', title: `Value ${value} in property count ${LONG_RANGE_MESSAGE}` },
-						`BigInt probe ${probe} was refused by something other than the Long range check: ${text}`
+						{ code: 'ValidationError', title: `Value ${value} in property count ${LONG_GUARD_MESSAGE}` },
+						`BigInt probe ${probe} was refused by something other than the Long type/range guard: ${text}`
 					);
 					strictEqual((await restGet(id)).status, 404, `BigInt probe ${probe} stored a record despite failing`);
 				}
