@@ -200,9 +200,8 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			if (batch.through) {
 				this.#appliedCursor = batch.through;
 				advancedCursor = true;
-				// A barrier started mid-batch would publish mappings past `#appliedCursor`, and a
-				// catch-up never reaches the drain that would otherwise run it. A rebuild chunk carries
-				// no cursor, so interrupting the slice for one would buy no durable progress.
+				// A catch-up never reaches the drain that would otherwise run the barrier. A rebuild
+				// chunk has no cursor to advance, so interrupting a slice for one buys nothing.
 				if (this.#flushRequested) break;
 			}
 		}

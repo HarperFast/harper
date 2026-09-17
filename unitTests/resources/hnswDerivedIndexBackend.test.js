@@ -4,12 +4,11 @@ const { DERIVED_INDEX_ACCEPTED } = require('#src/resources/derivedIndexRuntime')
 const { HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
 
 const OWNER_EPOCH = 7n;
-// Exceeds the backend's 5 ms apply slice, so a slice ends mid-batch rather than on a boundary.
-const SLOW_APPLY_MILLIS = 6;
+const SLOW_APPLY_MILLIS = 6; // exceeds the backend's 5 ms apply slice, so a slice ends mid-batch
+
 const BATCH_RECORDS = 2;
 
-// The native plane and its mapping store, reduced to what the backend drives: a barrier settles
-// only when the test says so.
+// The native plane and its mapping store, reduced to what the backend drives.
 class ControlledIndex {
 	applied = [];
 	barriers = [];
@@ -143,13 +142,13 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 		assert.equal(barrier.appliedAtStart, 50, 'the barrier waits for one batch, not for the queue to drain');
 	});
 
-	it('does not interrupt a rebuild scan, whose chunks carry no cursor to advance', async () => {
+	it('does not interrupt an apply slice for a chunk with no cursor to advance', async () => {
 		start(0);
 		deliverRebuildChunks(6, 50);
 		backend.flush('threshold');
 		const barrier = await waitFor(() => index.barriers[0], 5000);
-		assert.equal(barrier.appliedAtStart, 300, 'a rebuild pays one barrier at the drain, not one per chunk');
-		assert.equal(backend.getDurableCursor(), undefined);
+		assert.equal(barrier.appliedAtStart, 300, 'queued rebuild chunks apply through to the drain');
+		assert.equal(backend.getDurableCursor(), undefined, 'a rebuild scan publishes no cursor');
 	});
 
 	it('publishes every completed batch across a catch-up spanning several barriers', async () => {
