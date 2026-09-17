@@ -3584,6 +3584,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	}
 	const canReuseFullTextRuntime =
 		Table.derivedIndexRuntime &&
+		Table.derivedIndexRuntime.canReuse?.() !== false &&
 		!previousHasNativeHnsw &&
 		!Table.attributes.some((attribute) => Table.indices[attribute.name]?.customIndex?.postCommit) &&
 		previousFullTextStorageKey === fullTextStorageKey(Table.attributes);

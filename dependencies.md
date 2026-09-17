@@ -262,3 +262,12 @@ This is the inverse of the entries below — a dependency we take deliberate ste
 - Binary compilation: Supported Linux glibc x64/arm64, macOS arm64, and Windows x64 targets use prebuilds. Other targets attempt a Rust source build. Because the root package is optional Harper still installs if that build fails, but opted-in indexes remain unavailable until the module is present.
 - Can be deferred: Yes for ordinary HNSW indexes. The adapter loads lazily; an opted-in index returns 503 and retries rebuild when the native module is unavailable.
 - Eventual removal: Disable `nativePlane`, allow the schema reindex to rebuild the ordinary JS/CF graph, then remove the optional dependency and adapter integration.
+
+## @harperfast/fulltext (release-gated optional dependency; not yet declared)
+
+- Need for usage: Supplies the native Tantivy writer, reader, durable cursor payload, and crash-safe directory retirement used by `@fullText` derived indexes. Harper remains the source of truth and replays its audited RocksDB records into these native files.
+- Current integration state: Core loads `@harperfast/fulltext/native` lazily only when a table declares `@fullText`. The wrapper is still at its development `0.0.0` version, so this change does not invent a package range or add an unpublished artifact to `package.json`. Missing or incompatible native code makes that local index explicitly `unavailable`; the source table and authoritative writes remain available.
+- Release gate: Before Harper ships `@fullText`, add an exact optional-dependency pin, update the shrinkwrap, and validate the published package's platform prebuild matrix in CI. The wrapper must exact-pin its platform artifacts to the same version, matching the HNSW packaging pattern.
+- Environment interaction: Native index directories are local derived state inside the Harper database path. They are not RocksDB column families and are rebuilt from authoritative records and transaction logs when absent or incompatible.
+- Overlap: None. HNSW covers vector similarity; this package provides lexical search primitives through Tantivy.
+- Eventual removal: Removing `@fullText` declarations and completing native directory retirement makes the package unnecessary; ordinary Harper records remain intact.

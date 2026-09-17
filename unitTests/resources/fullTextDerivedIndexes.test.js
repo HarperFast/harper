@@ -169,23 +169,30 @@ describe('@fullText derived-index activation', () => {
 		);
 	});
 
-	it('publishes unavailable when native activation fails', async () => {
+	it('reports unavailable and retries when native activation initially fails', async () => {
+		const database = `fulltext-activation-failure-${Date.now()}`;
+		const attributes = () => [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+			{ name: 'search', type: 'FullText', fullText: definition('title') },
+		];
 		binding.runtimeInfo = async () => {
 			throw new Error('native module unavailable');
 		};
 		Product = table({
-			database: `fulltext-activation-failure-${Date.now()}`,
+			database,
 			table: 'Product',
 			audit: true,
-			attributes: [
-				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'title', type: 'String' },
-				{ name: 'search', type: 'FullText', fullText: definition('title') },
-			],
+			attributes: attributes(),
 		});
 
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'unavailable', 30_000);
 		assert.strictEqual(fullTextDerivedIndexReadiness(Product, 'search').reason, 'backend-failed');
+
+		delete binding.runtimeInfo;
+		Product = table({ database, table: 'Product', audit: true, attributes: attributes() });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		assert(binding.opens.some((options) => options.indexId === fullTextDerivedIndexId(Product, 'search')));
 	});
 
 	it('does not let a retried drop bypass a failed derived-index shutdown', async () => {
@@ -258,7 +265,17 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => binding.opens.some(isCurrentIndex), 30_000);
 		const firstGeneration = binding.opens.find(isCurrentIndex).generation;
 
+		let releaseClose;
+		binding.closeBarrier = new Promise((resolve) => (releaseClose = resolve));
 		Product = table({ database, table: 'Product', audit: true, attributes: attributes(2) });
+		await new Promise((resolve) => setImmediate(resolve));
+		const readinessDuringHandoff = fullTextDerivedIndexReadiness(Product, 'search');
+		const openedReplacementEarly = binding.opens.some(
+			(options) => isCurrentIndex(options) && options.generation !== firstGeneration
+		);
+		releaseClose();
+		assert.strictEqual(readinessDuringHandoff.state, 'unknown');
+		assert.strictEqual(openedReplacementEarly, false, 'replacement activation must await predecessor quiescence');
 		await waitFor(
 			() => binding.opens.some((options) => isCurrentIndex(options) && options.generation !== firstGeneration),
 			30_000

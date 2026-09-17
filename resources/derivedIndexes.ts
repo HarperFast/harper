@@ -6,11 +6,7 @@ import type { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { createNativeFullTextDerivedIndexBackend } from './NativeFullTextDerivedIndexLifecycle.ts';
 import type { NativeFullTextModule } from './fullTextNativeBinding.ts';
 import { registerDerivedIndexTables } from './derivedIndexRegistry.ts';
-import {
-	DerivedIndexRuntime,
-	publishDerivedIndexUnavailable,
-	readDerivedIndexReadiness,
-} from './derivedIndexRuntime.ts';
+import { DerivedIndexRuntime, readDerivedIndexReadiness } from './derivedIndexRuntime.ts';
 import { HnswDerivedIndexBackend, type DerivedNativeIndex } from './indexes/hnswDerivedIndex.ts';
 import { fullTextStorageDefinition } from './fullTextSchema.ts';
 
@@ -27,7 +23,12 @@ const FULL_TEXT_LIMITS = Object.freeze({
 	maxBatchBytes: 8 * 1024 * 1024,
 });
 
-type Installed = { Table: any; close(): Promise<void> };
+type Installed = {
+	Table: any;
+	close(): Promise<void>;
+	canReuse(): boolean;
+	readinessOverride(id: string): ReturnType<typeof readDerivedIndexReadiness> | undefined;
+};
 type Registered = {
 	runtime: DerivedIndexRuntime;
 	tables: Map<number, { Table: any }>;
@@ -68,7 +69,7 @@ function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
  * Register every schema-derived index of a table with its database's shared runtime. Registration
  * runs on every worker; the runtime elects one owner for each physical index.
  */
-export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | undefined {
+export function attachDerivedIndexes(Table: any): Installed | undefined {
 	const hnswAttributes = Table.attributes.filter(
 		(attribute: Attribute) => Table.indices[attribute.name]?.customIndex?.postCommit
 	);
@@ -76,15 +77,15 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 	const auditStore = Table.auditStore as RocksTransactionLogStore;
 	const existing = runtimes.get(auditStore);
 	const previous = existing?.installations.get(Table.tableId);
+	let previousClose: Promise<void> | undefined;
 	if (previous) {
-		void previous
-			.close()
-			.catch((error) =>
-				fullTextLogger.warn?.(
-					`Previous derived indexes for ${Table.databaseName}.${Table.tableName} did not quiesce cleanly`,
-					error
-				)
-			);
+		previousClose = previous.close();
+		previousClose.catch((error) =>
+			fullTextLogger.warn?.(
+				`Previous derived indexes for ${Table.databaseName}.${Table.tableName} did not quiesce cleanly`,
+				error
+			)
+		);
 	}
 	if (hnswAttributes.length === 0 && fullTextAttributes.length === 0) return;
 	assertDerivedIndexSupport(Table, fullTextAttributes);
@@ -101,13 +102,17 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 	let closing = false;
 	let closed: Promise<void> | undefined;
 	let closeComplete = false;
+	let reusable = true;
+	const readinessOverrides = new Map<string, ReturnType<typeof readDerivedIndexReadiness>>();
 	const installed: Installed = {
 		Table,
+		canReuse: () => reusable && !closing,
+		readinessOverride: (id) => readinessOverrides.get(id),
 		close() {
 			if (closeComplete) return Promise.resolve();
 			if (closed) return closed;
 			closing = true;
-			closed = Promise.all([...setups, ...releases.map((release) => release())])
+			closed = Promise.all([previous?.close(), ...setups, ...releases.map((release) => release())])
 				.then(() => {
 					closeComplete = true;
 					if (registered.tables.get(Table.tableId) === installed) registered.tables.delete(Table.tableId);
@@ -125,12 +130,29 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 	try {
 		for (const attribute of hnswAttributes) registerHnsw(Table, attribute, registered, releases);
 		for (const attribute of fullTextAttributes) {
-			const setup = registerFullText(Table, attribute, registered, releases, () => !closing).catch((error) =>
-				fullTextLogger.error?.(
-					`Could not activate full-text index ${Table.databaseName}.${Table.tableName}.${attribute.name}`,
-					error
-				)
-			);
+			const readinessId = fullTextDerivedIndexReadinessId(Table, attribute);
+			readinessOverrides.set(readinessId, { state: 'unknown', ownerEpoch: 0n, rebuildAttempts: 0 });
+			const setup = (async () => {
+				try {
+					await previousClose;
+					if (closing) return;
+					await registerFullText(Table, attribute, registered, releases, () => !closing);
+					if (!closing) readinessOverrides.delete(readinessId);
+				} catch (error) {
+					if (closing) return;
+					reusable = false;
+					readinessOverrides.set(readinessId, {
+						state: 'unavailable',
+						reason: 'backend-failed',
+						ownerEpoch: 0n,
+						rebuildAttempts: 0,
+					});
+					fullTextLogger.error?.(
+						`Could not activate full-text index ${Table.databaseName}.${Table.tableName}.${attribute.name}`,
+						error
+					);
+				}
+			})();
 			setups.push(setup);
 		}
 	} catch (error) {
@@ -257,65 +279,71 @@ async function registerFullText(
 			`Derived index ${storeName} requires auditing; the audit API retains full record history for the configured retention window`
 		);
 	}
-	try {
-		const backend = await createNativeFullTextDerivedIndexBackend({
-			id,
-			storePath: Table.primaryStore.rootStore.path,
-			storeName,
-			sourceGeneration: `${Table.tableId}:${attribute.fullTextGeneration ?? 'legacy'}`,
-			fields: storageDefinition.fields,
-			analyzer: storageDefinition.analyzer,
-			stopWords: storageDefinition.stopWords,
-			positions: storageDefinition.positions,
-			surfaceTerms: storageDefinition.surfaceTerms,
-			limits: { ...FULL_TEXT_LIMITS },
-			...(fullTextBindingForTests ? { binding: fullTextBindingForTests } : {}),
-		});
-		if (!isCurrent()) return;
-		releases.push(
-			registered.runtime.register({
-				backend,
-				projections: new Map([
-					[
-						Table.tableId,
-						(record: Record<string, unknown>) => {
-							const projection: Record<string, string | string[]> = Object.create(null);
-							for (const { name } of definition.fields) {
-								const value = record[name];
-								if (typeof value === 'string') projection[name] = value;
-								else if (Array.isArray(value)) {
-									let textValues: string[] | undefined;
-									for (let index = 0; index < value.length; index++) {
-										const entry = value[index];
-										if (typeof entry === 'string') {
-											if (textValues) textValues.push(entry);
-										} else if (entry == null) textValues ??= value.slice(0, index) as string[];
-										else throw new ClientError(`Full-text source '${name}' contains a non-text array value`, 400);
-									}
-									projection[name] = textValues ?? value;
-								} else if (value != null)
-									throw new ClientError(`Full-text source '${name}' contains a non-text value`, 400);
-							}
-							return projection;
-						},
-					],
-				]),
-				options: { maxLagMilliseconds: 0 },
-			})
-		);
-	} catch (error) {
-		if (isCurrent()) publishDerivedIndexUnavailable(Table.auditStore, id);
-		throw error;
-	}
+	const backend = await createNativeFullTextDerivedIndexBackend({
+		id,
+		storePath: Table.primaryStore.rootStore.path,
+		storeName,
+		sourceGeneration: `${Table.tableId}:${attribute.fullTextGeneration ?? 'legacy'}`,
+		fields: storageDefinition.fields,
+		analyzer: storageDefinition.analyzer,
+		stopWords: storageDefinition.stopWords,
+		positions: storageDefinition.positions,
+		surfaceTerms: storageDefinition.surfaceTerms,
+		limits: { ...FULL_TEXT_LIMITS },
+		...(fullTextBindingForTests ? { binding: fullTextBindingForTests } : {}),
+	});
+	if (!isCurrent()) return;
+	releases.push(
+		registered.runtime.register({
+			backend,
+			readinessId: fullTextDerivedIndexReadinessId(Table, attribute),
+			projections: new Map([
+				[
+					Table.tableId,
+					(record: Record<string, unknown>) => {
+						const projection: Record<string, string | string[]> = Object.create(null);
+						for (const { name } of definition.fields) {
+							const value = record[name];
+							if (typeof value === 'string') projection[name] = value;
+							else if (Array.isArray(value)) {
+								let textValues: string[] | undefined;
+								for (let index = 0; index < value.length; index++) {
+									const entry = value[index];
+									if (typeof entry === 'string') {
+										if (textValues) textValues.push(entry);
+									} else if (entry == null) textValues ??= value.slice(0, index) as string[];
+									else throw new ClientError(`Full-text source '${name}' contains a non-text array value`, 400);
+								}
+								projection[name] = textValues ?? value;
+							} else if (value != null)
+								throw new ClientError(`Full-text source '${name}' contains a non-text value`, 400);
+						}
+						return projection;
+					},
+				],
+			]),
+			options: { maxLagMilliseconds: 0 },
+		})
+	);
 }
 
 export function fullTextDerivedIndexId(Table: any, attributeName: string): string {
 	return `fulltext:${Table.tableName}/${attributeName}`;
 }
 
+function fullTextDerivedIndexReadinessId(Table: any, attribute: Attribute): string {
+	return `${fullTextDerivedIndexId(Table, attribute.name)}:${Table.tableId}:${attribute.fullTextGeneration ?? 'legacy'}`;
+}
+
 /** Shared readiness of a full-text index on any worker, registered or not. */
 export function fullTextDerivedIndexReadiness(Table: any, attributeName: string) {
-	return readDerivedIndexReadiness(Table.auditStore, fullTextDerivedIndexId(Table, attributeName));
+	const attribute = Table.attributes.find((candidate: Attribute) => candidate.name === attributeName);
+	if (!attribute?.fullText) throw new ClientError(`'${attributeName}' is not a full-text index`, 400);
+	const readinessId = fullTextDerivedIndexReadinessId(Table, attribute);
+	return (
+		Table.derivedIndexRuntime?.readinessOverride?.(readinessId) ??
+		readDerivedIndexReadiness(Table.auditStore, readinessId)
+	);
 }
 
 /** Test-only binding injection; production always loads `@harperfast/fulltext/native`. */

@@ -914,7 +914,13 @@ export function makeTable(options) {
 		static tableName = tableName;
 		static tableId = tableId;
 		static indices = indices;
-		static derivedIndexRuntime: { close(): Promise<void> } | undefined;
+		static derivedIndexRuntime:
+			| {
+					close(): Promise<void>;
+					canReuse?(): boolean;
+					readinessOverride?(id: string): unknown;
+				  }
+			| undefined;
 		static schemaChangeOperation: Promise<void> | undefined;
 		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
 		static audit = audit;

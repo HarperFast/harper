@@ -2695,10 +2695,14 @@ binding. That provisional registration makes cache eviction write its local-only
 during startup or a failed native setup; the runner adds its own reference after activation, and
 both references are released with the table installation. Without the provisional reference, a
 reused native index could retain a document evicted while no runner was registered.
-If native activation fails before a runner exists, Harper publishes terminal `unavailable` readiness
-instead of leaving `unknown` or a stale `ready` value. A table drop clears its installation only
-after shutdown proves quiescence; a rejected shutdown keeps the installation and ownership lock
-reachable so a retry must re-prove quiescence before destructive storage work begins.
+Full-text readiness is generation-scoped while the elected-writer lock remains target-scoped. A
+replacement generation therefore cannot inherit `ready` from the generation it supersedes, but the
+two generations still cannot own writers concurrently. Before a runner exists, its local
+installation masks shared readiness as `unknown`; native activation failure changes that local state
+to `unavailable` and prevents reuse, so a later schema load retries activation without poisoning a
+healthy peer. A table drop clears its installation only after shutdown proves quiescence; a rejected
+shutdown keeps the installation, its predecessor, and the ownership lock reachable so a retry must
+re-prove quiescence before destructive storage work begins.
 
 An `@fullText` target creates no RocksDB column family. Its native directory is rooted inside the
 database directory and selected by the lifecycle's hash of `<table>/<target>`. RocksDB remains the

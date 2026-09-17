@@ -170,6 +170,8 @@ export type DerivedIndexRunnerOptions = {
 
 export type DerivedIndexRegistration = {
 	backend: DerivedIndexBackend;
+	/** Shared readiness identity; defaults to the stable backend/ownership id. */
+	readinessId?: string;
 	projections: ReadonlyMap<number, (record: unknown) => unknown>;
 	options?: DerivedIndexRunnerOptions;
 };
@@ -673,7 +675,9 @@ class DerivedIndexRunner {
 			typeof root?.getSync === 'function' &&
 			typeof root?.removeSync === 'function';
 		this.#lagBudget = effectiveLagBudget(options);
-		this.#readinessBuffer = readinessBuffer(logStore, registration.backend.id, () => this.#notified());
+		this.#readinessBuffer = readinessBuffer(logStore, registration.readinessId ?? registration.backend.id, () =>
+			this.#notified()
+		);
 		this.#sharedViews = sharedViewsOf(this.#readinessBuffer);
 		try {
 			registration.backend.attach({
@@ -2237,18 +2241,6 @@ export function readDerivedIndexReadiness(
 	let views = byBackend.get(backendId);
 	if (!views) byBackend.set(backendId, (views = sharedViewsOf(readinessBuffer(logStore, backendId))));
 	return readReadiness(views);
-}
-
-/** Publish a terminal activation failure before a backend runner exists to own shared readiness. */
-export function publishDerivedIndexUnavailable(
-	logStore: RocksTransactionLogStore,
-	backendId: string,
-	reason: DerivedIndexReadinessReason = 'backend-failed'
-): void {
-	const { words } = sharedViewsOf(readinessBuffer(logStore, backendId));
-	Atomics.store(words, READINESS_REASON, READINESS_REASONS.indexOf(reason));
-	Atomics.store(words, READINESS_ATTEMPTS, 0);
-	Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf('unavailable'));
 }
 
 function isValidCursor(cursor: DerivedIndexCursor | undefined): cursor is DerivedIndexCursor {
