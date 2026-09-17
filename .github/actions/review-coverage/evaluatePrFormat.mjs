@@ -77,19 +77,17 @@ export function evaluatePrFormat(
 				`AI-shaped description needs exactly one valid pinned Review-Coverage footer (found ${coverageFields.length} field(s), ${coverage.length} valid)`
 			);
 		const needFields = matches(prose, /^\s*(?:<sub>)?Human-Review-Need:/gim);
-		const need = matches(prose, /^\s*<sub>Human-Review-Need:\s*[0-4]\s*@\s*[0-9a-f]{6,40}<\/sub>\s*$/gim);
+		const need = matches(prose, /^\s*<sub>Human-Review-Need:\s*[0-4](?:\s+\(decisions?:[^)@\n]*\))?\s*@\s*[0-9a-f]{6,40}<\/sub>\s*$/gim);
 		if (needFields.length !== 1 || need.length !== 1)
 			problems.push(
-				`AI-shaped description needs exactly one valid pinned Human-Review-Need footer (found ${needFields.length} field(s), ${need.length} valid)`
+				`AI-shaped description needs exactly one valid Human-Review-Need footer (found ${needFields.length} field(s), ${need.length} valid)`
 			);
+		// Only the coverage footer is pinned to the head it was materialized at. The review-need pin
+		// names the commit the grade describes, which lags the head after an amend the helper did not
+		// re-grade.
 		const head = String(pr?.head?.sha ?? '').toLowerCase();
-		for (const [label, field] of [
-			['Review-Coverage', coverage[0]],
-			['Human-Review-Need', need[0]],
-		]) {
-			const pin = field?.[0].match(/@\s*([0-9a-f]{6,40})<\/sub>/i)?.[1].toLowerCase();
-			if (pin && !head.startsWith(pin)) problems.push(`${label} footer is not pinned to the current head`);
-		}
+		const coveragePin = coverage[0]?.[0].match(/@\s*([0-9a-f]{6,40})<\/sub>/i)?.[1].toLowerCase();
+		if (coveragePin && !head.startsWith(coveragePin)) problems.push('Review-Coverage footer is not pinned to the current head');
 		if (
 			verification.length === 1 &&
 			complexity.length === 1 &&
