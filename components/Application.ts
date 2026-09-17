@@ -1682,9 +1682,6 @@ async function claimDeploymentDirectory(deploymentDirPath: string, componentName
 		if (owner === undefined) {
 			await mkdir(deploymentDirPath, { mode: 0o700 }).catch((retry: NodeJS.ErrnoException) => {
 				if (retry?.code !== 'EEXIST') throw retry;
-				// Says what to do, because this is the one refusal with no retry that can clear it: the claimant
-				// may be alive and about to name itself, or may have died between its mkdir and that write, and
-				// nothing on disk tells the two apart. A fresh id always works; #2315 step 5 carries the fix.
 				throw taken(
 					`Deployment id ${basename(deploymentDirPath)} is already claimed by a build that has not named its ` +
 						`component yet. If no deploy of any component is in flight, that directory is abandoned and has ` +
