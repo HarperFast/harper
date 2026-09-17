@@ -60,6 +60,38 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert(addedNames.includes('name'), `attribute 'name' was lost while adding a peer attribute: ${addedNames}`);
 	});
 
+	it('preserves non-enumerable live attribute metadata while staging a cluster merge', () => {
+		const Local = table({
+			table: 'ClusterMergeAttributeMetadata',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'related', type: 'String' },
+			],
+		});
+		const definition = { tableClass: class Related {} };
+		Object.defineProperty(
+			Local.attributes.find(({ name }) => name === 'related'),
+			'definition',
+			{ value: definition, configurable: true }
+		);
+
+		const Merged = table({
+			table: 'ClusterMergeAttributeMetadata',
+			database: 'test',
+			schemaDefined: true,
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'extra', type: 'String' },
+			],
+		});
+		const related = Merged.attributes.find(({ name }) => name === 'related');
+		assert.strictEqual(related.definition, definition);
+		assert.strictEqual(Object.getOwnPropertyDescriptor(related, 'definition').enumerable, false);
+	});
+
 	it('a cluster definition cannot flip the local schemaDefined declaration, live or durable', async () => {
 		const Dynamic = table({
 			table: 'ClusterMergeDynamic',

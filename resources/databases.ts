@@ -2614,11 +2614,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
 			const peerAddedAttributeNames = new Set<string>();
 			if (origin === 'cluster') {
-				const merged = Table.attributes.map((attribute) => ({ ...attribute }));
+				const cloneAttribute = (attribute: any) =>
+					Object.create(Object.getPrototypeOf(attribute), Object.getOwnPropertyDescriptors(attribute));
+				const merged = Table.attributes.map(cloneAttribute);
 				for (const attribute of attributes) {
 					const existing = merged.find((existingAttribute) => existingAttribute.name === attribute.name);
 					if (!existing) {
-						merged.push({ ...attribute });
+						merged.push(cloneAttribute(attribute));
 						peerAddedAttributeNames.add(attribute.name);
 						continue;
 					}
