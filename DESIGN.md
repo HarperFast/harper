@@ -2688,6 +2688,10 @@ that promise before applying `.map()`, `.concat()` or other iterable transforms.
 searches retain their synchronous iterable result. Static Resource search/query already awaits promise
 results, so wait/native-result errors precede HTTP headers. The adapter publishes coverage before the
 promise resolves. Ordinary searches still set their header synchronously from the native promise.
+Custom resources forwarding arbitrary queries should always `await super.search(query)` before
+composing results. The public TypeScript return type includes a promise, even for a caller that normally
+uses only synchronous options; the native-plane schema and positive wait determine the runtime shape.
+As with other promises, dropping a waiting search does not cancel it: await it or abort its request signal.
 An unknown or excessive bound produces `DERIVED_INDEX_LAGGING` / HTTP 503, with the tolerance and
 last certified age (when known) in the message. These admission failures never invalidate a healthy
 plane; existing unavailable/rebuilding checks still take precedence.
