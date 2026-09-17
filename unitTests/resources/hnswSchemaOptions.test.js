@@ -253,7 +253,7 @@ describe('HNSW GraphQL numeric options', () => {
 			table: tableName,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
-				{ name: 'embedding', indexed: { type: 'HNSW', nativePlaneMaxNodes: 0 }, type: 'Array' },
+				{ name: 'embedding', indexed: { type: 'HNSW' }, type: 'Array' },
 			],
 		});
 		assert.equal(Table.indices.embedding.customIndex.postCommit, undefined);
@@ -394,25 +394,16 @@ describe('HNSW GraphQL numeric options', () => {
 		assert.equal(Object.hasOwn(indexedOptions(tableName), 'nativePlane'), false);
 	});
 
-	it('validates native-only capacity only after base native eligibility', async () => {
+	it('validates native capacity independently of local native eligibility', async () => {
 		const previous = process.env.HNSW_NO_NATIVE_DEFAULT;
 		delete process.env.HNSW_NO_NATIVE_DEFAULT;
 		try {
-			const incompatible = await loadTable(
-				'HnswIneligibleNativeCapacityIgnored',
-				'(audit: true)',
-				'type: "HNSW", M: 12, nativePlaneMaxNodes: 0'
-			);
-			assert.equal(incompatible.postCommit, undefined);
-			const tableName = 'HnswIneligibleNativeCapacity';
-			if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !getPlaneBinding()) {
-				const index = await loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlaneMaxNodes: 0');
-				assert.equal(index.postCommit, undefined);
-				assert.equal(Object.hasOwn(indexedOptions(tableName), 'nativePlane'), false);
-				return;
-			}
 			await assert.rejects(
-				loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlaneMaxNodes: 0'),
+				loadTable('HnswIneligibleNativeCapacity', '(audit: true)', 'type: "HNSW", M: 12, nativePlaneMaxNodes: 0'),
+				/nativePlaneMaxNodes must be a positive integer/
+			);
+			await assert.rejects(
+				loadTable('HnswInvalidNativeCapacity', '(audit: true)', 'type: "HNSW", nativePlaneMaxNodes: 0'),
 				(error) =>
 					error instanceof ClientError &&
 					error.message === 'nativePlaneMaxNodes must be a positive integer below 2^32-1'
@@ -474,7 +465,7 @@ describe('HNSW GraphQL numeric options', () => {
 							},
 						],
 					}),
-				/nativePlane requires M=16/
+				process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? /nativePlane requires the RocksDB/ : /nativePlane requires M=16/
 			);
 			assert.deepStrictEqual(
 				AtomicTable.attributes.map(({ name }) => name),
@@ -539,7 +530,7 @@ describe('HNSW GraphQL numeric options', () => {
 							},
 						],
 					}),
-				/nativePlane requires M=16/
+				process.env.HARPER_STORAGE_ENGINE === 'lmdb' ? /nativePlane requires the RocksDB/ : /nativePlane requires M=16/
 			);
 			assert.strictEqual(tables[failedCreateName], undefined);
 			assert.strictEqual(AtomicTable.dbisDB.getSync(`${failedCreateName}/`), undefined);

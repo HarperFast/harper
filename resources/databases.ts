@@ -3379,7 +3379,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (release) release();
 	}
 }
-/** Stable structural form for deciding whether an index must be rebuilt; `coerceZero` extends numeric coercion to zero. */
+/**
+ * Stable structural form for deciding whether an index must be rebuilt. `coerceZero` extends numeric
+ * coercion to zero; a truthiness-sensitive numeric option must normalize its value before using it.
+ */
 export function canonicalizeIndexOptions(value: any, coerceZero = false): any {
 	if (Array.isArray(value)) return value.map((item) => canonicalizeIndexOptions(item, coerceZero));
 	if (value && typeof value === 'object') {

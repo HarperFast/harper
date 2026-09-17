@@ -407,9 +407,9 @@ export function attachDerivedIndexes(Table: any):
 	return {
 		async close(dropping = false) {
 			if (dropping) registered.droppingTables.add(Table.tableId);
-			const settled = dropping
-				? Promise.all([...(registered.tableBackends.get(Table.tableId) ?? [])].map((backend) => backend.settle()))
-				: Promise.all(releases.map((release) => release()));
+			const settlements = dropping
+				? [...(registered.tableBackends.get(Table.tableId) ?? [])].map((backend) => backend.settle())
+				: releases.map((release) => release());
 			const tableRegistration = registered.tables.get(Table.tableId);
 			if (tableRegistration) {
 				tableRegistration.owners.delete(installed);
@@ -419,7 +419,14 @@ export function attachDerivedIndexes(Table: any):
 					tableRegistration.current = tableRegistration.owners.values().next().value;
 				}
 			}
-			await settled;
+			if (dropping) {
+				await Promise.all(settlements);
+			} else {
+				for (const result of await Promise.allSettled(settlements)) {
+					if (result.status === 'rejected')
+						logger.error(`Could not settle a superseded HNSW backend for table ${Table.tableId}`, result.reason);
+				}
+			}
 		},
 		restoreAfterFailedDrop() {
 			registered.droppingTables.delete(Table.tableId);

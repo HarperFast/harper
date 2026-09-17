@@ -305,6 +305,7 @@ export class HierarchicalNavigableSmallWorld {
 			const value = name === 'optimizeRouting' ? normalizeOptimizeRoutingDeclaration(options[name]) : options[name];
 			options[name] = numericOption(name, value);
 		}
+		if (Object.hasOwn(options, 'nativePlaneMaxNodes')) nativePlaneMaxNodes(options);
 	}
 	static normalizeNativePlaneDeclaration(value: unknown): boolean | undefined {
 		if (value === undefined || value === null) return undefined;
@@ -344,6 +345,7 @@ export class HierarchicalNavigableSmallWorld {
 		return { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes };
 	}
 	static canRunNativePlane(rootStore: unknown, options: any, warnForMissingBinding = true): boolean {
+		nativePlaneMaxNodes(options);
 		if (!(rootStore instanceof RocksDatabase) || getPlaneBinding(warnForMissingBinding) == null) return false;
 		if (
 			options?.M === null ||
@@ -368,7 +370,6 @@ export class HierarchicalNavigableSmallWorld {
 			(configuredML === undefined || configuredML === 1 / Math.log(16)) &&
 			(configuredOptimizeRouting === undefined || configuredOptimizeRouting === 0.5);
 		if (!baseEligible) return false;
-		nativePlaneMaxNodes(options);
 		return true;
 	}
 	static canDefaultToNativePlane(rootStore: unknown, options: any): boolean {

@@ -1908,6 +1908,12 @@ export function makeTable(options) {
 				TableResource.derivedIndexRuntime = derivedIndexRuntime?.restoreAfterFailedDrop?.();
 				throw error;
 			}
+			const abortStaleDrop = () => {
+				derivedIndexRuntime?.completeDrop?.(false);
+				TableResource.derivedIndexRuntime = undefined;
+				TableResource.cleanup();
+				if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
+			};
 			let dropIdentityConfirmed = databaseName !== databasePath;
 			let primaryCatalogKey = TableResource.tableName + '/';
 			if (databaseName === databasePath) {
@@ -1963,10 +1969,7 @@ export function makeTable(options) {
 				}
 			}
 			if (!dropIdentityConfirmed) {
-				derivedIndexRuntime?.completeDrop?.(false);
-				TableResource.derivedIndexRuntime = undefined;
-				TableResource.cleanup();
-				if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
+				abortStaleDrop();
 				return;
 			}
 			TableResource.derivedIndexRuntime = undefined;
@@ -1982,7 +1985,7 @@ export function makeTable(options) {
 			// family drops below. If a drop fails past this point the table stays
 			// invisible, and the tombstone guarantees the drop completes on the
 			// next startup (or on a same-name create).
-			delete databases[databaseName][tableName];
+			if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
 			// The above stops new source-fill writes from starting, but a write from a get()
 			// that already returned to its caller may still be in flight. Dropping the column
 			// families out from under that write is a genuine invariant violation, not just a
@@ -2078,6 +2081,10 @@ export function makeTable(options) {
 						}
 						return removeTombstonedCatalog();
 					});
+					if (!removed) {
+						abortStaleDrop();
+						return;
+					}
 					if (removed) await dbisDb.committed;
 				} else {
 					// LMDB: no shared column-family double-drop, and its engine lock is
@@ -2085,7 +2092,7 @@ export function makeTable(options) {
 					// plus the same tombstone-guarded catalog removal.
 					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
-						derivedIndexRuntime?.completeDrop?.(false);
+						abortStaleDrop();
 						return;
 					}
 					const drops = [];

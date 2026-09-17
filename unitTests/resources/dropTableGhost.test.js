@@ -169,6 +169,45 @@ describe('dropTable ghost regression', () => {
 		assert.ok(!survived.dropping, 'the surviving row must be the fresh (non-tombstoned) create');
 	});
 
+	it('retires a stale class without removing a replacement discovered late in drop', async () => {
+		const tableName = 'GhostLateIdentityChange';
+		const Stale = defineTable(tableName);
+		await Stale.put({ id: 1, str: 'stale' });
+		const dbisDb = getDbisDb();
+		const primaryKey = `${tableName}/`;
+		const originalPrimary = { ...dbisDb.getSync(primaryKey) };
+		const replacement = { replacement: true };
+		const originalGetRange = Stale.primaryStore.getRange;
+		const originalCleanup = Stale.cleanup;
+		let cleaned = false;
+		Stale.cleanup = () => {
+			cleaned = true;
+			return originalCleanup.call(Stale);
+		};
+		Stale.primaryStore.getRange = function (...args) {
+			const replacementTableId =
+				typeof originalPrimary.tableId === 'bigint' ? originalPrimary.tableId + 1n : originalPrimary.tableId + 1;
+			const freshPrimary = { ...dbisDb.getSync(primaryKey), tableId: replacementTableId };
+			delete freshPrimary.dropping;
+			dbisDb.putSync(primaryKey, freshPrimary);
+			databases[TEST_DB][tableName] = replacement;
+			return originalGetRange.apply(this, args);
+		};
+		try {
+			await Stale.dropTable();
+		} finally {
+			Stale.primaryStore.getRange = originalGetRange;
+			Stale.cleanup = originalCleanup;
+		}
+		assert.equal(cleaned, true, 'the stale class must release its timers and reclamation registration');
+		assert.strictEqual(databases[TEST_DB][tableName], replacement, 'the replacement registry entry must survive');
+		assert.equal(dbisDb.getSync(primaryKey).dropping, undefined, 'the replacement catalog row must survive');
+
+		dbisDb.putSync(primaryKey, originalPrimary);
+		databases[TEST_DB][tableName] = Stale;
+		await Stale.dropTable();
+	});
+
 	it('bounds the retries of a drop that can never complete', async function () {
 		this.timeout(20000);
 		// The attempt budget is module-level and deliberately survives until the
