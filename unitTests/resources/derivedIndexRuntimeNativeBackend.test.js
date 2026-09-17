@@ -1224,6 +1224,62 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('rebuilds after repeated full-text inspection failures instead of retrying forever', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 10, recordId: 'a' })]]]),
+		});
+		let inspections = 0;
+		let resets = 0;
+		let finishReset;
+		const engine = {
+			committedPayload: undefined,
+			async applyMutationBatch(batch) {
+				return {
+					processed: batch.upserts.length + batch.deletes.length,
+					rejected: [],
+					encodedBytes: 1,
+					frames: 1,
+				};
+			},
+			async publish(payload) {
+				this.committedPayload = payload;
+				return 1n;
+			},
+			async close() {
+				return {};
+			},
+		};
+		const backend = new FullTextDerivedIndexBackend({
+			id: 'inspect-rebuild',
+			lifecycle: {
+				inspect() {
+					inspections++;
+					throw new Error('persistent inspection failure');
+				},
+				async open() {
+					return engine;
+				},
+				reset() {
+					resets++;
+					return new Promise((resolve) => (finishReset = resolve));
+				},
+			},
+			openAttempts: 1,
+		});
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		runtime.register(registration(backend, { lockRetryMilliseconds: 20, maxFlushAgeMilliseconds: 5 }));
+
+		await waitFor(() => resets === 1, { timeout: 5000 });
+		assert.strictEqual(inspections, 3);
+		assert.strictEqual(runtime.getStatus(backend.id).state, 'rebuilding');
+		assert.strictEqual(runtime.getReadiness(backend.id).state, 'rebuilding');
+		finishReset();
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 5000 });
+		assert.strictEqual(resets, 1);
+		assert.strictEqual(store.markers.size, 0);
+		await runtime.stop();
+	});
+
 	it('charges the rebuild budget when the full-text wrapper returns an invalid mutation result', async () => {
 		const records = new Map([['1:a', { version: 20, value: { title: 'oversized' }, size: 32 }]]);
 		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]), {

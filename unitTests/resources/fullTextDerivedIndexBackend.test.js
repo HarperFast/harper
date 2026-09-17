@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const { writeKeyId } = require('#src/resources/DatabaseTransaction');
 const {
 	FullTextDerivedIndexBackend,
+	FullTextDerivedIndexError,
 	decodeFullTextCursorPayload,
 	encodeFullTextCursorPayload,
 	toFullTextMutationBatch,
@@ -164,6 +165,49 @@ describe('FullTextDerivedIndexBackend', () => {
 		);
 		assert.strictEqual(backend.getDurableCursor(), undefined);
 		assert.strictEqual(source.inspectCalls, 2);
+	});
+
+	it('escalates repeated inspection failures across owner epochs and rearms the retry budget', () => {
+		const source = lifecycle();
+		let inspectionAvailable = false;
+		source.inspect = function () {
+			this.inspectCalls++;
+			if (!inspectionAvailable) throw new Error('persistent inspection failure');
+			return this.inspection;
+		};
+		const { backend, setEpoch } = makeBackend(source);
+
+		for (const epoch of [1n, 2n]) {
+			setEpoch(epoch);
+			assert.throws(
+				() => backend.getDurableCursor(),
+				(error) =>
+					error.name === 'DerivedIndexBackendRetryError' && /persistent inspection failure/.test(error.cause?.message)
+			);
+		}
+		setEpoch(3n);
+		assert.throws(
+			() => backend.getDurableCursor(),
+			(error) =>
+				error instanceof FullTextDerivedIndexError && /persistent inspection failure/.test(error.cause?.message)
+		);
+
+		setEpoch(4n);
+		assert.throws(
+			() => backend.getDurableCursor(),
+			(error) => error.name === 'DerivedIndexBackendRetryError'
+		);
+		inspectionAvailable = true;
+		setEpoch(5n);
+		assert.strictEqual(backend.getDurableCursor(), undefined);
+
+		inspectionAvailable = false;
+		setEpoch(6n);
+		assert.throws(
+			() => backend.getDurableCursor(),
+			(error) => error.name === 'DerivedIndexBackendRetryError'
+		);
+		assert.strictEqual(source.inspectCalls, 6);
 	});
 
 	it('opens the writer lazily on its first accepted delivery', async () => {
