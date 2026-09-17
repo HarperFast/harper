@@ -2475,68 +2475,75 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if (schemaDefined == undefined) schemaDefined = true;
 	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
+	let releaseExclusiveLock: (() => void) | undefined;
 
 	const hasHnswAtEntry = attributes.some((attribute) => attribute.indexed?.type === 'HNSW');
-	const persistedPrimaryKeyAtEntry =
-		hasHnswAtEntry || (Table && Table.audit !== true)
-			? Table?.dbisDB?.getSync(`${tableName}/${Table.primaryKey}`)
-			: undefined;
-	const persistedAuditAtEntry =
-		persistedPrimaryKeyAtEntry?.audit ??
-		(hasHnswAtEntry || (Table && Table.audit !== true) ? Table?.dbisDB?.getSync(`${tableName}/`)?.audit : undefined);
-	if (persistedAuditAtEntry === true && Table?.audit !== true) Table.enableAuditing();
-	for (const attribute of attributes) {
-		if (attribute.attribute && !attribute.name) {
-			// there is some legacy code that calls the attribute's name the attribute's attribute
-			attribute.name = attribute.attribute;
-			attribute.indexed = true;
-		} else attribute.attribute = attribute.name;
-		if (attribute.expiresAt) attribute.indexed = true;
-		if (attribute.indexed?.type === 'HNSW' && origin !== 'cluster') {
-			const existingAttribute = Table?.attributes.find((existing: any) => existing.name === attribute.name);
-			const persistedIndexed =
-				Table?.dbisDB?.getSync(`${tableName}/${attribute.name || ''}`)?.indexed ?? existingAttribute?.indexed;
-			CUSTOM_INDEXES.HNSW.normalizeDeclarationOptions(attribute.indexed, persistedIndexed);
-			if (attribute.indexed.nativePlane != null) {
-				const persistedNativePlane = persistedIndexed?.nativePlane;
-				const matchesPersistedLegacySpelling =
-					persistedIndexed?.type === 'HNSW' &&
-					Object.hasOwn(persistedIndexed, 'nativePlane') &&
-					typeof persistedNativePlane !== 'boolean' &&
-					(Object.is(persistedNativePlane, attribute.indexed.nativePlane) ||
-						(typeof persistedNativePlane === 'string' &&
-							typeof attribute.indexed.nativePlane === 'number' &&
-							persistedNativePlane.trim() !== '' &&
-							Number(persistedNativePlane) === attribute.indexed.nativePlane));
-				if (matchesPersistedLegacySpelling) {
-					attribute.indexed.nativePlane = persistedNativePlane;
-				} else {
-					attribute.indexed.nativePlane = CUSTOM_INDEXES.HNSW.normalizeNativePlaneDeclaration(
-						attribute.indexed.nativePlane
-					);
+	try {
+		if (Table && hasHnswAtEntry && origin !== 'cluster') exclusiveLock();
+		const persistedPrimaryKeyAtEntry =
+			hasHnswAtEntry || (Table && Table.audit !== true)
+				? Table?.dbisDB?.getSync(`${tableName}/${Table.primaryKey}`)
+				: undefined;
+		const persistedAuditAtEntry =
+			persistedPrimaryKeyAtEntry?.audit ??
+			(hasHnswAtEntry || (Table && Table.audit !== true) ? Table?.dbisDB?.getSync(`${tableName}/`)?.audit : undefined);
+		if (persistedAuditAtEntry === true && Table?.audit !== true) Table.enableAuditing();
+		for (const attribute of attributes) {
+			if (attribute.attribute && !attribute.name) {
+				// there is some legacy code that calls the attribute's name the attribute's attribute
+				attribute.name = attribute.attribute;
+				attribute.indexed = true;
+			} else attribute.attribute = attribute.name;
+			if (attribute.expiresAt) attribute.indexed = true;
+			if (attribute.indexed?.type === 'HNSW' && origin !== 'cluster') {
+				const existingAttribute = Table?.attributes.find((existing: any) => existing.name === attribute.name);
+				const persistedIndexed =
+					Table?.dbisDB?.getSync(`${tableName}/${attribute.name || ''}`)?.indexed ?? existingAttribute?.indexed;
+				CUSTOM_INDEXES.HNSW.normalizeDeclarationOptions(attribute.indexed, persistedIndexed);
+				if (attribute.indexed.nativePlane != null) {
+					const persistedNativePlane = persistedIndexed?.nativePlane;
+					const matchesPersistedLegacySpelling =
+						persistedIndexed?.type === 'HNSW' &&
+						Object.hasOwn(persistedIndexed, 'nativePlane') &&
+						typeof persistedNativePlane !== 'boolean' &&
+						(Object.is(persistedNativePlane, attribute.indexed.nativePlane) ||
+							(typeof persistedNativePlane === 'string' &&
+								typeof attribute.indexed.nativePlane === 'number' &&
+								persistedNativePlane.trim() !== '' &&
+								Number(persistedNativePlane) === attribute.indexed.nativePlane));
+					if (matchesPersistedLegacySpelling) {
+						attribute.indexed.nativePlane = persistedNativePlane;
+					} else {
+						attribute.indexed.nativePlane = CUSTOM_INDEXES.HNSW.normalizeNativePlaneDeclaration(
+							attribute.indexed.nativePlane
+						);
+					}
 				}
 			}
 		}
-	}
-	const auditEnabledAtEntry =
-		auditExplicitlyEnabled ||
-		(!auditExplicitlyDisabled &&
-			(persistedAuditAtEntry === true || (persistedAuditAtEntry == null && Table?.audit === true)));
-	if (
-		origin !== 'cluster' &&
-		attributes.some((attribute) => {
-			if (attribute.indexed?.type !== 'HNSW') return false;
-			if (attribute.indexed.nativePlane != null) return Boolean(attribute.indexed.nativePlane);
-			const existingAttribute = Table?.attributes.find(
-				(existing: any) => existing.name === attribute.name && existing.indexed?.type === 'HNSW'
+		const auditEnabledAtEntry =
+			auditExplicitlyEnabled ||
+			(!auditExplicitlyDisabled &&
+				(persistedAuditAtEntry === true || (persistedAuditAtEntry == null && Table?.audit === true)));
+		if (
+			origin !== 'cluster' &&
+			attributes.some((attribute) => {
+				if (attribute.indexed?.type !== 'HNSW') return false;
+				if (attribute.indexed.nativePlane != null) return Boolean(attribute.indexed.nativePlane);
+				const existingAttribute = Table?.attributes.find(
+					(existing: any) => existing.name === attribute.name && existing.indexed?.type === 'HNSW'
+				);
+				return Boolean(existingAttribute?.indexed.nativePlane);
+			}) &&
+			!auditEnabledAtEntry
+		) {
+			throw new ClientError(
+				`Table '${databaseName}.${tableName}' must enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
 			);
-			return Boolean(existingAttribute?.indexed.nativePlane);
-		}) &&
-		!auditEnabledAtEntry
-	) {
-		throw new ClientError(
-			`Table '${databaseName}.${tableName}' must enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
-		);
+		}
+	} catch (error) {
+		releaseLock();
+		throw error;
 	}
 	const validateNativeDefaultOptions = (catalog?: any) => {
 		for (const attribute of attributes) {
@@ -2555,7 +2562,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let deferredPrimaryRow: any;
 	let unpublishedPrimaryStore: any;
 	let published = false;
-	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
 	try {
@@ -3327,20 +3333,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (release) release();
 	}
 }
-/**
- * Canonical form used ONLY for the structural (reindex-triggering) comparison of index options.
- * `@indexed(...)` records options in source-argument order and may contain quoted numeric strings,
- * while the operations API and config objects can supply them reordered or as numbers; without
- * canonicalizing, such a representation-only difference flips the structural comparison and forces
- * a needless full rebuild (clearing + rebuilding the index, 503-ing the attribute throughout) for a
- * semantically identical index. Custom indexes define the special cases through `numericOptions`,
- * `truthyStructuralOptions`, and `normalizeOptionValue`: numerically equivalent HNSW option
- * representations compare equal; truthiness-based structural options retain their legacy mode; and
- * ambiguous zero values for other option sets remain distinct. Boolean-vs-object and other
- * absent-vs-present differences are preserved, so a genuine change (`true` vs `{ type: 'HNSW' }`, an
- * added/removed option, a changed value) still triggers a rebuild. Persistence keys off the raw form,
- * so the stored descriptor self-heals toward this shape over time. harper#1357
- */
+/** Stable structural form for deciding whether an index must be rebuilt. */
 export function canonicalizeIndexOptions(value: any, coerceZero = false): any {
 	if (Array.isArray(value)) return value.map((item) => canonicalizeIndexOptions(item, coerceZero));
 	if (value && typeof value === 'object') {

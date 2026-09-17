@@ -233,12 +233,9 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	}
 }
 
-// Multiple logical database names can resolve to one physical RocksDB database. They share the
-// audit store and plane file, so one runner must serve every class instead of applying each log
-// entry repeatedly. A reload or alias hands that runner to its newest class generation.
+// One generation owns each physical backend; destructive cleanup also awaits superseded generations.
 type RegisteredTable = { current: { Table: any }; owners: Set<{ Table: any }> };
 type RegisteredBackend = {
-	/** Stops this generation and every runner it superseded before the same physical backend was registered. */
 	settle: () => Promise<void>;
 };
 type Registered = {
@@ -317,12 +314,23 @@ export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): P
 			readiness: () => registered.runtime.getReadiness(id),
 			requestRebuild: () => registered.runtime.requestRebuild(id),
 		});
-		// Hand the physical backend to the newest alias/reload generation. Starting predecessor
-		// settlement removes its runner synchronously; the replacement waits for its native lock.
-		const predecessor = registered.backends.get(id);
-		const predecessorSettled = predecessor?.settle() ?? Promise.resolve();
+		let predecessor = registered.backends.get(id);
+		const inherited = predecessor;
+		const settlePredecessor = () => {
+			const current = predecessor;
+			if (!current) return Promise.resolve();
+			const settled = current.settle();
+			settled.then(
+				() => {
+					if (predecessor === current) predecessor = undefined;
+				},
+				() => {}
+			);
+			return settled;
+		};
+		const predecessorSettled = settlePredecessor();
 		predecessorSettled.catch(() => {});
-		if (registered.backends.get(id) === predecessor) registered.backends.delete(id);
+		if (registered.backends.get(id) === inherited) registered.backends.delete(id);
 		const release = registered.runtime.register({
 			backend: new HnswDerivedIndexBackend(id, index),
 			projections: new Map([
@@ -342,13 +350,11 @@ export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): P
 		const registeredBackend: RegisteredBackend = {
 			settle: () => {
 				if (settling) return settling;
-				const attempt = Promise.all([predecessor?.settle() ?? Promise.resolve(), release()]).then(() => {
+				const attempt = Promise.all([settlePredecessor(), release()]).then(() => {
 					if (registered.backends.get(id) === registeredBackend) registered.backends.delete(id);
 				});
 				settling = attempt;
 				attempt.catch(() => {
-					// requestRebuild() can retry a failed shutdown. Let a later close observe that
-					// retry's fresh stop promise instead of retaining the first rejection forever.
 					if (settling === attempt) settling = undefined;
 				});
 				return attempt;
@@ -357,8 +363,6 @@ export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): P
 		registered.backends.set(id, registeredBackend);
 		releases.push(async (dropping) => {
 			const active = registered.backends.get(id);
-			// dropTable destroys the shared column family and plane file, so it must quiesce whichever
-			// alias/reload generation currently owns the backend, not merely this class's generation.
 			if (dropping && active) await active.settle();
 			else await registeredBackend.settle();
 		});
