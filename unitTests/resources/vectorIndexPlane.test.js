@@ -595,14 +595,18 @@ describe('HNSW native plane file-primary delivery', function () {
 		assert.ok(fs.existsSync(planePath));
 	});
 
-	it('carries string, UUID and overflow-length primary keys through the plane', async () => {
+	it('carries string, UUID and overflow-length primary keys through a plane sized by nativePlaneKeyCap', async () => {
 		const Keyed = table({
 			table: 'PlaneKeyed',
 			database: DB,
 			audit: true,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
-				{ name: 'vector', indexed: { type: 'HNSW', nativePlane: true, efConstruction: 200 }, type: 'Array' },
+				{
+					name: 'vector',
+					indexed: { type: 'HNSW', nativePlane: true, efConstruction: 200, nativePlaneKeyCap: '16' },
+					type: 'Array',
+				},
 			],
 		});
 		await Keyed.indexingOperation;
@@ -631,6 +635,7 @@ describe('HNSW native plane file-primary delivery', function () {
 			Keyed.search({ sort: { attribute: 'vector', target: probe, distance: 'cosine' }, select: ['id'], limit: 5 })
 		);
 		assert.deepEqual(new Set(rows.map((row) => row.id)), new Set(keys));
+		assert.equal(index.getPlane().keyCap, 16, 'the directive value, a string, sets the plane keyCap');
 		await Keyed.dropTable();
 	});
 

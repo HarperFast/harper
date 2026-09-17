@@ -138,8 +138,10 @@ const NODE_COUNT_TTL = 10_000;
 // write — and ids at or past it are rejected by the crate, which disables the plane.
 const PLANE_LAYER0_CAP_MAX = 1024;
 const PLANE_MAX_NODES = 1 << 24;
-// Inline primary-key bytes per plane slot (msgpack-encoded); 40 fits UUIDs inside the slot padding.
+// Default inline primary-key bytes per plane slot (msgpack-encoded); 40 fits UUIDs inside the slot
+// padding. `nativePlaneKeyCap` raises it for tables whose keys are longer.
 const PLANE_KEY_CAP = 40;
+const PLANE_KEY_CAP_MAX = 65535;
 // An existing plane file that cannot be opened is normally another worker mid-create (retry);
 // past this age it is a crashed create and is deleted so the audit-backed runtime can rebuild it.
 const PLANE_STALE_CREATE_MS = 60_000;
@@ -292,6 +294,7 @@ export class HierarchicalNavigableSmallWorld {
 	private planeDisabledLogged = false;
 	private filePrimary = false;
 	private nativePlaneMaxNodes = PLANE_MAX_NODES;
+	private nativePlaneKeyCap = PLANE_KEY_CAP;
 	// Installed by attachDerivedIndexes on every worker: shared readiness of the index and the way
 	// to ask its owner for a rebuild. Only the owning worker's runtime ever destroys native state.
 	private derivedHost?: { readiness: () => DerivedIndexReadiness; requestRebuild: () => boolean };
@@ -360,6 +363,16 @@ export class HierarchicalNavigableSmallWorld {
 				this.nativePlaneMaxNodes >= PLANE_NO_ID
 			) {
 				throw new ClientError('nativePlaneMaxNodes must be a positive integer below 2^32-1');
+			}
+			// Number(): a directive argument arrives as a string
+			this.nativePlaneKeyCap =
+				options.nativePlaneKeyCap === undefined ? PLANE_KEY_CAP : Number(options.nativePlaneKeyCap);
+			if (
+				!Number.isSafeInteger(this.nativePlaneKeyCap) ||
+				this.nativePlaneKeyCap < 8 ||
+				this.nativePlaneKeyCap > PLANE_KEY_CAP_MAX
+			) {
+				throw new ClientError('nativePlaneKeyCap must be an integer between 8 and 65535');
 			}
 			// The plane stores int8 bins and computes asymmetric cosine only, so the flag is a
 			// no-op for float (quantization: "none") and non-cosine indexes; a graph whose derived
@@ -443,9 +456,10 @@ export class HierarchicalNavigableSmallWorld {
 					// Crash recovery is per-slot inside the crate. The clean flag is advisory;
 					// another worker may still be constructing this shared file.
 					const opened = Plane.open(filePath);
-					if (this.filePrimary && opened.keyCap < PLANE_KEY_CAP) {
+					if (this.filePrimary && opened.keyCap !== this.nativePlaneKeyCap) {
+						// created under another nativePlaneKeyCap: rebuild to the configured layout
 						opened.invalidateFile();
-						throw new Error(`plane keyCap ${opened.keyCap} is below the ${PLANE_KEY_CAP} this index stores`);
+						throw new Error(`plane keyCap ${opened.keyCap} differs from the configured ${this.nativePlaneKeyCap}`);
 					}
 					return (this.plane = opened);
 				} catch (openError) {
@@ -486,7 +500,7 @@ export class HierarchicalNavigableSmallWorld {
 					dims,
 					this.planeLayer0Cap(),
 					this.nativePlaneMaxNodes,
-					PLANE_KEY_CAP
+					this.nativePlaneKeyCap
 				));
 			} catch (createError) {
 				// Never leave a partial file that a later process could trust as current.

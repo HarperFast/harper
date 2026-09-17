@@ -2820,9 +2820,10 @@ unavailable until the value is raised and the index rebuilt). Header page: magic
 (derived from M/optimizeRouting at creation), entry point, atomic `id_high_water`, tag-guarded
 freelist head, a transaction watermark advanced only after an `msync` barrier, and a clean-shutdown
 flag. Layer-0 slot: seqlock word, flags + level, `scale`/`invMag`, degree, int8 vector padded to a
-4-byte boundary, `u32` neighbour ids, then the record's msgpack-encoded primary key (`keyCap` 40
-inline bytes, format v8; a longer key spills to an overflow arena at 128 B/node after the upper
-region) — 1,344 B at 768-d with cap 128, 704 B at 128-d, the key fitting the cache-line padding.
+4-byte boundary, `u32` neighbour ids, then the record's msgpack-encoded primary key (format v8;
+`nativePlaneKeyCap` inline bytes, default 40; a longer key spills to an overflow arena after the
+upper region, reserved at max(128, 4 × keyCap) bytes per node — a table whose keys are mostly
+longer than 40 encoded bytes should raise `nativePlaneKeyCap` rather than live in the arena) — 1,344 B at 768-d with cap 128, 704 B at 128-d, the key fitting the cache-line padding.
 Upper layers (~6% of nodes) live in a fixed-entry region in the same file, per-entry seqlocked.
 Per-edge cached distances are dropped: recomputing costs ~50 ns natively, storing costs 8 B and
 ~40% of a node. Searches and predicate batches return each hit's key with it, so no lookup by node
