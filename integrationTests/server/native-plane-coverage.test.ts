@@ -1,4 +1,4 @@
-/** Native HNSW coverage admission and response metadata through REST with six HTTP workers. */
+/** Native HNSW coverage waits and response metadata through REST with six HTTP workers. */
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { resolve } from 'node:path';
@@ -187,7 +187,7 @@ test(
 						for (const record of result.body.filter((record: any) => record.error))
 							assert.match(
 								record.error,
-								/^(DerivedIndexLagError|Error: The native HNSW index is (unavailable|rebuilding))/
+								/^(DerivedIndexLagError|ServerError: The native HNSW index is (unavailable|rebuilding))/
 							);
 						return false;
 					}

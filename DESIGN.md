@@ -2695,7 +2695,8 @@ provide a separate `message` field. SSE/NDJSON use their existing terminal error
 is not evidence of successful completion. Prefix rows can precede a later branch error. Count pages
 materialize before headers and can still return an error status. First-item HTTP status deferral is a
 separate follow-up (#2670), not a guarantee here. Direct custom-index arrays retain `indexCoverage`;
-ordinary native promises expose it before awaiting, while waiting promises expose it on resolved arrays.
+ordinary native promises expose it before awaiting, while waiting promises expose it on resolved arrays
+except for the zero-size fast path, which skips certification and carries no proof.
 
 Waiting consumes the ordinary transaction timeout without special monitor renewal. An expired read
 snapshot fails with `ReadSnapshotExpiredError`; timed-out staged writes retain their existing 422
@@ -2751,8 +2752,7 @@ retrying a deferred batch; an active peer owner already refreshes at flush caden
 notification or per-query persisted coverage write is needed. Closing a registration rejects its waiters.
 A completed nonempty drain also attaches its capture to the accepted boundary; ongoing writes need
 not leave an empty turn between batches. The capture remains fenced behind every indexed mutation
-accepted through that boundary. Query admission keeps existing read-only transaction links active
-until the bounded wait settles; `renewReadTimeout()` still refuses to extend pending write intents.
+accepted through that boundary.
 The strict/ownerless path costs a cursor read and stats per physical log. If a database-wide backlog
 prevents the owner from inspecting unrelated writes, coverage can conservatively become unprovable
 for an otherwise unaffected index; queries do not scan logs to classify that backlog.

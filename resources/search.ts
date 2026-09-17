@@ -146,7 +146,8 @@ export function executeConditions(
 			allowFullScan: request.allowFullScan,
 			filtered,
 			context,
-			minResults: request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
+			minResults:
+				request.limit === 0 ? 0 : request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 		});
 	}
 	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
@@ -572,7 +573,7 @@ export function searchByIndex(
 				filter:
 					waiting && recordFilter
 						? (id) => {
-								signal.throwIfAborted();
+								if (signal.aborted) return false;
 								checkActive?.();
 								return recordFilter(id);
 							}
@@ -615,15 +616,18 @@ export function searchByIndex(
 			};
 			if (typeof (searched as any)?.then === 'function') {
 				let settled = false;
-				const pending = (searched as Promise<any[]>)
-					.then((entries) => {
-						if (controller?.signal.aborted) return [];
-						checkActive?.();
-						return processEntries(entries);
-					})
-					.finally(() => {
-						settled = true;
-					});
+				const pending = waiting
+					? (searched as Promise<any[]>)
+							.then((entries) => {
+								if (controller.signal.aborted) return [];
+								if (signal.aborted) throw signal.reason ?? new Error('Index search aborted', { cause: signal.reason });
+								checkActive();
+								return processEntries(entries);
+							})
+							.finally(() => {
+								settled = true;
+							})
+					: (searched as Promise<any[]>).then(processEntries);
 				// A consumer may abandon this lazy iterable without calling next().
 				pending.catch(() => {});
 				const results: any = new ExtendedIterable();

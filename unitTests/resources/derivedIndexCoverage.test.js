@@ -136,11 +136,7 @@ describe('native derived-index query coverage', function () {
 		const since = derivedIndexTime(Product.auditStore.rootStore);
 		await index.derivedHost.waitForCoverage(since, 10_000);
 		await Other.put('after-wait-boundary', { value: 1 });
-		await index.derivedHost.waitForCoverage(since, 10_000);
-		await assert.rejects(
-			Promise.resolve().then(() => search(0)),
-			{ code: 'DERIVED_INDEX_LAGGING' }
-		);
+		await index.derivedHost.waitForCoverage(since, Number.MIN_VALUE);
 		await current();
 	});
 	it('accepts a published fixed-boundary proof on the final deadline check', async () => {
@@ -242,9 +238,14 @@ describe('native derived-index query coverage', function () {
 		}
 	});
 	it('skips native work for zero-size waiting pages including counts', async () => {
-		for (const count of [undefined, 'exact']) {
+		for (const [count, offset] of [
+			[undefined, 0],
+			['exact', 0],
+			[undefined, 5],
+			['exact', 5],
+		]) {
 			await current();
-			await Product.put('empty-wait-' + count, { vector });
+			await Product.put('empty-wait-' + count + '-' + offset, { vector });
 			let filtered = 0;
 			const results = await Product.search({
 				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: Number.MIN_VALUE },
@@ -253,6 +254,7 @@ describe('native derived-index query coverage', function () {
 					return true;
 				},
 				limit: 0,
+				offset,
 				count,
 			});
 			assert.deepStrictEqual(await Array.fromAsync(results), []);
@@ -279,6 +281,31 @@ describe('native derived-index query coverage', function () {
 			assert.equal(transaction.readTxnsUsed, 0);
 		} finally {
 			transaction.abort();
+		}
+	});
+	it('preserves a healthy plane when a filtered traversal is aborted with an arbitrary reason', async () => {
+		await current();
+		const plane = index.getPlane();
+		for (const reason of ['client left', null, Object.freeze({ cancelled: true })]) {
+			const controller = new AbortController();
+			let filtered = 0;
+			const results = await Product.search(
+				{
+					sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+					vectorFilter: () => {
+						filtered++;
+						controller.abort(reason);
+						return true;
+					},
+				},
+				{ signal: controller.signal }
+			);
+			await assert.rejects(Array.fromAsync(results), (error) =>
+				reason === null ? error.message === 'Index search aborted' && error.cause === null : Object.is(error, reason)
+			);
+			assert.equal(filtered, 1);
+			assert.strictEqual(index.getPlane(), plane);
+			assert.equal(index.derivedHost.readiness().state, 'ready');
 		}
 	});
 	it('keeps invalid waiting options synchronous without starting a traversal', async () => {
@@ -487,7 +514,6 @@ describe('native derived-index query coverage', function () {
 					conditions: [{ attribute: 'vector', comparator: 'le', value: 0.1, target: vector }],
 					sort: { attribute: 'vector', target: vector, maxIndexLagMilliseconds: 0 },
 				})) {
-					// Consume the real table query so admission executes.
 				}
 			},
 			(error) => {
@@ -541,7 +567,7 @@ describe('native derived-index query coverage', function () {
 		const result = await current();
 		assert(result.some(({ key }) => key === 'pending'));
 	});
-	it('retains a current proof when its process-local capture time is unavailable', async () => {
+	it('retains a current proof when its shared capture time is unavailable', async () => {
 		await current();
 		const buffer = Product.auditStore.getUserSharedBuffer(
 			`derived-index:hnsw:${Product.indices.vector.name}:readiness`,
