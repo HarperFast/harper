@@ -89,6 +89,30 @@ const MAX_DELEGATIONS_PER_TABLE = 10_000;
 const MAX_DELEGATIONS_PER_REQUESTER = 2_000;
 /** Bounds expiry work per tick, so a burst of expiries cannot stall the event loop. */
 const MAX_EXPIRIES_PER_TICK = 256;
+/** How many entries a relay sweep may LOOK at per tick, so a thread holding many live relayed
+ * admissions does not walk all of them every 100 ms to find nothing. Well above any realistic count of
+ * concurrent off-owner locks on one thread, so an ordinary sweep still completes a full pass. */
+const MAX_EXAMINED_PER_TICK = 4_096;
+/** How long past its lease a relayed admission entry is kept before pruning (harper-pro#852), so the
+ * handle's own lease timer fires first and forwards its release to the owner rather than racing the
+ * sweep that would drop the entry it needs. A few ticks is plenty. */
+const REMOTE_PRUNE_GRACE_MS = 500;
+/**
+ * What an owner-worker acquire (harper-pro#852) reserves out of the caller's `waitMs` for the round
+ * trip, so the transport is asked for a wait it can answer WITHIN the caller's budget. `lock()` holds
+ * the native key for the whole wait, so the hop must come out of that budget, never on top of it:
+ * overshooting blocks every other worker on the key for the overshoot. Halved for a caller whose wait
+ * is shorter than the allowance, so a short wait still leaves the owner something to work with.
+ *
+ * Small on purpose. This covers only the core-to-transport boundary: a transport that relays bounds
+ * itself inside the wait it is handed and reserves its own margin for the hops it makes, so reserving
+ * a hop-sized allowance here as well would subtract the same round trip from the caller twice.
+ */
+const REMOTE_ACQUIRE_HOP_MS = 500;
+/** Core's last-resort net on an owner-worker acquire, on top of the caller's `waitMs`. The transport
+ * already bounds itself inside that budget, so this fires only when it never returns at all — small,
+ * because it is a wedged-transport net and not a second full wait. */
+const REMOTE_ACQUIRE_BACKSTOP_MS = 1_000;
 const MAX_NODE_NAME_LENGTH = 255;
 const MAX_LOCK_DEPENDENCIES = 1_024;
 const MAX_DEPENDENCY_SETS_PER_TABLE = 20_000;
@@ -286,6 +310,18 @@ export interface ClusterLockTransport {
 	): Promise<DelegationReply>;
 	/** Home → delegate. Resolves once the delegate has drained and stopped admitting. */
 	recallDelegation(node: string, database: string, table: string, recall: DelegationRecall): Promise<void>;
+	/**
+	 * Obtain an admission from the worker thread that coordinates this database, for a `lock()` served
+	 * on a thread that is not the owner. Present only when the transport can relay across threads
+	 * (harper-pro#852); a transport without it makes `acquire()` fail closed off the owner thread, as
+	 * before. The returned `LockRound` was minted by the owner's coordinator; the caller's coordinator
+	 * records it as a REMOTE admission and installs the handle's revoker locally, so a recall on the
+	 * owner fences a write this thread's handle staged. `mintedMono` is comparable across threads
+	 * because `performance.now()` shares one time origin process-wide.
+	 */
+	acquireOnOwner?(database: string, table: string, key: any, leaseMs: number, waitMs: number): Promise<LockRound>;
+	/** Release a remote admission on the owner thread (the counterpart of `acquireOnOwner`). */
+	releaseOnOwner?(database: string, table: string, key: any, admissionId: number): Promise<void> | void;
 	/**
 	 * Establish an exact clean-handoff dependency set, or recover the strongest reachable-member
 	 * barrier when `dependencies` is null. Recovery returns the captured positions for current lock
@@ -549,12 +585,41 @@ interface Delegation {
 	sweepAtSize: number;
 	/** Resolvers waiting for the drain to finish, so recall can reply once rather than poll. */
 	drained?: (() => void)[];
+	/** The one in-flight `#surrender` for this delegation; see there for why it is memoized. */
+	surrendering?: Promise<void>;
+}
+
+/**
+ * One `lock()` this thread admitted from the OWNER thread (harper-pro#852), addressed by a LOCAL id
+ * distinct from the owner's own admission id (see `#remoteByOwnerId`), so a stale local admission can
+ * never share a number with an incoming owner-minted one. `revoke` fences this thread's handle;
+ * `revoked` latches a revoke that landed before `registerAdmission` supplied the real revoker.
+ * `fenceWaiters` resolve once the handle is provably fenced — the owner waits on them before it writes
+ * the release, so an ack never claims a fence the handle has not actually taken.
+ */
+interface RemoteAdmission {
+	/** The owner's admission id, echoed on release and matched by an inbound revoke. */
+	ownerAdmissionId: number;
+	key: any;
+	/** The caller-side handle fence — today always `Table.lock`'s `() => handle.revokeLease()`, which is
+	 * synchronous and total, never the owner-side async relay revoker (that lives on a delegation
+	 * `Admission` instead). `registerAdmission` accepts an async revoker all the same, so the ack paths
+	 * here settle on the outcome rather than assuming this one. */
+	revoke: () => void;
+	/** Monotonic deadline of the handle's own lease; the entry is dropped once past it. */
+	expiresMono: number;
+	revoked: boolean;
+	fenceWaiters: (() => void)[];
 }
 
 /** One `lock()` admitted under a delegation. */
 interface Admission {
-	/** Fences the handle's write capability. A no-op until `registerAdmission` supplies the real one. */
-	revoke: () => void;
+	/**
+	 * Fences the handle's write capability. A no-op until `registerAdmission` supplies the real one. A
+	 * handle admitted on another worker thread revokes over a message and resolves once that thread has
+	 * fenced it; `#surrender` waits for that (or the admission's own lease) before writing the release.
+	 */
+	revoke: () => void | Promise<void>;
 	/** Monotonic deadline of the handle's OWN lease, after which it fences itself and can be dropped. */
 	expiresMono: number;
 	/** False once the caller unlocked: it no longer blocks a drain, but is still revocable. */
@@ -690,8 +755,8 @@ const retiredCoordinators = new Map<string, { grantableAfterMono: number; counte
 const highestGeneration = new Map<string, number>();
 
 /** Bound one drain step so a single unresponsive delegate cannot consume the whole transition budget. */
-function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
-	if (!(ms > 0)) return Promise.reject(new Error('the quiesce deadline elapsed'));
+function withDeadline<T>(work: Promise<T>, ms: number, message = 'the quiesce deadline elapsed'): Promise<T> {
+	if (!(ms > 0)) return Promise.reject(new Error(message));
 	const timer = delay(ms);
 	work.then(
 		() => timer.cancel(),
@@ -700,7 +765,7 @@ function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
 	return Promise.race([
 		work,
 		timer.promise.then<T>(() => {
-			throw new Error('the quiesce deadline elapsed');
+			throw new Error(message);
 		}),
 	]);
 }
@@ -733,6 +798,26 @@ function ensureTicking() {
 
 /** Stands in until `registerAdmission` supplies the handle's real revoker. */
 function noRevoke() {}
+
+/**
+ * Fire a revoker in a fire-and-forget context, absorbing both a synchronous throw and a rejected
+ * promise. A relayed revoker is `() => Promise<void>` and may reject on a dead sibling port; a
+ * discarded rejection would exit the worker under Node's default policy, taking every coordinator on
+ * the thread. Callers that must WAIT for the fence (`#revokeAllAndSettle`, `revokeRemoteAdmission`)
+ * handle the outcome themselves and do not use this.
+ */
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+	return value != null && typeof (value as Promise<unknown>).then === 'function';
+}
+function fireRevokeAndForget(revoke: () => void | Promise<void>): void {
+	try {
+		const outcome = revoke();
+		if (isPromiseLike(outcome))
+			outcome.catch((error) => warnOnce('a fire-and-forget record lock revoke failed', error));
+	} catch (error) {
+		warnOnce('a fire-and-forget record lock revoke threw', error);
+	}
+}
 
 /**
  * Rate-limit rather than latch. These messages report a transport, writer or revoker that failed, and
@@ -840,6 +925,33 @@ export class LockCoordinator {
 	 */
 	#admissions = new Map<number, Delegation>();
 	#nextAdmissionId = 1;
+	/**
+	 * Admissions this thread obtained from the OWNER thread (harper-pro#852), keyed by a LOCAL id drawn
+	 * from `#nextAdmissionId` — never the owner's id, so it cannot collide with a live local admission.
+	 * This thread holds the handle (native key, staged writes, lease timer) while the delegation that
+	 * authorizes it lives on the owner. Allocated lazily so a coordinator that never serves an off-owner
+	 * lock pays nothing. An entry is kept after the caller unlocks, revoker included, until the handle's
+	 * own lease runs out (owner-side §6 retention: an unlocked-but-staged write is still fenceable).
+	 */
+	#remoteAdmissions: Map<number, RemoteAdmission> | undefined;
+	/** Owner admission id → this thread's local id, so an inbound revoke (which names the owner id)
+	 * reaches the right entry. */
+	#remoteByOwnerId: Map<number, number> | undefined;
+	/** Owner admission ids whose revoke arrived before `#acquireFromOwner` installed the entry, with the
+	 * ack resolvers waiting on the eventual fence and the monotonic time they arrived. Drained when the
+	 * entry installs (`#acquireFromOwner`); an entry whose acquire never lands (a revoke for an admission
+	 * this thread already dropped) is resolved and swept once its wait exceeds a lease (`tick`). */
+	#pendingRemoteRevokes: Map<number, { resolvers: (() => void)[]; at: number }> | undefined;
+	/**
+	 * Bumped every time every relayed admission is fenced wholesale (`fenceAllRemoteAdmissions`, i.e. the
+	 * owner worker is gone). `#acquireFromOwner` samples it before it asks the owner and re-checks after
+	 * the reply: a grant minted by an owner that has since been declared gone must NOT be installed, or
+	 * this thread would start writing under an admission the replacement owner knows nothing about while
+	 * that owner, starting empty, grants the same key to somebody else. Carried forward on handoff so a
+	 * transport swap mid-acquire cannot reset it and re-open the window.
+	 */
+	#relayGeneration = 0;
+	#relayedAdmissions = 0;
 	/** Keys this node homes, and who holds each one. */
 	#grants = new Map<unknown, HomeGrant>();
 	/** Per-requester counts, so one peer cannot fill the home's table on its own. */
@@ -932,6 +1044,31 @@ export class LockCoordinator {
 		// on the predecessor could never be released through the successor — `release` addresses the
 		// admission, so the entry would sit on the delegation forever and no recall could drain it.
 		for (const [admissionId, delegation] of this.#admissions) successor.#admissions.set(admissionId, delegation);
+		// Remote admissions (harper-pro#852) move with their handles: this thread still holds the native
+		// key and the staged write for each, so the successor must be the one a later `release` or a
+		// relayed `revoke` reaches. Their local ids stay valid (the successor's own `#nextAdmissionId` is
+		// carried forward below), and the owner-id index and any not-yet-installed revokes move with them.
+		if (this.#remoteAdmissions) {
+			const into = (successor.#remoteAdmissions ??= new Map());
+			for (const [localId, remote] of this.#remoteAdmissions) into.set(localId, remote);
+			const ownerIndex = (successor.#remoteByOwnerId ??= new Map());
+			for (const [ownerId, localId] of this.#remoteByOwnerId ?? []) ownerIndex.set(ownerId, localId);
+			this.#remoteAdmissions = undefined;
+			this.#remoteByOwnerId = undefined;
+		}
+		if (this.#pendingRemoteRevokes) {
+			const into = (successor.#pendingRemoteRevokes ??= new Map());
+			for (const [ownerId, entry] of this.#pendingRemoteRevokes) {
+				const existing = into.get(ownerId);
+				if (existing) existing.resolvers.push(...entry.resolvers);
+				else into.set(ownerId, entry);
+			}
+			this.#pendingRemoteRevokes = undefined;
+		}
+		successor.#relayedAdmissions += this.#relayedAdmissions;
+		// Never backwards: an acquire that sampled the predecessor must still see a bump the successor
+		// (or the predecessor) already recorded, so a swap mid-acquire cannot re-open the orphan window.
+		successor.#relayGeneration = Math.max(successor.#relayGeneration, this.#relayGeneration);
 		// Neither counter may restart. A repeated token would compare equal to one the predecessor
 		// already issued for a different delegation; a repeated admission id would address the wrong
 		// admission in the map just carried over.
@@ -970,7 +1107,13 @@ export class LockCoordinator {
 		this.#grants.clear();
 		this.#grantsByRequester.clear();
 		this.#admissions.clear();
-		if (successor.#delegations.size > 0 || successor.#pendingDelegations.size > 0 || successor.#grants.size > 0)
+		if (
+			successor.#delegations.size > 0 ||
+			successor.#pendingDelegations.size > 0 ||
+			successor.#grants.size > 0 ||
+			(successor.#remoteAdmissions?.size ?? 0) > 0 ||
+			(successor.#pendingRemoteRevokes?.size ?? 0) > 0
+		)
 			successor.#startTicking();
 	}
 
@@ -985,6 +1128,7 @@ export class LockCoordinator {
 		admitted: number;
 		revocable: number;
 		droppedOffOwner: number;
+		relayedAdmissions: number;
 	} {
 		let admitted = 0;
 		let revocable = 0;
@@ -998,6 +1142,10 @@ export class LockCoordinator {
 			admitted,
 			revocable,
 			droppedOffOwner: this.#droppedOffOwner,
+			// Admissions this thread has obtained from the owner worker (harper-pro#852), cumulative
+			// rather than current: what it makes visible in `cluster_status` is that off-owner `lock()`s
+			// are being served here at all.
+			relayedAdmissions: this.#relayedAdmissions,
 		};
 	}
 
@@ -1017,10 +1165,19 @@ export class LockCoordinator {
 		const authority = this.#authority();
 		if (authority !== this) return authority.acquire(key, leaseMs, waitMs);
 		if (this.#closed) throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
-		if (!this.transport.ownsCoordination())
+		if (!this.transport.ownsCoordination()) {
+			// Off the coordinating thread. A transport that can relay obtains the admission from the
+			// owner and installs the handle's revoker here (harper-pro#852); one that cannot fails
+			// closed, the historical contract.
+			// BOTH halves or neither. A transport that could acquire but not release would route locks and
+			// then never forward an unlock, leaving every admission `holding` on the owner for its full
+			// lease and stalling peer recalls — worse than the honest 503 below.
+			if (this.transport.acquireOnOwner && this.transport.releaseOnOwner)
+				return this.#acquireFromOwner(key, leaseMs, waitMs);
 			throw new LockUnavailableError(
 				'Cluster record lock coordination is not owned by this worker thread; retry so the request reaches the coordinating thread'
 			);
+		}
 		const keyId = this.#keyIdOf(key);
 		const deadlineMono = this.#monotonic() + waitMs;
 
@@ -1226,11 +1383,327 @@ export class LockCoordinator {
 	}
 
 	/**
+	 * Obtain an admission from the owner worker for a `lock()` served on a non-owner thread
+	 * (harper-pro#852), recorded under a LOCAL id so `registerAdmission`/`release` can never collide it
+	 * with a live local admission. `acquireOnOwner` is bounded by the transport, inside the caller's
+	 * `waitMs`; the race here is core's own backstop against a transport that never answers, so `lock()`
+	 * cannot hang far past the wait it was given.
+	 */
+	async #acquireFromOwner(key: any, leaseMs: number, waitMs: number): Promise<LockRound> {
+		// The transport bounds this wait (harper-pro's acquire has its own `waitMs`-scaled timeout); the
+		// core-side race is a last-resort backstop set strictly beyond that bound — the transport is asked
+		// for `waitMs - hop` and core's deadline is `waitMs + REMOTE_ACQUIRE_BACKSTOP_MS` — so it fires only
+		// if the transport never returns, never ahead of the transport's own timeout. Without it a wedged
+		// owner would hang `lock()` past its `waitMs`.
+		// Sampled BEFORE the request goes out, on the authority that will install the result.
+		const startGeneration = this.#authority().#relayGeneration;
+		// The hop allowance comes OUT of the caller's budget, never on top of it: `lock()` holds the native
+		// key for this whole wait, so overshooting `waitMs` blocks every other worker on the key for the
+		// overshoot. The transport is asked for the reduced wait and answers within the caller's budget;
+		// core's deadline is the caller's `waitMs` plus a small net that fires only if the transport never
+		// answers at all.
+		const hop = Math.min(REMOTE_ACQUIRE_HOP_MS, Math.floor(waitMs / 2));
+		// A transport that throws SYNCHRONOUSLY (a sibling port already gone) must still reach the
+		// normalization below: escaping raw gives the caller a 500 where it needs the retryable 503.
+		// `#beginRecall` wraps its transport call for the same reason.
+		const acquire = Promise.resolve().then(() =>
+			this.transport.acquireOnOwner!(this.database, this.table, key, leaseMs, waitMs - hop)
+		);
+		let backstopWon = false;
+		// If the backstop wins the race, the owner may still grant afterward: release that grant back so it
+		// does not sit `holding` on the owner for its whole lease. (The transport releases a late reply too;
+		// this closes the case where core's backstop fired first.)
+		acquire.then(
+			(round) => {
+				if (backstopWon) this.#authority().#releaseOnOwnerSafely(key, round.admissionId);
+			},
+			() => {}
+		);
+		const round = await withDeadline(
+			acquire,
+			waitMs + REMOTE_ACQUIRE_BACKSTOP_MS,
+			'the coordinating worker did not answer'
+		).catch((error) => {
+			backstopWon = true;
+			throw error instanceof LockUnavailableError
+				? error
+				: new LockUnavailableError(
+						`Could not obtain a cluster record lock on ${this.database}.${this.table} from the coordinating worker: ${(error as Error)?.message ?? error}`
+					);
+		});
+		const authority = this.#authority();
+		if (authority.#closed) {
+			// The coordinator closed while the owner was granting. The owner still holds this admission;
+			// hand it straight back rather than leaving it outstanding for its whole lease.
+			authority.#releaseOnOwnerSafely(key, round.admissionId);
+			throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
+		}
+		if (authority.#relayGeneration !== startGeneration) {
+			// Every relayed admission was fenced while this grant was in flight: the owner that minted it
+			// has been declared gone, and the replacement starts with no record of it. Installing it now
+			// would let this thread write under an admission the new owner can neither see nor recall,
+			// while that owner grants the same key to another worker — two writers. Fail closed and hand
+			// the grant back; the caller retries against the new owner.
+			authority.#releaseOnOwnerSafely(key, round.admissionId);
+			throw new LockUnavailableError(
+				'The record lock coordinating worker changed while this lock was being granted; retry against the new owner'
+			);
+		}
+		// A live entry already keyed to this owner id means the owner reused an id its counter had already
+		// issued — only possible if a replacement owner restarted its sequence. The old entry is from that
+		// prior owner incarnation and its delegation is gone: fence it fail-closed before the new one takes
+		// the id, so a later revoke for this id can never address the stale handle.
+		const collidingLocalId = authority.#remoteByOwnerId?.get(round.admissionId);
+		if (collidingLocalId !== undefined) {
+			const stale = authority.#remoteAdmissions?.get(collidingLocalId);
+			if (stale) {
+				fireRevokeAndForget(stale.revoke);
+				authority.#dropRemoteAdmission(collidingLocalId, stale);
+			}
+		}
+		const localId = authority.#nextAdmissionId++;
+		const entry: RemoteAdmission = {
+			ownerAdmissionId: round.admissionId,
+			key,
+			revoke: noRevoke,
+			expiresMono: round.mintedMono + leaseMs,
+			revoked: false,
+			fenceWaiters: [],
+		};
+		(authority.#remoteAdmissions ??= new Map()).set(localId, entry);
+		(authority.#remoteByOwnerId ??= new Map()).set(round.admissionId, localId);
+		// A revoke that raced ahead of this install (the owner registered its revoker before it posted
+		// the grant reply, so a recall in that window fired first): apply it now so the ack the owner is
+		// waiting on cannot resolve before the handle is fenced.
+		const pending = authority.#pendingRemoteRevokes?.get(round.admissionId);
+		if (pending) {
+			authority.#pendingRemoteRevokes!.delete(round.admissionId);
+			entry.revoked = true;
+			entry.fenceWaiters.push(...pending.resolvers);
+		}
+		authority.#relayedAdmissions++;
+		// Tick so an entry whose caller never releases (its lease elapses instead) is still pruned.
+		authority.#startTicking();
+		// The LOCAL id is what the handle registers and releases against; the round the owner minted
+		// still carries its own id, which only the owner-facing release/revoke messages use.
+		return { tsR: round.tsR, mintedMono: round.mintedMono, admissionId: localId };
+	}
+
+	/**
+	 * Fence a remote admission's handle on this thread, driven by a recall or surrender on the owner
+	 * (harper-pro#852), addressed by the OWNER's admission id. Resolves once the handle is provably
+	 * fenced — its `revokeLease` has run — so the owner's ack cannot claim a fence the handle has not
+	 * taken; the owner waits on this before writing the release. A revoke that arrives before the handle
+	 * is installed, or before `registerAdmission` supplies the real revoker, resolves only when the fence
+	 * finally lands. A revoker that throws, or whose promise rejects, fails this promise rather than
+	 * resolving it, so the owner falls back to its own lease bound rather than being told the fence
+	 * succeeded.
+	 */
+	revokeRemoteAdmission(ownerAdmissionId: number): Promise<void> {
+		const localId = this.#remoteByOwnerId?.get(ownerAdmissionId);
+		if (localId === undefined) {
+			// The entry is not installed yet (a revoke that raced ahead of the grant reply): latch the ack
+			// resolver so `#acquireFromOwner` can carry it, and never fence-then-resolve a handle that does
+			// not exist. If the acquire never lands (a revoke for an admission already dropped), `tick`
+			// resolves and sweeps it after a lease so the resolver cannot leak.
+			return new Promise<void>((resolve) => {
+				const map = (this.#pendingRemoteRevokes ??= new Map());
+				const pending = map.get(ownerAdmissionId);
+				if (pending) pending.resolvers.push(resolve);
+				else map.set(ownerAdmissionId, { resolvers: [resolve], at: this.#monotonic() });
+				this.#startTicking();
+			});
+		}
+		const remote = this.#remoteAdmissions?.get(localId);
+		if (!remote) return Promise.resolve();
+		remote.revoked = true;
+		if (remote.revoke === noRevoke) {
+			// The handle has not registered its revoker yet; resolve when `registerAdmission` fences it.
+			return new Promise<void>((resolve) => remote.fenceWaiters.push(resolve));
+		}
+		return Promise.resolve(this.#fenceRemoteAdmission(localId, remote));
+	}
+
+	/**
+	 * Fire a remote admission's revoker and report when the handle is PROVABLY fenced. `registerAdmission`
+	 * accepts an async revoker, so an outcome that is promise-like is not a fence until it fulfils: the
+	 * entry is dropped — and any ack waiting on it settled — only then. A rejection is not a fence at all,
+	 * so it propagates and the entry is LEFT for the lease sweep: a retry can fire the revoker again, and
+	 * the owner either sees the failure or waits its own lease bound out rather than writing the release
+	 * and admitting a successor over a live writer. Unlike a plain release, which retains the entry
+	 * because a staged write is still committable until the lease.
+	 */
+	#fenceRemoteAdmission(localId: number, remote: RemoteAdmission): void | Promise<void> {
+		let fenced: void | Promise<void>;
+		try {
+			fenced = remote.revoke();
+		} catch (error) {
+			// A synchronous throw is not a fence either, and it must not escape past the promise this
+			// function's callers hand to the owner: surface it as a rejection instead.
+			warnOnce('a relayed record lock fence failed; the handle lease still bounds it', error);
+			return Promise.reject(error);
+		}
+		if (!isPromiseLike(fenced)) {
+			this.#dropRemoteAdmission(localId, remote);
+			return;
+		}
+		return fenced.then(
+			() => {
+				this.#dropRemoteAdmission(localId, remote);
+			},
+			(error) => {
+				warnOnce('a relayed record lock fence failed; the handle lease still bounds it', error);
+				throw error;
+			}
+		);
+	}
+
+	/**
+	 * Fence every relayed handle this thread holds, fail-closed (harper-pro#852). Called when the owner
+	 * worker that granted them is gone (its thread exited, so its delegation table died with it): the
+	 * handles are no longer backed by any delegation, so nothing here may keep committing. There is no
+	 * owner left to tell, so this only revokes locally and drops the entries; a still-pending ack is
+	 * resolved, since the handle can no longer commit.
+	 */
+	fenceAllRemoteAdmissions(): void {
+		// Before anything is torn down, so an acquire already in flight to the departed owner fails its
+		// post-reply generation check rather than installing an orphaned admission.
+		this.#relayGeneration++;
+		if (this.#remoteAdmissions) {
+			for (const remote of this.#remoteAdmissions.values()) {
+				fireRevokeAndForget(remote.revoke);
+				this.#settleFenceWaiters(remote);
+			}
+			this.#remoteAdmissions = undefined;
+			this.#remoteByOwnerId = undefined;
+		}
+		if (this.#pendingRemoteRevokes) {
+			for (const entry of this.#pendingRemoteRevokes.values()) for (const resolve of entry.resolvers) resolve();
+			this.#pendingRemoteRevokes = undefined;
+		}
+	}
+
+	/**
+	 * Forward a release to the owner, naming the admission by the OWNER's id. Core deliberately carries no
+	 * owner epoch of its own: a release for an id a replacement owner has since reused is rejected by the
+	 * transport, which stamps every release with the owner session captured when the admission was minted
+	 * and drops its cached sessions when the coordinating thread changes. An owner ignores anything not
+	 * stamped with its own session, so a stale release cannot address a live admission that reuses the id.
+	 */
+	#releaseOnOwnerSafely(key: any, ownerAdmissionId: number): void {
+		// The common relayed unlock is a synchronous post to the owner thread, so it must not cost a
+		// promise chain and two microtasks per unlock: call it directly and only attach a rejection
+		// handler when the transport actually returned a promise.
+		try {
+			const outcome = this.transport.releaseOnOwner?.(this.database, this.table, key, ownerAdmissionId);
+			if (isPromiseLike(outcome))
+				outcome.catch((error) => warnOnce('failed to forward a relayed record lock release to the owner', error));
+		} catch (error) {
+			warnOnce('failed to forward a relayed record lock release to the owner', error);
+		}
+	}
+
+	/** Resolve every ack waiting on a remote admission's fence, then forget them. */
+	#settleFenceWaiters(remote: RemoteAdmission): void {
+		if (remote.fenceWaiters.length === 0) return;
+		const waiters = remote.fenceWaiters;
+		remote.fenceWaiters = [];
+		for (const resolve of waiters) resolve();
+	}
+
+	/**
+	 * Drop remote admissions whose handle lease elapsed a grace ago, at most `MAX_EXPIRIES_PER_TICK` per
+	 * tick like the delegation and grant sweeps — a burst of tens of thousands of same-lease admissions
+	 * expiring together drains over several ticks rather than deleting them all (and firing a release
+	 * message apiece) in one 100 ms turn. The scan skips still-live entries so different lease lengths are
+	 * handled. `REMOTE_PRUNE_GRACE_MS` past the lease is what lets the handle's OWN lease timer fire first
+	 * and forward its release (`release`) rather than racing this sweep.
+	 *
+	 * Entries EXAMINED are bounded too, not just deletions: a thread holding many live relayed admissions
+	 * would otherwise walk every one of them on every 100 ms tick, purely to find nothing. What is left
+	 * unexamined is reached on a later tick, which is safe because this sweep only reclaims memory — an
+	 * admission's handle is fenced by its own lease, never by this loop running promptly.
+	 *
+	 * The scan restarts at the map head each tick rather than carrying a cursor, so above the examine cap
+	 * a long-lived prefix would delay collecting expired entries behind it. Accepted deliberately: the cap
+	 * is far above any realistic count of concurrent off-owner locks on one thread, and a cursor would
+	 * have to walk the prefix anyway to find its resume point, spending the work it meant to save. It
+	 * costs memory held longer in a case that should not arise, never correctness.
+	 */
+	#pruneRemoteAdmissions(now: number): void {
+		const remotes = this.#remoteAdmissions;
+		if (!remotes) return;
+		const horizon = now - REMOTE_PRUNE_GRACE_MS;
+		let budget = MAX_EXPIRIES_PER_TICK;
+		let examined = MAX_EXAMINED_PER_TICK;
+		for (const [localId, remote] of remotes) {
+			if (budget <= 0 || examined <= 0) break;
+			examined--;
+			if (remote.expiresMono > horizon) continue;
+			budget--;
+			this.#dropRemoteAdmission(localId, remote, true);
+		}
+		if (remotes.size === 0) {
+			this.#remoteAdmissions = undefined;
+			this.#remoteByOwnerId = undefined;
+		}
+	}
+
+	/**
+	 * Drop a remote admission entry. `forwardRelease` tells the owner to give the delegation up now —
+	 * set when pruning at lease, since an event-loop stall can let this sweep run before the handle's
+	 * own lease timer forwards the release, and the owner would otherwise hold `holding` until its own
+	 * delegation lease. The forward is idempotent on the owner, so a race with the handle's own release
+	 * is harmless. Not set for a fence-drop: the owner is already surrendering that delegation.
+	 */
+	#dropRemoteAdmission(localId: number, remote: RemoteAdmission, forwardRelease = false): void {
+		// Optional: an asynchronous fence can settle after `fenceAllRemoteAdmissions`, `close` or a
+		// handoff has already cleared the map, and a TypeError here would reject an ack whose handle is
+		// in fact fenced, making the owner wait out the lease for nothing.
+		this.#remoteAdmissions?.delete(localId);
+		this.#remoteByOwnerId?.delete(remote.ownerAdmissionId);
+		// The handle's own lease has elapsed, so it fences itself; a still-pending ack may resolve.
+		this.#settleFenceWaiters(remote);
+		if (forwardRelease) this.#releaseOnOwnerSafely(remote.key, remote.ownerAdmissionId);
+	}
+
+	/**
+	 * Resolve and drop a latched revoke whose admission never installed — a revoke for an admission this
+	 * thread had already dropped (fenced or pruned), so the handle is gone and the ack is vacuously
+	 * satisfied. Bounded by a lease: past that, no acquire can still be in flight for the id.
+	 */
+	#prunePendingRemoteRevokes(now: number): void {
+		const pending = this.#pendingRemoteRevokes;
+		if (!pending) return;
+		// Bounded like the admission sweep above, and for the same reason: what this tick does not reach,
+		// a later one does. Each waiting ack is independently bounded by the owner's own lease wait.
+		let examined = MAX_EXAMINED_PER_TICK;
+		for (const [ownerId, entry] of pending) {
+			if (examined <= 0) break;
+			examined--;
+			if (now - entry.at < MAX_LOCK_LEASE_MS) continue;
+			pending.delete(ownerId);
+			for (const resolve of entry.resolvers) resolve();
+		}
+		if (pending.size === 0) this.#pendingRemoteRevokes = undefined;
+	}
+
+	/**
 	 * End this node's admission for a key. The delegation is deliberately KEPT: that is the
 	 * amortization, and the next `lock()` on this node costs nothing. Returns the durable release
 	 * write only when the delegation is actually being given up.
 	 */
 	release(key: any, admissionId: number): Promise<void> | void {
+		// A remote admission (harper-pro#852) — the common path once threads.count > 1 — tells the owner
+		// this caller unlocked (its own id, not this thread's local one) but keeps the entry, revoker
+		// included, until the handle's lease runs out: §6 revokes CAPABILITY, not admission, so a write
+		// staged before `unlock()` stays fenceable. Checked before `#keyIdOf` so a relayed unlock does not
+		// pay that key encoding for nothing.
+		const remote = this.#remoteAdmissions?.get(admissionId);
+		if (remote) {
+			this.#releaseOnOwnerSafely(remote.key, remote.ownerAdmissionId);
+			return undefined;
+		}
 		const keyId = this.#keyIdOf(key);
 		// Addressed by admission, not by key: after a renewal or a replacement the delegation at this
 		// key may not be the one that admitted this handle, and releasing by key alone would either
@@ -1421,6 +1894,8 @@ export class LockCoordinator {
 			this.#lastOwnershipPollMono = now;
 			this.#observeOwnership();
 		}
+		this.#pruneRemoteAdmissions(now);
+		this.#prunePendingRemoteRevokes(now);
 		// The budget counts EXPIRIES, not entries examined. Spending it on live entries would let a
 		// table with more than a budget's worth of continuously renewed grants starve every expired
 		// one behind them, and an uncollected expired grant answers `contended` to every other node.
@@ -1447,7 +1922,13 @@ export class LockCoordinator {
 			budget--;
 			this.#expireGrant(keyId, grant);
 		}
-		if (this.#delegations.size === 0 && this.#grants.size === 0) tickingCoordinators.delete(this);
+		if (
+			this.#delegations.size === 0 &&
+			this.#grants.size === 0 &&
+			!this.#remoteAdmissions &&
+			!this.#pendingRemoteRevokes
+		)
+			tickingCoordinators.delete(this);
 	}
 
 	/**
@@ -1524,6 +2005,24 @@ export class LockCoordinator {
 			}
 		}
 		for (const pending of this.#pendingDelegations.values()) pending.markRecalled();
+		// Remote admissions (harper-pro#852) that were NOT handed to a successor: this thread is going
+		// away, so fence their handles (fail closed) and tell the owner it may give the delegation up now
+		// rather than hold it for a full lease waiting on a worker that has gone.
+		if (this.#remoteAdmissions) {
+			for (const remote of this.#remoteAdmissions.values()) {
+				fireRevokeAndForget(remote.revoke);
+				this.#settleFenceWaiters(remote);
+				this.#releaseOnOwnerSafely(remote.key, remote.ownerAdmissionId);
+			}
+			this.#remoteAdmissions = undefined;
+			this.#remoteByOwnerId = undefined;
+		}
+		// Any ack still waiting on an entry that never installed cannot be honored here; resolve it so the
+		// owner's revoke wait does not hang on a thread that is gone (its own lease bounds it regardless).
+		if (this.#pendingRemoteRevokes) {
+			for (const entry of this.#pendingRemoteRevokes.values()) for (const resolve of entry.resolvers) resolve();
+			this.#pendingRemoteRevokes = undefined;
+		}
 		// The delegations THIS node issued as a home outlive it: no peer sees a local close, so each one
 		// stands until its own deadline. Leave the latest of those deadlines, and the counter, for
 		// whatever coordinator takes this table next.
@@ -1732,15 +2231,35 @@ export class LockCoordinator {
 	 * Register how to revoke the handle an admission produced. `Table.lock()` calls this once the
 	 * handle has joined the round, so a recall can fence a write that was staged and then unlocked.
 	 */
-	registerAdmission(admissionId: number, revoke: () => void): void {
+	registerAdmission(admissionId: number, revoke: () => void | Promise<void>): void {
 		const admission = this.#admissions.get(admissionId)?.admissions.get(admissionId);
-		if (!admission) {
-			// The admission was already revoked or collected between admit and register — the handle has
-			// no authority to keep, so revoke it now rather than leaving it unfenced.
-			revoke();
+		if (admission) {
+			admission.revoke = revoke;
 			return;
 		}
-		admission.revoke = revoke;
+		// A remote admission (harper-pro#852): the delegation lives on the owner, the handle here. A revoke
+		// that already latched (it beat this registration) fences the handle now and releases the ack that
+		// was waiting on the fence; otherwise store the revoker for a later recall.
+		const remote = this.#remoteAdmissions?.get(admissionId);
+		if (remote) {
+			remote.revoke = revoke;
+			if (remote.revoked) {
+				// A revoke latched before this registration: fence now, then drop the entry and release the
+				// ack that was waiting on the fence. `#dropRemoteAdmission` is what resolves that ack, so an
+				// async revoker must settle FIRST — resolving it early would tell the owner this handle is
+				// fenced while it still is not, and the owner would write the release over a live writer. A fence
+				// that FAILS settles nothing: the entry is left for the lease sweep, which resolves the ack once
+				// the handle is provably dead. The failure is warned about inside and has nobody here to go to,
+				// so it is absorbed rather than left to Node's unhandled-rejection policy.
+				const fenced = this.#fenceRemoteAdmission(admissionId, remote);
+				if (isPromiseLike(fenced)) fenced.catch(() => {});
+			}
+			return;
+		}
+		// The admission was already revoked or collected between admit and register — the handle has no
+		// authority to keep, so revoke it now (safely: a relay revoker collected in this window is async
+		// and could reject on a dead port) rather than leaving it unfenced.
+		fireRevokeAndForget(revoke);
 	}
 
 	/**
@@ -2026,12 +2545,25 @@ export class LockCoordinator {
 			});
 	}
 
-	/** Give up a delegation: stop admitting, then write the release that lets the home re-grant. */
-	#surrender(keyId: unknown, delegation: Delegation): Promise<void> | void {
+	/**
+	 * Give up a delegation: stop admitting, then write the release that lets the home re-grant. One
+	 * surrender per delegation, memoized: the home re-sends a recall `RECALL_RETRY_MS` after its own
+	 * recall call failed, which is far inside a delegation lease, so two recalls for the same token can
+	 * both be waiting on the drain and resume together. Without the memo the second finds the
+	 * admissions the first already emptied, has no fence to wait for, and writes the release while the
+	 * first is still waiting for a relayed handle to confirm it is fenced.
+	 */
+	#surrender(keyId: unknown, delegation: Delegation): Promise<void> {
+		return (delegation.surrendering ??= this.#surrenderOnce(keyId, delegation));
+	}
+
+	async #surrenderOnce(keyId: unknown, delegation: Delegation): Promise<void> {
 		if (this.#delegations.get(keyId) === delegation) this.#delegations.delete(keyId);
 		// Capability, not just admission: anything this delegation admitted must be unable to commit
-		// before the home is told it may re-grant.
-		this.#revokeAll(delegation);
+		// before the home is told it may re-grant. A handle admitted on another worker thread revokes
+		// over a message, so wait for its fence to land — bounded by the handle's own lease, past which
+		// it fences itself — before writing the release that lets the home re-grant the key.
+		await this.#revokeAllAndSettle(delegation);
 		const entry: LockReleaseEntry = {
 			type: 'lockRelease',
 			key: delegation.key,
@@ -2042,19 +2574,85 @@ export class LockCoordinator {
 		return this.#writeControlSafely(entry);
 	}
 
-	/** Revoke every handle this delegation is answerable for, and forget the admissions. */
-	#revokeAll(delegation: Delegation): void {
+	/**
+	 * Revoke every handle this delegation is answerable for and forget the admissions. Returns, per
+	 * admission, the revoker's outcome paired with the admission's own monotonic deadline, so a caller
+	 * that must not write the release before the fence is proven (`#surrender`) can bound its wait by
+	 * that deadline. Callers tearing the delegation down anyway (`tick`, `close`) ignore the result. A
+	 * revoke that throws synchronously is captured as a rejected outcome, never swallowed as fenced.
+	 */
+	#revokeAll(delegation: Delegation): { outcome: void | Promise<void>; expiresMono: number }[] {
 		const admissions = delegation.admissions;
 		delegation.admissions = new Map();
 		delegation.holding = 0;
 		delegation.sweepAtSize = ADMISSION_SWEEP_FLOOR;
+		const outcomes: { outcome: void | Promise<void>; expiresMono: number }[] = [];
 		for (const [admissionId, admission] of admissions) {
 			this.#admissions.delete(admissionId);
+			let outcome: void | Promise<void>;
 			try {
-				admission.revoke();
+				outcome = admission.revoke();
 			} catch (error) {
-				warnOnce('failed to revoke a record lock handle', error);
+				// A synchronous throw is NOT a fence: surface it as a rejected outcome so `#revokeAllAndSettle`
+				// waits out the admission's own lease rather than releasing against a handle that may still commit.
+				outcome = Promise.reject(error);
 			}
+			// Every fire-and-forget caller (`tick`, `close`) discards this array, so a rejecting outcome —
+			// a sync throw above, or a relayed revoker whose promise rejects on a dead sibling port — must
+			// carry its own no-op handler here or Node's default policy would exit the worker. The awaited
+			// path (`#revokeAllAndSettle`) still sees the rejection: a settled promise may be awaited again.
+			if (outcome && typeof (outcome as Promise<void>).then === 'function') (outcome as Promise<void>).catch(() => {});
+			outcomes.push({ outcome, expiresMono: admission.expiresMono });
+		}
+		return outcomes;
+	}
+
+	/**
+	 * `#revokeAll`, then wait for every asynchronous fence (a handle on another worker acking its
+	 * `revokeLease`) before the caller writes the release. Each wait is bounded HERE by the admission's
+	 * own remaining lease, independent of what the transport's revoker does: a revoker that rejects,
+	 * throws, or never settles cannot make `#surrender` publish the release before the fenced handle's
+	 * lease has elapsed — past which the handle fences itself and can no longer commit. The transport's
+	 * own lease-bounded ack (harper-pro) is the fast path; this is the guarantee.
+	 */
+	async #revokeAllAndSettle(delegation: Delegation): Promise<void> {
+		const outcomes = this.#revokeAll(delegation);
+		// ONE shared lease timer for the whole settle, not one per admission: a recall of a delegation
+		// holding thousands of relayed admissions would otherwise arm thousands of timers at exactly the
+		// moment it is handing off. The shared deadline is the LATEST lease among them, which bounds every
+		// handle in the set — waiting past a shorter lease only ever errs towards holding the release
+		// longer, never towards writing it early.
+		let latestExpiry = -Infinity;
+		let anyAsync = false;
+		for (const { outcome, expiresMono } of outcomes) {
+			if (!isPromiseLike(outcome)) continue;
+			anyAsync = true;
+			if (expiresMono > latestExpiry) latestExpiry = expiresMono;
+		}
+		// A synchronous revoker has already fenced by the time it returns, so it contributes nothing to
+		// wait on: only the promise-returning ones cost an entry here.
+		if (!anyAsync) return;
+		const leaseTimer = delay(Math.max(0, latestExpiry - this.#monotonic()));
+		const waits: Promise<unknown>[] = [];
+		for (const { outcome } of outcomes) {
+			if (!isPromiseLike(outcome)) continue;
+			// Race the fence ack against the shared lease deadline: whichever comes first, the handle can no
+			// longer commit once we return. A rejected fence is not a confirmed one, so it falls through to
+			// the same deadline rather than resolving early.
+			waits.push(
+				Promise.race([
+					outcome.catch((error) => {
+						warnOnce('a record lock handle did not confirm revocation; waiting out its lease', error);
+						return leaseTimer.promise;
+					}),
+					leaseTimer.promise,
+				])
+			);
+		}
+		try {
+			await Promise.all(waits);
+		} finally {
+			leaseTimer.cancel();
 		}
 	}
 
@@ -2381,4 +2979,65 @@ export async function deliverDelegationRecall(
 	if (!coordinator)
 		throw new Error(`No record lock coordinator on this thread to apply a recall for ${database}.${table}`);
 	await coordinator.onDelegationRecall(recall);
+}
+
+// ---- owner-worker relay (harper-pro#852) -------------------------------------------------------
+
+/**
+ * The owner thread's end of `acquireOnOwner`: mint an admission for a `lock()` served on another
+ * worker thread, and register `revoke` as the way to fence that thread's handle. `revoke` is what the
+ * transport wires to a cross-thread message; a recall or surrender here calls it and waits for the
+ * fence before writing the release. Runs on the coordinating thread, resolved through the transport-
+ * gated resolver so it fails when this thread does not coordinate the database — the same shape as
+ * `deliverDelegationRequest`. Returns the round the calling worker installs as a remote admission.
+ */
+export async function acquireForRelay(
+	database: string,
+	table: string,
+	key: any,
+	leaseMs: number,
+	waitMs: number,
+	makeRevoke: (round: LockRound) => () => void | Promise<void>
+): Promise<LockRound> {
+	const coordinator = coordinatorFor(database, table);
+	if (!coordinator)
+		throw new Error(`No record lock coordinator on this thread to acquire ${database}.${table} for a peer worker`);
+	const round = await coordinator.acquire(key, leaseMs, waitMs);
+	// Re-resolve through the ADMITTING resolver rather than reusing the captured coordinator: a transport
+	// swap during the acquire moves the admission to the successor and empties the predecessor, so
+	// registering on the captured object would eagerly revoke a healthy handle and leave the successor's
+	// admission unfenceable. `Table.ts` does the same via `admittingCoordinator`. The revoker is built
+	// from the round so it names the exact admission when it tells the calling worker to fence its handle.
+	const authority = coordinatorFor(database, table, admittingResolver) ?? coordinator;
+	authority.registerAdmission(round.admissionId, makeRevoke(round));
+	return round;
+}
+
+/** The owner thread's end of `releaseOnOwner`: end a relayed admission the owner minted. */
+export function releaseForRelay(database: string, table: string, key: any, admissionId: number): Promise<void> | void {
+	// The admitting resolver, like a received release: it answers the coordinator that HOLDS the
+	// admission even while a transport is momentarily unregistered, so a release is never dropped.
+	return coordinatorFor(database, table, admittingResolver)?.release(key, admissionId);
+}
+
+/**
+ * The calling thread's end of an owner `revoke`: fence the handle for a relayed admission this thread
+ * holds. Resolves once the handle's `revokeLease` has run, so the owner may wait for the fence before
+ * it writes the release. The admitting resolver answers the coordinator that adopted the admission
+ * across a transport swap.
+ */
+export function revokeRelayedAdmission(database: string, table: string, admissionId: number): Promise<void> {
+	const coordinator = coordinatorFor(database, table, admittingResolver);
+	// No coordinator to fence against means nothing here can commit under that admission; the fence is
+	// vacuously satisfied and the owner may proceed.
+	return coordinator ? coordinator.revokeRemoteAdmission(admissionId) : Promise.resolve();
+}
+
+/**
+ * Fail-closed fence for every relayed handle a table's coordinator holds (harper-pro#852), for when
+ * the owner worker that granted them has exited and its delegations are gone. Harper-pro calls this
+ * per table when it learns the coordinating thread for a database changed.
+ */
+export function fenceRelayedAdmissions(database: string, table: string): void {
+	coordinatorFor(database, table, admittingResolver)?.fenceAllRemoteAdmissions();
 }

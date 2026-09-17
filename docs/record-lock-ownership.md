@@ -793,6 +793,15 @@ Still owed by harper-pro — **the one thing that blocks enablement**:
   while a peer runs the cluster protocol — two nodes admitting one key. Registering everywhere is also
   what makes the `ownsCoordination()` 503 reachable, which is the path a non-owner worker is supposed
   to take.
+  - _Addressed in harper-pro#852._ The transport registers from the replication built-in's `start()`,
+    and a built-in is a trusted plugin that `placedOnThisThread` loads on **every** http worker,
+    dedicated application workers (harper#2524) included — so every serving thread latches
+    `clusterRequiredDatabases` and fails closed rather than taking the Phase 0 lock alone. The
+    `ownsCoordination()` 503 is no longer the path a non-owner takes: instead of answering 503 it
+    **relays** the acquire (and the matching release) to the coordinating worker over the worker port
+    mesh, installing the granted admission locally as a remote admission whose handle a recall on the
+    owner fences before the delegation release is written. A `lock()` therefore succeeds uniformly on
+    every http worker at `threads.count > 1`.
 - **`homeIncarnation` advanced per coordination incarnation, not per process** (§5.1). Core cannot mint
   it — it must be durable and monotonic — and cannot check it, which puts it in the same class as
   §4.3's activation record. It matters because coordinator state is per-thread: a replacement
