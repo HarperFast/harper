@@ -689,7 +689,29 @@ const retiredCoordinators = new Map<string, { grantableAfterMono: number; counte
  */
 const highestGeneration = new Map<string, number>();
 
+/** Bound one drain step so a single unresponsive delegate cannot consume the whole transition budget. */
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+	if (!(ms > 0)) return Promise.reject(new Error('the quiesce deadline elapsed'));
+	const timer = delay(ms);
+	work.then(
+		() => timer.cancel(),
+		() => timer.cancel()
+	);
+	return Promise.race([
+		work,
+		timer.promise.then<T>(() => {
+			throw new Error('the quiesce deadline elapsed');
+		}),
+	]);
+}
+
 const tickingCoordinators = new Set<LockCoordinator>();
+/**
+ * Every coordinator alive on this thread, so a membership transition can quiesce a whole database
+ * rather than one table at a time (harper-pro#856). The per-`(database, table)` resolvers cannot
+ * enumerate: they answer a name you already have.
+ */
+const liveCoordinators = new Set<LockCoordinator>();
 let tickTimer: ReturnType<typeof setInterval> | undefined;
 function ensureTicking() {
 	if (tickTimer || tickingCoordinators.size === 0) return;
@@ -762,6 +784,25 @@ export class LockCoordinator {
 	 */
 	#grantableAfterMono: number;
 	/**
+	 * How long until this coordinator can rule out authority issued before it took over — 0 when it
+	 * already can. Non-mutating, unlike `#ownershipHorizon`, which records ownership as a side effect.
+	 *
+	 * The waiver is deliberately NOT consulted. `grantableAfterMono` attests that no previous
+	 * INCARNATION OF THIS PROCESS delegated; it says nothing about a sibling thread that was
+	 * coordinating until this instant, and a coordinator built while already owning keeps the waiver
+	 * without ever observing that handoff — which let a takeover worker in a first-incarnation process
+	 * report a clean drain while the previous owner's delegates were still admitting.
+	 *
+	 * The cost is that a freshly built coordinator cannot prove quiescence for a full lease. That falls
+	 * only on the case that does not need the proof: a node with no delegations yet is bootstrapping
+	 * generation 1, where there is nothing to drain and no interval to skip.
+	 */
+	unprovenOwnershipMs(): number {
+		const horizon = DELEGATION_LEASE_MS + this.#skewMs;
+		if (this.#ownedSinceMono === undefined) return horizon;
+		return Math.max(0, this.#ownedSinceMono + horizon - this.#monotonic());
+	}
+	/**
 	 * When this coordinator was last observed to own coordination, and `undefined` while it does not.
 	 *
 	 * The quarantine has to run from here and not only from construction: a coordinator is built when a
@@ -828,6 +869,7 @@ export class LockCoordinator {
 			);
 		this.database = options.database;
 		this.table = options.table;
+		liveCoordinators.add(this);
 		this.nodeId = options.nodeId;
 		this.transport = options.transport;
 		this.#writeControl = options.writeControl;
@@ -1409,12 +1451,62 @@ export class LockCoordinator {
 	}
 
 	/**
+	 * One table's half of `quiesceDelegations`. Never throws for a single grant: a transition needs to
+	 * know exactly what is still live, and one unreachable delegate must not hide the rest.
+	 */
+	async quiesce(result: QuiesceResult, remaining: () => number): Promise<void> {
+		if (this.#closed) return;
+		// Delegate side first: this is what admits, and surrendering is purely local — it cannot be
+		// refused by an unreachable peer, so it succeeds even when the recalls below do not.
+		for (const delegation of [...this.#delegations.values()]) {
+			try {
+				await withDeadline(this.onDelegationRecall({ key: delegation.key, token: delegation.token }), remaining());
+				result.surrendered++;
+			} catch (error) {
+				result.outstanding.push({
+					table: this.table,
+					key: delegation.key,
+					reason: `this node still holds a delegation it could not drain: ${(error as Error)?.message ?? error}`,
+				});
+			}
+		}
+		// Home side: tell delegates elsewhere to stop. `#beginRecall` owns the retry and confirmation
+		// bookkeeping; this only drives it and reports what it did not confirm.
+		for (const [keyId, grant] of [...this.#grants]) {
+			if (grant.recallConfirmed) {
+				result.recalled++;
+				continue;
+			}
+			try {
+				this.#beginRecall(keyId, grant);
+				if (grant.recalling) await withDeadline(grant.recalling, remaining());
+				if (grant.recallConfirmed) result.recalled++;
+				else
+					result.outstanding.push({
+						table: this.table,
+						key: grant.key,
+						delegate: grant.delegate,
+						reason: 'the delegate did not confirm it stopped admitting',
+					});
+			} catch (error) {
+				result.outstanding.push({
+					table: this.table,
+					key: grant.key,
+					delegate: grant.delegate,
+					reason: `recall failed: ${(error as Error)?.message ?? error}`,
+				});
+			}
+		}
+	}
+
+	/**
 	 * Stop this coordinator and invalidate what it issued. Expiring every delegation is the part that
 	 * matters: `close()` runs when a transport is replaced (a component reload is enough), and a
 	 * successor coordinator must not be able to grant a key whose predecessor handles are still live.
 	 */
 	close(): void {
 		this.#closed = true;
+		liveCoordinators.delete(this);
 		// State that was handed to a successor is that coordinator's now; expiring it here would
 		// invalidate delegations the successor is correctly still honouring.
 		if (this.#handedOff) {
@@ -2040,6 +2132,117 @@ export function setLockCoordinatorResolver(
 	coordinatorResolver = resolve;
 	admittingResolver = resolveAdmitting;
 	controlWriterResolver = resolveControlWriter;
+}
+
+export interface QuiesceOutstanding {
+	table: string;
+	key: unknown;
+	/** Present when this node was the HOME and the delegate did not confirm. */
+	delegate?: string;
+	reason: string;
+}
+
+export interface QuiesceResult {
+	/**
+	 * Whether this result is a PROOF of quiescence, or merely a report of what was swept.
+	 *
+	 * A sweep can only visit coordinators that exist on this thread, and they are built lazily — a
+	 * table nothing has touched since a restart has none, so an empty `outstanding` would otherwise
+	 * read as "nothing is live" when the previous incarnation's delegations are still running
+	 * elsewhere. An orchestrator must require `complete && outstanding.length === 0`; anything else
+	 * means fall back to the drain interval for this node.
+	 */
+	complete: boolean;
+	/** Delegations this node held and gave up, so it can no longer admit under them. */
+	surrendered: number;
+	/** Grants this node issued whose delegate confirmed it stopped admitting. */
+	recalled: number;
+	/**
+	 * What is still live, or unprovable. Empty means this node is provably quiesced for the database —
+	 * and ONLY then, which is why a coordinator still inside its restart quarantine contributes an
+	 * entry here rather than reporting a clean sweep it cannot back.
+	 */
+	outstanding: QuiesceOutstanding[];
+}
+
+/**
+ * Stop this node admitting under the current generation for `database`, and say whether it is
+ * provably done (harper-pro#856).
+ *
+ * A membership change otherwise has to wait out `DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS` before the
+ * next generation may activate, because authority already issued under the old one has to expire —
+ * roughly six minutes during which the staged nodes serve no cluster locks at all. That interval is a
+ * TIMER, chosen because you cannot recall what you cannot reach. In a planned transition every
+ * participant is reachable, so the same guarantee can be *established* instead of waited out: this
+ * drains both directions and reports what, if anything, is left.
+ *
+ * - **As a delegate** it surrenders every delegation it holds. This is the load-bearing half: a
+ *   delegate is what admits, and `onDelegationRecall` is the existing path whose resolution means
+ *   "nothing on this node can admit on that token" — live critical sections are drained, not cut.
+ * - **As a home** it recalls every grant it issued, so delegates elsewhere stop too. Redundant when
+ *   every node is quiescing at once, and the reason this still terminates when one is not.
+ *
+ * `outstanding` empty on every node in `homes(g) ∪ homes(g+1)` is the operator's evidence that the
+ * next generation may be activated immediately. Anything left is a node to fall back to the timer for,
+ * or to fence externally — this never claims a drain it did not get, and never throws for one grant.
+ */
+export async function quiesceDelegations(database: string, budgetMs: number): Promise<QuiesceResult> {
+	const result: QuiesceResult = { complete: true, surrendered: 0, recalled: 0, outstanding: [] };
+	const coordinators = [...liveCoordinators].filter((coordinator) => coordinator.database === database);
+	// A DURATION, not an absolute deadline: the whole sweep gets this long, measured from here.
+	const deadline = Date.now() + Math.max(0, budgetMs);
+	const remaining = () => Math.max(0, deadline - Date.now());
+	for (const coordinator of coordinators) {
+		await coordinator.quiesce(result, remaining);
+	}
+	// A sweep proves quiescence only if it could have seen everything this NODE issued, not merely what
+	// this coordinator holds. Two ways it could not have:
+	//
+	// - No coordinator exists for the database on this thread, so there is nothing to attest from.
+	// - A coordinator has not owned coordination long enough for authority issued BEFORE it took over
+	//   — by a previous owner thread, or a previous incarnation of this process — to have expired.
+	//   Those grants live on delegate nodes and no local sweep can see them; the same fact is what
+	//   core's own grant gate refuses on, and it is why uptime is not the right measure (a worker that
+	//   built empty coordinators early and took ownership late has plenty of uptime and no proof).
+	if (coordinators.length === 0) {
+		result.outstanding.push({
+			table: '*',
+			key: undefined,
+			reason:
+				'no lock coordinator exists for this database on this thread, so there is nothing to prove quiescence from',
+		});
+	}
+	for (const coordinator of coordinators) {
+		const unproven = coordinator.unprovenOwnershipMs();
+		if (unproven > 0)
+			result.outstanding.push({
+				table: coordinator.table,
+				key: undefined,
+				reason: `this thread has not coordinated ${database}.${coordinator.table} long enough to rule out authority issued before it took over; ${Math.ceil(unproven)}ms remain`,
+			});
+	}
+	// A coordinator that closed parked the latest deadline of the grants it had issued to OTHER nodes
+	// here and then cleared its own table (`close`). Those grants are still valid on their delegates and
+	// no live coordinator holds them, so a sweep that ignored this would miss them entirely — the table
+	// may not even have a coordinator any more.
+	//
+	// `performance.now()` because a retired entry outlives the coordinator whose injected clock produced
+	// its deadline: production passes that same clock (the transport's `monotonicNow`), so the domains
+	// agree where it matters, and a test on an artificial clock only ever reads the deadline as further
+	// away — conservative, never a false clean.
+	const now = performance.now();
+	for (const [key, retired] of retiredCoordinators) {
+		const separator = key.indexOf('\u0000');
+		if (separator < 0 || key.slice(0, separator) !== database) continue;
+		if (!(retired.grantableAfterMono > now)) continue;
+		result.outstanding.push({
+			table: key.slice(separator + 1),
+			key: undefined,
+			reason: `a closed coordinator for this table issued grants that remain valid on their delegates for another ${Math.ceil(retired.grantableAfterMono - now)}ms`,
+		});
+	}
+	if (result.outstanding.length > 0) result.complete = false;
+	return result;
 }
 
 /**

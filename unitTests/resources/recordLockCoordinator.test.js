@@ -8,6 +8,7 @@ const {
 	decodeLockControlPayload,
 	encodeLockControlPayload,
 	homeFor,
+	quiesceDelegations,
 	ringKeyFor,
 } = require('#src/resources/recordLockCoordinator');
 const { MAX_LOCK_LEASE_MS, MIN_LOCK_LEASE_MS, makeKeyLockHandle } = require('#src/resources/recordLock');
@@ -2469,5 +2470,203 @@ describe('record lock delegations', () => {
 			assert.strictEqual(beta.freshnessCalls.at(-1).dependencies, null);
 			beta.coordinator.release(key, successor.admissionId);
 		});
+	});
+});
+
+describe('quiesceDelegations (harper-pro#856)', () => {
+	/** A coordinator that is a HOME for `alpha` and can grant to a peer, with a scriptable recall. */
+	function homeWithPeer(database, table, recall) {
+		// Ownership continuity is what proves quiescence, so a coordinator has to have owned for a full
+		// lease before a sweep is a proof. These tests are about the sweep itself, so they start the
+		// clock past that horizon; the handoff test below is the one that exercises the horizon.
+		const clock = { now: DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1 };
+		const coordinator = new LockCoordinator({
+			database,
+			table,
+			nodeId: 'alpha',
+			transport: {
+				homeMap: () => ({ generation: 1, homes: ['alpha', 'beta'], homeIncarnation: 1 }),
+				ownsCoordination: () => true,
+				establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+				requestDelegation: () => {
+					throw new Error('unused');
+				},
+				recallDelegation: recall,
+			},
+			writeControl: () => {},
+			keyIdOf: (key) => String(key),
+			nextTimestamp: () => 1,
+			monotonic: () => clock.now,
+			grantableAfterMono: -Infinity,
+			autoTick: false,
+		});
+		// Ownership was recorded at construction on this clock; move past its horizon.
+		clock.now += DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+		return coordinator;
+	}
+
+	it('reports a clean database as quiesced with nothing outstanding', async () => {
+		const coordinator = homeWithPeer('q1', 'T', async () => {});
+		const result = await quiesceDelegations('q1', 1000);
+		assert.deepStrictEqual(result.outstanding, []);
+		assert.strictEqual(result.surrendered, 0);
+		assert.strictEqual(result.recalled, 0);
+		coordinator.close();
+	});
+
+	it('an empty sweep is not a proof: a table nothing has touched has no coordinator to sweep', async () => {
+		// No coordinator, no transport attestation — the sweep sees nothing and must say so rather than
+		// reporting a clean drain that would let an orchestrator skip the interval.
+		const result = await quiesceDelegations('never-touched', 1000);
+		assert.deepStrictEqual(result.outstanding.length > 0 || result.complete === false, true);
+		assert.strictEqual(result.complete, false, 'an unattested, unswept database cannot be proven quiesced');
+	});
+
+	it('a thread that took ownership recently cannot prove quiescence, however long it has been up', async () => {
+		// cursor-grok's counterexample: worker A owns the database, grants, and exits. Worker B built
+		// empty coordinators earlier (a cluster_status poll), so its registry is non-empty and its uptime
+		// is long — but A's delegates still admit. Ownership continuity, not uptime, is the proof.
+		let mono = 0;
+		const coordinator = new LockCoordinator({
+			database: 'handoff',
+			table: 'T',
+			nodeId: 'alpha',
+			transport: {
+				homeMap: () => ({ generation: 1, homes: ['alpha', 'beta'], homeIncarnation: 1 }),
+				ownsCoordination: () => true,
+				establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+				requestDelegation: () => {
+					throw new Error('unused');
+				},
+				recallDelegation: async () => {},
+			},
+			writeControl: () => {},
+			keyIdOf: (key) => String(key),
+			nextTimestamp: () => 1,
+			monotonic: () => mono,
+			// No grantableAfterMono: this is NOT a first incarnation, so nothing is waived.
+			autoTick: false,
+		});
+		// Take ownership "now", then let a lot of wall time pass without the horizon elapsing.
+		const taken = await quiesceDelegations('handoff', 100);
+		assert.strictEqual(taken.complete, false, 'ownership just started: authority from the previous owner may be live');
+		assert.ok(taken.outstanding.some((o) => /long enough to rule out authority/.test(o.reason)));
+		// Past the horizon, the same sweep is a proof.
+		mono = DELEGATION_LEASE_MS + LOCK_LEASE_SKEW_MS + 1;
+		const later = await quiesceDelegations('handoff', 100);
+		assert.deepStrictEqual(later.outstanding, []);
+		assert.strictEqual(later.complete, true);
+		coordinator.close();
+	});
+
+	it("a closed coordinator's remote grants are still reported, though no live coordinator holds them", async () => {
+		// close() parks the latest deadline of grants issued to OTHER nodes and clears its own table, so
+		// the delegates keep admitting with nothing live to sweep. Reporting only what is live would call
+		// that quiesced.
+		const coordinator = homeWithPeer('retired1', 'T', async () => {});
+		const [key] = keysHomedHere('retired1', 'T', 1);
+		assert.strictEqual(
+			(await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: MAX_LOCK_LEASE_MS }))
+				.granted,
+			true
+		);
+		coordinator.close();
+		const result = await quiesceDelegations('retired1', 100);
+		assert.strictEqual(result.complete, false, "a closed coordinator's grants outlive it on their delegates");
+		assert.ok(
+			result.outstanding.some((entry) => /closed coordinator/.test(entry.reason)),
+			JSON.stringify(result.outstanding)
+		);
+	});
+
+	it('never reports complete alongside outstanding work', async () => {
+		const coordinator = homeWithPeer('q7', 'T', async () => {
+			throw new Error('unreachable');
+		});
+		const [key] = keysHomedHere('q7', 'T', 1);
+		await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 });
+		const result = await quiesceDelegations('q7', 300);
+		assert.ok(result.outstanding.length > 0);
+		assert.strictEqual(result.complete, false);
+		coordinator.close();
+	});
+
+	/** Keys are homed by rendezvous hash, so a test that needs THIS node to be the home must pick one. */
+	function keysHomedHere(database, table, count, homes = ['alpha', 'beta']) {
+		const found = [];
+		for (let i = 0; found.length < count; i++) {
+			const key = `k${i}`;
+			if (homeFor(ringKeyFor(database, table, key), homes) === 'alpha') found.push(key);
+		}
+		return found;
+	}
+
+	it('recalls a grant this node issued and counts it once confirmed', async () => {
+		const recalls = [];
+		const coordinator = homeWithPeer('q2', 'T', async (node, _db, _table, recall) => {
+			recalls.push({ node, key: recall.key });
+		});
+		// A grant to a peer, through the production request path.
+		const [key] = keysHomedHere('q2', 'T', 1);
+		const reply = await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 });
+		assert.strictEqual(reply.granted, true, 'the test key must be homed on this node');
+		const result = await quiesceDelegations('q2', 1000);
+		assert.deepStrictEqual(
+			recalls.map((r) => [r.node, r.key]),
+			[['beta', key]]
+		);
+		assert.strictEqual(result.recalled, 1);
+		assert.deepStrictEqual(result.outstanding, []);
+		coordinator.close();
+	});
+
+	it('reports an unconfirmed delegate as outstanding instead of claiming a drain', async () => {
+		const coordinator = homeWithPeer('q3', 'T', async () => {
+			throw new Error('unreachable');
+		});
+		const [key] = keysHomedHere('q3', 'T', 1);
+		assert.strictEqual(
+			(await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 })).granted,
+			true
+		);
+		const result = await quiesceDelegations('q3', 500);
+		assert.strictEqual(result.recalled, 0);
+		assert.strictEqual(result.outstanding.length, 1);
+		assert.strictEqual(result.outstanding[0].delegate, 'beta');
+		assert.strictEqual(result.outstanding[0].key, key);
+		assert.match(result.outstanding[0].reason, /did not confirm|recall failed/);
+		coordinator.close();
+	});
+
+	it('one unreachable delegate does not hide the rest', async () => {
+		const [good1, bad, good2] = keysHomedHere('q4', 'T', 3);
+		const coordinator = homeWithPeer('q4', 'T', async (_node, _db, _table, recall) => {
+			if (recall.key === bad) throw new Error('unreachable');
+		});
+		for (const key of [good1, bad, good2])
+			assert.strictEqual(
+				(await coordinator.onDelegationRequest({ key, requester: 'beta', generation: 1, leaseMs: 1000 })).granted,
+				true
+			);
+		const result = await quiesceDelegations('q4', 500);
+		assert.strictEqual(result.recalled, 2, 'the reachable grants still drained');
+		assert.deepStrictEqual(
+			result.outstanding.map((o) => o.key),
+			[bad]
+		);
+		coordinator.close();
+	});
+
+	it('only touches the named database, and a closed coordinator is not swept', async () => {
+		const a = homeWithPeer('q5', 'T', async () => {});
+		const b = homeWithPeer('q6', 'T', async () => {});
+		const [keyA] = keysHomedHere('q5', 'T', 1);
+		const [keyB] = keysHomedHere('q6', 'T', 1);
+		await a.onDelegationRequest({ key: keyA, requester: 'beta', generation: 1, leaseMs: 1000 });
+		await b.onDelegationRequest({ key: keyB, requester: 'beta', generation: 1, leaseMs: 1000 });
+		assert.strictEqual((await quiesceDelegations('q5', 1000)).recalled, 1);
+		b.close();
+		assert.strictEqual((await quiesceDelegations('q6', 1000)).recalled, 0, 'closed coordinators are deregistered');
+		a.close();
 	});
 });
