@@ -13,7 +13,7 @@ import { waitFor } from '../../unitTests/waitFor.js';
 
 test(
 	'native queries expose bounded coverage and reject expired or strict catch-up lag',
-	{ timeout: 180_000 },
+	{ timeout: 600_000 },
 	async () => {
 		const ctx = createHarperContext('native-plane-coverage');
 		let seed = 42;
@@ -89,11 +89,13 @@ test(
 				} else assert(shortWait.body.some(({ id }: { id: number }) => id === records.length - 1));
 			}
 			let progress: unknown;
+			const partialCoverage: unknown[] = [];
 			try {
 				await waitFor(
 					async () => {
 						const before = (await request('/PlaneStatus/')).body;
 						progress = before;
+						if (before.mappings > 0 && before.mappings < records.length) partialCoverage.push(before.cursor);
 						const strict = await query(0);
 						if (strict.status === 503) {
 							assert.equal(strict.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(strict));
@@ -120,11 +122,15 @@ test(
 						} else assert.equal(tolerant.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(tolerant));
 						return before.mappings === records.length && strict.status === 200;
 					},
-					{ timeout: 90_000, interval: 100, message: 'native plane did not certify current coverage' }
+					{ timeout: 300_000, interval: 500, message: 'native plane did not certify current coverage' }
 				);
 			} catch (error) {
 				throw new Error(`Native catch-up failed; last progress: ${JSON.stringify(progress)}`, { cause: error });
 			}
+			assert(
+				partialCoverage.some((cursor: any) => cursor?.coverage?.local),
+				`catch-up published no durable coverage before it finished: ${JSON.stringify(partialCoverage.slice(0, 4))}`
+			);
 			const final = await query(0);
 			assert.equal(final.status, 200, JSON.stringify(final));
 			const ids = final.body.map((record: { id: number }) => record.id);

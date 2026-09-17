@@ -199,8 +199,12 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			if (batch.through) this.#appliedCursor = batch.through;
 		}
 		if (this.#queue.length > 0) {
-			this.#schedule();
 			if (wasFull && this.#queuedBytes < QUEUE_CAPACITY_BYTES) this.#wake?.('changed');
+			// A completed batch is the only point where the staged mappings are exactly what
+			// `#appliedCursor` covers, so it is where a requested barrier can start without waiting
+			// for a catch-up — which never empties the queue — to finish.
+			if (this.#flushRequested && this.#position === 0) this.#runFlush();
+			else this.#schedule();
 			return;
 		}
 		if (wasFull) this.#wake?.('changed');
