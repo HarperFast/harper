@@ -92,10 +92,12 @@ suite(
 			return new Set([...primaryDbi(table).getKeys({ snapshot: true } as any)].map(String));
 		}
 		function rawIndexEntries(table: string, attribute: string): Array<{ key: string; id: string }> {
-			return [...indexDbi(table, attribute).getRange({ values: true, snapshot: true } as any)].map((e: any) => ({
-				key: String(e.key),
-				id: String(e.value),
-			}));
+			return [...indexDbi(table, attribute).getRange({ start: null, values: true, snapshot: true } as any)].map(
+				(e: any) => ({
+					key: String(e.key),
+					id: String(e.value),
+				})
+			);
 		}
 		function findPhantoms(table: string, attribute: string): Array<{ key: string; id: string }> {
 			const primaryKeys = rawPrimaryKeys(table);
@@ -302,7 +304,7 @@ suite(
 			assertIndexConsistency('LineItem', 'orderId', lineItem);
 		});
 
-		test('positive control: raw oracle detects dangling and wrong-key entries', async () => {
+		test('positive control: raw oracle detects dangling, wrong-key, and null-key entries', async () => {
 			const response = await postJSON('/InjectIndexEntry/', {
 				table: 'Order',
 				attribute: 'customerId',
@@ -357,6 +359,19 @@ suite(
 				'wrong-key control should alter reverse relationship traversal'
 			);
 
+			const nullKeyResponse = await postJSON('/InjectIndexEntry/', {
+				table: 'Order',
+				attribute: 'customerId',
+				value: null,
+				id: 'O1',
+			});
+			strictEqual(nullKeyResponse.status, 200, 'null-key control should succeed');
+			const unexpectedWithNull = findUnexpected('Order', 'customerId');
+			ok(
+				unexpectedWithNull.some((entry) => entry.key === 'null' && entry.id === 'O1'),
+				`raw oracle should detect the null-key entry (null -> O1); unexpected entries: ${JSON.stringify(unexpectedWithNull)}`
+			);
+
 			const ghostCleanup = await postJSON('/RemoveIndexEntry/', {
 				table: 'Order',
 				attribute: 'customerId',
@@ -371,6 +386,13 @@ suite(
 				id: 'O1',
 			});
 			strictEqual(wrongKeyCleanup.status, 200, 'wrong-key cleanup should succeed');
+			const nullKeyCleanup = await postJSON('/RemoveIndexEntry/', {
+				table: 'Order',
+				attribute: 'customerId',
+				value: null,
+				id: 'O1',
+			});
+			strictEqual(nullKeyCleanup.status, 200, 'null-key cleanup should succeed');
 			assertIndexConsistency('Order', 'customerId', inspectIndex('Order', 'customerId'));
 		});
 	}
