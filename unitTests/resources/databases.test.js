@@ -608,6 +608,71 @@ describe('audit cleanup retirement on teardown', () => {
 		assert.strictEqual(databases.derivedindexretry, undefined);
 	});
 
+	it('reactivates a quiesced derived index when another table prevents the database drop', async function () {
+		const Reactivated = table({
+			table: 'Reactivated',
+			database: 'derivedindexpartialdrop',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const Held = table({
+			table: 'Held',
+			database: 'derivedindexpartialdrop',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await new Promise(setImmediate);
+
+		const values = new Map();
+		const applied = [];
+		const index = {
+			postCommit: true,
+			indexStore: undefined,
+			index() {},
+			applyDerivedValue(id, vector) {
+				applied.push({ id, vector });
+			},
+			flushDerived: async () => {},
+			resetDerivedStorage() {},
+			assertDerivedValue() {},
+			attachDerivedHost() {},
+		};
+		const indexStore = {
+			name: 'derivedindexpartialdrop.Reactivated.vector',
+			customIndex: index,
+			getSync: (key) => values.get(key),
+			putSync: (key, value) => values.set(key, value),
+			removeSync: (key) => values.delete(key),
+			clear: async () => values.clear(),
+		};
+		index.indexStore = indexStore;
+		Reactivated.attributes.push({ name: 'vector', indexed: {} });
+		Reactivated.indices.vector = indexStore;
+
+		const stoppedRuntime = { close: async () => {} };
+		Reactivated.derivedIndexRuntime = stoppedRuntime;
+		let releaseHeld = false;
+		const heldRuntime = {
+			close: () => (releaseHeld ? Promise.resolve() : Promise.reject(new Error('second native writer did not stop'))),
+		};
+		Held.derivedIndexRuntime = heldRuntime;
+
+		await assert.rejects(dropDatabase('derivedindexpartialdrop'), /second native writer did not stop/);
+		assert.ok(Reactivated.derivedIndexRuntime);
+		assert.notStrictEqual(Reactivated.derivedIndexRuntime, stoppedRuntime);
+		assert.strictEqual(Held.derivedIndexRuntime, heldRuntime);
+
+		await Reactivated.put(1, { vector: [1, 2] });
+		await waitFor(() => applied.some(({ id, vector }) => id === 1 && vector?.[0] === 1), {
+			timeout: 2000,
+			message: 'the reactivated derived index did not resume delivery',
+		});
+
+		releaseHeld = true;
+		await dropDatabase('derivedindexpartialdrop');
+		assert.strictEqual(databases.derivedindexpartialdrop, undefined);
+	});
+
 	// The legacy per-table drop has no sibling coverage, and the store it retires is the one makeTable()
 	// was handed - not `primaryStore.auditStore`, which nothing assigns.
 	it('retires the legacy per-table drop against the table its own audit store, before closing it', async function () {

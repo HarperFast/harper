@@ -2738,8 +2738,10 @@ that settles; a rejected `shutdown` **keeps the lock** and publishes `unavailabl
 that cannot prove its queue quiescent must not hand the index to another owner. `stop()` waits for
 every backend to settle. An unregister cleanup returns the current release attempt; calling the same
 cleanup again retries a held release after a transient shutdown failure. Database removal leaves the
-table and storage registrations intact until every cleanup succeeds, so a failed drop remains
-retryable and cannot close storage while a backend may still be draining into it.
+table and storage registrations intact until every cleanup succeeds. If one table's cleanup succeeds
+while another fails, the successful table's derived indexes are registered again before the failed
+drop returns. The drop therefore remains retryable without serving a live database through a stopped
+index, and it cannot close storage while a backend may still be draining into it.
 `isOwnerEpoch(epoch)` is an `Atomics.load` of the shared counter; a backend checks it before each
 apply, after each await and in barrier completions, and drops work for a superseded epoch. The
 runner tracks a generation that changes on every acquisition, discard, reset and release and
