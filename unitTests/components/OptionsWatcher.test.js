@@ -1349,12 +1349,10 @@ describe('OptionsWatcher', () => {
 		options.on('change', countChanges);
 		const readySpy = spy();
 		options.on('ready', readySpy);
-		let writeAttempt = 0;
 		try {
 			await waitFor(
 				async () => {
 					if (readySpy.callCount > 0) return true;
-					expected[name].files = writeAttempt++ === 0 ? 'foo.js' : `foo-${writeAttempt}.js`;
 					await writeFile(configFilePath, stringify(expected), 'utf-8');
 					return false;
 				},
