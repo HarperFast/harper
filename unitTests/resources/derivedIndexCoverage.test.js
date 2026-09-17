@@ -5,7 +5,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { table, closeDatabase } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
-const { DatabaseTransaction, TRANSACTION_STATE, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
+const { DatabaseTransaction, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
 const { DERIVED_INDEX_CURSOR_KEY, HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
 const {
 	READINESS_BYTES,
@@ -148,24 +148,23 @@ describe('native derived-index query coverage', function () {
 		await index.derivedHost.waitForCoverage(since, 10_000);
 		await index.derivedHost.waitForCoverage(since, Number.MIN_VALUE);
 	});
-	it('keeps the request snapshot and transaction open throughout a bounded wait', async () => {
+	it('charges a waiting read to the ordinary snapshot timeout', async () => {
 		await current();
 		setTxnExpiration(20);
 		const transaction = new DatabaseTransaction();
 		try {
-			await Product.put('active-read-wait', { vector });
-			const pending = Product.search(
+			await Product.put('expired-read-wait', { vector });
+			const results = await Product.search(
 				{ sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 }, limit: 10 },
 				{ transaction }
 			);
 			const snapshot = transaction.transaction;
-			const started = performance.now();
-			const results = await pending;
-			assert(performance.now() - started > 100, 'the wait did not span several idle-monitor ticks');
-			assert.equal(transaction.open, TRANSACTION_STATE.OPEN);
-			assert.strictEqual(transaction.transaction, snapshot);
-			assert((await Array.fromAsync(results)).some(({ id }) => id === 'active-read-wait'));
 			await transaction.commit();
+			const pending = Array.fromAsync(results);
+			pending.catch(() => {});
+			await waitFor(() => transaction.transaction !== snapshot);
+			await Product.put('after-expired-snapshot', { vector });
+			await assert.rejects(pending, { name: 'ReadSnapshotExpiredError', statusCode: 503 });
 			assert.equal(transaction.readTxnsUsed, 0);
 		} finally {
 			transaction.abort();
@@ -179,39 +178,36 @@ describe('native derived-index query coverage', function () {
 		try {
 			await Product.put('write-timeout-wait', { vector });
 			await Other.put('uncommitted-wait', { value: 1 }, { transaction });
-			assert(transaction.hasPendingWrites());
-			const pending = Promise.resolve(
-				Product.search(
-					{ sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 }, limit: 10 },
-					{ transaction }
-				)
+			const results = await Product.search(
+				{ sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 }, limit: 10 },
+				{ transaction }
 			);
+			const pending = Array.fromAsync(results);
 			pending.catch(() => {});
 			await waitFor(() => transaction.timedOut);
-			await Promise.allSettled([pending]);
+			await assert.rejects(pending, { statusCode: 422 });
 			await assert.rejects(
 				Promise.resolve().then(() => transaction.commit()),
-				(error) => error.statusCode === 422
+				{ statusCode: 422 }
 			);
-			assert(transaction.timedOut);
-			assert.equal(transaction.pendingReads, 0);
 			assert.equal(await Other.get('uncommitted-wait'), undefined);
 		} finally {
 			transaction.abort();
 			setTxnExpiration(30_000);
 		}
 	});
-	it('cancels a waiting query and releases its read snapshot', async () => {
+	it('cancels a consumed waiting query and releases its read snapshot', async () => {
 		await Product.put('cancelled-wait', { vector });
 		const transaction = new DatabaseTransaction();
 		const controller = new AbortController();
 		try {
-			const pending = Product.search(
+			const results = await Product.search(
 				{ sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 }, limit: 10 },
 				{ transaction, signal: controller.signal }
 			);
+			const pending = Array.fromAsync(results);
 			controller.abort(new Error('cancel coverage wait'));
-			await assert.rejects(Promise.resolve(pending), /cancel coverage wait/);
+			await assert.rejects(pending, /cancel coverage wait/);
 			await transaction.commit();
 			assert.equal(transaction.readTxnsUsed, 0);
 		} finally {
@@ -219,209 +215,169 @@ describe('native derived-index query coverage', function () {
 		}
 		await current();
 	});
-	it('gates mapped async-authorized searches and zero-size pages before returning', async () => {
-		class Mapped extends Product {
-			static loadAsInstance = false;
-			async allowRead() {
-				return true;
-			}
-			async search(target) {
-				const results = await super.search(target);
-				return results.map((record) => record);
-			}
-		}
-		for (const count of [undefined, 'exact']) {
-			await current();
-			await Product.put('gated-' + count, { vector });
-			const transaction = new DatabaseTransaction();
-			try {
-				await assert.rejects(
-					Promise.resolve().then(() =>
-						Mapped.search(
-							{
-								sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: Number.MIN_VALUE },
-								limit: 0,
-								count,
-							},
-							{ transaction, user: { role: { permission: {} } }, authorize: true }
-						)
-					),
-					{ code: 'DERIVED_INDEX_LAGGING' }
-				);
-				await transaction.commit();
-				assert.equal(transaction.readTxnsUsed, 0);
-			} finally {
-				transaction.abort();
-			}
-		}
-		await current();
-	});
-	it('admits a waiting concat operand before returning an ordinary or mapped prefix', async () => {
-		for (const mapped of [false, true]) {
-			class Concatenated extends Product {
-				static loadAsInstance = false;
-				async search(target) {
-					const results = await super.search(target);
-					let prefix = super.search({ limit: 1 });
-					if (mapped) prefix = prefix.map((record) => record);
-					return prefix.concat(results);
-				}
-			}
-			await current();
-			await Product.put('concat-' + mapped, { vector });
-			const transaction = new DatabaseTransaction();
-			try {
-				await assert.rejects(
-					Promise.resolve().then(() =>
-						Concatenated.search(
-							{
-								sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: Number.MIN_VALUE },
-								limit: 10,
-							},
-							{ transaction }
-						)
-					),
-					{ code: 'DERIVED_INDEX_LAGGING' }
-				);
-				await transaction.commit();
-				assert.equal(transaction.readTxnsUsed, 0);
-			} finally {
-				transaction.abort();
-			}
-			await current();
-		}
-	});
-	it('cancels sibling admissions and settles them before releasing the query', async () => {
-		await current();
-		await Product.put('sibling-wait', { vector });
-		const transaction = new DatabaseTransaction();
-		const responseHeaders = new Headers();
-		try {
-			await assert.rejects(
-				Promise.resolve().then(() =>
-					Product.search(
-						{
-							operator: 'or',
-							conditions: [Number.MIN_VALUE, 10_000].map((waitForIndexMilliseconds) => ({
-								attribute: 'vector',
-								comparator: 'lt',
-								value: 2,
-								target: vector,
-								waitForIndexMilliseconds,
-							})),
-							limit: 10,
-						},
-						{ transaction, responseHeaders }
-					)
-				),
-				{ code: 'DERIVED_INDEX_LAGGING' }
-			);
-			assert.equal(transaction.pendingReads, 0);
-			await current();
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			assert.equal(
-				responseHeaders.get('Harper-Index-Coverage'),
-				null,
-				'a sibling published coverage after admission failed'
-			);
-		} finally {
-			transaction.abort();
-		}
-	});
-	for (const operator of ['or', 'and']) {
-		it('cancels deferred admissions on synchronous ' + operator.toUpperCase() + ' setup errors', async () => {
-			await current();
-			await Product.put('setup-failed-' + operator, { vector });
-			const transaction = new DatabaseTransaction();
-			const responseHeaders = new Headers();
-			let traversed = 0;
-			const unhandled = [];
-			const onUnhandled = (error) => unhandled.push(error);
-			process.on('unhandledRejection', onUnhandled);
-			try {
-				const first = {
-					attribute: 'vector',
-					comparator: 'lt',
-					value: 2,
-					target: vector,
-					waitForIndexMilliseconds: 10_000,
-					recordFilter: () => {
-						traversed++;
-						return true;
-					},
-				};
-				const invalid =
-					operator === 'or'
-						? { ...first, waitForIndexMilliseconds: 30_001 }
-						: { attribute: 'id', comparator: 'invalid-comparator', value: 'initial' };
-				const resource = new Product(null, { transaction, responseHeaders });
-				const started = performance.now();
-				assert.throws(
-					() =>
-						resource.search({
-							operator,
-							enforceExecutionOrder: true,
-							conditions: [operator === 'and' ? { operator: 'and', conditions: [first] } : first, invalid],
-							limit: 10,
-						}),
-					operator === 'and' ? /Unknown query comparator/ : /waitForIndexMilliseconds/
-				);
-				await transaction.commit();
-				assert.equal(transaction.readTxnsUsed, 0);
-				assert.equal(transaction.pendingReads, 0);
-				assert(performance.now() - started < 1000, 'setup failure waited for its 10-second admission');
-				await current();
-				await new Promise((resolve) => setTimeout(resolve, 100));
-				assert.equal(traversed, 0, 'a cancelled setup started a native traversal');
-				assert.equal(responseHeaders.get('Harper-Index-Coverage'), null);
-				assert.deepStrictEqual(unhandled, []);
-			} finally {
-				process.off('unhandledRejection', onUnhandled);
-				transaction.abort();
-			}
-		});
-	}
-	it('returns a promise only for an opted-in native instance search', async () => {
+	it('keeps opted-in instance searches iterable and starts only on consumption', async () => {
 		await current();
 		const transaction = new DatabaseTransaction();
+		let filtered = 0;
 		try {
 			const resource = new Product(null, { transaction });
-			const ordinary = resource.search({ sort: { attribute: 'vector', target: vector }, limit: 1 });
-			assert(!(ordinary instanceof Promise));
-			assert.equal(typeof ordinary.map, 'function');
-			await Array.fromAsync(ordinary);
-			const pending = resource.search({
+			const rows = resource.search({
 				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
-				limit: 1,
-			});
-			assert(pending instanceof Promise);
-			const rows = await pending;
-			assert.equal(typeof rows.map, 'function');
-			assert.equal((await Array.fromAsync(rows.map((record) => record))).length, 1);
-			await transaction.commit();
-			assert.equal(transaction.readTxnsUsed, 0);
-		} finally {
-			transaction.abort();
-		}
-	});
-	it('cancels a current fast-path search before its snapshot filter runs', async () => {
-		await current();
-		let filtered = 0;
-		const pending = index.search(
-			{ target: vector, comparator: 'sort', waitForIndexMilliseconds: 10_000 },
-			{ transaction: undefined },
-			{
-				filter: () => {
+				vectorFilter: () => {
 					filtered++;
 					return true;
 				},
-			}
-		);
-		pending.cancelAdmission(new Error('setup failed before native start'));
-		await assert.rejects(pending, /setup failed before native start/);
-		assert.equal(filtered, 0);
+				limit: 1,
+			});
+			assert(!(rows instanceof Promise));
+			assert.equal(typeof rows.map, 'function');
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.equal(filtered, 0);
+			assert.equal((await Array.fromAsync(rows.map((record) => record))).length, 1);
+			assert(filtered > 0);
+			await transaction.commit();
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+		}
 	});
-	it('awaits opted-in searches in legacy value-search consumers', async () => {
+	it('skips native work for zero-size waiting pages including counts', async () => {
+		for (const count of [undefined, 'exact']) {
+			await current();
+			await Product.put('empty-wait-' + count, { vector });
+			let filtered = 0;
+			const results = await Product.search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: Number.MIN_VALUE },
+				vectorFilter: () => {
+					filtered++;
+					return true;
+				},
+				limit: 0,
+				count,
+			});
+			assert.deepStrictEqual(await Array.fromAsync(results), []);
+			assert.equal(filtered, 0);
+		}
+	});
+	it('streams a concatenated prefix before a waiting suffix rejects', async () => {
+		await current();
+		await Product.put('concat-lazy', { vector });
+		const transaction = new DatabaseTransaction();
+		try {
+			const resource = new Product(null, { transaction });
+			const prefix = resource.search({ conditions: [{ attribute: 'id', value: 'initial' }] });
+			const suffix = resource.search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: Number.MIN_VALUE },
+			});
+			const iterator = prefix
+				.map((record) => record)
+				.concat(suffix)
+				[Symbol.asyncIterator]();
+			assert.equal((await iterator.next()).value.id, 'initial');
+			await assert.rejects(iterator.next(), { code: 'DERIVED_INDEX_LAGGING' });
+			await transaction.commit();
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+		}
+	});
+	it('keeps invalid waiting options synchronous without starting a traversal', async () => {
+		let filtered = 0;
+		const transaction = new DatabaseTransaction();
+		try {
+			const resource = new Product(null, { transaction });
+			for (const sort of [
+				{ waitForIndexMilliseconds: 30_001 },
+				{ waitForIndexMilliseconds: 10_000, maxIndexLagMilliseconds: -1 },
+			])
+				assert.throws(
+					() =>
+						resource.search({
+							sort: { attribute: 'vector', target: vector, ...sort },
+							vectorFilter: () => {
+								filtered++;
+								return true;
+							},
+						}),
+					{ statusCode: 400 }
+				);
+			await transaction.commit();
+			assert.equal(transaction.readTxnsUsed, 0);
+			assert.equal(filtered, 0);
+		} finally {
+			transaction.abort();
+		}
+	});
+	it('return before first next starts no native traversal', async () => {
+		await current();
+		let filtered = 0;
+		const transaction = new DatabaseTransaction();
+		try {
+			const resource = new Product(null, { transaction });
+			const results = resource.search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+				vectorFilter: () => {
+					filtered++;
+					return true;
+				},
+			});
+			await results[Symbol.asyncIterator]().return();
+			await transaction.commit();
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(filtered, 0);
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+		}
+	});
+	it('closing a pending filtered iterator cancels its wait without late reads', async () => {
+		await current();
+		await Product.put('closed-iterator', { vector });
+		const plane = index.getPlane();
+		const transaction = new DatabaseTransaction();
+		let filtered = 0;
+		try {
+			const resource = new Product(null, { transaction });
+			const rows = resource.search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+				vectorFilter: () => {
+					filtered++;
+					return true;
+				},
+			});
+			const iterator = rows[Symbol.asyncIterator]();
+			const pending = iterator.next();
+			pending.catch(() => {});
+			await new Promise((resolve) => setImmediate(resolve));
+			await iterator.return();
+			await Promise.allSettled([pending]);
+			await transaction.commit();
+			assert.equal(filtered, 0);
+			assert.equal(transaction.readTxnsUsed, 0);
+			assert.strictEqual(index.getPlane(), plane);
+		} finally {
+			transaction.abort();
+		}
+	});
+	it('rejects first consumption after its captured snapshot has expired', async () => {
+		await current();
+		setTxnExpiration(20);
+		const transaction = new DatabaseTransaction();
+		try {
+			const rows = new Product(null, { transaction }).search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+			});
+			const snapshot = transaction.transaction;
+			await transaction.commit();
+			await waitFor(() => transaction.transaction !== snapshot);
+			await assert.rejects(Array.fromAsync(rows), { name: 'ReadSnapshotExpiredError' });
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+			setTxnExpiration(30_000);
+		}
+	});
+	it('consumes opted-in searches in legacy value-search consumers', async () => {
 		const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 		const { searchByValue } = require('#src/dataLayer/search');
 		const options = {
@@ -448,32 +404,31 @@ describe('native derived-index query coverage', function () {
 		await assert.rejects(cancelled, /one caller left/);
 		for (const entries of await Promise.all(pending)) assert(entries.some(({ key }) => key === 'shared-wait'));
 	});
-	it('gates every native admission in a nested OR query', async () => {
+	it('preserves lag error fidelity after a nested OR prefix', async () => {
+		await current();
 		await Product.put('or-wait', { vector });
-		await assert.rejects(
-			Promise.resolve().then(() =>
-				Product.search({
-					operator: 'or',
+		const results = await Product.search({
+			operator: 'or',
+			enforceExecutionOrder: true,
+			conditions: [
+				{ attribute: 'id', value: 'initial' },
+				{
+					operator: 'and',
 					conditions: [
-						{ attribute: 'id', value: 'initial' },
 						{
-							operator: 'and',
-							conditions: [
-								{
-									attribute: 'vector',
-									comparator: 'le',
-									value: 0.1,
-									target: vector,
-									waitForIndexMilliseconds: Number.MIN_VALUE,
-								},
-							],
+							attribute: 'vector',
+							comparator: 'le',
+							value: 0.1,
+							target: vector,
+							waitForIndexMilliseconds: Number.MIN_VALUE,
 						},
 					],
-					limit: 0,
-				})
-			),
-			{ code: 'DERIVED_INDEX_LAGGING' }
-		);
+				},
+			],
+		});
+		const iterator = results[Symbol.asyncIterator]();
+		assert.equal((await iterator.next()).value.id, 'initial');
+		await assert.rejects(iterator.next(), { code: 'DERIVED_INDEX_LAGGING' });
 		await current();
 	});
 	it('handles an abandoned native wait rejection', async () => {
@@ -503,19 +458,21 @@ describe('native derived-index query coverage', function () {
 		assert((await Array.fromAsync(result)).some(({ id }) => id === 'aligned-wait'));
 		await Product.put('aligned-wait-override', { vector });
 		await assert.rejects(
-			Promise.resolve().then(() =>
-				Product.search({
-					conditions: [
-						{
-							attribute: 'vector',
-							comparator: 'le',
-							value: 0.1,
-							target: vector,
-							waitForIndexMilliseconds: Number.MIN_VALUE,
-						},
-					],
-					sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
-				})
+			Promise.resolve().then(async () =>
+				Array.fromAsync(
+					await Product.search({
+						conditions: [
+							{
+								attribute: 'vector',
+								comparator: 'le',
+								value: 0.1,
+								target: vector,
+								waitForIndexMilliseconds: Number.MIN_VALUE,
+							},
+						],
+						sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+					})
+				)
 			),
 			{ code: 'DERIVED_INDEX_LAGGING' }
 		);

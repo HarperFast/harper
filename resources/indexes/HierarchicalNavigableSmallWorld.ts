@@ -1626,8 +1626,7 @@ export class HierarchicalNavigableSmallWorld {
 			minResults?: number;
 		} = {}
 	) {
-		const started =
-			this.filePrimary && waitForIndexMilliseconds > 0 ? derivedIndexTime(this.indexStore.rootStore) : undefined;
+		const waiting = this.filePrimary && waitForIndexMilliseconds > 0;
 		let limit: number | undefined; // only set for threshold comparators; 0 is a valid threshold (e.g. dotProduct)
 		let limitInclusive = false; // true for `le`, false for `lt`
 		switch (comparator) {
@@ -1784,7 +1783,7 @@ export class HierarchicalNavigableSmallWorld {
 				return entries;
 			}
 		};
-		if (started !== undefined) {
+		if (waiting) {
 			context.signal?.throwIfAborted();
 			const host = this.derivedHost;
 			const state = host?.readiness().state;
@@ -1794,21 +1793,19 @@ export class HierarchicalNavigableSmallWorld {
 					503
 				);
 			}
-			const current = host.coverage(0);
-			const controller = new AbortController();
-			const signal = context.signal ? AbortSignal.any([context.signal, controller.signal]) : controller.signal;
-			const searched = Promise.resolve().then(async () => {
-				signal.throwIfAborted();
-				if (current?.state !== 'current') await host.waitForCoverage(started, waitForIndexMilliseconds, signal);
-				signal.throwIfAborted();
+			const searched = Promise.resolve(context.indexSearchStart).then(async () => {
+				context.signal?.throwIfAborted();
+				if (minResults === 0) return [];
+				const started = derivedIndexTime(this.indexStore.rootStore);
+				if (host.coverage(0)?.state !== 'current')
+					await host.waitForCoverage(started, waitForIndexMilliseconds, context.signal);
+				context.signal?.throwIfAborted();
 				return searchNative({
 					state: 'current',
 					maxLagMilliseconds: maxIndexLagMilliseconds,
 					lagUpperBoundMilliseconds: 0,
 				});
 			});
-			Object.defineProperty(searched, 'indexAdmission', { value: searched });
-			Object.defineProperty(searched, 'cancelAdmission', { value: (reason: unknown) => controller.abort(reason) });
 			searched.catch(() => {});
 			return searched;
 		}

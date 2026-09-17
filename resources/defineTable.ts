@@ -239,8 +239,8 @@ interface TypedVerbs<S extends Shape> {
 	update(id: IdOf<S>, updates?: PatchOf<S>, context?: any): MaybePromise<InstanceOf<S>>;
 	lock(id: IdOf<S>, options?: RecordLockOptions, context?: any): Promise<WritableRecord<InstanceOf<S>>>;
 	delete(id: IdOf<S>, context?: any): MaybePromise<unknown>;
-	search(query?: any, context?: any): MaybePromise<AsyncIterable<ReadVariant<S>>>;
-	query(query?: any, context?: any): MaybePromise<AsyncIterable<ReadVariant<S>>>;
+	search(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
+	query(query?: any, context?: any): AsyncIterable<ReadVariant<S>>;
 }
 
 /**

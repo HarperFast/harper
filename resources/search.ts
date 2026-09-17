@@ -6,7 +6,7 @@ import { INVALIDATED, EVICTED, freezeRecord } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import { lastMetadata } from './RecordEncoder.ts';
-import { writeKeyId } from './DatabaseTransaction.ts';
+import { writeKeyId, getReadTransactionGuard } from './DatabaseTransaction.ts';
 import { recordAction } from './analytics/write';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
@@ -70,8 +70,7 @@ export function executeConditions(
 	context,
 	transformToEntries,
 	filtered,
-	recordAccess?,
-	admissions?: Promise<unknown>[]
+	recordAccess?
 ) {
 	const firstSearch = conditions[0];
 	// Record-level guards (caller-supplied vectorFilter + rowFilter) apply to every record
@@ -140,16 +139,13 @@ export function executeConditions(
 				request,
 				context,
 				transformToEntries,
-				filtered,
-				undefined,
-				admissions
+				filtered
 				// recordAccess intentionally omitted: guards run once, at the top level (see above).
 			);
 		return searchByIndex(condition, txn, condition.descending || request.reverse === true, table, {
 			allowFullScan: request.allowFullScan,
 			filtered,
 			context,
-			admissions,
 			minResults: request.limit !== undefined ? (request.offset || 0) + request.limit : undefined,
 		});
 	}
@@ -292,14 +288,13 @@ export function searchByIndex(
 		// approximate index returns a fixed-size candidate list, so without this a query asking for more
 		// rows than that list holds silently gets a short result set. Only custom indexes read it.
 		minResults?: number;
-		admissions?: Promise<unknown>[];
 	} = {}
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	// A stale positional caller passes `allowFullScan` here. Type checking only covers .ts callers, so
 	// fail loud rather than silently reading every option as undefined.
 	if (typeof options !== 'object' || options === null)
 		throw new TypeError('searchByIndex: the 5th argument is an options object (#2165), not a positional value');
-	const { allowFullScan, filtered, context, minResults, admissions } = options;
+	const { allowFullScan, filtered, context, minResults } = options;
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
 	const comparator = searchCondition.comparator;
@@ -558,20 +553,42 @@ export function searchByIndex(
 			// exploring until it has enough MATCHING results, rather than post-filtering an under-filled
 			// candidate set. Only indexes that opt in (filteredSearch) receive it; others post-filter as before.
 			const recordFilter = index.customIndex.filteredSearch ? searchCondition.recordFilter : undefined;
-			const searched = index.customIndex.search(searchCondition, context, { filter: recordFilter, minResults });
-			const reportCoverage = (entries: any) => {
-				const coverage = entries.indexCoverage;
-				if (coverage && context?.responseHeaders) {
-					appendHeader(
-						context.responseHeaders,
-						'Harper-Index-Coverage',
-						`${coverage.state}; lag=${coverage.lagUpperBoundMilliseconds}; tolerance=${coverage.maxLagMilliseconds}`,
-						true
-					);
-					appendHeader(context.responseHeaders, 'Access-Control-Expose-Headers', 'Harper-Index-Coverage', true);
-				}
-			};
-			if (!(searched as any).indexAdmission) reportCoverage(searched);
+			const waiting = index.customIndex.filePrimary && searchCondition.waitForIndexMilliseconds > 0;
+			const start = waiting ? Promise.withResolvers<void>() : undefined;
+			const controller = waiting ? new AbortController() : undefined;
+			const checkActive = waiting ? getReadTransactionGuard(transaction) : undefined;
+			const signal = waiting
+				? context.signal
+					? AbortSignal.any([context.signal, controller.signal])
+					: controller.signal
+				: undefined;
+			const searchContext = waiting
+				? Object.create(context, {
+						signal: { value: signal },
+						indexSearchStart: { value: start.promise.then(() => checkActive?.()) },
+					})
+				: context;
+			const searched = index.customIndex.search(searchCondition, searchContext, {
+				filter:
+					waiting && recordFilter
+						? (id) => {
+								signal.throwIfAborted();
+								checkActive?.();
+								return recordFilter(id);
+							}
+						: recordFilter,
+				minResults,
+			});
+			const coverage = (searched as any).indexCoverage;
+			if (!waiting && coverage && context?.responseHeaders) {
+				appendHeader(
+					context.responseHeaders,
+					'Harper-Index-Coverage',
+					`${coverage.state}; lag=${coverage.lagUpperBoundMilliseconds}; tolerance=${coverage.maxLagMilliseconds}`,
+					true
+				);
+				appendHeader(context.responseHeaders, 'Access-Control-Expose-Headers', 'Harper-Index-Coverage', true);
+			}
 			const processEntries = (entries: any[]) => {
 				const loaded = entries
 					.map((entry) => {
@@ -580,7 +597,7 @@ export function searchByIndex(
 							const { key, ...otherProps } = entry;
 							if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
 							const loadedEntry = Table.primaryStore.getEntry(key, {
-								transaction: context && Table._readTxnForContext(context),
+								transaction: waiting ? transaction : context && Table._readTxnForContext(context),
 							});
 							if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
 							freezeRecord(loadedEntry?.value);
@@ -597,15 +614,16 @@ export function searchByIndex(
 				return loaded;
 			};
 			if (typeof (searched as any)?.then === 'function') {
-				const pending = (searched as Promise<any[]>).then((entries) => {
-					const loaded = processEntries(entries);
-					if ((searched as any).indexAdmission) reportCoverage(entries);
-					return loaded;
-				});
-				if ((searched as any).indexAdmission) {
-					Object.defineProperty(pending, 'cancelAdmission', { value: (searched as any).cancelAdmission });
-					admissions?.push(pending);
-				}
+				let settled = false;
+				const pending = (searched as Promise<any[]>)
+					.then((entries) => {
+						if (controller?.signal.aborted) return [];
+						checkActive?.();
+						return processEntries(entries);
+					})
+					.finally(() => {
+						settled = true;
+					});
 				// A consumer may abandon this lazy iterable without calling next().
 				pending.catch(() => {});
 				const results: any = new ExtendedIterable();
@@ -622,10 +640,16 @@ export function searchByIndex(
 					return {
 						next() {
 							if (closed) return Promise.resolve({ done: true, value: undefined });
-							return iteratorPromise.then((inner) => (closed ? { done: true, value: undefined } : inner.next()));
+							start?.resolve();
+							return iteratorPromise.then((inner) => {
+								if (closed) return { done: true, value: undefined };
+								checkActive?.();
+								return inner.next();
+							});
 						},
 						return(value?: any) {
 							closed = true;
+							if (!settled) controller?.abort();
 							iteratorPromise.then(
 								(inner) => (inner as any).return?.(value),
 								() => {}

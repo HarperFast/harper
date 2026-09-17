@@ -574,9 +574,7 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		| AsyncIterable<Record & Partial<RecordObject>>
 		| Promise<AsyncIterable<Record & Partial<RecordObject>>>;
 
-	search?(
-		target: RequestTargetOrId
-	): AsyncIterable<Record & Partial<RecordObject>> | Promise<AsyncIterable<Record & Partial<RecordObject>>>;
+	search?(target: RequestTargetOrId): AsyncIterable<Record & Partial<RecordObject>>;
 
 	create?(
 		target: RequestTargetOrId,

@@ -167,9 +167,7 @@ async function searchTypes() {
 	const querying = Track.query(options);
 	const searchedRows: AsyncIterable<TrackRecord> = await searching;
 	const queriedRows: AsyncIterable<TrackRecord> = await querying;
-	// @ts-expect-error a waiting search can return a promise, which is not iterable
 	const unawaitedSearch: AsyncIterable<TrackRecord> = searching;
-	// @ts-expect-error a waiting query can return a promise, which is not iterable
 	const unawaitedQuery: AsyncIterable<TrackRecord> = querying;
 	return { searchedRows, queriedRows, unawaitedSearch, unawaitedQuery };
 }

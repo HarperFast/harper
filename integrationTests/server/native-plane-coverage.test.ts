@@ -80,46 +80,51 @@ test(
 			}
 			for (const path of ['/PlaneProbe/', '/MappedPlane/', '/ConcatenatedPlane/']) {
 				const shortWait = await query(1_000_000, 1, target, path);
-				if (shortWait.status === 503) {
-					assert.equal(shortWait.body.code, 'DERIVED_INDEX_LAGGING');
-					assert.equal(shortWait.coverage, null);
-				} else {
-					assert.equal(shortWait.status, 200, JSON.stringify(shortWait));
-					assert.equal(shortWait.coverage, 'current; lag=0; tolerance=1000000');
-					assert(shortWait.body.some(({ id }) => id === records.length - 1));
-				}
+				assert.equal(shortWait.status, 200, JSON.stringify(shortWait));
+				assert.equal(shortWait.coverage, null);
+				const errors = shortWait.body.filter((record: any) => record.error);
+				if (errors.length) {
+					assert.equal(errors.length, 1, JSON.stringify(shortWait));
+					assert.match(errors[0].error, /^DerivedIndexLagError/);
+				} else assert(shortWait.body.some(({ id }: { id: number }) => id === records.length - 1));
 			}
-			await waitFor(
-				async () => {
-					const before = (await request('/PlaneStatus/')).body;
-					const strict = await query(0);
-					if (strict.status === 503) {
-						assert.equal(strict.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(strict));
-					} else {
-						assert.equal(strict.status, 200, JSON.stringify(strict));
-						assert.match(strict.coverage ?? '', /^current; lag=0; tolerance=0$/);
-						assert(strict.body.some(({ id }) => id === records.length - 1));
-					}
-					const normal = await query();
-					if (normal.status === 503) {
-						assert.equal(normal.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(normal));
-					} else {
-						assert.equal(normal.status, 200, JSON.stringify(normal));
-						assert.match(
-							normal.coverage ?? '',
-							/^(current|bounded); lag=[0-9.e+-]+; tolerance=3000$/,
-							JSON.stringify(normal)
-						);
-					}
-					const tolerant = await query(1_000_000);
-					if (tolerant.status === 200) {
-						assert(Array.isArray(tolerant.body));
-						assert.match(tolerant.coverage ?? '', /^(current|bounded); lag=[0-9.e+-]+; tolerance=1000000$/);
-					} else assert.equal(tolerant.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(tolerant));
-					return before.mappings === records.length && strict.status === 200;
-				},
-				{ timeout: 90_000, interval: 100, message: 'native plane did not certify current coverage' }
-			);
+			let progress: unknown;
+			try {
+				await waitFor(
+					async () => {
+						const before = (await request('/PlaneStatus/')).body;
+						progress = before;
+						const strict = await query(0);
+						if (strict.status === 503) {
+							assert.equal(strict.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(strict));
+						} else {
+							assert.equal(strict.status, 200, JSON.stringify(strict));
+							assert.match(strict.coverage ?? '', /^current; lag=0; tolerance=0$/);
+							assert(strict.body.some(({ id }) => id === records.length - 1));
+						}
+						const normal = await query();
+						if (normal.status === 503) {
+							assert.equal(normal.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(normal));
+						} else {
+							assert.equal(normal.status, 200, JSON.stringify(normal));
+							assert.match(
+								normal.coverage ?? '',
+								/^(current|bounded); lag=[0-9.e+-]+; tolerance=3000$/,
+								JSON.stringify(normal)
+							);
+						}
+						const tolerant = await query(1_000_000);
+						if (tolerant.status === 200) {
+							assert(Array.isArray(tolerant.body));
+							assert.match(tolerant.coverage ?? '', /^(current|bounded); lag=[0-9.e+-]+; tolerance=1000000$/);
+						} else assert.equal(tolerant.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(tolerant));
+						return before.mappings === records.length && strict.status === 200;
+					},
+					{ timeout: 90_000, interval: 100, message: 'native plane did not certify current coverage' }
+				);
+			} catch (error) {
+				throw new Error(`Native catch-up failed; last progress: ${JSON.stringify(progress)}`, { cause: error });
+			}
 			const final = await query(0);
 			assert.equal(final.status, 200, JSON.stringify(final));
 			const ids = final.body.map((record: { id: number }) => record.id);
@@ -157,7 +162,8 @@ test(
 							['/PlaneProbe/', '/MappedPlane/', '/ConcatenatedPlane/'][sequence % 3]
 						);
 						assert.equal(result.status, 200, JSON.stringify(result));
-						assert.equal(result.coverage, 'current; lag=0; tolerance=3000');
+						assert.equal(result.coverage, null);
+						assert(!result.body.some((record: any) => record.error), JSON.stringify(result));
 						assert(
 							result.body.some((record: { id: number }) => record.id === id),
 							`prior write ${id} missing`
@@ -176,7 +182,15 @@ test(
 					const result = await query(0, 10_000);
 					if (result.status === 503) return false;
 					assert.equal(result.status, 200, JSON.stringify(result));
-					assert.equal(result.coverage, 'current; lag=0; tolerance=0');
+					assert.equal(result.coverage, null);
+					if (result.body.some((record: any) => record.error)) {
+						for (const record of result.body.filter((record: any) => record.error))
+							assert.match(
+								record.error,
+								/^(DerivedIndexLagError|Error: The native HNSW index is (unavailable|rebuilding))/
+							);
+						return false;
+					}
 					assert(result.body.some(({ id }: { id: number }) => id === records.length - 1));
 					return true;
 				},

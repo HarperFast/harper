@@ -396,30 +396,6 @@ const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 const SEARCH_AUTHORIZATION_TRANSFORMS = Symbol.for('harper.searchAuthorizationTransforms');
 const AUTHORIZATION_TRANSFORM_METHODS = ['map', 'filter', 'concat', 'flatMap', 'slice', 'mapError'];
 
-type SearchAdmission = Promise<unknown> & { cancelAdmission?: (reason: unknown) => void };
-
-function settleSearchAdmissions(admissions: SearchAdmission[]): SearchAdmission {
-	const cancelAdmission = (reason: unknown) => {
-		for (const admission of admissions) admission.cancelAdmission?.(reason);
-	};
-	let failed = false;
-	let failure: unknown;
-	const pending = admissions.map((admission) =>
-		admission.catch((error) => {
-			if (!failed) {
-				failed = true;
-				failure = error;
-				cancelAdmission(error);
-			}
-		})
-	);
-	const result = Promise.all(pending).then(() => {
-		if (failed) throw failure;
-	});
-	Object.defineProperty(result, 'cancelAdmission', { value: cancelAdmission });
-	return result;
-}
-
 function propagateSearchAuthorization(iterable: any, authorization: Promise<any>, source?: any) {
 	if (!iterable || typeof iterable !== 'object') return iterable;
 	iterable[SEARCH_AUTHORIZATION] = authorization;
@@ -4189,7 +4165,7 @@ export function makeTable(options) {
 					(scanTarget as any).checkPermission = false;
 				}
 				(scanTarget as any).select = ['$id']; // just get the primary key of each record so we can delete them
-				for await (const entry of await this.search(scanTarget)) {
+				for await (const entry of this.search(scanTarget)) {
 					this._writeDelete((entry as any).$id);
 				}
 				return true;
@@ -4298,9 +4274,7 @@ export function makeTable(options) {
 		}
 
 		// #section: search-query
-		search(
-			target: RequestTarget
-		): AsyncIterable<Record & Partial<RecordObject>> | Promise<AsyncIterable<Record & Partial<RecordObject>>> {
+		search(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>> {
 			const context = this.getContext();
 			const txn = txnForContext(context);
 			if (!target) throw new Error('No query provided');
@@ -4676,10 +4650,8 @@ export function makeTable(options) {
 				boundRowFilter || typeof target.vectorFilter === 'function'
 					? { rowFilter: boundRowFilter, vectorFilter: target.vectorFilter }
 					: undefined;
-			const admissions: Promise<unknown>[] = [];
-			let entries;
 			try {
-				entries = executeConditions(
+				const entries = executeConditions(
 					conditions,
 					operator,
 					TableResource,
@@ -4688,15 +4660,8 @@ export function makeTable(options) {
 					context,
 					(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
 					filtered,
-					recordAccess,
-					admissions
+					recordAccess
 				);
-				let admission: SearchAdmission;
-				if (admissions.length) {
-					const pending = settleSearchAdmissions(admissions);
-					admission = (context.transaction ?? txn).keepReadActiveUntil(pending);
-					admission.catch(() => {});
-				}
 				const ensure_loaded = (target as any).ensureLoaded !== false;
 				// The guards inside executeConditions evaluate the
 				// LOCAL record, but on a caching table transformEntryForSelect may then revalidate an
@@ -4776,12 +4741,11 @@ export function makeTable(options) {
 							return typeof attr === 'string' && Boolean(indices[attr]?.customIndex);
 						});
 					const approximateResultSet = typeof target.vectorFilter === 'function' || touchesCustomIndex(conditions);
-					const pageResult = (async () => {
+					return (async () => {
 						const page: any = [];
 						let scanned = 0;
 						let exact = true;
 						try {
-							if (admission) await admission;
 							for await (const record of results) {
 								if (scanned >= offset && scanned < pageEnd) page.push(record);
 								scanned++;
@@ -4840,9 +4804,7 @@ export function makeTable(options) {
 						page.selectApplied = true;
 						page.getColumns = getColumns;
 						return page;
-					})();
-					if (admission) pageResult.catch(() => {});
-					return pageResult as any;
+					})() as any;
 				}
 				// apply any offset/limit after all the sorting and filtering
 				if (target.offset || target.limit !== undefined) results = results.slice(offset, end);
@@ -4852,20 +4814,8 @@ export function makeTable(options) {
 				};
 				results.selectApplied = true;
 				results.getColumns = getColumns;
-				if (admission) {
-					const admitted = admission.then(
-						() => results,
-						(error) => {
-							results.onDone?.();
-							throw error;
-						}
-					);
-					admitted.catch(() => {});
-					return admitted;
-				}
 				return results;
 			} catch (error) {
-				for (const admission of admissions as SearchAdmission[]) admission.cancelAdmission?.(error);
 				txn.doneReadTxn();
 				throw error;
 			}

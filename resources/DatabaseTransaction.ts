@@ -300,15 +300,21 @@ class ReadSnapshotExpiredError extends ServerError {
 	}
 }
 
-export function trackReadRange(transaction: ReadTransaction, createRange: () => any): any {
+export function getReadTransactionGuard(transaction: ReadTransaction): (() => void) | undefined {
 	const owner = readTransactionOwners.get(transaction);
-	if (!owner) return createRange();
-	function checkActive() {
+	if (!owner) return;
+	return function checkActive() {
 		if (owner.timedOut) throw transactionOpenTooLongError();
 		if (owner.transaction !== transaction) {
 			throw new ReadSnapshotExpiredError();
 		}
-	}
+	};
+}
+
+export function trackReadRange(transaction: ReadTransaction, createRange: () => any): any {
+	const owner = readTransactionOwners.get(transaction);
+	if (!owner) return createRange();
+	const checkActive = getReadTransactionGuard(transaction)!;
 	checkActive();
 	const range = createRange();
 	const iterate = range.iterate;
@@ -640,21 +646,6 @@ export class DatabaseTransaction implements Transaction {
 			txn.commitChainHead = committing ? this : undefined;
 			if (committing) txn.commitPhaseTicks = 0;
 		}
-	}
-
-	pendingReads = 0;
-
-	/** Keep a known, bounded asynchronous read active without extending staged-write lifetimes. */
-	keepReadActiveUntil<T>(pending: Promise<T>): Promise<T> {
-		const links: DatabaseTransaction[] = [];
-		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
-			txn.pendingReads++;
-			txn.renewReadTimeout();
-			links.push(txn);
-		}
-		return pending.finally(() => {
-			for (const txn of links) txn.pendingReads--;
-		});
 	}
 
 	rangeReadActive = false;
@@ -2235,7 +2226,7 @@ function startMonitoringTxns() {
 		reportNow: number,
 		reportBudget: LongLivedHolderReportBudget
 	) {
-		if (txn.rangeReadActive || txn.pendingReads > 0) {
+		if (txn.rangeReadActive) {
 			txn.rangeReadActive = false;
 			txn.renewReadTimeout();
 		}

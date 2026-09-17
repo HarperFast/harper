@@ -39,16 +39,16 @@ export class MappedPlane extends tables.PlaneProbe {
 	async allowRead() {
 		return true;
 	}
-	async search(target, query) {
-		const results = await super.search(query ?? target);
+	search(target, query) {
+		const results = super.search(query ?? target);
 		return results.map((record) => record);
 	}
 }
 
 export class ConcatenatedPlane extends tables.PlaneProbe {
 	static loadAsInstance = false;
-	async search(target, query) {
-		const results = await super.search(query ?? target);
+	search(target, query) {
+		const results = super.search(query ?? target);
 		return super
 			.search({ limit: 1 })
 			.map((record) => record)

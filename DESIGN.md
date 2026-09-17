@@ -2658,12 +2658,13 @@ Synchronous/non-native indexes ignore the native coverage options. For example, 
 
 For read-after-write, add `waitForIndexMilliseconds: 10000` to that sort (or vector condition).
 Omitted or `0` preserves immediate admission; a positive finite number, capped at **30,000 ms**,
-opts into a bounded wait for coverage of writes committed before the native search starts.
+opts into a bounded wait for coverage of writes committed before the native search begins on first iteration.
 The wait takes precedence over lag tolerance: a recent but stale proof cannot satisfy it. An already
 physically current index proceeds immediately. Otherwise the query captures one monotonic target and
-waits for the owner's certified time to reach it; later writes never reset the target. Successful waiting
-queries report `current; lag=0` relative to that boundary, even when later writes are still being indexed.
-A timeout returns retryable `DERIVED_INDEX_LAGGING` / HTTP 503. Request cancellation also ends the wait.
+waits for the owner's certified time to reach it; later writes never reset the target. Each consumed
+waiting branch has its own budget; sequential OR or concatenated branches can take longer in total.
+A timeout throws retryable `DERIVED_INDEX_LAGGING`. On an already-started HTTP stream this is an error
+record, not a new HTTP status. Request cancellation and iterator closure also end pending waits.
 
 Waiting preserves the normal 1000 ms flush-age schedule: a small write followed by a search commonly
 waits about a second plus barrier time. Shorter deadlines are valid but may expire. Replay must reach
@@ -2675,30 +2676,33 @@ have not committed locally.
 When a vector condition also provides the sort order, each explicit coverage option takes precedence;
 missing options inherit the sort's values. The query planner preserves both when combining them.
 
-A successful native query certifies coverage **at admission**. `Harper-Index-Coverage` is either
-`current; lag=0; tolerance=0` (with the actual requested tolerance), or
-`bounded; lag=<upper-bound-ms>; tolerance=<requested-ms>`. Bounded coverage can omit recent committed
-mutations; it is not a claim that the index is incomplete, nor an ANN recall guarantee. The header is
-exposed to CORS clients. Record arrays retain their existing shape. Direct custom-index callers can
-read the same `indexCoverage` property on the result array and, for asynchronous searches, on the
-returned promise before awaiting it for ordinary searches. Waiting searches expose coverage on the
-resolved array. Their internal admission promise covers the native traversal and mapping reads;
-an opted-in instance `Table.search` returns `Promise<ExtendedIterable>`. Custom resources must await
-that promise before applying `.map()`, `.concat()` or other iterable transforms. Ordinary instance
-searches retain their synchronous iterable result. Static Resource search/query already awaits promise
-results, so wait/native-result errors precede HTTP headers. The adapter publishes coverage before the
-promise resolves. Ordinary searches still set their header synchronously from the native promise.
-Custom resources forwarding arbitrary queries should always `await super.search(query)` before
-composing results. The public TypeScript return type includes a promise, even for a caller that normally
-uses only synchronous options; the native-plane schema and positive wait determine the runtime shape.
-As with other promises, dropping a waiting search does not cancel it: await it or abort its request signal.
-An unknown or excessive bound produces `DERIVED_INDEX_LAGGING` / HTTP 503, with the tolerance and
-last certified age (when known) in the message. These admission failures never invalidate a healthy
-plane; existing unavailable/rebuilding checks still take precedence.
+An ordinary non-waiting native query certifies coverage **at admission**. `Harper-Index-Coverage` is
+`current; lag=0; tolerance=<requested-ms>` or `bounded; lag=<upper-bound-ms>; tolerance=<requested-ms>`.
+Bounded coverage can omit recent committed mutations; it is not a claim of known incompleteness or an
+ANN recall guarantee. The header is exposed to CORS clients and does not certify a later traversal.
+Multiple non-waiting searches append one entry each.
 
-Multiple native searches in one response append one coverage entry per admission. The response has
-current coverage only if every entry is current; a bounded entry means part of it may omit recent writes.
-For ordinary non-waiting searches the header describes admission, not the outcome of a later traversal failure.
+Waiting queries retain the synchronous instance iterable API: custom resources can directly use
+`super.search(query).map(...)` or concatenate results. Validation and unavailable/rebuilding checks
+remain synchronous; the adapter opens a start gate only on consumption, so unused searches start no
+wait or traversal. A zero-size page skips native work. The iterable library can pull one extra source
+row at a page boundary; an exact boundary between branches can therefore start the next branch.
+
+Waiting queries publish no HTTP coverage header: a header sent before consumption cannot certify the
+pending work. The caller must consume results and check streamed errors. JSON array streams may include
+an error element such as `{ "error": "DerivedIndexLagError: ..." }`; error serialization may instead
+provide a separate `message` field. SSE/NDJSON use their existing terminal error records. HTTP 200 alone
+is not evidence of successful completion. Prefix rows can precede a later branch error. Count pages
+materialize before headers and can still return an error status. First-item HTTP status deferral is a
+separate follow-up (#2670), not a guarantee here. Direct custom-index arrays retain `indexCoverage`;
+ordinary native promises expose it before awaiting, while waiting promises expose it on resolved arrays.
+
+Waiting consumes the ordinary transaction timeout without special monitor renewal. An expired read
+snapshot fails with `ReadSnapshotExpiredError`; timed-out staged writes retain their existing 422
+failure and rollback. The adapter uses the captured snapshot for materialization and guards predicate
+reads, so it never recreates a snapshot after waiting. Dropping an unconsumed iterable starts no work;
+once consuming, close its iterator or abort the request to cancel. Lag rejection never invalidates a
+healthy plane. The default/strict no-wait lag rejection remains HTTP 503.
 File-primary node-to-record mappings are read from current storage, just like the native graph itself:
 an older record snapshot must not hide mappings published after a record already visible in that snapshot.
 Record filtering and materialization retain the request's snapshot; the native graph is not an MVCC index.
