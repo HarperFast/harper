@@ -6140,7 +6140,8 @@ export function makeTable(options) {
 					addError(name, 'required', `Property ${name} is required (and not does not allow null values)`);
 				}
 			};
-			for (const attribute of fullTextAttributes) {
+			for (let i = 0, l = fullTextAttributes.length; i < l; i++) {
+				const attribute = fullTextAttributes[i];
 				if (Object.hasOwn(record, attribute.name))
 					addError(
 						attribute.name,

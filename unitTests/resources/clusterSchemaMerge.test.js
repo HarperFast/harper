@@ -166,22 +166,24 @@ describe('cluster-origin schema definitions are additive-only', () => {
 			schemaDefined: true,
 			attributes: [
 				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'label', type: 'String' },
+				{ name: 'label', type: 'String', indexed: true },
 			],
 		});
+		await Hidden.indexingOperation;
 		await catalogFlushed(Hidden);
+		const indexingOperation = Hidden.indexingOperation;
 		const Updated = table({
 			table: 'ClusterMergeHidden',
 			database: 'test',
 			schemaDefined: true,
 			attributes: [
 				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'label', type: 'String', hidden: true },
+				{ name: 'label', type: 'String', indexed: true, hidden: true },
 			],
 		});
 		await catalogFlushed(Updated);
 		assert.strictEqual(Updated.dbisDB.getSync('ClusterMergeHidden/label').hidden, true);
-		assert.strictEqual(Updated.indexingOperation, Hidden.indexingOperation);
+		assert.strictEqual(Updated.indexingOperation, indexingOperation);
 	});
 
 	it('logs every peer difference it discards, not only a type conflict', async () => {
