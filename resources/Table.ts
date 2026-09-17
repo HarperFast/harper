@@ -2129,7 +2129,11 @@ export function makeTable(options) {
 						}
 						drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
 						await Promise.all(drops);
-						if (removeTombstonedCatalog()) await dbisDb.committed;
+						if (!removeTombstonedCatalog()) {
+							abortStaleDrop();
+							return;
+						}
+						await dbisDb.committed;
 					} catch (error) {
 						derivedIndexRuntime?.completeDrop?.();
 						throw error;
