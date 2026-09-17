@@ -2646,20 +2646,18 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attribute.hidden = true;
 			}
 			if (origin !== 'cluster') {
+				if (attributes.some((attribute) => attribute.fullText)) exclusiveLock();
 				const storedFieldReplacement = attributes.find((attribute) => {
 					if (!attribute.fullText) return false;
 					const descriptor = Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
 					return descriptor && !descriptor.fullText;
 				});
-				if (storedFieldReplacement) {
-					for (const _entry of Table.primaryStore.getRange({ start: true })) {
-						throw new ClientError(
-							`Cannot redefine stored attribute '${storedFieldReplacement.name}' as a FullText query handle while table ` +
-								`'${databaseName}.${tableName}' contains records. Declare a new FullText field name instead.`,
-							400
-						);
-					}
-				}
+				if (storedFieldReplacement)
+					throw new ClientError(
+						`Cannot redefine stored attribute '${storedFieldReplacement.name}' as a FullText query handle. ` +
+							'Declare a new FullText field name instead.',
+						400
+					);
 			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
 			// Re-assert from the live declaration so a stale value on disk (replicated event,

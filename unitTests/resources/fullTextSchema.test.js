@@ -241,7 +241,7 @@ describe('@fullText schema declaration', () => {
 		);
 	});
 
-	it('rejects replacing a populated stored field with a FullText query handle', async () => {
+	it('rejects replacing a stored field with a FullText query handle', async () => {
 		await loadGQLSchema(`
 			type FullTextStoredReplacement @table {
 				id: ID @primaryKey
