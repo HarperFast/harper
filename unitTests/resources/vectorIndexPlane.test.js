@@ -225,6 +225,26 @@ describe('HNSW native plane file-primary delivery', function () {
 		});
 	});
 
+	// ef sizes the beam; the candidates handed back for exact reranking are bounded by the rows
+	// the query will consume, so a wide ef does not turn into a record load per candidate.
+	it('returns a rerank window sized by offset + limit, not by ef', async () => {
+		const target = vectors.get(42);
+		await readySearch(target);
+		const search = (minResults) =>
+			customIndex().search(
+				{ target, comparator: 'sort', distance: 'cosine', ef: 200 },
+				{ transaction: undefined },
+				{ minResults }
+			);
+		const bounded = await search(10);
+		assert.equal(bounded.length, 40, `limit 10 at ef 200 should hand back 4x10 candidates, got ${bounded.length}`);
+		assert.equal(bounded[0].key, 42);
+		const small = await search(2);
+		assert.equal(small.length, 32, `the window has a floor of 32, got ${small.length}`);
+		const unbounded = await search(undefined);
+		assert.ok(unbounded.length > 40, `an unbounded query keeps the full ef candidate set, got ${unbounded.length}`);
+	});
+
 	it('applies predicates and full-stack exact rescoring', async () => {
 		const filtered = await readySearch(vectors.get(21), (id) => id % 3 === 0);
 		assert.ok(filtered.length > 0);

@@ -4,9 +4,10 @@ import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const logger = loggerWithTag('HNSW');
 
-export interface PlaneSearchHit {
-	id: number;
-	distance: number;
+/** Parallel arrays, ascending by distance: hit i is (ids[i], distances[i]). */
+export interface PlaneSearchHits {
+	ids: Uint32Array;
+	distances: Float32Array;
 }
 
 /** NAPI surface of the native file-primary HNSW index (`@harperfast/hnsw`). */
@@ -33,7 +34,7 @@ export interface HnswPlane {
 		ef: number,
 		filter?: Uint8Array | null,
 		filterExpansion?: number | null
-	): Promise<PlaneSearchHit[]>;
+	): Promise<PlaneSearchHits>;
 	searchWithPredicate(
 		vector: Float32Array,
 		k: number,
@@ -41,8 +42,8 @@ export interface HnswPlane {
 		predicate: (ids: number[]) => Uint8Array,
 		filterExpansion?: number | null,
 		visitBudget?: number | null
-	): Promise<PlaneSearchHit[]>;
-	searchSync(vector: Float32Array, k: number, ef: number): PlaneSearchHit[];
+	): Promise<PlaneSearchHits>;
+	searchSync(vector: Float32Array, k: number, ef: number): PlaneSearchHits;
 	writeNodeRawIfAbsent(
 		id: number,
 		level: number,

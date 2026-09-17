@@ -15,6 +15,7 @@ import {
 	planeStalePathFor,
 	PLANE_NO_ID,
 	type HnswPlane,
+	type PlaneSearchHits,
 } from './hnswPlaneBinding.ts';
 
 const logger = loggerWithTag('HNSW');
@@ -106,6 +107,16 @@ const ROUTING_EF = 1;
 // index's own auto-scaled ceiling so the worst case stays the same order. Schema and per-query ef
 // pins are authoritative cost ceilings; only an automatically scaled index widens from `limit`.
 const LIMIT_EF_MAX = 2 * AUTO_EF_CEILING;
+// How many candidates a bounded nearest-neighbor query hands back for exact reranking, as a
+// multiple of the rows it will consume (offset + limit). `ef` sizes the traversal's beam and
+// decides recall; it does not have to size the rerank. Every candidate returned costs a node
+// mapping read, a full record load and decode, and an exact distance — ~30 us against ~0.1 us
+// per traversal visit — so returning all `ef` of them made query cost scale with ef when
+// only the top few rows are wanted. int8 quantization perturbs the order slightly, so the
+// window is a multiple of the rows requested, with a floor for small limits. Threshold
+// queries and unbounded queries still get the full candidate set.
+const RERANK_FACTOR = 4;
+const RERANK_MIN = 32;
 // Auto-scaled construction ef, used only when an index does not explicitly configure efConstruction.
 // At a constant efConstruction, edge quality erodes as the graph grows until true neighbours become
 // unreachable at ANY search ef; the cap bounds per-insert cost. Measurements and policy in
@@ -553,13 +564,14 @@ export class HierarchicalNavigableSmallWorld {
 	private searchPlane(
 		plane: HnswPlane,
 		target: number[],
+		k: number,
 		ef: number,
 		filter: ((primaryKey: Id) => boolean) | undefined,
 		filterState: FilterState | undefined,
 		options: any
 	): Promise<any[]> {
 		const query = Float32Array.from(target);
-		let resultPromise: Promise<{ id: number; distance: number }[]>;
+		let resultPromise: Promise<PlaneSearchHits>;
 		let predicateError: unknown;
 		if (filter && filterState) {
 			const predicate = (ids: number[]): Uint8Array => {
@@ -579,9 +591,9 @@ export class HierarchicalNavigableSmallWorld {
 				return verdicts;
 			};
 			// pass the already-resolved JS visit budget verbatim so both paths stop at the same count
-			resultPromise = plane.searchWithPredicate(query, ef, ef, predicate, undefined, filterState.maxVisits);
+			resultPromise = plane.searchWithPredicate(query, k, ef, predicate, undefined, filterState.maxVisits);
 		} else {
-			resultPromise = plane.search(query, ef, ef);
+			resultPromise = plane.search(query, k, ef);
 		}
 		return resultPromise.then((hits) => {
 			if (predicateError !== undefined) {
@@ -596,12 +608,13 @@ export class HierarchicalNavigableSmallWorld {
 			}
 			const entries: any[] = [];
 			try {
-				for (const hit of hits) {
-					const mapping = this.safeGetSync(hit.id, options);
+				const { ids, distances } = hits;
+				for (let i = 0; i < ids.length; i++) {
+					const mapping = this.safeGetSync(ids[i], options);
 					if (mapping?.pending) continue;
 					const primaryKey = mapping?.primaryKey;
 					if (primaryKey === undefined) continue; // deleted/reused id raced the search
-					entries.push({ key: primaryKey, distance: hit.distance });
+					entries.push({ key: primaryKey, distance: distances[i] });
 				}
 			} catch (error) {
 				// The traversal already succeeded; this is a RocksDB read of the id mappings, which
@@ -1671,6 +1684,11 @@ export class HierarchicalNavigableSmallWorld {
 					filterEvaluations: 0,
 				}
 			: undefined;
+		// Candidates handed to the caller (see RERANK_FACTOR): the beam still runs at effectiveEf.
+		const rerankK =
+			comparator === 'sort' && minResults !== undefined
+				? Math.min(effectiveEf, Math.max(RERANK_MIN, minResults * RERANK_FACTOR))
+				: effectiveEf;
 		if (this.filePrimary && distanceFunction !== this.distance) {
 			throw new ClientError('A nativePlane index only supports its configured cosine distance');
 		}
@@ -1688,14 +1706,16 @@ export class HierarchicalNavigableSmallWorld {
 			// path, which tolerates the mismatch, rather than disabling the healthy plane
 			if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {
 				try {
-					return this.searchPlane(plane, target, effectiveEf, filter, filterState, txnOptions).catch((error) => {
-						// the query failed for a reason outside the traversal: re-raise instead of disabling the file
-						if (error?.[NOT_A_PLANE_FAILURE]) throw error;
-						// There is no JS graph behind a file-primary index: it stays unavailable until
-						// its audit-backed rebuild succeeds.
-						this.disablePlane(error);
-						throw new ServerError('The native HNSW index is rebuilding', 503);
-					});
+					return this.searchPlane(plane, target, rerankK, effectiveEf, filter, filterState, txnOptions).catch(
+						(error) => {
+							// the query failed for a reason outside the traversal: re-raise instead of disabling the file
+							if (error?.[NOT_A_PLANE_FAILURE]) throw error;
+							// There is no JS graph behind a file-primary index: it stays unavailable until
+							// its audit-backed rebuild succeeds.
+							this.disablePlane(error);
+							throw new ServerError('The native HNSW index is rebuilding', 503);
+						}
+					);
 				} catch (error) {
 					// Handle a throw raised before the asynchronous native search returns its promise.
 					this.disablePlane(error);
@@ -1755,6 +1775,7 @@ export class HierarchicalNavigableSmallWorld {
 			results = results.filter((candidate) =>
 				limitInclusive ? candidate.distance <= limit : candidate.distance < limit
 			);
+		if (results.length > rerankK) results = results.slice(0, rerankK);
 		return withStats(
 			results.map((candidate) => ({
 				// we return the result as an entry so we can provide distance as metadata
