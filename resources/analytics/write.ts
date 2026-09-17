@@ -157,6 +157,10 @@ function sendAnalytics() {
 	analyticsStart ||= performance.now();
 	sendAnalyticsTimeout = setTimeout(async () => {
 		sendAnalyticsTimeout = null;
+		// Rotate before the first yield below: a sample recorded mid-flush would otherwise be added to
+		// an entry already reported, and dropped with it.
+		const reportingActions = activeActions;
+		activeActions = new Map();
 		const period = performance.now() - analyticsStart;
 		analyticsStart = 0;
 		const metrics = [];
@@ -166,7 +170,7 @@ function sendAnalytics() {
 			threadId,
 			metrics,
 		};
-		for (const [_name, action] of activeActions) {
+		for (const [_name, action] of reportingActions) {
 			if (action.values) {
 				const values = action.values.subarray(0, (action.values as any).index);
 				values.sort();
@@ -239,7 +243,6 @@ function sendAnalytics() {
 		for (const listener of analyticsListeners) {
 			listener(metrics);
 		}
-		activeActions = new Map();
 		if (parentPort)
 			parentPort.postMessage({
 				type: ANALYTICS_REPORT_TYPE,
