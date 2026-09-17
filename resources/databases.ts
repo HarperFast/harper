@@ -2647,7 +2647,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 				attributes = merged;
 			}
-			const hasFullText = attributes.some((attribute) => attribute.fullText);
+			const hasFullText = attributes.some((attribute) => attribute.fullText || attribute.type === 'FullText');
 			// The target and every source descriptor must be validated in the same schema critical section
 			// that can persist a new handle. Otherwise another LMDB worker can change a source type between
 			// validation and persistence, leaving a durable handle that cannot be loaded.
@@ -2655,7 +2655,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			const fullTextValidationAttributes =
 				origin === 'cluster' && hasFullText
 					? attributes.map((attribute) => {
-							const descriptor = Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
+							const descriptor = Table.dbisDB.getSync(
+								attribute.isPrimaryKey ? `${tableName}/` : `${tableName}/${attribute.name}`
+							);
 							if (!descriptor) return attribute;
 							const durableAttribute = { ...attribute };
 							applyDurableDeclaration(durableAttribute, descriptor);
@@ -2663,14 +2665,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						})
 					: attributes;
 			for (let attributeIndex = 0; attributeIndex < attributes.length; attributeIndex++) {
-				const attribute = attributes[attributeIndex];
-				if (!attribute.fullText) continue;
+				let attribute = attributes[attributeIndex];
 				const validationAttribute =
 					fullTextValidationAttributes.find(({ name }) => name === attribute.name) ?? attribute;
+				if (!attribute.fullText && !validationAttribute.fullText && attribute.type !== 'FullText') continue;
 				if (validationAttribute !== attribute && validationAttribute.type !== 'FullText') {
 					attributes[attributeIndex] = validationAttribute;
 					continue;
 				}
+				if (validationAttribute !== attribute) attributes[attributeIndex] = attribute = validationAttribute;
 				try {
 					attribute.fullText = compileFullTextDefinition(
 						validationAttribute,
@@ -2873,9 +2876,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			? [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })]
 			: [];
 		const catalogRowsToRemove = [];
-		// Remove derived handles before their sources. Catalog rows are individually durable on RocksDB,
-		// so a crash between removals may leave an unused source but must not leave a handle naming a
-		// source that is already gone.
+		// Remove derived handles before any source mutation. Catalog rows are individually durable on
+		// RocksDB, so every crash point may leave an unused source but never a handle naming a missing or
+		// newly incompatible source.
 		durableAttributeRows.sort(
 			(left, right) => Number(Boolean(right.value?.fullText)) - Number(Boolean(left.value?.fullText))
 		);
@@ -2897,7 +2900,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				exclusiveLock();
 				hasChanges = true;
 				if (staleRow) {
-					if (deferredPrimaryRow) attributesDbi.remove(key);
+					if (deferredPrimaryRow || value.fullText) attributesDbi.remove(key);
 					else catalogRowsToRemove.push(key);
 				}
 				if (removeIndex) {
@@ -3245,18 +3248,24 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	if (hasChanges || refreshRelationshipAttributes || refreshedLiveAttributes) Table.updatedAttributes();
 	logger.trace(`${tableName} table loading, running index`);
 	const branchPath = target.branch?.path;
+	const schemaChangeOperation = hasChanges
+		? signalling.signalSchemaChange(
+				new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
+			)
+		: undefined;
+	if (schemaChangeOperation) Table.schemaChangeOperation = schemaChangeOperation;
 	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
 		// captured before the backfill can rewrite the attributes
 		const buildIds = new Map(attributesToIndex.map((attribute) => [attribute, attribute.indexingBuildId]));
 		const markSettled = () => markAbandonedIndexBuild(Table, rootStore, buildIds);
-		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove, branchPath).then(
-			markSettled,
-			markSettled
-		);
-	} else if (hasChanges)
-		Table.schemaChangeOperation = signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
-		);
+		Table.indexingOperation = runIndexing(
+			Table,
+			attributesToIndex,
+			indicesToRemove,
+			branchPath,
+			schemaChangeOperation
+		).then(markSettled, markSettled);
+	}
 	void Table.derivedIndexRuntime?.close();
 	Table.derivedIndexRuntime = attachDerivedIndexes(Table);
 
@@ -3477,7 +3486,13 @@ async function markAbandonedIndexBuild(Table, rootStore, buildIds: Map<any, stri
 		}
 	}
 }
-async function runIndexing(Table, attributes, indicesToRemove, branchPath?: string) {
+async function runIndexing(
+	Table,
+	attributes,
+	indicesToRemove,
+	branchPath?: string,
+	schemaChangeOperation?: Promise<void>
+) {
 	let checkpointing;
 	let hadIndexingErrors = false;
 	const attributeErrorReported = {};
@@ -3490,9 +3505,10 @@ async function runIndexing(Table, attributes, indicesToRemove, branchPath?: stri
 	const putRejectionHandlers = attributes.map((attribute) => (error) => onIndexPutRejected(attribute.name, error));
 	try {
 		logger.info(`Indexing ${Table.tableName} attributes`, attributes);
-		await signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
-		);
+		await (schemaChangeOperation ??
+			signalling.signalSchemaChange(
+				new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName, undefined, branchPath)
+			));
 		let lastResolution;
 		// The checkpoint and completion barriers have to cover every mutation still in flight: any of them
 		// may reject after those barriers read hadIndexingErrors.

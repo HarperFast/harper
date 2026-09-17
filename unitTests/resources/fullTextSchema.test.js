@@ -353,6 +353,50 @@ describe('@fullText schema declaration', () => {
 		);
 	});
 
+	it('removes a handle before persisting an incompatible source type', async () => {
+		await loadGQLSchema(`
+			type FullTextSourceTypeChange @table {
+				id: ID @primaryKey
+				text: String
+				search: FullText @fullText(fields: [{ name: "text" }])
+			}
+		`);
+		const Table = tables.FullTextSourceTypeChange;
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		const operations = [];
+		const databasePrototype = Object.getPrototypeOf(Table.dbisDB);
+		const putSync = databasePrototype.putSync;
+		const removeSync = databasePrototype.removeSync;
+		databasePrototype.putSync = function (key, ...args) {
+			operations.push(`put:${String(key)}`);
+			return putSync.call(this, key, ...args);
+		};
+		databasePrototype.removeSync = function (key, ...args) {
+			operations.push(`remove:${String(key)}`);
+			return removeSync.call(this, key, ...args);
+		};
+		try {
+			table({
+				table: 'FullTextSourceTypeChange',
+				database: 'data',
+				schemaDefined: true,
+				removedAttributes: ['search'],
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'text', type: 'Int' },
+				],
+			});
+		} finally {
+			databasePrototype.putSync = putSync;
+			databasePrototype.removeSync = removeSync;
+		}
+		const removeHandle = operations.indexOf('remove:FullTextSourceTypeChange/search');
+		const putSource = operations.indexOf('put:FullTextSourceTypeChange/text');
+		assert(removeHandle >= 0, `missing handle removal: ${operations}`);
+		assert(putSource >= 0, `missing source update: ${operations}`);
+		assert(removeHandle < putSource, `source changed before handle removal: ${operations}`);
+	});
+
 	it('rejects a FullText field without an index declaration', async () => {
 		await assert.rejects(
 			loadGQLSchema(`
