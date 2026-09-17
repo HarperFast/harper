@@ -2567,12 +2567,21 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		for (const attribute of attributes) {
 			const indexed = attribute.indexed;
 			if (indexed?.type !== 'HNSW') continue;
+			const persistedIndexed = catalog?.getSync(`${tableName}/${attribute.name || ''}`)?.indexed;
 			if (indexed.nativePlane) {
 				CUSTOM_INDEXES.HNSW.validateNativePlaneOptions(rootStore, indexed);
 				continue;
 			}
-			if (indexed.nativePlane != null || !auditQualifiesDefault) continue;
-			const persistedIndexed = catalog?.getSync(`${tableName}/${attribute.name || ''}`)?.indexed;
+			if (indexed.nativePlane != null) continue;
+			if (persistedIndexed?.type === 'HNSW' && Object.hasOwn(persistedIndexed, 'nativePlane')) {
+				if (persistedIndexed.nativePlane)
+					CUSTOM_INDEXES.HNSW.validateNativePlaneOptions(rootStore, {
+						...indexed,
+						nativePlane: persistedIndexed.nativePlane,
+					});
+				continue;
+			}
+			if (!auditQualifiesDefault) continue;
 			if (persistedIndexed?.type !== 'HNSW') CUSTOM_INDEXES.HNSW.canDefaultToNativePlane(rootStore, indexed);
 		}
 	};
@@ -2616,9 +2625,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 			}
 			// Acquire before the first mutation of the live Table below, so a lost race leaves no
-			// attributes this worker describes but never persisted. Only the RocksDB acquire is bounded
-			// and can throw, and only it is cheap when uncontended: LMDB's exclusiveLock() opens an
-			// environment-wide write transaction that cannot time out, so it stays lazy.
+			// attributes this worker describes but never persisted. Only the RocksDB acquire is bounded;
+			// ordinary LMDB declarations stay lazy, while legacy HNSW normalization locks at entry.
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
 			if (origin !== 'cluster') {
 				const lockedAttributesDbi = Table.dbisDB;

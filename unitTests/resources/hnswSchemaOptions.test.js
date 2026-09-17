@@ -931,6 +931,12 @@ describe('HNSW GraphQL numeric options', () => {
 					error.message ===
 						'nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5; set nativePlane: false to use the JS index'
 			);
+
+			const tableName = 'HnswInheritedNativeBadGeometry';
+			await loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlane: true');
+			await assert.rejects(loadTable(tableName, '(audit: true)', 'type: "HNSW", M: 32'), /nativePlane requires M=16/);
+			assert.strictEqual(indexedOptions(tableName).nativePlane, true);
+			assert.strictEqual(Object.hasOwn(indexedOptions(tableName), 'M'), false);
 		});
 	});
 
