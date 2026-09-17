@@ -680,6 +680,54 @@ describe('HNSW GraphQL numeric options', () => {
 			assert.ok(Table.attributes.some(({ name, isPrimaryKey }) => name === 'id' && isPrimaryKey));
 		});
 
+		it('persists an audit upgrade for a table without a primary key', function () {
+			if (!getPlaneBinding()) this.skip();
+			const tableName = 'HnswAuditUpgradeNoPrimary';
+			let Table = table({
+				table: tableName,
+				audit: false,
+				attributes: [
+					{ name: 'name', type: 'String' },
+					{ name: 'embedding', type: 'Array' },
+				],
+			});
+			createdTables.push(tableName);
+
+			Table = table({
+				table: tableName,
+				audit: true,
+				attributes: [
+					{ name: 'name', type: 'String' },
+					{ name: 'embedding', indexed: { type: 'HNSW' }, type: 'Array' },
+				],
+			});
+			assert.equal(Table.audit, true);
+			assert.equal(Table.dbisDB.getSync(`${tableName}/`).audit, true);
+			assert.equal(Table.indices.embedding.customIndex.postCommit, true);
+
+			resetDatabases();
+			Table = databases.data[tableName];
+			assert.equal(Table.audit, true);
+			assert.equal(Table.indices.embedding.customIndex.postCommit, true);
+		});
+
+		it('rejects removing the primary-key designation from the primary attribute', () => {
+			const tableName = 'HnswPrimaryKeyDesignation';
+			table({
+				table: tableName,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'embedding', type: 'Array' },
+				],
+			});
+			createdTables.push(tableName);
+
+			assert.throws(
+				() => table({ table: tableName, attributes: [{ name: 'id', type: 'String' }] }),
+				/Cannot remove the primary key designation/
+			);
+		});
+
 		it('persists removal or opt-out before disabling audit', async function () {
 			if (!getPlaneBinding()) this.skip();
 			const tableName = 'HnswAuditDisableOrdering';

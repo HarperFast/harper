@@ -2676,6 +2676,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributes = merged;
 			} else if (!attributes.some((attribute) => attribute.isPrimaryKey)) {
 				const existingPrimary = Table.attributes.find((attribute: any) => attribute.isPrimaryKey);
+				if (existingPrimary && attributes.some((attribute) => attribute.name === existingPrimary.name))
+					throw new ClientError(
+						`Cannot remove the primary key designation from '${databaseName}.${tableName}.${existingPrimary.name}'`
+					);
 				if (existingPrimary) attributes = [existingPrimary, ...attributes];
 			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
@@ -2924,6 +2928,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			);
 		}
 		if (nativePlaneEnabled && persistedAudit !== true) audit = true;
+		if (nativePlaneEnabled && persistedAudit !== true && !attributes.some((attribute) => attribute.isPrimaryKey)) {
+			exclusiveLock();
+			const primaryKey = primaryDescriptorKey();
+			const primaryDescriptor = attributesDbi.getSync(primaryKey);
+			if (primaryDescriptor && !tableIsDropping(primaryDescriptor, primaryKey)) {
+				Table.enableAuditing();
+				attributesDbi.put(primaryKey, { ...primaryDescriptor, audit: true });
+				hasChanges = true;
+			}
+		}
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		const attributesInPersistenceOrder = nativePlaneEnabled
@@ -3306,7 +3320,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		const declaredPrimaryKey = attributes?.find((attribute) => attribute.isPrimaryKey)?.name ?? Table?.primaryKey;
 		if (declaredPrimaryKey) {
 			const attributeKey = tableName + '/' + declaredPrimaryKey;
-			if (attributesDbi.getSync(attributeKey)) return attributeKey;
+			if (attributesDbi.getSync(attributeKey)?.isPrimaryKey) return attributeKey;
 		}
 		return tableName + '/';
 	}
