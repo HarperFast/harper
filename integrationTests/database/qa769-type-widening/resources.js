@@ -22,6 +22,21 @@ export class PutBigInt extends Resource {
 	}
 }
 
+export class StorageEngineInfo extends Resource {
+	static loadAsInstance = false;
+
+	// Derived from the store rather than trusted from HARPER_STORAGE_ENGINE: if the engine pin were
+	// ignored, both defineSuite arms would run RocksDB and the LMDB half would be green without ever
+	// touching LMDB's record or index encoding. LMDB environments land at `<path>.mdb` and its index
+	// stores expose `prefetch`; RocksDB does neither.
+	async get() {
+		const primaryStore = MeteredEvent.primaryStore;
+		const primaryPath = primaryStore.path ?? primaryStore.rootStore?.path ?? '';
+		const looksLikeLmdb = primaryPath.endsWith('.mdb') || Boolean(MeteredEvent.indices.count?.prefetch);
+		return { engine: looksLikeLmdb ? 'lmdb' : 'rocksdb', primaryPath };
+	}
+}
+
 export class IndexDump extends Resource {
 	static loadAsInstance = false;
 

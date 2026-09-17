@@ -63,7 +63,7 @@ import {
 	type ContextWithHarper,
 	type StartHarperOptions,
 } from '@harperfast/integration-testing';
-import { WORKER_COUNT, assertEveryWorkerStarted, NO_FULL_WORKER_COVERAGE } from './recordCachingWorkers.ts';
+import { NO_FULL_WORKER_COVERAGE, observedWorkerCount } from './recordCachingWorkers.ts';
 import { fetchOnNewConnection, observeEveryWorker } from '../utils/connectionPerRequest.ts';
 // @ts-expect-error utils/client.mjs has no type declarations; runtime resolves fine
 import { createApiClient } from '../apiTests/utils/client.mjs';
@@ -79,10 +79,15 @@ const TWO31 = 2147483648; // first value that overflows Int
 const TWO53 = 9007199254740992; // Harper's Long ceiling (resources/tracked.ts, resources/Table.ts)
 const FIVE_BILLION = 5000000000;
 
+// Fixed, not the shared HARPER_WORKER_COUNT knob: at one worker `observeEveryWorker` would be
+// satisfied by a single response and the per-worker divergence this suite exists to catch would go
+// unexercised while the suite stayed green.
+const WORKER_COUNT = 4;
+
 const READY_TIMEOUT_MS = 120_000;
 const RESTART_TEST_TIMEOUT_MS = 300_000;
 
-// Rewritten onto the INSTALLED component copy mid-run to widen the declared types.
+// Written over the INSTALLED component copy mid-run; the fixture source on disk is never touched.
 const SCHEMA_V2 = `type MeteredEvent @table @export {
 	id: Int @primaryKey
 	count: Long @indexed
@@ -101,6 +106,9 @@ const OLD_RECORDS = [
 	{ id: 6, count: 123456789, label: 'mid' },
 ];
 
+// Written under the widened `label: Any`, and rejected under the pre-widening `label: String`.
+const OBJECT_LABEL = { foo: 1, arr: [1, 2, 3], nested: { ok: true } };
+
 const RANGE_THRESHOLD = 1000000;
 
 // Exactly the rows above RANGE_THRESHOLD once the widened writes have landed, in ascending `count`
@@ -113,9 +121,23 @@ const ABOVE_THRESHOLD = [
 	{ id: 9, count: TWO53 },
 ];
 
-// Every id the suite expects to be stored by the time the index arm runs. The rejected writes
-// (id 10, 20, 21) are absent, which is how a silently-accepted over-cap value would show up.
-const STORED_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 30, 31];
+// Every id the suite expects to be stored by the time the index arm runs, with the `typeof` its
+// label decodes to in-worker. The rejected writes (id 10, 20, 21, 40) are absent, which is how a
+// silently-accepted out-of-range value would show up; and only the two `label: Any` writes may have
+// left `string`, which is what catches an `Any` value decoded back through the old declaration.
+const STORED_LABEL_TYPES = new Map([
+	[1, 'string'],
+	[2, 'string'],
+	[3, 'string'],
+	[4, 'string'],
+	[5, 'string'],
+	[6, 'string'],
+	[7, 'string'],
+	[8, 'string'],
+	[9, 'string'],
+	[30, 'object'],
+	[31, 'number'],
+]);
 
 // The `count` secondary index's own entries, in its own order: ascending by indexed value, then by
 // primary key. Old-encoded and new-encoded rows have to be interleaved here by value — an index that
@@ -271,6 +293,20 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				return response.body.map((row: DumpedRow) => ({ id: row.id, count: row.count }));
 			}
 
+			/** Loud at fewer than four workers, so the cross-worker arm cannot pass on a single one. */
+			async function assertWorkersStarted(): Promise<void> {
+				const observed = await observedWorkerCount(ctx);
+				ok(
+					observed >= WORKER_COUNT,
+					`expected ${WORKER_COUNT} HTTP workers, observed ${observed} — the cross-worker arm would be vacuous`
+				);
+			}
+
+			async function engineInEffect(): Promise<{ engine: string; primaryPath: string }> {
+				const response = await client.reqRest('/StorageEngineInfo/').timeout(10_000).expect(200);
+				return response.body;
+			}
+
 			async function indexEntries(): Promise<Array<{ count: number; id: number }>> {
 				const response = await client.reqRest('/IndexDump/').timeout(30_000).expect(200);
 				return response.body;
@@ -291,7 +327,13 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 			}
 
 			test('precondition: the fixture starts at count:Int @indexed / label:String on all workers', async () => {
-				await assertEveryWorkerStarted(ctx);
+				await assertWorkersStarted();
+				const running = await engineInEffect();
+				strictEqual(
+					running.engine,
+					engine,
+					`PRECONDITION: this arm must run on ${engine}, got ${JSON.stringify(running)}`
+				);
 				deepStrictEqual(await declaredTypes(), {
 					id: { type: 'Int', indexed: false, primaryKey: true },
 					count: { type: 'Int', indexed: true, primaryKey: false },
@@ -308,8 +350,20 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					`writing 2^31 to a declared Int must be rejected, got ${rejected.status}: ${rejected.text}`
 				);
 				ok(/integer/i.test(rejected.text), `the rejection must name the type/range violation, got: ${rejected.text}`);
-				// Loud rejection, not silent truncation: nothing may have been stored under that id.
 				strictEqual((await restGet(7)).status, 404, 'the rejected pre-widening record must not have been stored');
+
+				// The same guard for `label`, so the widened arm below is a real change rather than a
+				// fixture that shipped `label: Any` or a widening that only took effect for `count`.
+				const rejectedLabel = await insert([{ id: 40, count: 1, label: OBJECT_LABEL }]);
+				ok(
+					rejectedLabel.status >= 400,
+					`an object label under a declared String must be rejected, got ${rejectedLabel.status}: ${rejectedLabel.text}`
+				);
+				ok(
+					/string/i.test(rejectedLabel.text),
+					`the rejection must name the type violation, got: ${rejectedLabel.text}`
+				);
+				strictEqual((await restGet(40)).status, 404, 'the rejected pre-widening label must not have been stored');
 			});
 
 			test(
@@ -324,7 +378,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					);
 					await startHarper(ctx, HARPER_OPTIONS);
 					await waitForFixture();
-					await assertEveryWorkerStarted(ctx);
+					await assertWorkersStarted();
 
 					deepStrictEqual(await declaredTypes(), {
 						id: { type: 'Int', indexed: false, primaryKey: true },
@@ -356,15 +410,27 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 			test('the widened Long accepts what Int rejected, and round-trips it exactly', async () => {
 				// Exactly the value and id the pre-widening seed arm saw rejected.
 				await insert([{ id: 7, count: TWO31, label: 'now-fits-in-long' }]).expect(200);
-				assertRow((await restGet(7)).body, { count: TWO31, label: 'now-fits-in-long' }, '2^31 did not round-trip');
+				assertRow(
+					(await restGet(7).expect(200)).body,
+					{ count: TWO31, label: 'now-fits-in-long' },
+					'2^31 did not round-trip'
+				);
 
 				await insert([{ id: 8, count: FIVE_BILLION, label: 'five-billion' }]).expect(200);
-				assertRow((await restGet(8)).body, { count: FIVE_BILLION, label: 'five-billion' }, '5e9 did not round-trip');
+				assertRow(
+					(await restGet(8).expect(200)).body,
+					{ count: FIVE_BILLION, label: 'five-billion' },
+					'5e9 did not round-trip'
+				);
 			});
 
 			test("the widened Long still stops at Harper's own 2^53 ceiling", async () => {
 				await insert([{ id: 9, count: TWO53, label: 'two-pow-53' }]).expect(200);
-				assertRow((await restGet(9)).body, { count: TWO53, label: 'two-pow-53' }, '2^53 did not round-trip');
+				assertRow(
+					(await restGet(9).expect(200)).body,
+					{ count: TWO53, label: 'two-pow-53' },
+					'2^53 did not round-trip'
+				);
 
 				// 2^53+2 is exactly representable as a float64 and strictly above the abs(2^53) cap both
 				// resources/tracked.ts and resources/Table.ts enforce, so it must be rejected rather than
@@ -399,39 +465,43 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 			});
 
 			test('the widened label:Any takes the objects and numbers String refused', async () => {
-				const objectLabel = { foo: 1, arr: [1, 2, 3], nested: { ok: true } };
-				await insert([{ id: 30, count: 1, label: objectLabel }]).expect(200);
-				assertRow((await restGet(30)).body, { count: 1, label: objectLabel }, 'an object label did not round-trip');
+				await insert([{ id: 30, count: 1, label: OBJECT_LABEL }]).expect(200);
+				assertRow(
+					(await restGet(30).expect(200)).body,
+					{ count: 1, label: OBJECT_LABEL },
+					'an object label did not round-trip'
+				);
 
 				await insert([{ id: 31, count: 1, label: 12345 }]).expect(200);
-				assertRow((await restGet(31)).body, { count: 1, label: 12345 }, 'a numeric label did not round-trip');
+				assertRow(
+					(await restGet(31).expect(200)).body,
+					{ count: 1, label: 12345 },
+					'a numeric label did not round-trip'
+				);
 			});
 
 			test('the widened @indexed attribute keeps one index spanning both encodings', async () => {
-				// The index structure itself: exactly these value/primary-key pairs, no phantom entry and
-				// none missing. This is also what proves `count` is still indexed at all — without it the
-				// range query below would be satisfied by search.ts's silent full-scan fallback.
+				// The only layer that distinguishes a surviving index from `resources/search.ts:485`'s silent
+				// full-scan fallback, which would answer the range query below either way.
 				deepStrictEqual(
 					await indexEntries(),
 					INDEX_ENTRIES,
 					'the count index does not hold exactly the entries the stored rows imply'
 				);
 
-				// Exact row identity in the index's own result order: the five specific records, their exact
-				// values, and ascending `count` across the encoding change.
 				deepStrictEqual(
 					await rangeAboveThreshold(),
 					ABOVE_THRESHOLD,
 					'the range query over the widened attribute did not return exactly the expected rows, in order'
 				);
 
-				// Index-independent oracle: the same predicate over a full base-table scan, so storage has to
-				// agree with both layers above rather than all three sharing one wrong answer.
+				// Index-independent oracle, so storage has to agree with both layers above rather than all three
+				// sharing one wrong answer. An `Any` value handed back as a String fails on labelType.
 				const scan = await dumpAll();
 				deepStrictEqual(
-					scan.map((row) => row.id).sort((a, b) => a - b),
-					STORED_IDS,
-					'the table holds rows the suite did not store, or is missing rows it did'
+					new Map(scan.map((row) => [row.id, row.labelType])),
+					STORED_LABEL_TYPES,
+					'the table does not hold exactly the rows the suite stored, with the label types it wrote'
 				);
 				deepStrictEqual(
 					scan
@@ -450,9 +520,10 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				'every worker decodes the old-encoded and new-encoded records identically',
 				{ skip: NO_FULL_WORKER_COVERAGE },
 				async () => {
-					for (const { id, count, label } of [
-						{ id: 4, count: INT32_MAX, label: 'int32-max' },
-						{ id: 9, count: TWO53, label: 'two-pow-53' },
+					for (const { id, count, label, labelType } of [
+						{ id: 4, count: INT32_MAX, label: 'int32-max', labelType: 'string' },
+						{ id: 9, count: TWO53, label: 'two-pow-53', labelType: 'string' },
+						{ id: 30, count: 1, label: OBJECT_LABEL, labelType: 'object' },
 					]) {
 						const views = await observeEveryWorker(
 							() => rowOnWorker(id),
@@ -461,10 +532,12 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 								workerCount: WORKER_COUNT,
 							}
 						);
-						const distinct = new Set(views.map((view) => JSON.stringify([view.count, view.countType, view.label])));
+						const distinct = new Set(
+							views.map((view) => JSON.stringify([view.count, view.countType, view.label, view.labelType]))
+						);
 						deepStrictEqual(
 							[...distinct],
-							[JSON.stringify([count, 'number', label])],
+							[JSON.stringify([count, 'number', label, labelType])],
 							`the ${WORKER_COUNT} workers do not agree on id=${id} after the widening`
 						);
 					}
@@ -478,7 +551,7 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					await killHarper(ctx);
 					await startHarper(ctx, HARPER_OPTIONS);
 					await waitForFixture();
-					await assertEveryWorkerStarted(ctx);
+					await assertWorkersStarted();
 
 					deepStrictEqual(await declaredTypes(), {
 						id: { type: 'Int', indexed: false, primaryKey: true },
@@ -491,14 +564,19 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 						{ id: 6, count: 123456789, label: 'mid' },
 						{ id: 8, count: FIVE_BILLION, label: 'five-billion' },
 						{ id: 9, count: TWO53, label: 'two-pow-53' },
+						{ id: 30, count: 1, label: OBJECT_LABEL },
+						{ id: 31, count: 1, label: 12345 },
 					]) {
 						const expected = { count, label };
-						assertRow((await restGet(id)).body, expected, `REST read of id=${id} changed across the restart`);
+						assertRow(
+							(await restGet(id).expect(200)).body,
+							expected,
+							`REST read of id=${id} changed across the restart`
+						);
 						assertRow(await opsGet(id), expected, `search_by_hash read of id=${id} changed across the restart`);
 					}
 
-					// The index is opened afresh on this boot, so its entries are the other half of "nothing
-					// was disturbed" and the only place a restart-time reindex would show.
+					// Opened afresh on this boot, so this is the only place a restart-time reindex would show.
 					deepStrictEqual(await indexEntries(), INDEX_ENTRIES, 'the count index changed across the restart');
 					deepStrictEqual(
 						await rangeAboveThreshold(),
