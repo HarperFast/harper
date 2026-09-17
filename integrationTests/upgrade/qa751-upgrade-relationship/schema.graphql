@@ -1,14 +1,3 @@
-# QA-751 — does an in-place cross-version upgrade leave @relationship graph indexes intact?
-#
-# Model (2-level graph, both directions exercised):
-#   Customer --(reverse: to customerId)--> [Order] --(reverse: to orderId)--> [LineItem]
-#   LineItem --(forward: from orderId)--> Order --(forward: from customerId)--> Customer
-#
-# @relationship itself is virtual/unstored (resources/Table.ts ~4494-4604): the `to:` direction
-# resolves via a live search() against the OTHER table's FK index; the `from:` direction resolves
-# via a direct primary-key get() using the FK scalar value. So the only thing that can actually go
-# stale across an in-place upgrade is the underlying @indexed FK scalar's secondary-index dbi
-# (Order/customerId, LineItem/orderId) — that is what this scenario's raw-store oracle inspects.
 type Customer @table(audit: false) @export {
 	id: ID! @primaryKey
 	name: String
