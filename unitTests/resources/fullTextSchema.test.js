@@ -216,6 +216,18 @@ describe('@fullText schema declaration', () => {
 		);
 	});
 
+	it('rejects FullText nested in a list without an index declaration', async () => {
+		await assert.rejects(
+			loadGQLSchema(`
+				type FullTextListMissingDeclaration @table {
+					id: ID @primaryKey
+					search: [[FullText]]
+				}
+			`),
+			/must be a scalar with an @fullText declaration/
+		);
+	});
+
 	it('rejects a full-text declaration outside a table', async () => {
 		await assert.rejects(
 			loadGQLSchema(`
@@ -247,5 +259,20 @@ describe('@fullText schema declaration', () => {
 			search: 'source or replay data',
 		});
 		assert.strictEqual(Object.hasOwn(stored, 'search'), false, 'storage projection must remove the query handle');
+	});
+
+	it('prevents removing a source while its full-text declaration remains', async () => {
+		await loadGQLSchema(`
+			type FullTextSourceRemoval @table {
+				id: ID @primaryKey
+				text: String
+				search: FullText @fullText(fields: [{ name: "text" }])
+			}
+		`);
+		await assert.rejects(
+			tables.FullTextSourceRemoval.removeAttributes(['text']),
+			/Cannot remove attribute 'text' while @fullText field 'search' references it/
+		);
+		await assert.doesNotReject(tables.FullTextSourceRemoval.removeAttributes(['text', 'search']));
 	});
 });

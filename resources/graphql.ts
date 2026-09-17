@@ -224,6 +224,8 @@ async function processGraphQLSchema(
 				for (const field of definition.fields) {
 					const property = getProperty(field.type);
 					property.name = field.name.value;
+					if (property.type === 'array' && containsType(property, 'FullText'))
+						throw new ClientError(`FullText field "${property.name}" must be a scalar with an @fullText declaration`, 400);
 					if (field.description?.value) property.description = field.description.value;
 					attributes.push(property);
 					attributesObject[property.name] = undefined; // this is used as a backup scope for computed properties
@@ -449,6 +451,11 @@ async function processGraphQLSchema(
 		);
 		return script.runInThisContext()(attributes); // run the script in the context of the current context/global and return the function we defined
 	}
+}
+
+function containsType(property: { type?: string; elements?: unknown }, type: string): boolean {
+	if (property.type === type) return true;
+	return property.type === 'array' && !!property.elements && containsType(property.elements as typeof property, type);
 }
 
 // useful for testing

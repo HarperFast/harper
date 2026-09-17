@@ -159,6 +159,31 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert.strictEqual(restored.hidden, true);
 	});
 
+	it('persists a hidden-only declaration change without rebuilding an index', async () => {
+		const Hidden = table({
+			table: 'ClusterMergeHidden',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'label', type: 'String' },
+			],
+		});
+		await catalogFlushed(Hidden);
+		const Updated = table({
+			table: 'ClusterMergeHidden',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'label', type: 'String', hidden: true },
+			],
+		});
+		await catalogFlushed(Updated);
+		assert.strictEqual(Updated.dbisDB.getSync('ClusterMergeHidden/label').hidden, true);
+		assert.strictEqual(Updated.indexingOperation, Hidden.indexingOperation);
+	});
+
 	it('logs every peer difference it discards, not only a type conflict', async () => {
 		const storageLogger = forComponent('storage');
 		const originalWarn = storageLogger.warn;

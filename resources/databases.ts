@@ -437,9 +437,9 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
-// Restore every field used by `commonChanged`, plus `indexed` and `indexNulls`,
-// from the durable descriptor. In particular, preserve `indexNulls: false` so
-// an index that excludes nulls is not reopened as though it contains them.
+// Restore every durable field whose runtime behavior must not depend on a stale peer snapshot.
+// In particular, preserve `indexNulls: false` so an index that excludes nulls is not reopened as
+// though it contains them.
 const PEER_REDEFINABLE_FIELDS = [
 	'type',
 	'indexed',
@@ -2943,7 +2943,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				JSON.stringify(attributeDescriptor.fullText) !== JSON.stringify(attribute.fullText);
 			// any metadata difference (drives persistence)
 			const changed =
-				commonChanged || JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);
+				commonChanged ||
+				attributeDescriptor?.hidden !== attribute.hidden ||
+				JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);
 			// structure-affecting difference (drives reindex) — ignores search-only option changes and
 			// representation-only differences (key order, string-vs-number) via canonicalIndexKey
 			const indexOptionsStructurallyChanged =

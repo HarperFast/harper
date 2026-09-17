@@ -6196,7 +6196,17 @@ export function makeTable(options) {
 		}
 		static async removeAttributes(names: string[]) {
 			TableResource.assertSchemaMutable('remove attributes');
-			const new_attributes = attributes.filter((attribute) => !names.includes(attribute.name));
+			const removed = new Set(names);
+			for (const attribute of TableResource.attributes) {
+				if (removed.has(attribute.name) || !attribute.fullText) continue;
+				const source = attribute.fullText.fields.find((field) => removed.has(field.name));
+				if (source)
+					throw new ClientError(
+						`Cannot remove attribute '${source.name}' while @fullText field '${attribute.name}' references it`,
+						400
+					);
+			}
+			const new_attributes = TableResource.attributes.filter((attribute) => !names.includes(attribute.name));
 			table({
 				table: tableName,
 				database: databaseName,
