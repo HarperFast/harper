@@ -31,7 +31,6 @@ const previousMinorPath = process.env.HARPER_PREVIOUS_MINOR_PATH;
 const testsBun = process.env.HARPER_RUNTIME === 'bun';
 const skipSuite = !previousMinorPath || testsBun || process.platform === 'win32';
 
-// Both boots must select LMDB or the current build opens a different storage engine.
 const SHARED_CONFIG = {};
 const SHARED_ENV = {
 	HARPER_STORAGE_ENGINE: 'lmdb',
@@ -56,14 +55,15 @@ suite(
 			let ready = false;
 			while (Date.now() < deadline) {
 				try {
-					const probe = await fetch(`${httpURL}/Probe/`, { headers: { Authorization: client.headers.Authorization } });
-					if (probe.status !== 404) {
+					const probe = await fetch(`${httpURL}/Probe/`, {
+						headers: { Authorization: client.headers.Authorization },
+						signal: AbortSignal.timeout(5_000),
+					});
+					if (probe.ok) {
 						ready = true;
 						break;
 					}
-				} catch {
-					/* not ready yet */
-				}
+				} catch {}
 				await sleep(250);
 			}
 			ok(ready, 'Probe route should become available before proceeding');
@@ -205,9 +205,7 @@ suite(
 		after(async () => {
 			try {
 				externalEnv?.close();
-			} catch {
-				/* ignore */
-			}
+			} catch {}
 			await teardownHarper(ctx);
 			console.log('\n[QA-751] FINDINGS');
 			for (const f of findings) console.log('  ' + f);
