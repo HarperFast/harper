@@ -2766,6 +2766,34 @@ describe('relayed admissions across worker threads (harper-pro#852)', () => {
 		await assert.rejects(noRelay.acquire('k', LEASE, WAIT), /not owned by this worker thread/);
 	});
 
+	it('times out a wedged owner acquire and releases a grant that arrives afterward', async () => {
+		let grant;
+		const released = [];
+		const caller = makeCoordinator('r2a', {
+			homeMap: () => ({ generation: 1, homes: ['alpha'], homeIncarnation: 1 }),
+			ownsCoordination: () => false,
+			establishLockFreshness: async (_d, _t, _k, dependencies) => dependencies ?? [],
+			requestDelegation: () => {
+				throw new Error('unused');
+			},
+			recallDelegation: () => {
+				throw new Error('unused');
+			},
+			acquireOnOwner: () => new Promise((resolve) => (grant = resolve)),
+			releaseOnOwner: (_database, _table, key, ownerAdmissionId) => {
+				released.push({ key, ownerAdmissionId });
+			},
+		});
+		await assert.rejects(caller.acquire('k', LEASE, 0), /the coordinating worker did not answer/);
+		assert.deepStrictEqual(released, [], 'the backstop released an admission the owner had not granted');
+		grant({ tsR: 1, mintedMono: performance.now(), admissionId: 77 });
+		await waitFor(() => released.length === 1, {
+			message: 'the grant that arrived after the backstop was not released to the owner',
+		});
+		assert.deepStrictEqual(released, [{ key: 'k', ownerAdmissionId: 77 }]);
+		assert.strictEqual(caller.stats.relayedAdmissions, 0, 'the late grant was installed locally');
+	});
+
 	it('installs the handle revoker and fences it on a revoke, resolving the ack', async () => {
 		const { caller } = relaySetup('r3');
 		const round = await caller.acquire('k', LEASE, WAIT);
