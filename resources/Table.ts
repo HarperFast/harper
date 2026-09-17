@@ -911,7 +911,7 @@ export function makeTable(options) {
 		static tableName = tableName;
 		static tableId = tableId;
 		static indices = indices;
-		static derivedIndexRuntime: { close(): Promise<void> } | undefined;
+		static derivedIndexRuntime: { close(dropping?: boolean): Promise<void> } | undefined;
 		static audit = audit;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
@@ -1888,7 +1888,7 @@ export function makeTable(options) {
 			// same-name recreate must not race an owner still applying to the old generation.
 			const derivedIndexRuntime = TableResource.derivedIndexRuntime;
 			TableResource.derivedIndexRuntime = undefined;
-			await derivedIndexRuntime?.close();
+			await derivedIndexRuntime?.close(true);
 			const rootStore = primaryStore.rootStore;
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any

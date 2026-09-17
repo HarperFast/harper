@@ -235,9 +235,12 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 
 // Multiple logical database names can resolve to one physical RocksDB database. They share the
 // audit store and plane file, so one runner must serve every class instead of applying each log
-// entry repeatedly; ownership keeps that runner alive until the last class releases it.
+// entry repeatedly. A reload or alias hands that runner to its newest class generation.
 type RegisteredTable = { current: { Table: any }; owners: Set<{ Table: any }> };
-type RegisteredBackend = { references: Set<object>; release: () => Promise<void> };
+type RegisteredBackend = {
+	/** Stops this generation and every runner it superseded before the same physical backend was registered. */
+	settle: () => Promise<void>;
+};
 type Registered = {
 	runtime: DerivedIndexRuntime;
 	tables: Map<number, RegisteredTable>;
@@ -275,7 +278,7 @@ const warnedAuditIndexes = new Set<string>();
  * database. Returns the release for the table's registrations, or undefined when it has none. Runs
  * on every worker; the runtime elects one owner per index.
  */
-export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | undefined {
+export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): Promise<void> } | undefined {
 	const attributes = Table.attributes.filter(
 		(attribute: any) => Table.indices[attribute.name]?.customIndex?.postCommit
 	);
@@ -296,7 +299,7 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 		registeredTable = { current: installed, owners: new Set([installed]) };
 		registered.tables.set(Table.tableId, registeredTable);
 	}
-	const releases: Array<() => Promise<void>> = [];
+	const releases: Array<(dropping: boolean) => Promise<void>> = [];
 	for (const attribute of attributes) {
 		const indexStore = Table.indices[attribute.name];
 		const index = indexStore.customIndex as DerivedNativeIndex & { postCommit: true };
@@ -314,48 +317,59 @@ export function attachDerivedIndexes(Table: any): { close(): Promise<void> } | u
 			readiness: () => registered.runtime.getReadiness(id),
 			requestRebuild: () => registered.runtime.requestRebuild(id),
 		});
-		let registeredBackend = registered.backends.get(id);
-		const reference = {};
-		if (!registeredBackend) {
-			registeredBackend = {
-				references: new Set(),
-				release: registered.runtime.register({
-					backend: new HnswDerivedIndexBackend(id, index),
-					projections: new Map([
-						[
-							Table.tableId,
-							(record: any) => {
-								const vector = resolver ? resolver(record) : record[attribute.name];
-								if (vector == null) return undefined;
-								index.assertDerivedValue(vector, label);
-								return vector;
-							},
-						],
-					]),
-					options: { maxLagMilliseconds: attribute.indexed?.maxLagMilliseconds ?? DEFAULT_MAX_LAG_MILLISECONDS },
-				}),
-			};
-			registered.backends.set(id, registeredBackend);
-		}
-		registeredBackend.references.add(reference);
-		releases.push(async () => {
-			if (!registeredBackend.references.delete(reference)) return;
-			if (registeredBackend.references.size > 0) return;
-			if (registered.backends.get(id) === registeredBackend) registered.backends.delete(id);
-			await registeredBackend.release();
+		// A reload or database alias can register another class for the same physical index before the
+		// old class's asynchronous close has quiesced its runner. Hand off to the newest class instead
+		// of retaining a backend permanently bound to the first class's store, resolver, table id and
+		// lag policy. register() removes the old runner synchronously when release() is called; the new
+		// runner then waits for its predecessor's native lock before it can deliver.
+		const predecessor = registered.backends.get(id);
+		const predecessorSettled = predecessor?.settle() ?? Promise.resolve();
+		predecessorSettled.catch(() => {});
+		if (registered.backends.get(id) === predecessor) registered.backends.delete(id);
+		const release = registered.runtime.register({
+			backend: new HnswDerivedIndexBackend(id, index),
+			projections: new Map([
+				[
+					Table.tableId,
+					(record: any) => {
+						const vector = resolver ? resolver(record) : record[attribute.name];
+						if (vector == null) return undefined;
+						index.assertDerivedValue(vector, label);
+						return vector;
+					},
+				],
+			]),
+			options: { maxLagMilliseconds: attribute.indexed?.maxLagMilliseconds ?? DEFAULT_MAX_LAG_MILLISECONDS },
+		});
+		let settling: Promise<void> | undefined;
+		const registeredBackend: RegisteredBackend = {
+			settle: () =>
+				(settling ??= Promise.all([predecessorSettled, release()]).then(() => {
+					if (registered.backends.get(id) === registeredBackend) registered.backends.delete(id);
+				})),
+		};
+		registered.backends.set(id, registeredBackend);
+		releases.push(async (dropping) => {
+			const active = registered.backends.get(id);
+			// dropTable destroys the shared column family and plane file, so it must quiesce whichever
+			// alias/reload generation currently owns the backend, not merely this class's generation.
+			if (dropping && active) await active.settle();
+			else await registeredBackend.settle();
 		});
 	}
 	return {
-		async close() {
-			await Promise.all(releases.map((release) => release()));
+		async close(dropping = false) {
+			const settled = Promise.all(releases.map((release) => release(dropping)));
 			const tableRegistration = registered.tables.get(Table.tableId);
-			if (!tableRegistration) return;
-			tableRegistration.owners.delete(installed);
-			if (tableRegistration.owners.size === 0) {
-				registered.tables.delete(Table.tableId);
-			} else if (tableRegistration.current === installed) {
-				tableRegistration.current = tableRegistration.owners.values().next().value;
+			if (tableRegistration) {
+				tableRegistration.owners.delete(installed);
+				if (tableRegistration.owners.size === 0) {
+					registered.tables.delete(Table.tableId);
+				} else if (tableRegistration.current === installed) {
+					tableRegistration.current = tableRegistration.owners.values().next().value;
+				}
 			}
+			await settled;
 		},
 	};
 }
