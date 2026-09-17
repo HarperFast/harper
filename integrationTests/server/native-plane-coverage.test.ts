@@ -78,6 +78,7 @@ test(
 			// Sampling overlaps the writes, so no run can put the whole catch-up inside one interval.
 			const midCatchUpCoverage: string[] = [];
 			let sampling = true;
+			let samplerFailures = 0;
 			const sampler = (async () => {
 				// A run torn down by an earlier assertion never clears `sampling`; consecutive failures
 				// are what distinguishes that from a request lost under the ingest load.
@@ -89,7 +90,7 @@ test(
 							midCatchUpCoverage.push(JSON.stringify(status.cursor?.coverage ?? null));
 						failures = 0;
 					} catch {
-						failures++;
+						samplerFailures = ++failures;
 					}
 					await new Promise((resolve) => setTimeout(resolve, 500));
 				}
@@ -150,7 +151,7 @@ test(
 			}
 			assert(
 				midCatchUpCoverage.some((coverage) => coverage !== coverageBeforeWrites && JSON.parse(coverage)?.local != null),
-				`catch-up never advanced durable coverage before it finished (was ${coverageBeforeWrites}): ${JSON.stringify(midCatchUpCoverage.slice(0, 4))}`
+				`catch-up never advanced durable coverage before it finished (was ${coverageBeforeWrites}, sampler failures ${samplerFailures}): ${JSON.stringify(midCatchUpCoverage.slice(0, 4))}`
 			);
 			const final = await query(0);
 			assert.equal(final.status, 200, JSON.stringify(final));

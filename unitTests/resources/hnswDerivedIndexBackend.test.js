@@ -4,13 +4,12 @@ const { DERIVED_INDEX_ACCEPTED } = require('#src/resources/derivedIndexRuntime')
 const { HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
 
 const OWNER_EPOCH = 7n;
-// 6 ms exceeds the backend's 5 ms apply slice, so a slice ends mid-batch; 0 ms lets a whole
-// batch land inside one. A barrier must take the next batch boundary either way.
+// Exceeds the backend's 5 ms apply slice, so a slice ends mid-batch rather than on a boundary.
 const SLOW_APPLY_MILLIS = 6;
 const BATCH_RECORDS = 2;
 
-// The native plane and its mapping store, reduced to what the backend drives: application costs
-// real wall time, and a barrier settles only when the test says so.
+// The native plane and its mapping store, reduced to what the backend drives: a barrier settles
+// only when the test says so.
 class ControlledIndex {
 	applied = [];
 	barriers = [];
@@ -80,6 +79,14 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 		for (let sequence = 1; sequence <= count; sequence++)
 			assert.equal(backend.deliver(makeBatch(sequence, size)), DERIVED_INDEX_ACCEPTED);
 	};
+	const deliverRebuildChunks = (count, size) => {
+		for (let sequence = 1; sequence <= count; sequence++) {
+			const chunk = makeBatch(sequence, size);
+			delete chunk.through;
+			chunk.rebuild = true;
+			assert.equal(backend.deliver(chunk), DERIVED_INDEX_ACCEPTED);
+		}
+	};
 	const settled = (millis = 60) => new Promise((resolve) => setTimeout(resolve, millis));
 
 	it('starts a requested barrier at a completed batch instead of waiting for the queue to drain', async () => {
@@ -134,6 +141,15 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 		backend.flush('threshold');
 		const barrier = await waitFor(() => index.barriers[0], 5000);
 		assert.equal(barrier.appliedAtStart, 50, 'the barrier waits for one batch, not for the queue to drain');
+	});
+
+	it('does not interrupt a rebuild scan, whose chunks carry no cursor to advance', async () => {
+		start(0);
+		deliverRebuildChunks(6, 50);
+		backend.flush('threshold');
+		const barrier = await waitFor(() => index.barriers[0], 5000);
+		assert.equal(barrier.appliedAtStart, 300, 'a rebuild pays one barrier at the drain, not one per chunk');
+		assert.equal(backend.getDurableCursor(), undefined);
 	});
 
 	it('publishes every completed batch across a catch-up spanning several barriers', async () => {

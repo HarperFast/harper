@@ -170,6 +170,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		const host = this.#host!;
 		const until = performance.now() + APPLY_SLICE_MILLIS;
 		const wasFull = this.#queuedBytes >= QUEUE_CAPACITY_BYTES;
+		let advancedCursor = false;
 		while (this.#queue.length > 0 && performance.now() < until) {
 			const batch = this.#queue[0];
 			if (!host.isOwnerEpoch(batch.ownerEpoch)) {
@@ -196,14 +197,18 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			this.#queuedBytes -= batch.bytes;
 			this.#position = 0;
 			this.#appliedEpoch = batch.ownerEpoch;
-			if (batch.through) this.#appliedCursor = batch.through;
-			// A barrier started mid-batch would publish mappings past `#appliedCursor`, so a pending
-			// one takes this boundary; a catch-up otherwise never reaches the drain that runs it.
-			if (this.#flushRequested) break;
+			if (batch.through) {
+				this.#appliedCursor = batch.through;
+				advancedCursor = true;
+				// A barrier started mid-batch would publish mappings past `#appliedCursor`, and a
+				// catch-up never reaches the drain that would otherwise run it. A rebuild chunk carries
+				// no cursor, so interrupting the slice for one would buy no durable progress.
+				if (this.#flushRequested) break;
+			}
 		}
 		if (this.#queue.length > 0) {
 			if (wasFull && this.#queuedBytes < QUEUE_CAPACITY_BYTES) this.#wake?.('changed');
-			if (this.#flushRequested && this.#position === 0) this.#runFlush();
+			if (this.#flushRequested && this.#position === 0 && advancedCursor) this.#runFlush();
 			else this.#schedule();
 			return;
 		}

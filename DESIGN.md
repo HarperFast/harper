@@ -3050,8 +3050,12 @@ to `HnswDerivedIndexBackend`:
   `pk -> node` mapping written **pending**. The store holds no `node -> pk` entries: hits and
   predicate candidates carry their keys out of the plane, and a query deduplicates by key for the
   crash case where a replayed record's earlier node survives without a published mapping.
-- `flush()` runs when the queue is empty: `plane.flushAsync()`, then pending mappings are published,
-  then the batch's `through` vector is written as the cursor under `Symbol.for('derived-index-cursor')`.
+- `flush()` runs at the next completed batch that carries `through`, or at the drain when none does:
+  `plane.flushAsync()`, then pending mappings are published, then that batch's `through` vector is
+  written as the cursor under `Symbol.for('derived-index-cursor')`. Waiting for the drain instead
+  would leave a catch-up — which never empties the queue — with no barrier at all, so the runtime's
+  `flushAfterMutations` / `flushAfterBytes` / `maxFlushAgeMilliseconds` cadence would be inert for
+  its whole duration; a rebuild scan chunk carries no `through`, so it still waits for the drain.
   Application pauses while a barrier is in flight so the barrier publishes exactly the mappings it
   covers. That order is the crash contract: a crash before the barrier leaves pending mappings that
   replay re-derives; after it, a cursor that replays idempotently; never a published mapping to a
