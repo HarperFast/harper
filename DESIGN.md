@@ -2738,7 +2738,8 @@ that settles; a rejected `shutdown` **keeps the lock** and publishes `unavailabl
 that cannot prove its queue quiescent must not hand the index to another owner. `stop()` waits for
 every backend to settle. An unregister cleanup returns the current release attempt; calling the same
 cleanup again retries a held release after a transient shutdown failure. Database removal leaves the
-table and storage registrations intact until every cleanup succeeds. A table handle applies the same
+table and storage registrations intact until every cleanup succeeds, and a table drop retains its
+handle until that release succeeds so the same operation can be retried. A table handle applies the same
 rule to its individual index registrations: if one index fails to stop, sibling registrations that
 already quiesced are installed again before the handle rejects. The database drop likewise reinstalls
 every table handle that closed before another table failed. The drop therefore remains retryable

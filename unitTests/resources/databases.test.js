@@ -608,6 +608,32 @@ describe('audit cleanup retirement on teardown', () => {
 		assert.strictEqual(databases.derivedindexretry, undefined);
 	});
 
+	it('keeps a failed derived-index shutdown reachable for a later table-drop retry', async function () {
+		const Probe = table({
+			table: 'DerivedIndexTableRetryProbe',
+			database: 'derivedindextableretry',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await new Promise(setImmediate);
+		let closeAttempts = 0;
+		const runtime = {
+			close() {
+				closeAttempts++;
+				return closeAttempts === 1 ? Promise.reject(new Error('table writer did not stop')) : Promise.resolve();
+			},
+		};
+		Probe.derivedIndexRuntime = runtime;
+
+		await assert.rejects(Probe.dropTable(), /table writer did not stop/);
+		assert.strictEqual(closeAttempts, 1);
+		assert.strictEqual(Probe.derivedIndexRuntime, runtime);
+		assert.strictEqual(databases.derivedindextableretry.DerivedIndexTableRetryProbe, Probe);
+
+		await Probe.dropTable();
+		assert.strictEqual(closeAttempts, 2);
+		assert.strictEqual(databases.derivedindextableretry.DerivedIndexTableRetryProbe, undefined);
+	});
+
 	it('reactivates a quiesced derived index when another table prevents the database drop', async function () {
 		const Reactivated = table({
 			table: 'Reactivated',

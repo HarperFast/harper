@@ -1887,8 +1887,8 @@ export function makeTable(options) {
 			// backend must have quiesced before its stores and native file are destroyed, and a
 			// same-name recreate must not race an owner still applying to the old generation.
 			const derivedIndexRuntime = TableResource.derivedIndexRuntime;
-			TableResource.derivedIndexRuntime = undefined;
 			await derivedIndexRuntime?.close();
+			if (TableResource.derivedIndexRuntime === derivedIndexRuntime) TableResource.derivedIndexRuntime = undefined;
 			const rootStore = primaryStore.rootStore;
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any

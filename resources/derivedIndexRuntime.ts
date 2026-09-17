@@ -426,12 +426,18 @@ export function createDerivedIndexRegistrationHandle(
 	registrations: ReadonlyArray<() => DerivedIndexRegistrationRelease>,
 	onClosed: () => void
 ): { close(): Promise<void> } {
-	let releases = registrations.map((register) => register());
+	const releases: DerivedIndexRegistrationRelease[] = [];
+	try {
+		for (const register of registrations) releases.push(register());
+	} catch (error) {
+		void settleRegistrationReleases(releases);
+		throw error;
+	}
 	let closing: Promise<void> | undefined;
 	let closed = false;
 
 	const close = async () => {
-		const results = await Promise.allSettled(releases.map((release) => Promise.resolve().then(release)));
+		const results = await settleRegistrationReleases(releases);
 		const failures = results
 			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
 			.map((result) => result.reason);
@@ -468,6 +474,18 @@ export function createDerivedIndexRegistrationHandle(
 			return attempt;
 		},
 	};
+}
+
+function settleRegistrationReleases(releases: ReadonlyArray<DerivedIndexRegistrationRelease>) {
+	return Promise.allSettled(
+		releases.map((release) => {
+			try {
+				return Promise.resolve(release());
+			} catch (error) {
+				return Promise.reject(error);
+			}
+		})
+	);
 }
 
 function resolveRunnerOptions(
