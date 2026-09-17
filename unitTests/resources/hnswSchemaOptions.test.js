@@ -1001,6 +1001,13 @@ describe('HNSW GraphQL numeric options', () => {
 			Table = databases.data[tableName];
 			const alias = databases.dev[tableName];
 			assert.ok(alias?.derivedIndexRuntime, 'the configured database alias must share the physical table');
+			const backendId = `hnsw:${Table.indices.embedding.name}`;
+			const readiness = Table.auditStore.getUserSharedBuffer(
+				`derived-index:${backendId}:readiness`,
+				new ArrayBuffer(READINESS_BYTES)
+			);
+			Atomics.store(new Int32Array(readiness, 0, 6), 0, 4);
+			assert.equal(derivedIndexReadiness(Table.auditStore, Table.indices.embedding.name).state, 'unavailable');
 
 			await Table.dropTable();
 			Table = table({
