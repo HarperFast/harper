@@ -2674,6 +2674,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						);
 				}
 				attributes = merged;
+			} else if (!attributes.some((attribute) => attribute.isPrimaryKey)) {
+				const existingPrimary = Table.attributes.find((attribute: any) => attribute.isPrimaryKey);
+				if (existingPrimary) attributes = [existingPrimary, ...attributes];
 			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
 			// Re-assert from the live declaration so a stale value on disk (replicated event,
@@ -2921,17 +2924,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			);
 		}
 		if (nativePlaneEnabled && persistedAudit !== true) audit = true;
-		if (nativePlaneEnabled && persistedAudit !== true && !attributes.some((attribute) => attribute.isPrimaryKey)) {
-			exclusiveLock();
-			const primaryKey = primaryDescriptorKey();
-			const primaryDescriptor = attributesDbi.getSync(primaryKey);
-			if (primaryDescriptor && !tableIsDropping(primaryDescriptor, primaryKey)) {
-				Table.enableAuditing();
-				Table.audit = true;
-				attributesDbi.put(primaryKey, { ...primaryDescriptor, audit: true });
-				hasChanges = true;
-			}
-		}
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		const attributesInPersistenceOrder = nativePlaneEnabled

@@ -671,12 +671,13 @@ describe('HNSW GraphQL numeric options', () => {
 			Table = table({
 				table: tableName,
 				audit: true,
-				attributes: [{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' }],
+				attributes: [{ name: 'embedding', indexed: { type: 'HNSW' }, type: 'Array' }],
 			});
 
 			assert.equal(Table.audit, true);
 			assert.equal(Table.dbisDB.getSync(`${tableName}/`).audit, true);
 			assert.equal(Table.indices.embedding.customIndex.postCommit, true);
+			assert.ok(Table.attributes.some(({ name, isPrimaryKey }) => name === 'id' && isPrimaryKey));
 		});
 
 		it('persists removal or opt-out before disabling audit', async function () {
