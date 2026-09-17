@@ -61,13 +61,20 @@ async function subscribeAllowingSubackError(client, topic, options) {
 async function connectWithMessageListener(brokerUrl, options, listener) {
 	const client = connect(brokerUrl, options);
 	client.on('message', listener);
+	const connectionAbort = new AbortController();
+	const connectionTimeout = setTimeout(
+		() => connectionAbort.abort(new Error(`Timed out connecting MQTT client ${options.clientId}`)),
+		8000
+	);
 	try {
-		await once(client, 'connect');
+		await once(client, 'connect', { signal: connectionAbort.signal });
 		return client;
 	} catch (error) {
 		client.off('message', listener);
 		client.end(true);
 		throw error;
+	} finally {
+		clearTimeout(connectionTimeout);
 	}
 }
 
@@ -111,6 +118,10 @@ function waitForMqttSessionEvent(eventName, clientId, matches = () => true, time
 // broker to process the disconnect and tear down the session — so callers that immediately
 // reconnect with the same clientId can otherwise race the broker's teardown.
 async function endDurableSession(client, clientId) {
+	if (!client.connected) {
+		await client.endAsync();
+		return;
+	}
 	const abortController = new AbortController();
 	const tornDown = waitForMqttSessionEvent('disconnected', clientId, undefined, undefined, abortController.signal);
 	try {
@@ -1033,6 +1044,7 @@ describe('test MQTT connections and commands', function () {
 				acknowledgementAbort.signal
 			);
 			const deliverySettled = Promise.all([messageReceived, acknowledged]);
+			deliverySettled.catch(() => undefined);
 			try {
 				// Wait for the broker to finish processing (and durably persisting) our ack of this
 				// message, not just for the client to have sent it — see `session.acknowledge()`.
