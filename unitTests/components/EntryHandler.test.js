@@ -27,6 +27,45 @@ function createFixture(fixture) {
 	return { directory: dirPath };
 }
 
+<<<<<<< HEAD
+=======
+function createEntryHandler(...args) {
+	const entryHandler = new EntryHandler(...args);
+	openHandlers.add(entryHandler);
+	return entryHandler;
+}
+
+/**
+ * chokidar announces a new directory with `addDir` before it arms that directory's own native
+ * watch, and nothing re-reads the gap — a file created inside the window is never reported. Node
+ * 26.9.0 lands the write inside it on nearly every run (26.8.1 and earlier, almost never), which
+ * left this suite waiting forever on an `add` that was not coming.
+ *
+ * Rewriting the same file closes the gap without weakening the assertion: once the watch is up,
+ * any write makes chokidar re-read the directory and report the still-unseen file, and a file it
+ * already knows yields `change`, so the run under test still sees exactly one `add`.
+ */
+async function writeFileUntilObserved(entryHandler, absolutePath, contents) {
+	let observed;
+	const capture = (entry) => {
+		if (entry.absolutePath === absolutePath) observed ??= entry;
+	};
+	entryHandler.on('add', capture);
+	try {
+		await waitFor(
+			async () => {
+				if (observed) return observed;
+				await writeFile(absolutePath, contents);
+				return observed;
+			},
+			{ message: `Timed out waiting for the add event for ${absolutePath}` }
+		);
+	} finally {
+		entryHandler.off('add', capture);
+	}
+}
+
+>>>>>>> 8cfd60b9f (Stop the node 26 unit leg timing out on chokidar's unarmed-watch window)
 describe('EntryHandler', () => {
 	const fixture = ['a', 'b', 'c', ['foo', ['d', 'e', ['bar', ['f', 'g']]]]];
 	beforeEach(() => {
@@ -115,10 +154,8 @@ describe('EntryHandler', () => {
 		assert.ok(addDirArg.stats.isDirectory(), 'addDir event argument `stats` should be a directory');
 
 		// New file creation in new directory
-		const addFileInDirEvent = once(entryHandler, 'add');
 		const newFileInDirPath = join(newDirPath, 'y');
-		await writeFile(newFileInDirPath, 'y');
-		await addFileInDirEvent;
+		await writeFileUntilObserved(entryHandler, newFileInDirPath, 'y');
 		assert.equal(addHandlerSpy.callCount, 9, 'add event should be triggered for the new file in new directory');
 		const addFileInDirArg = addHandlerSpy.getCall(8).args[0];
 		assert.equal(

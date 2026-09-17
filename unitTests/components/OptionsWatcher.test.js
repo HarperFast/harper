@@ -10,6 +10,11 @@ const { stringify } = require('yaml');
 const { spy } = require('sinon');
 const { DEFAULT_CONFIG } = require('#src/components/DEFAULT_CONFIG');
 const { cloneDeep } = require('lodash');
+<<<<<<< HEAD
+=======
+const { useShortReadRetryBudget, restoreReadRetryBudget } = require('../shortReadRetryBudget');
+const { waitFor } = require('../waitFor.js');
+>>>>>>> 8cfd60b9f (Stop the node 26 unit leg timing out on chokidar's unarmed-watch window)
 
 /**
  * This function asserts that an event is emitted.
@@ -30,6 +35,35 @@ async function assertEvent(ee, event, triggerEvent, additionalAssertions) {
 		await additionalAssertions?.(eventSpy);
 	} finally {
 		ee.removeListener(event, eventSpy);
+	}
+}
+
+/**
+ * Write `contents` to a watched path, re-writing until `ee` reports `event`.
+ *
+ * chokidar's `ready` says its initial scan finished, not that the native watch is armed — the gap
+ * DESIGN.md's "`ready` means the watcher is armed" is about. A file created inside it is reported
+ * by no event, on every node version; node 26.9.0 schedules this suite's write into the gap on
+ * every run where 26.8.1 landed past it, leaving the test waiting forever. Re-writing closes it:
+ * once the watch is armed, any write makes chokidar re-read the directory and report the file it
+ * has not seen. A redundant write is silent — identical contents diff to nothing in
+ * `#applyScopedConfig` — so the event counts the caller asserts are unaffected.
+ */
+async function writeUntilObserved(ee, event, filePath, contents) {
+	let observed = false;
+	const capture = () => (observed = true);
+	ee.on(event, capture);
+	try {
+		await waitFor(
+			async () => {
+				if (observed) return true;
+				await writeFile(filePath, contents, 'utf-8');
+				return observed;
+			},
+			{ message: `Timed out waiting for ${event} after writing ${filePath}` }
+		);
+	} finally {
+		ee.off(event, capture);
 	}
 }
 
@@ -615,10 +649,23 @@ describe('OptionsWatcher', () => {
 
 		await assertEvent(
 			options,
+<<<<<<< HEAD
 			'change',
 			() => writeFile(configFilePath, stringify(expected), 'utf-8'),
 			(changeSpy) => {
 				assert.equal(changeSpy.callCount, 1);
+=======
+			'ready',
+			() => writeUntilObserved(options, 'ready', configFilePath, stringify(expected)),
+			(readySpy) => {
+				assert.equal(readySpy.callCount, 1);
+				assert.deepEqual(
+					readySpy.getCall(0).args,
+					[expected[name]],
+					'the arrival must carry the config that was written'
+				);
+				assert.equal(changed, 0, 'a truthy boot fallback is not a prior source value to merge against');
+>>>>>>> 8cfd60b9f (Stop the node 26 unit leg timing out on chokidar's unarmed-watch window)
 				assert.deepEqual(options.getRoot(), expected, 'should return the updated config after writing a new file');
 				assert.deepEqual(options.getAll(), expected[name], 'should return the configuration after file recreation');
 			}
