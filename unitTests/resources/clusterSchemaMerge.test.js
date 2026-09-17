@@ -423,6 +423,11 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		if (removed?.then) await removed;
 		const legacyWritten = Local.dbisDB.put('ClusterMergePrimarySource/id', legacyDescriptor);
 		if (legacyWritten?.then) await legacyWritten;
+		const staleBareWritten = Local.dbisDB.put('ClusterMergePrimarySource/', {
+			...legacyDescriptor,
+			type: 'String',
+		});
+		if (staleBareWritten?.then) await staleBareWritten;
 		table({
 			table: 'ClusterMergePrimarySource',
 			database: 'test',
