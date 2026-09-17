@@ -22,7 +22,7 @@
  *   3. the widening — rewrite the INSTALLED schema copy, restart, and confirm `describe_table` now
  *      reports `Long`/`Any` with `count` still indexed.
  *   4. old-record fidelity — every seeded record reads back byte-identical, value AND type, through
- *      both REST and the ops-API `search_by_hash` path, and the two paths agree with each other.
+ *      both REST and the ops-API `search_by_hash` path, each against the value it was written with.
  *   5. the widened type's new reach — 2^31 and 5e9 now round-trip; exactly 2^53 is accepted and
  *      2^53+2 rejected (Harper caps `Long` at abs(2^53) in `resources/tracked.ts:115` and
  *      `resources/Table.ts:6049`); genuine 64-bit magnitudes, handed in as real BigInt literals
@@ -95,8 +95,7 @@ const SCHEMA_V2 = `type MeteredEvent @table @export {
 }
 `;
 
-// Seeded while `count` is still Int and `label` still String, so every one of these is encoded under
-// the OLD declared types before the widening.
+// Encoded under the OLD declared types: seeded while `count` is still Int and `label` still String.
 const OLD_RECORDS = [
 	{ id: 1, count: 0, label: 'zero' },
 	{ id: 2, count: 1, label: 'one' },
@@ -121,10 +120,8 @@ const ABOVE_THRESHOLD = [
 	{ id: 9, count: TWO53 },
 ];
 
-// Every id the suite expects to be stored by the time the index arm runs, with the `typeof` its
-// label decodes to in-worker. The rejected writes (id 10, 20, 21, 40) are absent, which is how a
-// silently-accepted out-of-range value would show up; and only the two `label: Any` writes may have
-// left `string`, which is what catches an `Any` value decoded back through the old declaration.
+// Every stored id and the `typeof` its label decodes to in-worker. The rejected writes (10, 20, 21,
+// 40, 41) are absent, and only the two `label: Any` writes may have left `string`.
 const STORED_LABEL_TYPES = new Map([
 	[1, 'string'],
 	[2, 'string'],
@@ -157,8 +154,7 @@ const INDEX_ENTRIES = [
 ];
 
 // Real 64-bit magnitudes, written in-worker as BigInt literals. `value` is the decimal Harper must
-// echo back: seeing it un-rounded is the proof the bigint reached the range check without passing
-// through a float64.
+// echo back un-rounded, which is the proof the bigint reached the range check without a float64.
 const BIGINT_PROBES = [
 	{ id: 20, probe: '2^53+1', value: '9007199254740993' },
 	{ id: 21, probe: '2^63-1', value: '9223372036854775807' },
@@ -354,16 +350,28 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 
 				// The same guard for `label`, so the widened arm below is a real change rather than a
 				// fixture that shipped `label: Any` or a widening that only took effect for `count`.
-				const rejectedLabel = await insert([{ id: 40, count: 1, label: OBJECT_LABEL }]);
-				ok(
-					rejectedLabel.status >= 400,
-					`an object label under a declared String must be rejected, got ${rejectedLabel.status}: ${rejectedLabel.text}`
-				);
-				ok(
-					/string/i.test(rejectedLabel.text),
-					`the rejection must name the type violation, got: ${rejectedLabel.text}`
-				);
-				strictEqual((await restGet(40)).status, 404, 'the rejected pre-widening label must not have been stored');
+				// Both payload shapes the widened arm later accepts, so neither half of that arm can pass on a
+				// fixture that shipped `label: Any` or a widening that only took effect for `count`. The
+				// numeric one also settles whether a declared String coerces a number rather than refusing it.
+				for (const [id, label] of [
+					[40, OBJECT_LABEL],
+					[41, 12345],
+				] as const) {
+					const rejectedLabel = await insert([{ id, count: 1, label }]);
+					ok(
+						rejectedLabel.status >= 400,
+						`${typeof label} label under a declared String must be rejected, got ${rejectedLabel.status}: ${rejectedLabel.text}`
+					);
+					ok(
+						/string/i.test(rejectedLabel.text),
+						`the rejection must name the type violation, got: ${rejectedLabel.text}`
+					);
+					strictEqual(
+						(await restGet(id)).status,
+						404,
+						`the rejected pre-widening label ${id} must not have been stored`
+					);
+				}
 			});
 
 			test(
@@ -397,13 +405,6 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 					const expected = { count: record.count, label: record.label };
 					assertRow(rest.body, expected, `REST read of old-encoded id=${record.id} changed after the widening`);
 					assertRow(ops, expected, `search_by_hash read of old-encoded id=${record.id} changed after the widening`);
-					// A divergence between the two decode paths is its own finding, and neither comparison above
-					// would catch it if both drifted to the same wrong value.
-					assertRow(
-						rest.body,
-						{ count: ops.count, label: ops.label },
-						`REST and search_by_hash disagree on old-encoded id=${record.id}`
-					);
 				}
 			});
 

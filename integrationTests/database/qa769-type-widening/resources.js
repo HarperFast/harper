@@ -2,8 +2,7 @@ import { threadId } from 'node:worker_threads';
 
 const { MeteredEvent } = tables;
 
-// Magnitudes no float64 can carry, so they are only exact as BigInt literals — the only way to ask
-// whether the widened `Long` holds a genuine 64-bit value rather than whatever JSON transport left.
+// Only exact as BigInt literals: no float64 carries these, so JSON transport would round them first.
 const BIGINT_PROBES = {
 	'2^53+1': 9007199254740993n,
 	'2^63-1': 9223372036854775807n,
@@ -25,10 +24,8 @@ export class PutBigInt extends Resource {
 export class StorageEngineInfo extends Resource {
 	static loadAsInstance = false;
 
-	// Derived from the store rather than trusted from HARPER_STORAGE_ENGINE: if the engine pin were
-	// ignored, both defineSuite arms would run RocksDB and the LMDB half would be green without ever
-	// touching LMDB's record or index encoding. LMDB environments land at `<path>.mdb` and its index
-	// stores expose `prefetch`; RocksDB does neither.
+	// Derived from the store, never trusted from HARPER_STORAGE_ENGINE: an ignored engine pin would run
+	// both defineSuite arms on RocksDB. LMDB lands at `<path>.mdb` and its indices expose `prefetch`.
 	async get() {
 		const primaryStore = MeteredEvent.primaryStore;
 		const primaryPath = primaryStore.path ?? primaryStore.rootStore?.path ?? '';
@@ -40,9 +37,8 @@ export class StorageEngineInfo extends Resource {
 export class IndexDump extends Resource {
 	static loadAsInstance = false;
 
-	// The secondary index's own entries, with no primary-store join. A range query alone cannot prove
-	// the widened attribute is still indexed — resources/search.ts falls back to a full scan when it
-	// is not — so this is where "the index holds exactly these rows" is actually checked.
+	// The index's own entries, no primary-store join: resources/search.ts:485 answers a range query by
+	// full scan when an attribute is unindexed, so only this can show the index survived the widening.
 	async get() {
 		const index = MeteredEvent.indices.count;
 		if (!index) throw new Error('MeteredEvent.count carries no secondary index');
@@ -54,8 +50,7 @@ export class IndexDump extends Resource {
 export class DumpAll extends Resource {
 	static loadAsInstance = false;
 
-	// Index-independent oracle. `typeof` cannot survive JSON, so it is captured here; a stored bigint
-	// would fail serialization outright, which PutBigInt's rejection arm is what rules out.
+	// Index-independent oracle. `typeof` cannot survive JSON, so it is captured here.
 	async get() {
 		const rows = [];
 		for await (const record of MeteredEvent.search({})) {
