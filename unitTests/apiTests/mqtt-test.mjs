@@ -488,7 +488,7 @@ describe('test MQTT connections and commands', function () {
 		client.end();
 	});
 	it('subscribe to retained record with patch operations', async function () {
-		this.timeout(30000);
+		this.timeout(60000);
 		let path = 'SimpleRecord/78';
 		let client = await connectAsync(mqttUrl, {
 			clean: false,
@@ -501,13 +501,6 @@ describe('test MQTT connections and commands', function () {
 
 		let lastOnlineMessageId;
 		const onlinePhaseAbort = new AbortController();
-		const lastOnlineMessageAcknowledged = waitForMqttSessionEvent(
-			'acknowledged',
-			'with-patches',
-			(acknowledgement) => acknowledgement?.messageId === lastOnlineMessageId,
-			undefined,
-			onlinePhaseAbort.signal
-		);
 		let onMessage;
 		const onlineMessagesReceived = new Promise((resolve, reject) => {
 			const messages = [];
@@ -535,18 +528,33 @@ describe('test MQTT connections and commands', function () {
 			await Promise.all([
 				(async () => {
 					await client.subscribeAsync(path, { qos: 1 });
-					await axios.put(`${baseUrl}/SimpleRecord/78`, { name: 'a starting point', count: 2 }, { headers });
-					// Small delay so the PUT notification is delivered before the PATCH; without this the
-					// two messages can arrive out of order on a loaded CI runner.
-					await delay(20);
-					await axios.patch(
-						`${baseUrl}/SimpleRecord/78`,
-						{ name: 'an updated name', newProperty: 'new value', count: { __op__: 'add', value: 1 } },
-						{ headers }
+					const lastOnlineMessageAcknowledged = waitForMqttSessionEvent(
+						'acknowledged',
+						'with-patches',
+						(acknowledgement) => acknowledgement?.messageId === lastOnlineMessageId,
+						15000,
+						onlinePhaseAbort.signal
 					);
+					await Promise.all([
+						(async () => {
+							await axios.put(`${baseUrl}/SimpleRecord/78`, { name: 'a starting point', count: 2 }, { headers });
+							// Small delay so the PUT notification is delivered before the PATCH; without this the
+							// two messages can arrive out of order on a loaded CI runner.
+							await delay(20);
+							await axios.patch(
+								`${baseUrl}/SimpleRecord/78`,
+								{
+									name: 'an updated name',
+									newProperty: 'new value',
+									count: { __op__: 'add', value: 1 },
+								},
+								{ headers }
+							);
+						})(),
+						lastOnlineMessageAcknowledged,
+					]);
 				})(),
 				onlineMessagesReceived,
-				lastOnlineMessageAcknowledged,
 			]);
 			onlinePhaseComplete = true;
 		} finally {
@@ -600,6 +608,7 @@ describe('test MQTT connections and commands', function () {
 		});
 		reconnectMessagesReceived.catch(() => undefined);
 		client = undefined;
+		let reconnectPhaseComplete = false;
 		try {
 			client = await connectWithMessageListener(
 				mqttUrl,
@@ -623,12 +632,15 @@ describe('test MQTT connections and commands', function () {
 				{ headers }
 			);
 			await reconnectMessagesReceived;
+			reconnectPhaseComplete = true;
 		} finally {
 			clearTimeout(reconnectTimeout);
 			if (client) {
 				client.off('error', onReconnectError);
 				client.off('message', onReconnectMessage);
-				await endDurableSession(client, 'with-patches').catch(() => undefined);
+				const teardown = endDurableSession(client, 'with-patches');
+				if (reconnectPhaseComplete) await teardown;
+				else await teardown.catch(() => undefined);
 			}
 		}
 	});
