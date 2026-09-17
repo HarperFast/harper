@@ -1140,6 +1140,15 @@ describe('HNSW GraphQL numeric options', () => {
 			assert.equal(index.optimizeRouting, 0.5);
 			assert.equal(index.efConstructionConfigured, false);
 			assert.equal(index.efSearchConfigured, false);
+			for (const name of ['M', 'efConstruction', 'mL', 'optimizeRouting']) {
+				assert.throws(
+					() =>
+						HierarchicalNavigableSmallWorld.validateNativePlaneOptions(index.indexStore.rootStore, {
+							[name]: null,
+						}),
+					/nativePlane requires M=16/
+				);
+			}
 		});
 
 		it('retains the existing error for non-conforming native geometry', async () => {

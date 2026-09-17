@@ -2113,6 +2113,7 @@ export function makeTable(options) {
 					// LMDB: no shared column-family double-drop, and its engine lock is
 					// transactional rather than this spin lock, so keep the awaited drop
 					// plus the same tombstone-guarded catalog removal.
+					let removed: boolean;
 					try {
 						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
 						if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
@@ -2129,14 +2130,17 @@ export function makeTable(options) {
 						}
 						drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
 						await Promise.all(drops);
-						if (!removeTombstonedCatalog()) {
-							abortStaleDrop();
-							return;
-						}
-						await dbisDb.committed;
+						removed = removeTombstonedCatalog();
+						if (removed) await dbisDb.committed;
 					} catch (error) {
 						derivedIndexRuntime?.completeDrop?.();
 						throw error;
+					}
+					if (!removed) {
+						abortStaleDrop();
+						throw new Error(
+							`Could not complete drop of ${databaseName}.${tableName}: a replacement table became current while the LMDB stores were being dropped`
+						);
 					}
 				}
 			} else {

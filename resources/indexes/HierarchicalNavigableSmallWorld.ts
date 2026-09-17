@@ -327,6 +327,10 @@ export class HierarchicalNavigableSmallWorld {
 			normalizeOptimizeRoutingDeclaration(options?.optimizeRouting)
 		);
 		if (
+			options?.M === null ||
+			options?.efConstruction === null ||
+			options?.mL === null ||
+			options?.optimizeRouting === null ||
 			(nativeM !== undefined && nativeM !== 16) ||
 			(nativeEfConstruction !== undefined && nativeEfConstruction !== 200) ||
 			(nativeML !== undefined && nativeML !== 1 / Math.log(16)) ||

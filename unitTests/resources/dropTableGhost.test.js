@@ -234,7 +234,10 @@ describe('dropTable ghost regression', () => {
 			databases[TEST_DB][tableName] = replacement;
 		};
 		try {
-			await Stale.dropTable();
+			await assert.rejects(
+				() => Stale.dropTable(),
+				/a replacement table became current while the LMDB stores were being dropped/
+			);
 		} finally {
 			Stale.primaryStore.drop = originalDrop;
 			Stale.cleanup = originalCleanup;
