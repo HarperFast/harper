@@ -2858,7 +2858,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
 			// rows already present under a create are aborted state
-			const staleRow = !attribute || Boolean(deferredPrimaryRow);
+			const staleRow = (!attribute && !value.isPrimaryKey) || Boolean(deferredPrimaryRow);
 			if (staleRow || removeIndex) {
 				exclusiveLock();
 				hasChanges = true;
@@ -2921,6 +2921,17 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			);
 		}
 		if (nativePlaneEnabled && persistedAudit !== true) audit = true;
+		if (nativePlaneEnabled && persistedAudit !== true && !attributes.some((attribute) => attribute.isPrimaryKey)) {
+			exclusiveLock();
+			const primaryKey = primaryDescriptorKey();
+			const primaryDescriptor = attributesDbi.getSync(primaryKey);
+			if (primaryDescriptor && !tableIsDropping(primaryDescriptor, primaryKey)) {
+				Table.enableAuditing();
+				Table.audit = true;
+				attributesDbi.put(primaryKey, { ...primaryDescriptor, audit: true });
+				hasChanges = true;
+			}
+		}
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		const attributesInPersistenceOrder = nativePlaneEnabled
@@ -3300,7 +3311,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// The catalog row initStores() reads a table's settings from: the primary key's own row when it
 	// has one, and the bare table row otherwise.
 	function primaryDescriptorKey() {
-		const declaredPrimaryKey = attributes?.find((attribute) => attribute.isPrimaryKey)?.name;
+		const declaredPrimaryKey = attributes?.find((attribute) => attribute.isPrimaryKey)?.name ?? Table?.primaryKey;
 		if (declaredPrimaryKey) {
 			const attributeKey = tableName + '/' + declaredPrimaryKey;
 			if (attributesDbi.getSync(attributeKey)) return attributeKey;

@@ -656,6 +656,29 @@ describe('HNSW GraphQL numeric options', () => {
 			assert.equal(tables[tableName].dbisDB.getSync(`${tableName}/embedding`).indexed, undefined);
 		});
 
+		it('persists an audit upgrade when a native index declaration omits the primary key', function () {
+			if (!getPlaneBinding()) this.skip();
+			const tableName = 'HnswAuditUpgradeWithoutPrimary';
+			let Table = table({
+				table: tableName,
+				audit: false,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'embedding', type: 'Array' },
+				],
+			});
+			createdTables.push(tableName);
+			Table = table({
+				table: tableName,
+				audit: true,
+				attributes: [{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' }],
+			});
+
+			assert.equal(Table.audit, true);
+			assert.equal(Table.dbisDB.getSync(`${tableName}/`).audit, true);
+			assert.equal(Table.indices.embedding.customIndex.postCommit, true);
+		});
+
 		it('persists removal or opt-out before disabling audit', async function () {
 			if (!getPlaneBinding()) this.skip();
 			const tableName = 'HnswAuditDisableOrdering';

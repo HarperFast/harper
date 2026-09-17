@@ -274,6 +274,7 @@ export class HierarchicalNavigableSmallWorld {
 			typeof value === 'string' &&
 			(value === 'true' || value === 'false' || (value.trim() !== '' && Number(value) === 0))
 		)
+			// Legacy strings are truthy at runtime; keep them structurally distinct from false/0 so #1357 rebuilds.
 			return `legacy:${value}`;
 		return value;
 	}
