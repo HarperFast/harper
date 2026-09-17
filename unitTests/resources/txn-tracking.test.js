@@ -582,7 +582,7 @@ describe('Write txn timeout', () => {
 // longer than the limit, and aborting there both drops the write and unlinks the blob the write
 // references, leaving the caller holding a blob whose file is gone (issue #2062).
 describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', () => {
-	let BlobResource, SecondaryBlobResource;
+	let BlobResource, SecondaryBlobResource, ThirdResource;
 	before(async function () {
 		setupTestDBPath();
 		setMainIsWorker(true);
@@ -597,6 +597,14 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		SecondaryBlobResource = table({
 			table: 'CommitPhaseSecondaryBlobTable',
 			database: 'commit-phase-secondary',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'value', type: 'String' },
+			],
+		});
+		ThirdResource = table({
+			table: 'CommitPhaseThirdTable',
+			database: 'commit-phase-third',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'value', type: 'String' },
@@ -716,6 +724,115 @@ describe('Commit-phase pre-commit work is not poisoned by the monitor (#2062)', 
 		}
 		assert.ok(await BlobResource.get(2067), 'the head database write must commit');
 		assert.equal((await SecondaryBlobResource.get(2067))?.value, 'secondary', 'the linked database write must commit');
+	});
+
+	// Defers a link's native store commit so the monitor runs while the chain is mid-cascade.
+	function stallNativeCommit(link, ms, onStart) {
+		const store = link.writes.find(Boolean).store;
+		if (store instanceof RocksDatabase) {
+			const nativeTxn = link.transaction;
+			const commit = nativeTxn.commit;
+			nativeTxn.commit = function (...args) {
+				nativeTxn.commit = commit;
+				onStart?.();
+				return delay(ms).then(() => commit.apply(this, args));
+			};
+			return () => {
+				nativeTxn.commit = commit;
+			};
+		}
+		const ifVersion = store.ifVersion;
+		store.ifVersion = function (...args) {
+			store.ifVersion = ifVersion;
+			onStart?.();
+			return delay(ms).then(() => ifVersion.apply(this, args));
+		};
+		return () => {
+			store.ifVersion = ifVersion;
+		};
+	}
+
+	it('renews the idle window from the engine that owns the link', function () {
+		setLMDBTxnExpiration(20);
+		try {
+			const link = new LMDBTransaction();
+			link.timeoutBudget = 0;
+			link.renewIdleTimeout();
+			assert.equal(link.timeout, 20, 'an LMDB link must re-arm from the LMDB expiration, not the RocksDB one');
+		} finally {
+			setLMDBTxnExpiration(30000);
+		}
+	});
+
+	it('gives every link a fresh idle window when the head hands its writes to the store', async function () {
+		const slow = new PassThrough();
+		const blob = createBlob(slow);
+		const context = {};
+		const trackedTxns = setExpiration(20);
+		let links;
+		let restore;
+		let armed;
+		try {
+			const committing = transaction(context, async (txn) => {
+				txn.timeoutBudget = 400;
+				await BlobResource.put({ id: 2070, blob }, context);
+				await SecondaryBlobResource.put({ id: 2070, value: 'secondary' }, context);
+				links = databaseTxns(context);
+			});
+			committing.catch(() => {});
+			slow.write(Buffer.alloc(16384, 'l'));
+			await waitFor(() => links?.length === 2 && links.every((txn) => txn.committing), {
+				message: 'both database links should enter the same commit phase',
+			});
+			for (const link of links) trackedTxns.add(link);
+			// Let the pre-commit phase consume most of the window, then make the head's native commit outlast
+			// what is left of it: only a re-arm at the handoff keeps the second link alive.
+			await waitFor(() => links.every((txn) => txn.timeout <= 150), {
+				timeout: 5000,
+				message: 'the idle window should decay while the blob save is parked',
+			});
+			restore = stallNativeCommit(links[0], 250, () => {
+				armed = links.map((txn) => txn.timeout);
+			});
+			slow.end(Buffer.alloc(16384, 'm'));
+			await committing;
+			assert.deepEqual(armed, [400, 400], 'every link must start the cascade with the full engine window');
+		} finally {
+			restore?.();
+			for (const link of links ?? []) trackedTxns.delete(link);
+			if (!slow.writableEnded) slow.end();
+			setExpiration(30000);
+		}
+		assert.ok(await BlobResource.get(2070), 'the head database write must commit');
+		assert.equal((await SecondaryBlobResource.get(2070))?.value, 'secondary', 'the linked database write must commit');
+	});
+
+	it('re-arms the remaining links at every hop of a staggered cascade', async function () {
+		const context = {};
+		const trackedTxns = setExpiration(20);
+		let links;
+		const restores = [];
+		try {
+			const committing = transaction(context, async (txn) => {
+				txn.timeoutBudget = 200;
+				await BlobResource.put({ id: 2071 }, context);
+				await SecondaryBlobResource.put({ id: 2071, value: 'secondary' }, context);
+				await ThirdResource.put({ id: 2071, value: 'third' }, context);
+				links = databaseTxns(context);
+				assert.equal(links.length, 3);
+				for (const link of links) trackedTxns.add(link);
+				// Each hop takes most of one window; the whole cascade takes more than two.
+				for (const link of links) restores.push(stallNativeCommit(link, 150));
+			});
+			await committing;
+		} finally {
+			for (const restore of restores) restore();
+			for (const link of links ?? []) trackedTxns.delete(link);
+			setExpiration(30000);
+		}
+		assert.ok(await BlobResource.get(2071), 'the head database write must commit');
+		assert.equal((await SecondaryBlobResource.get(2071))?.value, 'secondary', 'the second link must commit');
+		assert.equal((await ThirdResource.get(2071))?.value, 'third', 'the third link must commit');
 	});
 
 	it('aborts a parked multi-store commit from the chain head when a later link exhausts the grace', async function () {

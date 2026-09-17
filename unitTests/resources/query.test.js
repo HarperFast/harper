@@ -977,6 +977,50 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[0].id, 'id-98');
 			assert.equal(results[1].id, 'id-93');
 		});
+		it('resolves each sort key once, so a record collected before the sort is not re-read per comparison', async function () {
+			if (typeof global.gc !== 'function') this.skip();
+			const sort = { attribute: 'relatedId', next: { attribute: 'name', descending: true } };
+			const expected = [];
+			for await (const record of QueryTable.search({ conditions: [{ attribute: 'relatedId', value: 3 }], sort })) {
+				expected.push(record.id);
+			}
+			assert.equal(expected.length, 20);
+			const ids = [...expected].sort();
+			// Copies of the matching records, reachable only through WeakRef-shaped entries — the shape a cached
+			// entry has once the LRU lets its record go. `pins` keeps them alive until every entry is collected.
+			let pins = ids.map((id) => ({ ...QueryTable.primaryStore.getEntry(id).value }));
+			const entries = pins.map((record, i) => Object.assign(new WeakRef(record), { key: ids[i] }));
+			const source = {
+				hasEntries: true,
+				async *[Symbol.asyncIterator]() {
+					for (const entry of entries) yield entry;
+					pins = null;
+					await new Promise((resolve) => setImmediate(resolve));
+					global.gc();
+				},
+			};
+			const context = {};
+			const startCount = QueryTable.primaryStore.readCount;
+			const results = [];
+			for await (const record of QueryTable.transformToOrderedSelect(
+				source,
+				undefined,
+				sort,
+				context,
+				undefined,
+				QueryTable.transformEntryForSelect(undefined, context, undefined, undefined, true, true, undefined, false, sort)
+			)) {
+				results.push(record.id);
+			}
+			assert.deepEqual(results, expected);
+			const reads = QueryTable.primaryStore.readCount - startCount;
+			// Materialization may read a record once (twice through the prefetch path); the comparator alone
+			// would add two reads per comparison.
+			assert(
+				reads <= 2 * expected.length,
+				`${reads} store reads to order ${expected.length} collected records; only materialization may read`
+			);
+		});
 		it('Query data in a table with and sort on createdAt', async function () {
 			let results = [];
 			for await (let record of QueryTable.search({
