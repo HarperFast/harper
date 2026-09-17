@@ -270,12 +270,20 @@ export class HierarchicalNavigableSmallWorld {
 		if (name !== 'optimizeRouting') return value;
 		if (value === true) return 1;
 		if (value === false) return 0;
-		if (value === '0' || value === 'true' || value === 'false') return `legacy:${value}`;
+		if (
+			typeof value === 'string' &&
+			(value === 'true' || value === 'false' || (value.trim() !== '' && Number(value) === 0))
+		)
+			return `legacy:${value}`;
 		return value;
 	}
 	static normalizeDeclarationOptions(options: any): void {
 		for (const name of HierarchicalNavigableSmallWorld.numericOptions) {
-			if (options[name] === undefined || options[name] === null) continue;
+			if (options[name] === undefined) continue;
+			if (options[name] === null) {
+				delete options[name];
+				continue;
+			}
 			const value = name === 'optimizeRouting' ? normalizeOptimizeRoutingDeclaration(options[name]) : options[name];
 			options[name] = numericOption(name, value);
 		}
@@ -286,7 +294,7 @@ export class HierarchicalNavigableSmallWorld {
 		if (value === false || value === 'false') return false;
 		throw new ClientError('nativePlane must be true or false');
 	}
-	static canRunNativePlane(rootStore: unknown, options: any): boolean {
+	static canRunNativePlane(rootStore: unknown, options: any, warnForMissingBinding = true): boolean {
 		const configuredM = numericOption('M', options?.M);
 		const configuredEfConstruction = numericOption('efConstruction', options?.efConstruction);
 		const configuredML = numericOption('mL', options?.mL);
@@ -297,7 +305,7 @@ export class HierarchicalNavigableSmallWorld {
 		nativePlaneMaxNodes(options);
 		return (
 			rootStore instanceof RocksDatabase &&
-			getPlaneBinding() != null &&
+			getPlaneBinding(warnForMissingBinding) != null &&
 			options?.quantization !== 'none' &&
 			options?.distance !== 'euclidean' &&
 			options?.distance !== 'dotProduct' &&
@@ -308,7 +316,9 @@ export class HierarchicalNavigableSmallWorld {
 		);
 	}
 	static canDefaultToNativePlane(rootStore: unknown, options: any): boolean {
-		return !nativePlaneDefaultDisabled() && HierarchicalNavigableSmallWorld.canRunNativePlane(rootStore, options);
+		return (
+			!nativePlaneDefaultDisabled() && HierarchicalNavigableSmallWorld.canRunNativePlane(rootStore, options, false)
+		);
 	}
 	// Index options that only affect search, not the stored graph — changing them must not trigger a
 	// reindex (databases.ts persists the new value but skips rebuilding). efConstructionSearch is the
@@ -378,12 +388,12 @@ export class HierarchicalNavigableSmallWorld {
 			// (we would actually like to use float16 if it were available)
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
-		const configuredM = options?.M ?? undefined;
-		const configuredEfConstruction = options?.efConstruction ?? undefined;
-		const configuredEfConstructionSearch = options?.efConstructionSearch ?? undefined;
-		const configuredML = options?.mL ?? undefined;
-		const configuredOptimizeRouting = options?.optimizeRouting ?? undefined;
-		const configuredFilterExpansion = options?.filterExpansion ?? undefined;
+		const configuredM = options?.M;
+		const configuredEfConstruction = options?.efConstruction;
+		const configuredEfConstructionSearch = options?.efConstructionSearch;
+		const configuredML = options?.mL;
+		const configuredOptimizeRouting = options?.optimizeRouting;
+		const configuredFilterExpansion = options?.filterExpansion;
 		this.int8 = options?.quantization !== 'none';
 		// Respect an explicitly-configured ef (efConstruction seeds the search ef too); otherwise auto-scale both.
 		this.efSearchConfigured = configuredEfConstructionSearch !== undefined || configuredEfConstruction !== undefined;

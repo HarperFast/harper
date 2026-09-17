@@ -120,6 +120,17 @@ describe('HNSW GraphQL numeric options', () => {
 		assert.equal(redeclared.M, 12);
 		assert.equal(redeclared.optimizeRouting, 0);
 		assert.equal(indexedOptions(tableName).optimizeRouting, 0);
+
+		const nullTableName = 'HnswLegacyNullRouting';
+		await loadTable(nullTableName, '', 'type: "HNSW", optimizeRouting: 0.6');
+		const nullDescriptor = tables[nullTableName].dbisDB.getSync(`${nullTableName}/embedding`);
+		nullDescriptor.indexed.optimizeRouting = null;
+		tables[nullTableName].dbisDB.putSync(`${nullTableName}/embedding`, nullDescriptor);
+		assert.equal(tables[nullTableName].dbisDB.getSync(`${nullTableName}/embedding`).indexed.optimizeRouting, null);
+		delete tables[nullTableName].indices.embedding;
+		resetDatabases();
+		assert.equal(indexedOptions(nullTableName).optimizeRouting, null);
+		assert.equal(customIndex(nullTableName).optimizeRouting, null);
 	});
 
 	it('rejects options that are not finite numeric values', async () => {
@@ -252,6 +263,25 @@ describe('HNSW GraphQL numeric options', () => {
 		});
 		assert.equal(Table.indices.embedding.customIndex.postCommit, undefined);
 		assert.equal(indexedOptions(tableName).nativePlane, false);
+
+		const legacyTableName = 'HnswReplicatedLegacyStringNative';
+		table({
+			table: legacyTableName,
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		createdTables.push(legacyTableName);
+		Table = table({
+			table: legacyTableName,
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: 'false' }, type: 'Array' },
+			],
+		});
+		const canRunLegacyNative = process.env.HARPER_STORAGE_ENGINE !== 'lmdb' && getPlaneBinding();
+		assert.equal(Table.indices.embedding.customIndex.postCommit, canRunLegacyNative ? true : undefined);
+		assert.equal(indexedOptions(legacyTableName).nativePlane, canRunLegacyNative ? 'false' : false);
 	});
 
 	describe('native plane geometry', () => {
@@ -272,6 +302,60 @@ describe('HNSW GraphQL numeric options', () => {
 			resetDatabases();
 			assert.equal(customIndex(tableName).postCommit, true);
 			assert.equal(indexedOptions(tableName).nativePlane, true);
+		});
+
+		it('defaults an index added after the global audit default is durable', async () => {
+			const tableName = 'HnswDurableGlobalAuditDefault';
+			let Table = table({
+				table: tableName,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'embedding', type: 'Array' },
+				],
+			});
+			createdTables.push(tableName);
+			assert.equal(Table.dbisDB.getSync(`${tableName}/`).audit, true);
+
+			Table = table({
+				table: tableName,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'embedding', indexed: { type: 'HNSW' }, type: 'Array' },
+				],
+			});
+			const nativeDefaultAvailable = Boolean(getPlaneBinding());
+			assert.equal(Table.indices.embedding.customIndex.postCommit, nativeDefaultAvailable ? true : undefined);
+			assert.equal(
+				Object.hasOwn(indexedOptions(tableName), 'nativePlane'),
+				nativeDefaultAvailable,
+				'the persisted audit descriptor controls the later index declaration'
+			);
+		});
+
+		it('persists an audit upgrade before a newly enabled native index', function () {
+			if (!getPlaneBinding()) this.skip();
+			const tableName = 'HnswAuditUpgradeOrdering';
+			table({
+				table: tableName,
+				audit: false,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'embedding', type: 'Array' },
+				],
+			});
+			createdTables.push(tableName);
+
+			const Table = table({
+				table: tableName,
+				audit: true,
+				attributes: [
+					{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
+					{ name: 'id', isPrimaryKey: true },
+				],
+			});
+			assert.equal(Table.dbisDB.getSync(`${tableName}/`).audit, true);
+			assert.equal(Table.dbisDB.getSync(`${tableName}/embedding`).indexed.nativePlane, true);
+			assert.equal(Table.indices.embedding.customIndex.postCommit, true);
 		});
 
 		it('leaves incompatible and kill-switched new indexes in JS mode', async function () {

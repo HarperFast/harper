@@ -2485,13 +2485,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (attribute.indexed?.type === 'HNSW' && origin !== 'cluster') {
 			CUSTOM_INDEXES.HNSW.normalizeDeclarationOptions(attribute.indexed);
 		}
-		if (attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane != null) {
+		if (attribute.indexed?.type === 'HNSW' && origin !== 'cluster' && attribute.indexed.nativePlane != null) {
 			try {
 				attribute.indexed.nativePlane = CUSTOM_INDEXES.HNSW.normalizeNativePlaneDeclaration(
 					attribute.indexed.nativePlane
 				);
 			} catch (error) {
-				if (origin === 'cluster') continue;
 				const existingAttribute = Table?.attributes.find(
 					(existing: any) => existing.name === attribute.name && existing.indexed?.type === 'HNSW'
 				);
@@ -2843,7 +2842,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
-		for (const attribute of attributes || []) {
+		const attributesWithPrimaryFirst = [
+			...attributes.filter((attribute) => attribute.isPrimaryKey),
+			...attributes.filter((attribute) => !attribute.isPrimaryKey),
+		];
+		for (const attribute of attributesWithPrimaryFirst) {
 			if (attribute.relationship) {
 				refreshRelationshipAttributes = true;
 				continue;

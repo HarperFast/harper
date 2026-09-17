@@ -73,7 +73,12 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		assert.equal(sameStructure({ x: '' }, { x: 0 }), false);
 		// booleans and numeric-looking strings are distinct (no boolean coercion)
 		assert.equal(sameStructure({ flag: true }, { flag: 'true' }), false);
-		assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: '0' }, { type: 'HNSW', optimizeRouting: 0 }), false);
+		for (const value of ['0', '0.0', '-0', ' 0 ', '0e0'])
+			assert.equal(
+				sameStructure({ type: 'HNSW', optimizeRouting: value }, { type: 'HNSW', optimizeRouting: 0 }),
+				false,
+				`${JSON.stringify(value)} must preserve its legacy truthiness`
+			);
 		assert.equal(
 			sameStructure({ type: 'HNSW', maxLagMilliseconds: '0' }, { type: 'HNSW', maxLagMilliseconds: 0 }),
 			true

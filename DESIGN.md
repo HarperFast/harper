@@ -2811,8 +2811,12 @@ and legacy string values retain their historical truthiness until an explicit de
 the mode and rebuilds the index. Numeric HNSW options are likewise normalized and validated only at
 the declaration boundary: persisted legacy values keep their previous runtime coercion, while a new
 canonical declaration triggers a rebuild when that interpretation changes (notably
-`optimizeRouting: "0"`). A replicated new attribute uses native mode only when the receiving
-node is independently audited and eligible, because the plane is node-local derived state. Set
+zero-valued `optimizeRouting` strings). A table whose primary descriptor already stores `audit: true`
+qualifies for the default even when that value originally came from the global audit setting. In
+contrast, a new table and its omitted-mode index in the same declaration do not qualify unless that
+declaration explicitly enables audit, because audit was not durable at the index-creation boundary.
+A replicated new attribute uses native mode only when the receiving node is independently audited
+and eligible, because the plane is node-local derived state. Set
 `HNSW_NO_NATIVE_DEFAULT=1` to keep newly omitted declarations on JS during rollout; it does not
 disable an explicit or already persisted native index. Set it before creating indexes when a
 rollback must remain cheap: an older release sees an omitted declaration against the persisted
