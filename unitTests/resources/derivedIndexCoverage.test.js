@@ -1,0 +1,858 @@
+require('../testUtils');
+const assert = require('node:assert');
+const { existsSync } = require('node:fs');
+const { setupTestDBPath } = require('../testUtils');
+const { table, closeDatabase } = require('#src/resources/databases');
+const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { getPlaneBinding } = require('#src/resources/indexes/hnswPlaneBinding');
+const { DatabaseTransaction, setTxnExpiration } = require('#src/resources/DatabaseTransaction');
+const { DERIVED_INDEX_CURSOR_KEY, HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
+const {
+	READINESS_BYTES,
+	DerivedIndexRuntime,
+	derivedIndexTime,
+	readDerivedIndexCoverage,
+} = require('#src/resources/derivedIndexRuntime');
+const { RocksDatabase, Transaction } = require('@harperfast/rocksdb-js');
+const { RocksTransactionLogStore } = require('#src/resources/RocksTransactionLogStore');
+const { createAuditEntry, ENTRY_DATAVIEW } = require('#src/resources/auditStore');
+const { waitFor } = require('../waitFor');
+
+describe('native derived-index query coverage', function () {
+	if (process.env.HARPER_STORAGE_ENGINE === 'lmdb' || !getPlaneBinding()) return;
+	this.timeout(20_000);
+	let Product, Other, index;
+	const vector = [1, 0, 0, 0];
+	const search = (maxIndexLagMilliseconds, waitForIndexMilliseconds, context = { transaction: undefined }) =>
+		index.search(
+			{
+				target: vector,
+				comparator: 'sort',
+				distance: 'cosine',
+				ef: 200,
+				maxIndexLagMilliseconds,
+				waitForIndexMilliseconds,
+			},
+			context
+		);
+	const current = () =>
+		waitFor(
+			async () => {
+				try {
+					return await search(0);
+				} catch (error) {
+					if (error.statusCode === 503) return false;
+					throw error;
+				}
+			},
+			{ timeout: 15_000, message: 'native index did not certify current coverage' }
+		);
+	before(async () => {
+		setupTestDBPath();
+		setMainIsWorker(true);
+		Product = table({
+			database: 'native-query-coverage',
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', type: 'Array', indexed: { type: 'HNSW', nativePlane: true } },
+			],
+		});
+		Other = table({
+			database: 'native-query-coverage',
+			table: 'Other',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'value' }],
+		});
+		index = Product.indices.vector.customIndex;
+		assert.equal((await current()).length, 0);
+		await Product.put('initial', { vector });
+		await current();
+	});
+	after(() => closeDatabase('native-query-coverage'));
+	it('rejects a committed write before its native barrier without invalidating the plane', async () => {
+		const plane = index.getPlane();
+		await Product.put('new', { vector });
+		await assert.rejects(
+			Promise.resolve().then(() => search(0)),
+			(error) => error.statusCode === 503 && error.code === 'DERIVED_INDEX_LAGGING' && error.retryable === true
+		);
+		assert.strictEqual(index.getPlane(), plane);
+		const tolerant = await search(60_000);
+		assert.equal(tolerant.indexCoverage.state, 'bounded');
+		assert(tolerant.indexCoverage.lagUpperBoundMilliseconds <= 60_000);
+		assert.equal(Object.keys(tolerant).includes('indexCoverage'), false);
+		const caughtUp = await current();
+		assert(caughtUp.some(({ key }) => key === 'new'));
+		assert.deepStrictEqual(caughtUp.indexCoverage, {
+			state: 'current',
+			maxLagMilliseconds: 0,
+			lagUpperBoundMilliseconds: 0,
+		});
+	});
+	it('uses a 3000 ms default and validates native query tolerances', async () => {
+		assert.equal((await search()).indexCoverage.maxLagMilliseconds, 3000);
+		for (const invalid of [-1, null, NaN, Infinity, '1000', {}]) {
+			await assert.rejects(
+				Promise.resolve().then(() => search(invalid)),
+				(error) => error.statusCode === 400 && /maxIndexLagMilliseconds/.test(error.message)
+			);
+		}
+		assert.equal((await search(0)).indexCoverage.state, 'current');
+	});
+	it('waits for a completed prior write on an otherwise idle database', async () => {
+		await Product.put('waited-write', { vector });
+		const result = await search(undefined, 10_000);
+		assert(result.some(({ key }) => key === 'waited-write'));
+		assert.deepStrictEqual(result.indexCoverage, {
+			state: 'current',
+			maxLagMilliseconds: 3000,
+			lagUpperBoundMilliseconds: 0,
+		});
+		assert.equal(search().indexAdmission, undefined);
+	});
+	it('times out despite a tolerant lag setting and leaves the native plane healthy', async () => {
+		await current();
+		const plane = index.getPlane();
+		await Product.put('short-wait', { vector });
+		await assert.rejects(
+			Promise.resolve().then(() => search(60_000, Number.MIN_VALUE)),
+			{ code: 'DERIVED_INDEX_LAGGING', statusCode: 503, retryable: true }
+		);
+		assert.strictEqual(index.getPlane(), plane);
+		await search(undefined, 10_000);
+	});
+	it('validates wait budgets and keeps the zero-wait behavior', async () => {
+		for (const invalid of [-1, null, NaN, Infinity, '1000', {}, 30_001]) {
+			await assert.rejects(
+				Promise.resolve().then(() => search(undefined, invalid)),
+				(error) => error.statusCode === 400 && /waitForIndexMilliseconds/.test(error.message)
+			);
+		}
+		assert.equal(search(undefined, 0).indexAdmission, undefined);
+	});
+	it('keeps a fixed certified boundary after later unrelated writes', async () => {
+		const since = derivedIndexTime(Product.auditStore.rootStore);
+		await index.derivedHost.waitForCoverage(since, 10_000);
+		await Other.put('after-wait-boundary', { value: 1 });
+		await index.derivedHost.waitForCoverage(since, Number.MIN_VALUE);
+		await current();
+	});
+	it('accepts a published fixed-boundary proof on the final deadline check', async () => {
+		const since = derivedIndexTime(Product.auditStore.rootStore);
+		await index.derivedHost.waitForCoverage(since, 10_000);
+		await index.derivedHost.waitForCoverage(since, Number.MIN_VALUE);
+	});
+	it('charges a waiting read to the ordinary snapshot timeout', async () => {
+		await current();
+		setTxnExpiration(20);
+		const transaction = new DatabaseTransaction();
+		try {
+			await Product.put('expired-read-wait', { vector });
+			const results = await Product.search(
+				{ sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 }, limit: 10 },
+				{ transaction }
+			);
+			const snapshot = transaction.transaction;
+			await transaction.commit();
+			const pending = Array.fromAsync(results);
+			pending.catch(() => {});
+			await waitFor(() => transaction.transaction !== snapshot);
+			await Product.put('after-expired-snapshot', { vector });
+			await assert.rejects(pending, { name: 'ReadSnapshotExpiredError', statusCode: 503 });
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+			setTxnExpiration(30_000);
+		}
+	});
+	it('does not keep staged writes alive while waiting for native coverage', async () => {
+		await current();
+		setTxnExpiration(20);
+		const transaction = new DatabaseTransaction();
+		try {
+			await Product.put('write-timeout-wait', { vector });
+			await Other.put('uncommitted-wait', { value: 1 }, { transaction });
+			const results = await Product.search(
+				{ sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 }, limit: 10 },
+				{ transaction }
+			);
+			const pending = Array.fromAsync(results);
+			pending.catch(() => {});
+			await waitFor(() => transaction.timedOut);
+			await assert.rejects(pending, { statusCode: 422 });
+			await assert.rejects(
+				Promise.resolve().then(() => transaction.commit()),
+				{ statusCode: 422 }
+			);
+			assert.equal(await Other.get('uncommitted-wait'), undefined);
+		} finally {
+			transaction.abort();
+			setTxnExpiration(30_000);
+		}
+	});
+	it('cancels a consumed waiting query and releases its read snapshot', async () => {
+		await Product.put('cancelled-wait', { vector });
+		const transaction = new DatabaseTransaction();
+		const controller = new AbortController();
+		try {
+			const results = await Product.search(
+				{ sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 }, limit: 10 },
+				{ transaction, signal: controller.signal }
+			);
+			const pending = Array.fromAsync(results);
+			controller.abort(new Error('cancel coverage wait'));
+			await assert.rejects(pending, /cancel coverage wait/);
+			await transaction.commit();
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+		}
+		await current();
+	});
+	it('keeps opted-in instance searches iterable and starts only on consumption', async () => {
+		await current();
+		const transaction = new DatabaseTransaction();
+		let filtered = 0;
+		try {
+			const resource = new Product(null, { transaction });
+			const rows = resource.search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+				vectorFilter: () => {
+					filtered++;
+					return true;
+				},
+				limit: 1,
+			});
+			assert(!(rows instanceof Promise));
+			assert.equal(typeof rows.map, 'function');
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			assert.equal(filtered, 0);
+			assert.equal((await Array.fromAsync(rows.map((record) => record))).length, 1);
+			assert(filtered > 0);
+			await transaction.commit();
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+		}
+	});
+	it('skips native work for zero-size waiting pages including counts', async () => {
+		for (const [count, offset] of [
+			[undefined, 0],
+			['exact', 0],
+			[undefined, 5],
+			['exact', 5],
+		]) {
+			await current();
+			await Product.put('empty-wait-' + count + '-' + offset, { vector });
+			let filtered = 0;
+			const results = await Product.search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: Number.MIN_VALUE },
+				vectorFilter: () => {
+					filtered++;
+					return true;
+				},
+				limit: 0,
+				offset,
+				count,
+			});
+			assert.deepStrictEqual(await Array.fromAsync(results), []);
+			assert.equal(filtered, 0);
+		}
+	});
+	it('streams a concatenated prefix before a waiting suffix rejects', async () => {
+		await current();
+		await Product.put('concat-lazy', { vector });
+		const transaction = new DatabaseTransaction();
+		try {
+			const resource = new Product(null, { transaction });
+			const prefix = resource.search({ conditions: [{ attribute: 'id', value: 'initial' }] });
+			const suffix = resource.search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: Number.MIN_VALUE },
+			});
+			const iterator = prefix
+				.map((record) => record)
+				.concat(suffix)
+				[Symbol.asyncIterator]();
+			assert.equal((await iterator.next()).value.id, 'initial');
+			await assert.rejects(iterator.next(), { code: 'DERIVED_INDEX_LAGGING' });
+			await transaction.commit();
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+		}
+	});
+	it('preserves a healthy plane when a filtered traversal is aborted with an arbitrary reason', async () => {
+		await current();
+		const plane = index.getPlane();
+		for (const reason of ['client left', null, Object.freeze({ cancelled: true })]) {
+			const controller = new AbortController();
+			let filtered = 0;
+			const results = await Product.search(
+				{
+					sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+					vectorFilter: () => {
+						filtered++;
+						controller.abort(reason);
+						return true;
+					},
+				},
+				{ signal: controller.signal }
+			);
+			await assert.rejects(Array.fromAsync(results), (error) =>
+				reason === null ? error.message === 'Index search aborted' && error.cause === null : Object.is(error, reason)
+			);
+			assert.equal(filtered, 1);
+			assert.strictEqual(index.getPlane(), plane);
+			assert.equal(index.derivedHost.readiness().state, 'ready');
+		}
+	});
+	it('consumes a waiting instance search without an owned transaction', async () => {
+		await current();
+		const results = new Product(null, { transaction: undefined }).search({
+			sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+			limit: 100,
+		});
+		assert((await Array.fromAsync(results)).some(({ id }) => id === 'initial'));
+	});
+	it('keeps invalid waiting options synchronous without starting a traversal', async () => {
+		let filtered = 0;
+		const transaction = new DatabaseTransaction();
+		try {
+			const resource = new Product(null, { transaction });
+			for (const sort of [
+				{ waitForIndexMilliseconds: 30_001 },
+				{ waitForIndexMilliseconds: 10_000, maxIndexLagMilliseconds: -1 },
+			])
+				assert.throws(
+					() =>
+						resource.search({
+							sort: { attribute: 'vector', target: vector, ...sort },
+							vectorFilter: () => {
+								filtered++;
+								return true;
+							},
+						}),
+					{ statusCode: 400 }
+				);
+			await transaction.commit();
+			assert.equal(transaction.readTxnsUsed, 0);
+			assert.equal(filtered, 0);
+		} finally {
+			transaction.abort();
+		}
+	});
+	it('return before first next starts no native traversal', async () => {
+		await current();
+		let filtered = 0;
+		const transaction = new DatabaseTransaction();
+		try {
+			const resource = new Product(null, { transaction });
+			const results = resource.search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+				vectorFilter: () => {
+					filtered++;
+					return true;
+				},
+			});
+			await results[Symbol.asyncIterator]().return();
+			await transaction.commit();
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(filtered, 0);
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+		}
+	});
+	it('closing a pending filtered iterator cancels its wait without late reads', async () => {
+		await current();
+		await Product.put('closed-iterator', { vector });
+		const plane = index.getPlane();
+		const transaction = new DatabaseTransaction();
+		let filtered = 0;
+		try {
+			const resource = new Product(null, { transaction });
+			const rows = resource.search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+				vectorFilter: () => {
+					filtered++;
+					return true;
+				},
+			});
+			const iterator = rows[Symbol.asyncIterator]();
+			const pending = iterator.next();
+			pending.catch(() => {});
+			await new Promise((resolve) => setImmediate(resolve));
+			await iterator.return();
+			await Promise.allSettled([pending]);
+			await transaction.commit();
+			assert.equal(filtered, 0);
+			assert.equal(transaction.readTxnsUsed, 0);
+			assert.strictEqual(index.getPlane(), plane);
+		} finally {
+			transaction.abort();
+		}
+	});
+	it('rejects first consumption after its captured snapshot has expired', async () => {
+		await current();
+		setTxnExpiration(20);
+		const transaction = new DatabaseTransaction();
+		try {
+			const rows = new Product(null, { transaction }).search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+			});
+			const snapshot = transaction.transaction;
+			await transaction.commit();
+			await waitFor(() => transaction.transaction !== snapshot);
+			await assert.rejects(Array.fromAsync(rows), { name: 'ReadSnapshotExpiredError' });
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+			setTxnExpiration(30_000);
+		}
+	});
+	it('consumes opted-in searches in legacy value-search consumers', async () => {
+		const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
+		const { searchByValue } = require('#src/dataLayer/search');
+		const options = {
+			database: 'native-query-coverage',
+			table: 'Product',
+			attribute: 'id',
+			value: '*',
+			sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+			limit: 100,
+		};
+		await Product.put('legacy-wait', { vector });
+		assert((await searchByValue({ ...options })).some(({ id }) => id === 'legacy-wait'));
+		await Product.put('legacy-map-wait', { vector });
+		assert(
+			(await new ResourceBridge().getDataByValue({ ...options, schema: options.database })).has('legacy-map-wait')
+		);
+	});
+	it('shares concurrent waits while cancelling only the disconnected caller', async () => {
+		await Product.put('shared-wait', { vector });
+		const controller = new AbortController();
+		const cancelled = search(undefined, 10_000, { transaction: undefined, signal: controller.signal });
+		const pending = Array.from({ length: 20 }, () => search(undefined, 10_000));
+		controller.abort(new Error('one caller left'));
+		await assert.rejects(cancelled, /one caller left/);
+		for (const entries of await Promise.all(pending)) assert(entries.some(({ key }) => key === 'shared-wait'));
+	});
+	it('preserves lag error fidelity after a nested OR prefix', async () => {
+		await current();
+		await Product.put('or-wait', { vector });
+		const results = await Product.search({
+			operator: 'or',
+			enforceExecutionOrder: true,
+			conditions: [
+				{ attribute: 'id', value: 'initial' },
+				{
+					operator: 'and',
+					conditions: [
+						{
+							attribute: 'vector',
+							comparator: 'le',
+							value: 0.1,
+							target: vector,
+							waitForIndexMilliseconds: Number.MIN_VALUE,
+						},
+					],
+				},
+			],
+		});
+		const iterator = results[Symbol.asyncIterator]();
+		assert.equal((await iterator.next()).value.id, 'initial');
+		await assert.rejects(iterator.next(), { code: 'DERIVED_INDEX_LAGGING' });
+		await current();
+	});
+	it('handles an abandoned native wait rejection', async () => {
+		await Product.put('abandoned-wait', { vector });
+		const unhandled = [];
+		const onUnhandled = (error) => unhandled.push(error);
+		process.on('unhandledRejection', onUnhandled);
+		try {
+			search(undefined, Number.MIN_VALUE);
+			new Product(null, { transaction: undefined }).search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: Number.MIN_VALUE },
+			});
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			assert.deepStrictEqual(unhandled, []);
+		} finally {
+			process.off('unhandledRejection', onUnhandled);
+		}
+		await current();
+	});
+	it('keeps aligned sort wait budgets and lets an explicit condition override them', async () => {
+		await Product.put('aligned-wait', { vector });
+		const result = await Product.search({
+			conditions: [{ attribute: 'vector', comparator: 'le', value: 0.1, target: vector }],
+			sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+			limit: 100,
+		});
+		assert((await Array.fromAsync(result)).some(({ id }) => id === 'aligned-wait'));
+		await Product.put('aligned-wait-override', { vector });
+		await assert.rejects(
+			Promise.resolve().then(async () =>
+				Array.fromAsync(
+					await Product.search({
+						conditions: [
+							{
+								attribute: 'vector',
+								comparator: 'le',
+								value: 0.1,
+								target: vector,
+								waitForIndexMilliseconds: Number.MIN_VALUE,
+							},
+						],
+						sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+					})
+				)
+			),
+			{ code: 'DERIVED_INDEX_LAGGING' }
+		);
+		await current();
+	});
+	it('keeps a sort tolerance when a vector condition already supplies the index search', async () => {
+		await current();
+		await Product.put('combined-query', { vector });
+		await assert.rejects(
+			async () => {
+				for await (const _record of Product.search({
+					conditions: [{ attribute: 'vector', comparator: 'le', value: 0.1, target: vector }],
+					sort: { attribute: 'vector', target: vector, maxIndexLagMilliseconds: 0 },
+				})) {
+				}
+			},
+			(error) => {
+				assert.equal(error.code, 'DERIVED_INDEX_LAGGING', error.stack);
+				return true;
+			}
+		);
+		await current();
+	});
+	it('does not lose the physical-position proof when a transaction aborts', async () => {
+		await current();
+		const before = Product.indices.vector.getSync(DERIVED_INDEX_CURSOR_KEY).coverage;
+		const txn = new DatabaseTransaction();
+		try {
+			await Product.put('aborted', { vector }, { transaction: txn });
+		} finally {
+			txn.abort();
+		}
+		const result = await search(0);
+		assert.equal(result.indexCoverage.state, 'current');
+		assert(!result.some(({ key }) => key === 'aborted'));
+		assert.deepStrictEqual(Product.indices.vector.getSync(DERIVED_INDEX_CURSOR_KEY).coverage, before);
+	});
+	it('resolves covered mappings even when the record snapshot predates their publication', async () => {
+		await Product.put('snapshot-covered', { vector });
+		const snapshot = new Transaction(Product.auditStore.rootStore.store);
+		try {
+			assert(Product.primaryStore.getEntry('snapshot-covered', { transaction: snapshot }));
+			await current();
+			const result = await index.search(
+				{ target: vector, comparator: 'sort', ef: 200, maxIndexLagMilliseconds: 0 },
+				{ transaction: { transaction: snapshot } }
+			);
+			assert(
+				result.some(({ key }) => key === 'snapshot-covered'),
+				'covered mapping was hidden by the record snapshot'
+			);
+		} finally {
+			snapshot.abort();
+		}
+	});
+	it('certifies unrelated progress without bypassing pending indexed mutations', async () => {
+		await Product.put('pending', { vector });
+		await Other.put('unrelated', { value: 1 });
+		await assert.rejects(
+			Promise.resolve().then(() => search(0)),
+			{ code: 'DERIVED_INDEX_LAGGING' }
+		);
+		await current();
+		await Other.put('unrelated', { value: 2 });
+		const result = await current();
+		assert(result.some(({ key }) => key === 'pending'));
+	});
+	it('retains a current proof when its shared capture time is unavailable', async () => {
+		await current();
+		const buffer = Product.auditStore.getUserSharedBuffer(
+			`derived-index:hnsw:${Product.indices.vector.name}:readiness`,
+			new ArrayBuffer(READINESS_BYTES)
+		);
+		const ageWord = new BigInt64Array(buffer, READINESS_BYTES - 8, 1);
+		Atomics.store(ageWord, 0, 0n);
+		assert.equal((await search(0)).indexCoverage.state, 'current');
+		await Product.put('after-proof', { vector });
+		await assert.rejects(
+			Promise.resolve().then(() => search(60_000)),
+			{ code: 'DERIVED_INDEX_LAGGING' }
+		);
+		await current();
+	});
+	it('refreshes owned idle coverage, fences old owners, and certifies without a registered reader', async () => {
+		await current();
+		const oldEpoch = index.derivedHost.readiness().ownerEpoch;
+		await Product.derivedIndexRuntime.close();
+		Product.derivedIndexRuntime = undefined;
+		const id = `hnsw:${Product.indices.vector.name}`;
+		const backend = new HnswDerivedIndexBackend(id, index);
+		const runtime = new DerivedIndexRuntime(
+			Product.auditStore,
+			(_tableId, recordId) => {
+				const entry = Product.primaryStore.getEntry(recordId);
+				return entry && { version: entry.version, value: entry.value };
+			},
+			{ maxFlushAgeMilliseconds: 100, idleGraceMilliseconds: 1000 }
+		);
+		runtime.register({ backend, projections: new Map([[Product.tableId, (record) => record.vector]]) });
+		try {
+			await waitFor(() => runtime.getReadiness(id).ownerEpoch > oldEpoch);
+			await current();
+			const buffer = Product.auditStore.getUserSharedBuffer(
+				`derived-index:${id}:readiness`,
+				new ArrayBuffer(READINESS_BYTES)
+			);
+			const time = new BigInt64Array(buffer, READINESS_BYTES - 8, 1);
+			const captured = Atomics.load(time, 0);
+			await waitFor(() => Atomics.load(time, 0) > captured);
+			const cursor = Product.indices.vector.getSync(DERIVED_INDEX_CURSOR_KEY);
+			backend.publishCoverage({ local: { sequence: 99, offset: 99 } }, oldEpoch);
+			assert.deepStrictEqual(Product.indices.vector.getSync(DERIVED_INDEX_CURSOR_KEY), cursor);
+			await runtime.stop();
+			Atomics.store(time, 0, 0n);
+			const reader = new RocksTransactionLogStore(Product.auditStore.rootStore);
+			assert.equal(
+				readDerivedIndexCoverage(reader, id, () => Product.indices.vector.getSync(DERIVED_INDEX_CURSOR_KEY), 0).state,
+				'current'
+			);
+			assert.equal((await search(0)).indexCoverage.state, 'current');
+		} finally {
+			await runtime.stop();
+		}
+	});
+	it('refreshes a completed nonempty drain while new unrelated commits keep arriving', async () => {
+		await Product.derivedIndexRuntime?.close();
+		const id = `hnsw:${Product.indices.vector.name}`;
+		const root = Product.auditStore.rootStore;
+		const log = root.useLog('continuous-coverage');
+		let producing = false;
+		let delivered = 0;
+		const commit = () =>
+			root.transactionSync((txn) => {
+				ENTRY_DATAVIEW.setUint32(0, 0);
+				log.addEntry(
+					Buffer.from(
+						createAuditEntry(
+							{
+								type: 'delete',
+								tableId: Other.tableId,
+								recordId: 'continuous',
+								nodeId: 0,
+								version: txn.getTimestamp(),
+							},
+							4
+						)
+					),
+					txn.id
+				);
+			});
+		// Real backend and real committed audit entries: each accepted batch causes another writer
+		// commit before the next drain, so there is no intervening empty iterator pass.
+		class ProducingBackend extends HnswDerivedIndexBackend {
+			deliver(batch) {
+				const result = super.deliver(batch);
+				if (producing) {
+					delivered++;
+					commit();
+				}
+				return result;
+			}
+		}
+		const runtime = new DerivedIndexRuntime(Product.auditStore, (_tableId, recordId) => {
+			const entry = Product.primaryStore.getEntry(recordId);
+			return entry && { version: entry.version, value: entry.value };
+		});
+		try {
+			runtime.register({
+				backend: new ProducingBackend(id, index),
+				projections: new Map([[Product.tableId, (record) => record.vector]]),
+			});
+			await waitFor(
+				() => runtime.getStatus(id).state === 'idle' && runtime.getStatus(id).ownerEpoch !== undefined,
+				10_000
+			);
+			producing = true;
+			commit();
+			await runtime.waitForCoverage(id, derivedIndexTime(Product.auditStore.rootStore), 500);
+			assert(delivered > 0);
+		} finally {
+			producing = false;
+			await runtime.waitForCoverage(id, derivedIndexTime(Product.auditStore.rootStore), 10_000);
+			await runtime.stop();
+		}
+	});
+	it('does not refresh coverage for unrelated writes while an earlier mutation awaits its barrier', async () => {
+		await Product.derivedIndexRuntime?.close();
+		const id = `hnsw:${Product.indices.vector.name}`;
+		const backend = new HnswDerivedIndexBackend(id, index);
+		const runtime = new DerivedIndexRuntime(
+			Product.auditStore,
+			(_tableId, recordId) => {
+				const entry = Product.primaryStore.getEntry(recordId);
+				return entry && { version: entry.version, value: entry.value };
+			},
+			{ maxFlushAgeMilliseconds: 6000 }
+		);
+		try {
+			runtime.register({ backend, projections: new Map([[Product.tableId, (record) => record.vector]]) });
+			await waitFor(() => runtime.getStatus(id).ownerEpoch !== undefined);
+			await runtime.waitForCoverage(id, derivedIndexTime(Product.auditStore.rootStore), 10_000);
+			const buffer = Product.auditStore.getUserSharedBuffer(
+				`derived-index:${id}:readiness`,
+				new ArrayBuffer(READINESS_BYTES)
+			);
+			const time = new BigInt64Array(buffer, READINESS_BYTES - 8, 1);
+			const before = Atomics.load(time, 0);
+			assert(before > 0n);
+			const cursor = Product.indices.vector.getSync(DERIVED_INDEX_CURSOR_KEY);
+			await Product.put('barrier-pending', { vector });
+			await waitFor(() => runtime.getMetrics(id).acceptedMutations === 1);
+			await Other.put('after-pending', { value: 1 });
+			await waitFor(() => runtime.getMetrics(id).acceptedBatches >= 2);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(Atomics.load(time, 0), before);
+			assert.deepStrictEqual(Product.indices.vector.getSync(DERIVED_INDEX_CURSOR_KEY), cursor);
+			await waitFor(() => index.derivedHost.coverage(3000).state === 'unknown', 5000);
+			await assert.rejects(
+				Promise.resolve().then(() => search()),
+				{ code: 'DERIVED_INDEX_LAGGING' }
+			);
+			backend.flush('age');
+			const results = await current();
+			assert(results.some(({ key }) => key === 'barrier-pending'));
+		} finally {
+			await runtime.stop();
+		}
+	});
+	it('discovers a physical log committed before the worker-local map is updated', async () => {
+		const auditStore = Product.auditStore;
+		const root = auditStore.rootStore;
+		const peer = root.useLog('coverage-peer');
+		root.transactionSync((txn) => {
+			Product.primaryStore.removeSync('new', { transaction: txn });
+			ENTRY_DATAVIEW.setUint32(0, 0);
+			peer.addEntry(
+				Buffer.from(
+					createAuditEntry(
+						{
+							type: 'delete',
+							tableId: Product.tableId,
+							recordId: 'new',
+							nodeId: 0,
+							version: txn.getTimestamp(),
+						},
+						4
+					)
+				),
+				txn.id
+			);
+		});
+		assert(!auditStore.logByName.has('coverage-peer'));
+		const id = `hnsw:${Product.indices.vector.name}`;
+		const runtime = new DerivedIndexRuntime(
+			auditStore,
+			(_tableId, recordId) => {
+				const entry = Product.primaryStore.getEntry(recordId);
+				return entry && { version: entry.version, value: entry.value };
+			},
+			{ maxFlushAgeMilliseconds: 50 }
+		);
+		try {
+			runtime.register({
+				backend: new HnswDerivedIndexBackend(id, index),
+				projections: new Map([[Product.tableId, (record) => record.vector]]),
+			});
+			const results = await current();
+			assert(auditStore.logByName.has('coverage-peer'));
+			assert(!results.some(({ key }) => key === 'new'));
+			assert(Product.indices.vector.getSync(DERIVED_INDEX_CURSOR_KEY).coverage['coverage-peer']);
+		} finally {
+			await runtime.stop();
+		}
+	});
+	it('compares sequence as well as offset across real log rotation', async () => {
+		const db = RocksDatabase.open(`${Product.auditStore.rootStore.path}-rotation`, { transactionLogMaxSize: 128 });
+		try {
+			const log = db.useLog('local');
+			const store = new RocksTransactionLogStore(db);
+			const buffer = store.getUserSharedBuffer('derived-index:rotation:readiness', new ArrayBuffer(READINESS_BYTES));
+			Atomics.store(new Int32Array(buffer), 0, 1);
+			const commit = () => db.transactionSync((txn) => log.addEntry(Buffer.alloc(256), txn.id));
+			commit();
+			const first = log.getStats().lastCommittedPosition;
+			db.putSync('cursor', { format: 1, logs: { local: 1 }, coverage: { local: first } });
+			const read = () => readDerivedIndexCoverage(store, 'rotation', () => db.getSync('cursor'), 0);
+			assert.equal(read().state, 'current');
+			commit();
+			const next = log.getStats().lastCommittedPosition;
+			assert(next.sequence > first.sequence);
+			assert.equal(next.offset, first.offset);
+			assert.equal(read().state, 'unknown');
+		} finally {
+			await db.close();
+		}
+	});
+
+	it('closing a database rejects its waiters without removing the native file', async () => {
+		const Closing = table({
+			database: 'closing-coverage-wait',
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'vector', type: 'Array', indexed: { type: 'HNSW', nativePlane: true } },
+			],
+		});
+		const closingIndex = Closing.indices.vector.customIndex;
+		const query = (options) =>
+			closingIndex.search({ target: vector, comparator: 'sort', ...options }, { transaction: undefined });
+		try {
+			await Closing.put('first', { vector });
+			await waitFor(async () => {
+				try {
+					return await query({ maxIndexLagMilliseconds: 0 });
+				} catch (error) {
+					if (error.statusCode === 503) return false;
+					throw error;
+				}
+			}, 15_000);
+			const path = closingIndex.planeFilePath();
+			assert(existsSync(path));
+			await Closing.put('pending', { vector });
+			const pending = query({ waitForIndexMilliseconds: 10_000 });
+			const rejected = assert.rejects(pending, (error) => error.statusCode === 503);
+			await closeDatabase('closing-coverage-wait');
+			await rejected;
+			assert(existsSync(path));
+		} finally {
+			await closeDatabase('closing-coverage-wait');
+		}
+	});
+
+	it('fails coverage reads closed without detaching a healthy native plane', async () => {
+		const plane = index.getPlane();
+		const buffer = Product.auditStore.getUserSharedBuffer(
+			`derived-index:hnsw:${Product.indices.vector.name}:readiness`,
+			new ArrayBuffer(READINESS_BYTES)
+		);
+		Atomics.store(new BigInt64Array(buffer, READINESS_BYTES - 8, 1), 0, 0n);
+		await Product.auditStore.rootStore.close();
+		await assert.rejects(
+			Promise.resolve().then(() => search(0)),
+			{ code: 'DERIVED_INDEX_LAGGING' }
+		);
+		assert.strictEqual(index.getPlane(), plane);
+	});
+});

@@ -2723,6 +2723,127 @@ then publish `unavailable` and release; the attempt count travels in shared memo
 honours an exhausted budget. `requestRebuild()` from any worker sets a request word the owner
 consumes at its next wake.
 
+### Native HNSW query coverage
+
+Generation readiness and read freshness are separate. A `ready` native index can still be applying
+committed mutations. Native vector sort/threshold conditions accept `maxIndexLagMilliseconds`:
+**3000 ms by default**, `0` for strict coverage, or an explicit finite nonnegative number. This default
+allows three ordinary 1000 ms flush ages; it does not change the separate writer backpressure budget.
+Synchronous/non-native indexes ignore the native coverage options. For example, an HTTP QUERY body can contain:
+
+```json
+{
+	"sort": {
+		"attribute": "vector",
+		"target": [1, 0, 0, 0],
+		"distance": "cosine",
+		"maxIndexLagMilliseconds": 0
+	},
+	"limit": 10
+}
+```
+
+For read-after-write, add `waitForIndexMilliseconds: 10000` to that sort (or vector condition).
+Omitted or `0` preserves immediate admission; a positive finite number, capped at **30,000 ms**,
+opts into a bounded wait for coverage of writes committed before the native search begins on first iteration.
+The wait takes precedence over lag tolerance: a recent but stale proof cannot satisfy it. An already
+physically current index proceeds immediately. Otherwise the query captures one monotonic target and
+waits for the owner's certified time to reach it; later writes never reset the target. Each consumed
+waiting branch has its own budget; sequential OR or concatenated branches can take longer in total.
+A timeout throws retryable `DERIVED_INDEX_LAGGING`. On an already-started HTTP stream this is an error
+record, not a new HTTP status. Request cancellation and iterator closure also end pending waits.
+
+Waiting preserves the normal 1000 ms flush-age schedule: a small write followed by a search commonly
+waits about a second plus barrier time. Shorter deadlines are valid but may expire. Replay must reach
+an end-of-log pass with readable committed prefixes to publish a new capture; sustained overload or
+unfinished transactions can prevent certification and cause timeouts even for unaffected tables.
+The wait does not promise exact ANN recall, a historical graph snapshot, or visibility of writes that
+have not committed locally.
+
+When a vector condition also provides the sort order, each explicit coverage option takes precedence;
+missing options inherit the sort's values. The query planner preserves both when combining them.
+
+An ordinary non-waiting native query certifies coverage **at admission**. `Harper-Index-Coverage` is
+`current; lag=0; tolerance=<requested-ms>` or `bounded; lag=<upper-bound-ms>; tolerance=<requested-ms>`.
+Bounded coverage can omit recent committed mutations; it is not a claim of known incompleteness or an
+ANN recall guarantee. The header is exposed to CORS clients and does not certify a later traversal.
+Multiple non-waiting searches append one entry each.
+
+Waiting queries retain the synchronous instance iterable API: custom resources can directly use
+`super.search(query).map(...)` or concatenate results. Validation and unavailable/rebuilding checks
+remain synchronous; the adapter opens a start gate only on consumption, so unused searches start no
+wait or traversal. A zero-size page skips native work. The iterable library can pull one extra source
+row at a page boundary; an exact boundary between branches can therefore start the next branch.
+
+Waiting queries publish no HTTP coverage header: a header sent before consumption cannot certify the
+pending work. The caller must consume results and check streamed errors. JSON array streams may include
+an error element such as `{ "error": "DerivedIndexLagError: ..." }`; error serialization may instead
+provide a separate `message` field. SSE/NDJSON use their existing terminal error records. HTTP 200 alone
+is not evidence of successful completion. Prefix rows can precede a later branch error. Count pages
+materialize before headers and can still return an error status. First-item HTTP status deferral is a
+separate follow-up (#2670), not a guarantee here. Direct custom-index arrays retain `indexCoverage`;
+ordinary native promises expose it before awaiting, while waiting promises expose it on resolved arrays
+except for the zero-size fast path, which skips certification and carries no proof.
+
+Waiting consumes the ordinary transaction timeout without special monitor renewal. An expired read
+snapshot fails with `ReadSnapshotExpiredError`; timed-out staged writes retain their existing 422
+failure and rollback. The adapter uses the captured snapshot for materialization and guards predicate
+reads, so it never recreates a snapshot after waiting. Dropping an unconsumed iterable starts no work;
+once consuming, close its iterator or abort the request to cancel. Lag rejection never invalidates a
+healthy plane. The default/strict no-wait lag rejection remains HTTP 503.
+File-primary node-to-record mappings are read from current storage, just like the native graph itself:
+an older record snapshot must not hide mappings published after a record already visible in that snapshot.
+Record filtering and materialization retain the request's snapshot; the native graph is not an MVCC index.
+
+The runner captures the RocksDB process-wide transaction clock (`getMonotonicTimestamp()`) before listing
+physical logs and polling their committed
+prefixes. It synchronously adds discovered logs to the audit store's worker-local map. A capture is
+usable only when each stats snapshot's committed position equals its written head: an earlier unfinished
+transaction can hide later committed transactions behind the readable prefix. The native statistics
+counter alone is insufficient here (it can remain nonzero at an equal head). Positions include both file
+sequence and byte offset; cursor timestamps and origin clocks are never ordered or subtracted to prove
+freshness.
+
+After a poll reaches the end with no undelivered records, the capture is associated with its offered
+cursor. Reconciliation publishes it only when that cursor, or a later entry in the ordered offered queue,
+is durable. Unrelated-only progress may publish without a new barrier only if **all** non-durable
+registered mutations, including unanchored chunks, are absent. Thus a queued relevant mutation cannot
+be skipped by a later unrelated commit. Publication is owner/epoch fenced. The physical vector is an
+optional `coverage` field in the existing durable cursor value, preserved by later cursor writes and
+removed with the cursor before reset. No native file format changes.
+
+Persisted coverage rewrites are limited to the flush cadence, including unrelated-table traffic. The
+shared time can refresh sooner once its prefix is durable. A coverage-only write failure logs and skips
+publication instead of rebuilding the healthy graph. Strict queries may wait for the next persisted proof.
+
+Restart identity relies on the existing storage durability ordering: these index column families disable
+WAL, and [RocksDB's database-flush callback](https://github.com/HarperFast/rocksdb-js/blob/v2.9.1/src/binding/transaction_log/transaction_log_store.cpp#L1080-L1111)
+flushes transaction-log files before their index-store flush can become durable. Under successful storage
+flushes, surviving coverage cannot refer to a lost, reusable log tail. Recovery also protects the flushed
+prefix. [Age-based rotation runs on a write](https://github.com/HarperFast/rocksdb-js/blob/v2.9.1/src/binding/transaction_log/transaction_log_store.cpp#L947-L963),
+so an ordinary idle log does not advance its head merely because time passed. These are dependency
+contracts, not a guarantee against externally replacing log files or failed storage durability.
+
+Bun gives each worker a different `process.hrtime.bigint()` origin, so it cannot certify cross-worker
+coverage. The transaction clock is shared across workers; its milliseconds are encoded as integer
+nanoseconds without multiplying the full epoch-sized floating-point value.
+
+The monotonic time lives only in the process-wide shared readiness buffer and is cleared on non-ready
+health transitions. An owner refreshes idle coverage at its flush cadence without extending its idle
+release deadline. A query within the certified age bound reads only shared memory and the monotonic
+clock; strict or older queries compare the persisted vector with current physical positions. This also
+certifies an unchanged index after owner release or process restart, when no usable time proof remains.
+Concurrent waiters on one worker/index share a single 25 ms poll timer, removed when all resolve,
+time out, or abort. A first waiter nudges its local runner without changing writer-lag accounting or
+retrying a deferred batch; an active peer owner already refreshes at flush cadence. No cross-worker
+notification or per-query persisted coverage write is needed. Closing a registration rejects its waiters.
+A completed nonempty drain also attaches its capture to the accepted boundary; ongoing writes need
+not leave an empty turn between batches. The capture remains fenced behind every indexed mutation
+accepted through that boundary.
+The strict/ownerless path costs a cursor read and stats per physical log. If a database-wide backlog
+prevents the owner from inspecting unrelated writes, coverage can conservatively become unprovable
+for an otherwise unaffected index; queries do not scan logs to classify that backlog.
+
 ### Handoff fencing
 
 Release drops ownership, calls `flush('shutdown')` then `shutdown(epoch)`, and unlocks only when

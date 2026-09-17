@@ -82,7 +82,7 @@ function main(mode, formatMode) {
 			? `_${r.exempt}_`
 			: r.compliant
 				? ''
-				: `Per team policy, a substantive PR is queued for human review only after ${required} cross-model reviews are run and reported in the description (\`## Review coverage\` naming each model — see harper-engineering-guidelines). The dispatch review gate enforces this when the fleet's review finds issues; this check just makes the reporting visible early.`,
+				: `Per team policy, a substantive AI-authored PR reports ${required} outside-model review families in its \`Review-Coverage:\` footer. Materialize it with the cross-model-review skill's \`pr-body-review-need.mjs --write\` (harper-engineering-guidelines, pr-conventions): it unions every review round the branch had, so the head commit does not need a receipt of its own — do not re-review just to produce the footer.`,
 	].filter(Boolean);
 	if (formatMode !== 'off') {
 		lines.push(

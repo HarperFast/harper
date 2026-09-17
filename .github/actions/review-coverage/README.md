@@ -8,7 +8,7 @@ An **AI-authored** PR from a non-bot organization member changing more than two 
 
 Coverage is read from the machine-derived `Review-Coverage:` footer that `pr-body-review-need.mjs` materializes from the review receipt; only its `ran=` segment counts, and the authoring family and the Harper adjudicator are excluded. **Only the footer is enforceable**, and the _last_ one in the body wins, so a quoted earlier round cannot score the PR. A prose `## Review coverage` section is still counted and shown in the report, but it is written from memory rather than derived from a receipt, so it does not satisfy `mode: enforce`; the check says so and names the helper that fixes it. Fenced code blocks are blanked before either read, so a PR documenting this convention cannot count its own example.
 
-The footer's `@ <sha>` pin is reported but never enforced — the question is whether two outside models looked at the change, not whether the footer was re-materialized after the last amend.
+The footer's `@ <sha>` pin is reported but never enforced — the question is whether two outside models looked at the change, not whether the footer was re-materialized after the last amend. Coverage is cumulative over the branch: the helper that writes the footer unions every review round, so a head commit with no review receipt of its own still reports the branch's coverage. The failure text says so, because an author who withholds the footer until the head has been re-reviewed spends a review round to produce a line the helper would have written from existing receipts.
 
 `Complexity: easy` waives one leg (not "all but one" — a consumer asking for 3 still gets 2) when the diff corroborates the claim: at most `easy_max_lines` (150) changed lines, at most `easy_max_files` (10) changed files, and at least one outside review still reported. Both caps fail closed when the measurement is missing, and the check names which cap bound. Setting either input to `0` disables the waiver. The waiver is corroborated by size only; the pre-push gate additionally refuses it when the diff touches a risk surface. An `easy` grade on a larger diff is refused and named in the check output, which keeps the field's "may only raise the diff-derived grade" invariant intact.
 
@@ -22,7 +22,7 @@ For a non-bot Harper organization member changing more than two lines, the descr
 - exactly one `## Verification` section with executed evidence or a not-observable rationale; and
 - at least one line-anchored link into the current PR diff. Every PR-diff link in the body must point to this repository and PR and resolve inside a current diff hunk.
 
-If any AI field is present, the body must also have one `## For the human reviewer` section before Verification, one valid `Complexity: easy|medium|complicated` field, and one `<sub>Review-Coverage: … @ <sha></sub>` and `<sub>Human-Review-Need: 0-4 @ <sha></sub>` footer pinned to the current head.
+If any AI field is present, the body must also have one `## For the human reviewer` section before Verification, one valid `Complexity: easy|medium|complicated` field, one `<sub>Review-Coverage: … @ <sha></sub>` footer pinned to the current head, and one `<sub>Human-Review-Need: 0-4 [(decisions: …)] @ <sha></sub>` footer. The review-need pin names the commit its grade describes and may lag the head: the footer helper carries the branch's latest graded round forward across an amend it did not re-grade.
 
 Drafts are reported but do not fail enforcement. Repair a link by copying a line link from the PR's Files changed page.
 
