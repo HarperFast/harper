@@ -195,16 +195,18 @@ describe('@fullText derived-index activation', () => {
 		assert(binding.opens.some((options) => options.indexId === fullTextDerivedIndexId(Product, 'search')));
 	});
 
-	it('does not let a retried drop bypass a failed derived-index shutdown', async () => {
+	it('retries failed shutdown before a same-definition activation can replace it', async () => {
+		const database = `fulltext-drop-shutdown-${Date.now()}`;
+		const attributes = () => [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+			{ name: 'search', type: 'FullText', fullText: definition('title') },
+		];
 		Product = table({
-			database: `fulltext-drop-shutdown-${Date.now()}`,
+			database,
 			table: 'Product',
 			audit: true,
-			attributes: [
-				{ name: 'id', type: 'ID', isPrimaryKey: true },
-				{ name: 'title', type: 'String' },
-				{ name: 'search', type: 'FullText', fullText: definition('title') },
-			],
+			attributes: attributes(),
 		});
 		await Product.put('shoe-1', { title: 'Trail shoe' });
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
@@ -214,9 +216,10 @@ describe('@fullText derived-index activation', () => {
 		await assert.rejects(Product.dropTable(), /shutdown failed|did not prove quiescence/);
 		assert.strictEqual(Product.derivedIndexRuntime, failedRuntime);
 		binding.closeError = undefined;
-		await Product.dropTable();
-		assert.strictEqual(Product.derivedIndexRuntime, undefined);
-		assert(binding.closeAttempts > 1, 'the retry must re-prove native quiescence before dropping');
+		Product = table({ database, table: 'Product', audit: true, attributes: attributes() });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		assert.notStrictEqual(Product.derivedIndexRuntime, failedRuntime);
+		assert(binding.closeAttempts > 1, 'replacement activation must re-prove predecessor quiescence');
 	});
 
 	it('rotates the native generation when a full-text declaration is removed and re-added', async () => {
@@ -415,6 +418,10 @@ describe('@fullText derived-index activation', () => {
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		assert(hasEvictionMarker, 'full-text tables must record evictions while native setup is pending');
 		const indexId = fullTextDerivedIndexId(Product, 'search');
-		assert.strictEqual(binding.opens.filter((options) => options.indexId === indexId).length, 0);
+		const storePath = Product.primaryStore.rootStore.path;
+		assert.strictEqual(
+			binding.opens.filter((options) => options.indexId === indexId && path.dirname(options.path) === storePath).length,
+			0
+		);
 	});
 });

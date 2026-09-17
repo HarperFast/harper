@@ -649,6 +649,9 @@ class DerivedIndexRunner {
 		this.#release();
 		this.#stopResult = (this.#releasing ?? Promise.resolve()).then(() => {
 			if (this.#releaseFailure) throw this.#releaseFailure;
+			const readiness = this.getReadiness();
+			if (readiness.state === 'unavailable' && readiness.reason === 'shutdown-failed')
+				this.#publishReadiness('unknown');
 			this.#unregisterTables();
 		});
 		this.#stopResult.catch(() => {});
