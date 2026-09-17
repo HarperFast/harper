@@ -16,7 +16,9 @@ export interface ResourceInterface<Record extends object = any>
 		| Promise<Record & Partial<RecordObject>>
 		| AsyncIterable<Record & Partial<RecordObject>>
 		| Promise<AsyncIterable<Record & Partial<RecordObject>>>;
-	search?(target: RequestTarget): AsyncIterable<Record & Partial<RecordObject>>;
+	search?(
+		target: RequestTarget
+	): AsyncIterable<Record & Partial<RecordObject>> | Promise<AsyncIterable<Record & Partial<RecordObject>>>;
 
 	allowCreate(user: User, record: Promise<Record & RecordObject>, context: Context): boolean | Promise<boolean>;
 	create?(

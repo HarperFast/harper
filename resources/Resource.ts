@@ -30,7 +30,6 @@ import { markStaticResourceInstance } from './staticResourceDispatch.ts';
 
 const AUTHORIZATION_SELECT = Symbol.for('harper.authorizationSelect');
 export const SEARCH_AUTHORIZATION = Symbol.for('harper.searchAuthorization');
-export const SEARCH_ADMISSION = Symbol.for('harper.searchAdmission');
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -575,7 +574,9 @@ export class Resource<Record extends object = any> implements ResourceInterface<
 		| AsyncIterable<Record & Partial<RecordObject>>
 		| Promise<AsyncIterable<Record & Partial<RecordObject>>>;
 
-	search?(target: RequestTargetOrId): AsyncIterable<Record & Partial<RecordObject>>;
+	search?(
+		target: RequestTargetOrId
+	): AsyncIterable<Record & Partial<RecordObject>> | Promise<AsyncIterable<Record & Partial<RecordObject>>>;
 
 	create?(
 		target: RequestTargetOrId,
@@ -984,11 +985,6 @@ function transactional(
 	}
 }
 
-function admitSearchResult(result: any) {
-	const admission = result?.[SEARCH_ADMISSION];
-	return admission ? when(admission, () => result) : result;
-}
-
 function authorizeSearchResult(result: any, user: any) {
 	const authorization = result?.[SEARCH_AUTHORIZATION];
 	return authorization
@@ -996,11 +992,10 @@ function authorizeSearchResult(result: any, user: any) {
 				if (state && typeof state === 'object') {
 					if (state.error) throw state.error;
 					if (!state.allowed) throw new AccessViolation(user);
-					return when(authorizeSearchResult(state.results, user), () => admitSearchResult(result));
 				} else if (!state) throw new AccessViolation(user);
-				return admitSearchResult(result);
+				return result;
 			})
-		: admitSearchResult(result);
+		: result;
 }
 
 function cloneRequestTarget(source: any): RequestTarget {

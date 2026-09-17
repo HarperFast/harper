@@ -2683,10 +2683,11 @@ exposed to CORS clients. Record arrays retain their existing shape. Direct custo
 read the same `indexCoverage` property on the result array and, for asynchronous searches, on the
 returned promise before awaiting it for ordinary searches. Waiting searches expose coverage on the
 resolved array. Their internal admission promise covers the native traversal and mapping reads;
-Table propagates a separate `SEARCH_ADMISSION` gate through supported iterable transforms, alongside
-async authorization. Static Resource search/query awaits both before returning the streaming response,
-so timeout/native-result errors precede HTTP headers. The adapter then publishes coverage before
-admission completes. Ordinary searches still set their header synchronously from the native promise.
+an opted-in instance `Table.search` returns `Promise<ExtendedIterable>`. Custom resources must await
+that promise before applying `.map()`, `.concat()` or other iterable transforms. Ordinary instance
+searches retain their synchronous iterable result. Static Resource search/query already awaits promise
+results, so wait/native-result errors precede HTTP headers. The adapter publishes coverage before the
+promise resolves. Ordinary searches still set their header synchronously from the native promise.
 An unknown or excessive bound produces `DERIVED_INDEX_LAGGING` / HTTP 503, with the tolerance and
 last certified age (when known) in the message. These admission failures never invalidate a healthy
 plane; existing unavailable/rebuilding checks still take precedence.

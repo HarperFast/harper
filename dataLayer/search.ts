@@ -24,7 +24,7 @@ export async function searchByValue(searchObject: any) {
 		searchObject.reverse = searchObject.desc;
 	}
 	const array = [];
-	for await (let record of harperBridge.searchByValue(searchObject)) {
+	for await (let record of await harperBridge.searchByValue(searchObject)) {
 		array.push(record);
 	}
 	return array;

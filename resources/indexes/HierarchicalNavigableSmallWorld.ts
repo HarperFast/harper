@@ -1785,31 +1785,30 @@ export class HierarchicalNavigableSmallWorld {
 		};
 		if (started !== undefined) {
 			context.signal?.throwIfAborted();
-			const current = this.derivedHost?.coverage(0);
 			const host = this.derivedHost;
-			if (!host || host.readiness().state !== 'ready') return searchNative();
-			let searched;
-			let cancelAdmission: (reason: unknown) => void;
-			if (current?.state === 'current') {
-				searched = searchNative({ ...current, maxLagMilliseconds: maxIndexLagMilliseconds });
-			} else {
-				const controller = new AbortController();
-				const signal = context.signal ? AbortSignal.any([context.signal, controller.signal]) : controller.signal;
-				cancelAdmission = (reason) => controller.abort(reason);
-				searched = host.waitForCoverage(started, waitForIndexMilliseconds, signal).then(() => {
-					signal.throwIfAborted();
-					return searchNative({
-						state: 'current',
-						maxLagMilliseconds: maxIndexLagMilliseconds,
-						lagUpperBoundMilliseconds: 0,
-					});
+			const state = host?.readiness().state;
+			if (state !== 'ready') {
+				throw new ServerError(
+					`The native HNSW index is ${state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
+					503
+				);
+			}
+			const current = host.coverage(0);
+			const controller = new AbortController();
+			const signal = context.signal ? AbortSignal.any([context.signal, controller.signal]) : controller.signal;
+			const searched = Promise.resolve().then(async () => {
+				signal.throwIfAborted();
+				if (current?.state !== 'current') await host.waitForCoverage(started, waitForIndexMilliseconds, signal);
+				signal.throwIfAborted();
+				return searchNative({
+					state: 'current',
+					maxLagMilliseconds: maxIndexLagMilliseconds,
+					lagUpperBoundMilliseconds: 0,
 				});
-			}
-			if (searched instanceof Promise) {
-				Object.defineProperty(searched, 'indexAdmission', { value: searched });
-				if (cancelAdmission) Object.defineProperty(searched, 'cancelAdmission', { value: cancelAdmission });
-				searched.catch(() => {});
-			}
+			});
+			Object.defineProperty(searched, 'indexAdmission', { value: searched });
+			Object.defineProperty(searched, 'cancelAdmission', { value: (reason: unknown) => controller.abort(reason) });
+			searched.catch(() => {});
 			return searched;
 		}
 		const native = searchNative();

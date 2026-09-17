@@ -494,7 +494,7 @@ export class ResourceBridge extends BridgeMethods {
 		if (attrs && !attrs.includes(table.primaryKey) && attrs[0] !== '*')
 			// ensure that we get the primary key so we can make a mapping
 			attrs.push(table.primaryKey);
-		for await (const record of this.searchByValue(searchObject, comparator)) {
+		for await (const record of await this.searchByValue(searchObject, comparator)) {
 			map.set(record[table.primaryKey], record);
 		}
 		return map;

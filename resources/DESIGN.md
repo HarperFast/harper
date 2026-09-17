@@ -153,13 +153,9 @@ Consequences worth knowing:
 
 **Async false-mode read gates preserve the streaming contract.** `Table.search` returns an `ExtendedIterable` carrying the internal `SEARCH_AUTHORIZATION` promise. Static `Resource.search` and `query` await that verdict before returning a response; on success the wrapper initializes the real search before the transaction settles so its normal read snapshot stays reserved until iteration completes. The marker follows supported iterable transforms and retains `selectApplied`/`getColumns`, so async or mapped delegation cannot turn a denial into a truncated successful response.
 
-**Native query waits finish before streaming.** Opted-in HNSW waits use a distinct `SEARCH_ADMISSION` promise on Table results. Static Resource search/query awaits it after authorization, including a search created by an asynchronous authorization verdict. Supported iterable transforms preserve both markers; admission failure releases the search’s reserved read reference. The gate includes native result processing and coverage headers, and materialized count queries await it even for an empty page.
+**Native query waits finish before streaming.** A positive native `waitForIndexMilliseconds` makes instance `Table.search` return `Promise<ExtendedIterable>`; ordinary instance searches retain their synchronous iterable result. Custom resources must await the search before applying iterable transforms. Static Resource search/query already awaits promise results, including searches initialized by asynchronous authorization. The promise covers native traversal, result processing and coverage headers; count queries wait even for an empty page.
 
-Admission aggregation cancels sibling waits on the first error and waits for every native admission
-to settle before releasing the request snapshot. The ExtendedIterable concat adapter carries admission
-from either operand, including an ordinary mapped prefix, and closes both operands when admission
-fails. It adds only gate lookups to an ungated concat; ordinary Table queries do not receive additional
-transform closures.
+Native work starts in a continuation, with cancellation armed during synchronous setup. A setup failure cancels every deferred admission before it can start and releases the reserved snapshot. After setup, aggregation cancels sibling waits on the first error and settles all started work before releasing the read reference. No admission symbols or shared iterable prototype changes are needed.
 
 **False-mode collection write gates stay per dispatch.** Built-in array PUT, query DELETE, and publish perform one request-scoped `allowUpdate`, `allowDelete`, or `allowCreate` verdict respectively. After query DELETE authorizes, it scans with a private cloned target whose permission check is disabled; the caller target stays untouched, and concurrent reads using it still run `allowRead`. Static publish overload routing marks the fresh per-dispatch resource receiver in `staticResourceDispatch.ts`, so copied targets and delayed delegation retain the `(target, message)` signature without putting reusable state on caller objects.
 

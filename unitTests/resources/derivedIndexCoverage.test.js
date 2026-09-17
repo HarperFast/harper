@@ -224,9 +224,9 @@ describe('native derived-index query coverage', function () {
 			async allowRead() {
 				return true;
 			}
-			search(target) {
-				const results = super.search(target);
-				return results instanceof Promise ? results : results.map((record) => record);
+			async search(target) {
+				const results = await super.search(target);
+				return results.map((record) => record);
 			}
 		}
 		for (const count of [undefined, 'exact']) {
@@ -259,10 +259,11 @@ describe('native derived-index query coverage', function () {
 		for (const mapped of [false, true]) {
 			class Concatenated extends Product {
 				static loadAsInstance = false;
-				search(target) {
+				async search(target) {
+					const results = await super.search(target);
 					let prefix = super.search({ limit: 1 });
 					if (mapped) prefix = prefix.map((record) => record);
-					return prefix.concat(super.search(target));
+					return prefix.concat(results);
 				}
 			}
 			await current();
@@ -326,6 +327,109 @@ describe('native derived-index query coverage', function () {
 			transaction.abort();
 		}
 	});
+	it('cancels deferred admissions on synchronous OR and AND setup errors', async () => {
+		for (const operator of ['or', 'and']) {
+			await current();
+			await Product.put('setup-failed-' + operator, { vector });
+			const transaction = new DatabaseTransaction();
+			const responseHeaders = new Headers();
+			const unhandled = [];
+			const onUnhandled = (error) => unhandled.push(error);
+			process.on('unhandledRejection', onUnhandled);
+			try {
+				const first = {
+					attribute: 'vector',
+					comparator: 'lt',
+					value: 2,
+					target: vector,
+					waitForIndexMilliseconds: 10_000,
+				};
+				const invalid =
+					operator === 'or'
+						? { ...first, waitForIndexMilliseconds: 30_001 }
+						: { attribute: 'id', comparator: 'invalid-comparator', value: 'initial' };
+				const resource = new Product(null, { transaction, responseHeaders });
+				const started = performance.now();
+				assert.throws(() =>
+					resource.search({
+						operator,
+						enforceExecutionOrder: true,
+						conditions: [operator === 'and' ? { operator: 'or', conditions: [first] } : first, invalid],
+						limit: 10,
+					})
+				);
+				await transaction.commit();
+				assert.equal(transaction.readTxnsUsed, 0);
+				assert.equal(transaction.pendingReads, 0);
+				assert(performance.now() - started < 1000, 'setup failure waited for its 10-second admission');
+				await current();
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				assert.equal(responseHeaders.get('Harper-Index-Coverage'), null);
+				assert.deepStrictEqual(unhandled, []);
+			} finally {
+				process.off('unhandledRejection', onUnhandled);
+				transaction.abort();
+			}
+		}
+	});
+	it('returns a promise only for an opted-in native instance search', async () => {
+		await current();
+		const transaction = new DatabaseTransaction();
+		try {
+			const resource = new Product(null, { transaction });
+			const ordinary = resource.search({ sort: { attribute: 'vector', target: vector }, limit: 1 });
+			assert(!(ordinary instanceof Promise));
+			assert.equal(typeof ordinary.map, 'function');
+			await Array.fromAsync(ordinary);
+			const pending = resource.search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+				limit: 1,
+			});
+			assert(pending instanceof Promise);
+			const rows = await pending;
+			assert.equal(typeof rows.map, 'function');
+			assert.equal((await Array.fromAsync(rows.map((record) => record))).length, 1);
+			await transaction.commit();
+			assert.equal(transaction.readTxnsUsed, 0);
+		} finally {
+			transaction.abort();
+		}
+	});
+	it('cancels a current fast-path search before its snapshot filter runs', async () => {
+		await current();
+		let filtered = 0;
+		const pending = index.search(
+			{ target: vector, comparator: 'sort', waitForIndexMilliseconds: 10_000 },
+			{ transaction: undefined },
+			{
+				filter: () => {
+					filtered++;
+					return true;
+				},
+			}
+		);
+		pending.cancelAdmission(new Error('setup failed before native start'));
+		await assert.rejects(pending, /setup failed before native start/);
+		assert.equal(filtered, 0);
+	});
+	it('awaits opted-in searches in legacy value-search consumers', async () => {
+		const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
+		const { searchByValue } = require('#src/dataLayer/search');
+		const options = {
+			database: 'native-query-coverage',
+			table: 'Product',
+			attribute: 'id',
+			value: '*',
+			sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+			limit: 100,
+		};
+		await Product.put('legacy-wait', { vector });
+		assert((await searchByValue({ ...options })).some(({ id }) => id === 'legacy-wait'));
+		await Product.put('legacy-map-wait', { vector });
+		assert(
+			(await new ResourceBridge().getDataByValue({ ...options, schema: options.database })).has('legacy-map-wait')
+		);
+	});
 	it('shares concurrent waits while cancelling only the disconnected caller', async () => {
 		await Product.put('shared-wait', { vector });
 		const controller = new AbortController();
@@ -370,6 +474,9 @@ describe('native derived-index query coverage', function () {
 		process.on('unhandledRejection', onUnhandled);
 		try {
 			search(undefined, Number.MIN_VALUE);
+			new Product(null, { transaction: undefined }).search({
+				sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: Number.MIN_VALUE },
+			});
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			assert.deepStrictEqual(unhandled, []);
 		} finally {
@@ -572,7 +679,10 @@ describe('native derived-index query coverage', function () {
 				backend: new ProducingBackend(id, index),
 				projections: new Map([[Product.tableId, (record) => record.vector]]),
 			});
-			await waitFor(() => runtime.getStatus(id).state === 'idle' && runtime.getStatus(id).ownerEpoch !== undefined);
+			await waitFor(
+				() => runtime.getStatus(id).state === 'idle' && runtime.getStatus(id).ownerEpoch !== undefined,
+				10_000
+			);
 			producing = true;
 			commit();
 			await runtime.waitForCoverage(id, process.hrtime.bigint(), 500);
@@ -597,7 +707,10 @@ describe('native derived-index query coverage', function () {
 		try {
 			runtime.register({ backend, projections: new Map([[Product.tableId, (record) => record.vector]]) });
 			await current();
-			await waitFor(() => runtime.getStatus(id).state === 'idle' && runtime.getStatus(id).ownerEpoch !== undefined);
+			await waitFor(
+				() => runtime.getStatus(id).state === 'idle' && runtime.getStatus(id).ownerEpoch !== undefined,
+				10_000
+			);
 			const buffer = Product.auditStore.getUserSharedBuffer(
 				`derived-index:${id}:readiness`,
 				new ArrayBuffer(READINESS_BYTES)
