@@ -567,10 +567,16 @@ describe('test MQTT connections and commands', function () {
 		);
 		const reconnectMessages = [];
 		let reconnectTimeout;
+		let reconnectSettled = false;
+		let rejectReconnectMessages;
 		let onReconnectError;
 		let onReconnectMessage;
 		const reconnectMessagesReceived = new Promise((resolve, reject) => {
-			onReconnectError = reject;
+			rejectReconnectMessages = reject;
+			onReconnectError = (error) => {
+				reconnectSettled = true;
+				reject(error);
+			};
 			onReconnectMessage = (topic, payload) => {
 				try {
 					const record = JSON.parse(payload);
@@ -583,16 +589,14 @@ describe('test MQTT connections and commands', function () {
 						assert.equal(reconnectMessages[1].count, 5);
 						assert.equal(reconnectMessages[2].name, 'update 4');
 						assert.equal(reconnectMessages[2].count, 6);
+						reconnectSettled = true;
 						resolve();
 					}
 				} catch (error) {
+					reconnectSettled = true;
 					reject(error);
 				}
 			};
-			reconnectTimeout = setTimeout(
-				() => reject(new Error('Timed out waiting for retained patch messages after reconnect')),
-				8000
-			);
 		});
 		reconnectMessagesReceived.catch(() => undefined);
 		client = undefined;
@@ -606,6 +610,12 @@ describe('test MQTT connections and commands', function () {
 				},
 				onReconnectMessage
 			);
+			if (!reconnectSettled) {
+				reconnectTimeout = setTimeout(
+					() => rejectReconnectMessages(new Error('Timed out waiting for retained patch messages after reconnect')),
+					8000
+				);
+			}
 			client.on('error', onReconnectError);
 			await axios.patch(
 				`${baseUrl}/SimpleRecord/78`,
