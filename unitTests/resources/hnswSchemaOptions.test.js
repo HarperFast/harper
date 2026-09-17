@@ -252,7 +252,7 @@ describe('HNSW GraphQL numeric options', () => {
 			table: tableName,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
-				{ name: 'embedding', indexed: { type: 'HNSW' }, type: 'Array' },
+				{ name: 'embedding', indexed: { type: 'HNSW', nativePlaneMaxNodes: 0 }, type: 'Array' },
 			],
 		});
 		assert.equal(Table.indices.embedding.customIndex.postCommit, undefined);

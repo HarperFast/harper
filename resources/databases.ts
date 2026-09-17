@@ -2522,6 +2522,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		auditExplicitlyEnabled ||
 		(!auditExplicitlyDisabled &&
 			(persistedAuditAtEntry === true || (persistedAuditAtEntry == null && Table?.audit === true)));
+	const auditEnabledForNativeDefaultAtEntry =
+		auditExplicitlyEnabled || (!auditExplicitlyDisabled && persistedAuditAtEntry === true);
 	if (
 		origin !== 'cluster' &&
 		attributes.some((attribute) => {
@@ -2540,7 +2542,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	}
 	// The default-native capacity check can reject. Run it before acquiring a schema lock or replacing
 	// the live attribute list so a rejected declaration cannot leave an existing table partly updated.
-	if (origin !== 'cluster' && auditEnabledAtEntry) {
+	if (origin !== 'cluster' && auditEnabledForNativeDefaultAtEntry) {
 		for (const attribute of attributes) {
 			const indexed = attribute.indexed;
 			if (indexed?.type !== 'HNSW' || indexed.nativePlane != null) continue;

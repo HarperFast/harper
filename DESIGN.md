@@ -2595,11 +2595,11 @@ path is simpler and picks up a dead owner immediately.
 Configuration-level database aliases can load several table classes over the same physical audit
 store, index column family and plane file. They must not run that backend more than once. Registration
 therefore hands the backend to the newest class generation: it synchronously retires the predecessor,
-installs the new class's index handle, projection, table id and lag policy, and chains quiescence so the
-successor cannot acquire the native lock before every predecessor settles. A normal class cleanup only
-retires its own generation. `dropTable()` is the destructive exception: it retires whichever alias owns
-the physical backend and awaits the whole handoff chain before deleting the column family or plane file,
-so a same-name recreate cannot inherit a runner bound to the dropped generation.
+installs the new class's index handle, projection, table id and lag policy, and lets the native lock keep
+the successor idle until the predecessor releases ownership. A normal class cleanup only retires its own
+generation. `dropTable()` is the destructive exception: it retires whichever alias owns the physical
+backend and awaits the whole settlement chain before deleting the column family or plane file, so a
+same-name recreate cannot inherit a runner bound to the dropped generation.
 
 Transaction timestamps are unique per physical log but **not monotone in physical order**
 (`TransactionLogStore::writeBatch` only advances `latestTimestamp` when the batch's is greater), so
