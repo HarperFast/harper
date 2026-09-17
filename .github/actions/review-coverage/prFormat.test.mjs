@@ -342,7 +342,7 @@ test('ordinary leading whitespace is allowed on Complexity', () => {
 	assert.strictEqual(result.pass, true);
 });
 
-test('AI footers must be pinned to the current head', () => {
+test('the coverage footer must be pinned to the current head; the review-need pin may lag it', () => {
 	const result = evaluatePrFormat(pr({ body: body({ head: 'deadbeef1234' }) }), {
 		mode: 'enforce',
 		repo: REPO,
@@ -350,7 +350,23 @@ test('AI footers must be pinned to the current head', () => {
 		prFiles: PR_FILES,
 	});
 	assert.match(result.problems.join('\n'), /Review-Coverage footer is not pinned to the current head/);
-	assert.match(result.problems.join('\n'), /Human-Review-Need footer is not pinned to the current head/);
+	assert.doesNotMatch(result.problems.join('\n'), /Human-Review-Need footer/);
+});
+
+test('a review-need footer carrying decision slugs is a valid footer', () => {
+	const decorated = body().replace(
+		/<sub>Human-Review-Need: (\d)/,
+		'<sub>Human-Review-Need: $1 (decisions: api-naming, delete-semantics)'
+	);
+	assert.notEqual(decorated, body(), 'fixture carries a review-need footer to decorate');
+	const result = evaluatePrFormat(pr({ body: decorated }), {
+		mode: 'enforce',
+		repo: REPO,
+		number: NUMBER,
+		prFiles: PR_FILES,
+	});
+	assert.doesNotMatch(result.problems.join('\n'), /Human-Review-Need/);
+	assert.strictEqual(result.compliant, true);
 });
 
 test('footer text cannot satisfy an empty Verification section', () => {
