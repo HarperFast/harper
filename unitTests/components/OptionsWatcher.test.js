@@ -13,6 +13,7 @@ const chokidar = require('chokidar');
 const { DEFAULT_CONFIG } = require('#src/components/DEFAULT_CONFIG');
 const { cloneDeep } = require('lodash');
 const { useShortReadRetryBudget, restoreReadRetryBudget } = require('../shortReadRetryBudget');
+const { waitFor } = require('../waitFor.js');
 
 /**
  * This function asserts that an event is emitted.
@@ -33,6 +34,33 @@ async function assertEvent(ee, event, triggerEvent, additionalAssertions) {
 		await additionalAssertions?.(eventSpy);
 	} finally {
 		ee.removeListener(event, eventSpy);
+	}
+}
+
+/**
+ * Write `contents` to a watched path, re-writing until `ee` reports `event`.
+ *
+ * chokidar's `ready` fires before its native watch is live, and the `ArmGate` re-read it triggers
+ * covers only what is on disk by then, so a write landing in the millisecond after it is reported
+ * by no event. Writing until the watcher reports it keeps that gap out of the assertion: a write
+ * past it makes chokidar re-read the directory, and a repeat write is silent because identical
+ * contents diff to nothing in `#applyScopedConfig`.
+ */
+async function writeUntilObserved(ee, event, filePath, contents) {
+	let observed = false;
+	const capture = () => (observed = true);
+	ee.on(event, capture);
+	try {
+		await waitFor(
+			async () => {
+				if (observed) return true;
+				await writeFile(filePath, contents, 'utf-8');
+				return observed;
+			},
+			{ message: `Timed out waiting for ${event} after writing ${filePath}` }
+		);
+	} finally {
+		ee.off(event, capture);
 	}
 }
 
@@ -1350,7 +1378,7 @@ describe('OptionsWatcher', () => {
 		await assertEvent(
 			options,
 			'ready',
-			() => writeFile(configFilePath, stringify(expected), 'utf-8'),
+			() => writeUntilObserved(options, 'ready', configFilePath, stringify(expected)),
 			(readySpy) => {
 				assert.equal(readySpy.callCount, 1);
 				assert.deepEqual(
