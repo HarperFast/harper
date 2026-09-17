@@ -1987,6 +1987,39 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('yields the event loop while capturing many empty physical logs', async () => {
+		const logNames = Array.from({ length: 1000 }, (_, index) => `log-${index}`);
+		let visited = 0;
+		let yielded = false;
+		let yieldedBefore = -1;
+		const store = new FakeLogStore(new Map(), {
+			logNames,
+			logEntries: new Map(logNames.map((name) => [name, []])),
+			onNext() {
+				if (visited++ === 0) setImmediate(() => (yielded = true));
+				if (yielded && yieldedBefore < 0) yieldedBefore = visited;
+			},
+		});
+		const backend = new AsyncBackend('empty-boundary-yield', { applyDelay: 1 });
+		const { runtime } = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 60_000,
+			scanRecords: () => [],
+		});
+		runtime.register(
+			registration(backend, {
+				maxTransactionsPerTurn: 64,
+				maxFlushAgeMilliseconds: 5,
+			})
+		);
+
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 5000 });
+		assert(
+			yieldedBefore > 0 && yieldedBefore < logNames.length,
+			`boundary scan held the event loop for ${visited} empty logs`
+		);
+		await runtime.stop();
+	});
+
 	it('yields the event loop through a long run of tombstones during a rebuild scan', async () => {
 		const store = new FakeLogStore(new Map([[7, []]]), {
 			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'kept' })]]]),

@@ -1929,6 +1929,7 @@ class DerivedIndexRunner {
 		const boundary: DerivedIndexCursor = { format: 1, logs: {} };
 		const options = this.#options;
 		let entriesThisTurn = 0;
+		let logsThisTurn = 0;
 		let turnStarted = options.now();
 		for (const logName of this.#logStore.rootStore.listLogs()) {
 			let tail: number | undefined;
@@ -1944,6 +1945,7 @@ class DerivedIndexRunner {
 					await new Promise<void>((resolve) => setImmediate(resolve));
 					if (!this.#live(generation)) return;
 					entriesThisTurn = 0;
+					logsThisTurn = 0;
 					turnStarted = options.now();
 				}
 			}
@@ -1955,9 +1957,18 @@ class DerivedIndexRunner {
 						'log-retention',
 						`transaction log '${logName}' retains no committed transaction and has lost its beginning`
 					);
-				continue;
+			} else setCursorLog(boundary.logs, logName, tail);
+			logsThisTurn++;
+			if (
+				logsThisTurn >= options.maxTransactionsPerTurn ||
+				options.now() - turnStarted >= options.maxMillisecondsPerTurn
+			) {
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				if (!this.#live(generation)) return;
+				entriesThisTurn = 0;
+				logsThisTurn = 0;
+				turnStarted = options.now();
 			}
-			setCursorLog(boundary.logs, logName, tail);
 		}
 		return boundary;
 	}
