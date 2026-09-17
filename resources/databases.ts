@@ -1177,6 +1177,9 @@ function initStores(
 		// unless its store was migrated to a different engine (e.g. LMDB to RocksDB on startup)
 		const recreateForEngineChange =
 			!!table && (table as any).primaryStore?.rootStore instanceof RocksDatabase !== rootStore instanceof RocksDatabase;
+		const recreateForTableIdChange =
+			!!table && primaryAttribute.tableId != null && table.tableId !== primaryAttribute.tableId;
+		const recreateTable = recreateForEngineChange || recreateForTableIdChange;
 		let indices = {},
 			existingAttributes = [];
 		let tableId;
@@ -1190,7 +1193,7 @@ function initStores(
 		const cacheControl = primaryAttribute.cacheControl;
 		const splitSegments = primaryAttribute.splitSegments;
 		const replicate = primaryAttribute.replicate;
-		if (table && !recreateForEngineChange) {
+		if (table && !recreateTable) {
 			if (primaryAttribute.audit === true && table.audit !== true) table.enableAuditing();
 			indices = table.indices;
 			existingAttributes = table.attributes;
@@ -1308,12 +1311,13 @@ function initStores(
 			existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
 			attributesUpdated = true;
 		}
-		if (table && !recreateForEngineChange) {
+		if (table && !recreateTable) {
 			if (attributesUpdated) {
 				table.schemaVersion++;
 				table.updatedAttributes();
 			}
 		} else {
+			if (recreateForTableIdChange) table.cleanup();
 			table = setTable(
 				tables,
 				tableName,

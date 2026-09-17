@@ -108,8 +108,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	 */
 	async shutdown(_epoch: bigint): Promise<void> {
 		this.#dropQueue();
-		await this.#flushing;
-		await this.#resetting;
+		await Promise.allSettled([this.#flushing, this.#resetting]);
 	}
 
 	/**
@@ -236,12 +235,14 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 // One generation owns each physical backend; destructive cleanup also awaits superseded generations.
 type RegisteredTable = { current: { Table: any }; owners: Set<{ Table: any }> };
 type RegisteredBackend = {
+	tableId: number;
 	settle: () => Promise<void>;
 };
 type Registered = {
 	runtime: DerivedIndexRuntime;
 	tables: Map<number, RegisteredTable>;
 	backends: Map<string, RegisteredBackend>;
+	droppingTables: Set<number>;
 };
 const runtimes = new WeakMap<object, Registered>();
 
@@ -263,7 +264,7 @@ function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
 					.map(({ key, value, version }) => ({ recordId: key, version, value })),
 		}
 	);
-	registered = { runtime, tables, backends: new Map() };
+	registered = { runtime, tables, backends: new Map(), droppingTables: new Set() };
 	runtimes.set(auditStore, registered);
 	return registered;
 }
@@ -275,18 +276,24 @@ const warnedAuditIndexes = new Set<string>();
  * database. Returns the release for the table's registrations, or undefined when it has none. Runs
  * on every worker; the runtime elects one owner per index.
  */
-export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): Promise<void> } | undefined {
+export function attachDerivedIndexes(Table: any):
+	| {
+			close(dropping?: boolean): Promise<void>;
+			restoreAfterFailedDrop(): ReturnType<typeof attachDerivedIndexes>;
+	  }
+	| undefined {
 	const attributes = Table.attributes.filter(
 		(attribute: any) => Table.indices[attribute.name]?.customIndex?.postCommit
 	);
-	if (attributes.length === 0) return;
 	if (Table.audit !== true) {
+		if (attributes.length === 0) return;
 		throw new ClientError(
 			`Table '${Table.databaseName}.${Table.tableName}' must enable audit logging before using a post-commit derived index`
 		);
 	}
 	const auditStore = Table.auditStore as RocksTransactionLogStore;
 	const registered = runtimeFor(auditStore);
+	if (registered.droppingTables.has(Table.tableId)) return;
 	const installed = { Table };
 	let registeredTable = registered.tables.get(Table.tableId);
 	if (registeredTable) {
@@ -316,6 +323,7 @@ export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): P
 		});
 		let predecessor = registered.backends.get(id);
 		const inherited = predecessor;
+		const generationChanged = predecessor !== undefined && predecessor.tableId !== Table.tableId;
 		const settlePredecessor = () => {
 			const current = predecessor;
 			if (!current) return Promise.resolve();
@@ -348,6 +356,7 @@ export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): P
 		});
 		let settling: Promise<void> | undefined;
 		const registeredBackend: RegisteredBackend = {
+			tableId: Table.tableId,
 			settle: () => {
 				if (settling) return settling;
 				const attempt = Promise.all([settlePredecessor(), release()]).then(() => {
@@ -361,6 +370,7 @@ export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): P
 			},
 		};
 		registered.backends.set(id, registeredBackend);
+		if (generationChanged) registered.runtime.requestRebuild(id);
 		releases.push(async (dropping) => {
 			const active = registered.backends.get(id);
 			if (dropping && active) await active.settle();
@@ -369,7 +379,14 @@ export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): P
 	}
 	return {
 		async close(dropping = false) {
-			const settled = Promise.all(releases.map((release) => release(dropping)));
+			if (dropping) registered.droppingTables.add(Table.tableId);
+			const settled = dropping
+				? Promise.all(
+						[...registered.backends.values()]
+							.filter((backend) => backend.tableId === Table.tableId)
+							.map((backend) => backend.settle())
+					)
+				: Promise.all(releases.map((release) => release(false)));
 			const tableRegistration = registered.tables.get(Table.tableId);
 			if (tableRegistration) {
 				tableRegistration.owners.delete(installed);
@@ -380,6 +397,10 @@ export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): P
 				}
 			}
 			await settled;
+		},
+		restoreAfterFailedDrop() {
+			registered.droppingTables.delete(Table.tableId);
+			return attachDerivedIndexes(Table);
 		},
 	};
 }

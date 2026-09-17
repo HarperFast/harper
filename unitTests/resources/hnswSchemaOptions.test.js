@@ -868,6 +868,8 @@ describe('HNSW GraphQL numeric options', () => {
 					{ name: 'embedding', indexed: { type: 'HNSW', nativePlane: true }, type: 'Array' },
 				],
 			});
+			await alias.dropTable();
+			assert.strictEqual(databases.data[tableName], Table, 'a stale alias must not drop the recreated generation');
 			await Table.put('recreated', { embedding: [1, 0] });
 			await waitFor(
 				async () => {
@@ -881,7 +883,6 @@ describe('HNSW GraphQL numeric options', () => {
 				},
 				{ timeout: 15_000, message: 'the recreated table generation did not receive derived-index writes' }
 			);
-			await alias.derivedIndexRuntime?.close();
 		});
 
 		it('keeps an unchanged unsupported legacy native-plane spelling loadable', async () => {

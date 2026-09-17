@@ -2597,9 +2597,10 @@ store, index column family and plane file. They must not run that backend more t
 therefore hands the backend to the newest class generation: it synchronously retires the predecessor,
 installs the new class's index handle, projection, table id and lag policy, and lets the native lock keep
 the successor idle until the predecessor releases ownership. A normal class cleanup only retires its own
-generation. `dropTable()` is the destructive exception: it retires whichever alias owns the physical
-backend and awaits the whole settlement chain before deleting the column family or plane file, so a
-same-name recreate cannot inherit a runner bound to the dropped generation.
+generation. `dropTable()` is the destructive exception: it fences the immutable table id, retires every
+registered backend for that generation (including settlement chains owned by another alias), and checks
+that the catalog still names that table id before deleting name-keyed storage. A same-name recreation can
+therefore register its new id without being retired by a stale alias.
 
 Transaction timestamps are unique per physical log but **not monotone in physical order**
 (`TransactionLogStore::writeBatch` only advances `latestTimestamp` when the batch's is greater), so
