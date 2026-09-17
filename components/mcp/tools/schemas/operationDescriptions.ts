@@ -172,7 +172,7 @@ export const OPERATION_DESCRIPTIONS: Record<string, string> = {
 	get_backup: "Creates a backup of a database via the storage engine's backup utility. May be heavy on disk I/O.",
 	// cleanup_orphan_blobs: dataLayer/schema.ts:347 — Reclaim unreferenced blob files.
 	cleanup_orphan_blobs:
-		'Identifies and removes orphaned blob files from database storage. Runs asynchronously; check logs for completion.',
+		'Identifies and removes orphaned blob files from database storage. Set dryRun to report the orphan count and bytes without deleting anything. Runs asynchronously; check logs for completion.',
 
 	// ─── Users / roles ────────────────────────────────────────────────────
 	// add_user: security/user.ts:129 — Create a user with role + password.

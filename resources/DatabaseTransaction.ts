@@ -406,6 +406,7 @@ export type TransactionWrite = {
 	// The origin record version carried by an applied or replayed write. Bound it by the origin's
 	// transaction-log key so malformed or historical overloaded values cannot move ordering past the write.
 	recordVersion?: number;
+	cleanupLosingVersion?: number;
 	saved?: boolean;
 	deferSave?: boolean;
 	skipReplicationConfirmation?: boolean;
@@ -415,6 +416,8 @@ export type TransactionWrite = {
 	result?: any;
 	// blobs that were pre-saved as part of this write; used to clean up files if the commit is skipped or aborted
 	savedBlobs?: Blob[];
+	// In-memory identity used to distinguish this write's blob owner stamp from another write's stamp.
+	blobOwnerWriteToken?: object;
 	// the commit handler's most recent decision: true means it took an early-return that left savedBlobs unreferenced.
 	// reset at the top of each commit-handler invocation so retries see a fresh state.
 	skipped?: boolean;
@@ -1213,6 +1216,7 @@ export class DatabaseTransaction implements Transaction {
 		// flags so an ordinary write never reads the property (harper#2412).
 		const writeVersion =
 			this.sourceApply || this.isReplay ? getAppliedWriteVersion(operation.recordVersion, txnTime) : txnTime;
+		if (this.sourceApply || this.isReplay) operation.cleanupLosingVersion = writeVersion;
 		// A base that feeds stored state must come from this transaction's snapshot, never the
 		// cross-worker cache vouch (stale when a resequenced write reused a version). That closes the
 		// lost-update window only when this transaction holds a snapshot to validate the later Put
@@ -1537,7 +1541,12 @@ export class DatabaseTransaction implements Transaction {
 							// referenced the blob can flip skipped/superseded back to false first.
 							for (const write of this.writes) {
 								if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
-									cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+									cleanupUnusedBlobs(
+										write.savedBlobs,
+										collectRetainedFileIds(write.store.getEntry(write.key)?.value),
+										write.blobOwnerWriteToken,
+										write.cleanupLosingVersion
+									);
 							}
 							if (this.recordLocks) this.noteCommittedLockVersions();
 							// now reset transactions tracking; this transaction be reused and committed again
@@ -1675,7 +1684,12 @@ export class DatabaseTransaction implements Transaction {
 				}
 				for (const write of this.writes) {
 					if (write?.savedBlobs && (write.skipped || (write.superseded && !write.blobsAuditReferenced)))
-						cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+						cleanupUnusedBlobs(
+							write.savedBlobs,
+							collectRetainedFileIds(write.store.getEntry(write.key)?.value),
+							write.blobOwnerWriteToken,
+							write.cleanupLosingVersion
+						);
 				}
 				if (this.recordLocks) this.noteCommittedLockVersions();
 				this.clearWrites();
@@ -1780,7 +1794,12 @@ export class DatabaseTransaction implements Transaction {
 		try {
 			for (const write of this.writes) {
 				if (write?.savedBlobs)
-					cleanupUnusedBlobs(write.savedBlobs, collectRetainedFileIds(write.store.getEntry(write.key)?.value));
+					cleanupUnusedBlobs(
+						write.savedBlobs,
+						collectRetainedFileIds(write.store.getEntry(write.key)?.value),
+						write.blobOwnerWriteToken,
+						write.cleanupLosingVersion
+					);
 			}
 		} finally {
 			this.endScopeOwnership(); // the scope is over; nothing may rotate this instance again

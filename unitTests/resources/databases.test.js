@@ -568,6 +568,7 @@ describe('audit cleanup retirement on teardown', () => {
 			// the first load has no attributes to build a table from; it is what creates the catalog store
 			// with the encoding initStores expects, so the attribute below is written the way production does
 			const rootStore = readMetaDb(tablePath, 'dog', 'legacydrop', auditPath, true);
+			assert.equal(rootStore.blobOwnerTableName, 'dog', 'the standalone root must retain its sole table identity');
 			// audit:false because a legacy audit store has no addDeleteRemovalCallback, so makeTable()
 			// throws while loading an audited legacy table - a separate, pre-existing defect
 			rootStore.dbisDb.putSync('id', { isPrimaryKey: true, name: 'id', tableId: 91, audit: false });

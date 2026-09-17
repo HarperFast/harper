@@ -46,7 +46,7 @@ import {
 	type AuditRecord,
 } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
-import { databasePaths, deleteRootBlobPathsForDB } from './blob.ts';
+import { databasePaths, deleteRootBlobPathsForDB, initBlobUnlinkQueue } from './blob.ts';
 import { removeStorageReclamation } from '../server/storageReclamation.ts';
 import { commonValidators, schemaRegex } from '../validation/common_validators.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
@@ -291,6 +291,7 @@ interface LMDBDatabase extends Database {
 }
 interface LMDBRootDatabase extends RootDatabase {
 	auditStore?: LMDBRootDatabase;
+	blobOwnerTableName?: string;
 	databaseName?: string;
 	dbisDb?: LMDBDatabase;
 	isLegacy?: boolean;
@@ -314,6 +315,7 @@ interface RocksDatabaseEx extends RocksDatabase {
 
 interface RocksRootDatabase extends RocksDatabaseEx {
 	auditStore?: RocksDatabaseEx;
+	blobOwnerTableName?: string;
 	databaseName?: string;
 	dbisDb?: RocksDatabaseEx;
 	store: any;
@@ -1015,6 +1017,9 @@ function initStores(
 ) {
 	// a store with no tables never reaches the per-table loop below, and blob roots resolve from this
 	rootStore.databaseName = storeName ?? databaseName;
+	// A legacy per-table environment stores bare attribute names, so its catalog has no table-name
+	// prefix for the blob unlink drain to probe. Preserve the sole table identity on the root instead.
+	rootStore.blobOwnerTableName = isLegacy ? defaultTable : undefined;
 	const envInit = new OpenEnvironmentObject(path, isReadOnlyMode());
 	const internalDbiInit = createOpenDBIObject(false);
 	let attributesDbi = rootStore.dbisDb;
@@ -1030,6 +1035,7 @@ function initStores(
 		}
 		openedStores?.push(attributesDbi);
 		rootStore.dbisDb = markInternalDbiNonVersioned(attributesDbi);
+		initBlobUnlinkQueue(rootStore);
 	}
 
 	let auditStore = rootStore.auditStore;
@@ -2638,6 +2644,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			target.adopt(attributesDbi);
 			markInternalDbiNonVersioned(attributesDbi);
+			initBlobUnlinkQueue(rootStore);
 
 			exclusiveLock(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
 			const existingTableMeta = (attributesDbi as any).getSync(dbiName);
@@ -2730,6 +2737,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			target.adopt((rootStore as any).dbisDb);
 			attributesDbi = markInternalDbiNonVersioned((rootStore as any).dbisDb);
+			initBlobUnlinkQueue(rootStore);
 		}
 		Table.dbisDB = attributesDbi;
 		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
