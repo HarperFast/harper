@@ -2508,7 +2508,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							typeof attribute.indexed.nativePlane === 'number' &&
 							persistedNativePlane.trim() !== '' &&
 							Number(persistedNativePlane) === attribute.indexed.nativePlane));
-				if (!matchesPersistedLegacySpelling) {
+				if (matchesPersistedLegacySpelling) {
+					attribute.indexed.nativePlane = persistedNativePlane;
+				} else {
 					attribute.indexed.nativePlane = CUSTOM_INDEXES.HNSW.normalizeNativePlaneDeclaration(
 						attribute.indexed.nativePlane
 					);
@@ -2535,6 +2537,18 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		throw new ClientError(
 			`Table '${databaseName}.${tableName}' must enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
 		);
+	}
+	// The default-native capacity check can reject. Run it before acquiring a schema lock or replacing
+	// the live attribute list so a rejected declaration cannot leave an existing table partly updated.
+	if (origin !== 'cluster' && auditEnabledAtEntry) {
+		for (const attribute of attributes) {
+			const indexed = attribute.indexed;
+			if (indexed?.type !== 'HNSW' || indexed.nativePlane != null) continue;
+			const existingAttribute = Table?.attributes.find((existing: any) => existing.name === attribute.name);
+			const persistedIndexed =
+				Table?.dbisDB?.getSync(`${tableName}/${attribute.name || ''}`)?.indexed ?? existingAttribute?.indexed;
+			if (persistedIndexed?.type !== 'HNSW') CUSTOM_INDEXES.HNSW.canDefaultToNativePlane(rootStore, indexed);
+		}
 	}
 	let hasChanges;
 	let refreshRelationshipAttributes = false;

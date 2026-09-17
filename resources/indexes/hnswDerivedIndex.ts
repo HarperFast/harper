@@ -317,11 +317,8 @@ export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): P
 			readiness: () => registered.runtime.getReadiness(id),
 			requestRebuild: () => registered.runtime.requestRebuild(id),
 		});
-		// A reload or database alias can register another class for the same physical index before the
-		// old class's asynchronous close has quiesced its runner. Hand off to the newest class instead
-		// of retaining a backend permanently bound to the first class's store, resolver, table id and
-		// lag policy. register() removes the old runner synchronously when release() is called; the new
-		// runner then waits for its predecessor's native lock before it can deliver.
+		// Hand the physical backend to the newest alias/reload generation. Starting predecessor
+		// settlement removes its runner synchronously; the replacement waits for its native lock.
 		const predecessor = registered.backends.get(id);
 		const predecessorSettled = predecessor?.settle() ?? Promise.resolve();
 		predecessorSettled.catch(() => {});
@@ -343,10 +340,19 @@ export function attachDerivedIndexes(Table: any): { close(dropping?: boolean): P
 		});
 		let settling: Promise<void> | undefined;
 		const registeredBackend: RegisteredBackend = {
-			settle: () =>
-				(settling ??= Promise.all([predecessorSettled, release()]).then(() => {
+			settle: () => {
+				if (settling) return settling;
+				const attempt = Promise.all([predecessor?.settle() ?? Promise.resolve(), release()]).then(() => {
 					if (registered.backends.get(id) === registeredBackend) registered.backends.delete(id);
-				})),
+				});
+				settling = attempt;
+				attempt.catch(() => {
+					// requestRebuild() can retry a failed shutdown. Let a later close observe that
+					// retry's fresh stop promise instead of retaining the first rejection forever.
+					if (settling === attempt) settling = undefined;
+				});
+				return attempt;
+			},
 		};
 		registered.backends.set(id, registeredBackend);
 		releases.push(async (dropping) => {

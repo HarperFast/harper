@@ -120,8 +120,23 @@ describe('HNSW GraphQL numeric options', () => {
 
 		const redeclared = await loadTable(tableName, '', 'type: "HNSW", M: 12, optimizeRouting: 0');
 		assert.equal(redeclared.M, 12);
-		assert.equal(redeclared.optimizeRouting, 0);
-		assert.equal(indexedOptions(tableName).optimizeRouting, 0);
+		assert.strictEqual(redeclared.optimizeRouting, '0');
+		assert.strictEqual(indexedOptions(tableName).optimizeRouting, '0');
+
+		for (const [suffix, declaration] of [
+			['Boolean', 'false'],
+			['QuotedBoolean', '"false"'],
+		]) {
+			const booleanOverrideTable = `HnswLegacy${suffix}RoutingOverride`;
+			await loadTable(booleanOverrideTable, '', 'type: "HNSW", optimizeRouting: 0.6');
+			const booleanOverrideDescriptor = tables[booleanOverrideTable].dbisDB.getSync(
+				`${booleanOverrideTable}/embedding`
+			);
+			booleanOverrideDescriptor.indexed.optimizeRouting = '0';
+			tables[booleanOverrideTable].dbisDB.putSync(`${booleanOverrideTable}/embedding`, booleanOverrideDescriptor);
+			await loadTable(booleanOverrideTable, '', `type: "HNSW", optimizeRouting: ${declaration}`);
+			assert.strictEqual(indexedOptions(booleanOverrideTable).optimizeRouting, 0);
+		}
 
 		const nullTableName = 'HnswLegacyNullRouting';
 		await loadTable(nullTableName, '', 'type: "HNSW", optimizeRouting: 0.6');
@@ -146,8 +161,8 @@ describe('HNSW GraphQL numeric options', () => {
 		assert.equal(unchanged.optimizeRouting, '0.0');
 		assert.equal(indexedOptions(exactTableName).optimizeRouting, '0.0');
 		const equivalentUnquoted = await loadTable(exactTableName, '', 'type: "HNSW", optimizeRouting: 0');
-		assert.equal(equivalentUnquoted.optimizeRouting, '0.0');
-		assert.equal(indexedOptions(exactTableName).optimizeRouting, '0.0');
+		assert.strictEqual(equivalentUnquoted.optimizeRouting, '0.0');
+		assert.strictEqual(indexedOptions(exactTableName).optimizeRouting, '0.0');
 	});
 
 	it('rejects options that are not finite numeric values', async () => {
@@ -373,6 +388,49 @@ describe('HNSW GraphQL numeric options', () => {
 					error instanceof ClientError &&
 					error.message === 'nativePlaneMaxNodes must be a positive integer below 2^32-1'
 			);
+			const atomicTableName = 'HnswNativeCapacityAtomic';
+			const AtomicTable = table({
+				table: atomicTableName,
+				audit: true,
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: 'kept', type: 'String' },
+				],
+			});
+			createdTables.push(atomicTableName);
+			assert.deepStrictEqual(
+				AtomicTable.attributes.map(({ name }) => name),
+				['id', 'kept']
+			);
+			assert.throws(
+				() =>
+					HierarchicalNavigableSmallWorld.canDefaultToNativePlane(AtomicTable.primaryStore.rootStore, {
+						type: 'HNSW',
+						nativePlaneMaxNodes: 0,
+					}),
+				/nativePlaneMaxNodes must be a positive integer/
+			);
+			assert.throws(
+				() =>
+					table({
+						table: atomicTableName,
+						audit: true,
+						attributes: [
+							{ name: 'id', isPrimaryKey: true },
+							{
+								name: 'embedding',
+								type: 'Array',
+								indexed: { type: 'HNSW', nativePlaneMaxNodes: 0 },
+							},
+						],
+					}),
+				/nativePlaneMaxNodes must be a positive integer/
+			);
+			assert.deepStrictEqual(
+				AtomicTable.attributes.map(({ name }) => name),
+				['id', 'kept']
+			);
+			assert.strictEqual(AtomicTable.dbisDB.getSync(`${atomicTableName}/embedding`), undefined);
 		} finally {
 			if (previous === undefined) delete process.env.HNSW_NO_NATIVE_DEFAULT;
 			else process.env.HNSW_NO_NATIVE_DEFAULT = previous;
@@ -795,10 +853,10 @@ describe('HNSW GraphQL numeric options', () => {
 			const index = await loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlane: "1"');
 			descriptor = tables[tableName].dbisDB.getSync(`${tableName}/embedding`);
 			assert.equal(index.postCommit, true);
-			assert.equal(descriptor.indexed.nativePlane, '1');
+			assert.strictEqual(descriptor.indexed.nativePlane, '1');
 			const unquotedReload = await loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlane: 1');
 			assert.equal(unquotedReload.postCommit, true);
-			assert.equal(indexedOptions(tableName).nativePlane, '1');
+			assert.strictEqual(indexedOptions(tableName).nativePlane, '1');
 			await assert.rejects(loadTable(tableName, '(audit: true)', 'type: "HNSW", nativePlane: 2'), (error) => {
 				return error instanceof ClientError && error.message === 'nativePlane must be true or false';
 			});
