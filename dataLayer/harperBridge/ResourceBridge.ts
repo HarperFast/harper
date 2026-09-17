@@ -115,6 +115,8 @@ export class ResourceBridge extends BridgeMethods {
 		if (attributes) {
 			// allow for attributes to be specified, but do some massaging to make sure they are in the right form
 			for (const attribute of attributes) {
+				if (attribute.type === 'FullText' || attribute.fullText)
+					throw new ClientError('Full-text attributes must be declared with @fullText in schema.graphql', 400);
 				if (attribute.is_primary_key) {
 					attribute.isPrimaryKey = true;
 					delete attribute.is_primary_key;

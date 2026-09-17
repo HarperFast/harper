@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { storedFieldsOnly } = require('#src/resources/RecordEncoder');
+const { ResourceBridge } = require('#src/dataLayer/harperBridge/ResourceBridge');
 
 describe('@fullText schema declaration', () => {
 	before(() => setupTestDBPath());
@@ -298,6 +299,23 @@ describe('@fullText schema declaration', () => {
 			]),
 			/must be declared with @fullText/
 		);
+	});
+
+	it('rejects full-text descriptors in create_table operations', async () => {
+		const bridge = new ResourceBridge();
+		for (const attribute of [
+			{ name: 'search', type: 'FullText' },
+			{ name: 'search', type: 'String', fullText: { fields: [{ name: 'missing' }] } },
+		]) {
+			await assert.rejects(
+				bridge.createTable(undefined, {
+					database: 'data',
+					table: 'FullTextCreateTableGuard',
+					attributes: [{ name: 'id', type: 'ID', is_primary_key: true }, attribute],
+				}),
+				/must be declared with @fullText/
+			);
+		}
 	});
 
 	it('does not inspect full-text metadata while validating an ordinary table write', async () => {
