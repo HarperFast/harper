@@ -308,6 +308,14 @@ describe('native derived-index query coverage', function () {
 			assert.equal(index.derivedHost.readiness().state, 'ready');
 		}
 	});
+	it('consumes a waiting instance search without an owned transaction', async () => {
+		await current();
+		const results = new Product(null, { transaction: undefined }).search({
+			sort: { attribute: 'vector', target: vector, waitForIndexMilliseconds: 10_000 },
+			limit: 100,
+		});
+		assert((await Array.fromAsync(results)).some(({ id }) => id === 'initial'));
+	});
 	it('keeps invalid waiting options synchronous without starting a traversal', async () => {
 		let filtered = 0;
 		const transaction = new DatabaseTransaction();

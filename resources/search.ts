@@ -621,7 +621,7 @@ export function searchByIndex(
 							.then((entries) => {
 								if (controller.signal.aborted) return [];
 								if (signal.aborted) throw signal.reason ?? new Error('Index search aborted', { cause: signal.reason });
-								checkActive();
+								checkActive?.();
 								return processEntries(entries);
 							})
 							.finally(() => {
