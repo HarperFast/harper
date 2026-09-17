@@ -143,15 +143,20 @@ describe('CRUD operations with the Resource API', () => {
 	});
 	it('keeps an analytics sample recorded while its window is being flushed', async function () {
 		const start = Date.now();
-		let sentinelRecorded = false;
+		// There is no listener-removal API, so the closure disarms itself. A listener left armed by a
+		// failed run here would inject its sentinel into a later suite's window.
+		let armed = true;
 		analytics.addAnalyticsListener((metrics) => {
-			if (sentinelRecorded || !metrics.some((entry) => entry?.metric === 'db-write' && entry?.path === 'CRUDTable'))
-				return;
-			sentinelRecorded = true;
+			if (!armed || !metrics.some((entry) => entry?.metric === 'db-write' && entry?.path === 'CRUDTable')) return;
+			armed = false;
 			analytics.recordAction(FLUSH_RACE_BYTES, 'db-write', 'CRUDTable', null);
 		});
-		analytics.recordAction(64, 'db-write', 'CRUDTable', null);
-		await waitForAnalyticsMetrics(['db-write'], start, FLUSH_RACE_BYTES, 5000);
+		try {
+			analytics.recordAction(64, 'db-write', 'CRUDTable', null);
+			await waitForAnalyticsMetrics(['db-write'], start, FLUSH_RACE_BYTES, 5000);
+		} finally {
+			armed = false;
+		}
 	});
 	async function waitForAnalyticsMetrics(metricNames, start, minBytes, timeout) {
 		const observed = [];
