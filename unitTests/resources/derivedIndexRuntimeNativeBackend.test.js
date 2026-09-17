@@ -16,6 +16,10 @@ const {
 	READINESS_BYTES,
 	readDerivedIndexReadiness,
 } = require('#src/resources/derivedIndexRuntime');
+const {
+	encodeFullTextCursorPayload,
+	FullTextDerivedIndexBackend,
+} = require('#src/resources/FullTextDerivedIndexBackend');
 
 // A shared fake of the RocksDB transaction-log store: `entriesByCursor` maps a resume timestamp to
 // the entries physically after it, `logEntries` is the retained log used by the rebuild boundary
@@ -361,10 +365,46 @@ describe('DerivedIndexRuntime for native backends', () => {
 			]
 		);
 		assert.strictEqual(batch.records[0].state, batch.transactions[0].mutations[0].state);
+		assert.strictEqual(typeof batch.records[0].recordKey, 'string');
 		assert.strictEqual(batch.records[0].state, batch.transactions[2].mutations[0].state);
 		assert.strictEqual(batch.transactions[0].mutations[0].logVersion, 100);
 		assert.strictEqual(getReads(), 2);
 		assert.deepStrictEqual(Object.keys(batch), ['ownerEpoch', 'transactions', 'through']);
+		await runtime.stop();
+	});
+
+	it('skips internal non-record audit keys while advancing the transaction cursor', async () => {
+		const store = new FakeLogStore(
+			new Map([
+				[
+					10,
+					[
+						{ ...audit({ timestamp: 20, recordId: Symbol.for('internal'), endTxn: false }) },
+						audit({ timestamp: 20, recordId: null }),
+					],
+				],
+				[20, []],
+			])
+		);
+		const backend = new SyncBackend('internal-key', cursor(10));
+		const { runtime } = runtimeFor(store, new Map());
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.cursor.logs.local === 20);
+		assert.deepStrictEqual(backend.deliveries[0].records, []);
+		await runtime.stop();
+	});
+
+	it('fails closed when an eligible audit entry has an undecodable record id', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: undefined, type: 'delete' })]]]));
+		const backend = new SyncBackend('undecodable-record-id', cursor(10));
+		const { runtime } = runtimeFor(store, new Map(), { scanRecords: undefined });
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getStatus(backend.id)?.state === 'needs-rebuild');
+		assert.match(runtime.getStatus(backend.id).reason, /undecodable record id/);
+		assert.deepStrictEqual(backend.cursor, cursor(10));
+		assert.strictEqual(backend.deliveries.length, 0);
 		await runtime.stop();
 	});
 
@@ -420,7 +460,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert(runtime.getMetrics('oversized').stalledMilliseconds > 0, 'a parked runner reports how long it has stalled');
 		assert.strictEqual(backend.deliveries[0].records.length, 3);
 		assert.deepStrictEqual(backend.deliveries[0].through, cursor(10), 'an open transaction advances no cursor');
-		assert.strictEqual(runtime.getMetrics('oversized').deferredBytes, 96);
+		assert.strictEqual(runtime.getMetrics('oversized').deferredBytes, 147);
 		defer = false;
 		backend.stateChange();
 
@@ -438,6 +478,36 @@ describe('DerivedIndexRuntime for native backends', () => {
 			chunks.map((batch) => batch.transactions.map((transaction) => transaction.timestamp)),
 			[[20], [20], [20, 30]],
 			'each chunk carries the transaction it is part of'
+		);
+		await runtime.stop();
+	});
+
+	it('charges canonical key bytes when chunking a maximum-key delete transaction', async () => {
+		const key = 'x'.repeat(1978);
+		const entries = Array.from({ length: 4096 }, (_, index) =>
+			audit({ timestamp: 20, recordId: `${index}.${key}`, endTxn: index === 4095 })
+		);
+		const store = new FakeLogStore(new Map([[10, entries]]));
+		const backend = new SyncBackend('delete-key-budget', cursor(10), (batch, target) => {
+			target.cursor = batch.through;
+			return DERIVED_INDEX_ACCEPTED;
+		});
+		const { runtime } = runtimeFor(store, new Map(), {
+			maxChunkRecords: 4096,
+			maxChunkBytes: 4 * 1024 * 1024,
+			maxMillisecondsPerTurn: 100_000,
+		});
+		runtime.register(registration(backend));
+
+		await waitFor(() => backend.cursor.logs.local === 20);
+		assert(backend.deliveries.length > 1);
+		assert.strictEqual(
+			backend.deliveries.reduce((records, batch) => records + batch.records.length, 0),
+			4096
+		);
+		assert(
+			backend.deliveries.every((batch) => batch.bytes <= 4 * 1024 * 1024 + 2048),
+			'a chunk may exceed the soft byte target only by its final maximum-size key'
 		);
 		await runtime.stop();
 	});
@@ -598,7 +668,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await stopped;
 		backend.shutdown = AsyncBackend.prototype.shutdown;
 		await waitFor(() => backend.host.isOwnerEpoch(firstEpoch) === false);
-		assert(backend.deliveries.every((batch) => batch.ownerEpoch === firstEpoch || batch.ownerEpoch > firstEpoch));
+		assert(backend.deliveries.every((batch) => batch.ownerEpoch >= firstEpoch));
 		await waitFor(() => second.getStatus('handoff').state === 'idle' && store.locks.size === 1);
 		await waitFor(() => backend.fenced >= 1, { timeout: 2000 });
 		assert.strictEqual(backend.applied.size, 0, 'the old owner apply must not publish into the new generation');
@@ -1128,6 +1198,319 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('retries a transient full-text inspection failure without condemning or resetting the index', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		let inspections = 0;
+		let resets = 0;
+		let inspectionAvailable = false;
+		const backend = new FullTextDerivedIndexBackend({
+			id: 'inspect-retry',
+			lifecycle: {
+				inspect() {
+					inspections++;
+					if (!inspectionAvailable) throw new Error('temporary inspection failure');
+					return { state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) };
+				},
+				async open() {
+					throw new Error('writer should not open');
+				},
+				async reset() {
+					resets++;
+				},
+			},
+		});
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		runtime.register(registration(backend, { lockRetryMilliseconds: 20 }));
+
+		await waitFor(
+			() =>
+				inspections > 0 &&
+				runtime.getReadiness(backend.id).state === 'unknown' &&
+				runtime.getReadiness(backend.id).reason
+		);
+		assert.strictEqual(runtime.getReadiness(backend.id).reason, 'backend-failed');
+		inspectionAvailable = true;
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready');
+		assert(inspections >= 2);
+		assert.strictEqual(resets, 0);
+		assert.strictEqual(store.markers.size, 0);
+		await runtime.stop();
+	});
+
+	it('shares inspection retry state across workers and clears it after another owner succeeds', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		let firstInspections = 0;
+		const firstBackend = new FullTextDerivedIndexBackend({
+			id: 'shared-inspection-retry',
+			lifecycle: {
+				inspect() {
+					firstInspections++;
+					throw new Error('worker one cannot inspect');
+				},
+				async open() {
+					throw new Error('writer should not open');
+				},
+				async reset() {
+					throw new Error('index should not reset');
+				},
+			},
+		});
+		const { runtime: firstRuntime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		firstRuntime.register(registration(firstBackend, { lockRetryMilliseconds: 250 }));
+		await waitFor(() => firstInspections === 2, { timeout: 5000 });
+		await firstRuntime.stop();
+
+		let secondInspections = 0;
+		const secondBackend = new FullTextDerivedIndexBackend({
+			id: firstBackend.id,
+			lifecycle: {
+				inspect() {
+					secondInspections++;
+					return { state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) };
+				},
+				async open() {
+					throw new Error('writer should not open');
+				},
+				async reset() {
+					throw new Error('index should not reset');
+				},
+			},
+		});
+		const { runtime: secondRuntime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		secondRuntime.register(registration(secondBackend));
+		await waitFor(() => secondRuntime.getReadiness(secondBackend.id).state === 'ready');
+		assert.strictEqual(secondInspections, 1);
+		await secondRuntime.stop();
+
+		let resets = 0;
+		const thirdBackend = new FullTextDerivedIndexBackend({
+			id: firstBackend.id,
+			lifecycle: {
+				inspect() {
+					throw new Error('worker three cannot inspect');
+				},
+				async open() {
+					throw new Error('writer should not open');
+				},
+				async reset() {
+					resets++;
+				},
+			},
+		});
+		const { runtime: thirdRuntime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		thirdRuntime.register(registration(thirdBackend, { lockRetryMilliseconds: 1000 }));
+		await waitFor(
+			() =>
+				thirdRuntime.getReadiness(thirdBackend.id).state === 'unknown' &&
+				thirdRuntime.getReadiness(thirdBackend.id).reason === 'backend-failed'
+		);
+		assert.strictEqual(resets, 0, 'the successful worker must rearm the shared recovery allowance');
+		await thirdRuntime.stop();
+	});
+
+	it('counts inspection failures across workers before starting one recovery rebuild', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]));
+		let firstInspections = 0;
+		const firstBackend = new FullTextDerivedIndexBackend({
+			id: 'shared-inspection-escalation',
+			lifecycle: {
+				inspect() {
+					firstInspections++;
+					throw new Error('worker one cannot inspect');
+				},
+				async open() {
+					throw new Error('writer should not open');
+				},
+				async reset() {
+					throw new Error('index should not reset');
+				},
+			},
+		});
+		const { runtime: firstRuntime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		firstRuntime.register(registration(firstBackend, { lockRetryMilliseconds: 250 }));
+		await waitFor(() => firstInspections === 2, { timeout: 5000 });
+		await firstRuntime.stop();
+
+		let secondInspections = 0;
+		let resets = 0;
+		let finishReset;
+		const engine = {
+			committedPayload: undefined,
+			async applyMutationBatch(batch) {
+				return {
+					processed: batch.upserts.length + batch.deletes.length,
+					rejected: [],
+					encodedBytes: 1,
+					frames: 1,
+				};
+			},
+			async publish(payload) {
+				this.committedPayload = payload;
+				return 1n;
+			},
+			async close() {
+				return {};
+			},
+		};
+		const secondBackend = new FullTextDerivedIndexBackend({
+			id: firstBackend.id,
+			lifecycle: {
+				inspect() {
+					secondInspections++;
+					throw new Error('worker two cannot inspect');
+				},
+				async open() {
+					return engine;
+				},
+				reset() {
+					resets++;
+					return new Promise((resolve) => (finishReset = resolve));
+				},
+			},
+			openAttempts: 1,
+		});
+		const { runtime: secondRuntime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
+		secondRuntime.register(registration(secondBackend, { lockRetryMilliseconds: 250 }));
+		await waitFor(() => resets === 1, { timeout: 5000 });
+		assert.strictEqual(secondInspections, 1, 'the third process-wide failure must start recovery');
+		finishReset();
+		await waitFor(() => secondRuntime.getReadiness(secondBackend.id).state === 'ready', { timeout: 5000 });
+		await secondRuntime.stop();
+	});
+
+	it('rebuilds after repeated full-text inspection failures instead of retrying forever', async () => {
+		const store = new FakeLogStore(new Map([[10, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 10, recordId: 'a' })]]]),
+		});
+		let inspections = 0;
+		let resets = 0;
+		let finishReset;
+		const engine = {
+			committedPayload: undefined,
+			async applyMutationBatch(batch) {
+				return {
+					processed: batch.upserts.length + batch.deletes.length,
+					rejected: [],
+					encodedBytes: 1,
+					frames: 1,
+				};
+			},
+			async publish(payload) {
+				this.committedPayload = payload;
+				return 1n;
+			},
+			async close() {
+				return {};
+			},
+		};
+		const backend = new FullTextDerivedIndexBackend({
+			id: 'inspect-rebuild',
+			lifecycle: {
+				inspect() {
+					inspections++;
+					throw new Error('persistent inspection failure');
+				},
+				async open() {
+					return engine;
+				},
+				reset() {
+					resets++;
+					return new Promise((resolve) => (finishReset = resolve));
+				},
+			},
+			openAttempts: 1,
+		});
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 5 });
+		runtime.register(
+			registration(backend, {
+				lockRetryMilliseconds: 20,
+				maxFlushAgeMilliseconds: 5,
+				maxRebuildAttempts: 2,
+				rebuildBackoffMilliseconds: 5,
+			})
+		);
+
+		await waitFor(() => resets === 1, { timeout: 5000 });
+		assert.strictEqual(inspections, 3);
+		assert.strictEqual(runtime.getStatus(backend.id).state, 'rebuilding');
+		assert.strictEqual(runtime.getReadiness(backend.id).state, 'rebuilding');
+		finishReset();
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 5000 });
+		await waitFor(() => store.locks.size === 0, { timeout: 5000 });
+		store.rootStore.emit('committed');
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'unavailable', { timeout: 5000 });
+		assert.strictEqual(inspections, 6);
+		assert.strictEqual(resets, 1);
+		await runtime.stop();
+	});
+
+	it('charges the rebuild budget when the full-text wrapper returns an invalid mutation result', async () => {
+		const records = new Map([
+			['1:a', { version: 20, value: { title: 'oversized-a' }, size: 32 }],
+			['1:b', { version: 30, value: { title: 'oversized-b' }, size: 32 }],
+		]);
+		const logEntries = [audit({ timestamp: 20, recordId: 'a' }), audit({ timestamp: 30, recordId: 'b' })];
+		const store = new FakeLogStore(new Map([[10, logEntries]]), {
+			logEntries: new Map([['local', logEntries]]),
+		});
+		class Engine {
+			constructor(committedPayload) {
+				this.committedPayload = committedPayload;
+			}
+
+			async applyMutationBatch() {
+				return {
+					processed: 0,
+					rejected: [],
+					encodedBytes: 1,
+					frames: 1,
+				};
+			}
+
+			async publish(payload) {
+				this.committedPayload = payload;
+				return 1n;
+			}
+
+			async close() {
+				return {};
+			}
+		}
+		const opened = [new Engine(), new Engine()];
+		let finishReset;
+		let resets = 0;
+		const backend = new FullTextDerivedIndexBackend({
+			id: 'single-fulltext-failure',
+			lifecycle: {
+				inspect() {
+					return { state: 'checkpointed', committedPayload: encodeFullTextCursorPayload(cursor(10)) };
+				},
+				async open() {
+					return opened.shift();
+				},
+				reset() {
+					resets++;
+					return new Promise((resolve) => (finishReset = resolve));
+				},
+			},
+			openAttempts: 1,
+		});
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 1000, maxTransactionsPerTurn: 1 });
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5, rebuildBackoffMilliseconds: 1000 }));
+
+		await waitFor(() => resets === 1);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(runtime.getStatus(backend.id).state, 'rebuilding');
+		const attempts = runtime.getMetrics(backend.id).rebuildAttempts;
+		assert.strictEqual(attempts, 1);
+		assert.strictEqual(readDerivedIndexReadiness(store, backend.id).rebuildAttempts, attempts);
+
+		records.clear();
+		finishReset();
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 5000 });
+		await runtime.stop();
+	});
+
 	it('exposes the owner-published readiness to a non-owning worker', async () => {
 		const records = new Map([['1:a', { version: 5, value: { title: 'a' } }]]);
 		const store = new FakeLogStore(new Map([[7, []]]), {
@@ -1247,7 +1630,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await waitFor(() => backend.deliveries.length > 0);
 		const states = backend.deliveries.flatMap((batch) => batch.records.map((record) => record.state));
 		assert.strictEqual(states.length, 40);
-		assert(states.every((state) => state.kind === 'unindexable' && /\(400\)$/.test(state.reason)));
+		assert(states.every((state) => state.kind === 'unindexable' && state.reason.endsWith('(400)')));
 		assert.strictEqual(runtime.getMetrics('all-rejected').unindexableRecords, 40);
 		await waitFor(() => backend.cursor.logs.local === 59);
 		assert.strictEqual(runtime.getStatus('all-rejected').state, 'idle');
@@ -1598,6 +1981,27 @@ describe('DerivedIndexRuntime for native backends', () => {
 		const lookups = store.bufferLookups;
 		await runtime.stop();
 		assert.strictEqual(store.bufferLookups, lookups, 'shared-memory views are fetched once per runner');
+	});
+
+	it('skips internal non-record keys during a rebuild scan', async () => {
+		const store = new FakeLogStore(new Map([[7, []]]), {
+			logEntries: new Map([['local', [audit({ timestamp: 7, recordId: 'kept' })]]]),
+		});
+		const backend = new AsyncBackend('internal-scan-keys', { applyDelay: 1 });
+		const { runtime } = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 60_000,
+			scanRecords: function* () {
+				yield { recordId: Symbol.for('internal'), version: 1, value: { title: 'internal' } };
+				yield { recordId: null, version: 1, value: { title: 'null' } };
+				yield { recordId: 'kept', version: 2, value: { title: 'kept' } };
+			},
+		});
+		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5 }));
+
+		await waitFor(() => runtime.getReadiness('internal-scan-keys').state === 'ready', { timeout: 5000 });
+		assert.deepStrictEqual([...backend.applied.keys()], ['kept']);
+		assert.strictEqual(runtime.getMetrics('internal-scan-keys').rebuiltRecords, 1);
+		await runtime.stop();
 	});
 
 	it('does not trip the lag policy for a caught-up owner that idles past the budget', async () => {

@@ -28,6 +28,7 @@ export type DerivedIndexState =
 export type DerivedIndexMutation = {
 	tableId: number;
 	recordId: Id;
+	recordKey: string;
 	logVersion: number;
 	state: DerivedIndexState;
 };
@@ -95,6 +96,17 @@ export interface DerivedIndexBackendHost {
 	getReadiness(): DerivedIndexReadiness;
 }
 
+/** A fault originating inside a derived-index backend rather than the delivery runtime. */
+export class DerivedIndexBackendError extends Error {}
+
+/** A transient first-read failure during owner acquisition; release ownership and retry without rebuilding. */
+export class DerivedIndexBackendRetryError extends DerivedIndexBackendError {
+	constructor(message: string, cause?: unknown) {
+		super(message, cause === undefined ? undefined : { cause });
+		this.name = 'DerivedIndexBackendRetryError';
+	}
+}
+
 /**
  * A backend queues expensive work and publishes durability later: `deliver()` may only enqueue, a
  * barrier completes asynchronously, and the durable cursor trails delivery. Work that survives a
@@ -116,6 +128,7 @@ export interface DerivedIndexBackend {
 	 */
 	shutdown(ownerEpoch: bigint): void | Promise<void>;
 	onStateChange(wake: (change?: DerivedIndexBackendStateChange) => void): () => void;
+	getUnindexableRecords?(): number;
 	/**
 	 * Destroy index state and the durable cursor; `getDurableCursor()` must return `undefined`
 	 * afterwards. Crash safety is the backend's: its first durable action must invalidate the cursor
@@ -168,7 +181,10 @@ export type DerivedIndexRegistration = {
  */
 export type DerivedIndexRecord = { version: number; value: unknown; size?: number } | undefined;
 
-/** A scan record whose `value` is null or undefined is a tombstone, and one whose `recordId` is a symbol is a Harper-internal store entry; neither is indexed. */
+/**
+ * A scan record whose `value` is null or undefined is a tombstone. A record whose canonical
+ * `writeKeyId()` is not a string is a Harper-internal store entry. Neither is indexed.
+ */
 export type DerivedIndexScanRecord = { recordId: Id; version: number; value: unknown; size?: number };
 
 export type DerivedIndexRuntimeOptions = DerivedIndexRunnerOptions & {
@@ -234,7 +250,13 @@ const READINESS_REASONS: DerivedIndexReadinessReason[] = [
 	'rebuild-requested',
 ];
 const CONDEMNED_MARKER = new Uint8Array([1]);
-// One shared allocation per backend: five independently read Int32 words, then the owner-epoch
+const DERIVED_INDEX_MUTATION_OVERHEAD_BYTES = 16;
+const INSPECTION_FAILURE_LIMIT = 3;
+const INSPECTION_STATE_RADIX = 4;
+const INSPECTION_RECOVERY_NONE = 0;
+const INSPECTION_RECOVERY_REQUESTED = 1;
+const INSPECTION_RECOVERY_ATTEMPTED = 2;
+// One shared allocation per backend: six independently read Int32 words, then the owner-epoch
 // counter. Each word is self-consistent on its own; nothing needs to observe two of them atomically.
 const READINESS_WORDS = 6;
 const READINESS_EPOCH_OFFSET = READINESS_WORDS * 4;
@@ -244,6 +266,7 @@ const READINESS_REASON = 1;
 const READINESS_ATTEMPTS = 2;
 const READINESS_REBUILD_REQUEST = 3;
 const READINESS_LAG_EXCEEDED = 4;
+const READINESS_INSPECTION = 5;
 
 /** A failure raised inside the collector that already knows its shareable reason. */
 class RunnerError extends Error {
@@ -665,7 +688,7 @@ class DerivedIndexRunner {
 			oldestAcceptedAgeMilliseconds: oldestAcceptedAt === undefined ? 0 : Math.max(0, now - oldestAcceptedAt),
 			cursorLagMilliseconds: cursorLag,
 			stalledMilliseconds: this.#stalledSince === undefined ? 0 : Math.max(0, now - this.#stalledSince),
-			unindexableRecords: this.#unindexableRecords,
+			unindexableRecords: this.#unindexableRecords + (this.#registration.backend.getUnindexableRecords?.() ?? 0),
 			rebuildAttempts: this.#rebuildAttempts,
 			rebuiltRecords: this.#rebuiltRecords,
 			quiescenceAgeMilliseconds:
@@ -910,10 +933,68 @@ class DerivedIndexRunner {
 				return;
 			}
 			this.#resetFromDurableCursor();
+			// Inspection recovery is coordinated process-wide. Only a normal acquisition proves that
+			// native state is inspectable again; rebuild revival reuses the backend's reset state.
+			if (!reviving) this.#clearInspectionState();
 			if (this.#owned && !this.#rebuilding) this.#drain();
 		} catch (error) {
-			this.#fail('failed to initialize the runner', error);
+			if (error instanceof DerivedIndexBackendRetryError) {
+				const inspection = this.#recordInspectionFailure();
+				if (inspection.failures >= INSPECTION_FAILURE_LIMIT) {
+					if (inspection.recovery === INSPECTION_RECOVERY_ATTEMPTED) {
+						this.#rebuildAttempts = Math.max(1, this.#rebuildAttempts);
+						this.#becomeUnavailable('backend state remained uninspectable after rebuild', 'backend-failed', error);
+						return;
+					}
+					this.#requestInspectionRecovery();
+					this.#fail('backend state repeatedly could not be inspected', error, 'backend-failed');
+					return;
+				}
+				logger.warn?.(`Derived index '${this.id}' could not inspect backend state; retrying`, error);
+				this.status = { state: 'idle' };
+				this.#publishReadiness('unknown', 'backend-failed');
+				this.#release();
+				this.#armLockRetry(this.#options.lockRetryMilliseconds);
+				return;
+			}
+			this.#fail(
+				'failed to initialize the runner',
+				error,
+				error instanceof DerivedIndexBackendError ? 'backend-failed' : 'runner-failed'
+			);
 		}
+	}
+
+	#recordInspectionFailure(): { failures: number; recovery: number } {
+		const words = this.#shared().words;
+		const state = Atomics.load(words, READINESS_INSPECTION);
+		const recovery = Math.floor(state / INSPECTION_STATE_RADIX);
+		const failures = Math.min(INSPECTION_FAILURE_LIMIT, (state % INSPECTION_STATE_RADIX) + 1);
+		Atomics.store(words, READINESS_INSPECTION, recovery * INSPECTION_STATE_RADIX + failures);
+		return { failures, recovery };
+	}
+
+	#requestInspectionRecovery() {
+		const words = this.#shared().words;
+		const state = Atomics.load(words, READINESS_INSPECTION);
+		const recovery = Math.floor(state / INSPECTION_STATE_RADIX);
+		if (recovery === INSPECTION_RECOVERY_NONE)
+			Atomics.store(words, READINESS_INSPECTION, INSPECTION_RECOVERY_REQUESTED * INSPECTION_STATE_RADIX);
+	}
+
+	#clearInspectionState() {
+		Atomics.store(this.#shared().words, READINESS_INSPECTION, 0);
+	}
+
+	#beginInspectionRecovery() {
+		const words = this.#shared().words;
+		const state = Atomics.load(words, READINESS_INSPECTION);
+		const recovery = Math.floor(state / INSPECTION_STATE_RADIX);
+		Atomics.store(
+			words,
+			READINESS_INSPECTION,
+			(recovery === INSPECTION_RECOVERY_REQUESTED ? INSPECTION_RECOVERY_ATTEMPTED : recovery) * INSPECTION_STATE_RADIX
+		);
 	}
 
 	#mintEpoch(): bigint {
@@ -1187,15 +1268,25 @@ class DerivedIndexRunner {
 					// is met exactly once: here, before the rebuild it demands.
 					throw new RunnerError('reload', `table ${entry.tableId} requires a derived-index rebuild`);
 				} else if (ELIGIBLE_ACTIONS.has(entry.type)) {
-					let byRecord = current.keys.get(entry.tableId);
-					if (!byRecord) current.keys.set(entry.tableId, (byRecord = new Map()));
-					const key = writeKeyId(entry.recordId);
-					const known = byRecord.get(key);
-					if (known) known.logVersion = entry.version;
-					else {
-						byRecord.set(key, { recordId: entry.recordId, logVersion: entry.version, sizeHint: entry.size });
-						current.keyCount++;
-						keyCount++;
+					let recordId;
+					try {
+						recordId = entry.recordId;
+					} catch {
+						throw new RunnerError('log-corrupt', 'transaction log yielded an undecodable record id');
+					}
+					if (recordId === undefined)
+						throw new RunnerError('log-corrupt', 'transaction log yielded an undecodable record id');
+					const key = writeKeyId(recordId);
+					if (typeof key === 'string') {
+						let byRecord = current.keys.get(entry.tableId);
+						if (!byRecord) current.keys.set(entry.tableId, (byRecord = new Map()));
+						const known = byRecord.get(key);
+						if (known) known.logVersion = entry.version;
+						else {
+							byRecord.set(key, { recordId, logVersion: entry.version, sizeHint: entry.size });
+							current.keyCount++;
+							keyCount++;
+						}
 					}
 				}
 			}
@@ -1249,6 +1340,7 @@ class DerivedIndexRunner {
 					mutations.push({
 						tableId,
 						recordId: collectedKey.recordId,
+						recordKey: record.recordKey,
 						logVersion: collectedKey.logVersion,
 						state: record.state,
 					});
@@ -1303,11 +1395,19 @@ class DerivedIndexRunner {
 			record.logVersion = collectedKey.logVersion;
 			return record;
 		}
+		const recordKey = derivedIndexRecordKey(key);
+		chunk.batch.bytes += recordKey.length + DERIVED_INDEX_MUTATION_OVERHEAD_BYTES;
 		const current = this.#resolveRecord(tableId, collectedKey.recordId);
 		const state: DerivedIndexState = current
 			? this.#project(chunk, tableId, current.value, current.version, current.size ?? collectedKey.sizeHint)
 			: { kind: 'absent' };
-		record = { tableId, recordId: collectedKey.recordId, logVersion: collectedKey.logVersion, state };
+		record = {
+			tableId,
+			recordId: collectedKey.recordId,
+			recordKey,
+			logVersion: collectedKey.logVersion,
+			state,
+		};
 		byRecord.set(key, record);
 		chunk.batch.records.push(record);
 		return record;
@@ -1419,11 +1519,13 @@ class DerivedIndexRunner {
 		this.#settleReady();
 		if (this.#idleTimer) return;
 		this.status = { state: 'idle', ownerEpoch: this.#ownerEpoch };
+		const generation = this.#generation;
+		const offered = cloneCursor(this.#offered);
 		this.#idleTimer = setTimeout(() => {
 			this.#idleTimer = undefined;
-			if (this.#stopped) return;
+			if (this.#stopped || generation !== this.#generation || !sameCursor(offered, this.#offered)) return;
 			try {
-				if (sameCursor(this.#registration.backend.getDurableCursor(), this.#offered!)) this.#release();
+				if (sameCursor(this.#registration.backend.getDurableCursor(), offered)) this.#release();
 			} catch (error) {
 				this.#fail('backend cursor read threw at idle release', error, 'backend-failed');
 			}
@@ -1680,6 +1782,9 @@ class DerivedIndexRunner {
 			this.#becomeUnavailable('rebuild budget exhausted by a previous owner', 'rebuild-exhausted');
 			return;
 		}
+		// The shared state follows ownership across workers. Clearing the partial streak here makes an
+		// unrelated rebuild a fresh inspection attempt without restoring an already-spent recovery.
+		this.#beginInspectionRecovery();
 		const generation = this.#generation;
 		this.status = { state: 'rebuilding', ownerEpoch: this.#ownerEpoch };
 		this.#rebuildAttempts++;
@@ -1730,7 +1835,7 @@ class DerivedIndexRunner {
 		for (const [tableId] of this.#registration.projections) {
 			for (const record of this.#scanRecords!(tableId)) {
 				if (this.#addScanRecord(chunk, tableId, record)) indexed++;
-				// Filtered entries (tombstones, symbol keys) count against the turn too: a long run of them
+				// Filtered entries (tombstones, non-record keys) count against the turn too: a long run of them
 				// must yield without delivering an empty chunk.
 				if (
 					chunk.batch.records.length >= options.maxChunkRecords ||
@@ -1757,14 +1862,18 @@ class DerivedIndexRunner {
 	}
 
 	#addScanRecord(chunk: Chunk, tableId: number, record: DerivedIndexScanRecord): DerivedIndexMutation | undefined {
-		if (record.value == null || typeof record.recordId === 'symbol') return;
+		if (record.value == null) return;
 		const key = writeKeyId(record.recordId);
+		if (typeof key !== 'string') return;
 		let byRecord = chunk.resolved.get(tableId);
 		if (!byRecord) chunk.resolved.set(tableId, (byRecord = new Map()));
 		if (byRecord.has(key)) return;
+		const recordKey = derivedIndexRecordKey(key);
+		chunk.batch.bytes += recordKey.length + DERIVED_INDEX_MUTATION_OVERHEAD_BYTES;
 		const mutation: DerivedIndexMutation = {
 			tableId,
 			recordId: record.recordId,
+			recordKey,
 			logVersion: record.version,
 			state: this.#project(chunk, tableId, record.value, record.version, record.size),
 		};
@@ -1939,6 +2048,11 @@ class DerivedIndexRunner {
 		const settling = Promise.allSettled([this.#resetting, flushed]).then(() => undefined);
 		this.#releasing = settling.then(() => (epoch === undefined ? undefined : this.#quiesce(epoch))).then(unlock, hold);
 	}
+}
+
+function derivedIndexRecordKey(key: unknown): string {
+	if (typeof key !== 'string') throw new Error('derived index record id has no canonical stored key');
+	return key;
 }
 
 function lastOpen(collected: CollectedTransaction[]): CollectedTransaction | undefined {

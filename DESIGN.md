@@ -2641,6 +2641,7 @@ interface DerivedIndexBackend {
 	flush(reason: 'age' | 'threshold' | 'shutdown'): void | Promise<void>; // barrier request
 	shutdown(ownerEpoch: bigint): void | Promise<void>; // quiescence: nothing further applies or publishes for the epoch
 	onStateChange(wake: (change?: 'changed' | 'accepted-work-lost' | 'failed') => void): () => void;
+	getUnindexableRecords?(): number; // backend-local records omitted from the derived index
 	reset?(ownerEpoch: bigint): void | Promise<void>; // destroy state and cursor; first durable action invalidates the cursor
 }
 type DerivedIndexBatch = {
@@ -2651,9 +2652,17 @@ type DerivedIndexBatch = {
 	bytes: number; // estimate; non-enumerable
 	rebuild?: true;
 };
+type DerivedIndexMutation = {
+	tableId: number;
+	recordId: Id;
+	recordKey: string; // canonical writeKeyId(recordId)
+	logVersion: number;
+	state: DerivedIndexState;
+};
 ```
 
-There is one contract and every hook is required. What an ownership handoff has to fence is work
+There is one contract; only the metrics hook `getUnindexableRecords` and recovery hook `reset` are
+optional. What an ownership handoff has to fence is work
 that survives a method return — a queued apply, a barrier that completes later, a cursor that
 trails delivery — so every backend supplies the epoch fence, the barrier request and the quiescence
 handshake; one that completes inside `deliver()` implements them trivially. `deliver()` is not
@@ -2684,8 +2693,8 @@ the cursor while the earlier state stayed indexed. An oversized transaction is d
 chunks with `through` withheld until the chunk that contains its `endTxn`; nothing marks such a
 chunk because a backend can do nothing with the distinction, and query-visible atomicity of one
 transaction across chunks is not promised. `bytes` is an estimate from stored record sizes (or the
-log entry size), never a serialization; `maxChunkRecords` is the hard bound. All bounds are settable
-per registration.
+log entry size) plus the canonical key bytes charged for every mutation, never a serialization;
+`maxChunkRecords` is the hard bound. All bounds are settable per registration.
 
 ### Durability cadence
 
@@ -2703,7 +2712,8 @@ completion.
 When the backend has `reset` and the runtime was built with `scanRecords`, `needs-rebuild` is a
 phase, not an end state: publish `rebuilding`; `shutdown(previousEpoch)`; mint a new epoch and
 republish; `reset(newEpoch)` (afterwards `getDurableCursor()` must be `undefined`); capture the
-**committed tail** of every log; scan every registered table (tombstones and symbol keys skipped),
+**committed tail** of every log; scan every registered table (tombstones and records whose canonical
+`writeKeyId()` is not a string skipped),
 project, deliver bounded chunks with `through` absent; deliver a final chunk with `through` = tail;
 install the tail as offered progress and replay through the ordinary drain; publish `ready` at the
 first durable advance past the tail or the first idle pass with durable == offered.
@@ -2792,6 +2802,199 @@ flowchart TD
     K -->|yes, after backoff| Y
     K -->|no| U[publish unavailable, release lock]
 ```
+
+### Native Fulltext backend (`resources/FullTextDerivedIndexBackend.ts`)
+
+The Fulltext backend connects this runtime to `@harperfast/fulltext/native`. Tantivy files are
+node-local derived state; Harper records and transaction logs remain authoritative. Every source
+node and replica maintains its own index. Neither Harper nor Fulltext stores terms, postings,
+segments, or indexed documents in RocksDB.
+
+```text
+Harper records and committed logs
+                |
+                v
+       DerivedIndexRuntime
+       - elects one owner
+       - resolves record state
+       - replays/rebuilds
+                |
+                v
+   FullTextDerivedIndexBackend
+   - bounds and orders work
+   - maps canonical record ids
+   - fences the owner epoch
+                |
+                v
+ @harperfast/fulltext/native
+ - owns the Tantivy writer/readers
+ - atomically publishes segments + cursor
+ - validates, inspects, resets, and reclaims native state
+```
+
+There is no Harper Fulltext store protocol, `CURRENT`, `STORE.json`, generation directory, or
+RocksDB transport. Harper supplies one deterministic directory,
+`<storePath>/<sha256(storeName)>.fulltext`, and a separately hashed source generation. Documents
+use `<decimal table id>.<base64url(canonical writeKeyId bytes)>`; the runtime already produced the
+canonical key, so the backend does not reinterpret customer IDs.
+
+#### Binding and writer lifecycle
+
+Harper validates lifecycle API 1, mutation-batch API 3, the `native` storage capability, and the
+wrapper-reported commit-payload capacity before registration. The native ABI remains an internal
+Rust/Node compatibility check enforced by the wrapper's own loader; Harper does not couple itself
+to that implementation version. Harper keeps its cursor format ceiling at 64 KiB and refuses to
+activate if the wrapper cannot carry that configured value.
+
+```ts
+type AppliedMutationBatch = {
+	processed: number;
+	rejected: Array<{
+		operation: 'upsert';
+		index: number;
+		code: 'E_INVALID_ARGUMENT' | 'E_BATCH_TOO_LARGE';
+	}>;
+	encodedBytes: number;
+	frames: number;
+};
+
+interface NativeFullTextModule {
+	NativeFullTextIndex: new (...args: unknown[]) => {
+		applyMutationBatch(batch, options?): Promise<AppliedMutationBatch>;
+	};
+	runtimeInfo(): Promise<{
+		packageVersion: string;
+		tantivyVersion: string;
+		nativeAbiVersion: number;
+		lifecycleApiVersion: 1;
+		mutationBatchApiVersion: 3;
+		storageBackends: ReadonlyArray<'native'>;
+		limits: { maxCommitPayloadBytes: number };
+	}>;
+	validateNativeFullTextIndexOptions(options): void;
+	inspectNativeFullTextIndex(
+		options
+	):
+		| { state: 'missing' | 'cursorless' }
+		| { state: 'checkpointed'; committedPayload: string }
+		| { state: 'incompatible'; code: string };
+	openNativeFullTextIndex(options): Promise<{
+		readonly committedPayload?: string;
+		applyMutationBatch(
+			batch,
+			options: { assumeDistinctIds: true; rejectedUpsert: 'delete' }
+		): Promise<AppliedMutationBatch>;
+		publish(cursor: string): Promise<bigint>;
+		close(options?: { mode?: 'require-clean' | 'rollback' }): Promise<{ cleanupError?: unknown }>;
+	}>;
+	resetNativeFullTextIndex(options): Promise<{ state: 'missing' } | { state: 'reset'; retiredPath: string }>;
+	reclaimRetiredNativeFullTextIndexes(options: {
+		path: string;
+		retiredPath?: string;
+	}): Promise<{ removed: number; failed: number }>;
+}
+```
+
+Native configuration validation belongs to the wrapper because it must stay identical to open's
+Rust decoder and Tantivy limits. Harper calls the validation-only operation at activation; it does
+not duplicate field, analyzer, or writer-limit rules.
+
+Inspection is synchronous and read-only. It supplies the replay anchor without taking Tantivy's
+single writer. The backend opens the writer only when the FIFO reaches a mutation or publication
+barrier. Cursor-only traffic can therefore advance through the queue without holding every index's
+writer. Before first use, the opened handle's `committedPayload` is reconciled with the inspected
+cursor. A mismatch rollback-closes the handle, adopts the native cursor, discards accepted work,
+and asks the runtime to replay from that exact point.
+
+An inspection exception is retried across owner epochs without condemning valid native state. The
+failure streak and recovery allowance live in the process-shared readiness buffer, so ownership
+moving between workers cannot reset or duplicate them. The third consecutive exception enters the
+normal condemnation and rebuild path. One rebuild is allowed process-wide for that uninterrupted
+inspection outage; if inspection still fails three times afterward, the shared state becomes
+`unavailable` without another catalog rebuild. A successful inspection by any owner clears the
+streak and rearms the allowance. An unrelated rebuild clears a partial failure streak but does not
+rearm an already spent inspection-recovery rebuild.
+
+#### Bounded apply and publication
+
+`deliver()` only validates ownership and admits a retained batch. Queue count is a hard bound;
+estimated source bytes are a scheduling bound and allow one oversized batch when the queue is
+empty, matching HNSW and preventing one large record from permanently stalling the index. Exact
+wire limits belong to Fulltext.
+
+When schema registration is added, it must build the runtime projection from the same declared field
+list passed to Fulltext when the native schema is opened. Unknown projection fields are an integration
+error that the registration path must fail rather than silently drop. This slice does not register
+schemas.
+
+In one serialized drain, Harper passes one logical mutation batch to `applyMutationBatch()`. The
+wrapper owns FTMB encoding, frame partitioning, exact `maxBatchBytes` enforcement, native frame
+counts, rejection details, and replacement deletes. Harper sets `assumeDistinctIds: true` because a
+resolved runtime chunk contains at most one mutation per source record key. Harper verifies that the
+wrapper processed the whole logical batch before advancing and uses only the rejection count for
+metrics; it does not interpret the wrapper's internal frames or rejection metadata.
+
+A wrapper-rejected upsert becomes a delete for the same derived document ID so an old searchable
+value cannot survive; Harper counts the returned rejection as unindexable. Schema mismatch and
+invalid aggregate results fail the backend.
+
+All frames and replacements for an accepted command remain staged in one writer window. One
+`publish(cursor)` makes them searchable and durable with the cursor. A failure after any staged
+frame rollback-closes the writer and replays from the prior durable cursor; a partial logical batch
+is never published.
+
+```mermaid
+sequenceDiagram
+    participant R as DerivedIndexRuntime
+    participant B as Fulltext backend
+    participant N as Native Fulltext
+    R->>B: deliver(batch, epoch)
+    B-->>R: accepted
+    B->>N: applyMutationBatch(logical batch)
+    R->>B: flush(reason)
+    B->>N: publish(cursor)
+    N-->>B: segments + cursor durable/searchable
+    B-->>R: durable progress changed
+```
+
+#### Failure, shutdown, and rebuild
+
+Apply or publish failure discards later commands and performs one rollback close. The runtime is
+not told accepted work was lost until close proves native quiescence. Harper permits one immediate
+replay for a transient writer failure. A second writer failure before any successful publication is
+reported as permanent, entering the shared condemnation/rebuild budget and its backoff instead of
+spinning an unbounded open/apply/close loop. A wrapper contract or protocol violation enters that
+same shared budget immediately rather than adding a Fulltext-specific recovery state machine.
+
+Shutdown drains accepted work, publishes when possible, closes the writer, and resolves only after
+no command from that owner epoch can touch the index. The wrapper returns a structured close result:
+a `cleanupError` means resources are quiescent despite an operational cleanup problem, so Harper
+logs it and completes handoff. A rejected close means quiescence was not proven (or clean close was
+refused for uncommitted data), so the runtime keeps the runner lock and no successor can open the
+same writer. Harper does not classify native error codes to infer quiescence.
+
+Reset runs only inside the shared rebuild sequence after condemnation is durable and the prior
+epoch is quiescent. Fulltext atomically retires the active directory and owns the naming and safe
+removal mechanism for those wrapper-created trees. Harper chooses the existing cleanup points—once
+during lifecycle initialization and again after reset—and calls the wrapper reclaimer with the live
+index path. It neither interprets `retiredPath` nor recursively removes native files itself. The
+wrapper limits removal to generated names for that one index, ignores unrelated entries and other
+indices sharing `.fulltext-retired`, and reports failed removals for Harper to log and retry on a
+later lifecycle pass. After reset Harper passes the opaque `retiredPath` back to the wrapper so the
+producer's canonical basename is retained without Harper parsing it.
+
+A restart reuses compatible files and replays from the cursor embedded in the Tantivy publication.
+A new replica, restore without local files, missing/corrupt/incompatible index, or condemned
+generation rebuilds from authoritative tables before serving Fulltext queries. Ordinary Harper
+reads and writes continue unless the optional derived-index lag policy is enabled and exceeded.
+
+The focused verification covers binding capabilities, delegated validation and reclamation,
+deterministic identity, inspect-without-open, lazy cursor reconciliation, logical-batch delegation,
+rejected-record accounting, rollback, handoff quiescence, restart replay, local rebuild,
+and absence of derived storage feedback into the authoritative log. Wrapper tests own the
+filesystem safety matrix for retirement. Performance qualification must measure rebuild and
+incremental throughput, publication cost, memory, disk amplification, restart recovery, and search
+latency under concurrent catalog indexing.
 
 ## Native HNSW plane: a file-primary mmap graph on the derived-index runtime (`resources/indexes/HierarchicalNavigableSmallWorld.ts`, `resources/indexes/hnswDerivedIndex.ts`, `resources/indexes/hnswPlaneBinding.ts`)
 
