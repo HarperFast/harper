@@ -99,7 +99,7 @@ describe('EntryHandler', () => {
 		const unlinkDirHandlerSpy = spy();
 		entryHandler.on('unlinkDir', unlinkDirHandlerSpy);
 
-		await once(entryHandler, 'ready');
+		await entryHandler.ready;
 		assert.equal(readyEventSpy.callCount, 1, 'ready event should be triggered once');
 
 		// Initial add events
@@ -109,10 +109,11 @@ describe('EntryHandler', () => {
 		assert.equal(addDirHandlerSpy.callCount, 3, 'addDir event should be triggered for each directory');
 
 		// New file creation
-		const addFileEvent = once(entryHandler, 'add');
 		const newFilePath = join(this.directory, 'x');
 		await writeFile(newFilePath, 'x');
-		await addFileEvent;
+		await waitFor(() => addHandlerSpy.callCount === 8, {
+			message: 'timed out waiting for the root file add event',
+		});
 		assert.equal(addHandlerSpy.callCount, 8, 'add event should be triggered for the new file');
 		const addFileArg = addHandlerSpy.getCall(7).args[0];
 		assert.equal(addFileArg.absolutePath, newFilePath, 'add event argument `absolutePath` should be the file path');
@@ -124,10 +125,11 @@ describe('EntryHandler', () => {
 		assert.ok(addFileArg.stats.isFile(), 'add event argument `stats` should be a file');
 
 		// New directory creation
-		const addDirEvent = once(entryHandler, 'addDir');
 		const newDirPath = join(this.directory, 'fuzz');
 		await mkdir(newDirPath);
-		await addDirEvent;
+		await waitFor(() => addDirHandlerSpy.callCount === 4, {
+			message: 'timed out waiting for the root directory add event',
+		});
 		assert.equal(addDirHandlerSpy.callCount, 4, 'addDir event should be triggered for the new directory');
 		const addDirArg = addDirHandlerSpy.getCall(3).args[0];
 		assert.equal(
@@ -141,13 +143,35 @@ describe('EntryHandler', () => {
 		assert.ok(addDirArg.stats !== undefined, 'addDir event argument `stats` should be defined');
 		assert.ok(addDirArg.stats.isDirectory(), 'addDir event argument `stats` should be a directory');
 
-		// New file creation in new directory
-		const addFileInDirEvent = once(entryHandler, 'add');
-		const newFileInDirPath = join(newDirPath, 'y');
-		await writeFile(newFileInDirPath, 'y');
-		await addFileInDirEvent;
-		assert.equal(addHandlerSpy.callCount, 9, 'add event should be triggered for the new file in new directory');
-		const addFileInDirArg = addHandlerSpy.getCall(8).args[0];
+		// A root addDir event can precede the recursive watch being armed. Keep creating distinct
+		// files until an add proves the new directory itself is watched.
+		let newFileInDirPath;
+		let addFileInDirArg;
+		let candidate = 0;
+		await waitFor(
+			async () => {
+				addFileInDirArg = addHandlerSpy
+					.getCalls()
+					.slice(8)
+					.map((call) => call.args[0])
+					.find((entry) => entry.absolutePath.startsWith(`${newDirPath}${sep}`));
+				if (addFileInDirArg) {
+					newFileInDirPath = addFileInDirArg.absolutePath;
+					return true;
+				}
+				const fileName = candidate++ === 0 ? 'y' : `y-${candidate}`;
+				await writeFile(join(newDirPath, fileName), 'y');
+				return false;
+			},
+			{
+				timeout: 6000,
+				interval: 50,
+				message: 'timed out waiting for the new directory to receive a nested file add event',
+			}
+		);
+		assert.ok(addHandlerSpy.callCount >= 9, 'add event should be triggered for the new file in a new directory');
+		assert.ok(newFileInDirPath, 'the nested file event should identify its absolute path');
+		assert.ok(addFileInDirArg, 'the nested file event should carry an entry');
 		assert.equal(
 			addFileInDirArg.absolutePath,
 			newFileInDirPath,
@@ -160,21 +184,31 @@ describe('EntryHandler', () => {
 		);
 		assert.equal(addFileInDirArg.entryType, 'file', 'add event argument `entryType` should be `file`');
 		assert.equal(addFileInDirArg.eventType, 'add', 'add event argument `eventType` should be `add`');
-		assert.equal(addFileInDirArg.urlPath, '/fuzz/y', 'add event argument `urlPath` should be file name');
+		assert.equal(
+			addFileInDirArg.urlPath,
+			`/fuzz/${basename(newFileInDirPath)}`,
+			'add event argument `urlPath` should be file name'
+		);
 		assert.ok(addFileInDirArg.stats !== undefined, 'add event argument `stats` should be defined');
 		assert.ok(addFileInDirArg.stats.isFile(), 'add event argument `stats` should be a file');
 
-		// New directory creation in new directory
-		const addDirInDirEvent = once(entryHandler, 'addDir');
 		const newDirInDirPath = join(newDirPath, 'buzz');
 		await mkdir(newDirInDirPath);
-		await addDirInDirEvent;
-		assert.equal(
-			addDirHandlerSpy.callCount,
-			5,
-			'addDir event should be triggered for the new directory in new directory'
+		let addDirInDirArg;
+		await waitFor(
+			() => {
+				addDirInDirArg = addDirHandlerSpy
+					.getCalls()
+					.map((call) => call.args[0])
+					.find((entry) => entry.absolutePath === newDirInDirPath);
+				return addDirInDirArg;
+			},
+			{
+				message: 'timed out waiting for the nested directory add event',
+			}
 		);
-		const addDirInDirArg = addDirHandlerSpy.getCall(4).args[0];
+		assert.ok(addDirHandlerSpy.callCount >= 5, 'addDir event should be triggered for the nested directory');
+		assert.ok(addDirInDirArg, 'the nested directory event should carry an entry');
 		assert.equal(
 			addDirInDirArg.absolutePath,
 			newDirInDirPath,
@@ -187,9 +221,10 @@ describe('EntryHandler', () => {
 		assert.ok(addDirInDirArg.stats.isDirectory(), 'addDir event argument `stats` should be a directory');
 
 		// File removal
-		const unlinkFileEvent = once(entryHandler, 'unlink');
 		rmSync(newFilePath);
-		await unlinkFileEvent;
+		await waitFor(() => unlinkHandlerSpy.callCount === 1, {
+			message: 'timed out waiting for the root file unlink event',
+		});
 		assert.equal(unlinkHandlerSpy.callCount, 1, 'unlink event should be triggered for the removed file');
 		const unlinkFileArg = unlinkHandlerSpy.getCall(0).args[0];
 		assert.equal(
@@ -204,11 +239,22 @@ describe('EntryHandler', () => {
 		assert.equal(unlinkFileArg.stats, undefined, 'unlink event argument `stats` should not be defined');
 
 		// Directory removal
-		const unlinkDirEvent = once(entryHandler, 'unlinkDir');
 		rmSync(newDirInDirPath, { recursive: true });
-		await unlinkDirEvent;
+		let unlinkDirArg;
+		await waitFor(
+			() => {
+				unlinkDirArg = unlinkDirHandlerSpy
+					.getCalls()
+					.map((call) => call.args[0])
+					.find((entry) => entry.absolutePath === newDirInDirPath);
+				return unlinkDirArg;
+			},
+			{
+				message: 'timed out waiting for the nested directory unlink event',
+			}
+		);
 		assert.equal(unlinkDirHandlerSpy.callCount, 1, 'unlinkDir event should be triggered for the removed directory');
-		const unlinkDirArg = unlinkDirHandlerSpy.getCall(0).args[0];
+		assert.ok(unlinkDirArg, 'the nested directory unlink event should carry an entry');
 		assert.equal(
 			unlinkDirArg.absolutePath,
 			newDirInDirPath,

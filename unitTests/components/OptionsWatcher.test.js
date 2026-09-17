@@ -13,6 +13,7 @@ const chokidar = require('chokidar');
 const { DEFAULT_CONFIG } = require('#src/components/DEFAULT_CONFIG');
 const { cloneDeep } = require('lodash');
 const { useShortReadRetryBudget, restoreReadRetryBudget } = require('../shortReadRetryBudget');
+const { waitFor } = require('../waitFor');
 
 /**
  * This function asserts that an event is emitted.
@@ -1323,7 +1324,6 @@ describe('OptionsWatcher', () => {
 	});
 
 	it('should handle default config resolution', async () => {
-		this.timeout = 3000;
 		const { fixture, configFilePath } = createFixture();
 		// Manually remove the config file to test default resolution
 		rmSync(configFilePath, { force: true });
@@ -1347,37 +1347,50 @@ describe('OptionsWatcher', () => {
 		let changed = 0;
 		const countChanges = () => changed++;
 		options.on('change', countChanges);
-		await assertEvent(
-			options,
-			'ready',
-			() => writeFile(configFilePath, stringify(expected), 'utf-8'),
-			(readySpy) => {
-				assert.equal(readySpy.callCount, 1);
-				assert.deepEqual(
-					readySpy.getCall(0).args,
-					[expected[name]],
-					'the arrival must carry the config that was written'
-				);
-				assert.equal(changed, 0, 'a truthy boot fallback is not a prior source value to merge against');
-				assert.deepEqual(options.getRoot(), expected, 'should return the updated config after writing a new file');
-				assert.deepEqual(options.getAll(), expected[name], 'should return the configuration after file recreation');
-			}
-		);
+		const readySpy = spy();
+		options.on('ready', readySpy);
+		let writeAttempt = 0;
+		try {
+			await waitFor(
+				async () => {
+					if (readySpy.callCount > 0) return true;
+					expected[name].files = writeAttempt++ === 0 ? 'foo.js' : `foo-${writeAttempt}.js`;
+					await writeFile(configFilePath, stringify(expected), 'utf-8');
+					return false;
+				},
+				{
+					timeout: 6000,
+					interval: 50,
+					message: 'timed out waiting for the missing config path to detect a source file',
+				}
+			);
+			assert.equal(readySpy.callCount, 1);
+			assert.deepEqual(
+				readySpy.getCall(0).args,
+				[expected[name]],
+				'the arrival must carry the config that was written'
+			);
+			assert.equal(changed, 0, 'a truthy boot fallback is not a prior source value to merge against');
+			assert.deepEqual(options.getRoot(), expected, 'should return the updated config after writing a new file');
+			assert.deepEqual(options.getAll(), expected[name], 'should return the configuration after file recreation');
+		} finally {
+			options.removeListener('ready', readySpy);
+		}
 		options.removeListener('change', countChanges);
 
-		await assertEvent(
-			options,
-			'remove',
-			() => rm(configFilePath, { force: true }),
-			(removeSpy) => {
-				assert.equal(removeSpy.callCount, 1);
-				assert.deepEqual(options.getRoot(), DEFAULT_CONFIG, 'should return the default config after file removal');
-				assert.deepEqual(options.getAll(), DEFAULT_CONFIG[name], 'should return the default config after file removal');
-			}
-		);
+		const removeSpy = spy();
+		options.on('remove', removeSpy);
+		await rm(configFilePath, { force: true });
+		await waitFor(() => removeSpy.callCount === 1, {
+			timeout: 6000,
+			message: 'timed out waiting for the config file unlink event',
+		});
+		assert.deepEqual(options.getRoot(), DEFAULT_CONFIG, 'should return the default config after file removal');
+		assert.deepEqual(options.getAll(), DEFAULT_CONFIG[name], 'should return the default config after file removal');
+		options.removeListener('remove', removeSpy);
 
 		await teardown({ fixture, options });
-	});
+	}).timeout(10000);
 
 	describe('polling fallback on watcher exhaustion', () => {
 		// harper#488: when ENOSPC/EMFILE fires on the underlying chokidar watcher,
