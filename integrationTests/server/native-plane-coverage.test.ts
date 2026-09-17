@@ -75,17 +75,21 @@ test(
 			await waitFor(async () => (await request('/PlaneStatus/')).body.readiness.state === 'ready', 30_000);
 			await waitFor(async () => (await query(0)).status === 200, 30_000);
 			const coverageBeforeWrites = JSON.stringify((await request('/PlaneStatus/')).body.cursor?.coverage ?? null);
-			// Sampling starts before the writes do, so the catch-up cannot finish between two polls.
+			// Sampling overlaps the writes, so no run can put the whole catch-up inside one interval.
 			const midCatchUpCoverage: string[] = [];
 			let sampling = true;
 			const sampler = (async () => {
-				while (sampling) {
+				// A run torn down by an earlier assertion never clears `sampling`; consecutive failures
+				// are what distinguishes that from a request lost under the ingest load.
+				let failures = 0;
+				while (sampling && failures < 5) {
 					try {
 						const status = (await request('/PlaneStatus/')).body;
 						if (status.mappings < records.length)
 							midCatchUpCoverage.push(JSON.stringify(status.cursor?.coverage ?? null));
+						failures = 0;
 					} catch {
-						return; // the server is gone: an earlier assertion failed and teardown has run
+						failures++;
 					}
 					await new Promise((resolve) => setTimeout(resolve, 500));
 				}
