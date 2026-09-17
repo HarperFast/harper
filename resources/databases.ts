@@ -2600,7 +2600,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// Acquire before the first mutation of the live Table below, so a lost race leaves no
 			// attributes this worker describes but never persisted. Only the RocksDB acquire is bounded
 			// and can throw, and only it is cheap when uncontended: LMDB's exclusiveLock() opens an
-			// environment-wide write transaction that cannot time out, so it stays lazy.
+			// environment-wide write transaction that cannot time out, so it generally stays lazy.
 			if (rootStore instanceof RocksDatabase) exclusiveLock();
 			if (removedAttributes?.length) {
 				exclusiveLock();
@@ -2612,12 +2612,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
+			const peerAddedAttributeNames = new Set<string>();
 			if (origin === 'cluster') {
-				const merged = Table.attributes.slice();
+				const merged = Table.attributes.map((attribute) => ({ ...attribute }));
 				for (const attribute of attributes) {
 					const existing = merged.find((existingAttribute) => existingAttribute.name === attribute.name);
 					if (!existing) {
-						merged.push(attribute);
+						merged.push({ ...attribute });
+						peerAddedAttributeNames.add(attribute.name);
 						continue;
 					}
 					// Nodes that apply the same peer definitions in a different order keep different index sets, and
@@ -2641,6 +2643,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributes = merged;
 			}
 			const hasFullText = attributes.some((attribute) => attribute.fullText);
+			// The target and every source descriptor must be validated in the same schema critical section
+			// that can persist a new handle. Otherwise another LMDB worker can change a source type between
+			// validation and persistence, leaving a durable handle that cannot be loaded.
 			if (hasFullText) exclusiveLock();
 			const fullTextValidationAttributes =
 				origin === 'cluster' && hasFullText
@@ -2652,15 +2657,30 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							return durableAttribute;
 						})
 					: attributes;
-			for (const attribute of attributes) {
+			for (let attributeIndex = 0; attributeIndex < attributes.length; attributeIndex++) {
+				const attribute = attributes[attributeIndex];
 				if (!attribute.fullText) continue;
 				const validationAttribute =
 					fullTextValidationAttributes.find(({ name }) => name === attribute.name) ?? attribute;
-				attribute.fullText = compileFullTextDefinition(
-					validationAttribute,
-					validationAttribute.fullText,
-					fullTextValidationAttributes
-				);
+				if (validationAttribute !== attribute && validationAttribute.type !== 'FullText') {
+					attributes[attributeIndex] = validationAttribute;
+					continue;
+				}
+				try {
+					attribute.fullText = compileFullTextDefinition(
+						validationAttribute,
+						validationAttribute.fullText,
+						fullTextValidationAttributes
+					);
+				} catch (error) {
+					if (origin !== 'cluster' || !peerAddedAttributeNames.has(attribute.name) || !(error instanceof ClientError))
+						throw error;
+					logger.warn(
+						`Ignoring invalid peer full-text declaration ${databaseName}.${tableName}.${attribute.name}: ${error.message}`
+					);
+					attributes.splice(attributeIndex--, 1);
+					continue;
+				}
 				attribute.hidden = true;
 			}
 			if (origin !== 'cluster') {

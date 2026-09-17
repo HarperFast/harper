@@ -159,7 +159,102 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert.strictEqual(restored.hidden, true);
 	});
 
-	it('rejects a peer full-text handle when the local source type is incompatible', () => {
+	it('restores a durable stored field over a stale live full-text handle', async () => {
+		const Stale = table({
+			table: 'ClusterMergeStoredOverFullText',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{
+					name: 'search',
+					type: 'FullText',
+					fullText: {
+						fields: [{ name: 'title', weight: 1 }],
+						analyzer: 'english@1',
+						stopWords: true,
+						positions: true,
+						surfaceTerms: true,
+						synonyms: [],
+					},
+					hidden: true,
+				},
+			],
+		});
+		await catalogFlushed(Stale);
+		const key = 'ClusterMergeStoredOverFullText/search';
+		const storedDescriptor = { ...Stale.dbisDB.getSync(key), type: 'String' };
+		delete storedDescriptor.fullText;
+		delete storedDescriptor.hidden;
+		const written = Stale.dbisDB.put(key, storedDescriptor);
+		if (written?.then) await written;
+
+		const Restored = table({
+			table: 'ClusterMergeStoredOverFullText',
+			database: 'test',
+			schemaDefined: true,
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'extra', type: 'String' },
+			],
+		});
+		const restored = Restored.attributes.find(({ name }) => name === 'search');
+		assert.strictEqual(restored.type, 'String');
+		assert.strictEqual(restored.fullText, undefined);
+		assert(Restored.attributes.some(({ name }) => name === 'extra'));
+	});
+
+	it('does not mutate live full-text metadata when cluster validation fails', async () => {
+		const definition = {
+			fields: [{ name: 'title', weight: 1 }],
+			analyzer: 'english@1',
+			stopWords: true,
+			positions: true,
+			surfaceTerms: true,
+			synonyms: [],
+		};
+		const Local = table({
+			table: 'ClusterMergeAtomicFullText',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'first', type: 'FullText', fullText: definition, hidden: true },
+				{ name: 'second', type: 'FullText', fullText: definition, hidden: true },
+			],
+		});
+		await catalogFlushed(Local);
+		const firstKey = 'ClusterMergeAtomicFullText/first';
+		const secondKey = 'ClusterMergeAtomicFullText/second';
+		const firstWrite = Local.dbisDB.put(firstKey, {
+			...Local.dbisDB.getSync(firstKey),
+			fullText: { ...definition, fields: [{ name: 'title', weight: 2 }] },
+		});
+		if (firstWrite?.then) await firstWrite;
+		const secondWrite = Local.dbisDB.put(secondKey, {
+			...Local.dbisDB.getSync(secondKey),
+			fullText: { ...definition, fields: [{ name: 'missing', weight: 1 }] },
+		});
+		if (secondWrite?.then) await secondWrite;
+
+		assert.throws(
+			() =>
+				table({
+					table: 'ClusterMergeAtomicFullText',
+					database: 'test',
+					schemaDefined: true,
+					origin: 'cluster',
+					attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
+				}),
+			/references unknown source field "missing"/
+		);
+		assert.strictEqual(Local.attributes.find(({ name }) => name === 'first').fullText.fields[0].weight, 1);
+	});
+
+	it('discards a peer full-text handle when the local source type is incompatible', () => {
 		const Local = table({
 			table: 'ClusterMergeInvalidFullText',
 			database: 'test',
@@ -169,39 +264,37 @@ describe('cluster-origin schema definitions are additive-only', () => {
 				{ name: 'title', type: 'Int' },
 			],
 		});
-		assert.throws(
-			() =>
-				table({
-					table: 'ClusterMergeInvalidFullText',
-					database: 'test',
-					schemaDefined: true,
-					origin: 'cluster',
-					attributes: [
-						{ name: 'id', type: 'ID', isPrimaryKey: true },
-						{ name: 'title', type: 'String' },
-						{
-							name: 'search',
-							type: 'FullText',
-							fullText: {
-								fields: [{ name: 'title', weight: 1 }],
-								analyzer: 'english@1',
-								stopWords: true,
-								positions: true,
-								surfaceTerms: true,
-								synonyms: [],
-							},
-						},
-					],
-				}),
-			/String, \[String\], or Blob/
-		);
+		table({
+			table: 'ClusterMergeInvalidFullText',
+			database: 'test',
+			schemaDefined: true,
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'extra', type: 'String' },
+				{
+					name: 'search',
+					type: 'FullText',
+					fullText: {
+						fields: [{ name: 'title', weight: 1 }],
+						analyzer: 'english@1',
+						stopWords: true,
+						positions: true,
+						surfaceTerms: true,
+						synonyms: [],
+					},
+				},
+			],
+		});
 		assert.strictEqual(
 			Local.attributes.some(({ name }) => name === 'search'),
 			false
 		);
+		assert(Local.attributes.some(({ name }) => name === 'extra'));
 	});
 
-	it('validates a peer full-text handle against a newer durable source type', async () => {
+	it('discards a peer full-text handle that conflicts with a newer durable source type', async () => {
 		const Local = table({
 			table: 'ClusterMergeDurableInvalidFullText',
 			database: 'test',
@@ -215,32 +308,28 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		const sourceKey = 'ClusterMergeDurableInvalidFullText/title';
 		const written = Local.dbisDB.put(sourceKey, { ...Local.dbisDB.getSync(sourceKey), type: 'Int' });
 		if (written?.then) await written;
-		assert.throws(
-			() =>
-				table({
-					table: 'ClusterMergeDurableInvalidFullText',
-					database: 'test',
-					schemaDefined: true,
-					origin: 'cluster',
-					attributes: [
-						{ name: 'id', type: 'ID', isPrimaryKey: true },
-						{ name: 'title', type: 'String' },
-						{
-							name: 'search',
-							type: 'FullText',
-							fullText: {
-								fields: [{ name: 'title', weight: 1 }],
-								analyzer: 'english@1',
-								stopWords: true,
-								positions: true,
-								surfaceTerms: true,
-								synonyms: [],
-							},
-						},
-					],
-				}),
-			/String, \[String\], or Blob/
-		);
+		table({
+			table: 'ClusterMergeDurableInvalidFullText',
+			database: 'test',
+			schemaDefined: true,
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{
+					name: 'search',
+					type: 'FullText',
+					fullText: {
+						fields: [{ name: 'title', weight: 1 }],
+						analyzer: 'english@1',
+						stopWords: true,
+						positions: true,
+						surfaceTerms: true,
+						synonyms: [],
+					},
+				},
+			],
+		});
 		assert.strictEqual(
 			Local.attributes.some(({ name }) => name === 'search'),
 			false
