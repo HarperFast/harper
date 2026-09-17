@@ -300,15 +300,21 @@ class ReadSnapshotExpiredError extends ServerError {
 	}
 }
 
-export function trackReadRange(transaction: ReadTransaction, createRange: () => any): any {
+export function getReadTransactionGuard(transaction: ReadTransaction): (() => void) | undefined {
 	const owner = readTransactionOwners.get(transaction);
-	if (!owner) return createRange();
-	function checkActive() {
+	if (!owner) return;
+	return function checkActive() {
 		if (owner.timedOut) throw transactionOpenTooLongError();
 		if (owner.transaction !== transaction) {
 			throw new ReadSnapshotExpiredError();
 		}
-	}
+	};
+}
+
+export function trackReadRange(transaction: ReadTransaction, createRange: () => any): any {
+	const owner = readTransactionOwners.get(transaction);
+	if (!owner) return createRange();
+	const checkActive = getReadTransactionGuard(transaction)!;
 	checkActive();
 	const range = createRange();
 	const iterate = range.iterate;

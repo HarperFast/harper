@@ -2,9 +2,14 @@ import { closeSync, existsSync, openSync, rmSync, statSync, unlinkSync } from 'n
 import { cosineDistance, euclideanDistance, dotProductDistance } from './vector.ts';
 import { FLOAT32_OPTIONS } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
-import { ClientError, ServerError } from '../../utility/errors/hdbError.ts';
+import { ClientError, ServerError, DerivedIndexLagError } from '../../utility/errors/hdbError.ts';
 import type { Id } from '../../resources/ResourceInterface.ts';
-import type { DerivedIndexReadiness } from '../derivedIndexRuntime.ts';
+import {
+	DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
+	MAX_WAIT_FOR_INDEX_MILLISECONDS,
+	type DerivedNativeIndexHost,
+} from './hnswDerivedIndex.ts';
+import { derivedIndexTime, type DerivedIndexReadiness, type DerivedIndexCoverage } from '../derivedIndexRuntime.ts';
 import { SKIP } from '@harperfast/extended-iterable';
 import { RocksDatabase } from '@harperfast/rocksdb-js';
 import { createHash } from 'node:crypto';
@@ -282,7 +287,7 @@ export class HierarchicalNavigableSmallWorld {
 	private nativePlaneMaxNodes = PLANE_MAX_NODES;
 	// Installed by attachDerivedIndexes on every worker: shared readiness of the index and the way
 	// to ask its owner for a rebuild. Only the owning worker's runtime ever destroys native state.
-	private derivedHost?: { readiness: () => DerivedIndexReadiness; requestRebuild: () => boolean };
+	private derivedHost?: DerivedNativeIndexHost;
 	private pendingDerivedMappings = new Map<
 		Id,
 		{ id?: number; signature?: string; version?: number; pending?: boolean }
@@ -559,6 +564,8 @@ export class HierarchicalNavigableSmallWorld {
 		options: any
 	): Promise<any[]> {
 		const query = Float32Array.from(target);
+		// Native mappings are published after record commits, so a record snapshot can hide covered nodes.
+		const mappingOptions = this.filePrimary ? undefined : options;
 		let resultPromise: Promise<{ id: number; distance: number }[]>;
 		let predicateError: unknown;
 		if (filter && filterState) {
@@ -567,7 +574,7 @@ export class HierarchicalNavigableSmallWorld {
 				if (predicateError !== undefined) return verdicts; // already failed — deny remaining batches cheaply
 				try {
 					for (let i = 0; i < ids.length; i++) {
-						const primaryKey = this.safeGetSync(ids[i], options)?.primaryKey;
+						const primaryKey = this.safeGetSync(ids[i], mappingOptions)?.primaryKey;
 						if (primaryKey !== undefined && this.admit(filter, filterState, primaryKey)) verdicts[i] = 1;
 					}
 				} catch (error) {
@@ -597,7 +604,7 @@ export class HierarchicalNavigableSmallWorld {
 			const entries: any[] = [];
 			try {
 				for (const hit of hits) {
-					const mapping = this.safeGetSync(hit.id, options);
+					const mapping = this.safeGetSync(hit.id, mappingOptions);
 					if (mapping?.pending) continue;
 					const primaryKey = mapping?.primaryKey;
 					if (primaryKey === undefined) continue; // deleted/reused id raced the search
@@ -621,8 +628,21 @@ export class HierarchicalNavigableSmallWorld {
 		});
 	}
 
-	attachDerivedHost(host: { readiness: () => DerivedIndexReadiness; requestRebuild: () => boolean }): void {
+	attachDerivedHost(host: DerivedNativeIndexHost): void {
 		this.derivedHost = host;
+	}
+
+	private queryCoverage(maxLagMilliseconds: number) {
+		const coverage = this.derivedHost?.coverage(maxLagMilliseconds);
+		if (!coverage || coverage.state === 'unknown') {
+			const age = coverage?.lagUpperBoundMilliseconds;
+			throw new DerivedIndexLagError(
+				`Cannot certify native HNSW index coverage within ${maxLagMilliseconds} ms` +
+					(age === undefined ? '; freshness is unknown' : `; last certified ${Math.ceil(age)} ms ago`) +
+					'; retry this query'
+			);
+		}
+		return coverage;
 	}
 
 	/**
@@ -1576,6 +1596,8 @@ export class HierarchicalNavigableSmallWorld {
 			comparator,
 			ef,
 			filterExpansion,
+			maxIndexLagMilliseconds = DEFAULT_MAX_INDEX_LAG_MILLISECONDS,
+			waitForIndexMilliseconds = 0,
 		}: {
 			target: number[];
 			value: number;
@@ -1584,6 +1606,8 @@ export class HierarchicalNavigableSmallWorld {
 			comparator: string;
 			ef?: number;
 			filterExpansion?: number;
+			maxIndexLagMilliseconds?: number;
+			waitForIndexMilliseconds?: number;
 		},
 		context: any,
 		{
@@ -1602,6 +1626,7 @@ export class HierarchicalNavigableSmallWorld {
 			minResults?: number;
 		} = {}
 	) {
+		const waiting = this.filePrimary && waitForIndexMilliseconds > 0;
 		let limit: number | undefined; // only set for threshold comparators; 0 is a valid threshold (e.g. dotProduct)
 		let limitInclusive = false; // true for `le`, false for `lt`
 		switch (comparator) {
@@ -1628,6 +1653,23 @@ export class HierarchicalNavigableSmallWorld {
 		else distanceFunction = this.distance;
 		if (!target) throw new ClientError('A target vector must be provided for an HNSW query');
 		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
+		if (
+			this.filePrimary &&
+			(typeof maxIndexLagMilliseconds !== 'number' ||
+				!Number.isFinite(maxIndexLagMilliseconds) ||
+				maxIndexLagMilliseconds < 0)
+		)
+			throw new ClientError('maxIndexLagMilliseconds must be a finite nonnegative number');
+		if (
+			this.filePrimary &&
+			(typeof waitForIndexMilliseconds !== 'number' ||
+				!Number.isFinite(waitForIndexMilliseconds) ||
+				waitForIndexMilliseconds < 0 ||
+				waitForIndexMilliseconds > MAX_WAIT_FOR_INDEX_MILLISECONDS)
+		)
+			throw new ClientError(
+				`waitForIndexMilliseconds must be a finite number between 0 and ${MAX_WAIT_FOR_INDEX_MILLISECONDS}`
+			);
 
 		const txnOptions = context.transaction; // should have a nested RocksDB transaction
 		// Resolve search ef: per-query ef wins; else use the schema-pinned value (from either ef option);
@@ -1674,53 +1716,101 @@ export class HierarchicalNavigableSmallWorld {
 		if (this.filePrimary && distanceFunction !== this.distance) {
 			throw new ClientError('A nativePlane index only supports its configured cosine distance');
 		}
-		// The plane traverses the index's own metric (cosine — the eligibility requirement), so a
-		// query overriding `distance` has to take the JS path: rescoreResults only corrects the
-		// reported distances of whatever candidates came back, not which candidates the beam kept.
-		if (this.planeEligible && distanceFunction === this.distance) {
-			const plane = this.getPlane(target.length, false);
-			// A file-primary index has no JS path to fall through to, so a target the plane cannot
-			// accept has to fail as the client error it is. Otherwise it throws out of
-			// Float32Array.from or the traversal, is read as plane corruption, and unlinks a healthy
-			// file — one malformed query costing a full reconstruction.
-			if (this.filePrimary && plane) this.assertPlaneVector(target, 'Search target');
-			// a non-file-primary query whose dimensionality differs from the graph's takes the JS
-			// path, which tolerates the mismatch, rather than disabling the healthy plane
-			if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {
-				try {
-					return this.searchPlane(plane, target, effectiveEf, filter, filterState, txnOptions).catch((error) => {
-						// the query failed for a reason outside the traversal: re-raise instead of disabling the file
-						if (error?.[NOT_A_PLANE_FAILURE]) throw error;
-						// There is no JS graph behind a file-primary index: it stays unavailable until
-						// its audit-backed rebuild succeeds.
+		const searchNative = (certified?: DerivedIndexCoverage) => {
+			if (this.filePrimary && this.derivedReadiness() !== 'ready') {
+				throw new ServerError(
+					`The native HNSW index is ${this.derivedReadiness() === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
+					503
+				);
+			}
+			// The plane traverses the index's own metric (cosine — the eligibility requirement), so a
+			// query overriding `distance` has to take the JS path: rescoreResults only corrects the
+			// reported distances of whatever candidates came back, not which candidates the beam kept.
+			if (this.planeEligible && distanceFunction === this.distance) {
+				const plane = this.getPlane(target.length, false);
+				// A file-primary index has no JS path to fall through to, so a target the plane cannot
+				// accept has to fail as the client error it is. Otherwise it throws out of
+				// Float32Array.from or the traversal, is read as plane corruption, and unlinks a healthy
+				// file — one malformed query costing a full reconstruction.
+				if (this.filePrimary && plane) this.assertPlaneVector(target, 'Search target');
+				// a non-file-primary query whose dimensionality differs from the graph's takes the JS
+				// path, which tolerates the mismatch, rather than disabling the healthy plane
+				if (plane && plane.dims === target.length && this.planeSearchReady(plane)) {
+					const coverage = certified ?? (this.filePrimary ? this.queryCoverage(maxIndexLagMilliseconds) : undefined);
+					try {
+						const searched = this.searchPlane(plane, target, effectiveEf, filter, filterState, txnOptions)
+							.catch((error) => {
+								// the query failed for a reason outside the traversal: re-raise instead of disabling the file
+								if (error?.[NOT_A_PLANE_FAILURE]) throw error;
+								// There is no JS graph behind a file-primary index: it stays unavailable until
+								// its audit-backed rebuild succeeds.
+								this.disablePlane(error);
+								throw new ServerError('The native HNSW index is rebuilding', 503);
+							})
+							.then((entries) => {
+								if (coverage) Object.defineProperty(entries, 'indexCoverage', { value: coverage });
+								return entries;
+							});
+						if (coverage) Object.defineProperty(searched, 'indexCoverage', { value: coverage });
+						return searched;
+					} catch (error) {
+						// Handle a throw raised before the asynchronous native search returns its promise.
 						this.disablePlane(error);
 						throw new ServerError('The native HNSW index is rebuilding', 503);
-					});
-				} catch (error) {
-					// Handle a throw raised before the asynchronous native search returns its promise.
-					this.disablePlane(error);
-					throw new ServerError('The native HNSW index is rebuilding', 503);
+					}
 				}
 			}
-		}
-		if (this.filePrimary) {
-			const state = this.derivedReadiness();
-			if (state === 'unavailable') throw new ServerError('The native HNSW index is unavailable', 503);
-			const planePath = this.planeFilePath();
-			if (state !== 'ready' || (planePath && existsSync(planePath))) {
-				throw new ServerError('The native HNSW index is rebuilding', 503);
+			if (this.filePrimary) {
+				const state = this.derivedReadiness();
+				if (state === 'unavailable') throw new ServerError('The native HNSW index is unavailable', 503);
+				const planePath = this.planeFilePath();
+				if (state !== 'ready' || (planePath && existsSync(planePath))) {
+					throw new ServerError('The native HNSW index is rebuilding', 503);
+				}
+				// The absence of a file is not proof of an empty index — it is also the state just after
+				// any process removes an unopenable one. Only the surviving node mappings prove it.
+				if (this.hasNodeMappings()) {
+					// A table taking no further writes never drains, so a query is the only thing left
+					// that can notice the graph is gone and ask for it back.
+					logger.error?.(`${this.indexStore.name} lost its native file while its node mappings survive`);
+					this.derivedHost?.requestRebuild();
+					throw new ServerError('The native HNSW index is rebuilding', 503);
+				}
+				const entries = withStats([], filterState);
+				Object.defineProperty(entries, 'indexCoverage', {
+					value: certified ?? this.queryCoverage(maxIndexLagMilliseconds),
+				});
+				return entries;
 			}
-			// The absence of a file is not proof of an empty index — it is also the state just after
-			// any process removes an unopenable one. Only the surviving node mappings prove it.
-			if (this.hasNodeMappings()) {
-				// A table taking no further writes never drains, so a query is the only thing left
-				// that can notice the graph is gone and ask for it back.
-				logger.error?.(`${this.indexStore.name} lost its native file while its node mappings survive`);
-				this.derivedHost?.requestRebuild();
-				throw new ServerError('The native HNSW index is rebuilding', 503);
+		};
+		if (waiting) {
+			context.signal?.throwIfAborted();
+			const host = this.derivedHost;
+			const state = host?.readiness().state;
+			if (state !== 'ready') {
+				throw new ServerError(
+					`The native HNSW index is ${state === 'unavailable' ? 'unavailable' : 'rebuilding'}`,
+					503
+				);
 			}
-			return withStats([], filterState);
+			const searched = Promise.resolve(context.indexSearchStart).then(async () => {
+				context.signal?.throwIfAborted();
+				if (minResults === 0) return [];
+				const started = derivedIndexTime(this.indexStore.rootStore);
+				if (host.coverage(0)?.state !== 'current')
+					await host.waitForCoverage(started, waitForIndexMilliseconds, context.signal);
+				context.signal?.throwIfAborted();
+				return searchNative({
+					state: 'current',
+					maxLagMilliseconds: maxIndexLagMilliseconds,
+					lagUpperBoundMilliseconds: 0,
+				});
+			});
+			searched.catch(() => {});
+			return searched;
 		}
+		const native = searchNative();
+		if (native) return native;
 		let entryPoint = this.getEntryPoint(txnOptions);
 		if (!entryPoint) return withStats([], filterState);
 		let entryPointId = entryPoint.id;
