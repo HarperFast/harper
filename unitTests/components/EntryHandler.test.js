@@ -39,14 +39,11 @@ function createEntryHandler(...args) {
 }
 
 /**
- * chokidar announces a new directory with `addDir` before it arms that directory's own native
- * watch, and nothing re-reads the gap — a file created inside the window is never reported. Node
- * 26.9.0 lands the write inside it on nearly every run (26.8.1 and earlier, almost never), which
- * left this suite waiting forever on an `add` that was not coming.
- *
- * Rewriting the same file closes the gap without weakening the assertion: once the watch is up,
- * any write makes chokidar re-read the directory and report the still-unseen file, and a file it
- * already knows yields `change`, so the run under test still sees exactly one `add`.
+ * chokidar emits `addDir` before it arms the new directory's own native watch, and nothing
+ * re-reads that gap, so a file created inside it is reported by no event at all. Writing until the
+ * watcher reports the file keeps the gap out of the assertion: a write past it makes chokidar
+ * re-read the directory and surface the file, and a repeat write to one it already knows is a
+ * `change`, so the `add` count asserted below is unaffected.
  */
 async function writeFileUntilObserved(entryHandler, absolutePath, contents) {
 	let observed;
