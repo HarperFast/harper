@@ -395,6 +395,19 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await runtime.stop();
 	});
 
+	it('fails closed when an eligible audit entry has an undecodable record id', async () => {
+		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: undefined, type: 'delete' })]]]));
+		const backend = new SyncBackend('undecodable-record-id', cursor(10));
+		const { runtime } = runtimeFor(store, new Map(), { scanRecords: undefined });
+		runtime.register(registration(backend));
+
+		await waitFor(() => runtime.getStatus(backend.id)?.state === 'needs-rebuild');
+		assert.match(runtime.getStatus(backend.id).reason, /undecodable record id/);
+		assert.deepStrictEqual(backend.cursor, cursor(10));
+		assert.strictEqual(backend.deliveries.length, 0);
+		await runtime.stop();
+	});
+
 	it('resolves a key after its last collected occurrence so a concurrent write cannot be certified stale', async () => {
 		const records = new Map([['1:a', { version: 100, value: { title: 'v1' } }]]);
 		const store = new FakeLogStore(
@@ -1266,8 +1279,15 @@ describe('DerivedIndexRuntime for native backends', () => {
 			},
 			openAttempts: 1,
 		});
-		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 1000 });
-		runtime.register(registration(backend, { lockRetryMilliseconds: 20, maxFlushAgeMilliseconds: 5 }));
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 5 });
+		runtime.register(
+			registration(backend, {
+				lockRetryMilliseconds: 20,
+				maxFlushAgeMilliseconds: 5,
+				maxRebuildAttempts: 2,
+				rebuildBackoffMilliseconds: 5,
+			})
+		);
 
 		await waitFor(() => resets === 1, { timeout: 5000 });
 		assert.strictEqual(inspections, 3);
@@ -1275,15 +1295,22 @@ describe('DerivedIndexRuntime for native backends', () => {
 		assert.strictEqual(runtime.getReadiness(backend.id).state, 'rebuilding');
 		finishReset();
 		await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 5000 });
+		await waitFor(() => store.locks.size === 0, { timeout: 5000 });
+		store.rootStore.emit('committed');
+		await waitFor(() => runtime.getReadiness(backend.id).state === 'unavailable', { timeout: 5000 });
+		assert.strictEqual(inspections, 6);
 		assert.strictEqual(resets, 1);
-		assert.strictEqual(store.markers.size, 0);
 		await runtime.stop();
 	});
 
 	it('charges the rebuild budget when the full-text wrapper returns an invalid mutation result', async () => {
-		const records = new Map([['1:a', { version: 20, value: { title: 'oversized' }, size: 32 }]]);
-		const store = new FakeLogStore(new Map([[10, [audit({ timestamp: 20, recordId: 'a' })]]]), {
-			logEntries: new Map([['local', [audit({ timestamp: 20, recordId: 'a' })]]]),
+		const records = new Map([
+			['1:a', { version: 20, value: { title: 'oversized-a' }, size: 32 }],
+			['1:b', { version: 30, value: { title: 'oversized-b' }, size: 32 }],
+		]);
+		const logEntries = [audit({ timestamp: 20, recordId: 'a' }), audit({ timestamp: 30, recordId: 'b' })];
+		const store = new FakeLogStore(new Map([[10, logEntries]]), {
+			logEntries: new Map([['local', logEntries]]),
 		});
 		class Engine {
 			constructor(committedPayload) {
@@ -1327,7 +1354,7 @@ describe('DerivedIndexRuntime for native backends', () => {
 			},
 			openAttempts: 1,
 		});
-		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 1000 });
+		const { runtime } = runtimeFor(store, records, { idleGraceMilliseconds: 1000, maxTransactionsPerTurn: 1 });
 		runtime.register(registration(backend, { maxFlushAgeMilliseconds: 5, rebuildBackoffMilliseconds: 1000 }));
 
 		await waitFor(() => resets === 1);
