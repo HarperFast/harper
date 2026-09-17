@@ -21,7 +21,7 @@
  *     still references (retainedFileIds, harper#641) -- so (d) and (e) are BOTH expected, per
  *     static read, to reclaim the old file via the ordinary put() path. Nobody had measured this
  *     empirically before.
- *   - resources/databases.ts:893 dropDatabase() ... :940 `await deleteRootBlobPathsForDB(rootStore)`
+ *   - resources/databases.ts:893 dropDatabase() ... :940 `await deleteBlobPathsForDatabaseName(databaseName)`
  *     unconditionally rimraf's the ENTIRE {dataRootDir}/blobs/{db} directory as its last (awaited)
  *     step, regardless of what's referenced -- so a full DB drop is expected to leave 0 files,
  *     synchronously by the time the op response returns.
@@ -463,7 +463,7 @@ suite(
 			const dropRes = await opReq({ operation: 'drop_database', database: 'qa720db' });
 			strictEqual(dropRes.status, 200, `drop_database failed: ${JSON.stringify(dropRes.body)}`);
 
-			// dropDatabase() awaits deleteRootBlobPathsForDB() as its last step before returning, so the
+			// dropDatabase() awaits deleteBlobPathsForDatabaseName() as its last step before returning, so the
 			// whole-directory rimraf should already be complete by the time the op response lands -- poll
 			// briefly anyway rather than assuming synchronous completion.
 			const settled = await waitForSettle(dropDbUsage, 0, { timeoutMs: 10_000 });

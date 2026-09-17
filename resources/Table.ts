@@ -2039,6 +2039,10 @@ export function makeTable(options) {
 						return removeTombstonedCatalog();
 					});
 					if (removed) await dbisDb.committed;
+					// A dropped column family's handles still count as open on the database until they are
+					// closed, and nothing else ever closes them once the table has left the catalog — an
+					// open handle is what stops drop_database and restore_backup from taking the database.
+					TableResource.closeStores();
 				} else {
 					// LMDB: no shared column-family double-drop, and its engine lock is
 					// transactional rather than this spin lock, so keep the awaited drop
@@ -6883,15 +6887,54 @@ export function makeTable(options) {
 			}
 			return Promise.all(promises);
 		}
-		/** Release everything makeTable() registered process-wide; the class must not be used afterwards. */
-		static cleanup() {
+		/**
+		 * Release everything makeTable() registered process-wide; the class must not be used afterwards.
+		 * Returns a promise when a derived-index runtime has to be released first; a caller that needs
+		 * the handles actually closed (drop_database's process-wide check) collects it through `closing`.
+		 */
+		static cleanup(closing?: Promise<unknown>[], keepRootOpen?: () => void) {
 			disposed = true;
-			void TableResource.derivedIndexRuntime?.close();
+			// every synchronous release first: `derivedIndexRuntime.close()` is another component's
+			// method and a synchronous throw from it would otherwise skip all of them, leaving this
+			// class's interval holding the event loop open on a worker that is trying to exit
 			clearTimeout(cleanupTimer);
 			settlePendingCleanup();
 			clearInterval(recordExpirationInterval);
 			deleteCallbackHandle?.remove();
 			removeStorageReclamationHandler(primaryStore.path, reclamationHandler);
+			const released = TableResource.derivedIndexRuntime?.close();
+			// a table that left the catalog (dropped elsewhere, or never finished loading) must not keep
+			// its column-family handles open on this thread; see dropTable
+			if (!released) {
+				TableResource.closeStores();
+				return;
+			}
+			// the runtime resolves its close only once nothing can still write through these stores, and
+			// rejects when it could not prove that (derivedIndexRuntime.stop()) — a pending HNSW flush
+			// republishing through its index store is exactly what must not find the store closed
+			const closed = released.then(
+				() => TableResource.closeStores(),
+				(error) => {
+					keepRootOpen?.();
+					harperLogger.warn?.(
+						`Derived index teardown for ${databaseName}.${tableName} did not settle; leaving its stores open`,
+						error
+					);
+				}
+			);
+			closing?.push(closed);
+			return closed;
+		}
+		/** Release this thread's handles on the table's RocksDB column families; LMDB sub-databases stay open with their environment. */
+		static closeStores() {
+			if (!(primaryStore instanceof RocksDatabase)) return;
+			for (const store of [...Object.values(indices), primaryStore]) {
+				try {
+					(store as any)?.close?.();
+				} catch (error) {
+					harperLogger.debug?.(`Error closing a store of ${databaseName}.${tableName}:`, error);
+				}
+			}
 		}
 		static _readTxnForContext(context) {
 			return txnForContext(context).getReadTxn();

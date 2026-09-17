@@ -29,7 +29,7 @@
  *    This fixture keeps a sibling `Keepalive` table alive in db "qa809t" for exactly that
  *    reason, matching qa805's fixture design.
  *  - `drop_database` (resources/databases.ts ~893) is reported to synchronously await a
- *    whole-directory rimraf (`deleteRootBlobPathsForDB`) before the op returns -- verified
+ *    whole-directory rimraf (`deleteBlobPathsForDatabaseName`) before the op returns -- verified
  *    empirically below (checkpoint 2 immediately after return), not assumed.
  *
  * Design: sweep the kill delay AFTER drop_table returns -- 0ms, 100ms, 400ms, 600ms, and a

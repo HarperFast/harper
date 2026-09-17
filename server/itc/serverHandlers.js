@@ -49,8 +49,31 @@ async function schemaHandler(event) {
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
-	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		closeDatabase(event.message.schema);
+	// drop_database: the dropping thread destroyed the database process-wide, so this thread's
+	// handles are already dead; releasing them here is what lets a same-name create_database open
+	// the directory afresh instead of every later rescan on this thread failing on the closed store.
+	// close_database: a drop is about to destroy the directory and needs the same release first.
+	if (
+		event.message?.schema &&
+		(event.message.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP ||
+			event.message.operation === hdbTerms.ITC_SCHEMA_OPERATIONS.CLOSE_DATABASE ||
+			event.message.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA ||
+			event.message.operation === hdbTerms.OPERATIONS_ENUM.DROP_DATABASE)
+	) {
+		// the ack this handler gates is what `drop_database` and `restore_backup` treat as this thread
+		// having released the database, so it has to outlast the closes a table with a derived index
+		// only finishes once its runtime has settled
+		const closing = [];
+		try {
+			closeDatabase(event.message.schema, closing);
+			await Promise.all(closing);
+		} catch (error) {
+			// signalSchemaChange awaits this handler alongside the broadcast and documents that neither
+			// leg rejects; a store close that does reject must not skip the rescan below or surface as an
+			// unhandled rejection on the worker. The destructive step is gated on the process-wide
+			// registry, never on this ack, so a failed release refuses the drop rather than passing it.
+			hdbLogger.error(`Error releasing database ${event.message.schema} for ${event.message.operation}:`, error);
+		}
 	}
 	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);

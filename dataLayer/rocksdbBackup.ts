@@ -2,14 +2,13 @@
 
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { open, readdir, writeFile } from 'node:fs/promises';
-import { join, relative, resolve, sep } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
-import { setTimeout as delay } from 'node:timers/promises';
 import { pack as tarPack, type Pack } from 'tar-stream';
-import { RocksDatabase, backups, registryStatus, type BackupInfo } from '@harperfast/rocksdb-js';
-import { getDatabases, resolveDatabasePath } from '../resources/databases.ts';
+import { RocksDatabase, backups, type BackupInfo } from '@harperfast/rocksdb-js';
+import { getDatabases, resolveDatabasePath, waitForDatabaseClosedProcessWide } from '../resources/databases.ts';
 import {
 	type BlobCaptureDisposition,
 	classifyBlobFileForCapture,
@@ -606,38 +605,20 @@ export async function restoreBackup(request: any) {
 	return { database: databaseName, backup_id: backupId };
 }
 
-// After the close broadcast is acknowledged, every worker thread has released its Harper-managed
-// handles; a short grace period covers a just-finished job worker still draining its own close.
-// Anything still open past that is a handle Harper neither tracks nor controls (a loaded component
-// holding its own instance, or the system database), which will never close on its own — so fail
-// fast rather than waiting out a long timeout.
-const DATABASE_CLOSE_WAIT_MS = 3000;
-const DATABASE_CLOSE_POLL_INTERVAL_MS = 250;
-
 /**
- * Verify no thread in this process still has the database open (rocksdb-js's registry is
- * process-global across worker threads), polling briefly to let a just-finished job worker's own
- * close drain. Throws 409 with an actionable message if handles remain — which means a loaded
- * component is holding the database open (Harper can neither detect which component nor force its
- * handle closed), so an online in-place restore is not possible and the offline CLI is the path.
+ * Verify no thread in this process still has the database open (see
+ * `waitForDatabaseClosedProcessWide`). Throws 409 with an actionable message if handles remain —
+ * which means a loaded component is holding the database open (Harper can neither detect which
+ * component nor force its handle closed), so an online in-place restore is not possible and the
+ * offline CLI is the path.
  */
 async function verifyDatabaseClosed(databaseDir: string, databaseName: string): Promise<void> {
-	const targetPath = resolve(databaseDir);
-	const deadline = Date.now() + DATABASE_CLOSE_WAIT_MS;
-	for (;;) {
-		const stillOpen = registryStatus().some(
-			(instance) => resolve(instance.path) === targetPath && instance.refCount > 0
-		);
-		if (!stillOpen) return;
-		if (Date.now() >= deadline) {
-			throw new BackupInProgressError(
-				`Cannot restore database '${databaseName}' while Harper is running: it is held open by a loaded component (or is the system database). ` +
-					`Restore it offline instead — stop the server and run: harper restore_backup database=${databaseName}` +
-					(databaseName === 'system' ? '' : ` backup_id=<id>`)
-			);
-		}
-		await delay(DATABASE_CLOSE_POLL_INTERVAL_MS);
-	}
+	if (await waitForDatabaseClosedProcessWide(databaseDir)) return;
+	throw new BackupInProgressError(
+		`Cannot restore database '${databaseName}' while Harper is running: it is held open by a loaded component (or is the system database). ` +
+			`Restore it offline instead — stop the server and run: harper restore_backup database=${databaseName}` +
+			(databaseName === 'system' ? '' : ` backup_id=<id>`)
+	);
 }
 
 /**
