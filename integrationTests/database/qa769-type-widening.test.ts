@@ -15,8 +15,8 @@
  * `bigint-indexed-range.test.ts` (QA-190) cover numeric range queries and the `Long` 2^53 ceiling on
  * a FIXED schema. What is new here is that the declared type changes underneath stored records:
  *
- *   1. precondition — the fixture really starts at `Int`/`String` with `count` indexed, and all four
- *      workers started, so neither the widening nor the cross-worker arm can pass vacuously.
+ *   1. precondition — the engine in effect, four started workers, and a starting declaration of
+ *      `Int`/`String` with `count` indexed.
  *   2. seeding — records under the OLD `Int`/`String` types, plus proof that 2^31 is loudly REJECTED
  *      before the widening (so its acceptance afterwards is a real change, not a pre-existing one).
  *   3. the widening — rewrite the INSTALLED schema copy, restart, and confirm `describe_table` now
@@ -28,17 +28,16 @@
  *      `resources/Table.ts:6049`); genuine 64-bit magnitudes, handed in as real BigInt literals
  *      in-worker so no float64 transport rounds them first, reach that cap at full precision and are
  *      refused by it; and `label` now takes objects and numbers.
- *   6. index consistency — THE load-bearing arm, checked at both layers. The `@indexed count`
- *      secondary index must hold exactly the eleven value/primary-key entries the stored rows imply,
- *      spanning the old-encoded (id 1-6) and new-encoded (id 7-9, 30, 31) records, which is what
- *      "no phantom and no missing index entries" means literally; and the `greater_than` range query
- *      over it must return exactly the five rows above the threshold, in ascending order.
- *      Both are needed: `resources/search.ts:485` silently falls back to a full scan for an
- *      unindexed attribute, so the query result alone cannot show the index survived the widening,
- *      and the index dump alone cannot show the query planner reads it correctly.
- *   7. multi-worker + a second restart — every one of the four workers decodes the same
- *      old-encoded and new-encoded record identically (proven per worker, not assumed from a
- *      connection spray), and a restart with no schema change disturbs neither vintage.
+ *   6. index consistency, at both layers. The `@indexed count` secondary index must hold exactly the
+ *      eleven value/primary-key entries the stored rows imply, old-encoded (id 1-6) and new-encoded
+ *      (id 7-9, 30, 31) interleaved by value; and the `greater_than` range query over it must return
+ *      exactly the five rows above the threshold, in ascending order. Both, because
+ *      `resources/search.ts:485` answers a range query by full scan when an attribute is unindexed,
+ *      so the query result alone does not show the index survived the widening, while the index dump
+ *      alone does not show the planner reads it.
+ *   7. multi-worker + a second restart — each of the four workers is asked individually, by thread
+ *      id, for the same old-encoded and new-encoded record and must answer identically; and a restart
+ *      with no schema change disturbs neither vintage nor the index.
  *
  * The schema rewrite targets `{dataRootDir}/components/{fixture}/schema.graphql`:
  * `setupHarperWithFixture` copies the fixture there, and that copy — not the source on disk — is
@@ -348,11 +347,8 @@ function defineSuite(engine: 'rocksdb' | 'lmdb') {
 				ok(/integer/i.test(rejected.text), `the rejection must name the type/range violation, got: ${rejected.text}`);
 				strictEqual((await restGet(7)).status, 404, 'the rejected pre-widening record must not have been stored');
 
-				// The same guard for `label`, so the widened arm below is a real change rather than a
-				// fixture that shipped `label: Any` or a widening that only took effect for `count`.
-				// Both payload shapes the widened arm later accepts, so neither half of that arm can pass on a
-				// fixture that shipped `label: Any` or a widening that only took effect for `count`. The
-				// numeric one also settles whether a declared String coerces a number rather than refusing it.
+				// Both payload shapes the widened arm later accepts, so neither half of it can pass on a fixture
+				// that shipped `label: Any` or a widening that only took effect for `count`.
 				for (const [id, label] of [
 					[40, OBJECT_LABEL],
 					[41, 12345],
