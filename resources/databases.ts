@@ -1191,6 +1191,7 @@ function initStores(
 		const splitSegments = primaryAttribute.splitSegments;
 		const replicate = primaryAttribute.replicate;
 		if (table && !recreateForEngineChange) {
+			if (primaryAttribute.audit === true && table.audit !== true) table.enableAuditing();
 			indices = table.indices;
 			existingAttributes = table.attributes;
 			table.schemaVersion++;
@@ -2475,6 +2476,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
 
+	const persistedAuditAtEntry = Table?.dbisDB?.getSync(`${tableName}/`)?.audit;
 	for (const attribute of attributes) {
 		if (attribute.attribute && !attribute.name) {
 			// there is some legacy code that calls the attribute's name the attribute's attribute
@@ -2482,8 +2484,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			attribute.indexed = true;
 		} else attribute.attribute = attribute.name;
 		if (attribute.expiresAt) attribute.indexed = true;
+		const existingAttribute = Table?.attributes.find((existing: any) => existing.name === attribute.name);
+		const persistedIndexed =
+			Table?.dbisDB?.getSync(`${tableName}/${attribute.name || ''}`)?.indexed ?? existingAttribute?.indexed;
 		if (attribute.indexed?.type === 'HNSW' && origin !== 'cluster') {
-			CUSTOM_INDEXES.HNSW.normalizeDeclarationOptions(attribute.indexed);
+			CUSTOM_INDEXES.HNSW.normalizeDeclarationOptions(attribute.indexed, persistedIndexed);
 		}
 		if (attribute.indexed?.type === 'HNSW' && origin !== 'cluster' && attribute.indexed.nativePlane != null) {
 			try {
@@ -2491,18 +2496,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					attribute.indexed.nativePlane
 				);
 			} catch (error) {
-				const existingAttribute = Table?.attributes.find(
-					(existing: any) => existing.name === attribute.name && existing.indexed?.type === 'HNSW'
-				);
-				if (!existingAttribute || !Object.hasOwn(existingAttribute.indexed, 'nativePlane')) throw error;
-				const existingValue = existingAttribute.indexed.nativePlane;
+				if (persistedIndexed?.type !== 'HNSW' || !Object.hasOwn(persistedIndexed, 'nativePlane')) throw error;
+				const existingValue = persistedIndexed.nativePlane;
 				let existingValueIsLegacy = false;
 				try {
 					CUSTOM_INDEXES.HNSW.normalizeNativePlaneDeclaration(existingValue);
 				} catch {
 					existingValueIsLegacy = true;
 				}
-				if (!existingValueIsLegacy || Boolean(existingValue) !== Boolean(attribute.indexed.nativePlane)) throw error;
+				if (!existingValueIsLegacy || !Object.is(existingValue, attribute.indexed.nativePlane)) throw error;
 				logger.warn(
 					`Keeping the legacy nativePlane value for ${databaseName}.${tableName}.${attribute.name}; redeclare it as true or false to change modes`
 				);
@@ -2521,10 +2523,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			return Boolean(existingAttribute?.indexed.nativePlane);
 		}) &&
 		!auditExplicitlyEnabled &&
-		(auditExplicitlyDisabled || Table?.audit !== true)
+		(auditExplicitlyDisabled || (Table?.audit !== true && persistedAuditAtEntry !== true))
 	) {
 		throw new ClientError(
-			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
+			`Table '${databaseName}.${tableName}' must enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
 		);
 	}
 	let hasChanges;
@@ -2831,15 +2833,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 			}
 		}
-		if (
+		const nativePlaneEnabled =
 			origin !== 'cluster' &&
-			attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) &&
-			!auditEnabledForNativePlane
-		) {
+			attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane);
+		if (nativePlaneEnabled && !auditEnabledForNativePlane) {
 			throw new ClientError(
-				`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
+				`Table '${databaseName}.${tableName}' must enable audit logging before using nativePlane because its transaction log is the derived-index recovery source; set nativePlane: false to use the JS index`
 			);
 		}
+		if (nativePlaneEnabled && persistedPrimaryAttribute?.audit === true && Table.audit !== true) Table.enableAuditing();
+		if (nativePlaneEnabled && persistedPrimaryAttribute?.audit !== true) audit = true;
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		const attributesWithPrimaryFirst = [
@@ -2869,7 +2872,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				if (
 					origin !== 'cluster' &&
 					(schemaDefinedMismatch ||
-						(audit !== undefined && audit !== Table.audit) ||
+						(typeof audit === 'boolean' && audit !== attributeDescriptor.audit) ||
 						(sealed !== undefined && sealed !== Table.sealed) ||
 						(replicate !== undefined && replicate !== Table.replicate) ||
 						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||

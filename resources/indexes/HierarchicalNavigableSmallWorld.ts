@@ -277,9 +277,11 @@ export class HierarchicalNavigableSmallWorld {
 			return `legacy:${value}`;
 		return value;
 	}
-	static normalizeDeclarationOptions(options: any): void {
+	static normalizeDeclarationOptions(options: any, persistedOptions?: any): void {
 		for (const name of HierarchicalNavigableSmallWorld.numericOptions) {
 			if (options[name] === undefined) continue;
+			if (persistedOptions && Object.hasOwn(persistedOptions, name) && Object.is(options[name], persistedOptions[name]))
+				continue;
 			if (options[name] === null) {
 				delete options[name];
 				continue;
@@ -295,6 +297,14 @@ export class HierarchicalNavigableSmallWorld {
 		throw new ClientError('nativePlane must be true or false');
 	}
 	static canRunNativePlane(rootStore: unknown, options: any, warnForMissingBinding = true): boolean {
+		if (!(rootStore instanceof RocksDatabase) || getPlaneBinding(warnForMissingBinding) == null) return false;
+		if (
+			options?.M === null ||
+			options?.efConstruction === null ||
+			options?.mL === null ||
+			options?.optimizeRouting === null
+		)
+			return false;
 		const configuredM = numericOption('M', options?.M);
 		const configuredEfConstruction = numericOption('efConstruction', options?.efConstruction);
 		const configuredML = numericOption('mL', options?.mL);
@@ -304,8 +314,6 @@ export class HierarchicalNavigableSmallWorld {
 		);
 		nativePlaneMaxNodes(options);
 		return (
-			rootStore instanceof RocksDatabase &&
-			getPlaneBinding(warnForMissingBinding) != null &&
 			options?.quantization !== 'none' &&
 			options?.distance !== 'euclidean' &&
 			options?.distance !== 'dotProduct' &&
