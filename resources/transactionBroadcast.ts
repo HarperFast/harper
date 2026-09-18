@@ -228,9 +228,9 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 						if (lastSlash !== matchingKey.length - 1) {
 							ancestorLevel++; // don't increase the ancestor level for this going from resource/ to resource
 						}
-						if (lastSlash > -1) {
-							matchingKey = matchingKey.slice(0, lastSlash + 1);
-						} else matchingKey = null;
+						// lastIndexOf clamps a negative fromIndex to 0, so '/' would otherwise yield itself forever
+						const parentKey = lastSlash > -1 ? matchingKey.slice(0, lastSlash + 1) : null;
+						matchingKey = parentKey === matchingKey ? null : parentKey;
 					} while (true);
 				}
 			} else if (auditRecord.type === 'reload') {
