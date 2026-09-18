@@ -1168,11 +1168,7 @@ export class LockCoordinator {
 		return this.#acquire(key, leaseMs, waitMs);
 	}
 
-	/**
-	 * `observed` is what an earlier coordinator for this same wait saw, handed on when a swap lands
-	 * mid-wait so the successor classifies the inherited deadline against it. Private because it is
-	 * continuation state for one `acquire()`, not something a caller may assert.
-	 */
+	/** `observed` is continuation state for one `acquire()`: what an earlier coordinator for it saw. */
 	async #acquire(key: any, leaseMs: number, waitMs: number, observed?: LastCompletedReply): Promise<LockRound> {
 		// `Table.lock()` captures a coordinator and only reaches here after the native key lock, which
 		// can wait the caller's whole timeout — long enough for a transport swap to close what it
@@ -1387,30 +1383,29 @@ export class LockCoordinator {
 			if (!exhausted) await delay(Math.min(retryAfterMs, remaining)).promise;
 			if (this.#closed) {
 				// Same swap, landing in the backoff instead. Carry the remaining wait so the deadline the
-				// caller asked for is preserved across the hop — and what this wait saw with it, since a
-				// successor exhausted on arrival has nothing of its own to answer from.
+				// caller asked for is preserved across the hop, and what this wait saw with it: a successor
+				// exhausted on arrival has nothing of its own to answer from.
 				const successor = this.#authority();
 				if (successor === this)
 					throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
 				return successor.#acquire(key, leaseMs, Math.max(0, deadlineMono - this.#monotonic()), lastCompleted);
 			}
 			if (!exhausted) continue acquisition;
-			// Only an observation of THIS home under THIS generation still describes the key. The map is
-			// re-read here rather than reusing the pass's copy because a generation can be activated while
-			// the probe that ended the wait was still in flight.
+			// Only an observation made under the generation that is current NOW still describes the key —
+			// this pass's reply included, since a generation can be activated while the probe that ended
+			// the wait is still in flight. Hence a fresh read rather than the copy this pass started from.
+			const currentGeneration = this.transport.homeMap(this.database)?.generation;
 			const carried =
-				lastCompleted?.home === home &&
-				lastCompleted.generation === homeMap.generation &&
-				lastCompleted.generation === this.transport.homeMap(this.database)?.generation
+				lastCompleted?.home === home && lastCompleted.generation === currentGeneration
 					? lastCompleted.reply
 					: undefined;
-			const terminal = carried ?? reply;
+			const terminal = carried ?? (homeMap.generation === currentGeneration ? reply : undefined);
 			// 423 says "someone else holds this key", so only a denial that actually means that may end
 			// as one. Every other reason ran out the clock without the key ever being held, and reporting
 			// contention for it sends the caller to retry a condition no timeout can outlast.
-			if (terminal.reason === 'contended') throw new ClientError('Record is locked and was not released in time', 423);
+			if (terminal?.reason === 'contended') throw new ClientError('Record is locked and was not released in time', 423);
 			throw new LockUnavailableError(
-				`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: the key's home answered ${terminal.reason ?? (terminal.granted ? 'grants that arrived too late to use' : 'nothing usable')}`
+				`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: ${describeExhaustedWait(terminal)}`
 			);
 		}
 	}
@@ -2726,6 +2721,17 @@ export class LockCoordinator {
 }
 
 /** A sleep whose timer the winner of a race can drop, rather than let it run out its full delay. */
+/**
+ * What ended an exhausted `acquire()`, for the 503 it throws. `timeout` is deliberately NOT phrased
+ * as a home answer: it is this node's own deadline, and an operator told "the home answered timeout"
+ * looks for a fault on a node that was simply not waited for.
+ */
+function describeExhaustedWait(terminal: DelegationReply | undefined): string {
+	if (!terminal) return 'the record lock home map changed generation before the wait ended';
+	if (terminal.reason === 'timeout') return "no reply from the key's home within the wait";
+	return `the key's home answered ${terminal.reason ?? (terminal.granted ? 'grants that arrived too late to use' : 'nothing usable')}`;
+}
+
 function delay(ms: number): { promise: Promise<void>; cancel: () => void } {
 	let timer: ReturnType<typeof setTimeout>;
 	const promise = new Promise<void>((resolve) => {

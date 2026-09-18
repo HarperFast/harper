@@ -547,8 +547,10 @@ blocks only the keys it homes, which is the availability property the whole rede
 `#requestRemotely` races the home against the caller's remaining budget and
 synthesizes `reason: 'timeout'` when the budget wins; that reply is this node's own deadline, not
 something the home said, so it is evidence-free. `acquire()` keeps the last completed reply in
-`lastCompleted`, bound to the `(home, generation)` that produced it and retired when either moves,
-and classifies from it: a wait that watched the key held answers 423 even though its final probe was
+`lastCompleted`, bound to the `(home, generation)` that produced it; at the terminal branch it
+re-reads the map and accepts an observation — the carried one and the pass's own reply alike — only
+under the generation that is current then, since one can be activated while the last probe is in
+flight. It classifies from what survives: a wait that watched the key held answers 423 even though its final probe was
 cut short, while a later `not-home` — the fresher fact — still answers 503. It also stops before a
 backoff that would reach the deadline, since the probe after it could only come back as that same
 synthetic timeout. Do not restore "the last reply wins": the retry loop's final pass is by

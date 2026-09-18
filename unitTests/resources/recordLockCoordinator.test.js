@@ -487,7 +487,10 @@ describe('record lock delegations', () => {
 				cluster.advance('beta', 1_000);
 				await new Promise((resolve) => setTimeout(resolve, 200));
 			};
-			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300), /home answered timeout/);
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				/no reply from the key's home/
+			);
 		});
 
 		it('retires an observation a generation activated while the last probe was in flight', async () => {
@@ -504,7 +507,27 @@ describe('record lock delegations', () => {
 				cluster.advance('beta', 1_000);
 				await new Promise((resolve) => setTimeout(resolve, 200));
 			};
-			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300), /home answered timeout/);
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				/home map changed generation/
+			);
+		});
+
+		it('retires this pass own contended reply when a generation activated while it was in flight', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The reply that ends the wait is itself `contended`, but it describes the ring that was
+			// current when it was computed. The route rule has to reach it too, not only a carried one.
+			cluster.beforeReply = (from) => {
+				if (from !== 'beta') return;
+				cluster.generation = 2;
+				cluster.advance('beta', 1_000);
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 200),
+				/home map changed generation/
+			);
 		});
 	});
 
@@ -1240,7 +1263,7 @@ describe('record lock delegations', () => {
 				new Promise((resolve) => {
 					deliverFirst = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
 				});
-			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /home answered timeout/);
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /no reply from the key's home/);
 			alpha.coordinator.transport.requestDelegation = realRequest;
 			await alpha.coordinator.acquire(key, LEASE, WAIT);
 
@@ -2234,7 +2257,7 @@ describe('record lock delegations', () => {
 				new Promise((resolve) => {
 					deliverFirst = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
 				});
-			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /home answered timeout/);
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /no reply from the key's home/);
 			alpha.coordinator.transport.requestDelegation = realRequest;
 			await alpha.coordinator.acquire(key, LEASE, WAIT);
 			assert.strictEqual(alpha.coordinator.stats.delegations, 1);
@@ -2258,7 +2281,7 @@ describe('record lock delegations', () => {
 				new Promise((resolve) => {
 					resolveReply = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
 				});
-			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /home answered timeout/);
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /no reply from the key's home/);
 			// The home grants only now, to a caller that has already given up. Nothing would ever claim
 			// or release it, so the home would deny every other node for the whole delegation.
 			await resolveReply();
