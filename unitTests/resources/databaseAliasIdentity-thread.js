@@ -1,7 +1,7 @@
 'use strict';
 
 const { parentPort, workerData } = require('node:worker_threads');
-const { getDatabases } = require('#src/resources/databases');
+const { closeLoadedDatabases, getDatabases } = require('#src/resources/databases');
 const { onMessageByType, setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 const MESSAGE_TYPE = 'database-alias-identity-test';
@@ -17,10 +17,16 @@ function run() {
 	require('#js/server/threads/itc');
 	setMainIsWorker(true);
 	onMessageByType(CONTROL_TYPE, () => {});
+	const keepAlive = setInterval(() => {}, 1000);
 	parentPort.on('message', (message) => {
 		if (message.type === CONTROL_TYPE && message.command === 'inspect') report('inspected', { aliases: aliasState() });
+		if (message.type === CONTROL_TYPE && message.command === 'close') {
+			closeLoadedDatabases();
+			clearInterval(keepAlive);
+			report('closed');
+			parentPort.close();
+		}
 	});
-	setInterval(() => {}, 1000);
 	report('booted', { aliases: aliasState() });
 }
 

@@ -72,6 +72,8 @@ function startFixtureWorker(aliases) {
 	let failure;
 	const unregisterAliases = registerWorkerDataProvider('databaseAliasIdentityAliases', () => aliases);
 	let worker;
+	let resolveExit;
+	const exited = new Promise((resolve) => (resolveExit = resolve));
 	try {
 		worker = startWorker(WORKER_FIXTURE, {
 			name: 'database-alias-identity-test',
@@ -90,9 +92,11 @@ function startFixtureWorker(aliases) {
 					for (const waiter of waiting.splice(0)) waiter.reject(error);
 				});
 				spawned.on('exit', (code) => {
-					if (code === 0) return;
-					failure = new Error(`fixture worker exited with code ${code}`);
-					for (const waiter of waiting.splice(0)) waiter.reject(failure);
+					if (code !== 0) {
+						failure = new Error(`fixture worker exited with code ${code}`);
+						for (const waiter of waiting.splice(0)) waiter.reject(failure);
+					}
+					resolveExit(code);
 				});
 			},
 		});
@@ -100,8 +104,8 @@ function startFixtureWorker(aliases) {
 		unregisterAliases();
 	}
 	const next = () => {
-		if (queued.length) return Promise.resolve(queued.shift());
 		if (failure) return Promise.reject(failure);
+		if (queued.length) return Promise.resolve(queued.shift());
 		return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
 	};
 	return {
@@ -113,6 +117,11 @@ function startFixtureWorker(aliases) {
 			const message = await next();
 			assert.strictEqual(message.event, event, `expected worker event '${event}', received '${message.event}'`);
 			return message;
+		},
+		async close() {
+			this.send('close');
+			await this.expect('closed');
+			assert.strictEqual(await exited, 0);
 		},
 	};
 }
@@ -182,5 +191,7 @@ describe('shared root-store database identity', function () {
 			physicalalias: false,
 			configuredalias: false,
 		});
+		await fixture.close();
+		fixture = undefined;
 	});
 });
