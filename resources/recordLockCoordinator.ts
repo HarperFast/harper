@@ -1168,7 +1168,6 @@ export class LockCoordinator {
 		return this.#acquire(key, leaseMs, waitMs);
 	}
 
-	/** `observed` is continuation state for one `acquire()`: what an earlier coordinator for it saw. */
 	async #acquire(key: any, leaseMs: number, waitMs: number, observed?: LastCompletedReply): Promise<LockRound> {
 		// `Table.lock()` captures a coordinator and only reaches here after the native key lock, which
 		// can wait the caller's whole timeout — long enough for a transport swap to close what it
@@ -1382,9 +1381,8 @@ export class LockCoordinator {
 			const exhausted = home === this.nodeId ? remaining <= 0 : remaining <= retryAfterMs;
 			if (!exhausted) await delay(Math.min(retryAfterMs, remaining)).promise;
 			if (this.#closed) {
-				// Same swap, landing in the backoff instead. Carry the remaining wait so the deadline the
-				// caller asked for is preserved across the hop, and what this wait saw with it: a successor
-				// exhausted on arrival has nothing of its own to answer from.
+				// Same swap, landing in the backoff instead. The successor inherits both the remaining wait
+				// and what this one saw, since a successor exhausted on arrival has nothing of its own.
 				const successor = this.#authority();
 				if (successor === this)
 					throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
@@ -1400,12 +1398,11 @@ export class LockCoordinator {
 					? lastCompleted.reply
 					: undefined;
 			const terminal = carried ?? (homeMap.generation === currentGeneration ? reply : undefined);
-			// 423 says "someone else holds this key", so only a denial that actually means that may end
-			// as one. Every other reason ran out the clock without the key ever being held, and reporting
-			// contention for it sends the caller to retry a condition no timeout can outlast.
+			// Only `contended` may end as 423: every other reason ran out the clock without the key ever
+			// being held, and reporting contention sends the caller to retry a condition no wait outlasts.
 			if (terminal?.reason === 'contended') throw new ClientError('Record is locked and was not released in time', 423);
 			throw new LockUnavailableError(
-				`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: ${describeExhaustedWait(terminal)}`
+				`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: ${describeExhaustedWait(terminal, currentGeneration !== undefined)}`
 			);
 		}
 	}
@@ -2720,18 +2717,22 @@ export class LockCoordinator {
 	}
 }
 
-/** A sleep whose timer the winner of a race can drop, rather than let it run out its full delay. */
 /**
- * What ended an exhausted `acquire()`, for the 503 it throws. `timeout` is deliberately NOT phrased
- * as a home answer: it is this node's own deadline, and an operator told "the home answered timeout"
- * looks for a fault on a node that was simply not waited for.
+ * What ended an exhausted `acquire()`, for the 503 it throws. A `timeout` is not phrased as a home
+ * answer: it is this node's own deadline, and an operator told "the home answered timeout" looks for
+ * a fault on a node that was simply not waited for.
  */
-function describeExhaustedWait(terminal: DelegationReply | undefined): string {
-	if (!terminal) return 'the record lock home map changed generation before the wait ended';
-	if (terminal.reason === 'timeout') return "no reply from the key's home within the wait";
-	return `the key's home answered ${terminal.reason ?? (terminal.granted ? 'grants that arrived too late to use' : 'nothing usable')}`;
+function describeExhaustedWait(terminal: DelegationReply | undefined, hasCurrentMap: boolean): string {
+	if (terminal)
+		return terminal.reason === 'timeout'
+			? "no reply from the key's home within the wait"
+			: `the key's home answered ${terminal.reason ?? (terminal.granted ? 'grants that arrived too late to use' : 'nothing usable')}`;
+	return hasCurrentMap
+		? 'the record lock home map changed generation before the wait ended'
+		: 'this node has no current record lock home map';
 }
 
+/** A sleep whose timer the winner of a race can drop, rather than let it run out its full delay. */
 function delay(ms: number): { promise: Promise<void>; cancel: () => void } {
 	let timer: ReturnType<typeof setTimeout>;
 	const promise = new Promise<void>((resolve) => {
