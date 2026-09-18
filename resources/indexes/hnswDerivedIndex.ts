@@ -40,6 +40,8 @@ export type DerivedNativeIndexHost = {
 // chunks a delivery by records and estimated bytes; this caps how many chunks may wait.
 const QUEUE_CAPACITY_BYTES = 64 * 1024 * 1024;
 const APPLY_SLICE_MILLIS = 5;
+const BARRIER_IDLE_MULTIPLE = 3;
+const BARRIER_IDLE_CEILING_MILLISECONDS = 7_500;
 // Writes to an index this far behind fail with a retryable 503 (see the runtime's lag policy).
 const DEFAULT_MAX_LAG_MILLISECONDS = 30_000;
 
@@ -78,6 +80,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	#appliedEpoch?: bigint;
 	#flushRequested = false;
 	#flushing?: Promise<void>;
+	#interruptBarrierAfter = 0;
 	#resetting?: Promise<void>;
 	#unindexable = 0;
 
@@ -170,6 +173,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		const host = this.#host!;
 		const until = performance.now() + APPLY_SLICE_MILLIS;
 		const wasFull = this.#queuedBytes >= QUEUE_CAPACITY_BYTES;
+		let advancedCursor = false;
 		while (this.#queue.length > 0 && performance.now() < until) {
 			const batch = this.#queue[0];
 			if (!host.isOwnerEpoch(batch.ownerEpoch)) {
@@ -196,11 +200,16 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			this.#queuedBytes -= batch.bytes;
 			this.#position = 0;
 			this.#appliedEpoch = batch.ownerEpoch;
-			if (batch.through) this.#appliedCursor = batch.through;
+			if (batch.through) {
+				this.#appliedCursor = batch.through;
+				advancedCursor = true;
+				if (this.#mayInterruptForBarrier()) break;
+			}
 		}
 		if (this.#queue.length > 0) {
-			this.#schedule();
 			if (wasFull && this.#queuedBytes < QUEUE_CAPACITY_BYTES) this.#wake?.('changed');
+			if (this.#position === 0 && advancedCursor && this.#mayInterruptForBarrier()) this.#runFlush(true);
+			else this.#schedule();
 			return;
 		}
 		if (wasFull) this.#wake?.('changed');
@@ -226,9 +235,14 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		}
 	}
 
-	#runFlush() {
+	#mayInterruptForBarrier(): boolean {
+		return this.#flushRequested && performance.now() >= this.#interruptBarrierAfter;
+	}
+
+	#runFlush(interrupting = false) {
 		if (this.#flushing) return;
 		this.#flushRequested = false;
+		const started = performance.now();
 		const cursor = this.#appliedCursor;
 		const epoch = this.#appliedEpoch;
 		const host = this.#host!;
@@ -243,6 +257,13 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		this.#flushing.then(
 			() => {
 				this.#flushing = undefined;
+				if (interrupting) {
+					const idle = Math.min(
+						BARRIER_IDLE_MULTIPLE * (performance.now() - started),
+						BARRIER_IDLE_CEILING_MILLISECONDS
+					);
+					this.#interruptBarrierAfter = performance.now() + idle;
+				}
 				this.#wake?.('changed');
 				if (this.#queue.length > 0) this.#schedule();
 				else if (this.#flushRequested) this.#runFlush();

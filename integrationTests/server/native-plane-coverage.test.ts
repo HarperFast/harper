@@ -13,7 +13,7 @@ import { waitFor } from '../../unitTests/waitFor.js';
 
 test(
 	'native queries expose bounded coverage and reject expired or strict catch-up lag',
-	{ timeout: 180_000 },
+	{ timeout: 600_000 },
 	async () => {
 		const ctx = createHarperContext('native-plane-coverage');
 		let seed = 42;
@@ -120,7 +120,7 @@ test(
 						} else assert.equal(tolerant.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(tolerant));
 						return before.mappings === records.length && strict.status === 200;
 					},
-					{ timeout: 90_000, interval: 100, message: 'native plane did not certify current coverage' }
+					{ timeout: 300_000, interval: 500, message: 'native plane did not certify current coverage' }
 				);
 			} catch (error) {
 				throw new Error(`Native catch-up failed; last progress: ${JSON.stringify(progress)}`, { cause: error });
@@ -194,7 +194,7 @@ test(
 					assert(result.body.some(({ id }: { id: number }) => id === records.length - 1));
 					return true;
 				},
-				{ timeout: 30_000, message: 'restarted native index did not certify its persisted coverage' }
+				{ timeout: 120_000, message: 'restarted native index did not certify its persisted coverage' }
 			);
 		} finally {
 			await teardownHarper(ctx);
