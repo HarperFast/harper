@@ -804,7 +804,7 @@ number into its write instruction synchronously and the native writer consumes i
 (`node_modules/lmdb/write.js`), so a pass suspended inside `await removeAuditEntry()` still has a
 delete pending against the primary and audit DBIs, and LMDB forbids closing a DBI an existing
 transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTable()` await it.
-`closeDatabase()` and branch `close()` are synchronous and cannot; what covers them is that every
+`closeDatabase()` cannot; what covers it is that every
 environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
 re-checks `rootStore.status`, plus the fact that their production callers reach them only for RocksDB
 stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.
@@ -2729,16 +2729,24 @@ A database drop uses a stricter cross-worker barrier than ordinary schema broadc
 worker first marks the database as dropping, then every live peer marks it likewise, quiesces all
 derived-index installations associated with its audit store, closes its handles, and acknowledges
 success. A handle-close failure produces a negative acknowledgement rather than being logged and
-treated as quiescent. A negative acknowledgement or timeout rejects the drop before destructive storage work.
-While marked, scans and on-demand lookup cannot reopen the database. Failure broadcasts cancellation
-and reloads the database; successful deletion sends the ordinary schema event, which clears the
-marker. The destructive barrier includes job workers even though ordinary schema gossip excludes
-them. A peer also records the coordinating thread and cancels its marker if that thread exits before
-finish or cancellation arrives. A preparation delivered after the exit notification is rejected
-before it can install a marker, closing the opposite ordering of the same race. An interrupted drop
-therefore does not fence the database name until the process restarts. Branch shutdown and job-worker
-teardown await the same derived-index quiescence before closing their RocksDB handles. A process exit
-remains the final safety boundary if orderly teardown itself cannot complete.
+treated as quiescent. A negative acknowledgement, recipient exit before acknowledgement, or timeout
+rejects the drop before destructive storage work. While marked, scans and on-demand lookup cannot
+reopen a peer's database; the coordinator keeps its already-open database loaded until
+`dropDatabase()` starts. Failure broadcasts cancellation and reloads the database; a peer whose
+in-flight preparation finishes after that cancellation detects the changed marker and reloads again.
+Cancellation and finish messages clear only the marker owned by their originator, so a late message
+cannot clear a newer drop. Successful deletion sends the ordinary schema event, which clears the
+matching marker. The destructive barrier includes job workers even though ordinary schema gossip
+excludes them. A peer also records the coordinating thread and cancels its marker if that thread exits
+before finish or cancellation arrives. A preparation delivered after the exit notification is
+rejected before it can install a marker, closing the opposite ordering of the same race. An
+interrupted drop therefore does not fence the database name until the process restarts. Branch
+shutdown and job-worker teardown await the same derived-index quiescence before closing their RocksDB
+handles. A process exit remains the final safety boundary if orderly teardown itself cannot complete.
+For RocksDB, `RocksDatabase.destroy()` is the final native backstop: rocksdb-js claims the shared
+descriptor, closes its attached resources, and throws if any descriptor reference remains; it calls
+RocksDB's destructive API only after that reference check succeeds. Harper therefore does not add a
+second registry-polling protocol to database drop.
 
 An `@fullText` index creates no RocksDB column family. Its native directory is rooted inside the
 database directory and selected by the lifecycle's hash of `<table>/<index>`. RocksDB remains the

@@ -167,6 +167,17 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		);
 	});
 
+	it('rejects a strict broadcast when a worker exits before acknowledging', async function () {
+		const worker = await startFixtureWorker('silent');
+		started.push(worker);
+		const broadcast = broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 2000, {
+			rejectOnError: true,
+		});
+		worker.wasShutdown = true;
+		await worker.terminate();
+		await assert.rejects(broadcast, /exited before acknowledging/);
+	});
+
 	it('includes job workers only when a destructive barrier requests them', async function () {
 		const worker = await startFixtureWorker('reject', 'job');
 		started.push(worker);

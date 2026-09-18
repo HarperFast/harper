@@ -21,6 +21,7 @@ const {
 	closeDatabaseForRestore,
 	closeLoadedDatabases,
 	prepareDatabaseForDrop,
+	beginDatabaseDrop,
 	cancelDatabaseDrop,
 	cancelDatabaseDropsFromThread,
 	openBranchDatabase,
@@ -137,16 +138,55 @@ describe('RocksDB handle release', function () {
 		assert.deepStrictEqual(Object.keys(getDatabases()[databaseName]), ['pkg']);
 		assert.strictEqual(getDatabases()[databaseName].pkg.primaryStore.rootStore, rootStore);
 		await getDatabases()[databaseName].pkg.schemaChangeOperation;
+		const originator = 890_000 + Math.floor(Math.random() * 10_000);
 
-		await prepareDatabaseForDrop(databaseName);
+		await prepareDatabaseForDrop(databaseName, originator);
 		assert.strictEqual(getDatabases()[databaseName], undefined);
 		assert.strictEqual(rootStore.status, 'closed');
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 		resetDatabases();
 		assert.strictEqual(getDatabases()[databaseName], undefined, 'catalog rescans must not reopen a prepared drop');
 
-		cancelDatabaseDrop(databaseName);
+		cancelDatabaseDrop(databaseName, originator);
 		assert.ok(getDatabases()[databaseName]);
+	});
+
+	it('keeps the coordinator database loaded while its drop barrier is pending', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-coordinator-rescan';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		await getDatabases()[databaseName].pkg.schemaChangeOperation;
+
+		beginDatabaseDrop(databaseName);
+		resetDatabases();
+
+		assert.ok(getDatabases()[databaseName], 'schema gossip must not evict the coordinator before dropDatabase runs');
+		cancelDatabaseDrop(databaseName);
+	});
+
+	it('reopens a peer when cancellation overtakes drop preparation', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-cancel-race';
+		const Table = table({
+			table: 'pkg',
+			database: databaseName,
+			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
+		});
+		await Table.schemaChangeOperation;
+		if (!(Table.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		let release;
+		const barrier = new Promise((resolve) => (release = resolve));
+		Table.derivedIndexRuntime = { close: () => barrier };
+		const originator = 920_000 + Math.floor(Math.random() * 10_000);
+		const preparing = prepareDatabaseForDrop(databaseName, originator);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		cancelDatabaseDrop(databaseName, originator);
+		release();
+		await assert.rejects(preparing, /canceled before it completed/);
+
+		assert.ok(getDatabases()[databaseName], 'cancellation must win over an in-flight prepare');
 	});
 
 	it('reopens a prepared database when its drop coordinator exits', async function () {

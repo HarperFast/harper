@@ -61,11 +61,11 @@ async function schemaHandler(event) {
 		return;
 	}
 	if (event.message?.operation === CANCEL_DATABASE_DROP_OPERATION && event.message.schema) {
-		cancelDatabaseDrop(event.message.schema);
+		cancelDatabaseDrop(event.message.schema, event.message.originator);
 		return;
 	}
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA && event.message.schema) {
-		finishDatabaseDrop(event.message.schema);
+		finishDatabaseDrop(event.message.schema, event.message.originator);
 	}
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while

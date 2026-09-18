@@ -1073,6 +1073,7 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS,
 		let waitingCount = 0;
 		let timer;
 		let timingOut = false;
+		let buildingRecipients = true;
 		const errors = [];
 		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
 		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
@@ -1095,13 +1096,14 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS,
 			// Ordinary schema gossip excludes single-task job workers. Destructive barriers opt
 			// them in because they must prove their database handles and derived writers quiescent.
 			if (!options.includeJobWorkers && !isEligibleBroadcastRecipient(port)) continue;
+			let ackHandler;
 			try {
 				let requestId = nextId++;
-				const ackHandler = (error) => {
+				ackHandler = (error) => {
 					if (!pending.delete(ackHandler)) return; // already settled for this port
 					awaitingResponses.delete(requestId);
 					if (error) errors.push(error);
-					if (--waitingCount === 0 && !timingOut) {
+					if (--waitingCount === 0 && !timingOut && !buildingRecipients) {
 						finish();
 					}
 					if (port !== parentPort && --port.refCount === 0) {
@@ -1109,6 +1111,7 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS,
 					}
 				};
 				ackHandler.port = port;
+				ackHandler.rejectOnClose = options.rejectOnError;
 				pending.add(ackHandler);
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
@@ -1119,18 +1122,25 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS,
 					port.on(port.close ? 'close' : 'exit', () => {
 						for (let [, ackHandler] of awaitingResponses) {
 							if (ackHandler.port === port) {
-								ackHandler();
+								ackHandler(
+									ackHandler.rejectOnClose
+										? new Error(`Worker thread ${port.threadId} exited before acknowledging the operation`)
+										: undefined
+								);
 							}
 						}
 					});
 				}
-				port.postMessage(message);
 				waitingCount++;
+				port.postMessage(message);
 			} catch (error) {
 				harperLogger.error(`Unable to send message to worker`, error);
+				if (ackHandler) ackHandler(options.rejectOnError ? error : undefined);
+				else if (options.rejectOnError) errors.push(error);
 			}
 		}
-		if (waitingCount === 0) return resolve();
+		buildingRecipients = false;
+		if (waitingCount === 0) return finish();
 		if (timeout > 0) {
 			timer = setTimeout(() => {
 				timer = undefined;

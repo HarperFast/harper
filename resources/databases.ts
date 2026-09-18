@@ -696,7 +696,7 @@ export function getDatabases(): Databases {
 			// branch directories are process-local derivatives, never databases in their own right
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
-			if (databasesBeingDropped.has(dbName)) continue;
+			if (databasesBeingDropped.has(dbName) && databasesBeingDropped.get(dbName) !== threadId) continue;
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (blockedByRestore.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
@@ -2458,8 +2458,10 @@ export async function prepareDatabaseForDrop(databaseName: string, originator = 
 	databasesBeingDropped.set(databaseName, originator);
 	try {
 		await closeDatabaseForRestore(databaseName);
+		if (databasesBeingDropped.get(databaseName) !== originator)
+			throw new Error(`Database drop preparation for '${databaseName}' was canceled before it completed`);
 	} catch (error) {
-		databasesBeingDropped.delete(databaseName);
+		if (databasesBeingDropped.get(databaseName) === originator) databasesBeingDropped.delete(databaseName);
 		resetDatabases();
 		throw error;
 	}
@@ -2469,18 +2471,20 @@ export function beginDatabaseDrop(databaseName: string): void {
 	databasesBeingDropped.set(databaseName, threadId);
 }
 
-export function finishDatabaseDrop(databaseName: string): void {
+export function finishDatabaseDrop(databaseName: string, originator?: number): void {
+	if (originator !== undefined && databasesBeingDropped.get(databaseName) !== originator) return;
 	databasesBeingDropped.delete(databaseName);
 }
 
-export function cancelDatabaseDrop(databaseName: string): void {
+export function cancelDatabaseDrop(databaseName: string, originator?: number): void {
+	if (originator !== undefined && databasesBeingDropped.get(databaseName) !== originator) return;
 	if (!databasesBeingDropped.delete(databaseName)) return;
 	resetDatabases();
 }
 
 export function cancelDatabaseDropsFromThread(originator: number): void {
 	for (const [databaseName, dropOriginator] of databasesBeingDropped)
-		if (dropOriginator === originator) cancelDatabaseDrop(databaseName);
+		if (dropOriginator === originator) cancelDatabaseDrop(databaseName, originator);
 }
 
 /**
