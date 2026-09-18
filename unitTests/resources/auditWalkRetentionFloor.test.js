@@ -16,12 +16,6 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const DAY = 86400 * 1000;
 const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
 
-// harper#2642: the out-of-order reconciliation walk follows the record's audit chain looking for an
-// entry at or below the incoming write's version. Below the database's audit floor no such entry is
-// accounted for, so the walk always runs the whole retained chain — an end-of-log scan per step on
-// RocksDB — to an outcome the floor already determines. These tests assert the walk is not entered
-// below the floor, that the one contribution which survives (commutative ops) still does and is not
-// applied twice on a re-delivery, and that the walk's head lookup resolves to a single log.
 // harper#2642. The walk is not entered below the audit floor; the one contribution that survives it
 // (commutative ops) still applies and is not applied twice on a re-delivery; the head lookup resolves
 // to a single log.
@@ -236,6 +230,54 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 		// `extra` is absent from the head because the newer full put did not carry it — which a head
 		// record cannot tell apart from "no write ever set this key", so neither may be resurrected.
 		assert.equal(record.extra, undefined, 'a field the head lacks is not resurrected either');
+	});
+
+	// The record encoder reserves its metadata prefix through msgpackr's RESERVE_START_SPACE option,
+	// whose byte count is the LOW BYTE of the option word, so a prefix over 255 bytes wraps and the
+	// record is written with a reserved size neither side agrees on. Each out-of-order write applied to
+	// a record appends one audit ref (12 bytes) and only an in-order write clears them, so ~19 of them
+	// to one record used to cross it: the record decoded as empty, later writes rebuilt it from
+	// nothing, and everything it held was gone. Both the walk and the below-floor short-circuit append
+	// refs, so both are pinned here. (harper#2642)
+	describe('persisted audit-ref cardinality', () => {
+		async function applyOps(T, id, first, count) {
+			for (let i = 0; i < count; i++) {
+				await applyFromOrigin(T, id, { count: { __op__: 'add', value: 1 } }, { logKey: first + i, version: first + i });
+			}
+			return T.primaryStore.getEntry(id);
+		}
+
+		it('survives more out-of-order applies than the encoder prefix can hold, on the walk path', async function () {
+			if (isLMDB) return this.skip();
+			const T = tableInOwnDatabase('RefCardinalityWalk');
+			const anchor = Date.now();
+			await T.put('many', { name: 'newer', count: 0 });
+			await T.patch('many', { name: 'head' }, { timestamp: anchor + 100_000 });
+
+			// Older than the head but above the floor, so every apply goes through the reconciliation walk.
+			const entry = await applyOps(T, 'many', anchor + 1000, 40);
+
+			assert.ok(
+				entry.additionalAuditRefs.length < 20,
+				`ref list must stay bounded; got ${entry.additionalAuditRefs?.length}`
+			);
+			assert.deepEqual(await T.get('many'), { id: 'many', name: 'head', count: 40 });
+		});
+
+		it('survives the same volume through the below-floor short-circuit', async function () {
+			if (isLMDB) return this.skip();
+			const T = tableInOwnDatabase('RefCardinalityFloor');
+			await T.put('many', { name: 'newer', count: 0 });
+			raiseAuditFloor(T.auditStore, Date.now());
+
+			const entry = await applyOps(T, 'many', Date.now() - 30 * DAY, 40);
+
+			assert.ok(
+				entry.additionalAuditRefs.length < 20,
+				`ref list must stay bounded; got ${entry.additionalAuditRefs?.length}`
+			);
+			assert.deepEqual(await T.get('many'), { id: 'many', name: 'newer', count: 40 });
+		});
 	});
 
 	it('pins the walk head lookup to one log and leaves an unrecorded predecessor aggregating', async function () {

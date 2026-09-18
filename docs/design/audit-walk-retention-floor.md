@@ -224,6 +224,38 @@ Residual, reported as a finding rather than fixed here: steps ≥ 2 still fan ou
 skips, so were it ever set it would misalign the entry). With fix 1 in place those walks happen only
 for in-retention writes.
 
+## A latent record-corruption bug this change surfaced
+
+Round 1 of the pre-push review flagged that `additionalAuditRefs` grows by one per applied
+out-of-order write and is persisted with a one-byte count, so 256 refs would wrap it. Writing a test
+for that bound found the real limit is far lower and the failure is already reachable on `main`.
+
+`RecordEncoder`'s metadata prefix is reserved through msgpackr's `RESERVE_START_SPACE`, whose byte
+count is the **low byte** of the same option word as its flags (`encodeOptions & 0xff`, msgpackr
+`pack`). The prefix is `8 + 4 + optional expiresAt/residency/nodeId + 1 + 12 × refs`, so it crosses
+255 at roughly **19 refs**, not 256 — and then the record is written with a reserved size neither
+side agrees on.
+
+Measured, same fixture, same command, RocksDB — a record given 40 out-of-order commutative applies
+through the ordinary reconciliation walk (all in retention, so this change's short-circuit is not
+involved):
+
+|                             | record after 40 applies                          |
+| --------------------------- | ------------------------------------------------ |
+| `origin/main` @ `78271ac75` | `{"count":20}` — `name` gone, 20 increments lost |
+| this branch                 | `{"id":"many","name":"head","count":40}`         |
+
+The record decoded as empty partway through and the remaining applies rebuilt it from nothing. So
+this is a pre-existing silent data-corruption path on the walk, not one this change introduces — but
+the short-circuit reaches the same list by the same rule, so it is fixed here rather than left for
+the branch to trip over.
+
+The fix is in the encoder, the layer that owns the prefix: clamp the encoded ref count to what the
+remaining prefix budget can hold, computed from the actual `valueStart` rather than a guessed
+constant, and write that count. Refs are best-effort by contract — a later in-order write drops them
+outright — so the tail (the oldest heads) is dropped; index 0 is the addressable audit head and is
+always kept. Both cardinality paths are pinned by tests.
+
 ## Compatibility
 
 No public API changes. Replicated conflict-resolution semantics for below-floor writes do change,
