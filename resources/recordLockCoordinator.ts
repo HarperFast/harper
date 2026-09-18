@@ -239,11 +239,12 @@ export interface DelegationReply {
 	dependencies?: LockDependencySet | null;
 	/**
 	 * Denied only. `contended` is the one reason that means another node holds the key, and so the only
-	 * one a timeout may report as 423. `generation` (the two sides hold different home maps),
-	 * `unknown-node` (this node is not named in the map), `quarantine` (the home is inside its §4.3
-	 * restart interval) and `timeout` (the home never answered) all describe something other than
-	 * contention, so each ends as a retryable 503 rather than telling the caller a key nobody holds is
-	 * held.
+	 * one an exhausted wait may report as 423. `generation` (the two sides hold different home maps),
+	 * `unknown-node` (this node is not named in the map) and `quarantine` (the home is inside its §4.3
+	 * restart interval) all describe something other than contention, so each ends as a retryable 503
+	 * rather than telling the caller a key nobody holds is held. `timeout` is not a home answer at all
+	 * — it is this node's own deadline ending its probe — so it never classifies a wait: `acquire`
+	 * answers from the last reply a home completed.
 	 */
 	reason?: 'contended' | 'generation' | 'unknown-node' | 'capacity' | 'not-home' | 'quarantine' | 'timeout';
 	/** Denied with `generation`, so a stale requester can re-derive the ring without another round trip. */
@@ -1156,14 +1157,17 @@ export class LockCoordinator {
 	 *
 	 * The amortization is the first branch: a live, un-recalled delegation with enough time left costs
 	 * zero cluster messages.
+	 *
+	 * `observed` carries the last reply a home completed for this wait across a coordinator handoff,
+	 * so the deadline the successor inherits is classified against what the predecessor saw.
 	 */
-	async acquire(key: any, leaseMs: number, waitMs: number): Promise<LockRound> {
+	async acquire(key: any, leaseMs: number, waitMs: number, observed?: DelegationReply): Promise<LockRound> {
 		// `Table.lock()` captures a coordinator and only reaches here after the native key lock, which
 		// can wait the caller's whole timeout — long enough for a transport swap to close what it
 		// captured. Authority moved to the successor rather than away, so run there instead of
 		// rejecting a caller that is already holding the key.
 		const authority = this.#authority();
-		if (authority !== this) return authority.acquire(key, leaseMs, waitMs);
+		if (authority !== this) return authority.acquire(key, leaseMs, waitMs, observed);
 		if (this.#closed) throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
 		if (!this.transport.ownsCoordination()) {
 			// Off the coordinating thread. A transport that can relay obtains the admission from the
@@ -1180,6 +1184,7 @@ export class LockCoordinator {
 		}
 		const keyId = this.#keyIdOf(key);
 		const deadlineMono = this.#monotonic() + waitMs;
+		let lastCompleted = observed;
 
 		acquisition: for (;;) {
 			const homeMap = this.transport.homeMap(this.database);
@@ -1360,24 +1365,34 @@ export class LockCoordinator {
 				// which the terminal answer below is what handles.
 				warnOnce('record lock home disagreed about the ring', { database: this.database, table: this.table });
 
+			// A `timeout` is this node's own deadline cutting its probe short, not something the home
+			// said, so it carries no evidence about the key. Classifying from it would report a key
+			// nobody holds — or a ring nobody disputes — for a wait that watched the key held the whole
+			// time. The last reply the home actually completed is what the wait observed.
+			if (reply.reason !== 'timeout') lastCompleted = reply;
 			const remaining = deadlineMono - this.#monotonic();
-			if (remaining <= 0) {
+			const retryAfterMs = reply.retryAfterMs ?? 25;
+			// A backoff that reaches the deadline leaves the next pass nothing to complete a round trip
+			// in, and a request sent with no budget can only come back as this node's own `timeout`.
+			if (remaining <= retryAfterMs) {
+				const terminal = lastCompleted ?? reply;
 				// 423 says "someone else holds this key", so only a denial that actually means that may end
 				// as one. Every other reason ran out the clock without the key ever being held, and reporting
 				// contention for it sends the caller to retry a condition no timeout can outlast.
-				if (reply.reason === 'contended') throw new ClientError('Record is locked and was not released in time', 423);
+				if (terminal.reason === 'contended')
+					throw new ClientError('Record is locked and was not released in time', 423);
 				throw new LockUnavailableError(
-					`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: the key's home answered ${reply.reason ?? (reply.granted ? 'grants that arrived too late to use' : 'nothing usable')}`
+					`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: the key's home answered ${terminal.reason ?? (terminal.granted ? 'grants that arrived too late to use' : 'nothing usable')}`
 				);
 			}
-			await delay(Math.min(reply.retryAfterMs ?? 25, remaining)).promise;
+			await delay(retryAfterMs).promise;
 			if (this.#closed) {
 				// Same swap, landing in the backoff instead. Carry the remaining wait so the deadline the
 				// caller asked for is preserved across the hop.
 				const successor = this.#authority();
 				if (successor === this)
 					throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
-				return successor.acquire(key, leaseMs, Math.max(0, deadlineMono - this.#monotonic()));
+				return successor.acquire(key, leaseMs, Math.max(0, deadlineMono - this.#monotonic()), lastCompleted);
 			}
 		}
 	}
@@ -2400,8 +2415,8 @@ export class LockCoordinator {
 				requested,
 				timeout.promise.then(() => {
 					raced = true;
-					// `timeout`, not `contended`: the home never answered, so nobody was shown to hold the
-					// key. Retried the same way, but a wait that ends here is 503 rather than 423.
+					// Never `contended`: this node stopped waiting, so this reply shows nothing about the key.
+					// `acquire` treats it as evidence-free and classifies from the last completed reply.
 					return { granted: false, reason: 'timeout', retryAfterMs: 0 } as DelegationReply;
 				}),
 			]);

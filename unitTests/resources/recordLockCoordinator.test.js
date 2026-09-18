@@ -430,6 +430,46 @@ describe('record lock delegations', () => {
 			await betaAcquire;
 			assert.strictEqual(betaAdmitted, true);
 		});
+
+		it('ends a wait the home answered contended as 423, and sends no probe it cannot complete', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// Beta's backoff reaches its deadline, so any further request would go out with no budget and
+			// could only come back as beta's own `timeout`. The stall makes that the outcome if one is
+			// sent at all: a wait that watched the key held must not report it unheld.
+			let replies = 0;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) return cluster.advance('beta', 180);
+				cluster.advance('beta', 1_000);
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			};
+			const sent = cluster.requests.length;
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 200),
+				(error) => error.statusCode === 423
+			);
+			assert.strictEqual(cluster.requests.length, sent + 1, 'a probe went out with no budget to complete in');
+		});
+
+		it('ends on the last reply the home completed, so a later not-home is not reported as contention', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The home stops owning coordination between beta's two passes. Contention is what beta saw
+			// first, but the ring disagreement is the fresher fact and the one the caller has to act on.
+			let replies = 0;
+			cluster.beforeReply = (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) {
+					cluster.node('gamma').owns = false;
+					return cluster.advance('beta', 200);
+				}
+				cluster.advance('beta', 100);
+			};
+			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300), /home answered not-home/);
+		});
 	});
 
 	describe('successor freshness', () => {
