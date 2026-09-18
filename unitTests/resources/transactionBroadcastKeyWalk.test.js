@@ -1,6 +1,3 @@
-// The broadcaster walks a changed key up its '/' hierarchy to notify ancestor subscribers. A key
-// rooted at '/' used to make that walk spin forever (harper#2687), seizing the worker. These drive
-// the real same-thread aftercommit path with leading-slash keys.
 require('../testUtils');
 const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
@@ -61,10 +58,12 @@ describe('transactionBroadcast key-hierarchy walk', () => {
 		const table = makeFakeStores('/fake/broadcast-key-walk-root-key');
 		const { events, subscription } = subscribeCollecting(table, '/');
 		try {
-			table.auditStore.emit('aftercommit', putEntries('/foo', 'unrelated/key'));
-			await waitFor(() => events.length === 2, { message: 'one put for the root ancestor and the end_txn' });
+			table.auditStore.emit('aftercommit', putEntries('/foo', '/', '//x', 'unrelated/key'));
+			await waitFor(() => events.length === 4, { message: 'one put per leading-slash record and the end_txn' });
 			assert.deepEqual(events, [
 				{ id: '/foo', type: 'put', beginTxn: true },
+				{ id: '/', type: 'put', beginTxn: undefined },
+				{ id: '//x', type: 'put', beginTxn: undefined },
 				{ id: null, type: 'end_txn', beginTxn: true },
 			]);
 		} finally {
