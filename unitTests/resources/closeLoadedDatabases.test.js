@@ -323,6 +323,25 @@ describe('RocksDB handle release', function () {
 		cancelDatabaseDrop(databaseName, originator);
 	});
 
+	it('closes a captured tableless root when a rescan evicts it during preparation', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-empty-drop-rescan-race';
+		const rootStore = database({ database: databaseName });
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const originator = 927_000 + Math.floor(Math.random() * 10_000);
+		const preparing = prepareDatabaseForDrop(databaseName, originator);
+
+		assert.strictEqual(resetDatabases()[databaseName], undefined, 'the peer rescan should evict the marked database');
+		await preparing;
+
+		assert.strictEqual(
+			refCountFor(rootStore.path),
+			0,
+			'PREPARE must close the tableless root captured before the rescan'
+		);
+		cancelDatabaseDrop(databaseName, originator);
+	});
+
 	it('rejects concurrent drop coordinators without replacing the active marker', async function () {
 		this.timeout(30000);
 		const databaseName = 'close-drop-concurrent-coordinator';

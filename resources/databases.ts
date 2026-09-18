@@ -2421,10 +2421,16 @@ export async function dropDatabase(databaseName) {
  */
 const pendingDatabaseStoreCloses = new Map<string, Map<any, string>>();
 export function closeDatabase(databaseName: string, failOnCloseError = false): boolean {
-	return closeDatabaseTables(databaseName, databases[databaseName], failOnCloseError);
+	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	return closeDatabaseTables(databaseName, databases[databaseName], definedRoot, failOnCloseError);
 }
 
-function closeDatabaseTables(databaseName: string, dbTables: Tables | undefined, failOnCloseError: boolean): boolean {
+function closeDatabaseTables(
+	databaseName: string,
+	dbTables: Tables | undefined,
+	definedRoot: RootDatabaseKind | undefined,
+	failOnCloseError: boolean
+): boolean {
 	let pendingCloses = pendingDatabaseStoreCloses.get(databaseName);
 	const hadPendingCloses = Boolean(pendingCloses?.size);
 	if (!dbTables && !hadPendingCloses) return false;
@@ -2453,7 +2459,6 @@ function closeDatabaseTables(databaseName: string, dbTables: Tables | undefined,
 	// a database with no tables (an empty schema, or one whose tables were all dropped) still holds
 	// an open root store, tracked only on the defined-database entry rather than any table — include
 	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
-	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	if (definedRoot) rootStores.add(definedRoot);
 	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
 	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
@@ -2496,10 +2501,11 @@ function closeDatabaseTables(databaseName: string, dbTables: Tables | undefined,
 export async function closeDatabaseForRestore(databaseName: string, dropOriginator?: number): Promise<boolean> {
 	const dbTables = databases[databaseName];
 	if (!dbTables) return closeDatabase(databaseName, true);
+	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	await quiesceDatabaseDerivedIndexes(databaseName, dbTables, 'database restore');
 	if (dropOriginator !== undefined && databasesBeingDropped.get(databaseName) !== dropOriginator)
 		throw new Error(`Database drop preparation for '${databaseName}' was canceled before storage close`);
-	return closeDatabaseTables(databaseName, dbTables, true);
+	return closeDatabaseTables(databaseName, dbTables, definedRoot, true);
 }
 
 export async function prepareDatabaseForDrop(databaseName: string, originator = threadId): Promise<void> {
