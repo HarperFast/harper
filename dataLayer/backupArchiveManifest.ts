@@ -2,6 +2,8 @@
 
 import { packageJson } from '../utility/packageUtils.js';
 import { ClientError } from '../utility/errors/hdbError.ts';
+import { get as getConfigValue } from '../utility/environment/environmentManager.ts';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 
 /**
  * The machine-readable identification carried by a `get_backup` archive.
@@ -54,6 +56,81 @@ export interface BackupArchiveManifest {
 	 */
 	roles: string[] | null;
 	created_at: number;
+	/**
+	 * Provenance, never gated on — `requires` is the gate. This is what a support engineer needs
+	 * when an archive shows up months later and will not restore, and it is deliberately separate
+	 * so nobody is tempted to turn a description into a compatibility check.
+	 */
+	source: BackupArchiveSource;
+}
+
+export interface BackupArchiveSource {
+	/**
+	 * Names of the built-in components the producing distribution registered — `replication`,
+	 * `secretCustody`, `waf` on Harper Pro, empty on OSS core. This is the only honest
+	 * pro-vs-OSS signal that exists: core has no edition flag, and its `package.json` is core's own
+	 * even when Pro bundles it, so `harper_version` cannot distinguish them.
+	 */
+	built_in_components: string[];
+	node_version: string;
+	platform: string;
+	arch: string;
+	/** Allowlisted storage settings only — see {@link PROVENANCE_SETTINGS}. */
+	settings: Record<string, unknown>;
+}
+
+/**
+ * The settings recorded in `source.settings`, as an explicit allowlist rather than a config dump.
+ * An archive leaves the host, so the rule is: describe how the data was written, and never carry a
+ * path, a hostname, a credential, or anything under auth/network/TLS — `storage.path` and
+ * `storage.blobPaths` are excluded for exactly that reason, and `blob_root_count` already records
+ * the only part of the blob layout a reader can act on.
+ */
+const PROVENANCE_SETTINGS: readonly string[] = [
+	CONFIG_PARAMS.STORAGE_COMPRESSION,
+	CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD,
+	CONFIG_PARAMS.STORAGE_BLOBS_COMPRESSION,
+	CONFIG_PARAMS.STORAGE_CACHING,
+	CONFIG_PARAMS.STORAGE_WRITEASYNC,
+	CONFIG_PARAMS.STORAGE_OVERLAPPINGSYNC,
+	CONFIG_PARAMS.STORAGE_PAGESIZE,
+];
+
+/**
+ * Best-effort: a manifest is worth writing without provenance, and the offline CLI may hold no
+ * config at all. Never let describing the source fail the backup that produced it.
+ */
+function collectSource(): BackupArchiveSource {
+	// Read directly rather than importing Application.ts's getEnvBuiltInComponents(): that module is
+	// ~5k lines and nothing in dataLayer depends on it, and this is a cold path. configUtils.ts:549
+	// reads the same variable the same way. Format is `name=packageIdentifier`, comma-separated.
+	const builtInComponents = (process.env.HARPER_BUILTIN_COMPONENTS ?? '')
+		.split(',')
+		.map((definition) => definition.trim().split('=')[0])
+		.filter(Boolean);
+	const settings: Record<string, unknown> = {};
+	for (const param of PROVENANCE_SETTINGS) {
+		try {
+			const value = getConfigValue(param);
+			if (value !== undefined) settings[param] = value;
+		} catch {
+			/* config not loaded */
+		}
+	}
+	// A dictionary is an external file the data depends on, so record THAT one was configured
+	// without recording where it lives.
+	try {
+		if (getConfigValue(CONFIG_PARAMS.STORAGE_COMPRESSION_DICTIONARY)) settings.storage_compression_dictionary = true;
+	} catch {
+		/* config not loaded */
+	}
+	return {
+		built_in_components: builtInComponents,
+		node_version: process.version,
+		platform: process.platform,
+		arch: process.arch,
+		settings,
+	};
 }
 
 /**
@@ -89,6 +166,7 @@ export function buildArchiveManifest({
 		requires,
 		roles,
 		created_at: Date.now(),
+		source: collectSource(),
 	};
 }
 

@@ -59,6 +59,51 @@ describe('backupArchiveManifest', function () {
 		});
 	});
 
+	describe('source provenance', function () {
+		const originalBuiltIns = process.env.HARPER_BUILTIN_COMPONENTS;
+
+		afterEach(function () {
+			if (originalBuiltIns === undefined) delete process.env.HARPER_BUILTIN_COMPONENTS;
+			else process.env.HARPER_BUILTIN_COMPONENTS = originalBuiltIns;
+		});
+
+		it('records the runtime the archive was produced on', function () {
+			const { source } = manifestFor();
+			assert.strictEqual(source.node_version, process.version);
+			assert.strictEqual(source.platform, process.platform);
+			assert.strictEqual(source.arch, process.arch);
+		});
+
+		it('names the built-in components, which is the only pro-vs-OSS signal there is', function () {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'replication=@/dist/replication/replicator.js,secretCustody=@/dist/x.js';
+			assert.deepStrictEqual(manifestFor().source.built_in_components, ['replication', 'secretCustody']);
+		});
+
+		it('reports no built-ins on OSS core, rather than omitting the field', function () {
+			delete process.env.HARPER_BUILTIN_COMPONENTS;
+			assert.deepStrictEqual(manifestFor().source.built_in_components, []);
+		});
+
+		it('tolerates a trailing separator in the registry', function () {
+			process.env.HARPER_BUILTIN_COMPONENTS = 'replication=@/dist/replication/replicator.js,';
+			assert.deepStrictEqual(manifestFor().source.built_in_components, ['replication']);
+		});
+
+		it('records no path, host, or credential — the archive leaves the box', function () {
+			const serialized = serializeArchiveManifest(manifestFor());
+			for (const key of Object.keys(JSON.parse(serialized).source.settings)) {
+				assert.ok(
+					!/path|paths|host|url|key|secret|token|cert/i.test(key),
+					`${key} is recorded in archive provenance but names a location or credential`
+				);
+			}
+		});
+
+		it('survives a build with no config loaded', function () {
+			assert.ok(manifestFor().source.settings);
+		});
+	});
+
 	describe('serialize / parse', function () {
 		it('round-trips', function () {
 			const manifest = manifestFor();
