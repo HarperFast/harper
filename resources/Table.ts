@@ -173,7 +173,6 @@ export type Attribute = {
 	resolve?: any;
 	computedFromExpression?: any;
 	embed?: { source: string; model: string };
-	fullText?: FullTextDefinition;
 	version?: any;
 	properties?: Array<Attribute>;
 	elements?: Attribute;
@@ -611,6 +610,7 @@ export function makeTable(options) {
 		hidden,
 		cacheControl,
 		isBranch,
+		fullTextIndexes = [],
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
@@ -681,7 +681,6 @@ export function makeTable(options) {
 	// the definition (set early, during connectPropertyType) rather than its `.tableClass` (assigned later, so
 	// unset for self/forward refs at collection time); `.tableClass` is resolved lazily at detection.
 	let enumerableAttributeNames: string[] = [];
-	let fullTextAttributes: Attribute[] = [];
 	const enumerableRelationDefs = new Set<any>();
 	// True when the table surfaces any non-table @computed attribute. A resolver can return a live (possibly
 	// cyclic) entity at runtime regardless of its declared scalar type, and the static edge graph can't see
@@ -916,6 +915,7 @@ export function makeTable(options) {
 		static indices = indices;
 		static derivedIndexRuntime: { close(): Promise<void> } | undefined;
 		static schemaChangeOperation: Promise<void> | undefined;
+		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
 		static audit = audit;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
@@ -1384,11 +1384,12 @@ export function makeTable(options) {
 												hasChanges = true;
 											}
 										}
-										if (hasChanges) {
+										if (hasChanges || event.fullTextIndexes !== undefined) {
 											table({
 												table: tableName,
 												database: databaseName,
 												attributes: updatedAttributes,
+												fullTextIndexes: event.fullTextIndexes,
 												origin: 'cluster',
 											});
 											signalling.signalSchemaChange(
@@ -6179,8 +6180,6 @@ export function makeTable(options) {
 			const new_attributes = attributes.slice(0);
 			for (const attribute of attributesToAdd) {
 				if (!attribute.name) throw new ClientError('Attribute name is required');
-				if (attribute.type === 'FullText' || attribute.fullText)
-					throw new ClientError('Full-text attributes must be declared with @fullText in schema.graphql', 400);
 				if (attribute.name.match(/[`/]/))
 					throw new ClientError('Attribute names cannot include backticks or forward slashes');
 				validateAttribute(attribute.name);
@@ -6197,7 +6196,7 @@ export function makeTable(options) {
 		static async removeAttributes(names: string[]) {
 			TableResource.assertSchemaMutable('remove attributes');
 			const removed = new Set(names);
-			assertFullTextSourcesRemain(TableResource.attributes, removed);
+			assertFullTextSourcesRemain(TableResource.fullTextIndexes, removed);
 			const new_attributes = TableResource.attributes.filter((attribute) => !names.includes(attribute.name));
 			table({
 				table: tableName,
@@ -6422,13 +6421,9 @@ export function makeTable(options) {
 		 * When attributes have been changed, we update the accessors that are assigned to this table
 		 */
 		static updatedAttributes() {
-			for (const name of primaryStore.encoder.resolvedAttributeNamesList ?? [])
-				delete primaryStore.encoder.structPrototype[name];
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
-			fullTextAttributes = this.attributes.filter((attribute) => attribute.fullText);
-			TableResource.prototype.validate = fullTextAttributes.length ? validateWithFullText : validateWithoutFullText;
 			expiresAtProperty = this.attributes.find((attribute) => attribute.expiresAt);
 			// Drop registry entries for attributes that are no longer `@embed`, so a dropped
 			// directive doesn't leave a stale embedder or block a default refresh on re-add.
@@ -6474,10 +6469,7 @@ export function makeTable(options) {
 				if (attribute.embed && !TableResource.userSetEmbedders.has(attribute.name)) {
 					this.userEmbedders[attribute.name] = createDefaultEmbedder(attribute.embed);
 				}
-				if (attribute.fullText) {
-					propertyResolvers[attribute.name] = attribute.resolve = () => undefined;
-					attribute.resolve.directReturn = true;
-				} else if (relationship) {
+				if (relationship) {
 					if (attribute.indexed) {
 						console.error(
 							`A relationship property can not be directly indexed, (but you may want to index the foreign key attribute)`
@@ -6910,26 +6902,6 @@ export function makeTable(options) {
 			return txnForContext(context).getReadTxn();
 		}
 	}
-	const validateWithoutFullText = TableResource.prototype.validate;
-	const validateWithFullText = function (this: InstanceType<typeof TableResource>, record: any, patch?: boolean) {
-		let errors: ValidationIssue[] | undefined;
-		for (let i = 0, l = fullTextAttributes.length; i < l; i++) {
-			const name = fullTextAttributes[i].name;
-			if (Object.hasOwn(record, name))
-				(errors ||= []).push({
-					path: name,
-					code: 'full_text',
-					message: `Full-text query property ${name} may not be directly assigned a value`,
-				});
-		}
-		try {
-			validateWithoutFullText.call(this, record, patch);
-		} catch (error) {
-			if (!(error instanceof ValidationError) || !errors) throw error;
-			for (const issue of error.errors) errors.push(issue);
-		}
-		if (errors) throw new ValidationError(errors, errors.map((issue) => issue.message).join('. '));
-	};
 	const throttledCallToSource = throttle(
 		async (source, id, sourceContext, existingEntry) => {
 			// call the data source if it exists and will fulfill our request for data

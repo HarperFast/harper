@@ -59,7 +59,12 @@ import { attachDerivedIndexes } from './indexes/hnswDerivedIndex.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
-import { assertFullTextSourcesRemain, compileFullTextDefinition } from './fullTextSchema.ts';
+import {
+	assertFullTextSourcesRemain,
+	compileFullTextDefinition,
+	compileFullTextDefinitions,
+	type FullTextDefinition,
+} from './fullTextSchema.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
 import {
 	acquireRestoreLock,
@@ -453,8 +458,6 @@ const PEER_REDEFINABLE_FIELDS = [
 	'embed',
 	'computed',
 	'computedFromExpression',
-	'fullText',
-	'hidden',
 ];
 // `indexNulls` is derived from the durable descriptor, never sent by a peer, so naming it in the
 // discard warn would blame the peer for a field it did not write.
@@ -464,48 +467,19 @@ const PEER_DECLARABLE_FIELDS = PEER_REDEFINABLE_FIELDS.filter((field) => field !
 // that path the descriptor — not the caller — decides what the attribute is, in both directions.
 function applyDurableDeclaration(attribute: any, descriptor: any) {
 	for (const field of PEER_REDEFINABLE_FIELDS) {
-		if (field in descriptor) attribute[field] = descriptor[field];
+		if (field in descriptor)
+			Object.defineProperty(attribute, field, {
+				value: descriptor[field],
+				writable: true,
+				configurable: true,
+				enumerable: true,
+			});
 		else delete attribute[field];
 	}
 }
 
-function compileFullTextDeclarations(
-	attributes: any[],
-	validationAttributes: any[],
-	origin: string | undefined,
-	peerAddedAttributeNames: Set<string>,
-	databaseName: string,
-	tableName: string
-) {
-	for (let attributeIndex = 0; attributeIndex < attributes.length; attributeIndex++) {
-		let attribute = attributes[attributeIndex];
-		const validationAttribute = validationAttributes.find(({ name }) => name === attribute.name) ?? attribute;
-		const attributeFullText = attribute.fullText;
-		const validationFullText = validationAttribute.fullText;
-		if (!attributeFullText && !validationFullText) {
-			// Relationship types can resolve through a forward-reference getter. They cannot be
-			// full-text targets, so do not resolve that getter while scanning unrelated attributes.
-			if (attribute.relationship || validationAttribute.relationship) continue;
-			if (attribute.type !== 'FullText') continue;
-		}
-		if (validationAttribute !== attribute && validationAttribute.type !== 'FullText') {
-			attributes[attributeIndex] = validationAttribute;
-			continue;
-		}
-		if (validationAttribute !== attribute) attributes[attributeIndex] = attribute = validationAttribute;
-		try {
-			attribute.fullText = compileFullTextDefinition(validationAttribute, validationFullText, validationAttributes);
-		} catch (error) {
-			if (origin !== 'cluster' || !peerAddedAttributeNames.has(attribute.name) || !(error instanceof ClientError))
-				throw error;
-			logger.warn(
-				`Ignoring invalid peer full-text declaration ${databaseName}.${tableName}.${attribute.name}: ${error.message}`
-			);
-			attributes.splice(attributeIndex--, 1);
-			continue;
-		}
-		attribute.hidden = true;
-	}
+function isDurableAttribute(attribute: any) {
+	return !attribute.relationship;
 }
 
 /**
@@ -1380,6 +1354,7 @@ function initStores(
 					databaseName,
 					indices,
 					attributes,
+					fullTextIndexes: primaryAttribute.fullTextIndexes ?? [],
 					schemaDefined: primaryAttribute.schemaDefined,
 					dbisDB: attributesDbi,
 				})
@@ -1855,6 +1830,7 @@ interface TableDefinition {
 	cacheControl?: string | null;
 	/** Internal: this declaration came from the application owned by the current dedicated worker. */
 	isolatedApplicationOwner?: boolean;
+	fullTextIndexes?: FullTextDefinition[];
 	/** Internal: names an attribute-removal operation so locked invariants can be checked against disk. */
 	removedAttributes?: string[];
 }
@@ -2542,6 +2518,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		hidden,
 		cacheControl,
 		isolatedApplicationOwner,
+		fullTextIndexes,
 		removedAttributes,
 	} = tableDefinition;
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
@@ -2575,6 +2552,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	// schema-replication in Table.ts, dataLoader.ts) are operating on already-live tables whose
 	// flag must be left as-is. Only an explicit value can re-assert on the existing-Table branch.
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
+	const fullTextIndexesExplicit = tableDefinition.fullTextIndexes !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
 	if (
 		attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) &&
@@ -2599,16 +2577,33 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		} else attribute.attribute = attribute.name;
 		if (attribute.expiresAt) attribute.indexed = true;
 	}
-	if (!Table) {
-		compileFullTextDeclarations(
-			attributes,
-			attributes,
-			origin,
-			origin === 'cluster' ? new Set(attributes.map(({ name }) => name)) : new Set(),
-			databaseName,
-			tableName
-		);
+	if (!Table && origin === 'cluster') {
+		const compiled: FullTextDefinition[] = [];
+		for (const peerDefinition of fullTextIndexes ?? []) {
+			try {
+				if (audit !== true)
+					throw new ClientError(
+						`Table '${databaseName}.${tableName}' must enable audit logging before using @fullText`,
+						400
+					);
+				compiled.push(compileFullTextDefinition(peerDefinition, attributes));
+			} catch (error) {
+				if (!(error instanceof ClientError)) throw error;
+				logger.warn(
+					`Ignoring invalid peer full-text declaration ${databaseName}.${tableName}${typeof peerDefinition?.name === 'string' ? `.${peerDefinition.name}` : ''}: ${error.message}`
+				);
+			}
+		}
+		fullTextIndexes = compiled.sort((left, right) => left.name.localeCompare(right.name));
+	} else if (!Table || origin !== 'cluster') {
+		fullTextIndexes = fullTextIndexesExplicit
+			? compileFullTextDefinitions(fullTextIndexes ?? [], attributes)
+			: (Table?.fullTextIndexes ?? []);
 	}
+	if (fullTextIndexes?.length && audit !== true && (audit === false || Table?.audit !== true) && origin !== 'cluster')
+		throw new ClientError(
+			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using @fullText because its transaction log is the derived-index recovery source`
+		);
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
 	let refreshedLiveAttributes = false;
@@ -2648,18 +2643,19 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					);
 				}
 			}
-			const liveAttributesByName = new Map(Table.attributes.map((attribute) => [attribute.name, attribute]));
+			const durableAttributes = attributes.filter(isDurableAttribute);
+			const durableLiveAttributes = Table.attributes.filter(isDurableAttribute);
+			const liveAttributesByName = new Map(durableLiveAttributes.map((attribute) => [attribute.name, attribute]));
 			const schemaShapeChanged =
 				origin !== 'cluster' &&
-				(attributes.length !== Table.attributes.length ||
-					attributes.some((attribute) => {
+				(JSON.stringify(fullTextIndexes) !== JSON.stringify(Table.fullTextIndexes) ||
+					durableAttributes.length !== durableLiveAttributes.length ||
+					durableAttributes.some((attribute) => {
 						const liveAttribute = liveAttributesByName.get(attribute.name);
 						return (
 							!liveAttribute ||
 							liveAttribute.type !== attribute.type ||
 							JSON.stringify(liveAttribute.elements) !== JSON.stringify(attribute.elements) ||
-							JSON.stringify(liveAttribute.fullText) !== JSON.stringify(attribute.fullText) ||
-							Boolean(liveAttribute.relationship) !== Boolean(attribute.relationship) ||
 							Boolean(liveAttribute.computed) !== Boolean(attribute.computed) ||
 							liveAttribute.computedFromExpression !== attribute.computedFromExpression
 						);
@@ -2672,17 +2668,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			if (removedAttributes?.length) {
 				exclusiveLock();
 				const removedAttributeNames = new Set(removedAttributes);
-				const proposedAttributes = new Map(attributes.map((attribute) => [attribute.name, attribute]));
-				const durableAttributes = [];
-				for (const { value } of Table.dbisDB.getRange({ start: tableName + '/', end: tableName + '0' })) {
-					if (!value?.name || removedAttributeNames.has(value.name)) continue;
-					durableAttributes.push(proposedAttributes.get(value.name) ?? value);
-				}
-				assertFullTextSourcesRemain(durableAttributes, removedAttributeNames);
+				const primaryDescriptor =
+					Table.dbisDB.getSync(`${tableName}/${Table.primaryKey}`) ?? Table.dbisDB.getSync(`${tableName}/`);
+				assertFullTextSourcesRemain(primaryDescriptor?.fullTextIndexes ?? Table.fullTextIndexes, removedAttributeNames);
 			}
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
-			const peerAddedAttributeNames = new Set<string>();
 			if (origin === 'cluster') {
 				const cloneAttribute = (attribute: any) =>
 					Object.create(Object.getPrototypeOf(attribute), Object.getOwnPropertyDescriptors(attribute));
@@ -2691,7 +2682,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					const existing = merged.find((existingAttribute) => existingAttribute.name === attribute.name);
 					if (!existing) {
 						merged.push(cloneAttribute(attribute));
-						peerAddedAttributeNames.add(attribute.name);
 						continue;
 					}
 					// Nodes that apply the same peer definitions in a different order keep different index sets, and
@@ -2714,48 +2704,56 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 				attributes = merged;
 			}
-			const hasFullText = attributes.some((attribute) => attribute.fullText || attribute.type === 'FullText');
-			// Cluster validation overlays durable descriptors, so those reads and any handle persistence must
-			// share one critical section. Local shape changes already acquired above; an unchanged local reload
-			// must not serialize every LMDB worker on an environment-wide write transaction.
-			if (origin === 'cluster' && hasFullText) exclusiveLock();
-			const fullTextValidationAttributes =
-				origin === 'cluster' && hasFullText
-					? attributes.map((attribute) => {
-							const descriptor = attribute.isPrimaryKey
-								? (Table.dbisDB.getSync(`${tableName}/${attribute.name}`) ?? Table.dbisDB.getSync(`${tableName}/`))
-								: Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
-							if (!descriptor) return attribute;
-							const durableAttribute = { ...attribute };
-							applyDurableDeclaration(durableAttribute, descriptor);
-							return durableAttribute;
-						})
-					: attributes;
-			compileFullTextDeclarations(
-				attributes,
-				fullTextValidationAttributes,
-				origin,
-				peerAddedAttributeNames,
-				databaseName,
-				tableName
-			);
-			if (origin !== 'cluster') {
-				const storedFieldReplacement = attributes.find((attribute) => {
-					if (!attribute.fullText) return false;
-					const namedDescriptor = Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
-					const primaryDescriptor = Table.dbisDB.getSync(`${tableName}/`);
-					const descriptor =
-						namedDescriptor ?? (primaryDescriptor?.name === attribute.name ? primaryDescriptor : undefined);
-					return descriptor && !descriptor.fullText;
-				});
-				if (storedFieldReplacement)
-					throw new ClientError(
-						`Cannot redefine stored attribute '${storedFieldReplacement.name}' as a FullText query handle. ` +
-							'Declare a new FullText field name instead.',
-						400
-					);
+			if (origin === 'cluster') {
+				if (!fullTextIndexesExplicit) fullTextIndexes = Table.fullTextIndexes;
+				else {
+					exclusiveLock();
+					const validationAttributes = attributes.map((attribute) => {
+						if (attribute.relationship) return attribute;
+						const descriptor = attribute.isPrimaryKey
+							? (Table.dbisDB.getSync(`${tableName}/${attribute.name}`) ?? Table.dbisDB.getSync(`${tableName}/`))
+							: Table.dbisDB.getSync(`${tableName}/${attribute.name}`);
+						if (!descriptor) return attribute;
+						const durableAttribute = Object.create(
+							Object.getPrototypeOf(attribute),
+							Object.getOwnPropertyDescriptors(attribute)
+						);
+						applyDurableDeclaration(durableAttribute, descriptor);
+						return durableAttribute;
+					});
+					const primaryDescriptor =
+						Table.dbisDB.getSync(`${tableName}/${Table.primaryKey}`) ?? Table.dbisDB.getSync(`${tableName}/`);
+					const merged = [...(primaryDescriptor?.fullTextIndexes ?? Table.fullTextIndexes)];
+					for (const peerDefinition of fullTextIndexes ?? []) {
+						const name = peerDefinition?.name;
+						const existing =
+							typeof name === 'string' ? merged.find((definition) => definition.name === name) : undefined;
+						if (existing) {
+							if (JSON.stringify(existing) !== JSON.stringify(peerDefinition))
+								logger.warn(
+									`Ignoring peer redefinition of full-text index ${databaseName}.${tableName}.${name}; the local schema is authoritative`
+								);
+							continue;
+						}
+						try {
+							if (Table.audit !== true)
+								throw new ClientError(
+									`Table '${databaseName}.${tableName}' must enable audit logging before using @fullText`,
+									400
+								);
+							merged.push(compileFullTextDefinition(peerDefinition, validationAttributes));
+						} catch (error) {
+							if (!(error instanceof ClientError)) throw error;
+							logger.warn(
+								`Ignoring invalid peer full-text declaration ${databaseName}.${tableName}${typeof name === 'string' ? `.${name}` : ''}: ${error.message}`
+							);
+						}
+					}
+					fullTextIndexes = merged.sort((left, right) => left.name.localeCompare(right.name));
+				}
 			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
+			Table.fullTextIndexes = fullTextIndexes ?? [];
 			// Re-assert from the live declaration so a stale value on disk (replicated event,
 			// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
 			// callers that omit the flag (cluster schema-replication, data loader) don't flip a
@@ -2777,6 +2775,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			primaryKeyAttribute.schemaDefined = schemaDefined;
 			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
 			if (relationshipDefinitions) primaryKeyAttribute.relationships = relationshipDefinitions;
+			if (fullTextIndexes?.length) primaryKeyAttribute.fullTextIndexes = fullTextIndexes;
 			// can't change compression after the fact (except threshold), so save only when we create the table
 			primaryKeyAttribute.compression = getDefaultCompression();
 			if (trackDeletes) primaryKeyAttribute.trackDeletes = true;
@@ -2894,6 +2893,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				databaseName,
 				indices: {},
 				attributes,
+				fullTextIndexes,
 				schemaDefined,
 				dbisDB: attributesDbi,
 				description,
@@ -2923,16 +2923,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		// A cluster-origin list can miss a descriptor another thread committed moments ago, so removal
 		// reconciliation is reserved for local schema authoring; on a create the rows can only be aborted state.
 		const reconcileRemovals = origin !== 'cluster' || Boolean(deferredPrimaryRow);
-		const durableAttributeRows = reconcileRemovals
-			? [...attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })]
-			: [];
-		const catalogRowsToRemove = [];
-		// Remove obsolete handles before any source mutation. Retargeted handles are replaced between
-		// their new sources and obsolete source changes below.
-		durableAttributeRows.sort(
-			(left, right) => Number(Boolean(right.value?.fullText)) - Number(Boolean(left.value?.fullText))
-		);
-		for (const { key, value } of durableAttributeRows) {
+		for (const { key, value } of reconcileRemovals
+			? attributesDbi.getRange({ start: tableName + '/', end: tableName + '0' })
+			: []) {
 			if (value == null) continue;
 			let [attributeTableName, attribute_name] = key.toString().split('/');
 			if (attribute_name === '') attribute_name = value.name; // primary key
@@ -2944,16 +2937,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 			const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
-			const replacedFullTextHandle = value.fullText && attribute && !attribute.fullText;
 			// rows already present under a create are aborted state
 			const staleRow = !attribute || Boolean(deferredPrimaryRow);
-			if (staleRow || removeIndex || replacedFullTextHandle) {
+			if (staleRow || removeIndex) {
 				exclusiveLock();
 				hasChanges = true;
-				if (staleRow) {
-					if (deferredPrimaryRow || value.fullText) attributesDbi.remove(key);
-					else catalogRowsToRemove.push(key);
-				} else if (replacedFullTextHandle) attributesDbi.remove(key);
+				if (staleRow) attributesDbi.remove(key);
 				if (removeIndex) {
 					const indexDbi = Table.indices[attributeTableName];
 					if (indexDbi) indicesToRemove.push(indexDbi);
@@ -2962,17 +2951,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		}
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
-		// A replacement handle's sources land first, then the handle, then fields it no longer uses.
-		// Existing-table removals land last, so every crash point leaves every durable handle valid.
-		const fullTextSourceNames = new Set(
-			attributes.flatMap((attribute) => attribute.fullText?.fields.map(({ name }) => name) ?? [])
-		);
-		const attributesForPersistence = [
-			...attributes.filter((attribute) => !attribute.fullText && fullTextSourceNames.has(attribute.name)),
-			...attributes.filter((attribute) => attribute.fullText),
-			...attributes.filter((attribute) => !attribute.fullText && !fullTextSourceNames.has(attribute.name)),
-		];
-		for (const attribute of attributesForPersistence) {
+		for (const attribute of attributes || []) {
 			if (attribute.relationship) {
 				refreshRelationshipAttributes = true;
 				continue;
@@ -2991,16 +2970,19 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// gated off for cluster-origin callers: their values come from this worker's (possibly
 				// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
 				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
+				const fullTextIndexesChanged =
+					JSON.stringify(attributeDescriptor.fullTextIndexes ?? []) !== JSON.stringify(fullTextIndexes ?? []);
 				// primary key can't change indexing, but settings can change
 				if (
-					origin !== 'cluster' &&
-					(schemaDefinedMismatch ||
-						(audit !== undefined && audit !== Table.audit) ||
-						(sealed !== undefined && sealed !== Table.sealed) ||
-						(replicate !== undefined && replicate !== Table.replicate) ||
-						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
-						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-						attribute.type !== attributeDescriptor.type)
+					fullTextIndexesChanged ||
+					(origin !== 'cluster' &&
+						(schemaDefinedMismatch ||
+							(audit !== undefined && audit !== Table.audit) ||
+							(sealed !== undefined && sealed !== Table.sealed) ||
+							(replicate !== undefined && replicate !== Table.replicate) ||
+							(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
+							(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
+							attribute.type !== attributeDescriptor.type))
 				) {
 					exclusiveLock();
 					const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
@@ -3016,6 +2998,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
 					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
 					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
+					if (fullTextIndexesChanged) {
+						if (fullTextIndexes?.length) updatedPrimaryAttribute.fullTextIndexes = fullTextIndexes;
+						else delete updatedPrimaryAttribute.fullTextIndexes;
+					}
 					hasChanges = true; // send out notification of the change
 					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 				}
@@ -3091,13 +3077,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributeDescriptor.computedFromExpression !== attribute.computedFromExpression ||
 				// An embed declaration changes how writes populate the stored vector even when its HNSW
 				// options are unchanged, so it belongs in the common durable-schema comparison.
-				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed) ||
-				JSON.stringify(attributeDescriptor.fullText) !== JSON.stringify(attribute.fullText);
+				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed);
 			// any metadata difference (drives persistence)
 			const changed =
-				commonChanged ||
-				attributeDescriptor?.hidden !== attribute.hidden ||
-				JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);
+				commonChanged || JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);
 			// structure-affecting difference (drives reindex) — ignores search-only option changes and
 			// representation-only differences (key order, string-vs-number) via canonicalIndexKey
 			const indexOptionsStructurallyChanged =
@@ -3261,7 +3244,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
-		for (const key of catalogRowsToRemove) attributesDbi.remove(key);
 		// The primary row is what makes a table loadable, so it lands last: a scan on another thread that
 		// runs mid-create skips the table instead of building (and announcing) a partial one. It already
 		// carries this table's relationships (set on primaryKeyAttribute above), so the persistence block

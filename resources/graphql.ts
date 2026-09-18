@@ -8,22 +8,9 @@ import type { NamedTypeNode, StringValueNode, ValueNode } from 'graphql';
 import { ClientError } from '../utility/errors/hdbError.ts';
 import { attributeToFragment, type JsonSchemaFragment } from './jsonSchemaTypes.ts';
 import harperLogger from '../utility/logging/harper_logger.ts';
-import { compileFullTextDefinition } from './fullTextSchema.ts';
+import { compileFullTextDefinitions } from './fullTextSchema.ts';
 
-const PRIMITIVE_TYPES = [
-	'ID',
-	'Int',
-	'Float',
-	'Long',
-	'String',
-	'Boolean',
-	'Date',
-	'Bytes',
-	'Any',
-	'BigInt',
-	'Blob',
-	'FullText',
-];
+const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
 // coerce directive arg values by their AST node kind so numbers arrive as numbers,
 // not as the string literals they're stored as on IntValue/FloatValue nodes.
@@ -160,7 +147,13 @@ async function processGraphQLSchema(
 				// use type name as the default table
 				const attributes: any[] = [];
 				const typeProperties: Record<string, JsonSchemaFragment> = {};
-				const typeDef: any = { table: null, database: null, attributes, properties: typeProperties };
+				const typeDef: any = {
+					table: null,
+					database: null,
+					attributes,
+					properties: typeProperties,
+					fullTextIndexes: [],
+				};
 				if (definition.description?.value) typeDef.description = definition.description.value;
 				types.set(typeName, typeDef);
 				resources.allTypes.set(typeName, typeDef);
@@ -194,6 +187,15 @@ async function processGraphQLSchema(
 					if (directive.name.value === 'splitSegments') typeDef.splitSegments = true;
 					if (directive.name.value === 'replicate') typeDef.replicate = true;
 					if (directive.name.value === 'hidden') typeDef.hidden = true;
+					if (directive.name.value === 'fullText') {
+						const fullTextDefinition: Record<string, unknown> = Object.create(null);
+						for (const arg of directive.arguments || []) {
+							if (Object.hasOwn(fullTextDefinition, arg.name.value))
+								throw new ClientError(`@fullText declares "${arg.name.value}" more than once`, 400);
+							fullTextDefinition[arg.name.value] = coerceDirectiveValue(arg.value);
+						}
+						typeDef.fullTextIndexes.push(fullTextDefinition);
+					}
 					if (directive.name.value === 'export') {
 						typeDef.export = true;
 						for (const arg of directive.arguments) {
@@ -224,11 +226,6 @@ async function processGraphQLSchema(
 				for (const field of definition.fields) {
 					const property = getProperty(field.type);
 					property.name = field.name.value;
-					if (property.type === 'array' && containsType(property, 'FullText'))
-						throw new ClientError(
-							`FullText field "${property.name}" must be a scalar with an @fullText declaration`,
-							400
-						);
 					if (field.description?.value) property.description = field.description.value;
 					attributes.push(property);
 					attributesObject[property.name] = undefined; // this is used as a backup scope for computed properties
@@ -292,18 +289,7 @@ async function processGraphQLSchema(
 								}
 							}
 						} else if (directiveName === 'fullText') {
-							if (property.fullText)
-								throw new ClientError(`@fullText may be declared only once on "${property.name}"`, 400);
-							const fullTextDefinition: Record<string, unknown> = Object.create(null);
-							for (const arg of directive.arguments || []) {
-								if (Object.hasOwn(fullTextDefinition, arg.name.value))
-									throw new ClientError(
-										`@fullText on "${property.name}" declares "${arg.name.value}" more than once`,
-										400
-									);
-								fullTextDefinition[arg.name.value] = coerceDirectiveValue(arg.value);
-							}
-							property.fullText = fullTextDefinition;
+							throw new ClientError('@fullText must be declared on a @table type, not on a field', 400);
 						} else if (directiveName === 'relationship') {
 							const relationshipDefinition = {};
 							for (const arg of directive.arguments) {
@@ -362,16 +348,10 @@ async function processGraphQLSchema(
 							`@embed on "${prop.name}" references unknown source field "${prop.embed.source}"`,
 							400
 						);
-					if (prop.fullText) {
-						if (!typeDef.table)
-							throw new ClientError(`@fullText on "${prop.name}" is only supported on a @table type`, 400);
-						prop.fullText = compileFullTextDefinition(prop, prop.fullText, attributes);
-						// The target stays in Table.attributes for query planning and schema diffing, but is
-						// suppressed from generated introspection surfaces.
-						prop.hidden = true;
-					} else if (prop.type === 'FullText')
-						throw new ClientError(`FullText field "${prop.name}" requires an @fullText declaration`, 400);
 				}
+				if (typeDef.fullTextIndexes.length > 0 && !typeDef.table)
+					throw new ClientError('@fullText is only supported on a @table type', 400);
+				typeDef.fullTextIndexes = compileFullTextDefinitions(typeDef.fullTextIndexes, attributes);
 				// Project the array form into the canonical `properties` Record (JSON-Schema-shaped,
 				// keyed by attribute name). Both shapes are co-populated in this single pass;
 				// downstream consumers (MCP, OpenAPI) read whichever form they prefer.
@@ -459,11 +439,6 @@ async function processGraphQLSchema(
 		);
 		return script.runInThisContext()(attributes); // run the script in the context of the current context/global and return the function we defined
 	}
-}
-
-function containsType(property: { type?: string; elements?: unknown }, type: string): boolean {
-	if (property.type === type) return true;
-	return property.type === 'array' && !!property.elements && containsType(property.elements as typeof property, type);
 }
 
 // useful for testing

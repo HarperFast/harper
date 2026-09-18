@@ -41,12 +41,6 @@ A signed double-precision floating-point value
 scalar Float
 
 """
-A query-only handle for a native full-text derived index. Values are never stored
-in table records; use the field in full-text search conditions.
-"""
-scalar FullText
-
-"""
 ID (serialized as a String): A unique identifier that's often used to refetch an
 object or as the key for a cache. Although it's serialized as a String, an ID is
 not intended to be human‐readable.
@@ -251,6 +245,7 @@ input FullTextHighlighting {
 Create a native full-text derived index over the listed source attributes.
 """
 directive @fullText(
+	name: String!
 	fields: [FullTextSource!]!
 	analyzer: String! = "english@1"
 	stopWords: Boolean! = true
@@ -258,7 +253,7 @@ directive @fullText(
 	surfaceTerms: Boolean! = true
 	synonyms: [FullTextSynonymRule!]! = []
 	highlighting: FullTextHighlighting
-) on FIELD_DEFINITION
+) repeatable on OBJECT
 
 """
 Define a derived field whose value is computed from other fields.

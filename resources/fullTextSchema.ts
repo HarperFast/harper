@@ -1,6 +1,7 @@
 import { ClientError } from '../utility/errors/hdbError.ts';
 
 const FULL_TEXT_ARGUMENTS = new Set([
+	'name',
 	'fields',
 	'analyzer',
 	'stopWords',
@@ -34,6 +35,7 @@ export type FullTextHighlighting = {
 };
 
 export type FullTextDefinition = {
+	name: string;
 	fields: FullTextSource[];
 	analyzer: 'english@1';
 	stopWords: boolean;
@@ -47,77 +49,67 @@ type SchemaAttribute = {
 	name: string;
 	type?: string;
 	elements?: { type?: string };
-	indexed?: unknown;
 	computed?: unknown;
 	computedFromExpression?: unknown;
-	embed?: unknown;
 	relationship?: unknown;
-	isPrimaryKey?: boolean;
-	assignCreatedTime?: boolean;
-	assignUpdatedTime?: boolean;
-	expiresAt?: boolean;
-	enumerable?: boolean;
-	nullable?: boolean;
-	fullText?: FullTextDefinition;
 };
 
 export function assertFullTextSourcesRemain(
-	attributes: readonly SchemaAttribute[],
+	definitions: readonly FullTextDefinition[],
 	removed: ReadonlySet<string>
 ): void {
-	for (const attribute of attributes) {
-		if (removed.has(attribute.name) || !attribute.fullText) continue;
-		const source = attribute.fullText.fields.find((field) => removed.has(field.name));
+	for (const definition of definitions) {
+		const source = definition.fields.find((field) => removed.has(field.name));
 		if (source)
 			throw schemaError(
-				`Cannot remove attribute '${source.name}' while @fullText field '${attribute.name}' references it`
+				`Cannot remove attribute '${source.name}' while @fullText index '${definition.name}' references it`
 			);
 	}
 }
 
-export function compileFullTextDefinition(
-	target: SchemaAttribute,
-	value: unknown,
+export function compileFullTextDefinitions(
+	values: readonly unknown[],
 	attributes: readonly SchemaAttribute[]
-): FullTextDefinition {
-	if (target.type !== 'FullText')
-		throw schemaError(`@fullText on "${target.name}" requires the FullText scalar type; got "${displayType(target)}"`);
-	if (target.indexed) throw schemaError(`@fullText on "${target.name}" cannot be combined with @indexed`);
-	if (target.enumerable) throw schemaError(`@fullText on "${target.name}" cannot be combined with @enumerable`);
-	if (target.nullable === false) throw schemaError(`@fullText on "${target.name}" must be nullable`);
-	if (
-		target.computed ||
-		target.embed ||
-		target.relationship ||
-		target.isPrimaryKey ||
-		target.assignCreatedTime ||
-		target.assignUpdatedTime ||
-		target.expiresAt
-	)
-		throw schemaError(`@fullText on "${target.name}" cannot be combined with another field-lifecycle directive`);
-	const definition = requireObject(value, `@fullText on "${target.name}"`);
-	assertKnownKeys(definition, FULL_TEXT_ARGUMENTS, `@fullText on "${target.name}"`);
+): FullTextDefinition[] {
+	const names = new Set<string>();
+	const definitions = values.map((value) => {
+		const definition = compileFullTextDefinition(value, attributes);
+		if (names.has(definition.name))
+			throw schemaError(`@fullText index "${definition.name}" is declared more than once`);
+		names.add(definition.name);
+		return definition;
+	});
+	return definitions.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function compileFullTextDefinition(value: unknown, attributes: readonly SchemaAttribute[]): FullTextDefinition {
+	const definition = requireObject(value, '@fullText');
+	assertKnownKeys(definition, FULL_TEXT_ARGUMENTS, '@fullText');
+	if (typeof definition.name !== 'string' || definition.name.length === 0)
+		throw schemaError('@fullText requires a non-empty string "name"');
+	const indexName = definition.name;
 
 	if (!Array.isArray(definition.fields) || definition.fields.length === 0)
-		throw schemaError(`@fullText on "${target.name}" requires a non-empty "fields" list`);
+		throw schemaError(`@fullText index "${indexName}" requires a non-empty "fields" list`);
 	const attributesByName = new Map(attributes.map((attribute) => [attribute.name, attribute]));
 	const sourceNames = new Set<string>();
 	const fields = definition.fields.map((entry, index) => {
-		const source = requireObject(entry, `@fullText fields[${index}] on "${target.name}"`);
-		assertKnownKeys(source, SOURCE_ARGUMENTS, `@fullText fields[${index}] on "${target.name}"`);
+		const source = requireObject(entry, `@fullText fields[${index}] on index "${indexName}"`);
+		assertKnownKeys(source, SOURCE_ARGUMENTS, `@fullText fields[${index}] on index "${indexName}"`);
 		if (typeof source.name !== 'string' || source.name.length === 0)
-			throw schemaError(`@fullText fields[${index}] on "${target.name}" requires a non-empty string "name"`);
+			throw schemaError(`@fullText fields[${index}] on index "${indexName}" requires a non-empty string "name"`);
 		if (sourceNames.has(source.name))
-			throw schemaError(`@fullText on "${target.name}" declares source field "${source.name}" more than once`);
+			throw schemaError(`@fullText index "${indexName}" declares source field "${source.name}" more than once`);
 		const attribute = attributesByName.get(source.name);
-		if (!attribute) throw schemaError(`@fullText on "${target.name}" references unknown source field "${source.name}"`);
-		if (!isSupportedSource(attribute))
-			throw schemaError(
-				`@fullText source field "${source.name}" must be String or [String]; got "${displayType(attribute)}"`
-			);
+		if (!attribute)
+			throw schemaError(`@fullText index "${indexName}" references unknown source field "${source.name}"`);
 		if (attribute.computed || attribute.computedFromExpression || attribute.relationship)
 			throw schemaError(
 				`@fullText source field "${source.name}" must be stored record data and cannot use @computed or @relationship`
+			);
+		if (!isSupportedSource(attribute))
+			throw schemaError(
+				`@fullText source field "${source.name}" must be String or [String]; got "${displayType(attribute)}"`
 			);
 		const weight = source.weight === undefined ? 1 : source.weight;
 		if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0)
@@ -133,14 +125,15 @@ export function compileFullTextDefinition(
 
 	const analyzer = definition.analyzer === undefined ? DEFAULT_ANALYZER : definition.analyzer;
 	if (analyzer !== DEFAULT_ANALYZER)
-		throw schemaError(`@fullText on "${target.name}" supports only the versioned analyzer "${DEFAULT_ANALYZER}"`);
-	const stopWords = booleanOption(definition, 'stopWords', true, target.name);
-	const positions = booleanOption(definition, 'positions', true, target.name);
-	const surfaceTerms = booleanOption(definition, 'surfaceTerms', true, target.name);
-	const synonyms = compileSynonyms(definition.synonyms, target.name);
-	const highlighting = compileHighlighting(definition.highlighting, target.name);
+		throw schemaError(`@fullText index "${indexName}" supports only the versioned analyzer "${DEFAULT_ANALYZER}"`);
+	const stopWords = booleanOption(definition, 'stopWords', true, indexName);
+	const positions = booleanOption(definition, 'positions', true, indexName);
+	const surfaceTerms = booleanOption(definition, 'surfaceTerms', true, indexName);
+	const synonyms = compileSynonyms(definition.synonyms, indexName);
+	const highlighting = compileHighlighting(definition.highlighting, indexName);
 
 	return {
+		name: indexName,
 		fields,
 		analyzer,
 		stopWords,

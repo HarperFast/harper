@@ -2812,6 +2812,22 @@ flowchart TD
     K -->|no| U[publish unavailable, release lock]
 ```
 
+### Full-text declarations are table metadata, not record attributes
+
+`@fullText` is a repeatable directive on an audited `@table` type. Each declaration has a name and
+one or more stored `String` or `[String]` sources. The canonical declaration list lives on the
+table's primary catalog descriptor and `Table.fullTextIndexes`; index names never enter
+`Table.attributes`, record validation, record encoding, JSON Schema properties, or ordinary
+secondary-index storage. This keeps derived-index names in their own namespace, so an unsealed
+record may safely contain dynamic data with the same spelling.
+
+Cluster schema reconciliation is additive per index name: a peer-new declaration is validated and
+accepted, while an existing local declaration wins any conflict and the discard is logged. Removing
+a source attribute is rejected while a declaration references it. Full-text comparators later
+resolve their `attribute` through this registry; ordinary comparators continue to resolve record
+attributes. The schema contract and alternatives are detailed in
+`docs/full-text-index-namespace.md`.
+
 ### Native Fulltext backend (`resources/FullTextDerivedIndexBackend.ts`)
 
 The Fulltext backend connects this runtime to `@harperfast/fulltext/native`. Tantivy files are
