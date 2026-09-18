@@ -63,6 +63,7 @@ import {
 	assertFullTextSourcesRemain,
 	compileFullTextDefinition,
 	compileFullTextDefinitions,
+	sortFullTextDefinitions,
 	type FullTextDefinition,
 } from './fullTextSchema.ts';
 import { isProcessRunning } from '../utility/processManagement/processManagement.js';
@@ -2579,14 +2580,20 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	}
 	if (!Table && origin === 'cluster') {
 		const compiled: FullTextDefinition[] = [];
+		const names = new Set<string>();
+		const clusterAuditEnabled = typeof audit === 'boolean' ? audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG) === true;
 		for (const peerDefinition of fullTextIndexes ?? []) {
 			try {
-				if (audit !== true)
+				if (!clusterAuditEnabled)
 					throw new ClientError(
 						`Table '${databaseName}.${tableName}' must enable audit logging before using @fullText`,
 						400
 					);
-				compiled.push(compileFullTextDefinition(peerDefinition, attributes));
+				const definition = compileFullTextDefinition(peerDefinition, attributes);
+				if (names.has(definition.name))
+					throw new ClientError(`@fullText index "${definition.name}" is declared more than once`, 400);
+				names.add(definition.name);
+				compiled.push(definition);
 			} catch (error) {
 				if (!(error instanceof ClientError)) throw error;
 				logger.warn(
@@ -2594,11 +2601,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				);
 			}
 		}
-		fullTextIndexes = compiled.sort((left, right) => left.name.localeCompare(right.name));
+		fullTextIndexes = sortFullTextDefinitions(compiled);
 	} else if (!Table || origin !== 'cluster') {
-		fullTextIndexes = fullTextIndexesExplicit
-			? compileFullTextDefinitions(fullTextIndexes ?? [], attributes)
-			: (Table?.fullTextIndexes ?? []);
+		fullTextIndexes = compileFullTextDefinitions(
+			fullTextIndexesExplicit ? (fullTextIndexes ?? []) : (Table?.fullTextIndexes ?? []),
+			attributes
+		);
 	}
 	if (fullTextIndexes?.length && audit !== true && (audit === false || Table?.audit !== true) && origin !== 'cluster')
 		throw new ClientError(
@@ -2672,16 +2680,43 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					Table.dbisDB.getSync(`${tableName}/${Table.primaryKey}`) ?? Table.dbisDB.getSync(`${tableName}/`);
 				assertFullTextSourcesRemain(primaryDescriptor?.fullTextIndexes ?? Table.fullTextIndexes, removedAttributeNames);
 			}
+			if (origin !== 'cluster' && fullTextIndexesExplicit) {
+				// RocksDB catalog rows are individually atomic, not one multi-row transaction. When one
+				// declaration removes both an index and its source, clear the primary-row reference before
+				// stale-row reconciliation can remove that source. A crash may leave an extra source row,
+				// which is safe; it must not leave a declaration whose source row is gone.
+				const incomingNames = new Set(durableAttributes.map((attribute) => attribute.name));
+				const removedNames = new Set(
+					durableLiveAttributes
+						.filter((attribute) => !incomingNames.has(attribute.name))
+						.map((attribute) => attribute.name)
+				);
+				let primaryDescriptorKey = `${tableName}/${Table.primaryKey}`;
+				let primaryDescriptor = Table.dbisDB.getSync(primaryDescriptorKey);
+				if (!primaryDescriptor) {
+					primaryDescriptorKey = `${tableName}/`;
+					primaryDescriptor = Table.dbisDB.getSync(primaryDescriptorKey);
+				}
+				const removesIndexedSource = (primaryDescriptor?.fullTextIndexes ?? Table.fullTextIndexes).some((definition) =>
+					definition.fields.some((field) => removedNames.has(field.name))
+				);
+				if (removesIndexedSource && primaryDescriptor && !tableIsDropping(primaryDescriptor, primaryDescriptorKey)) {
+					exclusiveLock();
+					const updatedPrimaryDescriptor = { ...primaryDescriptor };
+					if (fullTextIndexes?.length) updatedPrimaryDescriptor.fullTextIndexes = fullTextIndexes;
+					else delete updatedPrimaryDescriptor.fullTextIndexes;
+					Table.dbisDB.put(primaryDescriptorKey, updatedPrimaryDescriptor);
+					hasChanges = true;
+				}
+			}
 			// it table already exists, get the split segments setting
 			if (splitSegments == undefined) splitSegments = Table.splitSegments;
 			if (origin === 'cluster') {
-				const cloneAttribute = (attribute: any) =>
-					Object.create(Object.getPrototypeOf(attribute), Object.getOwnPropertyDescriptors(attribute));
-				const merged = Table.attributes.map(cloneAttribute);
+				const merged = Table.attributes.slice();
 				for (const attribute of attributes) {
 					const existing = merged.find((existingAttribute) => existingAttribute.name === attribute.name);
 					if (!existing) {
-						merged.push(cloneAttribute(attribute));
+						merged.push(attribute);
 						continue;
 					}
 					// Nodes that apply the same peer definitions in a different order keep different index sets, and
@@ -2706,6 +2741,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			if (origin === 'cluster') {
 				if (!fullTextIndexesExplicit) fullTextIndexes = Table.fullTextIndexes;
+				else if (JSON.stringify(fullTextIndexes) === JSON.stringify(Table.fullTextIndexes))
+					fullTextIndexes = Table.fullTextIndexes;
 				else {
 					exclusiveLock();
 					const validationAttributes = attributes.map((attribute) => {
@@ -2749,7 +2786,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							);
 						}
 					}
-					fullTextIndexes = merged.sort((left, right) => left.name.localeCompare(right.name));
+					fullTextIndexes = sortFullTextDefinitions(merged);
 				}
 			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
@@ -2971,6 +3008,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				// stale) snapshot, so a rewrite could revert a newer local declaration already on disk.
 				const schemaDefinedMismatch = schemaDefinedExplicit && attributeDescriptor.schemaDefined !== schemaDefined;
 				const fullTextIndexesChanged =
+					fullTextIndexesExplicit &&
 					JSON.stringify(attributeDescriptor.fullTextIndexes ?? []) !== JSON.stringify(fullTextIndexes ?? []);
 				// primary key can't change indexing, but settings can change
 				if (

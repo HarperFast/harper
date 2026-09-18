@@ -4,6 +4,8 @@ const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { forComponent } = require('#src/utility/logging/harper_logger');
+const env = require('#src/utility/environment/environmentManager');
+const terms = require('#src/utility/hdbTerms');
 
 // Covers the additive-only invariant documented in DESIGN.md: a definition carrying origin 'cluster'
 // is a snapshot of a peer's eventually-consistent view, so it may add but never remove or redefine.
@@ -549,5 +551,89 @@ describe('cluster-origin schema definitions are additive-only', () => {
 			Created.dbisDB.getSync('ClusterCreateInvalidFullText/id') ??
 			Created.dbisDB.getSync('ClusterCreateInvalidFullText/');
 		assert.strictEqual(primary.fullTextIndexes, undefined);
+	});
+
+	it('uses the resolved audit default when a peer snapshot first materializes a table', async () => {
+		const previousAuditDefault = env.get(terms.CONFIG_PARAMS.LOGGING_AUDITLOG);
+		env.setProperty(terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
+		try {
+			const Created = table({
+				table: 'ClusterCreateDefaultAuditFullText',
+				database: 'test',
+				origin: 'cluster',
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'title', type: 'String' },
+				],
+				fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+			});
+			await catalogFlushed(Created);
+			assert.strictEqual(Created.audit, true);
+			assert.deepStrictEqual(
+				Created.fullTextIndexes.map(({ name }) => name),
+				['search']
+			);
+		} finally {
+			env.setProperty(terms.CONFIG_PARAMS.LOGGING_AUDITLOG, previousAuditDefault);
+		}
+	});
+
+	it('drops duplicate names from a first peer snapshot', async () => {
+		const Created = table({
+			table: 'ClusterCreateDuplicateFullText',
+			database: 'test',
+			origin: 'cluster',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'description', type: 'String' },
+			],
+			fullTextIndexes: [
+				{ name: 'search', fields: [{ name: 'title' }] },
+				{ name: 'search', fields: [{ name: 'description' }] },
+			],
+		});
+		await catalogFlushed(Created);
+		assert.deepStrictEqual(
+			Created.fullTextIndexes.map(({ name, fields }) => [name, fields[0].name]),
+			[['search', 'title']]
+		);
+	});
+
+	it('does not let a non-explicit peer call erase a newer durable declaration list', async () => {
+		const Local = table({
+			table: 'ClusterKeepNewerDurableFullText',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		let primaryKey = 'ClusterKeepNewerDurableFullText/id';
+		let primary = Local.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'ClusterKeepNewerDurableFullText/';
+			primary = Local.dbisDB.getSync(primaryKey);
+		}
+		const durableIndexes = [Local.fullTextIndexes[0], { ...Local.fullTextIndexes[0], name: 'titles' }];
+		const written = Local.dbisDB.put(primaryKey, { ...primary, fullTextIndexes: durableIndexes });
+		if (written?.then) await written;
+
+		table({
+			table: 'ClusterKeepNewerDurableFullText',
+			database: 'test',
+			origin: 'cluster',
+			attributes: Local.attributes.map((attribute) => ({ ...attribute })),
+		});
+		await catalogFlushed(Local);
+		assert.deepStrictEqual(
+			Local.dbisDB.getSync(primaryKey).fullTextIndexes.map(({ name }) => name),
+			['search', 'titles']
+		);
 	});
 });

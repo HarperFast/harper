@@ -37,7 +37,9 @@ type Product
 
 `@fullText` is repeatable. `name` is unique within the table's derived-index registry. It is not added to `Table.attributes`, JSON Schema properties, record validation, record encoding, or ordinary secondary indexes.
 
-The complete declaration list is stored on the table's canonical primary descriptor. It does not use `tableName/indexName` attribute keys. The list and referenced source descriptors are committed under the same schema transaction, so reload cannot observe a newly published declaration without its sources. An unchanged declaration does not acquire an LMDB environment-wide writer lock.
+The initial public authoring surface is `schema.graphql`. Harper's internal `table()` contract carries the canonical list for catalog reload and replication, but `defineTable` and the legacy `create_table` operation do not gain a second full-text declaration vocabulary in this feature.
+
+The complete declaration list is stored on the table's canonical primary descriptor. It does not use `tableName/indexName` attribute keys. Updates replace that one descriptor row atomically. On create, the primary descriptor is written after the source rows, so a crash leaves an invisible partial table rather than a visible declaration without sources. When a local schema removes a declaration and one of its sources together, it clears the declaration before deleting the stale source row. An unchanged declaration does not acquire an LMDB environment-wide writer lock.
 
 The query remains within Harper's existing condition shape:
 
@@ -68,7 +70,7 @@ Full-text query authorization requires table read access and read access to ever
 
 1. Move the canonical full-text declaration collection from `Attribute.fullText` to table metadata.
 2. Parse every table-level `@fullText` directive and reject duplicate names or invalid sources.
-3. Validate that the table's audit transaction log is enabled before persisting a declaration; attachment faults mark the index unavailable without preventing the table from loading.
+3. Require local schema authors to enable the table's audit transaction log explicitly before persisting a declaration. A peer-created table may accept a declaration only when its resolved local audit setting is enabled. Attachment faults mark the index unavailable without preventing the table from loading.
 4. Persist the complete declaration list on the table's canonical primary descriptor in the same schema transaction as its source descriptors. Persist only when the canonical list changes.
 5. Merge cluster-origin declarations per index name: accept peer-new names; keep local definitions on conflicts and warn; validate under the existing cluster schema lock.
 6. Attach one native backend per declaration from the table-level list, with projections over its source fields.
@@ -98,6 +100,7 @@ Full-text query authorization requires table read access and read access to ever
 ## Open items
 
 - The query planner work is not yet implemented; the condition-routing claim above is the target contract.
+- Harper-pro's `DB_SCHEMA` sender does not yet serialize `fullTextIndexes` or consider it in `ensureTableIfChanged`; the coordinated replication change must land before cross-node schema convergence is complete.
 - Native index retirement remains tracked separately and is not changed by this namespace decision.
 - End-to-end verification is blocked until the query path exists.
 - Mixed builds exchange incompatible unreleased schema metadata; schema and runtime branches must land and release together.

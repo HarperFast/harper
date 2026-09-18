@@ -79,7 +79,11 @@ export function compileFullTextDefinitions(
 		names.add(definition.name);
 		return definition;
 	});
-	return definitions.sort((left, right) => left.name.localeCompare(right.name));
+	return sortFullTextDefinitions(definitions);
+}
+
+export function sortFullTextDefinitions<T extends { name: string }>(definitions: T[]): T[] {
+	return definitions.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
 }
 
 export function compileFullTextDefinition(value: unknown, attributes: readonly SchemaAttribute[]): FullTextDefinition {

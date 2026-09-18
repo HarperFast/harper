@@ -1389,6 +1389,7 @@ export function makeTable(options) {
 												table: tableName,
 												database: databaseName,
 												attributes: updatedAttributes,
+												audit: event.audit,
 												fullTextIndexes: event.fullTextIndexes,
 												origin: 'cluster',
 											});

@@ -2823,10 +2823,12 @@ record may safely contain dynamic data with the same spelling.
 
 Cluster schema reconciliation is additive per index name: a peer-new declaration is validated and
 accepted, while an existing local declaration wins any conflict and the discard is logged. Removing
-a source attribute is rejected while a declaration references it. Full-text comparators later
-resolve their `attribute` through this registry; ordinary comparators continue to resolve record
-attributes. The schema contract and alternatives are detailed in
-`docs/full-text-index-namespace.md`.
+a source attribute is rejected while a declaration references it; a local schema that removes both
+clears the primary-descriptor declaration before deleting the stale source row. Local schema
+authors must enable audit explicitly, while a peer-created table accepts a declaration only when
+its resolved local audit setting is enabled. Full-text comparators later resolve their `attribute`
+through this registry; ordinary comparators continue to resolve record attributes. The schema
+contract and alternatives are detailed in `docs/full-text-index-namespace.md`.
 
 ### Native Fulltext backend (`resources/FullTextDerivedIndexBackend.ts`)
 

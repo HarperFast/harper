@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { loadGQLSchema } = require('#src/resources/graphql');
 const { compileFullTextDefinitions } = require('#src/resources/fullTextSchema');
+const { closeDatabase, getDatabases, resetDatabases, table } = require('#src/resources/databases');
 
 function descriptor(Table) {
 	return Table.dbisDB.getSync(`${Table.tableName}/${Table.primaryKey}`) ?? Table.dbisDB.getSync(`${Table.tableName}/`);
@@ -122,6 +123,38 @@ describe('@fullText table declaration', () => {
 		assert.strictEqual(descriptor(Table).fullTextIndexes[0].fields[0].weight, 4);
 	});
 
+	it('reloads declarations from the catalog after a worker-style database reset', async () => {
+		const databaseName = 'fulltext_schema_restart';
+		await loadGQLSchema(`
+			type FullTextRestart
+				@table(database: "${databaseName}", audit: true)
+				@fullText(name: "search", fields: [{ name: "text" }]) {
+				id: ID @primaryKey
+				text: String
+			}
+		`);
+		const Before = getDatabases()[databaseName].FullTextRestart;
+		if (Before.dbisDB.committed) await Before.dbisDB.committed;
+
+		const rootStore = Before.primaryStore.rootStore;
+		let closing;
+		const originalClose = rootStore.close.bind(rootStore);
+		rootStore.close = (...args) => (closing = originalClose(...args));
+		assert(closeDatabase(databaseName));
+		await closing;
+		resetDatabases();
+		const Reopened = getDatabases()[databaseName].FullTextRestart;
+		assert.notStrictEqual(Reopened, Before);
+		assert.deepStrictEqual(
+			Reopened.fullTextIndexes.map(({ name, fields }) => [name, fields[0].name]),
+			[['search', 'text']]
+		);
+		assert.strictEqual(
+			Reopened.attributes.some(({ name }) => name === 'search'),
+			false
+		);
+	});
+
 	it('removes the persisted declaration when the schema removes it', async () => {
 		await loadGQLSchema(`
 			type FullTextRemoval
@@ -141,6 +174,52 @@ describe('@fullText table declaration', () => {
 		if (Table.dbisDB.committed) await Table.dbisDB.committed;
 		assert.deepStrictEqual(Table.fullTextIndexes, []);
 		assert.strictEqual(descriptor(Table).fullTextIndexes, undefined);
+	});
+
+	it('clears a declaration before removing one of its source rows', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		await loadGQLSchema(`
+			type FullTextSourceRemovalOrder
+				@table(audit: true)
+				@fullText(name: "search", fields: [{ name: "text" }]) {
+				id: ID @primaryKey
+				text: String @indexed
+			}
+		`);
+		const Table = tables.FullTextSourceRemovalOrder;
+		if (Table.indexingOperation) await Table.indexingOperation;
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		assert(Table.dbisDB.getSync('FullTextSourceRemovalOrder/text'));
+		let removeOwner = Table.dbisDB;
+		while (removeOwner && !Object.hasOwn(removeOwner, 'removeSync')) removeOwner = Object.getPrototypeOf(removeOwner);
+		assert(removeOwner, 'the catalog handle must expose a synchronous remove primitive');
+		const originalRemove = removeOwner.removeSync;
+		const crashBeforeSourceRemoval = function (key, ...args) {
+			if (String(key) === 'FullTextSourceRemovalOrder/text') {
+				assert.strictEqual(descriptor(Table).fullTextIndexes, undefined);
+				throw new Error('simulated crash before source removal');
+			}
+			return originalRemove.call(this, key, ...args);
+		};
+		removeOwner.removeSync = crashBeforeSourceRemoval;
+		try {
+			assert.throws(
+				() =>
+					table({
+						table: 'FullTextSourceRemovalOrder',
+						database: 'test',
+						schemaDefined: true,
+						audit: true,
+						attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
+						fullTextIndexes: [],
+					}),
+				/simulated crash before source removal/
+			);
+		} finally {
+			removeOwner.removeSync = originalRemove;
+		}
+		assert.strictEqual(descriptor(Table).fullTextIndexes, undefined);
+		assert(Table.dbisDB.getSync('FullTextSourceRemovalOrder/text'));
 	});
 
 	it('preserves dynamic record data with the same name as an index', async () => {
@@ -273,6 +352,46 @@ describe('@fullText table declaration', () => {
 			}
 		`);
 		await assert.rejects(tables.FullTextRemoveSource.removeAttributes(['text']), /while @fullText index 'search'/);
+	});
+
+	it('revalidates retained declarations when a non-schema caller changes a source', () => {
+		const Table = table({
+			table: 'FullTextRetainedSourceValidation',
+			database: 'test',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'text', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'text' }] }],
+		});
+		assert.throws(
+			() =>
+				table({
+					table: 'FullTextRetainedSourceValidation',
+					database: 'test',
+					audit: true,
+					attributes: Table.attributes.map((attribute) =>
+						attribute.name === 'text' ? { ...attribute, type: 'Int' } : attribute
+					),
+				}),
+			/must be String/
+		);
+	});
+
+	it('sorts index names by code point rather than the host locale', () => {
+		const definitions = compileFullTextDefinitions(
+			[
+				{ name: 'ä', fields: [{ name: 'text' }] },
+				{ name: 'z', fields: [{ name: 'text' }] },
+				{ name: 'A', fields: [{ name: 'text' }] },
+			],
+			[{ name: 'text', type: 'String' }]
+		);
+		assert.deepStrictEqual(
+			definitions.map(({ name }) => name),
+			['A', 'z', 'ä']
+		);
 	});
 
 	for (const [name, definition, attributes, expected] of [
