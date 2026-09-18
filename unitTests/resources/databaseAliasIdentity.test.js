@@ -70,6 +70,7 @@ function startFixtureWorker(aliases) {
 	const queued = [];
 	const waiting = [];
 	let failure;
+	let closing = false;
 	const unregisterAliases = registerWorkerDataProvider('databaseAliasIdentityAliases', () => aliases);
 	let worker;
 	let resolveExit;
@@ -92,7 +93,7 @@ function startFixtureWorker(aliases) {
 					for (const waiter of waiting.splice(0)) waiter.reject(error);
 				});
 				spawned.on('exit', (code) => {
-					if (code !== 0) {
+					if (code !== 0 || !closing) {
 						failure = new Error(`fixture worker exited with code ${code}`);
 						for (const waiter of waiting.splice(0)) waiter.reject(failure);
 					}
@@ -119,6 +120,7 @@ function startFixtureWorker(aliases) {
 			return message;
 		},
 		async close() {
+			closing = true;
 			this.send('close');
 			await this.expect('closed');
 			assert.strictEqual(await exited, 0);
@@ -139,7 +141,7 @@ describe('shared root-store database identity', function () {
 	});
 
 	afterEach(async () => {
-		await fixture?.worker?.terminate?.();
+		await fixture?.close();
 		fixture = undefined;
 		closeAliases(loadedAliases);
 		loadedAliases = [];
