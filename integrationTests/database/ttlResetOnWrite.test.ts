@@ -40,6 +40,11 @@
  * an INCONCLUSIVE window still fails its assertion (resetObserved/goneObserved isn't `true`) — it
  * just fails with an accurate "couldn't measure" message instead of a false RESET/NO-RESET or
  * F-002 verdict. Only the race probe (surface 6) has a bucket that absorbs INCONCLUSIVE outright.
+ *
+ * An attempt is also INCONCLUSIVE when the update's ACK did not land before the seed's earliest
+ * possible expiry. Past that instant the surface is no longer being measured against a live
+ * record: a SQL UPDATE matches nothing and reads as NO-RESET, while a REST PUT recreates the
+ * record and reads as a RESET.
  */
 import { suite, test, before, after } from 'node:test';
 import { ok } from 'node:assert';
@@ -426,10 +431,9 @@ suite(
 					updateStatus === 200 || updateStatus === 204,
 					`[${label}] update returned ${updateStatus} (expected 200/204)`
 				);
-				// NO-RESET is only conclusive if the update was ACKed while the seed was still alive;
-				// an update that lands after expiry matches nothing and so resets nothing. The server
-				// applied the seed no earlier than seedSentAt and the update no later than its ACK,
-				// so updateAt < seedSentAt + TTL_MS is the tight bound that proves it.
+				// The server applied the seed no earlier than seedSentAt and the update no later than
+				// its ACK, so this is the tight bound proving the update landed on a live record —
+				// the only condition under which this attempt measures the surface at all.
 				if (updateAt >= seedSentAt + TTL_MS) {
 					inconclusive = true;
 					result.finding = `INCONCLUSIVE — update ACKed ${updateAt - seedSentAt}ms after the seed was sent, at or past its earliest expiry (${TTL_MS}ms); the record may already have been gone`;
