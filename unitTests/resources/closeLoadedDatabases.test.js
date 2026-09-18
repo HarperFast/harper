@@ -184,10 +184,43 @@ describe('RocksDB handle release', function () {
 		const originator = 895_000 + Math.floor(Math.random() * 5_000);
 		try {
 			await prepareDatabaseForDrop(databaseName, originator);
-			assert.doesNotThrow(() => resetDatabases(), 'a peer rescan must skip the prepared legacy database');
+			resetDatabases();
+			assert.strictEqual(
+				getDatabases()[databaseName],
+				undefined,
+				'a peer rescan must skip the prepared legacy database'
+			);
 		} finally {
 			rmSync(legacyDatabasePath, { recursive: true, force: true });
 			cancelDatabaseDrop(databaseName, originator);
+		}
+	});
+
+	it('does not reopen a prepared legacy table with an explicit path during a catalog rescan', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-configured-table-rescan';
+		const previousConfig = env.get(terms.CONFIG_PARAMS.DATABASES);
+		const configuredRoot = join(testRoot, 'configured-legacy-table-drop');
+		const tablePath = join(configuredRoot, 'pkg.mdb');
+		mkdirSync(configuredRoot, { recursive: true });
+		writeFileSync(tablePath, 'not an LMDB database');
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {
+			...previousConfig,
+			[databaseName]: { tables: { pkg: { path: configuredRoot } } },
+		});
+		const originator = 896_000 + Math.floor(Math.random() * 4_000);
+		try {
+			await prepareDatabaseForDrop(databaseName, originator);
+			resetDatabases();
+			assert.strictEqual(
+				getDatabases()[databaseName],
+				undefined,
+				'a peer rescan must skip explicitly configured tables in the prepared database'
+			);
+		} finally {
+			rmSync(configuredRoot, { recursive: true, force: true });
+			cancelDatabaseDrop(databaseName, originator);
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, previousConfig);
 		}
 	});
 

@@ -755,14 +755,14 @@ export function getDatabases(): Databases {
 
 	if (schemaConfigs) {
 		for (const dbName in schemaConfigs) {
+			if (databasesBeingDropped.has(dbName) && databasesBeingDropped.get(dbName) !== threadId) continue;
 			const schemaConfig = schemaConfigs[dbName];
 			const databasePath = schemaConfig.path;
-			if (existsSync(databasePath)) {
+			if (databasePath && existsSync(databasePath)) {
 				const entries = readdirSync(databasePath, { withFileTypes: true });
 				const blockedByRestore = databasesBlockedByRestore(databasePath);
 				for (const databaseEntry of entries) {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
-					if (databasesBeingDropped.has(dbName) && databasesBeingDropped.get(dbName) !== threadId) continue;
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
@@ -2461,6 +2461,9 @@ export async function prepareDatabaseForDrop(databaseName: string, originator = 
 		throw new Error(`Cannot prepare database '${databaseName}' for a drop whose coordinator has exited`);
 	const activeOriginator = databasesBeingDropped.get(databaseName);
 	if (activeOriginator !== undefined && activeOriginator !== originator) {
+		logger.warn(
+			`Rejecting database drop preparation for '${databaseName}'; coordinator ${activeOriginator} still owns the drop marker`
+		);
 		const error: any = new Error(`Database '${databaseName}' is already being dropped by another coordinator`);
 		error.statusCode = 409;
 		throw error;
@@ -2479,6 +2482,9 @@ export async function prepareDatabaseForDrop(databaseName: string, originator = 
 
 export function beginDatabaseDrop(databaseName: string): void {
 	if (databasesBeingDropped.has(databaseName)) {
+		logger.warn(
+			`Rejecting database drop for '${databaseName}'; coordinator ${databasesBeingDropped.get(databaseName)} still owns the drop marker`
+		);
 		const error: any = new Error(`Database '${databaseName}' is already being dropped`);
 		error.statusCode = 409;
 		throw error;

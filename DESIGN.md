@@ -2742,10 +2742,11 @@ schema event, which clears the matching marker. The destructive barrier includes
 though ordinary schema gossip excludes them. A peer also records the coordinating thread and cancels
 its marker if that thread exits before finish or cancellation arrives. A preparation delivered after
 the exit notification is rejected before it can install a marker, closing the opposite ordering of
-the same race. An
-interrupted drop therefore does not fence the database name until the process restarts. Branch
-shutdown and job-worker teardown await the same derived-index quiescence before closing their RocksDB
-handles. A process exit remains the final safety boundary if orderly teardown itself cannot complete.
+the same race. A lost cancellation to a still-live peer deliberately remains fail-closed: conflicting
+preparations log the holding coordinator and return 409, and that peer may require a worker restart
+to clear the marker. Branch shutdown and job-worker teardown await the same derived-index quiescence
+before closing their RocksDB handles. A process exit remains the final safety boundary if orderly
+teardown itself cannot complete.
 For RocksDB, `RocksDatabase.destroy()` is the final native backstop: rocksdb-js claims the shared
 descriptor, closes its attached resources, and throws if any descriptor reference remains; it calls
 RocksDB's destructive API only after that reference check succeeds. Harper therefore does not add a
