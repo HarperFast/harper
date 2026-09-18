@@ -40,9 +40,10 @@ export type DerivedNativeIndexHost = {
 // chunks a delivery by records and estimated bytes; this caps how many chunks may wait.
 const QUEUE_CAPACITY_BYTES = 64 * 1024 * 1024;
 const APPLY_SLICE_MILLIS = 5;
-// A barrier pauses application for as long as the plane takes to persist, so interrupting a
-// catch-up for one is only worth it while that cost stays a small share of the catch-up. Idling
-// this multiple of the last interrupting barrier's own duration holds it under a quarter.
+// A barrier pauses application for as long as the plane takes to persist, so interrupting a catch-up
+// for one is only worth it while that cost stays a small share of the catch-up. Idling this multiple
+// of the last interrupting barrier's own duration holds it under a quarter, and the cap keeps the
+// oldest non-durable work from ageing into the lag budget below on a plane that persists slowly.
 const BARRIER_IDLE_MULTIPLE = 3;
 // Writes to an index this far behind fail with a retryable 503 (see the runtime's lag policy).
 const DEFAULT_MAX_LAG_MILLISECONDS = 30_000;
@@ -205,7 +206,6 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 			if (batch.through) {
 				this.#appliedCursor = batch.through;
 				advancedCursor = true;
-				// A catch-up never reaches the drain that would otherwise run the barrier.
 				if (this.#mayInterruptForBarrier()) break;
 			}
 		}
@@ -260,8 +260,13 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		this.#flushing.then(
 			() => {
 				this.#flushing = undefined;
-				if (interrupting)
-					this.#interruptBarrierAfter = performance.now() + BARRIER_IDLE_MULTIPLE * (performance.now() - started);
+				if (interrupting) {
+					const idle = Math.min(
+						BARRIER_IDLE_MULTIPLE * (performance.now() - started),
+						DEFAULT_MAX_LAG_MILLISECONDS / 4
+					);
+					this.#interruptBarrierAfter = performance.now() + idle;
+				}
 				this.#wake?.('changed');
 				if (this.#queue.length > 0) this.#schedule();
 				else if (this.#flushRequested) this.#runFlush();
