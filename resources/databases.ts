@@ -760,7 +760,7 @@ export function getDatabases(): Databases {
 				const blockedByRestore = databasesBlockedByRestore(databasePath);
 				for (const databaseEntry of entries) {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
-					if (databasesBeingDropped.has(dbName)) continue;
+					if (databasesBeingDropped.has(dbName) && databasesBeingDropped.get(dbName) !== threadId) continue;
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
@@ -2445,10 +2445,12 @@ export function closeDatabase(databaseName: string, failOnCloseError = false): b
 	return true;
 }
 
-export async function closeDatabaseForRestore(databaseName: string): Promise<boolean> {
+export async function closeDatabaseForRestore(databaseName: string, dropOriginator?: number): Promise<boolean> {
 	const dbTables = databases[databaseName];
 	if (!dbTables) return false;
 	await quiesceDatabaseDerivedIndexes(databaseName, dbTables, 'database restore');
+	if (dropOriginator !== undefined && databasesBeingDropped.get(databaseName) !== dropOriginator)
+		throw new Error(`Database drop preparation for '${databaseName}' was canceled before storage close`);
 	return closeDatabase(databaseName, true);
 }
 
@@ -2457,7 +2459,7 @@ export async function prepareDatabaseForDrop(databaseName: string, originator = 
 		throw new Error(`Cannot prepare database '${databaseName}' for a drop whose coordinator has exited`);
 	databasesBeingDropped.set(databaseName, originator);
 	try {
-		await closeDatabaseForRestore(databaseName);
+		await closeDatabaseForRestore(databaseName, originator);
 		if (databasesBeingDropped.get(databaseName) !== originator)
 			throw new Error(`Database drop preparation for '${databaseName}' was canceled before it completed`);
 	} catch (error) {
@@ -2498,7 +2500,8 @@ export function cancelDatabaseDropsFromThread(originator: number): void {
  * handles linger process-wide (and, e.g., block an online `restore_backup` from confirming the
  * database is closed). The `system` database is intentionally left open: it is non-enumerable here
  * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
- * table during teardown. Best-effort: closing failures are swallowed inside `closeDatabase`.
+ * table during teardown. Handle-close failures propagate so orderly worker shutdown cannot claim
+ * that process-global references were released when they were not.
  *
  * Branches are invisible to the loop below but hold handles from the same registry, so this — the
  * thread's one teardown entry point — closes them too.

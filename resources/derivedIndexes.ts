@@ -378,11 +378,11 @@ function fullTextIndexGeneration(Table: any, definition: FullTextDefinition): st
 }
 
 function currentFullTextIndexGeneration(Table: any, indexName: string): string | undefined {
+	const generation = Table.fullTextIndexGenerations?.[indexName];
+	if (typeof generation === 'string') return generation;
 	const definition = Table.fullTextIndexes?.find((candidate: FullTextDefinition) => candidate.name === indexName);
 	if (!definition) return;
-	return (
-		Table.fullTextIndexGenerations?.[indexName] ?? `legacy:${JSON.stringify(fullTextStorageDefinition(definition))}`
-	);
+	return `legacy:${JSON.stringify(fullTextStorageDefinition(definition))}`;
 }
 
 function fullTextDerivedIndexReadinessId(Table: any, definition: FullTextDefinition): string {

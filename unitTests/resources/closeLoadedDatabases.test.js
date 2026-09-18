@@ -9,7 +9,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { mkdtempSync, rmSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const {
@@ -28,10 +28,13 @@ const {
 	closeBranchDatabases,
 } = require('#src/resources/databases');
 const { registryStatus, RocksDatabase } = require('@harperfast/rocksdb-js');
+const env = require('#src/utility/environment/environmentManager');
+const terms = require('#src/utility/hdbTerms');
 
 describe('RocksDB handle release', function () {
+	let testRoot;
 	before(function () {
-		setupTestDBPath();
+		testRoot = setupTestDBPath();
 	});
 
 	function openRocksDb(databaseName) {
@@ -165,6 +168,35 @@ describe('RocksDB handle release', function () {
 		cancelDatabaseDrop(databaseName);
 	});
 
+	it('keeps a configured-path coordinator database loaded while its drop barrier is pending', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-configured-rescan';
+		const previousConfig = env.get(terms.CONFIG_PARAMS.DATABASES);
+		const configuredRoot = join(testRoot, 'configured-drop-root');
+		mkdirSync(configuredRoot, { recursive: true });
+		env.setProperty(terms.CONFIG_PARAMS.DATABASES, {
+			...previousConfig,
+			[databaseName]: { path: configuredRoot },
+		});
+		try {
+			const rootStore = openRocksDb(databaseName);
+			if (!(rootStore instanceof RocksDatabase)) return this.skip();
+			await getDatabases()[databaseName].pkg.schemaChangeOperation;
+
+			beginDatabaseDrop(databaseName);
+			resetDatabases();
+
+			assert.ok(
+				getDatabases()[databaseName],
+				'schema gossip must not evict a configured-path coordinator before dropDatabase runs'
+			);
+			cancelDatabaseDrop(databaseName);
+		} finally {
+			cancelDatabaseDrop(databaseName);
+			env.setProperty(terms.CONFIG_PARAMS.DATABASES, previousConfig);
+		}
+	});
+
 	it('reopens a peer when cancellation overtakes drop preparation', async function () {
 		this.timeout(30000);
 		const databaseName = 'close-drop-cancel-race';
@@ -175,6 +207,7 @@ describe('RocksDB handle release', function () {
 		});
 		await Table.schemaChangeOperation;
 		if (!(Table.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		const rootStore = Table.primaryStore.rootStore;
 		let release;
 		const barrier = new Promise((resolve) => (release = resolve));
 		Table.derivedIndexRuntime = { close: () => barrier };
@@ -184,9 +217,14 @@ describe('RocksDB handle release', function () {
 
 		cancelDatabaseDrop(databaseName, originator);
 		release();
-		await assert.rejects(preparing, /canceled before it completed/);
+		await assert.rejects(preparing, /canceled before/);
 
 		assert.ok(getDatabases()[databaseName], 'cancellation must win over an in-flight prepare');
+		assert.strictEqual(
+			getDatabases()[databaseName].pkg.primaryStore.rootStore,
+			rootStore,
+			'cancellation before storage close must not churn the live database handle'
+		);
 	});
 
 	it('reopens a prepared database when its drop coordinator exits', async function () {
