@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789716374941,
+  "lastUpdate": 1789716379181,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -14390,6 +14390,83 @@ window.BENCHMARK_DATA = {
           {
             "name": "E scan p99 — short ranges",
             "value": 110.57,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "61a1f9a3344263b0bf0803f7546f20ab8aa3948e",
+          "message": "Merge pull request #2678 from HarperFast/fix/unit-resources-step-timeout-budget\n\nSize the unit-test step budgets from measured runs and raise `Unit tests: resources` to 12 minutes",
+          "timestamp": "2026-09-18T05:00:30Z",
+          "url": "https://github.com/HarperFast/harper/commit/61a1f9a3344263b0bf0803f7546f20ab8aa3948e"
+        },
+        "date": 1789716378229,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "C read p99 — read only",
+            "value": 16.55,
+            "unit": "ms"
+          },
+          {
+            "name": "B read p99 — read mostly",
+            "value": 16.83,
+            "unit": "ms"
+          },
+          {
+            "name": "B update p99 — read mostly",
+            "value": 20.03,
+            "unit": "ms"
+          },
+          {
+            "name": "A read p99 — update heavy",
+            "value": 20.04,
+            "unit": "ms"
+          },
+          {
+            "name": "A update p99 — update heavy",
+            "value": 27.35,
+            "unit": "ms"
+          },
+          {
+            "name": "F read p99 — read-modify-write",
+            "value": 18.85,
+            "unit": "ms"
+          },
+          {
+            "name": "F rmw p99 — read-modify-write",
+            "value": 37.68,
+            "unit": "ms"
+          },
+          {
+            "name": "D read p99 — read latest",
+            "value": 15.99,
+            "unit": "ms"
+          },
+          {
+            "name": "D insert p99 — read latest",
+            "value": 18.67,
+            "unit": "ms"
+          },
+          {
+            "name": "E insert p99 — short ranges",
+            "value": 42.34,
+            "unit": "ms"
+          },
+          {
+            "name": "E scan p99 — short ranges",
+            "value": 213.26,
             "unit": "ms"
           }
         ]
