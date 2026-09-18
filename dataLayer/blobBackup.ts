@@ -335,6 +335,55 @@ export async function assertBlobSnapshotRestorable(
 	}
 }
 
+/** Whether any configured blob root holds at least one file. Stops at the first one it finds. */
+export async function blobRootsHaveFiles(blobRoots: string[]): Promise<boolean> {
+	for (const root of blobRoots) {
+		const stack: string[] = [root];
+		while (stack.length > 0) {
+			const dir = stack.pop() as string;
+			let entries;
+			try {
+				entries = await readdir(dir, { withFileTypes: true });
+			} catch (error: any) {
+				if (error.code === 'ENOENT' || error.code === 'ENOTDIR') continue;
+				throw error;
+			}
+			for (const entry of entries) {
+				if (entry.isFile()) return true;
+				if (entry.isDirectory()) stack.push(join(dir, entry.name));
+			}
+		}
+	}
+	return false;
+}
+
+/**
+ * Refuse an in-place restore of an engine-only backup over a database that still has blobs.
+ *
+ * Restoring engine files while leaving the live blob roots alone produces a mixed generation:
+ * rolled-back records addressing whichever blobs happen to be on disk now. The common outcome is a
+ * dangling reference to a blob deleted since the backup point; the worse one is a blob id reissued
+ * after the deletions plus a restart (ids are a per-database counter re-seeded from a directory scan
+ * — `resources/blob.ts` `getNextFileId`), which resolves a restored record onto unrelated bytes.
+ *
+ * Purging the roots instead is not the answer — that strips blobs the restored records still
+ * reference — so the operator has to choose, and the choice is recorded. A restore into a new
+ * database name is unaffected: it has no pre-existing blobs to disagree with.
+ */
+export async function assertEngineOnlyRestoreAllowed(
+	databaseName: string,
+	blobRoots: string[],
+	{ backupHasBlobs, inPlace, allowEngineOnly }: { backupHasBlobs: boolean; inPlace: boolean; allowEngineOnly: boolean }
+): Promise<void> {
+	if (backupHasBlobs || !inPlace || allowEngineOnly) return;
+	if (!(await blobRootsHaveFiles(blobRoots))) return;
+	throw new ClientError(
+		`Cannot restore an engine-only backup over database '${databaseName}': the backup captured no blobs, but the database still has blob files. ` +
+			`Restoring would roll records back while leaving those blobs in place, so a record could resolve to a blob that no longer belongs to it. ` +
+			`Restore a backup that includes blobs, restore into a new database with 'target_database', or pass 'allow_engine_only' to accept the mixed result.`
+	);
+}
+
 /**
  * Restore a backup's blob snapshot back into the database's blob roots. Each root is purged and
  * rewritten from `blobs/<backupId>/<rootIndex>/` so the restored blob set matches the backup exactly
@@ -342,7 +391,9 @@ export async function assertBlobSnapshotRestorable(
  *
  * A backup created with blobs excluded (or an older backup that predates blob snapshots) has no
  * snapshot directory: in that case the live blob roots are left untouched and a warning is logged,
- * since purging them would strip blobs the restored records may still reference. Roots are restored
+ * since purging them would strip blobs the restored records may still reference. An in-place restore
+ * only reaches that state when the operator accepted it (`assertEngineOnlyRestoreAllowed`) or the
+ * roots are already empty. Roots are restored
  * by index into the *same* configured root; an incompatible root count is rejected up front (see
  * `assertBlobSnapshotRestorable`) rather than collapsed, so blobs are never mis-addressed.
  */

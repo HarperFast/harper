@@ -77,7 +77,12 @@ export async function runBackupCommand(command: string): Promise<void> {
 			result = await purgeBackupsOffline(databaseName, request.keep_count);
 			break;
 		case OPERATIONS_ENUM.RESTORE_BACKUP:
-			result = await restoreBackupOffline(databaseName, request.backup_id, request.target_database);
+			result = await restoreBackupOffline(
+				databaseName,
+				request.backup_id,
+				request.target_database,
+				request.allow_engine_only === true
+			);
 			break;
 		default:
 			throw new Error(`Unknown backup command '${command}'`);
