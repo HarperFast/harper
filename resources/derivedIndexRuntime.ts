@@ -329,13 +329,11 @@ export class DerivedIndexRuntime {
 		runner.wake(true);
 		return () => {
 			const held = this.#heldRunners.get(registration.backend.id);
-			if (held?.runner === runner) return this.#retryHeldRelease(registration.backend.id, held);
+			if (held?.runner === runner) return this.#retryHeldRelease(held);
 			if (this.#runners.get(registration.backend.id) === runner) {
 				this.#runners.delete(registration.backend.id);
 				this.#stopListeningIfIdle();
 			}
-			const held = this.#heldRunners.get(registration.backend.id);
-			if (held?.runner === runner) return this.#retryHeldRelease(held);
 			return this.#track(runner, runner.stop());
 		};
 	}

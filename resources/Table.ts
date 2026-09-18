@@ -919,7 +919,7 @@ export function makeTable(options) {
 					close(): Promise<void>;
 					canReuse?(): boolean;
 					readinessOverride?(id: string): unknown;
-				  }
+			  }
 			| undefined;
 		static schemaChangeOperation: Promise<void> | undefined;
 		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
