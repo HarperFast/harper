@@ -89,12 +89,15 @@ jobs:
       # still chains its own resources/apitests/bin runs with `&&`, so a failure there stops
       # at the first of those three.
       #
-      # Size each cap at roughly 1.5x the step's slowest run that REACHED mocha's epilogue, pooling
-      # all three Node legs since none is reliably the slowest, and re-derive from the Actions step
-      # API before changing one: a cap-killed sample is right-censored and reads far too low.
-      # `resources` is the cautionary case — capped at 7m off a ~4m30-5m25 estimate that was never
-      # re-measured, it reached 6m58 completed and went red on main. Last derived 2026-09-18 over
-      # the 30 `Unit Test` pushes since 2026-09-14; `resources` needed ~7m40 at its worst.
+      # Size a cap you are changing at roughly 1.5x that step's slowest run which REACHED mocha's
+      # epilogue, pooling all three Node legs since none is reliably the slowest, and re-derive it
+      # from the Actions step API: a cap-killed sample is right-censored and reads far too low.
+      # Derived 2026-09-18 over the 30 `Unit Test` pushes since 2026-09-14, and only `resources`
+      # was re-budgeted — capped at 7m off a ~4m30-5m25 estimate nobody re-measured, it reached
+      # 6m58 completed, went red on main, and needed ~7m40 at its worst. `main` (3m19) and `lmdb`
+      # (3m17) sit at ~1.2x their own worst, not 1.5x. `lmdb` has been killed at 4m twice on main,
+      # but from its LMDB-`resources` phase running ~2x its usual time rather than from drift, so
+      # that one wants a diagnosis and not a bigger number.
       - name: 'Unit tests: main'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 4
