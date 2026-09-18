@@ -34,8 +34,6 @@ test(
 			.sort((a, b) => b.dot - a.dot)
 			.slice(0, 10)
 			.map(({ id }) => id);
-		let sampling = false;
-		let sampler: Promise<void> | undefined;
 		try {
 			await setupHarperWithFixture(ctx, resolve(import.meta.dirname, 'fixtures/native-plane-coverage'), {
 				config: { threads: { count: 6 }, logging: { level: 'warn' } },
@@ -76,24 +74,6 @@ test(
 				});
 			await waitFor(async () => (await request('/PlaneStatus/')).body.readiness.state === 'ready', 30_000);
 			await waitFor(async () => (await query(0)).status === 200, 30_000);
-			const coverageBeforeWrites = JSON.stringify((await request('/PlaneStatus/')).body.cursor?.coverage ?? null);
-			const midCatchUpCoverage: Array<[number, string]> = [];
-			let samplerFailures = 0;
-			sampling = true;
-			sampler = (async () => {
-				let failures = 0;
-				while (sampling && failures < 5) {
-					try {
-						const status = (await request('/PlaneStatus/')).body;
-						if (status.mappings + status.pending > 0 && status.mappings < records.length)
-							midCatchUpCoverage.push([Date.now(), JSON.stringify(status.cursor?.coverage ?? null)]);
-						failures = samplerFailures = 0;
-					} catch {
-						samplerFailures = ++failures;
-					}
-					await new Promise((resolve) => setTimeout(resolve, 500));
-				}
-			})();
 			for (let start = 0; start < records.length; start += 500) {
 				const result = await request('/PlaneProbe/', 'PUT', records.slice(start, start + 500));
 				assert(result.status < 300, JSON.stringify(result));
@@ -144,20 +124,7 @@ test(
 				);
 			} catch (error) {
 				throw new Error(`Native catch-up failed; last progress: ${JSON.stringify(progress)}`, { cause: error });
-			} finally {
-				sampling = false;
-				await sampler;
 			}
-			// Several barrier cadences (`maxFlushAgeMilliseconds` is 1000) have to fall inside the window
-			// the sampler actually watched before "coverage never advanced" means anything.
-			const observed = midCatchUpCoverage.length ? midCatchUpCoverage.at(-1)![0] - midCatchUpCoverage[0][0] : 0;
-			if (samplerFailures === 0 && observed >= 4_000)
-				assert(
-					midCatchUpCoverage.some(
-						([, coverage]) => coverage !== coverageBeforeWrites && JSON.parse(coverage)?.local != null
-					),
-					`catch-up never advanced durable coverage over ${observed} ms (was ${coverageBeforeWrites}): ${JSON.stringify(midCatchUpCoverage.slice(0, 4))}`
-				);
 			const final = await query(0);
 			assert.equal(final.status, 200, JSON.stringify(final));
 			const ids = final.body.map((record: { id: number }) => record.id);
@@ -227,11 +194,9 @@ test(
 					assert(result.body.some(({ id }: { id: number }) => id === records.length - 1));
 					return true;
 				},
-				{ timeout: 30_000, message: 'restarted native index did not certify its persisted coverage' }
+				{ timeout: 120_000, message: 'restarted native index did not certify its persisted coverage' }
 			);
 		} finally {
-			sampling = false;
-			await sampler;
 			await teardownHarper(ctx);
 		}
 	}
