@@ -732,6 +732,8 @@ export function getDatabases(): Databases {
 	const baseSchemaPath = getBaseSchemaPath();
 	if (existsSync(baseSchemaPath)) {
 		for (const schemaEntry of readdirSync(baseSchemaPath, { withFileTypes: true })) {
+			if (databasesBeingDropped.has(schemaEntry.name) && databasesBeingDropped.get(schemaEntry.name) !== threadId)
+				continue;
 			if (!schemaEntry.isFile()) {
 				const schemaPath = join(baseSchemaPath, schemaEntry.name);
 				const schemaAuditPath = join(getTransactionAuditStoreBasePath(), schemaEntry.name);
@@ -2457,6 +2459,12 @@ export async function closeDatabaseForRestore(databaseName: string, dropOriginat
 export async function prepareDatabaseForDrop(databaseName: string, originator = threadId): Promise<void> {
 	if (originator !== threadId && manageThreads.hasThreadExited(originator))
 		throw new Error(`Cannot prepare database '${databaseName}' for a drop whose coordinator has exited`);
+	const activeOriginator = databasesBeingDropped.get(databaseName);
+	if (activeOriginator !== undefined && activeOriginator !== originator) {
+		const error: any = new Error(`Database '${databaseName}' is already being dropped by another coordinator`);
+		error.statusCode = 409;
+		throw error;
+	}
 	databasesBeingDropped.set(databaseName, originator);
 	try {
 		await closeDatabaseForRestore(databaseName, originator);
@@ -2470,6 +2478,11 @@ export async function prepareDatabaseForDrop(databaseName: string, originator = 
 }
 
 export function beginDatabaseDrop(databaseName: string): void {
+	if (databasesBeingDropped.has(databaseName)) {
+		const error: any = new Error(`Database '${databaseName}' is already being dropped`);
+		error.statusCode = 409;
+		throw error;
+	}
 	databasesBeingDropped.set(databaseName, threadId);
 }
 
@@ -2500,14 +2513,20 @@ export function cancelDatabaseDropsFromThread(originator: number): void {
  * handles linger process-wide (and, e.g., block an online `restore_backup` from confirming the
  * database is closed). The `system` database is intentionally left open: it is non-enumerable here
  * (skipped by the loop), is never restored online, and the exiting worker may still touch the job
- * table during teardown. Handle-close failures propagate so orderly worker shutdown cannot claim
- * that process-global references were released when they were not.
+ * table during teardown. Handle-close failures propagate after every database has been attempted,
+ * so one wedged index cannot prevent unrelated native handles from being released and orderly
+ * worker shutdown cannot claim that process-global references were released when they were not.
  *
  * Branches are invisible to the loop below but hold handles from the same registry, so this — the
  * thread's one teardown entry point — closes them too.
  */
 export async function closeLoadedDatabases(): Promise<void> {
-	await closeBranchDatabases();
+	const closeErrors: Error[] = [];
+	try {
+		await closeBranchDatabases();
+	} catch (error) {
+		closeErrors.push(new Error('Failed to close branch databases', { cause: error }));
+	}
 	// snapshot the names first: closeDatabase() deletes from `databases` as it goes
 	for (const databaseName of Object.keys(databases)) {
 		const dbTables = databases[databaseName];
@@ -2524,8 +2543,15 @@ export async function closeLoadedDatabases(): Promise<void> {
 		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) {
 			isRocks = true;
 		}
-		if (isRocks) await closeDatabaseForRestore(databaseName);
+		if (isRocks) {
+			try {
+				await closeDatabaseForRestore(databaseName);
+			} catch (error) {
+				closeErrors.push(new Error(`Failed to close database '${databaseName}'`, { cause: error }));
+			}
+		}
 	}
+	if (closeErrors.length) throw new AggregateError(closeErrors, 'Failed to close all loaded databases');
 }
 // HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than
 // versioned. process.env values are strings, so a bare truthiness check would treat "0"/"false"

@@ -2735,11 +2735,14 @@ reopen a peer's database; the coordinator keeps its already-open database loaded
 `dropDatabase()` starts. Failure broadcasts cancellation and reloads the database; a peer whose
 in-flight preparation finishes after that cancellation detects the changed marker and reloads again.
 Cancellation and finish messages clear only the marker owned by their originator, so a late message
-cannot clear a newer drop. Successful deletion sends the ordinary schema event, which clears the
-matching marker. The destructive barrier includes job workers even though ordinary schema gossip
-excludes them. A peer also records the coordinating thread and cancels its marker if that thread exits
-before finish or cancellation arrives. A preparation delivered after the exit notification is
-rejected before it can install a marker, closing the opposite ordering of the same race. An
+cannot clear a newer drop. An active marker is never replaced: another local attempt or a preparation
+from a different coordinator receives 409. Simultaneous coordinators can therefore both fail and
+retry, but cannot close or cancel each other's prepared state. Successful deletion sends the ordinary
+schema event, which clears the matching marker. The destructive barrier includes job workers even
+though ordinary schema gossip excludes them. A peer also records the coordinating thread and cancels
+its marker if that thread exits before finish or cancellation arrives. A preparation delivered after
+the exit notification is rejected before it can install a marker, closing the opposite ordering of
+the same race. An
 interrupted drop therefore does not fence the database name until the process restarts. Branch
 shutdown and job-worker teardown await the same derived-index quiescence before closing their RocksDB
 handles. A process exit remains the final safety boundary if orderly teardown itself cannot complete.

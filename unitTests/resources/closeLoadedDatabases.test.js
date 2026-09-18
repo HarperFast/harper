@@ -9,7 +9,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { mkdirSync, mkdtempSync, rmSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const {
@@ -105,6 +105,27 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(b.path), 0, 'database b should be released');
 	});
 
+	it('closeLoadedDatabases attempts every user database before reporting close failures', async function () {
+		this.timeout(30000);
+		const firstName = 'closerelease-failure-a';
+		const secondName = 'closerelease-failure-b';
+		const first = openRocksDb(firstName);
+		const second = openRocksDb(secondName);
+		if (!(first instanceof RocksDatabase)) return this.skip();
+		const firstTable = getDatabases()[firstName].pkg;
+		await firstTable.schemaChangeOperation;
+		firstTable.derivedIndexRuntime = {
+			close: () => Promise.reject(new Error('test derived-index close failure')),
+		};
+
+		await assert.rejects(closeLoadedDatabases(), /Failed to close all loaded databases/);
+
+		assert.ok(refCountFor(first.path) > 0, 'the failed database must remain open');
+		assert.strictEqual(refCountFor(second.path), 0, 'a sibling database must still release its handles');
+		delete firstTable.derivedIndexRuntime;
+		await closeDatabaseForRestore(firstName);
+	});
+
 	it('closeLoadedDatabases quiesces derived indexes before releasing job-worker handles', async function () {
 		this.timeout(30000);
 		const databaseName = 'closerelease-derived';
@@ -152,6 +173,22 @@ describe('RocksDB handle release', function () {
 
 		cancelDatabaseDrop(databaseName, originator);
 		assert.ok(getDatabases()[databaseName]);
+	});
+
+	it('does not reopen a prepared legacy LMDB database during a catalog rescan', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-legacy-rescan';
+		const legacyDatabasePath = join(testRoot, 'database', databaseName);
+		mkdirSync(legacyDatabasePath, { recursive: true });
+		writeFileSync(join(legacyDatabasePath, 'pkg.mdb'), 'not an LMDB database');
+		const originator = 895_000 + Math.floor(Math.random() * 5_000);
+		try {
+			await prepareDatabaseForDrop(databaseName, originator);
+			assert.doesNotThrow(() => resetDatabases(), 'a peer rescan must skip the prepared legacy database');
+		} finally {
+			rmSync(legacyDatabasePath, { recursive: true, force: true });
+			cancelDatabaseDrop(databaseName, originator);
+		}
 	});
 
 	it('keeps the coordinator database loaded while its drop barrier is pending', async function () {
@@ -225,6 +262,26 @@ describe('RocksDB handle release', function () {
 			rootStore,
 			'cancellation before storage close must not churn the live database handle'
 		);
+	});
+
+	it('rejects concurrent drop coordinators without replacing the active marker', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-concurrent-coordinator';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		await getDatabases()[databaseName].pkg.schemaChangeOperation;
+		const competingOriginator = 930_000 + Math.floor(Math.random() * 10_000);
+
+		beginDatabaseDrop(databaseName);
+		assert.throws(() => beginDatabaseDrop(databaseName), /already being dropped/);
+		await assert.rejects(prepareDatabaseForDrop(databaseName, competingOriginator), /another coordinator/);
+		cancelDatabaseDrop(databaseName, competingOriginator);
+		assert.throws(
+			() => database({ database: databaseName }),
+			/being dropped/,
+			'a competing coordinator must not clear or replace the active marker'
+		);
+		cancelDatabaseDrop(databaseName);
 	});
 
 	it('reopens a prepared database when its drop coordinator exits', async function () {
