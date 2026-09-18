@@ -149,6 +149,28 @@ describe('@fullText schema declaration', () => {
 		assert.strictEqual(transactions, 0);
 	});
 
+	it('persists computed source metadata used by durable peer validation', async () => {
+		await loadGQLSchema(`
+			type FullTextComputedMetadata @table {
+				id: ID @primaryKey
+				text: String
+				derived: String
+				search: FullText @fullText(fields: [{ name: "text" }])
+			}
+		`);
+		await loadGQLSchema(`
+			type FullTextComputedMetadata @table {
+				id: ID @primaryKey
+				text: String
+				derived: String @computed
+				search: FullText @fullText(fields: [{ name: "text" }])
+			}
+		`);
+		const Table = tables.FullTextComputedMetadata;
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		assert.strictEqual(Table.dbisDB.getSync('FullTextComputedMetadata/derived').computed, true);
+	});
+
 	for (const [name, field, expected] of [
 		['wrong target type', 'search: String @fullText(fields: [{ name: "text" }])', /FullText scalar/],
 		['missing fields', 'search: FullText @fullText', /non-empty "fields"/],

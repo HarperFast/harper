@@ -2657,7 +2657,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							JSON.stringify(liveAttribute.elements) !== JSON.stringify(attribute.elements) ||
 							JSON.stringify(liveAttribute.fullText) !== JSON.stringify(attribute.fullText) ||
 							Boolean(liveAttribute.relationship) !== Boolean(attribute.relationship) ||
-							Boolean(liveAttribute.computed) !== Boolean(attribute.computed)
+							Boolean(liveAttribute.computed) !== Boolean(attribute.computed) ||
+							liveAttribute.computedFromExpression !== attribute.computedFromExpression
 						);
 					}));
 			// Acquire before the first mutation of the live Table below, so a lost race leaves no
@@ -3083,6 +3084,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributeDescriptor.enumerable !== attribute.enumerable ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements) ||
+				Boolean(attributeDescriptor.computed) !== Boolean(attribute.computed) ||
+				attributeDescriptor.computedFromExpression !== attribute.computedFromExpression ||
 				// An embed declaration changes how writes populate the stored vector even when its HNSW
 				// options are unchanged, so it belongs in the common durable-schema comparison.
 				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed) ||
