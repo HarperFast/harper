@@ -460,10 +460,26 @@ const PEER_REDEFINABLE_FIELDS = [
 	'embed',
 	'computed',
 	'computedFromExpression',
+	'hidden',
 ];
 // `indexNulls` is derived from the durable descriptor, never sent by a peer, so naming it in the
 // discard warn would blame the peer for a field it did not write.
 const PEER_DECLARABLE_FIELDS = PEER_REDEFINABLE_FIELDS.filter((field) => field !== 'indexNulls');
+
+function compilePersistedFullTextDefinitions(
+	primaryDescriptor: any,
+	fallback: readonly FullTextDefinition[],
+	attributes: readonly any[],
+	databaseName: string,
+	tableName: string
+): FullTextDefinition[] {
+	const values = primaryDescriptor ? (primaryDescriptor.fullTextIndexes ?? []) : fallback;
+	return compileValidFullTextDefinitions(values, attributes, (value, error) =>
+		logger.warn(
+			`Ignoring invalid persisted full-text declaration ${databaseName}.${tableName}${typeof (value as any)?.name === 'string' ? `.${(value as any).name}` : ''}: ${error.message}`
+		)
+	);
+}
 
 // A cluster-origin caller's list can predate a declaration another thread has already committed, so on
 // that path the descriptor — not the caller — decides what the attribute is, in both directions.
@@ -1327,13 +1343,12 @@ function initStores(
 			existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
 			attributesUpdated = true;
 		}
-		const fullTextIndexes = compileValidFullTextDefinitions(
-			primaryAttribute.fullTextIndexes ?? [],
+		const fullTextIndexes = compilePersistedFullTextDefinitions(
+			primaryAttribute,
+			[],
 			attributes,
-			(value, error) =>
-				logger.warn(
-					`Ignoring invalid persisted full-text declaration ${databaseName}.${tableName}${typeof (value as any)?.name === 'string' ? `.${(value as any).name}` : ''}: ${error.message}`
-				)
+			databaseName,
+			tableName
 		);
 		if (table && !recreateForEngineChange) {
 			const fullTextIndexesUpdated = JSON.stringify(table.fullTextIndexes ?? []) !== JSON.stringify(fullTextIndexes);
@@ -2705,7 +2720,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				const removedAttributeNames = new Set(removedAttributes);
 				const primaryDescriptor =
 					Table.dbisDB.getSync(`${tableName}/${Table.primaryKey}`) ?? Table.dbisDB.getSync(`${tableName}/`);
-				assertFullTextSourcesRemain(primaryDescriptor?.fullTextIndexes ?? Table.fullTextIndexes, removedAttributeNames);
+				assertFullTextSourcesRemain(
+					compilePersistedFullTextDefinitions(
+						primaryDescriptor,
+						Table.fullTextIndexes,
+						Table.attributes,
+						databaseName,
+						tableName
+					),
+					removedAttributeNames
+				);
 			}
 			if (origin !== 'cluster' && fullTextIndexesExplicit) {
 				// RocksDB catalog rows are individually atomic, not one multi-row transaction. When one
@@ -2724,7 +2748,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					primaryDescriptorKey = `${tableName}/`;
 					primaryDescriptor = Table.dbisDB.getSync(primaryDescriptorKey);
 				}
-				const durableFullTextIndexes = primaryDescriptor?.fullTextIndexes ?? Table.fullTextIndexes;
+				const durableFullTextIndexes = compilePersistedFullTextDefinitions(
+					primaryDescriptor,
+					Table.fullTextIndexes,
+					durableLiveAttributes,
+					databaseName,
+					tableName
+				);
 				const retainedFullTextIndexes = durableFullTextIndexes.filter((definition) =>
 					definition.fields.every((field) => !removedNames.has(field.name))
 				);
@@ -2787,13 +2817,12 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					});
 					const primaryDescriptor =
 						Table.dbisDB.getSync(`${tableName}/${Table.primaryKey}`) ?? Table.dbisDB.getSync(`${tableName}/`);
-					const merged = compileValidFullTextDefinitions(
-						primaryDescriptor?.fullTextIndexes ?? Table.fullTextIndexes,
+					const merged = compilePersistedFullTextDefinitions(
+						primaryDescriptor,
+						Table.fullTextIndexes,
 						validationAttributes,
-						(value, error) =>
-							logger.warn(
-								`Ignoring invalid persisted full-text declaration ${databaseName}.${tableName}${typeof (value as any)?.name === 'string' ? `.${(value as any).name}` : ''}: ${error.message}`
-							)
+						databaseName,
+						tableName
 					);
 					const durableAudit =
 						typeof primaryDescriptor?.audit === 'boolean'
@@ -3153,7 +3182,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributeDescriptor.computedFromExpression !== attribute.computedFromExpression ||
 				// An embed declaration changes how writes populate the stored vector even when its HNSW
 				// options are unchanged, so it belongs in the common durable-schema comparison.
-				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed);
+				JSON.stringify(attributeDescriptor.embed) !== JSON.stringify(attribute.embed) ||
+				attributeDescriptor.hidden !== attribute.hidden;
 			// any metadata difference (drives persistence)
 			const changed =
 				commonChanged || JSON.stringify(attributeDescriptor?.indexed) !== JSON.stringify(attribute.indexed);

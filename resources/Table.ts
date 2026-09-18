@@ -632,6 +632,7 @@ export function makeTable(options) {
 	let lockCoordinator: LockCoordinator | undefined;
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
+	const ignoredPeerFullTextStates = new Set<string>();
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;
@@ -1384,25 +1385,33 @@ export function makeTable(options) {
 												hasChanges = true;
 											}
 										}
-										const fullTextChanged = event.fullTextIndexes?.some(
-											(peerDefinition) =>
-												!this.fullTextIndexes.some((definition) => definition.name === peerDefinition?.name)
-										);
-										if (hasChanges || fullTextChanged) {
+										const fullTextChanged =
+											event.fullTextIndexes !== undefined &&
+											JSON.stringify(event.fullTextIndexes) !== JSON.stringify(this.fullTextIndexes);
+										const peerFullTextState = fullTextChanged
+											? `${(this as any).schemaVersion}:${JSON.stringify(event.fullTextIndexes)}`
+											: undefined;
+										if (hasChanges || (peerFullTextState && !ignoredPeerFullTextStates.has(peerFullTextState))) {
 											const attributeCount = this.attributes.length;
 											const fullTextState = JSON.stringify(this.fullTextIndexes);
 											table({
 												table: tableName,
 												database: databaseName,
 												attributes: updatedAttributes,
-												audit: event.audit,
 												fullTextIndexes: event.fullTextIndexes,
 												origin: 'cluster',
 											});
-											if (
+											const schemaChanged =
 												this.attributes.length !== attributeCount ||
-												JSON.stringify(this.fullTextIndexes) !== fullTextState
-											)
+												JSON.stringify(this.fullTextIndexes) !== fullTextState;
+											if (!schemaChanged && peerFullTextState) {
+												if (ignoredPeerFullTextStates.size >= 100) {
+													const oldest = ignoredPeerFullTextStates.values().next().value;
+													if (oldest !== undefined) ignoredPeerFullTextStates.delete(oldest);
+												}
+												ignoredPeerFullTextStates.add(peerFullTextState);
+											}
+											if (schemaChanged)
 												signalling.signalSchemaChange(
 													new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, databaseName, tableName)
 												);
@@ -6432,6 +6441,8 @@ export function makeTable(options) {
 		 * When attributes have been changed, we update the accessors that are assigned to this table
 		 */
 		static updatedAttributes() {
+			for (const name of primaryStore.encoder.resolvedAttributeNamesList ?? [])
+				delete primaryStore.encoder.structPrototype[name];
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);

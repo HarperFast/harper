@@ -172,6 +172,33 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert.match(discardWarnings[0], /nullable/, 'the warning must name the discarded `nullable` difference');
 	});
 
+	it('persists a hidden-only declaration change without rebuilding an index', async () => {
+		const Hidden = table({
+			table: 'ClusterMergeHidden',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'label', type: 'String', indexed: true },
+			],
+		});
+		await Hidden.indexingOperation;
+		await catalogFlushed(Hidden);
+		const indexingOperation = Hidden.indexingOperation;
+		const Updated = table({
+			table: 'ClusterMergeHidden',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'label', type: 'String', indexed: true, hidden: true },
+			],
+		});
+		await catalogFlushed(Updated);
+		assert.strictEqual(Updated.dbisDB.getSync('ClusterMergeHidden/label').hidden, true);
+		assert.strictEqual(Updated.indexingOperation, indexingOperation);
+	});
+
 	it('recovers an abandoned index build even though the peer definition itself is not applied', async () => {
 		const attributes = [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -684,6 +711,48 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert.deepStrictEqual(
 			Local.dbisDB.getSync(primaryKey).fullTextIndexes.map(({ name }) => name),
 			['search', 'titles']
+		);
+	});
+
+	it('does not resurrect a durably cleared declaration from stale live state', async () => {
+		const Local = table({
+			table: 'ClusterKeepDurableFullTextRemoval',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		let primaryKey = 'ClusterKeepDurableFullTextRemoval/id';
+		let primary = Local.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'ClusterKeepDurableFullTextRemoval/';
+			primary = Local.dbisDB.getSync(primaryKey);
+		}
+		const withoutFullText = { ...primary };
+		delete withoutFullText.fullTextIndexes;
+		const written = Local.dbisDB.put(primaryKey, withoutFullText);
+		if (written?.then) await written;
+
+		table({
+			table: 'ClusterKeepDurableFullTextRemoval',
+			database: 'test',
+			origin: 'cluster',
+			attributes: Local.attributes.map((attribute) => ({ ...attribute })),
+			fullTextIndexes: [{ name: 'titles', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		assert.deepStrictEqual(
+			Local.fullTextIndexes.map(({ name }) => name),
+			['titles']
+		);
+		assert.deepStrictEqual(
+			Local.dbisDB.getSync(primaryKey).fullTextIndexes.map(({ name }) => name),
+			['titles']
 		);
 	});
 

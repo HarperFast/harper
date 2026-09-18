@@ -507,6 +507,59 @@ describe('@fullText table declaration', () => {
 		await assert.rejects(tables.FullTextRemoveSource.removeAttributes(['text']), /while @fullText index 'search'/);
 	});
 
+	it('ignores malformed persisted declarations while checking a source removal', async () => {
+		const Table = table({
+			table: 'FullTextMalformedRemovalGuard',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'text', type: 'String' },
+			],
+		});
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		let primaryKey = 'FullTextMalformedRemovalGuard/id';
+		let primary = Table.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'FullTextMalformedRemovalGuard/';
+			primary = Table.dbisDB.getSync(primaryKey);
+		}
+		const written = Table.dbisDB.put(primaryKey, { ...primary, fullTextIndexes: [{ name: 'broken' }] });
+		if (written?.then) await written;
+		await Table.removeAttributes(['text']);
+		assert.strictEqual(
+			Table.attributes.some(({ name }) => name === 'text'),
+			false
+		);
+	});
+
+	it('removes a stale computed accessor when the attribute becomes stored data', async () => {
+		let Table = table({
+			table: 'FullTextAccessorCleanup',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'value', type: 'String', computed: true },
+			],
+		});
+		Table.setComputedAttribute('value', () => 'computed');
+		await Table.put({ id: 'one' });
+		assert.strictEqual((await Table.get('one')).value, 'computed');
+		Table = table({
+			table: 'FullTextAccessorCleanup',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'value', type: 'String' },
+			],
+		});
+		await Table.put({ id: 'one', value: 'stored' });
+		assert.strictEqual((await Table.get('one')).value, 'stored');
+	});
+
 	it('revalidates retained declarations when a non-schema caller changes a source', () => {
 		const Table = table({
 			table: 'FullTextRetainedSourceValidation',
