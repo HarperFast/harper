@@ -47,6 +47,18 @@ if (cluster.isPrimary) {
 		return reply.send(rows.map((r) => r.id));
 	});
 
+	// Writes go through the pooled connection, not a psql subprocess. Spawning `docker compose
+	// exec psql` per row costs ~330ms of process startup, which swamps whatever the index
+	// actually does and would be reported as pgvector's write latency.
+	app.post('/insert', async (request, reply) => {
+		const { id, vector } = request.body;
+		await pool.query('INSERT INTO items (id, embedding) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET embedding = $2', [
+			id,
+			`[${vector.join(',')}]`,
+		]);
+		return reply.send({ id });
+	});
+
 	app.get('/health', async (_req, reply) => {
 		await pool.query('SELECT 1');
 		return reply.send({ ok: true });
