@@ -239,8 +239,12 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		const cursor = this.#appliedCursor;
 		const epoch = this.#appliedEpoch;
 		const host = this.#host!;
+		const barrierStarted = performance.now();
 		this.#flushing = (async () => {
 			await this.#index.flushDerived();
+			logger.warn?.(
+				`[BARRIER] ${this.id} took ${Math.round(performance.now() - barrierStarted)}ms queue=${this.#queue.length} cursor=${JSON.stringify(cursor)} priorCoverage=${JSON.stringify(this.getDurableCursor()?.coverage)}`
+			);
 			if (epoch !== undefined && !host.isOwnerEpoch(epoch)) return;
 			if (cursor) {
 				const coverage = this.getDurableCursor()?.coverage;
