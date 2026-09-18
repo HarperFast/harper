@@ -63,6 +63,7 @@ import {
 	assertFullTextSourcesRemain,
 	compileFullTextDefinition,
 	compileFullTextDefinitions,
+	compileValidFullTextDefinitions,
 	sortFullTextDefinitions,
 	type FullTextDefinition,
 } from './fullTextSchema.ts';
@@ -1326,15 +1327,14 @@ function initStores(
 			existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
 			attributesUpdated = true;
 		}
-		let fullTextIndexes: FullTextDefinition[] = [];
-		try {
-			fullTextIndexes = compileFullTextDefinitions(primaryAttribute.fullTextIndexes ?? [], attributes);
-		} catch (error) {
-			if (!(error instanceof ClientError)) throw error;
-			logger.warn(
-				`Ignoring invalid persisted full-text declarations for ${databaseName}.${tableName}: ${error.message}`
-			);
-		}
+		const fullTextIndexes = compileValidFullTextDefinitions(
+			primaryAttribute.fullTextIndexes ?? [],
+			attributes,
+			(value, error) =>
+				logger.warn(
+					`Ignoring invalid persisted full-text declaration ${databaseName}.${tableName}${typeof (value as any)?.name === 'string' ? `.${(value as any).name}` : ''}: ${error.message}`
+				)
+		);
 		if (table && !recreateForEngineChange) {
 			const fullTextIndexesUpdated = JSON.stringify(table.fullTextIndexes ?? []) !== JSON.stringify(fullTextIndexes);
 			if (fullTextIndexesUpdated) table.fullTextIndexes = fullTextIndexes;
@@ -2619,13 +2619,14 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			attributes
 		);
 	}
-	if (fullTextIndexes?.length && audit !== true && (audit === false || Table?.audit !== true) && origin !== 'cluster')
+	if (!Table && fullTextIndexes?.length && audit !== true && origin !== 'cluster')
 		throw new ClientError(
 			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using @fullText because its transaction log is the derived-index recovery source`
 		);
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
 	let refreshedLiveAttributes = false;
+	let liveSchemaMutated = false;
 	let deferredPrimaryRow: any;
 	let deferredFullTextIndexesKey: string | undefined;
 	let unpublishedPrimaryStore: any;
@@ -2633,6 +2634,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let releaseExclusiveLock: (() => void) | undefined;
 	const attributesToIndex = [];
 	const indicesToRemove = [];
+	const originalLiveAttributes = Table?.attributes.slice();
+	const originalLiveFullTextIndexes = Table?.fullTextIndexes.slice();
 	try {
 		if (Table) {
 			refreshedLiveAttributes = true;
@@ -2685,6 +2688,18 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// and can throw, and only it is cheap when uncontended: LMDB's exclusiveLock() opens an
 			// environment-wide write transaction that cannot time out, so it generally stays lazy.
 			if (rootStore instanceof RocksDatabase || schemaShapeChanged) exclusiveLock();
+			if (fullTextIndexes?.length && origin !== 'cluster' && audit !== true) {
+				const primaryDescriptor =
+					Table.dbisDB.getSync(`${tableName}/${Table.primaryKey}`) ?? Table.dbisDB.getSync(`${tableName}/`);
+				const durableAudit =
+					typeof primaryDescriptor?.audit === 'boolean'
+						? primaryDescriptor.audit
+						: envGet(CONFIG_PARAMS.LOGGING_AUDITLOG) === true;
+				if (audit === false || !durableAudit)
+					throw new ClientError(
+						`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using @fullText because its transaction log is the derived-index recovery source`
+					);
+			}
 			if (removedAttributes?.length) {
 				exclusiveLock();
 				const removedAttributeNames = new Set(removedAttributes);
@@ -2709,13 +2724,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					primaryDescriptorKey = `${tableName}/`;
 					primaryDescriptor = Table.dbisDB.getSync(primaryDescriptorKey);
 				}
-				const removesIndexedSource = (primaryDescriptor?.fullTextIndexes ?? Table.fullTextIndexes).some((definition) =>
-					definition.fields.some((field) => removedNames.has(field.name))
+				const durableFullTextIndexes = primaryDescriptor?.fullTextIndexes ?? Table.fullTextIndexes;
+				const retainedFullTextIndexes = durableFullTextIndexes.filter((definition) =>
+					definition.fields.every((field) => !removedNames.has(field.name))
 				);
+				const removesIndexedSource = retainedFullTextIndexes.length !== durableFullTextIndexes.length;
 				if (removesIndexedSource && primaryDescriptor && !tableIsDropping(primaryDescriptor, primaryDescriptorKey)) {
 					exclusiveLock();
 					const updatedPrimaryDescriptor = { ...primaryDescriptor };
-					if (fullTextIndexes?.length) updatedPrimaryDescriptor.fullTextIndexes = fullTextIndexes;
+					if (retainedFullTextIndexes.length) updatedPrimaryDescriptor.fullTextIndexes = retainedFullTextIndexes;
 					else delete updatedPrimaryDescriptor.fullTextIndexes;
 					Table.dbisDB.put(primaryDescriptorKey, updatedPrimaryDescriptor);
 					hasChanges = true;
@@ -2770,7 +2787,18 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					});
 					const primaryDescriptor =
 						Table.dbisDB.getSync(`${tableName}/${Table.primaryKey}`) ?? Table.dbisDB.getSync(`${tableName}/`);
-					const merged = [...(primaryDescriptor?.fullTextIndexes ?? Table.fullTextIndexes)];
+					const merged = compileValidFullTextDefinitions(
+						primaryDescriptor?.fullTextIndexes ?? Table.fullTextIndexes,
+						validationAttributes,
+						(value, error) =>
+							logger.warn(
+								`Ignoring invalid persisted full-text declaration ${databaseName}.${tableName}${typeof (value as any)?.name === 'string' ? `.${(value as any).name}` : ''}: ${error.message}`
+							)
+					);
+					const durableAudit =
+						typeof primaryDescriptor?.audit === 'boolean'
+							? primaryDescriptor.audit
+							: envGet(CONFIG_PARAMS.LOGGING_AUDITLOG) === true;
 					for (const peerDefinition of fullTextIndexes ?? []) {
 						const name = peerDefinition?.name;
 						const existing =
@@ -2783,7 +2811,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 							continue;
 						}
 						try {
-							if (Table.audit !== true)
+							if (!durableAudit)
 								throw new ClientError(
 									`Table '${databaseName}.${tableName}' must enable audit logging before using @fullText`,
 									400
@@ -2800,7 +2828,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				}
 			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
-			Table.fullTextIndexes = fullTextIndexes ?? [];
+			liveSchemaMutated = true;
 			// Re-assert from the live declaration so a stale value on disk (replicated event,
 			// v4-era backfill) is corrected on every reload. Gated on `schemaDefinedExplicit` so
 			// callers that omit the flag (cluster schema-replication, data loader) don't flip a
@@ -3336,10 +3364,16 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	} catch (error) {
 		if (unpublishedPrimaryStore && !published) discardUnpublishedTable();
 		else if (published && tables[tableName] !== Table) discardUnregisteredClass();
+		if (liveSchemaMutated && originalLiveAttributes && originalLiveFullTextIndexes) {
+			Table.attributes.splice(0, Table.attributes.length, ...originalLiveAttributes);
+			Table.fullTextIndexes = originalLiveFullTextIndexes;
+			Table.updatedAttributes();
+		}
 		throw error;
 	} finally {
 		releaseLock();
 	}
+	Table.fullTextIndexes = fullTextIndexes ?? [];
 	if (hasChanges || refreshRelationshipAttributes) Table.schemaVersion++;
 	if (hasChanges || refreshRelationshipAttributes || refreshedLiveAttributes) Table.updatedAttributes();
 	logger.trace(`${tableName} table loading, running index`);

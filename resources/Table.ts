@@ -1384,10 +1384,13 @@ export function makeTable(options) {
 												hasChanges = true;
 											}
 										}
-										const fullTextChanged =
-											event.fullTextIndexes !== undefined &&
-											JSON.stringify(event.fullTextIndexes) !== JSON.stringify(this.fullTextIndexes);
+										const fullTextChanged = event.fullTextIndexes?.some(
+											(peerDefinition) =>
+												!this.fullTextIndexes.some((definition) => definition.name === peerDefinition?.name)
+										);
 										if (hasChanges || fullTextChanged) {
+											const attributeCount = this.attributes.length;
+											const fullTextState = JSON.stringify(this.fullTextIndexes);
 											table({
 												table: tableName,
 												database: databaseName,
@@ -1396,9 +1399,13 @@ export function makeTable(options) {
 												fullTextIndexes: event.fullTextIndexes,
 												origin: 'cluster',
 											});
-											signalling.signalSchemaChange(
-												new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, databaseName, tableName)
-											);
+											if (
+												this.attributes.length !== attributeCount ||
+												JSON.stringify(this.fullTextIndexes) !== fullTextState
+											)
+												signalling.signalSchemaChange(
+													new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, databaseName, tableName)
+												);
 										}
 									} else {
 										if (event.beginTxn) {

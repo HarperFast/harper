@@ -1,7 +1,7 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { getDatabases, resetDatabases, table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { forComponent } = require('#src/utility/logging/harper_logger');
 const env = require('#src/utility/environment/environmentManager');
@@ -531,6 +531,56 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		});
 		assert.deepStrictEqual(Local.fullTextIndexes, []);
 		assert.strictEqual(Local.dbisDB.getSync(sourceKey).type, 'Int');
+	});
+
+	it('keeps valid durable declarations and does not revive invalid siblings during peer merge', async () => {
+		let Local = table({
+			table: 'ClusterMergeInvalidDurableSibling',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		let primaryKey = 'ClusterMergeInvalidDurableSibling/id';
+		let primary = Local.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'ClusterMergeInvalidDurableSibling/';
+			primary = Local.dbisDB.getSync(primaryKey);
+		}
+		const invalidSibling = { ...Local.fullTextIndexes[0], name: 'broken', fields: [{ name: 'missing', weight: 1 }] };
+		const written = Local.dbisDB.put(primaryKey, {
+			...primary,
+			fullTextIndexes: [Local.fullTextIndexes[0], invalidSibling],
+		});
+		if (written?.then) await written;
+
+		resetDatabases();
+		Local = getDatabases().test.ClusterMergeInvalidDurableSibling;
+		assert.deepStrictEqual(
+			Local.fullTextIndexes.map(({ name }) => name),
+			['search']
+		);
+		table({
+			table: 'ClusterMergeInvalidDurableSibling',
+			database: 'test',
+			origin: 'cluster',
+			attributes: Local.attributes.map((attribute) => ({ ...attribute })),
+			fullTextIndexes: [{ name: 'peer', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		assert.deepStrictEqual(
+			Local.fullTextIndexes.map(({ name }) => name),
+			['peer', 'search']
+		);
+		assert.deepStrictEqual(
+			Local.dbisDB.getSync(primaryKey).fullTextIndexes.map(({ name }) => name),
+			['peer', 'search']
+		);
 	});
 
 	it('drops invalid full-text metadata when creating a table from a peer snapshot', async () => {

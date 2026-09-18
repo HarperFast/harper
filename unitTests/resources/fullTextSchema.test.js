@@ -286,6 +286,95 @@ describe('@fullText table declaration', () => {
 		assert.strictEqual(Table.dbisDB.getSync('FullTextSourcePublishOrder/text').type, 'Int');
 	});
 
+	it('publishes only the minimal safe list before a combined source removal and index addition', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		const Table = table({
+			table: 'FullTextCombinedPublishOrder',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'oldText', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'oldSearch', fields: [{ name: 'oldText' }] }],
+		});
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		let putOwner = Table.dbisDB;
+		while (putOwner && !Object.hasOwn(putOwner, 'putSync')) putOwner = Object.getPrototypeOf(putOwner);
+		assert(putOwner, 'the catalog handle must expose a synchronous put primitive');
+		const originalPut = putOwner.putSync;
+		putOwner.putSync = function (key, value, ...args) {
+			if (String(key) === 'FullTextCombinedPublishOrder/body')
+				throw new Error('simulated crash before replacement source publication');
+			return originalPut.call(this, key, value, ...args);
+		};
+		try {
+			assert.throws(
+				() =>
+					table({
+						table: 'FullTextCombinedPublishOrder',
+						database: 'test',
+						schemaDefined: true,
+						audit: true,
+						attributes: [
+							{ name: 'id', type: 'ID', isPrimaryKey: true },
+							{ name: 'body', type: 'String' },
+						],
+						fullTextIndexes: [{ name: 'newSearch', fields: [{ name: 'body' }] }],
+					}),
+				/simulated crash before replacement source publication/
+			);
+		} finally {
+			putOwner.putSync = originalPut;
+		}
+		assert.strictEqual(descriptor(Table).fullTextIndexes, undefined);
+		assert.deepStrictEqual(
+			Table.fullTextIndexes.map(({ name }) => name),
+			['oldSearch'],
+			'a failed catalog write must not publish the incoming declaration in memory'
+		);
+		assert(Table.attributes.some(({ name }) => name === 'oldText'));
+		assert.strictEqual(
+			Table.attributes.some(({ name }) => name === 'body'),
+			false
+		);
+	});
+
+	it('checks the durable audit setting before adding a declaration', async () => {
+		const Table = table({
+			table: 'FullTextDurableAudit',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'text', type: 'String' },
+			],
+		});
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		let primaryKey = 'FullTextDurableAudit/id';
+		let primary = Table.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'FullTextDurableAudit/';
+			primary = Table.dbisDB.getSync(primaryKey);
+		}
+		const written = Table.dbisDB.put(primaryKey, { ...primary, audit: false });
+		if (written?.then) await written;
+		assert.strictEqual(Table.audit, true, 'the test requires stale live audit state');
+		assert.throws(
+			() =>
+				table({
+					table: 'FullTextDurableAudit',
+					database: 'test',
+					schemaDefined: true,
+					attributes: Table.attributes.map((attribute) => ({ ...attribute })),
+					fullTextIndexes: [{ name: 'search', fields: [{ name: 'text' }] }],
+				}),
+			/must explicitly enable audit logging/
+		);
+	});
+
 	it('preserves dynamic record data with the same name as an index', async () => {
 		await loadGQLSchema(`
 			type FullTextDynamicCollision @table(audit: true) {

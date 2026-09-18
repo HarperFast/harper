@@ -82,6 +82,28 @@ export function compileFullTextDefinitions(
 	return sortFullTextDefinitions(definitions);
 }
 
+export function compileValidFullTextDefinitions(
+	values: readonly unknown[],
+	attributes: readonly SchemaAttribute[],
+	onInvalid: (value: unknown, error: ClientError) => void
+): FullTextDefinition[] {
+	const names = new Set<string>();
+	const definitions: FullTextDefinition[] = [];
+	for (const value of values) {
+		try {
+			const definition = compileFullTextDefinition(value, attributes);
+			if (names.has(definition.name))
+				throw schemaError(`@fullText index "${definition.name}" is declared more than once`);
+			names.add(definition.name);
+			definitions.push(definition);
+		} catch (error) {
+			if (!(error instanceof ClientError)) throw error;
+			onInvalid(value, error);
+		}
+	}
+	return sortFullTextDefinitions(definitions);
+}
+
 export function sortFullTextDefinitions<T extends { name: string }>(definitions: T[]): T[] {
 	return definitions.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
 }
