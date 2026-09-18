@@ -4,7 +4,7 @@ const { DERIVED_INDEX_ACCEPTED } = require('#src/resources/derivedIndexRuntime')
 const { HnswDerivedIndexBackend } = require('#src/resources/indexes/hnswDerivedIndex');
 
 const OWNER_EPOCH = 7n;
-const SLOW_APPLY_MILLIS = 6; // exceeds the backend's 5 ms apply slice, so a slice ends mid-batch
+const SLOW_APPLY_MILLIS = 6;
 
 const BATCH_RECORDS = 2;
 
@@ -72,7 +72,6 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 	};
 
 	beforeEach(() => start());
-	// Not awaited: a case that leaves a barrier unsettled would never resolve the shutdown.
 	afterEach(() => void backend.shutdown(OWNER_EPOCH).catch(() => {}));
 
 	const deliver = (count, size) => {
