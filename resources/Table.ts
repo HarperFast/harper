@@ -4049,16 +4049,17 @@ export function makeTable(options) {
 								write.skipped = true;
 								return;
 							}
-							// Every existing branch head is retained, as the walk does: dropping them loses the surviving
-							// head's addressable log-key pointer wherever the record and log clocks differ.
+							// The surviving head's addressable log-key pointer lives in these, wherever the record and log
+							// clocks differ.
 							if (existingEntry.additionalAuditRefs) {
 								for (const ref of existingEntry.additionalAuditRefs) {
 									additionalAuditRefs.push(ref);
 								}
 							}
-							// The ref the walk pushes for an applied out-of-order write. It is the only thing that lets the
-							// read-your-writes check above recognise a re-delivery once the walk no longer runs, which the
-							// ops just applied need so they are not applied twice.
+							// Once the walk no longer runs, this ref is what the read-your-writes check above matches a
+							// re-delivery of these ops on. Best-effort, like every other guard here: the encoder bounds
+							// the persisted list, so an identity can age out of it (harper#1148's full-copy convergence
+							// is the backstop).
 							additionalAuditRefs.push({ version: txnLogKey, nodeId: options?.nodeId });
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
