@@ -509,15 +509,9 @@ describe('applyInstallModeDefaults', () => {
 	});
 });
 
-// installer.ts's move off inquirer's single schema-array `prompt()` call, to sequential per-field
-// `prompts.input`/`prompts.password` calls, had no executing coverage — the only prior test
-// asserted the old 8-question array shape against a `prompts.input` stub returning a whole answers
-// object at once, neither of which the current implementation does. `installPrompts` isn't
-// exported, so this drives it through the same shared `installer` rewire instance used above.
 describe('installPrompts', () => {
-	const installPrompts = installer.__get__('installPrompts');
 	const hdbTerms = require('#src/utility/hdbTerms');
-	const { resolveInstallDestination } = require('#js/utility/install/installer');
+	const { installPrompts, resolveInstallDestination } = require('#js/utility/install/installer');
 	let originalInput;
 	let originalPassword;
 

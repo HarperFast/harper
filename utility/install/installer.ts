@@ -84,7 +84,7 @@ let ignoreExisting = false;
  * This module orchestrates the installation of Harper.
  */
 
-export { install, updateConfigEnv, setIgnoreExisting, resolveInstallDestination };
+export { install, updateConfigEnv, setIgnoreExisting, resolveInstallDestination, installPrompts };
 install.createSuperUser = createSuperUser;
 
 /**
