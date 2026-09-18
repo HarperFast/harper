@@ -3083,10 +3083,11 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						);
 					return declareTable(target, tableDefinition);
 				} catch (error) {
-					const publishedRepairTable = repairTable ?? target.tables(databaseName)?.[tableName];
+					const repairTables = target.tables(databaseName);
+					const publishedRepairTable = repairTable ?? repairTables?.[tableName];
 					publishedRepairTable?.cleanup?.();
-					if (target.tables(databaseName)?.[tableName] === publishedRepairTable)
-						delete target.tables(databaseName)[tableName];
+					if (publishedRepairTable && repairTables?.[tableName] === publishedRepairTable)
+						delete repairTables[tableName];
 					throw error;
 				} finally {
 					fullTextActivationRepairs.delete(repairKey);
