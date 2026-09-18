@@ -29,8 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     # A job that hits this cap is reported as `cancelled`, not `failure`, so it reads as non-red
     # on a required check. Every step below is capped in its own right and this sits above their
-    # sum (44 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
-    timeout-minutes: 45
+    # sum (49 on the longest leg), so a stall surfaces as a step failure and this stays a backstop.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -87,9 +87,25 @@ jobs:
       # each step's own cap is what turns a wedged suite into a reported failure, so one bad
       # top-level suite no longer hides the rest (harper#2587, harper#2017) — `test:unit:lmdb`
       # still chains its own resources/apitests/bin runs with `&&`, so a failure there stops
-      # at the first of those three. Per-step budgets are sized off measured Node 22 durations
-      # (the slowest leg): main ~2m15-2m30, apitests ~20-25s, resources ~4m30-5m25,
-      # lmdb ~1m55-2m05.
+      # at the first of those three.
+      #
+      # Per-step budgets, re-derived 2026-09-18 from the Actions step API over the 30 `Unit Test`
+      # pushes to main since 2026-09-14 — 90 samples per step, all three Node legs pooled, since
+      # no leg is reliably the slowest: over those 30 runs Node 22 was slowest 15 times, Node 26
+      # 10 and Node 24 5, and the slowest completed `resources` run of all was a Node 26 one.
+      # Ranges below count only steps that RAN TO COMPLETION; a step killed by its own cap is a
+      # right-censored sample and is excluded.
+      #
+      #   step       cap   completed min-max   worst / cap
+      #   main        4m   2m26-3m19            83%
+      #   apitests    3m   15-34s               19%
+      #   resources  12m   4m27-6m58            58%
+      #   lmdb        4m   1m50-3m17            82%
+      #
+      # Re-derive these before trusting them. `resources` was capped at 7m against an estimate of
+      # ~4m30-5m25 that was never re-measured; it grew to 6m58 completed and went red on main.
+      # Its 12m prices that erosion in: the worst censored run was killed ~45s short of mocha's
+      # epilogue, so it needed ~7m40, and 12m is that plus ~55%.
       - name: 'Unit tests: main'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
         timeout-minutes: 4
@@ -102,7 +118,7 @@ jobs:
 
       - name: 'Unit tests: resources'
         if: "!cancelled() && steps.setup-harper.outcome == 'success'"
-        timeout-minutes: 7
+        timeout-minutes: 12
         run: npm run test:unit:resources
 
       - name: 'Unit tests: lmdb'
