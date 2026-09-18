@@ -991,7 +991,31 @@ The manifest therefore carries: archive-schema version, producing Harper version
 rocksdb-js major, transaction-log format version, blob-format features present in the archive
 (compression, marker types), source database name, whether blobs are included, the blob root
 count, and the names of the roles that held grants on the database (§5.10). The reader refuses when
-the target lacks any capability the archive declares. The same fields go into the managed backup
+the target lacks any capability the archive declares.
+
+**Provenance is a second, separate block, and deliberately never gated on.** `requires` is the
+gate; `source` is what a support engineer needs when an archive surfaces months later and will not
+restore. It records the producing runtime (`node_version`, `platform`, `arch`), an allowlist of
+storage settings that describe how the data was written, and the **built-in component names** the
+distribution registered. That last field is the only honest answer to "was this Harper or Harper
+Pro": core has no edition flag, no license discriminator and no build stamp, and `packageJson`
+resolves by walking up from `utility/` to the first `package.json` it finds
+(`utility/packageUtils.js:27-33`), which is core's own even when Pro bundles core as a submodule —
+so `harper_version` cannot distinguish the two. What does distinguish them is
+`HARPER_BUILTIN_COMPONENTS`, the `name=packageIdentifier` list an embedding distribution sets
+before boot (`components/Application.ts:5256-5266`); it names `replication`, `secretCustody` and
+`waf` on Pro and is empty on OSS core. It carries no Pro semver, because none exists — recording
+the names is the most that is true today, and a Pro version stamp would be a change to harper-pro,
+not to this manifest.
+
+The settings block is an **allowlist, never a config dump**: an archive leaves the host, so it
+carries no path, hostname, or credential. `storage.path` and `storage.blobPaths` are excluded for
+that reason — in Fabric a storage path can embed tenant identifiers, and `blob_root_count` already
+records the only part of that layout a reader can act on. An external compression dictionary is
+recorded as a boolean, because the data depends on a file the archive does not carry
+(`resources/databases.ts:3934-3939`) and the reader needs to know that without being told where it
+lived. Collection is best-effort: the offline CLI may hold no config, and describing the source
+must never fail the backup that produced it. The same fields go into the managed backup
 manifest (`dataLayer/backupManifest.ts` holds only `{ backupId, blobs, completedAt }` today), so an
 imported backup records its provenance. A **managed** backup whose manifest predates these fields
 was written by this instance's own lineage: it is accepted, and the result reports its format as
