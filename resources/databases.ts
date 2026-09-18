@@ -480,14 +480,15 @@ function compileFullTextDeclarations(
 	for (let attributeIndex = 0; attributeIndex < attributes.length; attributeIndex++) {
 		let attribute = attributes[attributeIndex];
 		const validationAttribute = validationAttributes.find(({ name }) => name === attribute.name) ?? attribute;
-		const attributeFullText = Object.getOwnPropertyDescriptor(attribute, 'fullText')?.value;
-		const validationFullText = Object.getOwnPropertyDescriptor(validationAttribute, 'fullText')?.value;
-		const attributeType = Object.getOwnPropertyDescriptor(attribute, 'type')?.value;
-		if (!attributeFullText && !validationFullText && attributeType !== 'FullText') continue;
-		if (
-			validationAttribute !== attribute &&
-			Object.getOwnPropertyDescriptor(validationAttribute, 'type')?.value !== 'FullText'
-		) {
+		const attributeFullText = attribute.fullText;
+		const validationFullText = validationAttribute.fullText;
+		if (!attributeFullText && !validationFullText) {
+			// Relationship types can resolve through a forward-reference getter. They cannot be
+			// full-text targets, so do not resolve that getter while scanning unrelated attributes.
+			if (attribute.relationship || validationAttribute.relationship) continue;
+			if (attribute.type !== 'FullText') continue;
+		}
+		if (validationAttribute !== attribute && validationAttribute.type !== 'FullText') {
 			attributes[attributeIndex] = validationAttribute;
 			continue;
 		}
