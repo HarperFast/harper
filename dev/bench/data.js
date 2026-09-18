@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789722818427,
+  "lastUpdate": 1789722823040,
   "repoUrl": "https://github.com/HarperFast/harper",
   "entries": {
     "YCSB Throughput (single-node)": [
@@ -21948,6 +21948,53 @@ window.BENCHMARK_DATA = {
           {
             "name": "concurrent-rw read p99",
             "value": 4497.2,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Kris Zyp",
+            "username": "kriszyp",
+            "email": "kriszyp@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "61a1f9a3344263b0bf0803f7546f20ab8aa3948e",
+          "message": "Merge pull request #2678 from HarperFast/fix/unit-resources-step-timeout-budget\n\nSize the unit-test step budgets from measured runs and raise `Unit tests: resources` to 12 minutes",
+          "timestamp": "2026-09-18T05:00:30Z",
+          "url": "https://github.com/HarperFast/harper/commit/61a1f9a3344263b0bf0803f7546f20ab8aa3948e"
+        },
+        "date": 1789722821610,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "ttl-churn peak size",
+            "value": 3963.52,
+            "unit": "MB"
+          },
+          {
+            "name": "ttl-churn final size",
+            "value": 3963.52,
+            "unit": "MB"
+          },
+          {
+            "name": "concurrent-rw read p50",
+            "value": 614.9,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p95",
+            "value": 1529.7,
+            "unit": "ms"
+          },
+          {
+            "name": "concurrent-rw read p99",
+            "value": 1950.5,
             "unit": "ms"
           }
         ]
