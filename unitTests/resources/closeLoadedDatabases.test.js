@@ -364,6 +364,11 @@ describe('RocksDB handle release', function () {
 		await assert.rejects(prepareDatabaseForDrop(databaseName), /test handle close failure/);
 
 		assert.ok(getDatabases()[databaseName], 'a rejected prepare must reload the database for continued use');
+
+		await prepareDatabaseForDrop(databaseName);
+		assert.strictEqual(closeAttempts, 2, 'the next preparation must retry the exact handle that failed to close');
+		assert.strictEqual(refCountFor(rootStore.path), 0, 'the retried close must release the stranded native handle');
+		cancelDatabaseDrop(databaseName);
 	});
 
 	it('closeLoadedDatabases releases a branch database (invisible to the databases map it walks)', async function () {

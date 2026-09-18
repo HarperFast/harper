@@ -188,6 +188,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 	const { cpSync, mkdtempSync, rmSync } = require('node:fs');
 	const { tmpdir } = require('node:os');
 	const { registryStatus } = require('@harperfast/rocksdb-js');
+	const { ownsDerivedIndexWriters } = require('#js/server/threads/manageThreads');
 
 	// the real observable for a released handle: rocksdb-js's registry is process-global and its
 	// refCount only drops to zero once every column family opened under a path has been closed
@@ -250,6 +251,12 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 			'branchbase',
 			'sharing the base name would resolve the branch blob roots onto the base directory'
 		);
+	});
+
+	it('assigns branch derived-index writers to the main worker in single-thread mode', function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+
+		assert.strictEqual(ownsDerivedIndexWriters(branch.rootStore.path), true);
 	});
 
 	it('refuses a second open of the same directory rather than handing out a rival graph', function () {

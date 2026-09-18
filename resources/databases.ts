@@ -2419,20 +2419,30 @@ export async function dropDatabase(databaseName) {
  * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
  * progress, per the restore marker checks in the scan).
  */
+const pendingDatabaseStoreCloses = new Map<string, Map<any, string>>();
 export function closeDatabase(databaseName: string, failOnCloseError = false): boolean {
 	const dbTables = databases[databaseName];
-	if (!dbTables) return false;
+	let pendingCloses = pendingDatabaseStoreCloses.get(databaseName);
+	const hadPendingCloses = Boolean(pendingCloses?.size);
+	if (!dbTables && !hadPendingCloses) return false;
+	pendingCloses ??= new Map();
 	const rootStores = new Set<any>();
 	const closeErrors: unknown[] = [];
+	const attemptedStores = new Set<any>();
 	const closeStore = (store: any, description: string) => {
+		if (!store || attemptedStores.has(store)) return;
+		attemptedStores.add(store);
 		try {
-			store?.close?.();
+			store.close?.();
+			pendingCloses.delete(store);
 		} catch (error) {
 			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
+			pendingCloses.set(store, description);
 			closeErrors.push(error);
 		}
 	};
-	for (const tableName in dbTables) {
+	for (const [store, description] of pendingCloses) closeStore(store, description);
+	for (const tableName in dbTables ?? {}) {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
 		if (table.primaryStore.rootStore) rootStores.add(table.primaryStore.rootStore);
@@ -2447,7 +2457,7 @@ export function closeDatabase(databaseName: string, failOnCloseError = false): b
 	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
 	// synchronous purgeLogs() call with nothing suspended mid-removal.
 	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
-	for (const tableName in dbTables) {
+	for (const tableName in dbTables ?? {}) {
 		const table: any = dbTables[tableName];
 		if (!table?.primaryStore) continue;
 		for (const indexName in table.indices || {}) {
@@ -2462,6 +2472,8 @@ export function closeDatabase(databaseName: string, failOnCloseError = false): b
 		lmdbDatabaseEnvs.delete(rootStore.path);
 		rocksdbDatabaseEnvs.delete(rootStore.path);
 	}
+	if (pendingCloses.size) pendingDatabaseStoreCloses.set(databaseName, pendingCloses);
+	else pendingDatabaseStoreCloses.delete(databaseName);
 	const definedDatabase = definedDatabases?.get(databaseName);
 	if (definedDatabase) (definedDatabase as any).rootStore = undefined;
 	if (databaseName === 'data') {
@@ -2475,7 +2487,7 @@ export function closeDatabase(databaseName: string, failOnCloseError = false): b
 		if (closeErrors.length === 1) throw closeErrors[0];
 		if (closeErrors.length) throw new AggregateError(closeErrors, `Failed to close database '${databaseName}'`);
 	}
-	return true;
+	return Boolean(dbTables || hadPendingCloses);
 }
 
 export async function closeDatabaseForRestore(databaseName: string, dropOriginator?: number): Promise<boolean> {
@@ -2586,6 +2598,14 @@ export async function closeLoadedDatabases(): Promise<void> {
 			} catch (error) {
 				closeErrors.push(new Error(`Failed to close database '${databaseName}'`, { cause: error }));
 			}
+		}
+	}
+	for (const databaseName of [...pendingDatabaseStoreCloses.keys()]) {
+		if (databases[databaseName]) continue;
+		try {
+			closeDatabase(databaseName, true);
+		} catch (error) {
+			closeErrors.push(new Error(`Failed to retry database handle close for '${databaseName}'`, { cause: error }));
 		}
 	}
 	if (closeErrors.length) throw new AggregateError(closeErrors, 'Failed to close all loaded databases');

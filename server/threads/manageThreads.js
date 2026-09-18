@@ -263,7 +263,7 @@ function ownsStoreExpiration(storePath) {
 	return getWorkerIndex() === 0;
 }
 function ownsDerivedIndexWriters(storePath) {
-	if (branchStorePaths.has(storePath)) return workerData?.isolatedApplication !== undefined;
+	if (branchStorePaths.has(storePath)) return workerData?.isolatedApplication !== undefined || getWorkerIndex() === 0;
 	return workerData?.isolatedApplication === undefined && getWorkerIndex() === 0;
 }
 /**
