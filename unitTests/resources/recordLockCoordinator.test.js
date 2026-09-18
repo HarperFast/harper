@@ -470,6 +470,25 @@ describe('record lock delegations', () => {
 			};
 			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300), /home answered not-home/);
 		});
+
+		it('retires an observation the ring has moved on from, rather than reporting it as contention', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// A new generation is a new route. What the previous home said about the key describes an
+			// arrangement that no longer owns it, so the wait must answer from its own probe.
+			let replies = 0;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) {
+					cluster.generation = 2;
+					return cluster.advance('beta', 200);
+				}
+				cluster.advance('beta', 1_000);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			};
+			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300), /home answered timeout/);
+		});
 	});
 
 	describe('successor freshness', () => {
@@ -1246,6 +1265,31 @@ describe('record lock delegations', () => {
 			assert.strictEqual(successor.stats.delegations, 1, 'the delegation landed somewhere else');
 			assert.strictEqual(predecessor.stats.delegations, 0, 'the closed coordinator took the delegation');
 			successor.release(key, round.admissionId);
+		});
+
+		it('carries what the wait already saw into the successor, so a swap mid-backoff still ends 423', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The swap lands in beta's backoff, so the successor inherits a deadline with nothing left to
+			// probe with. Without the predecessor's observation it would report a held key as a
+			// coordination failure.
+			let swapped = false;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (!swapped) {
+					swapped = true;
+					replace(cluster, 'beta');
+					return cluster.advance('beta', 1_000);
+				}
+				// The successor's own probe carries no budget, so only the predecessor's observation can
+				// tell this wait that the key was held.
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 200),
+				(error) => error.statusCode === 423
+			);
 		});
 
 		it('does not restart the counter, so a successor token never ties a predecessor’s', async () => {

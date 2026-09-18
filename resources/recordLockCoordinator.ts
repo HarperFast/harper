@@ -243,13 +243,19 @@ export interface DelegationReply {
 	 * `unknown-node` (this node is not named in the map) and `quarantine` (the home is inside its §4.3
 	 * restart interval) all describe something other than contention, so each ends as a retryable 503
 	 * rather than telling the caller a key nobody holds is held. `timeout` is not a home answer at all
-	 * — it is this node's own deadline ending its probe — so it never classifies a wait: `acquire`
-	 * answers from the last reply a home completed.
+	 * — it is this node's own deadline ending its probe — and never classifies a wait (DESIGN.md).
 	 */
 	reason?: 'contended' | 'generation' | 'unknown-node' | 'capacity' | 'not-home' | 'quarantine' | 'timeout';
 	/** Denied with `generation`, so a stale requester can re-derive the ring without another round trip. */
 	generation?: number;
 	retryAfterMs?: number;
+}
+
+/** A completed home reply, bound to the route that produced it so a ring change retires it. */
+interface LastCompletedReply {
+	reply: DelegationReply;
+	home: string;
+	generation: number;
 }
 
 export interface DelegationRequest {
@@ -1157,17 +1163,23 @@ export class LockCoordinator {
 	 *
 	 * The amortization is the first branch: a live, un-recalled delegation with enough time left costs
 	 * zero cluster messages.
-	 *
-	 * `observed` carries the last reply a home completed for this wait across a coordinator handoff,
-	 * so the deadline the successor inherits is classified against what the predecessor saw.
 	 */
-	async acquire(key: any, leaseMs: number, waitMs: number, observed?: DelegationReply): Promise<LockRound> {
+	async acquire(key: any, leaseMs: number, waitMs: number): Promise<LockRound> {
+		return this.#acquire(key, leaseMs, waitMs);
+	}
+
+	/**
+	 * `observed` is what an earlier coordinator for this same wait saw, handed on when a swap lands
+	 * mid-wait so the successor classifies the inherited deadline against it. Private because it is
+	 * continuation state for one `acquire()`, not something a caller may assert.
+	 */
+	async #acquire(key: any, leaseMs: number, waitMs: number, observed?: LastCompletedReply): Promise<LockRound> {
 		// `Table.lock()` captures a coordinator and only reaches here after the native key lock, which
 		// can wait the caller's whole timeout — long enough for a transport swap to close what it
 		// captured. Authority moved to the successor rather than away, so run there instead of
 		// rejecting a caller that is already holding the key.
 		const authority = this.#authority();
-		if (authority !== this) return authority.acquire(key, leaseMs, waitMs, observed);
+		if (authority !== this) return authority.#acquire(key, leaseMs, waitMs, observed);
 		if (this.#closed) throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
 		if (!this.transport.ownsCoordination()) {
 			// Off the coordinating thread. A transport that can relay obtains the admission from the
@@ -1365,35 +1377,40 @@ export class LockCoordinator {
 				// which the terminal answer below is what handles.
 				warnOnce('record lock home disagreed about the ring', { database: this.database, table: this.table });
 
-			// A `timeout` is this node's own deadline cutting its probe short, not something the home
-			// said, so it carries no evidence about the key. Classifying from it would report a key
-			// nobody holds — or a ring nobody disputes — for a wait that watched the key held the whole
-			// time. The last reply the home actually completed is what the wait observed.
-			if (reply.reason !== 'timeout') lastCompleted = reply;
+			// A `timeout` is this node's own deadline ending its probe, not something a home said, so it
+			// is evidence about this node's budget and never about the key.
+			if (reply.reason !== 'timeout') lastCompleted = { reply, home, generation: homeMap.generation };
 			const remaining = deadlineMono - this.#monotonic();
 			const retryAfterMs = reply.retryAfterMs ?? 25;
-			// A backoff that reaches the deadline leaves the next pass nothing to complete a round trip
-			// in, and a request sent with no budget can only come back as this node's own `timeout`.
-			if (remaining <= retryAfterMs) {
-				const terminal = lastCompleted ?? reply;
-				// 423 says "someone else holds this key", so only a denial that actually means that may end
-				// as one. Every other reason ran out the clock without the key ever being held, and reporting
-				// contention for it sends the caller to retry a condition no timeout can outlast.
-				if (terminal.reason === 'contended')
-					throw new ClientError('Record is locked and was not released in time', 423);
-				throw new LockUnavailableError(
-					`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: the key's home answered ${terminal.reason ?? (terminal.granted ? 'grants that arrived too late to use' : 'nothing usable')}`
-				);
-			}
-			await delay(retryAfterMs).promise;
+			// Asking a home this node IS costs nothing — `#grantLocally` is synchronous and a release can
+			// still land inside the backoff — so only a remote home leaves the next pass unusable: its
+			// request would go out with the leftover budget and could only return this node's `timeout`.
+			const exhausted = home === this.nodeId ? remaining <= 0 : remaining <= retryAfterMs;
+			if (!exhausted) await delay(Math.min(retryAfterMs, remaining)).promise;
 			if (this.#closed) {
 				// Same swap, landing in the backoff instead. Carry the remaining wait so the deadline the
-				// caller asked for is preserved across the hop.
+				// caller asked for is preserved across the hop — and what this wait already saw with it. A
+				// successor that homes the key itself can still grant inside what is left.
 				const successor = this.#authority();
 				if (successor === this)
 					throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
-				return successor.acquire(key, leaseMs, Math.max(0, deadlineMono - this.#monotonic()), lastCompleted);
+				return successor.#acquire(key, leaseMs, Math.max(0, deadlineMono - this.#monotonic()), lastCompleted);
 			}
+			if (!exhausted) continue acquisition;
+			// Only an observation of THIS home under THIS generation still describes the key: a ring change
+			// makes the previous home's answer a statement about a route that no longer owns it.
+			const carried =
+				lastCompleted?.home === home && lastCompleted.generation === homeMap.generation
+					? lastCompleted.reply
+					: undefined;
+			const terminal = carried ?? reply;
+			// 423 says "someone else holds this key", so only a denial that actually means that may end
+			// as one. Every other reason ran out the clock without the key ever being held, and reporting
+			// contention for it sends the caller to retry a condition no timeout can outlast.
+			if (terminal.reason === 'contended') throw new ClientError('Record is locked and was not released in time', 423);
+			throw new LockUnavailableError(
+				`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: the key's home answered ${terminal.reason ?? (terminal.granted ? 'grants that arrived too late to use' : 'nothing usable')}`
+			);
 		}
 	}
 
@@ -2416,7 +2433,6 @@ export class LockCoordinator {
 				timeout.promise.then(() => {
 					raced = true;
 					// Never `contended`: this node stopped waiting, so this reply shows nothing about the key.
-					// `acquire` treats it as evidence-free and classifies from the last completed reply.
 					return { granted: false, reason: 'timeout', retryAfterMs: 0 } as DelegationReply;
 				}),
 			]);
