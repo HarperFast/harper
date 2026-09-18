@@ -1398,8 +1398,9 @@ export class LockCoordinator {
 					? lastCompleted.reply
 					: undefined;
 			const terminal = carried ?? (homeMap.generation === currentGeneration ? reply : undefined);
-			// Only `contended` may end as 423: every other reason ran out the clock without the key ever
-			// being held, and reporting contention sends the caller to retry a condition no wait outlasts.
+			// Only `contended` may end as 423: it is the one answer that says another node holds the key,
+			// and reporting contention for anything else sends the caller to retry a condition no wait
+			// outlasts. A wait can see `contended` and still end 503 — the rule is what the home said LAST.
 			if (terminal?.reason === 'contended') throw new ClientError('Record is locked and was not released in time', 423);
 			throw new LockUnavailableError(
 				`Could not establish a cluster record lock on ${this.database}.${this.table} within the wait: ${describeExhaustedWait(terminal, currentGeneration !== undefined)}`
