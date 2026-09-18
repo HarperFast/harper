@@ -241,53 +241,6 @@ describe.skip('Test installer module', () => {
 		});
 	});
 
-	it('Test installPrompts passes correct schema and override works', async () => {
-		const prompt_stub = sandbox.stub(prompts, 'input');
-		const installPrompts = installer.__get__('installPrompts');
-		const override = {
-			DEFAULTS_MODE: 'dev',
-			CLUSTERING_ENABLED: true,
-			CLUSTERING_NODENAME: 'im_a_node',
-		};
-
-		const answers_fake_result = {
-			ROOTPATH: 'i/am/root/',
-			HDB_ADMIN_USERNAME: 'test_user',
-			HDB_ADMIN_PASSWORD: 'testing_rulz',
-		};
-
-		const expected_result = {
-			DEFAULTS_MODE: 'dev',
-			CLUSTERING_ENABLED: true,
-			CLUSTERING_NODENAME: 'im_a_node',
-			ROOTPATH: 'i/am/root/',
-			HDB_ADMIN_USERNAME: 'test_user',
-			HDB_ADMIN_PASSWORD: 'testing_rulz',
-		};
-
-		prompt_stub.resolves(answers_fake_result);
-		const result = await installPrompts(override);
-		expect(result).to.eql(expected_result);
-		const prompts_schema = prompt_stub.args[0][0];
-		expect(prompts_schema.length).to.equal(8);
-		expect(prompts_schema[0].name).to.equal('ROOTPATH');
-		expect(prompts_schema[0].when).to.be.true;
-		expect(prompts_schema[1].name).to.equal('HDB_ADMIN_USERNAME');
-		expect(prompts_schema[1].when).to.be.true;
-		expect(prompts_schema[2].name).to.equal('HDB_ADMIN_PASSWORD');
-		expect(prompts_schema[2].when).to.be.true;
-		expect(prompts_schema[3].name).to.equal('DEFAULTS_MODE');
-		expect(prompts_schema[3].when).to.be.false;
-		expect(prompts_schema[4].name).to.equal('REPLICATION_HOSTNAME');
-		expect(prompts_schema[4].when).to.be.true;
-		expect(prompts_schema[5].name).to.equal('CLUSTERING_NODENAME');
-		expect(prompts_schema[5].when).to.be.false;
-		expect(prompts_schema[6].name).to.equal('CLUSTERING_USER');
-		expect(prompts_schema[6].when).to.be.true;
-		expect(prompts_schema[7].name).to.equal('CLUSTERING_PASSWORD');
-		expect(prompts_schema[7].when).to.be.true;
-	});
-
 	it('Test createSuperUser calls create admin user with correct params', async () => {
 		const create_admin_user_stub = sandbox.stub();
 		const create_admin_user_rw = installer.__set__('createAdminUser', create_admin_user_stub);
@@ -553,6 +506,63 @@ describe('applyInstallModeDefaults', () => {
 	it('preserves an explicitly provided node.hostname for a dev install', () => {
 		const args = applyInstallModeDefaults({ node_hostname: 'real-node.example.com' }, 'dev');
 		assert.equal(args.node_hostname, 'real-node.example.com');
+	});
+});
+
+// installer.ts's move off inquirer's single schema-array `prompt()` call, to sequential per-field
+// `prompts.input`/`prompts.password` calls, had no executing coverage — the only prior test
+// asserted the old 8-question array shape against a `prompts.input` stub returning a whole answers
+// object at once, neither of which the current implementation does. `installPrompts` isn't
+// exported, so this drives it through the same shared `installer` rewire instance used above.
+describe('installPrompts', () => {
+	const installPrompts = installer.__get__('installPrompts');
+	const hdbTerms = require('#src/utility/hdbTerms');
+	const { resolveInstallDestination } = require('#js/utility/install/installer');
+	let originalInput;
+	let originalPassword;
+
+	beforeEach(() => {
+		originalInput = prompts.input;
+		originalPassword = prompts.password;
+	});
+
+	afterEach(() => {
+		prompts.input = originalInput;
+		prompts.password = originalPassword;
+	});
+
+	it('prompts only for unset fields, applies resolveInstallDestination to the answer, and leaves an override field untouched', async () => {
+		const inputMessages = [];
+		let nodeHostnameConfig;
+		prompts.input = async (config) => {
+			inputMessages.push(config.message);
+			if (config.message.includes('destination')) return '~/my-test-hdb';
+			if (config.message.includes('username')) return 'test_user';
+			if (config.message.includes('hostname')) {
+				nodeHostnameConfig = config;
+				return '';
+			}
+			throw new Error(`unexpected input prompt: ${config.message}`);
+		};
+		let passwordCalls = 0;
+		prompts.password = async () => {
+			passwordCalls++;
+			return 'testing_rulz';
+		};
+
+		const override = { [hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE]: 'prod' };
+		const result = await installPrompts(override);
+
+		assert.strictEqual(inputMessages.length, 3, 'ROOTPATH, HDB_ADMIN_USERNAME, and NODE_HOSTNAME each prompt once');
+		assert.strictEqual(passwordCalls, 1, 'HDB_ADMIN_PASSWORD prompts once');
+
+		assert.strictEqual(result[hdbTerms.INSTALL_PROMPTS.ROOTPATH], resolveInstallDestination('~/my-test-hdb'));
+		assert.strictEqual(result[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME], 'test_user');
+		assert.strictEqual(result[hdbTerms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD], 'testing_rulz');
+		assert.strictEqual(result[hdbTerms.INSTALL_PROMPTS.DEFAULTS_MODE], 'prod', 'the override value is preserved');
+
+		// @inquirer/input's `default` is typed string|undefined; DEFAULT_NODE_HOSTNAME is null.
+		assert.strictEqual(nodeHostnameConfig.default, undefined);
 	});
 });
 

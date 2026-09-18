@@ -63,6 +63,23 @@ export async function forceDowngradePrompt(upgradeObj: any) {
 
 export async function upgradeCertsPrompt() {
 	const override = assignCMDENVVariables(['GENERATE_CERTS']);
+	// Without a terminal, an interactive prompt blocks on stdin forever (systemd, containers, CI) —
+	// so with no TTY, resolve the answer from the override here and never reach the prompt (#2046).
+	if (!process.stdin.isTTY) {
+		if (override.GENERATE_CERTS === undefined) {
+			throw new Error(
+				'Harper now requires a Certificate Authority certificate, and there is no interactive terminal to ask on.' +
+					' Set GENERATE_CERTS=yes (environment variable or --GENERATE_CERTS yes) to have Harper generate new' +
+					' certificates, or GENERATE_CERTS=no to keep your existing certificates and add your own CA certificate' +
+					' (set the <certificateAuthority> parameter in harperdb-config.yaml).'
+			);
+		}
+		const answer = answerFromOverride(override.GENERATE_CERTS);
+		if (answer === undefined) {
+			throw new Error(`Unrecognized GENERATE_CERTS value '${override.GENERATE_CERTS}'; use yes or no.`);
+		}
+		return answer;
+	}
 	const overrideAnswer = answerFromOverride(override.GENERATE_CERTS);
 	if (overrideAnswer !== undefined) return overrideAnswer;
 
