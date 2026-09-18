@@ -1423,7 +1423,7 @@ Operations for restarting Harper and managing system state.
 | `restart_service`    | Restarts a specific Harper service                    | super_user    |
 | `system_information` | Returns detailed host system metrics                  | super_user    |
 | `set_status`         | Sets an application-specific status value (in-memory) | super_user    |
-| `get_status`         | Returns a previously set status value                 | super_user    |
+| `get_status`         | Returns one status value, or the instance summary     | super_user    |
 | `clear_status`       | Removes a status entry                                | super_user    |
 
 ### `restart`
@@ -1457,6 +1457,29 @@ Manage in-memory application status values. Status types: `primary`, `maintenanc
 ```json
 { "operation": "set_status", "id": "primary", "status": "active" }
 ```
+
+`get_status` has two forms, and the one you get depends on whether you pass an `id`.
+
+With an `id`, it returns that one status record:
+
+```json
+{ "operation": "get_status", "id": "primary" }
+```
+
+**Without an `id`, it returns a summary of the instance** rather than a status value:
+
+```json
+{ "operation": "get_status" }
+```
+
+| Field              | Description                                                                                                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `systemStatus`     | Every status record set with `set_status`                                                                                                                                 |
+| `componentStatus`  | Per-component health, aggregated across threads: `name` plus a `status` of `healthy`, `warning`, `error`, `loading`, or `unknown`                                         |
+| `restartRequired`  | Whether a restart is pending on this node — set by a deploy that did not restart (see [Deploying without a restart](#deploying-without-a-restart)) and cleared on restart |
+| `middlewareChains` | The resolved HTTP, upgrade, and WebSocket middleware order. Present only when the request passes `middleware: true` <VersionBadge version="v5.2.0" />                     |
+
+`restartRequired` is per node: it reports the node that served the request, not the cluster.
 
 ---
 
