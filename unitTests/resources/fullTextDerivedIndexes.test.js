@@ -2,7 +2,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const path = require('node:path');
 const { setupTestDBPath } = require('../testUtils');
-const { databaseEventsEmitter, resetDatabases, table } = require('#src/resources/databases');
+const { closeDatabaseForRestore, databaseEventsEmitter, resetDatabases, table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { waitFor } = require('../waitFor');
 const {
@@ -27,6 +27,7 @@ function definition(field, weight = 1, name = 'search') {
 
 describe('@fullText derived-index activation', () => {
 	let Product;
+	let Other;
 	let binding;
 
 	before(() => {
@@ -40,10 +41,12 @@ describe('@fullText derived-index activation', () => {
 	});
 
 	afterEach(async () => {
-		const runtime = Product?.derivedIndexRuntime;
+		const runtimes = new Set([Product?.derivedIndexRuntime, Other?.derivedIndexRuntime].filter(Boolean));
 		if (Product) Product.derivedIndexRuntime = undefined;
-		await runtime?.close();
+		if (Other) Other.derivedIndexRuntime = undefined;
+		for (const runtime of runtimes) await runtime.close();
 		Product = undefined;
+		Other = undefined;
 		setFullTextNativeBindingForTests(undefined);
 	});
 
@@ -241,6 +244,38 @@ describe('@fullText derived-index activation', () => {
 		assert(binding.closeAttempts > 1, 'replacement activation must re-prove predecessor quiescence');
 	});
 
+	it('reactivates indexes already quiesced when another index blocks restore', async () => {
+		const database = `fulltext-restore-shutdown-${Date.now()}`;
+		const tableDefinition = (tableName, field) => ({
+			database,
+			table: tableName,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: field, type: 'String' },
+			],
+			fullTextIndexes: [definition(field)],
+		});
+		Product = table(tableDefinition('Product', 'title'));
+		Other = table(tableDefinition('Other', 'description'));
+		await Product.put('shoe-1', { title: 'Trail shoe' });
+		await Other.put('coat-1', { description: 'Rain coat' });
+		await waitFor(
+			() =>
+				fullTextDerivedIndexReadiness(Product, 'search').state === 'ready' &&
+				fullTextDerivedIndexReadiness(Other, 'search').state === 'ready',
+			30_000
+		);
+		const productRuntime = Product.derivedIndexRuntime;
+		binding.closeErrors.set(fullTextDerivedIndexId(Other, 'search'), new Error('writer did not quiesce'));
+
+		await assert.rejects(closeDatabaseForRestore(database), /shutdown failed|did not prove quiescence/);
+		assert.notStrictEqual(Product.derivedIndexRuntime, productRuntime);
+		assert(Other.derivedIndexRuntime);
+		binding.closeErrors.clear();
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+	});
+
 	it('reactivates siblings when one derived index cannot quiesce', async () => {
 		const database = `fulltext-partial-shutdown-${Date.now()}`;
 		const attributes = () => [
@@ -414,14 +449,25 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexes: [definition('title')],
 		});
 		const indexId = fullTextDerivedIndexId(Product, 'search');
-		await waitFor(() => binding.opens.some(({ indexId: openedId }) => openedId === indexId), 30_000);
-		const firstOpen = binding.opens.find(({ indexId: openedId }) => openedId === indexId);
+		const storePath = Product.primaryStore.rootStore.path;
+		const isCurrentIndex = (options) => options.indexId === indexId && path.dirname(options.path) === storePath;
+		await waitFor(() => binding.opens.some(isCurrentIndex), 30_000);
+		const firstOpen = binding.opens.find(isCurrentIndex);
 		const firstToken = Product.fullTextIndexGenerations.search;
 		assert.strictEqual(typeof firstToken, 'string');
 
 		Product = resetDatabases()[database].Product;
-		await waitFor(() => binding.opens.filter(({ indexId: openedId }) => openedId === indexId).length > 1, 30_000);
-		const latest = binding.opens.findLast(({ indexId: openedId }) => openedId === indexId);
+		await Product.put('shoe-2', { title: 'Road shoe' });
+		try {
+			await waitFor(() => binding.opens.filter(isCurrentIndex).length > 1, 30_000);
+		} catch (error) {
+			const readiness = fullTextDerivedIndexReadiness(Product, 'search');
+			error.message += `; opens=${JSON.stringify(
+				binding.opens.filter(isCurrentIndex).map(({ indexId, generation }) => ({ indexId, generation }))
+			)}; closeAttempts=${binding.closeAttempts}; readiness=${readiness.state}/${readiness.reason ?? ''}`;
+			throw error;
+		}
+		const latest = binding.opens.findLast(isCurrentIndex);
 		assert.strictEqual(Product.fullTextIndexGenerations.search, firstToken);
 		assert.strictEqual(latest.generation, firstOpen.generation);
 	});

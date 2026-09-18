@@ -2191,6 +2191,54 @@ function lockDatabaseForDrop(dbPath: string, databaseName: string, held: Restore
  * Delete the database
  * @param databaseName
  */
+async function quiesceDatabaseDerivedIndexes(dbTables: Tables, operation: string): Promise<void> {
+	while (true) {
+		const derivedIndexTables = new Map<any, any[]>();
+		for (const table of Object.values(dbTables) as any[]) {
+			const runtime = table.derivedIndexRuntime;
+			if (!runtime) continue;
+			const runtimeTables = derivedIndexTables.get(runtime);
+			if (runtimeTables) runtimeTables.push(table);
+			else derivedIndexTables.set(runtime, [table]);
+		}
+		if (derivedIndexTables.size === 0) return;
+
+		const entries = [...derivedIndexTables].map(([runtime, runtimeTables]) => ({ runtime, runtimeTables }));
+		const results = await Promise.allSettled(
+			entries.map(({ runtime }) => {
+				try {
+					return Promise.resolve(runtime.close());
+				} catch (error) {
+					return Promise.reject(error);
+				}
+			})
+		);
+		const failures = results
+			.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+			.map((result) => result.reason);
+		if (failures.length) {
+			for (let index = 0; index < results.length; index++) {
+				if (results[index].status !== 'fulfilled') continue;
+				const { runtime, runtimeTables } = entries[index];
+				for (const table of runtimeTables) {
+					if (table.derivedIndexRuntime !== runtime) continue;
+					try {
+						table.derivedIndexRuntime = attachDerivedIndexes(table);
+					} catch (error) {
+						failures.push(error);
+					}
+				}
+			}
+			if (failures.length === 1) throw failures[0];
+			throw new AggregateError(failures, `derived index backends failed to shut down or reactivate for ${operation}`);
+		}
+
+		for (const { runtime, runtimeTables } of entries)
+			for (const table of runtimeTables)
+				if (table.derivedIndexRuntime === runtime) table.derivedIndexRuntime = undefined;
+	}
+}
+
 export async function dropDatabase(databaseName) {
 	if (!databases[databaseName]) throw new Error('Database does not exist');
 	const dbTables = databases[databaseName];
@@ -2211,58 +2259,7 @@ export async function dropDatabase(databaseName) {
 
 		// A database drop bypasses each Table's dropTable() path, so retire every derived-index
 		// registration here before its source stores or native files can be closed and removed.
-		while (true) {
-			const derivedIndexTables = new Map<any, any[]>();
-			for (const table of Object.values(dbTables) as any[]) {
-				const runtime = table.derivedIndexRuntime;
-				if (!runtime) continue;
-				const runtimeTables = derivedIndexTables.get(runtime);
-				if (runtimeTables) runtimeTables.push(table);
-				else derivedIndexTables.set(runtime, [table]);
-			}
-			if (derivedIndexTables.size === 0) break;
-
-			const derivedIndexEntries = [...derivedIndexTables].map(([runtime, runtimeTables]) => ({
-				runtime,
-				runtimeTables,
-			}));
-			const derivedIndexClosures = derivedIndexEntries.map(({ runtime }) => {
-				try {
-					return Promise.resolve(runtime.close());
-				} catch (error) {
-					return Promise.reject(error);
-				}
-			});
-			const derivedIndexResults = await Promise.allSettled(derivedIndexClosures);
-			const derivedIndexFailures = derivedIndexResults
-				.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-				.map((result) => result.reason);
-			if (derivedIndexFailures.length) {
-				const reactivationFailures: unknown[] = [];
-				for (let i = 0; i < derivedIndexResults.length; i++) {
-					if (derivedIndexResults[i].status !== 'fulfilled') continue;
-					const { runtime, runtimeTables } = derivedIndexEntries[i];
-					for (const table of runtimeTables) {
-						if (table.derivedIndexRuntime !== runtime) continue;
-						try {
-							table.derivedIndexRuntime = attachDerivedIndexes(table);
-						} catch (error) {
-							reactivationFailures.push(error);
-						}
-					}
-				}
-				const failures = [...derivedIndexFailures, ...reactivationFailures];
-				if (failures.length === 1) throw failures[0];
-				throw new AggregateError(
-					failures,
-					'derived index backends failed to shut down or reactivate after database drop'
-				);
-			}
-
-			for (const { runtime, runtimeTables } of derivedIndexEntries)
-				for (const table of runtimeTables)
-					if (table.derivedIndexRuntime === runtime) table.derivedIndexRuntime = undefined;
-		}
+		await quiesceDatabaseDerivedIndexes(dbTables, 'database drop');
 
 		for (const tableName in dbTables) {
 			const table = dbTables[tableName];
@@ -2384,13 +2381,7 @@ export function closeDatabase(databaseName: string): boolean {
 export async function closeDatabaseForRestore(databaseName: string): Promise<boolean> {
 	const dbTables = databases[databaseName];
 	if (!dbTables) return false;
-	for (const table of Object.values(dbTables) as any[]) {
-		while (table.derivedIndexRuntime) {
-			const runtime = table.derivedIndexRuntime;
-			await runtime.close();
-			if (table.derivedIndexRuntime === runtime) table.derivedIndexRuntime = undefined;
-		}
-	}
+	await quiesceDatabaseDerivedIndexes(dbTables, 'database restore');
 	return closeDatabase(databaseName);
 }
 

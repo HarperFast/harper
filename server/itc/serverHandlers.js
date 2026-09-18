@@ -50,7 +50,12 @@ async function schemaHandler(event) {
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		await closeDatabaseForRestore(event.message.schema);
+		try {
+			await closeDatabaseForRestore(event.message.schema);
+		} catch (error) {
+			hdbLogger.error(`Could not quiesce database '${event.message.schema}' for restore`, error);
+			return;
+		}
 	}
 	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);

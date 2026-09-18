@@ -121,19 +121,18 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 			if (closeComplete) return Promise.resolve();
 			if (closed) return closed;
 			closing = true;
+			const releases = registrations.map(({ release }) => {
+				try {
+					return Promise.resolve(release());
+				} catch (error) {
+					return Promise.reject(error);
+				}
+			});
 			closed = (async () => {
 				const failures: unknown[] = [];
 				const preparationResults = await Promise.allSettled([previous?.close(), ...setups]);
 				for (const result of preparationResults) if (result.status === 'rejected') failures.push(result.reason);
-				const releaseResults = await Promise.allSettled(
-					registrations.map(({ release }) => {
-						try {
-							return Promise.resolve(release());
-						} catch (error) {
-							return Promise.reject(error);
-						}
-					})
-				);
+				const releaseResults = await Promise.allSettled(releases);
 				for (const result of releaseResults) if (result.status === 'rejected') failures.push(result.reason);
 				if (failures.length) {
 					for (let index = 0; index < releaseResults.length; index++) {

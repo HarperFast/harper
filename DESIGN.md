@@ -2721,6 +2721,11 @@ replacement even when the table and index names are reused. A restart preserves 
 compatible Tantivy files before replaying the audit tail. Query-only
 synonym, highlighting, and per-field highlight settings persist without rebuilding Tantivy segments.
 
+Removing an index or dropping its table quiesces the writer but does not yet delete the native
+directory. Reusing the same index path resets incompatible state and reclaims it. Permanent removal
+requires the wrapper to add generation-conditional retirement; Harper must not use the current
+unconditional reset because a concurrent drop/recreate could delete the new table's index.
+
 Activation requires explicit table auditing and RocksDB. String and string-array sources are
 projected directly from the stored current record. Computed sources are rejected at activation
 until resolver semantics have a stable version that can participate in generation compatibility;
