@@ -3,6 +3,7 @@
 import * as hdbTerms from './hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import ITCEventObject from '../server/itc/utility/ITCEventObject.js';
+import { isMainThread } from 'node:worker_threads';
 let serverItcHandlers;
 import { sendItcEvent } from '../server/threads/itc.js';
 
@@ -15,20 +16,38 @@ export const CANCEL_DATABASE_DROP_OPERATION = 'cancel-database-drop';
 // the op awaited propagation to the other workers — the originator half of #1497. Promise.all also
 // lets a strict handler or broadcast failure reach this function's logging boundary. Callers that
 // don't await keep their prior fire-and-forget behavior.
-type SchemaSignalOptions = { includeJobWorkers?: boolean; rejectOnError?: boolean };
+type SchemaSignalOptions = {
+	excludeThreadId?: number;
+	includeJobWorkers?: boolean;
+	mainFirst?: boolean;
+	onlyThreadId?: number;
+	rejectOnError?: boolean;
+};
 
 export async function signalSchemaChange(message: any, options?: SchemaSignalOptions) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);
 		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
-		await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema, options)]);
+		if (options?.mainFirst) {
+			await serverItcHandlers.schema(itcEventSchema);
+			await signalSchemaChangeToPeers(message, options);
+		} else {
+			await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema, options)]);
+		}
 	} catch (err) {
 		hdbLogger.error(err);
 	}
 }
 
 export async function signalSchemaChangeToPeers(message: any, options?: SchemaSignalOptions) {
+	if (options?.mainFirst && !isMainThread) {
+		const mainEvent = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, { ...message });
+		await sendItcEvent(mainEvent, { ...options, onlyThreadId: 0 });
+		const peerEvent = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, { ...message });
+		await sendItcEvent(peerEvent, { ...options, excludeThreadId: 0 });
+		return;
+	}
 	const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
 	await sendItcEvent(itcEventSchema, options);
 }

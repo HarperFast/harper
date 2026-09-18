@@ -2726,12 +2726,16 @@ a failed proof leaves those handles open, so the restore's existing closed-datab
 purging files.
 
 A database drop uses a stricter cross-worker barrier than ordinary schema broadcasts. The initiating
-worker first marks the database as dropping, then every live peer marks it likewise, quiesces all
-derived-index installations associated with its audit store, closes its handles, and acknowledges
-success. A handle-close failure produces a negative acknowledgement rather than being logged and
-treated as quiescent. A negative acknowledgement, recipient exit before acknowledgement, or timeout
-rejects the drop before destructive storage work. While marked, scans and on-demand lookup cannot
-reopen a peer's database; the coordinator keeps its already-open database loaded until
+worker first marks the database as dropping. A worker coordinator then fences the main thread before
+snapshotting the remaining peers; main owns production worker creation, so a worker started after
+that acknowledgement inherits the active marker in `workerData`, while workers already running join
+the second barrier snapshot. The same ordering clears the main marker before cancellation or finish
+is broadcast, so a worker cannot inherit a marker after the clearing snapshot. Every peer then
+quiesces all derived-index installations associated with its audit store, closes its handles, and
+acknowledges success. A handle-close failure produces a negative acknowledgement rather than being
+logged and treated as quiescent. A negative acknowledgement, recipient exit before acknowledgement,
+or timeout rejects the drop before destructive storage work. While marked, scans and on-demand lookup
+cannot reopen a peer's database; the coordinator keeps its already-open database loaded until
 `dropDatabase()` starts. Failure broadcasts cancellation and reloads the database; a peer whose
 in-flight preparation finishes after that cancellation detects the changed marker and reloads again.
 Cancellation and finish messages clear only the marker owned by their originator, so a late message

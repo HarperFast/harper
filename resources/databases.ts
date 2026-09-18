@@ -639,6 +639,27 @@ function clearInterruptedDropEntries(storePath: string, tableName: string) {
 }
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
 const databasesBeingDropped = new Map<string, number>();
+if (Array.isArray(workerData?.databaseDropMarkers))
+	for (const entry of workerData.databaseDropMarkers) {
+		if (!Array.isArray(entry)) continue;
+		const [databaseName, originator] = entry;
+		if (typeof databaseName === 'string' && typeof originator === 'number' && Number.isInteger(originator))
+			databasesBeingDropped.set(databaseName, originator);
+	}
+for (const [databaseName, originator] of databasesBeingDropped)
+	manageThreads.markDatabaseDropForWorkerStarts(databaseName, originator);
+
+function setDatabaseDropMarker(databaseName: string, originator: number): void {
+	databasesBeingDropped.set(databaseName, originator);
+	manageThreads.markDatabaseDropForWorkerStarts(databaseName, originator);
+}
+
+function clearDatabaseDropMarker(databaseName: string, originator?: number): boolean {
+	if (originator !== undefined && databasesBeingDropped.get(databaseName) !== originator) return false;
+	const deleted = databasesBeingDropped.delete(databaseName);
+	manageThreads.clearDatabaseDropForWorkerStarts(databaseName, originator);
+	return deleted;
+}
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
@@ -2520,13 +2541,13 @@ export async function prepareDatabaseForDrop(databaseName: string, originator = 
 		error.statusCode = 409;
 		throw error;
 	}
-	databasesBeingDropped.set(databaseName, originator);
+	setDatabaseDropMarker(databaseName, originator);
 	try {
 		await closeDatabaseForRestore(databaseName, originator);
 		if (databasesBeingDropped.get(databaseName) !== originator)
 			throw new Error(`Database drop preparation for '${databaseName}' was canceled before it completed`);
 	} catch (error) {
-		if (databasesBeingDropped.get(databaseName) === originator) databasesBeingDropped.delete(databaseName);
+		clearDatabaseDropMarker(databaseName, originator);
 		resetDatabases();
 		throw error;
 	}
@@ -2541,17 +2562,17 @@ export function beginDatabaseDrop(databaseName: string): void {
 		error.statusCode = 409;
 		throw error;
 	}
-	databasesBeingDropped.set(databaseName, threadId);
+	setDatabaseDropMarker(databaseName, threadId);
 }
 
 export function finishDatabaseDrop(databaseName: string, originator?: number): void {
 	if (originator !== undefined && databasesBeingDropped.get(databaseName) !== originator) return;
-	databasesBeingDropped.delete(databaseName);
+	clearDatabaseDropMarker(databaseName, originator);
 }
 
 export function cancelDatabaseDrop(databaseName: string, originator?: number): void {
 	if (originator !== undefined && databasesBeingDropped.get(databaseName) !== originator) return;
-	if (!databasesBeingDropped.delete(databaseName)) return;
+	if (!clearDatabaseDropMarker(databaseName, originator)) return;
 	resetDatabases();
 }
 

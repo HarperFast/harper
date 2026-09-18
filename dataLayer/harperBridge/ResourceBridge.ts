@@ -200,18 +200,19 @@ export class ResourceBridge extends BridgeMethods {
 		try {
 			await signalling.signalSchemaChangeToPeers(
 				new SchemaEventMsg(process.pid, signalling.PREPARE_DATABASE_DROP_OPERATION, databaseName),
-				{ rejectOnError: true, includeJobWorkers: true }
+				{ includeJobWorkers: true, mainFirst: true, rejectOnError: true }
 			);
 			await dropDatabase(databaseName);
 			finishDatabaseDrop(databaseName);
 			await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, databaseName), {
 				includeJobWorkers: true,
+				mainFirst: true,
 			});
 		} catch (error) {
 			cancelDatabaseDrop(databaseName);
 			await signalling.signalSchemaChangeToPeers(
 				new SchemaEventMsg(process.pid, signalling.CANCEL_DATABASE_DROP_OPERATION, databaseName),
-				{ includeJobWorkers: true }
+				{ includeJobWorkers: true, mainFirst: true }
 			);
 			throw error;
 		}

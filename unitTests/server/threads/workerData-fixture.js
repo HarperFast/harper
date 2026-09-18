@@ -10,6 +10,7 @@ parentPort.postMessage({
 	testSkipped: workerData.testSkipped,
 	testThrows: workerData.testThrows,
 	testNonCloneable: workerData.testNonCloneable,
+	databaseDropMarkers: workerData.databaseDropMarkers,
 	name: workerData.name,
 	hasTicketKeys: Boolean(workerData.ticketKeys),
 });

@@ -181,6 +181,8 @@ module.exports = {
 	restoreShutdownDeadline,
 	beginProcessShutdown,
 	registerWorkerDataProvider,
+	markDatabaseDropForWorkerStarts,
+	clearDatabaseDropForWorkerStarts,
 	onThreadExit,
 	hasThreadExited,
 	notifyThreadExit,
@@ -394,6 +396,18 @@ function registerWorkerDataProvider(name, provider) {
 // setProperty() clones each value as it records it, so this provider cannot hit the log-and-skip
 // path below — which for this one would mean spawning the worker on the on-disk config.
 registerWorkerDataProvider('configOverrides', () => envMgr.getConfigOverrides());
+// A worker start must join an in-progress destructive barrier even when it missed the peer snapshot.
+const databaseDropsForWorkerStarts = new Map();
+registerWorkerDataProvider('databaseDropMarkers', () =>
+	databaseDropsForWorkerStarts.size ? [...databaseDropsForWorkerStarts] : undefined
+);
+function markDatabaseDropForWorkerStarts(databaseName, originator) {
+	databaseDropsForWorkerStarts.set(databaseName, originator);
+}
+function clearDatabaseDropForWorkerStarts(databaseName, originator) {
+	if (originator !== undefined && databaseDropsForWorkerStarts.get(databaseName) !== originator) return;
+	databaseDropsForWorkerStarts.delete(databaseName);
+}
 function collectProvidedWorkerData(options) {
 	if (workerDataProviders.size === 0) return undefined;
 	let provided;
@@ -1094,8 +1108,10 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS,
 			resolve();
 		};
 		for (let port of connectedPorts) {
+			if (options.onlyThreadId !== undefined && port.threadId !== options.onlyThreadId) continue;
+			if (options.excludeThreadId !== undefined && port.threadId === options.excludeThreadId) continue;
 			// Ordinary schema gossip excludes single-task job workers. Destructive barriers opt
-			// them in because they must prove their database handles and derived writers quiescent.
+			// them in after first fencing the main thread that owns production worker creation.
 			if (!options.includeJobWorkers && !isEligibleBroadcastRecipient(port)) continue;
 			let ackHandler;
 			try {

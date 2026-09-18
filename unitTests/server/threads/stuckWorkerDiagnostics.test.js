@@ -190,4 +190,22 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 			/quiescence failed/
 		);
 	});
+
+	it('can fence one worker before broadcasting a destructive barrier', async function () {
+		const jobWorker = await startFixtureWorker('acknowledge', 'job');
+		const httpWorker = await startFixtureWorker('reject');
+		started.push(jobWorker, httpWorker);
+		await assert.rejects(
+			broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 100, {
+				onlyThreadId: httpWorker.threadId,
+				rejectOnError: true,
+			}),
+			/quiescence failed/
+		);
+		await broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 100, {
+			excludeThreadId: httpWorker.threadId,
+			includeJobWorkers: true,
+			rejectOnError: true,
+		});
+	});
 });
