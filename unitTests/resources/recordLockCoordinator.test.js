@@ -430,6 +430,105 @@ describe('record lock delegations', () => {
 			await betaAcquire;
 			assert.strictEqual(betaAdmitted, true);
 		});
+
+		it('ends a wait the home answered contended as 423, and sends no probe it cannot complete', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// Beta's backoff reaches its deadline, so any further request would go out with no budget and
+			// could only come back as beta's own `timeout`. The stall makes that the outcome if one is
+			// sent at all: a wait that watched the key held must not report it unheld.
+			let replies = 0;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) return cluster.advance('beta', 180);
+				cluster.advance('beta', 1_000);
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			};
+			const sent = cluster.requests.length;
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 200),
+				(error) => error.statusCode === 423
+			);
+			assert.strictEqual(cluster.requests.length, sent + 1, 'a probe went out with no budget to complete in');
+		});
+
+		it('ends on the last reply the home completed, so a later not-home is not reported as contention', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The home stops owning coordination between beta's two passes. Contention is what beta saw
+			// first, but the ring disagreement is the fresher fact and the one the caller has to act on.
+			let replies = 0;
+			cluster.beforeReply = (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) {
+					cluster.node('gamma').owns = false;
+					return cluster.advance('beta', 200);
+				}
+				cluster.advance('beta', 100);
+			};
+			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300), /home answered not-home/);
+		});
+
+		it('retires an observation the ring has moved on from, rather than reporting it as contention', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// A new generation is a new route. What the previous home said about the key describes an
+			// arrangement that no longer owns it, so the wait must answer from its own probe.
+			let replies = 0;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) {
+					cluster.generation = 2;
+					return cluster.advance('beta', 200);
+				}
+				cluster.advance('beta', 1_000);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				/no reply from the key's home/
+			);
+		});
+
+		it('retires an observation a generation activated while the last probe was in flight', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The pass that ends the wait read its map before sending, so only a fresh read sees a
+			// generation that was activated while its probe was still out.
+			let replies = 0;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) return cluster.advance('beta', 200);
+				cluster.generation = 2;
+				cluster.advance('beta', 1_000);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 300),
+				/home map changed generation/
+			);
+		});
+
+		it('retires this pass own contended reply when a generation activated while it was in flight', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The reply that ends the wait is itself `contended`, but it describes the ring that was
+			// current when it was computed. The route rule has to reach it too, not only a carried one.
+			cluster.beforeReply = (from) => {
+				if (from !== 'beta') return;
+				cluster.generation = 2;
+				cluster.advance('beta', 1_000);
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 200),
+				/home map changed generation/
+			);
+		});
 	});
 
 	describe('successor freshness', () => {
@@ -1164,7 +1263,7 @@ describe('record lock delegations', () => {
 				new Promise((resolve) => {
 					deliverFirst = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
 				});
-			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /home answered timeout/);
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /no reply from the key's home/);
 			alpha.coordinator.transport.requestDelegation = realRequest;
 			await alpha.coordinator.acquire(key, LEASE, WAIT);
 
@@ -1206,6 +1305,53 @@ describe('record lock delegations', () => {
 			assert.strictEqual(successor.stats.delegations, 1, 'the delegation landed somewhere else');
 			assert.strictEqual(predecessor.stats.delegations, 0, 'the closed coordinator took the delegation');
 			successor.release(key, round.admissionId);
+		});
+
+		it('carries what the wait already saw into the successor, so a swap mid-wait still ends 423', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The swap lands while beta's probe is still out and its deadline passes with it, so the
+			// successor inherits a wait with nothing left to probe with. Without the predecessor's
+			// observation it would report a held key as a coordination failure.
+			let swapped = false;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (!swapped) {
+					swapped = true;
+					replace(cluster, 'beta');
+					return cluster.advance('beta', 1_000);
+				}
+				// The successor's own probe carries no budget, so only the predecessor's observation can
+				// tell this wait that the key was held.
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 200),
+				(error) => error.statusCode === 423
+			);
+		});
+
+		it('carries it across a swap that lands inside the backoff, not only inside a probe', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The other side of the same hop: beta's reply lands with budget to spare, so it is inside
+			// `delay()` when the swap closes it. The observation has to survive that path too.
+			let swapped = false;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (swapped) return new Promise((resolve) => setTimeout(resolve, 200));
+				swapped = true;
+				setTimeout(() => {
+					replace(cluster, 'beta');
+					cluster.advance('beta', 1_000);
+				}, 5);
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 1_000),
+				(error) => error.statusCode === 423
+			);
 		});
 
 		it('does not restart the counter, so a successor token never ties a predecessor’s', async () => {
@@ -2133,7 +2279,7 @@ describe('record lock delegations', () => {
 				new Promise((resolve) => {
 					deliverFirst = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
 				});
-			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /home answered timeout/);
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /no reply from the key's home/);
 			alpha.coordinator.transport.requestDelegation = realRequest;
 			await alpha.coordinator.acquire(key, LEASE, WAIT);
 			assert.strictEqual(alpha.coordinator.stats.delegations, 1);
@@ -2157,7 +2303,7 @@ describe('record lock delegations', () => {
 				new Promise((resolve) => {
 					resolveReply = async () => resolve(await cluster.node(target).coordinator.onDelegationRequest(request));
 				});
-			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /home answered timeout/);
+			await assert.rejects(() => alpha.coordinator.acquire(key, LEASE, 100), /no reply from the key's home/);
 			// The home grants only now, to a caller that has already given up. Nothing would ever claim
 			// or release it, so the home would deny every other node for the whole delegation.
 			await resolveReply();

@@ -543,6 +543,20 @@ coordinator, or a call on a thread that does not own coordination all reject wit
 rather than downgrading to a node-local lock — which would hand two nodes one key. An unreachable node
 blocks only the keys it homes, which is the availability property the whole redesign exists for.
 
+**An exhausted wait is classified from the last reply a home completed, never from a `timeout`.**
+`#requestRemotely` races the home against the caller's remaining budget and
+synthesizes `reason: 'timeout'` when the budget wins; that reply is this node's own deadline, not
+something the home said, so it is evidence-free. `acquire()` keeps the last completed reply in
+`lastCompleted`, bound to the `(home, generation)` that produced it; at the terminal branch it
+re-reads the map and accepts an observation — the carried one and the pass's own reply alike — only
+under the generation that is current then, since one can be activated while the last probe is in
+flight. It classifies from what survives: a wait that watched the key held answers 423 even though its final probe was
+cut short, while a later `not-home` — the fresher fact — still answers 503. It also stops before a
+backoff that would reach the deadline, since the probe after it could only come back as that same
+synthetic timeout. Do not restore "the last reply wins": the retry loop's final pass is by
+construction the one most likely to be truncated, so that rule reports a contended key as a
+coordination failure at random.
+
 **`{ scope: 'node' }`** opts out of the cluster step and keeps exact Phase 0 semantics, which by
 design permits simultaneous holders on different nodes. An **explicit** `{ scope: 'cluster' }` with no
 transport rejects 503 rather than silently returning the weaker lock, and a transaction that already
