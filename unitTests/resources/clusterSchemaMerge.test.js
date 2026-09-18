@@ -1,9 +1,11 @@
 require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
-const { table } = require('#src/resources/databases');
+const { getDatabases, resetDatabases, table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { forComponent } = require('#src/utility/logging/harper_logger');
+const env = require('#src/utility/environment/environmentManager');
+const terms = require('#src/utility/hdbTerms');
 
 // Covers the additive-only invariant documented in DESIGN.md: a definition carrying origin 'cluster'
 // is a snapshot of a peer's eventually-consistent view, so it may add but never remove or redefine.
@@ -168,6 +170,33 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 		assert.match(discardWarnings[0], /indexed/, 'the warning must name the discarded `indexed` difference');
 		assert.match(discardWarnings[0], /nullable/, 'the warning must name the discarded `nullable` difference');
+	});
+
+	it('persists a hidden-only declaration change without rebuilding an index', async () => {
+		const Hidden = table({
+			table: 'ClusterMergeHidden',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'label', type: 'String', indexed: true },
+			],
+		});
+		await Hidden.indexingOperation;
+		await catalogFlushed(Hidden);
+		const indexingOperation = Hidden.indexingOperation;
+		const Updated = table({
+			table: 'ClusterMergeHidden',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'label', type: 'String', indexed: true, hidden: true },
+			],
+		});
+		await catalogFlushed(Updated);
+		assert.strictEqual(Updated.dbisDB.getSync('ClusterMergeHidden/label').hidden, true);
+		assert.strictEqual(Updated.indexingOperation, indexingOperation);
 	});
 
 	it('recovers an abandoned index build even though the peer definition itself is not applied', async () => {
@@ -390,6 +419,380 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert(
 			!discardWarnings[0].includes('indexNulls'),
 			`the warning must not blame the peer for a locally derived field: ${discardWarnings[0]}`
+		);
+	});
+
+	it('accepts and persists a peer-new full-text index without creating an attribute', async () => {
+		const Local = table({
+			table: 'ClusterMergeFullTextAdd',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+		});
+		const Merged = table({
+			table: 'ClusterMergeFullTextAdd',
+			database: 'test',
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Merged);
+		assert.deepStrictEqual(
+			Merged.fullTextIndexes.map(({ name }) => name),
+			['search']
+		);
+		assert.strictEqual(
+			Merged.attributes.some(({ name }) => name === 'search'),
+			false
+		);
+		assert.deepStrictEqual(
+			(
+				Local.dbisDB.getSync('ClusterMergeFullTextAdd/id') ?? Local.dbisDB.getSync('ClusterMergeFullTextAdd/')
+			).fullTextIndexes.map(({ name }) => name),
+			['search']
+		);
+	});
+
+	it('merges peer declarations per name and keeps conflicting local definitions', async () => {
+		const storageLogger = forComponent('storage');
+		const originalWarn = storageLogger.warn;
+		const warnings = [];
+		const Local = table({
+			table: 'ClusterMergeFullTextConflict',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'description', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		storageLogger.warn = (...args) => warnings.push(args);
+		try {
+			table({
+				table: 'ClusterMergeFullTextConflict',
+				database: 'test',
+				origin: 'cluster',
+				attributes: Local.attributes.map((attribute) => ({ ...attribute })),
+				fullTextIndexes: [
+					{ name: 'search', fields: [{ name: 'description' }] },
+					{ name: 'titles', fields: [{ name: 'title' }] },
+				],
+			});
+		} finally {
+			storageLogger.warn = originalWarn;
+		}
+		assert.deepStrictEqual(
+			Local.fullTextIndexes.map(({ name, fields }) => [name, fields[0].name]),
+			[
+				['search', 'title'],
+				['titles', 'title'],
+			]
+		);
+		assert(
+			warnings.some(([message]) =>
+				String(message).includes(
+					'Ignoring peer redefinition of full-text index test.ClusterMergeFullTextConflict.search'
+				)
+			),
+			`missing full-text conflict warning: ${JSON.stringify(warnings)}`
+		);
+	});
+
+	it('discards an invalid peer index while retaining other peer schema additions', () => {
+		const Local = table({
+			table: 'ClusterMergeInvalidFullText',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'Int' },
+			],
+		});
+		table({
+			table: 'ClusterMergeInvalidFullText',
+			database: 'test',
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'extra', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		assert.deepStrictEqual(Local.fullTextIndexes, []);
+		assert(Local.attributes.some(({ name }) => name === 'extra'));
+	});
+
+	it('validates peer indexes against the durable source descriptor', async () => {
+		const Local = table({
+			table: 'ClusterMergeDurableFullTextSource',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+		});
+		await catalogFlushed(Local);
+		const sourceKey = 'ClusterMergeDurableFullTextSource/title';
+		const written = Local.dbisDB.put(sourceKey, { ...Local.dbisDB.getSync(sourceKey), type: 'Int' });
+		if (written?.then) await written;
+		table({
+			table: 'ClusterMergeDurableFullTextSource',
+			database: 'test',
+			origin: 'cluster',
+			attributes: Local.attributes.map((attribute) => ({ ...attribute })),
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		assert.deepStrictEqual(Local.fullTextIndexes, []);
+		assert.strictEqual(Local.dbisDB.getSync(sourceKey).type, 'Int');
+	});
+
+	it('keeps valid durable declarations and does not revive invalid siblings during peer merge', async () => {
+		let Local = table({
+			table: 'ClusterMergeInvalidDurableSibling',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		let primaryKey = 'ClusterMergeInvalidDurableSibling/id';
+		let primary = Local.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'ClusterMergeInvalidDurableSibling/';
+			primary = Local.dbisDB.getSync(primaryKey);
+		}
+		const invalidSibling = { ...Local.fullTextIndexes[0], name: 'broken', fields: [{ name: 'missing', weight: 1 }] };
+		const written = Local.dbisDB.put(primaryKey, {
+			...primary,
+			fullTextIndexes: [Local.fullTextIndexes[0], invalidSibling],
+		});
+		if (written?.then) await written;
+
+		resetDatabases();
+		Local = getDatabases().test.ClusterMergeInvalidDurableSibling;
+		assert.deepStrictEqual(
+			Local.fullTextIndexes.map(({ name }) => name),
+			['search']
+		);
+		table({
+			table: 'ClusterMergeInvalidDurableSibling',
+			database: 'test',
+			origin: 'cluster',
+			attributes: Local.attributes.map((attribute) => ({ ...attribute })),
+			fullTextIndexes: [{ name: 'peer', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		assert.deepStrictEqual(
+			Local.fullTextIndexes.map(({ name }) => name),
+			['peer', 'search']
+		);
+		assert.deepStrictEqual(
+			Local.dbisDB.getSync(primaryKey).fullTextIndexes.map(({ name }) => name),
+			['peer', 'search']
+		);
+	});
+
+	it('drops invalid full-text metadata when creating a table from a peer snapshot', async () => {
+		const Created = table({
+			table: 'ClusterCreateInvalidFullText',
+			database: 'test',
+			origin: 'cluster',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'Int' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Created);
+		assert.deepStrictEqual(Created.fullTextIndexes, []);
+		const primary =
+			Created.dbisDB.getSync('ClusterCreateInvalidFullText/id') ??
+			Created.dbisDB.getSync('ClusterCreateInvalidFullText/');
+		assert.strictEqual(primary.fullTextIndexes, undefined);
+	});
+
+	it('uses the resolved audit default when a peer snapshot first materializes a table', async () => {
+		const previousAuditDefault = env.get(terms.CONFIG_PARAMS.LOGGING_AUDITLOG);
+		env.setProperty(terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
+		try {
+			const Created = table({
+				table: 'ClusterCreateDefaultAuditFullText',
+				database: 'test',
+				origin: 'cluster',
+				attributes: [
+					{ name: 'id', type: 'ID', isPrimaryKey: true },
+					{ name: 'title', type: 'String' },
+				],
+				fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+			});
+			await catalogFlushed(Created);
+			assert.strictEqual(Created.audit, true);
+			assert.deepStrictEqual(
+				Created.fullTextIndexes.map(({ name }) => name),
+				['search']
+			);
+		} finally {
+			env.setProperty(terms.CONFIG_PARAMS.LOGGING_AUDITLOG, previousAuditDefault);
+		}
+	});
+
+	it('drops duplicate names from a first peer snapshot', async () => {
+		const Created = table({
+			table: 'ClusterCreateDuplicateFullText',
+			database: 'test',
+			origin: 'cluster',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{ name: 'description', type: 'String' },
+			],
+			fullTextIndexes: [
+				{ name: 'search', fields: [{ name: 'title' }] },
+				{ name: 'search', fields: [{ name: 'description' }] },
+			],
+		});
+		await catalogFlushed(Created);
+		assert.deepStrictEqual(
+			Created.fullTextIndexes.map(({ name, fields }) => [name, fields[0].name]),
+			[['search', 'title']]
+		);
+	});
+
+	it('does not let a non-explicit peer call erase a newer durable declaration list', async () => {
+		const Local = table({
+			table: 'ClusterKeepNewerDurableFullText',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		let primaryKey = 'ClusterKeepNewerDurableFullText/id';
+		let primary = Local.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'ClusterKeepNewerDurableFullText/';
+			primary = Local.dbisDB.getSync(primaryKey);
+		}
+		const durableIndexes = [Local.fullTextIndexes[0], { ...Local.fullTextIndexes[0], name: 'titles' }];
+		const written = Local.dbisDB.put(primaryKey, { ...primary, fullTextIndexes: durableIndexes });
+		if (written?.then) await written;
+
+		table({
+			table: 'ClusterKeepNewerDurableFullText',
+			database: 'test',
+			origin: 'cluster',
+			attributes: Local.attributes.map((attribute) => ({ ...attribute })),
+		});
+		await catalogFlushed(Local);
+		assert.deepStrictEqual(
+			Local.dbisDB.getSync(primaryKey).fullTextIndexes.map(({ name }) => name),
+			['search', 'titles']
+		);
+	});
+
+	it('does not resurrect a durably cleared declaration from stale live state', async () => {
+		const Local = table({
+			table: 'ClusterKeepDurableFullTextRemoval',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		let primaryKey = 'ClusterKeepDurableFullTextRemoval/id';
+		let primary = Local.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'ClusterKeepDurableFullTextRemoval/';
+			primary = Local.dbisDB.getSync(primaryKey);
+		}
+		const withoutFullText = { ...primary };
+		delete withoutFullText.fullTextIndexes;
+		const written = Local.dbisDB.put(primaryKey, withoutFullText);
+		if (written?.then) await written;
+
+		table({
+			table: 'ClusterKeepDurableFullTextRemoval',
+			database: 'test',
+			origin: 'cluster',
+			attributes: Local.attributes.map((attribute) => ({ ...attribute })),
+			fullTextIndexes: [{ name: 'titles', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		assert.deepStrictEqual(
+			Local.fullTextIndexes.map(({ name }) => name),
+			['titles']
+		);
+		assert.deepStrictEqual(
+			Local.dbisDB.getSync(primaryKey).fullTextIndexes.map(({ name }) => name),
+			['titles']
+		);
+	});
+
+	it('merges an explicit peer list against disk even when it matches stale live state', async () => {
+		const Local = table({
+			table: 'ClusterMergeStaleExplicitFullText',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		let primaryKey = 'ClusterMergeStaleExplicitFullText/id';
+		let primary = Local.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'ClusterMergeStaleExplicitFullText/';
+			primary = Local.dbisDB.getSync(primaryKey);
+		}
+		const durableIndexes = [Local.fullTextIndexes[0], { ...Local.fullTextIndexes[0], name: 'titles' }];
+		const written = Local.dbisDB.put(primaryKey, { ...primary, fullTextIndexes: durableIndexes });
+		if (written?.then) await written;
+
+		table({
+			table: 'ClusterMergeStaleExplicitFullText',
+			database: 'test',
+			origin: 'cluster',
+			attributes: Local.attributes.map((attribute) => ({ ...attribute })),
+			fullTextIndexes: Local.fullTextIndexes.map((definition) => ({
+				...definition,
+				fields: definition.fields.map((field) => ({ ...field })),
+			})),
+		});
+		await catalogFlushed(Local);
+		assert.deepStrictEqual(
+			Local.dbisDB.getSync(primaryKey).fullTextIndexes.map(({ name }) => name),
+			['search', 'titles']
 		);
 	});
 });

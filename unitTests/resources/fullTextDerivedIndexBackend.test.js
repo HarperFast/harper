@@ -135,6 +135,15 @@ describe('FullTextDerivedIndexBackend', () => {
 		assert.strictEqual(converted.upserts[0].id, `1.${Buffer.from(writeKeyId(1), 'latin1').toString('base64url')}`);
 		assert.strictEqual(converted.deletes[0], `12.${Buffer.from(writeKeyId('a'), 'latin1').toString('base64url')}`);
 		assert.notStrictEqual(converted.upserts[0].id, converted.deletes[0]);
+
+		const unicode = toFullTextMutationBatch(
+			batch(1n, [
+				mutation('日', { kind: 'record', version: 1, projection: { title: 'sun' } }),
+				mutation('å', { kind: 'record', version: 1, projection: { title: 'ring' } }),
+			])
+		);
+		assert.notStrictEqual(writeKeyId('日'), writeKeyId('å'));
+		assert.notStrictEqual(unicode.upserts[0].id, unicode.upserts[1].id);
 	});
 
 	it('inspects the durable cursor without opening a writer', () => {

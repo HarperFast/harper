@@ -152,6 +152,7 @@ import { RocksDatabase, Transaction as RocksTransaction } from '@harperfast/rock
 import { LMDBTransaction, ImmediateTransaction as ImmediateLMDBTransaction } from './LMDBTransaction';
 import { contentTypes } from '../server/serverHelpers/contentTypes';
 import { type JsonSchemaFragment, projectAttributesToProperties } from './jsonSchemaTypes.ts';
+import { assertFullTextSourcesRemain, type FullTextDefinition } from './fullTextSchema.ts';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -609,6 +610,7 @@ export function makeTable(options) {
 		hidden,
 		cacheControl,
 		isBranch,
+		fullTextIndexes = [],
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
@@ -630,6 +632,7 @@ export function makeTable(options) {
 	let lockCoordinator: LockCoordinator | undefined;
 	let warnedNullSourcePut = false; // latched: one warn per table per worker (see _writeUpdate)
 	let warnedFutureSourceVersion = false; // likewise (see getFromSource)
+	const ignoredPeerFullTextStates = new Set<string>();
 	let sourceLoad: any; // if a source has a load function (replicator), record it here
 	let hasSourceGet: any;
 	let primaryKeyAttribute: Attribute | undefined;
@@ -912,6 +915,8 @@ export function makeTable(options) {
 		static tableId = tableId;
 		static indices = indices;
 		static derivedIndexRuntime: { close(): Promise<void> } | undefined;
+		static schemaChangeOperation: Promise<void> | undefined;
+		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
 		static audit = audit;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
@@ -1380,16 +1385,36 @@ export function makeTable(options) {
 												hasChanges = true;
 											}
 										}
-										if (hasChanges) {
+										const fullTextChanged =
+											event.fullTextIndexes !== undefined &&
+											JSON.stringify(event.fullTextIndexes) !== JSON.stringify(this.fullTextIndexes);
+										const peerFullTextState = fullTextChanged
+											? `${(this as any).schemaVersion}:${JSON.stringify(event.fullTextIndexes)}`
+											: undefined;
+										if (hasChanges || (peerFullTextState && !ignoredPeerFullTextStates.has(peerFullTextState))) {
+											const attributeCount = this.attributes.length;
+											const fullTextState = JSON.stringify(this.fullTextIndexes);
 											table({
 												table: tableName,
 												database: databaseName,
 												attributes: updatedAttributes,
+												fullTextIndexes: event.fullTextIndexes,
 												origin: 'cluster',
 											});
-											signalling.signalSchemaChange(
-												new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, databaseName, tableName)
-											);
+											const schemaChanged =
+												this.attributes.length !== attributeCount ||
+												JSON.stringify(this.fullTextIndexes) !== fullTextState;
+											if (!schemaChanged && peerFullTextState) {
+												if (ignoredPeerFullTextStates.size >= 100) {
+													const oldest = ignoredPeerFullTextStates.values().next().value;
+													if (oldest !== undefined) ignoredPeerFullTextStates.delete(oldest);
+												}
+												ignoredPeerFullTextStates.add(peerFullTextState);
+											}
+											if (schemaChanged)
+												signalling.signalSchemaChange(
+													new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, databaseName, tableName)
+												);
 										}
 									} else {
 										if (event.beginTxn) {
@@ -6190,12 +6215,15 @@ export function makeTable(options) {
 		}
 		static async removeAttributes(names: string[]) {
 			TableResource.assertSchemaMutable('remove attributes');
-			const new_attributes = attributes.filter((attribute) => !names.includes(attribute.name));
+			const removed = new Set(names);
+			assertFullTextSourcesRemain(TableResource.fullTextIndexes, removed);
+			const new_attributes = TableResource.attributes.filter((attribute) => !names.includes(attribute.name));
 			table({
 				table: tableName,
 				database: databaseName,
 				schemaDefined,
 				attributes: new_attributes,
+				removedAttributes: names,
 			});
 			return (TableResource as any).indexingOperation;
 		}
@@ -6413,6 +6441,8 @@ export function makeTable(options) {
 		 * When attributes have been changed, we update the accessors that are assigned to this table
 		 */
 		static updatedAttributes() {
+			for (const name of primaryStore.encoder.resolvedAttributeNamesList ?? [])
+				delete primaryStore.encoder.structPrototype[name];
 			// Refresh on every call: schema reload mutates `attributes` in place, so the
 			// class-construction snapshot would otherwise go stale.
 			this.embedAttributes = (this.attributes as any[]).filter((a) => a?.embed);
