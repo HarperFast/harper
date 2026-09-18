@@ -1307,13 +1307,13 @@ describe('record lock delegations', () => {
 			successor.release(key, round.admissionId);
 		});
 
-		it('carries what the wait already saw into the successor, so a swap mid-backoff still ends 423', async () => {
+		it('carries what the wait already saw into the successor, so a swap mid-wait still ends 423', async () => {
 			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
 			const key = cluster.keyHomedOn('gamma');
 			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
-			// The swap lands in beta's backoff, so the successor inherits a deadline with nothing left to
-			// probe with. Without the predecessor's observation it would report a held key as a
-			// coordination failure.
+			// The swap lands while beta's probe is still out and its deadline passes with it, so the
+			// successor inherits a wait with nothing left to probe with. Without the predecessor's
+			// observation it would report a held key as a coordination failure.
 			let swapped = false;
 			cluster.beforeReply = async (from) => {
 				if (from !== 'beta') return;
@@ -1328,6 +1328,28 @@ describe('record lock delegations', () => {
 			};
 			await assert.rejects(
 				() => cluster.node('beta').coordinator.acquire(key, LEASE, 200),
+				(error) => error.statusCode === 423
+			);
+		});
+
+		it('carries it across a swap that lands inside the backoff, not only inside a probe', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The other side of the same hop: beta's reply lands with budget to spare, so it is inside
+			// `delay()` when the swap closes it. The observation has to survive that path too.
+			let swapped = false;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (swapped) return new Promise((resolve) => setTimeout(resolve, 200));
+				swapped = true;
+				setTimeout(() => {
+					replace(cluster, 'beta');
+					cluster.advance('beta', 1_000);
+				}, 5);
+			};
+			await assert.rejects(
+				() => cluster.node('beta').coordinator.acquire(key, LEASE, 1_000),
 				(error) => error.statusCode === 423
 			);
 		});
