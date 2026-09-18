@@ -1936,7 +1936,9 @@ export function openBranchDatabase(
 			if (closed) return Promise.resolve();
 			if (closing) return closing;
 			closing = (async () => {
-				await quiesceDerivedIndexes(tables, 'branch shutdown', (rootStore as any).auditStore);
+				await quiesceDerivedIndexes(tables, 'branch shutdown', {
+					additionalAuditStore: (rootStore as any).auditStore,
+				});
 				closed = true;
 				openBranches.delete(path);
 				releaseBranchIdentity(storeName);
@@ -2248,14 +2250,18 @@ function lockDatabaseForDrop(dbPath: string, databaseName: string, held: Restore
 async function quiesceDerivedIndexes(
 	dbTables: Tables,
 	operation: string,
-	additionalAuditStore?: RocksTransactionLogStore
+	options: {
+		additionalAuditStore?: RocksTransactionLogStore;
+		includeAuditStoreInstallations?: boolean;
+	} = {}
 ): Promise<void> {
+	const { additionalAuditStore, includeAuditStoreInstallations = true } = options;
 	while (true) {
 		const derivedIndexTables = new Map<any, any[]>();
 		const auditStores = new Set<RocksTransactionLogStore>();
 		if (additionalAuditStore) auditStores.add(additionalAuditStore);
 		for (const table of Object.values(dbTables) as any[]) {
-			if (table.auditStore) auditStores.add(table.auditStore);
+			if (includeAuditStoreInstallations && table.auditStore) auditStores.add(table.auditStore);
 			const runtime = table.derivedIndexRuntime;
 			if (!runtime) continue;
 			const runtimeTables = derivedIndexTables.get(runtime);
@@ -2305,10 +2311,13 @@ async function quiesceDerivedIndexes(
 
 async function quiesceDatabaseDerivedIndexes(databaseName: string, dbTables: Tables, operation: string): Promise<void> {
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
-	await quiesceDerivedIndexes(dbTables, operation, definedRoot?.auditStore);
+	await quiesceDerivedIndexes(dbTables, operation, { additionalAuditStore: definedRoot?.auditStore });
 }
 
-/** Fail closed when a schema rescan could not establish the table's current derived-index generation. */
+/**
+ * Fail closed when a schema rescan could not establish the table's current derived-index generation.
+ * The audit store is database-wide, so this path deliberately closes only the runtime named by the table.
+ */
 export async function quiesceTableDerivedIndexes(
 	databaseName: string,
 	tableName: string,
@@ -2317,7 +2326,7 @@ export async function quiesceTableDerivedIndexes(
 	const Table = databases[databaseName]?.[tableName];
 	if (!Table?.derivedIndexRuntime) return;
 	const table = Object.assign(Object.create(null), { [tableName]: Table });
-	await quiesceDerivedIndexes(table, operation);
+	await quiesceDerivedIndexes(table, operation, { includeAuditStoreInstallations: false });
 }
 
 /**
