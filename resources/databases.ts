@@ -54,8 +54,13 @@ import { planeFilePathFor, planeStalePathFor } from './indexes/hnswPlaneBinding.
 import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.ts';
 import { RocksDatabase, supportedCompression, type RocksDatabaseOptions } from '@harperfast/rocksdb-js';
 import { PrimaryRocksDatabase } from './PrimaryRocksDatabase.ts';
+import type { RocksTransactionLogStore } from './RocksTransactionLogStore.ts';
 import { replayLogs } from './replayLogs.ts';
-import { assertFullTextActivationSupported, attachDerivedIndexes } from './derivedIndexes.ts';
+import {
+	assertFullTextActivationSupported,
+	attachDerivedIndexes,
+	getDerivedIndexInstallations,
+} from './derivedIndexes.ts';
 import { totalmem } from 'node:os';
 import { RocksIndexStore } from './RocksIndexStore.ts';
 import { resolveRocksMemoryConfig } from '../utility/rocksMemoryConfig.ts';
@@ -492,6 +497,21 @@ function compilePersistedFullTextDefinitions(
 	);
 }
 
+function decodePersistedAttribute(key: unknown, persistedValue: any, defaultTable?: string) {
+	const value = persistedValue as any;
+	let [tableName, attributeName] = key.toString().split('/');
+	if (attributeName === '') attributeName = value.name;
+	else if (!attributeName) {
+		attributeName = tableName;
+		tableName = defaultTable;
+		if (!value.name) {
+			value.name = attributeName;
+			value.indexed = !value.isPrimaryKey;
+		}
+	}
+	return { tableName, attributeName, value };
+}
+
 type FullTextIndexGenerations = Record<string, string>;
 
 function fullTextIndexGenerations(
@@ -519,6 +539,20 @@ function fullTextIndexGenerations(
 		} else if (createMissing) generations[definition.name] = randomBytes(16).toString('hex');
 	}
 	return generations;
+}
+
+function canReuseDerivedIndexRuntime(
+	Table: any,
+	previousStorageKey: string | undefined,
+	previousHasNativeHnsw: boolean | undefined
+): boolean {
+	return Boolean(
+		Table.derivedIndexRuntime &&
+		Table.derivedIndexRuntime.canReuse?.() !== false &&
+		!previousHasNativeHnsw &&
+		!Table.attributes.some((attribute) => Table.indices[attribute.name]?.customIndex?.postCommit) &&
+		previousStorageKey === fullTextStorageKey(Table.fullTextIndexes, Table.fullTextIndexGenerations)
+	);
 }
 
 // A cluster-origin caller's list can predate a declaration another thread has already committed, so on
@@ -1143,24 +1177,12 @@ function initStores(
 	for (const result of attributesDbi.getRange({ start: false })) {
 		const { key, value } = result as { key: string; value: any };
 		if (value == null) continue;
-		let [tableName, attribute_name] = key.toString().split('/');
-		if (attribute_name === '') {
-			// primary key
-			attribute_name = value.name;
-		} else if (!attribute_name) {
-			attribute_name = tableName;
-			tableName = defaultTable;
-			if (!value.name) {
-				// legacy attribute
-				value.name = attribute_name;
-				value.indexed = !value.isPrimaryKey;
-			}
-		}
+		const { tableName, attributeName } = decodePersistedAttribute(key, value, defaultTable);
 		definedTables?.add(tableName);
 		let tableDef = tablesToLoad.get(tableName);
 		if (!tableDef) tablesToLoad.set(tableName, (tableDef = { attributes: [] }));
-		if (attribute_name == null || value.isPrimaryKey) tableDef.primary = value;
-		if (attribute_name != null) tableDef.attributes.push(value);
+		if (attributeName == null || value.isPrimaryKey) tableDef.primary = value;
+		if (attributeName != null) tableDef.attributes.push(value);
 		Object.defineProperty(value, 'key', { value: key, configurable: true });
 	}
 
@@ -1246,17 +1268,11 @@ function initStores(
 		const current = { attributes: [] } as any;
 		for (const { key, value: persistedValue } of attributesDbi.getRange({ start: false })) {
 			if (persistedValue == null) continue;
-			const value = persistedValue as any;
-			let [persistedTableName, attributeName] = key.toString().split('/');
-			if (attributeName === '') attributeName = value.name;
-			else if (!attributeName) {
-				attributeName = persistedTableName;
-				persistedTableName = defaultTable;
-				if (!value.name) {
-					value.name = attributeName;
-					value.indexed = !value.isPrimaryKey;
-				}
-			}
+			const {
+				tableName: persistedTableName,
+				attributeName,
+				value,
+			} = decodePersistedAttribute(key, persistedValue, defaultTable);
 			if (persistedTableName !== wantedTableName) continue;
 			if (attributeName == null || value.isPrimaryKey) current.primary = value;
 			if (attributeName != null) current.attributes.push(value);
@@ -1340,6 +1356,11 @@ function initStores(
 		if (reportedIncompleteCatalogs.size) reportedIncompleteCatalogs.delete(`${databaseName}/${tableName}`);
 		// if the table has already been defined, use that class, don't create a new one
 		let table = tables[tableName];
+		const previousFullTextStorageKey =
+			table && fullTextStorageKey(table.fullTextIndexes, table.fullTextIndexGenerations);
+		const previousHasNativeHnsw = table?.attributes.some(
+			(attribute) => table.indices[attribute.name]?.customIndex?.postCommit
+		);
 		// unless its store was migrated to a different engine (e.g. LMDB to RocksDB on startup)
 		const recreateForEngineChange =
 			!!table && (table as any).primaryStore?.rootStore instanceof RocksDatabase !== rootStore instanceof RocksDatabase;
@@ -1528,10 +1549,15 @@ function initStores(
 			if (!destination && !fullTextActivationRepairs.has(fullTextActivationRepairKey(path, tableName)))
 				databaseEventsEmitter.emit('updateTable', table);
 		}
-		void table.derivedIndexRuntime?.close();
-		table.derivedIndexRuntime = fullTextActivationRepairs.has(fullTextActivationRepairKey(path, tableName))
-			? undefined
-			: attachDerivedIndexes(table);
+		const repairingFullTextActivation = fullTextActivationRepairs.has(fullTextActivationRepairKey(path, tableName));
+		const reuseDerivedIndexRuntime =
+			!repairingFullTextActivation &&
+			!recreateForEngineChange &&
+			canReuseDerivedIndexRuntime(table, previousFullTextStorageKey, previousHasNativeHnsw);
+		if (!reuseDerivedIndexRuntime) {
+			void table.derivedIndexRuntime?.close();
+			table.derivedIndexRuntime = repairingFullTextActivation ? undefined : attachDerivedIndexes(table);
+		}
 		if (Array.isArray(primaryAttribute.relationships)) {
 			relationshipsToHydrate.push({ table, databaseName, tableName, definitions: primaryAttribute.relationships });
 		} else if (primaryAttribute.relationships !== undefined) {
@@ -2187,20 +2213,23 @@ function lockDatabaseForDrop(dbPath: string, databaseName: string, held: Restore
 	held.push(lock);
 }
 
-/**
- * Delete the database
- * @param databaseName
- */
-async function quiesceDatabaseDerivedIndexes(dbTables: Tables, operation: string): Promise<void> {
+async function quiesceDatabaseDerivedIndexes(databaseName: string, dbTables: Tables, operation: string): Promise<void> {
 	while (true) {
 		const derivedIndexTables = new Map<any, any[]>();
+		const auditStores = new Set<RocksTransactionLogStore>();
 		for (const table of Object.values(dbTables) as any[]) {
+			if (table.auditStore) auditStores.add(table.auditStore);
 			const runtime = table.derivedIndexRuntime;
 			if (!runtime) continue;
 			const runtimeTables = derivedIndexTables.get(runtime);
 			if (runtimeTables) runtimeTables.push(table);
 			else derivedIndexTables.set(runtime, [table]);
 		}
+		const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+		if (definedRoot?.auditStore) auditStores.add(definedRoot.auditStore);
+		for (const auditStore of auditStores)
+			for (const runtime of getDerivedIndexInstallations(auditStore))
+				if (!derivedIndexTables.has(runtime)) derivedIndexTables.set(runtime, []);
 		if (derivedIndexTables.size === 0) return;
 
 		const entries = [...derivedIndexTables].map(([runtime, runtimeTables]) => ({ runtime, runtimeTables }));
@@ -2239,6 +2268,10 @@ async function quiesceDatabaseDerivedIndexes(dbTables: Tables, operation: string
 	}
 }
 
+/**
+ * Delete the database
+ * @param databaseName
+ */
 export async function dropDatabase(databaseName) {
 	if (!databases[databaseName]) throw new Error('Database does not exist');
 	const dbTables = databases[databaseName];
@@ -2259,7 +2292,7 @@ export async function dropDatabase(databaseName) {
 
 		// A database drop bypasses each Table's dropTable() path, so retire every derived-index
 		// registration here before its source stores or native files can be closed and removed.
-		await quiesceDatabaseDerivedIndexes(dbTables, 'database drop');
+		await quiesceDatabaseDerivedIndexes(databaseName, dbTables, 'database drop');
 
 		for (const tableName in dbTables) {
 			const table = dbTables[tableName];
@@ -2377,11 +2410,10 @@ export function closeDatabase(databaseName: string): boolean {
 	return true;
 }
 
-/** Quiesce post-commit derived indexes before online restore closes and replaces database storage. */
 export async function closeDatabaseForRestore(databaseName: string): Promise<boolean> {
 	const dbTables = databases[databaseName];
 	if (!dbTables) return false;
-	await quiesceDatabaseDerivedIndexes(dbTables, 'database restore');
+	await quiesceDatabaseDerivedIndexes(databaseName, dbTables, 'database restore');
 	return closeDatabase(databaseName);
 }
 
@@ -3658,12 +3690,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			schemaChangeOperation
 		).then(markSettled, markSettled);
 	}
-	const canReuseFullTextRuntime =
-		Table.derivedIndexRuntime &&
-		Table.derivedIndexRuntime.canReuse?.() !== false &&
-		!previousHasNativeHnsw &&
-		!Table.attributes.some((attribute) => Table.indices[attribute.name]?.customIndex?.postCommit) &&
-		previousFullTextStorageKey === fullTextStorageKey(Table.fullTextIndexes, Table.fullTextIndexGenerations);
+	const canReuseFullTextRuntime = canReuseDerivedIndexRuntime(Table, previousFullTextStorageKey, previousHasNativeHnsw);
 	// Query behavior is read from the live schema and does not require a second writer for the same generation.
 	// HNSW keeps the existing replacement path because its registration also captures computed resolvers.
 	if (!canReuseFullTextRuntime) {

@@ -455,6 +455,9 @@ describe('@fullText derived-index activation', () => {
 		const firstOpen = binding.opens.find(isCurrentIndex);
 		const firstToken = Product.fullTextIndexGenerations.search;
 		assert.strictEqual(typeof firstToken, 'string');
+		const runtime = Product.derivedIndexRuntime;
+		Product.derivedIndexRuntime = undefined;
+		await runtime.close();
 
 		Product = resetDatabases()[database].Product;
 		await Product.put('shoe-2', { title: 'Road shoe' });
@@ -470,6 +473,29 @@ describe('@fullText derived-index activation', () => {
 		const latest = binding.opens.findLast(isCurrentIndex);
 		assert.strictEqual(Product.fullTextIndexGenerations.search, firstToken);
 		assert.strictEqual(latest.generation, firstOpen.generation);
+	});
+
+	it('keeps an unchanged full-text runtime attached across a catalog rescan', async () => {
+		const database = `fulltext-activation-rescan-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('title')],
+		});
+		await Product.put('shoe-1', { title: 'Trail shoe' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const runtime = Product.derivedIndexRuntime;
+		const openCount = binding.opens.length;
+
+		Product = resetDatabases()[database].Product;
+
+		assert.strictEqual(Product.derivedIndexRuntime, runtime);
+		assert.strictEqual(binding.opens.length, openCount);
 	});
 
 	it('preserves the native generation when only query behavior changes', async () => {
@@ -575,6 +601,43 @@ describe('@fullText derived-index activation', () => {
 		const repairedGeneration = Product.fullTextIndexGenerations.search;
 		assert.strictEqual(repairedGeneration, firstGeneration);
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+	});
+
+	it('retries a quarantined table runtime when restore quiesces hidden installations', async () => {
+		const database = `fulltext-quarantine-restore-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Invalid',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('title')],
+		});
+		Other = table({
+			database,
+			table: 'Healthy',
+			attributes: [{ name: 'id', type: 'ID', isPrimaryKey: true }],
+		});
+		await Product.put('shoe-1', { title: 'Trail shoe' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const runtime = Product.derivedIndexRuntime;
+		const primaryEntry = [...Product.dbisDB.getRange({ start: 'Invalid/', end: 'Invalid0' })].find(
+			({ value }) => value.isPrimaryKey
+		);
+		Product.dbisDB.putSync(primaryEntry.key, { ...primaryEntry.value, audit: false });
+		await Product.dbisDB.committed;
+		binding.closeError = new Error('writer did not quiesce');
+
+		const reloaded = resetDatabases()[database];
+		assert.strictEqual(reloaded.Invalid, undefined);
+		await assert.rejects(runtime.close(), /shutdown failed|did not prove quiescence/);
+		binding.closeError = undefined;
+
+		assert.strictEqual(await closeDatabaseForRestore(database), true);
+		Product = undefined;
+		Other = undefined;
 	});
 
 	it('does not register an index after its table closes during native setup', async () => {

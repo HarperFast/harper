@@ -80,15 +80,20 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 	const fullTextDefinitions = Table.fullTextIndexes as FullTextDefinition[];
 	const auditStore = Table.auditStore as RocksTransactionLogStore;
 	const existing = runtimes.get(auditStore);
-	const previous = existing?.installations.get(Table.tableId);
+	let previous = existing?.installations.get(Table.tableId);
 	let previousClose: Promise<void> | undefined;
 	if (previous) {
 		previousClose = previous.close();
-		previousClose.catch((error) =>
-			fullTextLogger.warn?.(
-				`Previous derived indexes for ${Table.databaseName}.${Table.tableName} did not quiesce cleanly`,
-				error
-			)
+		previousClose.then(
+			() => {
+				previous = undefined;
+				previousClose = undefined;
+			},
+			(error) =>
+				fullTextLogger.warn?.(
+					`Previous derived indexes for ${Table.databaseName}.${Table.tableName} did not quiesce cleanly`,
+					error
+				)
 		);
 	}
 	if (hnswAttributes.length === 0 && fullTextDefinitions.length === 0) return previous;
@@ -198,6 +203,12 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 		throw error;
 	}
 	return installed;
+}
+
+export function getDerivedIndexInstallations(
+	auditStore: RocksTransactionLogStore
+): ReadonlyArray<{ close(): Promise<void> }> {
+	return [...(runtimes.get(auditStore)?.installations.values() ?? [])];
 }
 
 function assertDerivedIndexSupport(Table: any, fullTextDefinitions: FullTextDefinition[]): void {
