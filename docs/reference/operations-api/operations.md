@@ -1477,7 +1477,7 @@ With an `id`, it returns that one status record:
 | `systemStatus`     | Every status record set with `set_status`                                                                                                                                 |
 | `componentStatus`  | Per-component health, aggregated across threads: `name` plus a `status` of `healthy`, `warning`, `error`, `loading`, or `unknown`                                         |
 | `restartRequired`  | Whether a restart is pending on this node — set by a deploy that did not restart (see [Deploying without a restart](#deploying-without-a-restart)) and cleared on restart |
-| `middlewareChains` | The resolved HTTP, upgrade, and WebSocket middleware order. Present only when the request passes `middleware: true` <VersionBadge version="v5.2.0" />                     |
+| `middlewareChains` | The resolved HTTP, upgrade, and WebSocket middleware order (v5.2.0). Present only when the request passes `middleware: true`                                              |
 
 `restartRequired` is per node: it reports the node that served the request, not the cluster.
 
