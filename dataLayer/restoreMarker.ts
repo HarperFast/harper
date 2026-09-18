@@ -1,20 +1,10 @@
 'use strict';
 
-import {
-	closeSync,
-	existsSync,
-	fsyncSync,
-	mkdirSync,
-	openSync,
-	readdirSync,
-	readFileSync,
-	renameSync,
-	unlinkSync,
-	writeSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
+import { fsyncDirectory, writeFileDurably } from '../utility/durableFile.ts';
 
 /**
  * Restore lock + marker protocol for RocksDB database restores (online operation and offline CLI),
@@ -147,26 +137,6 @@ export function checkRestoreState(dbPath: string): RestoreState {
 }
 
 /**
- * fsync a directory so a create/unlink of an entry within it is durable. Best-effort: Windows (and
- * some filesystems) reject opening a directory for fsync with EPERM/EISDIR/ENOTSUP — the durability
- * flush is a POSIX nicety, so treat those as a no-op rather than failing the restore.
- */
-function fsyncDir(dir: string): void {
-	let dirFd: number;
-	try {
-		dirFd = openSync(dir, 'r');
-	} catch (error: any) {
-		if (error.code === 'EPERM' || error.code === 'EISDIR' || error.code === 'ENOTSUP') return;
-		throw error;
-	}
-	try {
-		fsyncSync(dirFd);
-	} finally {
-		closeSync(dirFd);
-	}
-}
-
-/**
  * Take the per-database restore lock without writing a marker. Used by `dropDatabase` so a drop and
  * a restore serialize on the same primitive: whichever takes the lock first runs to completion; the
  * other gets a 409. Throws (statusCode 409) if the lock is already held.
@@ -209,30 +179,10 @@ function markerIsIntact(markerPath: string, dbPath: string): boolean {
  * left by an earlier crash is this database's own debris and is simply overwritten.
  */
 function publishRestoringMarker(dbPath: string): void {
-	const metaDir = restoreMetaDir(dbPath);
-	const tempPath = join(metaDir, restoreMetaKey(dbPath) + MARKER_TEMP_SUFFIX);
-	try {
-		const fd = openSync(tempPath, 'w');
-		try {
-			// first line is the database directory name so the startup scan can map this marker back to
-			// the database it blocks without reversing the hashed key
-			writeSync(fd, `${basename(dbPath)}\nrestore started ${new Date().toISOString()}\n`);
-			fsyncSync(fd);
-		} finally {
-			closeSync(fd);
-		}
-		renameSync(tempPath, restoringMarkerPath(dbPath));
-	} catch (error) {
-		try {
-			unlinkSync(tempPath);
-		} catch {
-			// debris either way; the write failure is the error worth reporting
-		}
-		throw error;
-	}
-	// fsync the metadata directory so the marker's directory entry is durable — without this a
-	// power loss can lose the entry, and a half-purged database would load as healthy
-	fsyncDir(metaDir);
+	// first line is the database directory name so the startup scan can map this marker back to the
+	// database it blocks without reversing the hashed key
+	const contents = `${basename(dbPath)}\nrestore started ${new Date().toISOString()}\n`;
+	writeFileDurably(restoringMarkerPath(dbPath), contents, restoreMetaKey(dbPath) + MARKER_TEMP_SUFFIX);
 }
 
 /**
@@ -255,7 +205,7 @@ export function beginRestore(dbPath: string): RestoreLock {
 		// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
 		// have been interrupted between the rename and this flush, which would leave the directory
 		// entry — the thing the startup scan reads — still only in the page cache.
-		else fsyncDir(restoreMetaDir(dbPath));
+		else fsyncDirectory(restoreMetaDir(dbPath));
 	} catch (error) {
 		fileLockRelease(lock.token);
 		throw error;
@@ -273,7 +223,7 @@ export function completeRestore(lock: RestoreLock): void {
 		// fsync the metadata directory so the marker's *removal* is durable — symmetric with the
 		// creation fsync in beginRestore. Without it, a power loss could resurrect the marker's
 		// directory entry and misclassify a fully-restored database as incomplete.
-		fsyncDir(restoreMetaDir(lock.dbPath));
+		fsyncDirectory(restoreMetaDir(lock.dbPath));
 	} finally {
 		fileLockRelease(lock.token);
 	}
@@ -297,7 +247,7 @@ export function clearRestoreMarker(lock: RestoreLock): void {
 		const markerPath = restoringMarkerPath(lock.dbPath);
 		if (existsSync(markerPath)) {
 			unlinkSync(markerPath);
-			fsyncDir(restoreMetaDir(lock.dbPath));
+			fsyncDirectory(restoreMetaDir(lock.dbPath));
 		}
 	} finally {
 		fileLockRelease(lock.token);
