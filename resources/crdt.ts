@@ -74,6 +74,28 @@ export function rebuildUpdateBefore(update: any, newerUpdate: any, fullUpdate?: 
 	}
 	return newUpdate;
 }
+
+/**
+ * The commutative operations in an out-of-order `update` — the only part of it whose outcome does not
+ * depend on where it lands in the write order. Used when the audit history the update would have been
+ * resequenced against is no longer retained.
+ *
+ * Not `rebuildUpdateBefore`, which folds an update against another UPDATE: against a materialized
+ * record its plain-newer-value rule drops the incoming `add` on any key the record already has a
+ * value for.
+ */
+export function commutativeOpsOf(update: any) {
+	let ops = null;
+	for (const key in update) {
+		const value = update[key];
+		if (value?.__op__) {
+			if (!ops) ops = {};
+			ops[key] = value;
+		}
+	}
+	return ops;
+}
+
 export function applyReverse(record, update, unknowns: Set<string>) {
 	for (const key in update) {
 		const value = update[key];
