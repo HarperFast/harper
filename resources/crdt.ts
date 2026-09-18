@@ -76,15 +76,13 @@ export function rebuildUpdateBefore(update: any, newerUpdate: any, fullUpdate?: 
 }
 
 /**
- * The commutative operations in an out-of-order `update` — the only part of it whose outcome does
- * not depend on where it lands in the write order. Used when the audit history the update would have
- * been resequenced against is no longer retained: a plain field's survival is decided by what newer
- * writes did to that key, which is exactly what the purged history no longer answers, while an `add`
- * folds to the same value whatever the order.
+ * The commutative operations in an out-of-order `update` — the only part of it whose outcome does not
+ * depend on where it lands in the write order. Used when the audit history the update would have been
+ * resequenced against is no longer retained.
  *
- * Not `rebuildUpdateBefore`: that folds an update against another UPDATE, where a plain newer value
- * wins the key outright — so against a materialized record it drops the incoming `add` on any key
- * the record already has a value for, which is the opposite of what this is for.
+ * Not `rebuildUpdateBefore`, which folds an update against another UPDATE: against a materialized
+ * record its plain-newer-value rule drops the incoming `add` on any key the record already has a
+ * value for.
  */
 export function commutativeOpsOf(update: any) {
 	let ops = null;

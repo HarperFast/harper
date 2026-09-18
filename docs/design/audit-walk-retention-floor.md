@@ -181,12 +181,18 @@ usefully only when it reaches an entry whose log key is at or below **`txnTime`*
 (`while (localTime > txnTime || …)`, `:3822`), so `txnTime` is the coordinate whose reachability
 decides whether the walk can terminate at this write. `txnLogKey` addresses _this write's own_
 entry, which is a different question and is already the coordinate `dedupVersionCouldBeRetained`
-uses for the keyed dedup. The round-1 counterexample (`version=100`, `txnLogKey=200`, floor `150`)
-does not survive the trace: with every retained key ≥ 150, no step can land at or below 100, so the
-walk still runs the whole chain to a purged miss and reconciles nothing exactly. Gating on
-`txnLogKey` would disable the fix outright — a replication apply commits under the _receiver's_
-current log key, which is always above the floor, which is exactly why #1486's guard did not cover
-this path.
+uses for the keyed dedup. The round-1 counterexample (`version=100`, `txnLogKey=200`, floor `150`) is
+exactly the case that decides it, and it decides it the other way: with every retained key ≥ 150, no
+step can land at or below 100, so the walk still runs the whole chain to a purged miss and reconciles
+nothing exactly — while a `txnLogKey` gate would not fire and would pay for that walk.
+
+One claim an earlier revision of this note carried was wrong, and a review round caught it: a
+replication apply does **not** commit under the receiver's current log key. The apply transaction
+takes the origin's log key (`resources/Table.ts:3715-3717`, and
+`unitTests/resources/dualClockAuditRecord.test.js`'s _an applied write keeps the origin version and
+takes the origin log key_), so `txnLogKey` is stable across re-deliveries of the same origin event.
+That is what makes the audit ref this change records a usable re-delivery guard, asserted directly in
+_applies a re-delivered below-floor op once when the record and log clocks differ_.
 
 ## Why fix 3 normalises the head, not the lookup call site
 
@@ -250,7 +256,7 @@ mixed window is not a new class of divergence, only a differently-shaped one.
 ## Planning round 1 resolution
 
 `Framing-Verdict: better-alternative-exists`. Resolved as follows, per
-[design-alternatives](https://github.com/HarperFast/harper) step 6:
+the `harper-engineering-guidelines` step-6 rule:
 
 | round-1 finding                                                                                            | resolution                                                                                                                                                                                                                      |
 | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

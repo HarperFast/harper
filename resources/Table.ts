@@ -3643,43 +3643,43 @@ export function makeTable(options) {
 						// existing timestamp, which means that we received updates out of order, and must resequence the application
 						// of the updates to the record to ensure consistency across the cluster
 						// TODO: can the previous version be older, but even more previous version be newer?
-						// The keyed dedup lookups in the audit block below (the up-front check, and the depth-cap /
-						// fully-superseded `isReDeliveredDuplicate` checks later) read the per-node transaction log
-						// by version. That log has time-based retention — auditRetention purges whole log files — so a
-						// lookup for a version older than the log's oldest retained entry has (essentially always)
-						// been purged. On RocksDB an exactStart miss scans the whole log to end-of-log (~17ms each in
-						// the field, all 100% misses while applying aged hdb_analytics during a system-DB copy,
-						// pegging the worker at ~100% CPU — harper-pro#480). Both of these lookups are already
-						// documented as best-effort-may-miss: a miss at the up-front check falls through to the walk
-						// (the additionalAuditRefs read-your-writes check above is the real duplicate guard, #1137),
-						// and the depth-cap check notes the lookup "can intermittently miss under load" with the
-						// authoritative full-copy record restoring exact convergence (#1148). This guard turns that
-						// tolerated miss into a deliberate skip for pre-retention versions — staying within the
-						// existing contract. (oldestRetainedAuditTime is the first physical/in-order entry's version;
-						// a transaction log appended out of timestamp order could in theory retain a smaller-versioned
-						// entry below it — but the same best-effort contract and full-copy convergence cover that.)
-						// Resolve the oldest retained entry once, for the same log the dedup reads.
-						let oldestRetainedAuditTime: number | undefined;
-						let oldestRetainedAuditTimeResolved = false;
-						const dedupVersionCouldBeRetained = (version: number): boolean => {
-							if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
-							if (!oldestRetainedAuditTimeResolved) {
-								oldestRetainedAuditTimeResolved = true;
-								// getRange yields ascending by audit-log key, so the first entry is the oldest retained.
-								// Mirror replicationConnection's retention check and the cleanup key basis (`txnLogKey`).
-								// Fall back to the nominal time-based purge floor when the log is empty/unavailable.
-								for (const entry of auditStore.getRange({ start: 1, log: options?.nodeId })) {
-									oldestRetainedAuditTime = entry.txnLogKey;
-									break;
-								}
-								oldestRetainedAuditTime ??= Date.now() - auditRetention;
-							}
-							return version >= oldestRetainedAuditTime!;
-						};
-						// Set by the audit block below once the duplicate guards have run: this write is older than
-						// every audit entry the database still accounts for, so the resequencing walk cannot reach it.
+						// Both are set by the audit block below and read by the walk block after it.
 						let belowAuditFloor = false;
+						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
+							// The keyed dedup lookups in this block (the up-front check below, and the depth-cap /
+							// fully-superseded `isReDeliveredDuplicate` checks later) read the per-node transaction log
+							// by version. That log has time-based retention — auditRetention purges whole log files — so a
+							// lookup for a version older than the log's oldest retained entry has (essentially always)
+							// been purged. On RocksDB an exactStart miss scans the whole log to end-of-log (~17ms each in
+							// the field, all 100% misses while applying aged hdb_analytics during a system-DB copy,
+							// pegging the worker at ~100% CPU — harper-pro#480). Both of these lookups are already
+							// documented as best-effort-may-miss: a miss at the up-front check falls through to the walk
+							// (the additionalAuditRefs read-your-writes check above is the real duplicate guard, #1137),
+							// and the depth-cap check notes the lookup "can intermittently miss under load" with the
+							// authoritative full-copy record restoring exact convergence (#1148). This guard turns that
+							// tolerated miss into a deliberate skip for pre-retention versions — staying within the
+							// existing contract. (oldestRetainedAuditTime is the first physical/in-order entry's version;
+							// a transaction log appended out of timestamp order could in theory retain a smaller-versioned
+							// entry below it — but the same best-effort contract and full-copy convergence cover that.)
+							// Resolve the oldest retained entry once, for the same log the dedup reads.
+							let oldestRetainedAuditTime: number | undefined;
+							let oldestRetainedAuditTimeResolved = false;
+							dedupVersionCouldBeRetained = (version: number): boolean => {
+								if (!isRocksDB) return true; // LMDB keeps its exact, unbounded lookup (keyed by local audit time)
+								if (!oldestRetainedAuditTimeResolved) {
+									oldestRetainedAuditTimeResolved = true;
+									// getRange yields ascending by audit-log key, so the first entry is the oldest retained.
+									// Mirror replicationConnection's retention check and the cleanup key basis (`txnLogKey`).
+									// Fall back to the nominal time-based purge floor when the log is empty/unavailable.
+									for (const entry of auditStore.getRange({ start: 1, log: options?.nodeId })) {
+										oldestRetainedAuditTime = entry.txnLogKey;
+										break;
+									}
+									oldestRetainedAuditTime ??= Date.now() - auditRetention;
+								}
+								return version >= oldestRetainedAuditTime!;
+							};
 							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
 							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
 							// out-of-order versions, read with read-your-writes consistency, so this skips the duplicate up
@@ -3738,17 +3738,13 @@ export function makeTable(options) {
 									return; // duplicate already applied; avoid the resequencing walk
 								}
 							}
-							// The walk below can only terminate at this write by reaching an audit entry whose log key is at
-							// or below txnTime (its own loop condition). Below the database's audit floor no such entry is
-							// accounted for any more, so the walk always runs the whole retained chain — one end-of-log scan
-							// per step on RocksDB — to an outcome the floor already determines (harper#2642: 1000-step cap
-							// never reached, one record per several minutes, two replication legs dead for 24h+).
-							// txnTime, not txnLogKey: txnLogKey addresses this write's OWN entry, which is what
-							// dedupVersionCouldBeRetained above guards, and a replication apply commits under the receiver's
-							// current log key — always above the floor, which is why #1486's guard did not cover this path.
-							// An unknown floor is Infinity, which every other consumer reads as "nothing is safe"; here the
-							// same value has to mean "cannot decide, walk", or an unreadable floor would discard every
-							// out-of-order write. RocksDB only: LMDB's audit store keeps its exact, unbounded reconciliation.
+							// The walk terminates at this write only by reaching an audit entry whose log key is at or below
+							// txnTime (the loop condition below), so below the floor it cannot: it runs the whole retained
+							// chain to an outcome the floor already determines (harper#2642). txnTime is the coordinate
+							// because it is the one that loop compares; txnLogKey addresses this write's own entry, a
+							// different question that dedupVersionCouldBeRetained already answers. An unknown floor is
+							// Infinity, which fails closed for a cursor check but has to fail OPEN here — walk rather than
+							// discard. RocksDB only: LMDB keeps its exact, unbounded reconciliation.
 							if (isRocksDB && precedesExisting < 0) {
 								const auditFloor = getAuditFloor(auditStore);
 								belowAuditFloor = Number.isFinite(auditFloor) && txnTime < auditFloor;
@@ -3772,13 +3768,11 @@ export function makeTable(options) {
 								new Date(localTime)
 							);
 
-							// `?? 0` only here, where undefined provably means the LOCAL log: a record's stored nodeId
-							// and the id its audit entry is logged under are resolved by the same expression, the latter
-							// with `?? 0` (RecordEncoder :933 vs :1005), so an absent record nodeId means log 0 — the same
-							// reading precedesExistingVersion and the identity string below already take. NOT at the lookup
-							// call site: `auditRecord.previousNodeId`, which advanceToPreviousAudit assigns after every step,
-							// is never encoded, so undefined there means "log unknown" and only the aggregate lookup can
-							// resolve a cross-origin predecessor (harper#2642).
+							// Normalized here and not at the lookup, because the two sources of an undefined nodeId do not
+							// mean the same thing: a record's own nodeId is resolved by the same expression as the id its
+							// audit entry is logged under, which applies `?? 0` (RecordEncoder), so absent means log 0;
+							// `previousNodeId` is never encoded, so absent there means the log is unknown and only the
+							// aggregate lookup can resolve a cross-origin predecessor.
 							let nodeId = initialAuditHead.nodeId ?? 0;
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							const auditRefsToVisit: Array<{ localTime: number; nodeId: number }> = existingEntry.additionalAuditRefs
@@ -4044,33 +4038,28 @@ export function makeTable(options) {
 								return;
 							}
 						} else if (belowAuditFloor) {
-							// The walk cannot reach this write, so the only contribution it can still make is the part
-							// whose outcome does not depend on the write order: its commutative ops. Whether a plain field
-							// survives depends on what newer writes did to that key — a newer full put erases it, a patch
-							// elsewhere does not — and that is precisely what the purged history no longer answers, so
-							// applying one would resurrect state a newer put may have erased and would make the result a
-							// function of how much log THIS node still holds.
-							// Everything else loses to the strictly newer head: a full update (no ops survive
-							// updateAndFreeze), a head carrying no record (a delete, or a residency-omitted record, which
-							// an op must not resurrect), and an op-less patch. Bare return, no writeCommit, matching the
-							// superseded-by-a-newer-put exit above so no audit record references the losing update's
-							// pre-saved blobs.
+							// The walk cannot reach this write, so it may contribute only what is order-independent: its
+							// commutative ops. Whether a plain field survives depends on what newer writes did to that key,
+							// which is what the purged history no longer answers, so applying one would resurrect state a
+							// newer put may have erased. Everything else loses to the strictly newer head: a full update, a
+							// head carrying no record (a delete or a residency-omitted record, which an op must not
+							// resurrect), and an op-less patch. Bare return, no writeCommit, so no audit record references
+							// the losing update's pre-saved blobs.
 							incrementalUpdateToApply = fullUpdate || existingRecord == null ? null : commutativeOpsOf(recordUpdate);
 							if (!incrementalUpdateToApply) {
 								write.skipped = true;
 								return;
 							}
-							// Every existing branch head is retained, as the walk does: per-origin log keys are not
-							// globally ordered, and dropping them loses the surviving head's addressable log-key pointer
-							// wherever the record and log clocks differ.
+							// Every existing branch head is retained, as the walk does: dropping them loses the surviving
+							// head's addressable log-key pointer wherever the record and log clocks differ.
 							if (existingEntry.additionalAuditRefs) {
 								for (const ref of existingEntry.additionalAuditRefs) {
 									additionalAuditRefs.push(ref);
 								}
 							}
-							// The ref the walk adds at its own out-of-order push: it is what lets the read-your-writes
-							// additionalAuditRefs check above recognise a re-delivery of this write, which matters here
-							// because the ops just applied would otherwise be applied twice.
+							// The ref the walk pushes for an applied out-of-order write. It is the only thing that lets the
+							// read-your-writes check above recognise a re-delivery once the walk no longer runs, which the
+							// ops just applied need so they are not applied twice.
 							additionalAuditRefs.push({ version: txnLogKey, nodeId: options?.nodeId });
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update

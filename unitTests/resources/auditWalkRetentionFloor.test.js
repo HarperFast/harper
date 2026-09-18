@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
+const { transaction } = require('#src/resources/transaction');
 const {
 	raiseAuditFloor,
 	getAuditFloor,
@@ -21,6 +22,9 @@ const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
 // RocksDB — to an outcome the floor already determines. These tests assert the walk is not entered
 // below the floor, that the one contribution which survives (commutative ops) still does and is not
 // applied twice on a re-delivery, and that the walk's head lookup resolves to a single log.
+// harper#2642. The walk is not entered below the audit floor; the one contribution that survives it
+// (commutative ops) still applies and is not applied twice on a re-delivery; the head lookup resolves
+// to a single log.
 describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 	// Every `key` the keyed dedup and the walk look up, plus the `log` each exactStart range was
 	// pinned to. The walk is the only thing in this block that looks up the EXISTING chain's keys,
@@ -188,6 +192,35 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 		await T.patch('twice', { count: { __op__: 'add', value: 1 } }, { timestamp: staleVersion });
 
 		assert.equal((await T.get('twice')).count, 6, 'a re-delivery must not double-apply the increment');
+	});
+
+	// The receive path: the apply transaction commits under the ORIGIN's log key while the write stores
+	// the origin's record version, so the two clocks differ (harper#2412). A re-delivery of the same
+	// origin event repeats both, which is what the below-floor audit ref is matched on.
+	function applyFromOrigin(T, id, record, { logKey, version, nodeId = 3, fullUpdate = false }) {
+		const context = { source: {}, sourceApply: true, timestamp: logKey };
+		return transaction(context, async () => {
+			const resource = await T.getResource(id, context);
+			return resource._writeUpdate(id, record, fullUpdate, { isNotification: true, nodeId, version });
+		});
+	}
+
+	it('applies a re-delivered below-floor op once when the record and log clocks differ', async function () {
+		if (isLMDB) return this.skip();
+		const T = tableInOwnDatabase('ReDeliveredApply');
+		await T.put('origin', { name: 'newer', count: 5 });
+		raiseAuditFloor(T.auditStore, Date.now());
+
+		// version below the floor, log key above it: the walk still cannot reach the version, and the
+		// guard must key on the log key the origin repeats rather than on anything receiver-local.
+		const version = Date.now() - 30 * DAY;
+		const logKey = Date.now() + 1;
+		const event = { count: { __op__: 'add', value: 1 } };
+		await applyFromOrigin(T, 'origin', event, { logKey, version });
+		assert.equal((await T.get('origin')).count, 6, 'the first delivery applies');
+
+		await applyFromOrigin(T, 'origin', event, { logKey, version });
+		assert.equal((await T.get('origin')).count, 6, 'the re-delivered origin event must not apply twice');
 	});
 
 	it('contributes no plain field from below the floor, whether or not the head carries it', async function () {
