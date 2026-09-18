@@ -390,37 +390,51 @@ async function main(): Promise<void> {
 		const r = await withHarper(async (url, resourceTargets) => {
 			const loadSeconds = await loadHarper(url, base);
 			console.log(`  [harper] load+index ${loadSeconds.toFixed(1)}s (${(base.length / loadSeconds).toFixed(0)} vec/s)`);
-			// Time-to-queryable, not time-to-written. The native plane is maintained post-commit, so
-			// a load returning says nothing about the index being usable — and nothing in the query
-			// path signals that it is still building, it just returns quietly incomplete results
-			// (measured 32% recall straight after a load, rising to 100% once it caught up).
-			//
-			// Recall does not climb monotonically: it plateaus mid-build, so a short stability
-			// window declares victory early (a 3-poll window stopped at 44.6% here). Require a full
-			// minute with no improvement before calling it built.
+			// Time-to-queryable. Two distinct states have to be cleared, and they are not the same:
+			//   1. the index is still building — every query fails 503 "rebuilding"/"unavailable"
+			//   2. the index is ready but has not yet covered the most recent writes
+			// waitForIndexMilliseconds (harper#2658) addresses only (2): its wait path checks
+			// readiness first and throws 503 immediately if the index is not ready, so it cannot be
+			// used to wait out the initial build. It is also capped at 30000ms. So poll for (1),
+			// then use the bounded causal wait for (2).
 			const probe = queries.slice(0, 50);
 			const probeTruth = truth.slice(0, 50);
 			const settleStart = Date.now();
-			let indexSeconds = 0;
-			let best = 0;
-			let stable = 0;
-			const STABLE_POLLS = 12; // x 5s = 60s of no improvement
-			const deadline = Date.now() + Number(values.settleMs || '900000');
-			while (Date.now() < deadline) {
-				const r = await runQueries(harperSender(url, 40), probe, K, 8, 1);
-				const recall = r.ids.reduce((sum, got, i) => sum + recallAt(got, probeTruth[i]), 0) / probe.length;
-				if (recall > best + 0.005) {
-					best = recall;
-					stable = 0;
-					console.log(
-						`    [plane] ${((Date.now() - settleStart) / 1000).toFixed(0)}s probe recall ${(recall * 100).toFixed(1)}%`
-					);
-				} else if (++stable >= STABLE_POLLS) {
+			const plain = harperSender(url, 40);
+			const readyBy = Date.now() + Number(values.settleMs || '900000');
+			let becameReady = false;
+			while (Date.now() < readyBy) {
+				try {
+					await plain(queries[0], K);
+					becameReady = true;
 					break;
+				} catch {
+					await delay(1000);
 				}
-				await delay(5000);
 			}
-			indexSeconds = (Date.now() - settleStart) / 1000 - STABLE_POLLS * 5;
+			if (!becameReady) console.log('  [harper] WARNING: index never left the rebuilding state');
+			// Now that it is serving, make sure it has caught up with the load before measuring.
+			try {
+				await harperSender(url, 40, 30_000)(queries[0], K);
+			} catch (error) {
+				console.log(`  [harper] coverage wait: ${(error as Error).message}`);
+			}
+			// Verify completeness rather than trusting readiness. Observed on 0.3.0: a run whose very
+			// first query succeeded immediately measured 68.9% recall where a run that waited 4.1s
+			// measured 99.4% — so "serving" and "complete" are still not the same state, and a
+			// benchmark that starts measuring on the first 200 silently scores a half-built index.
+			// Since recall is measured anyway, use it as the gate.
+			let best = 0;
+			let probeRun = await runQueries(plain, probe, K, 8, 1);
+			best = probeRun.ids.reduce((sum, got, i) => sum + recallAt(got, probeTruth[i]), 0) / probe.length;
+			while (best < 0.95 && Date.now() < readyBy) {
+				await delay(2000);
+				probeRun = await runQueries(plain, probe, K, 8, 1);
+				const again = probeRun.ids.reduce((sum, got, i) => sum + recallAt(got, probeTruth[i]), 0) / probe.length;
+				if (again <= best + 0.001 && again >= 0.9) break; // plateaued below the gate; report honestly
+				best = again;
+			}
+			const indexSeconds = (Date.now() - settleStart) / 1000;
 			console.log(
 				`  [harper] index queryable after a further ${indexSeconds.toFixed(1)}s (probe recall ${(best * 100).toFixed(1)}%)`
 			);
