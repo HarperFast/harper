@@ -22,3 +22,18 @@ services:
       -c max_parallel_workers_per_gather=0
       -c max_connections=300
       -c max_wal_size=8GB
+
+  # Qdrant: Rust, HNSW, self-hosted, and it serves HTTP itself — so unlike the pgvector stack
+  # there is no Node app in front of it, making it the closer architectural analogue to Harper.
+  # Host networking to match the other services; pinned to the same cpuset at runtime.
+  qdrant:
+    image: qdrant/qdrant:latest
+    network_mode: host
+    volumes:
+      - ${VECTOR_DATA_DIR_QDRANT:-./data}/qdrant:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+      # Match the others: no quantization, so all three compare float32 storage with
+      # whatever each engine does internally.
+      QDRANT__LOG_LEVEL: WARN

@@ -333,6 +333,96 @@ function pgSender(ef: number) {
 	};
 }
 
+// --------------------------------------------------------------------------- qdrant
+
+const QDRANT = 'http://127.0.0.1:6333';
+const QDRANT_COLLECTION = 'items';
+
+async function qdrantApi(method: string, path: string, body?: unknown): Promise<any> {
+	const res = await fetch(`${QDRANT}${path}`, {
+		method,
+		headers: { 'Content-Type': 'application/json' },
+		body: body === undefined ? undefined : JSON.stringify(body),
+	});
+	const text = await res.text();
+	if (!res.ok) throw new Error(`qdrant ${method} ${path} -> ${res.status}: ${text.slice(0, 300)}`);
+	return text ? JSON.parse(text) : undefined;
+}
+
+async function startQdrant(): Promise<string> {
+	console.log('\n=== qdrant: starting ===');
+	await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24 }).catch(() => {});
+	await exec('docker', [...COMPOSE, 'up', '-d', 'qdrant'], { maxBuffer: 1 << 24 });
+	await waitFor(`${QDRANT}/readyz`, 120_000);
+	const { stdout } = await exec('docker', [...COMPOSE, 'ps', '-q', 'qdrant']);
+	const id = stdout.trim();
+	if (values.serverCpus) await exec('docker', ['update', `--cpuset-cpus=${values.serverCpus}`, id]);
+	return id;
+}
+
+/**
+ * Qdrant indexes in background optimizer threads, and leaves a segment on plain (brute-force)
+ * search until it grows past `indexing_threshold` — which is a SIZE IN KILOBYTES, not a vector
+ * count, and where 0 means "never index" rather than "index everything". Its default of 20000 KB
+ * is ~39k 128-dim float32 vectors, so a smaller collection silently stays brute-forced and scores
+ * 100% recall at every ef: exact search wearing an ANN benchmark's clothes. Set it to 1 KB so the
+ * graph is always built, then wait for the optimizer to report every vector indexed.
+ */
+async function loadQdrant(base: Float32Array[], dims: number): Promise<{ load: number; index: number }> {
+	await qdrantApi('DELETE', `/collections/${QDRANT_COLLECTION}`).catch(() => {});
+	await qdrantApi('PUT', `/collections/${QDRANT_COLLECTION}`, {
+		vectors: { size: dims, distance: METRIC === 'cosine' ? 'Cosine' : 'Euclid' },
+		hnsw_config: { m: 16, ef_construct: 200 },
+		optimizers_config: { indexing_threshold: 1 },
+	});
+
+	const loadStart = Date.now();
+	const BATCH = 2000;
+	for (let start = 0; start < base.length; start += BATCH) {
+		const end = Math.min(start + BATCH, base.length);
+		const points = [];
+		for (let i = start; i < end; i++) points.push({ id: i, vector: Array.from(base[i]) });
+		await qdrantApi('PUT', `/collections/${QDRANT_COLLECTION}/points?wait=true`, { points });
+		if (start % 40000 === 0) console.log(`  loaded ${end} / ${base.length}`);
+	}
+	const load = (Date.now() - loadStart) / 1000;
+
+	// Time-to-queryable: green status with every vector indexed. Without this the sweep would
+	// measure a half-optimized collection, the same trap the native plane posed.
+	const indexStart = Date.now();
+	const deadline = Date.now() + 900_000;
+	while (Date.now() < deadline) {
+		const info = await qdrantApi('GET', `/collections/${QDRANT_COLLECTION}`);
+		const r = info?.result ?? {};
+		if (r.status === 'green' && (r.indexed_vectors_count ?? 0) >= base.length) break;
+		await delay(2000);
+	}
+	const index = (Date.now() - indexStart) / 1000;
+	const info = await qdrantApi('GET', `/collections/${QDRANT_COLLECTION}`);
+	const indexed = info?.result?.indexed_vectors_count ?? 0;
+	if (indexed < base.length) {
+		throw new Error(
+			`qdrant indexed only ${indexed}/${base.length} vectors — the collection is still on plain ` +
+				`search, which scores 100% recall at every ef and is not an HNSW measurement`
+		);
+	}
+	console.log(`  [qdrant] ${indexed} vectors indexed (HNSW active)`);
+	return { load, index };
+}
+
+function qdrantSender(ef: number) {
+	return async (vector: Float32Array, k: number): Promise<(number | string)[]> => {
+		const body = await qdrantApi('POST', `/collections/${QDRANT_COLLECTION}/points/search`, {
+			vector: Array.from(vector),
+			limit: k,
+			params: { hnsw_ef: ef },
+			with_payload: false,
+			with_vector: false,
+		});
+		return (body?.result ?? []).map((h: any) => h.id);
+	};
+}
+
 // --------------------------------------------------------------------------- sweep
 
 async function sweep(
@@ -477,6 +567,26 @@ async function main(): Promise<void> {
 		await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24 }).catch(() => {});
 		results.push({
 			target: 'pgvector',
+			loadSeconds: load,
+			indexSeconds: index,
+			memoryMiB: Object.values(mem.memoryBytes ?? {}).reduce((a, b) => a + b, 0) / 1048576,
+			sweep: sweepPoints,
+		});
+	}
+
+	if (targets.includes('qdrant')) {
+		const id = await startQdrant();
+		const { load, index } = await loadQdrant(base, dims);
+		console.log(`  [qdrant] load ${load.toFixed(1)}s + index ${index.toFixed(1)}s`);
+		const resourceTargets = {
+			processes: {} as Record<string, string>,
+			cgroups: { qdrant: `/sys/fs/cgroup/system.slice/docker-${id}.scope` },
+		};
+		const mem = await sampleResources(resourceTargets);
+		const sweepPoints = await sweep((ef) => qdrantSender(ef), undefined, queries, truth, resourceTargets);
+		await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24 }).catch(() => {});
+		results.push({
+			target: 'qdrant',
 			loadSeconds: load,
 			indexSeconds: index,
 			memoryMiB: Object.values(mem.memoryBytes ?? {}).reduce((a, b) => a + b, 0) / 1048576,
