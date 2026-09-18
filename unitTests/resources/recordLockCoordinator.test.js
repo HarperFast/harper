@@ -489,6 +489,23 @@ describe('record lock delegations', () => {
 			};
 			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300), /home answered timeout/);
 		});
+
+		it('retires an observation a generation activated while the last probe was in flight', async () => {
+			const cluster = new FakeCluster(['alpha', 'beta', 'gamma']);
+			const key = cluster.keyHomedOn('gamma');
+			await cluster.node('alpha').coordinator.acquire(key, LEASE, WAIT);
+			// The pass that ends the wait read its map before sending, so only a fresh read sees a
+			// generation that was activated while its probe was still out.
+			let replies = 0;
+			cluster.beforeReply = async (from) => {
+				if (from !== 'beta') return;
+				if (++replies === 1) return cluster.advance('beta', 200);
+				cluster.generation = 2;
+				cluster.advance('beta', 1_000);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			};
+			await assert.rejects(() => cluster.node('beta').coordinator.acquire(key, LEASE, 300), /home answered timeout/);
+		});
 	});
 
 	describe('successor freshness', () => {

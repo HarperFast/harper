@@ -547,7 +547,7 @@ blocks only the keys it homes, which is the availability property the whole rede
 `#requestRemotely` races the home against the caller's remaining budget and
 synthesizes `reason: 'timeout'` when the budget wins; that reply is this node's own deadline, not
 something the home said, so it is evidence-free. `acquire()` keeps the last completed reply in
-`lastCompleted` (carried across a coordinator handoff by `acquire`'s trailing `observed` parameter)
+`lastCompleted`, bound to the `(home, generation)` that produced it and retired when either moves,
 and classifies from it: a wait that watched the key held answers 423 even though its final probe was
 cut short, while a later `not-home` — the fresher fact — still answers 503. It also stops before a
 backoff that would reach the deadline, since the probe after it could only come back as that same

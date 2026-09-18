@@ -1164,7 +1164,7 @@ export class LockCoordinator {
 	 * The amortization is the first branch: a live, un-recalled delegation with enough time left costs
 	 * zero cluster messages.
 	 */
-	async acquire(key: any, leaseMs: number, waitMs: number): Promise<LockRound> {
+	acquire(key: any, leaseMs: number, waitMs: number): Promise<LockRound> {
 		return this.#acquire(key, leaseMs, waitMs);
 	}
 
@@ -1377,30 +1377,31 @@ export class LockCoordinator {
 				// which the terminal answer below is what handles.
 				warnOnce('record lock home disagreed about the ring', { database: this.database, table: this.table });
 
-			// A `timeout` is this node's own deadline ending its probe, not something a home said, so it
-			// is evidence about this node's budget and never about the key.
 			if (reply.reason !== 'timeout') lastCompleted = { reply, home, generation: homeMap.generation };
 			const remaining = deadlineMono - this.#monotonic();
 			const retryAfterMs = reply.retryAfterMs ?? 25;
-			// Asking a home this node IS costs nothing — `#grantLocally` is synchronous and a release can
-			// still land inside the backoff — so only a remote home leaves the next pass unusable: its
-			// request would go out with the leftover budget and could only return this node's `timeout`.
+			// A home this node IS costs nothing to ask again — `#grantLocally` is synchronous, so a release
+			// landing in the backoff is still grantable at the deadline. A remote home is not: its request
+			// would go out with the leftover budget and could only return this node's own `timeout`.
 			const exhausted = home === this.nodeId ? remaining <= 0 : remaining <= retryAfterMs;
 			if (!exhausted) await delay(Math.min(retryAfterMs, remaining)).promise;
 			if (this.#closed) {
 				// Same swap, landing in the backoff instead. Carry the remaining wait so the deadline the
-				// caller asked for is preserved across the hop — and what this wait already saw with it. A
-				// successor that homes the key itself can still grant inside what is left.
+				// caller asked for is preserved across the hop — and what this wait saw with it, since a
+				// successor exhausted on arrival has nothing of its own to answer from.
 				const successor = this.#authority();
 				if (successor === this)
 					throw new LockUnavailableError('Cluster record lock coordination was closed for this table');
 				return successor.#acquire(key, leaseMs, Math.max(0, deadlineMono - this.#monotonic()), lastCompleted);
 			}
 			if (!exhausted) continue acquisition;
-			// Only an observation of THIS home under THIS generation still describes the key: a ring change
-			// makes the previous home's answer a statement about a route that no longer owns it.
+			// Only an observation of THIS home under THIS generation still describes the key. The map is
+			// re-read here rather than reusing the pass's copy because a generation can be activated while
+			// the probe that ended the wait was still in flight.
 			const carried =
-				lastCompleted?.home === home && lastCompleted.generation === homeMap.generation
+				lastCompleted?.home === home &&
+				lastCompleted.generation === homeMap.generation &&
+				lastCompleted.generation === this.transport.homeMap(this.database)?.generation
 					? lastCompleted.reply
 					: undefined;
 			const terminal = carried ?? reply;
@@ -2432,7 +2433,6 @@ export class LockCoordinator {
 				requested,
 				timeout.promise.then(() => {
 					raced = true;
-					// Never `contended`: this node stopped waiting, so this reply shows nothing about the key.
 					return { granted: false, reason: 'timeout', retryAfterMs: 0 } as DelegationReply;
 				}),
 			]);
