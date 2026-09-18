@@ -108,11 +108,12 @@ exports.startServers = startServers;
 exports.closeServers = closeServers;
 
 async function closeWorkerDatabases() {
+	reportWorkerDatabaseCloseStatus(true);
 	let failureLogged = false;
 	for (;;) {
 		try {
 			await require('../../resources/databases.ts').closeLoadedDatabases();
-			if (failureLogged) reportWorkerDatabaseCloseStatus(false);
+			reportWorkerDatabaseCloseStatus(false);
 			return;
 		} catch (error) {
 			if (!failureLogged) {

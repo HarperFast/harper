@@ -3,32 +3,37 @@
 import * as hdbTerms from './hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import ITCEventObject from '../server/itc/utility/ITCEventObject.js';
-import { isMainThread } from 'node:worker_threads';
+import { isMainThread, threadId } from 'node:worker_threads';
 let serverItcHandlers;
 import { sendItcEvent } from '../server/threads/itc.js';
 
 export const PREPARE_DATABASE_DROP_OPERATION = 'prepare-database-drop';
 export const CANCEL_DATABASE_DROP_OPERATION = 'cancel-database-drop';
 
-// Await BOTH the local handler and the cross-worker broadcast. The local handler is what
-// rebuilds THIS thread's cache; firing it un-awaited let the originating worker return success
-// before its own cache caught up, so the next request it served observed stale state even though
-// the op awaited propagation to the other workers — the originator half of #1497. Promise.all also
-// lets a strict handler or broadcast failure reach this function's logging boundary. Callers that
-// don't await keep their prior fire-and-forget behavior.
+// Await both local handling and peer propagation so the caller cannot outrun its own schema cache.
 type SchemaSignalOptions = {
 	excludeThreadId?: number;
 	includeJobWorkers?: boolean;
 	mainFirst?: boolean;
 	onlyThreadId?: number;
 	rejectOnError?: boolean;
+	relayFromMain?: boolean;
 };
 
 export async function signalSchemaChange(message: any, options?: SchemaSignalOptions) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);
 		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
+		if (options?.relayFromMain) {
+			message.originator = threadId;
+			message.relaySchemaChangeFromMain = true;
+		}
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
+		if (options?.relayFromMain) {
+			if (isMainThread) await serverItcHandlers.schema(itcEventSchema);
+			else await sendItcEvent(itcEventSchema, { ...options, onlyThreadId: 0 });
+			return;
+		}
 		if (options?.mainFirst) {
 			let localError;
 			let localFailed = false;

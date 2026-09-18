@@ -1938,18 +1938,17 @@ export function makeTable(options) {
 					mainFirst: true,
 					rejectOnError: true,
 				});
-				markDatabaseDropDestructive(databaseName, threadId, attemptId);
-				await TableResource.#dropTablePrepared();
+				await TableResource.#dropTablePrepared(() =>
+					markDatabaseDropDestructive(databaseName, threadId, attemptId)
+				);
 				finishDatabaseDrop(databaseName, threadId, attemptId);
 				await signalling.signalSchemaChange(dropMessage(OPERATIONS_ENUM.DROP_TABLE), {
-					includeJobWorkers: true,
-					mainFirst: true,
-					rejectOnError: true,
+					relayFromMain: true,
 				});
 			} catch (error) {
 				const cancellationErrors: unknown[] = [];
 				try {
-					cancelDatabaseDrop(databaseName, threadId, attemptId);
+					await cancelDatabaseDrop(databaseName, threadId, attemptId);
 				} catch (cancelError) {
 					cancellationErrors.push(cancelError);
 				}
@@ -1971,7 +1970,7 @@ export function makeTable(options) {
 			}
 		}
 
-		static async #dropTablePrepared() {
+		static async #dropTablePrepared(markDestructive: () => void) {
 			// Release post-commit derived-index delivery before any destructive work: the runner's
 			// backend must have quiesced before its stores and native file are destroyed, and a
 			// same-name recreate must not race an owner still applying to the old generation.
@@ -1983,6 +1982,7 @@ export function makeTable(options) {
 				}
 			};
 			await quiesceDerivedIndexes();
+			markDestructive();
 			const rootStore = primaryStore.rootStore;
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any

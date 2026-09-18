@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { parentPort } from 'node:worker_threads';
 import { getEnvBuiltInComponents } from './../../components/Application.ts';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
+import { reportWorkerDatabaseCloseStatus } from '../threads/manageThreads.js';
 const JOB_NAME = process.env[(hdbTerms as any).PROCESS_NAME_ENV_PROP] as string;
 const JOB_ID = JOB_NAME.substring(4);
 
@@ -90,16 +91,23 @@ const JOB_ID = JOB_NAME.substring(4);
 		} catch (updateErr) {
 			harperLogger.error('Error updating job record on job worker exit:', updateErr);
 		}
-		// Release this worker's RocksDB handles before it exits. A job worker opens the whole
-		// database graph via getDatabases(); rocksdb-js's registry is process-global and a thread
-		// that exits without closing leaks its handles process-wide, which (among other costs)
-		// blocks an online restore_backup from confirming the target database is closed. Best
-		// effort — never let cleanup mask the job result.
-		try {
-			const { closeLoadedDatabases } = await import('../../resources/databases.ts');
-			await closeLoadedDatabases();
-		} catch (closeErr) {
-			harperLogger.warn('Error releasing database handles on job worker exit:', closeErr);
+		// Keep this worker alive until every process-global RocksDB handle is released. Main exits
+		// Harper if cleanup cannot complete within the ordinary worker-termination safety window.
+		reportWorkerDatabaseCloseStatus(true);
+		let closeFailureLogged = false;
+		for (;;) {
+			try {
+				const { closeLoadedDatabases } = await import('../../resources/databases.ts');
+				await closeLoadedDatabases();
+				reportWorkerDatabaseCloseStatus(false);
+				break;
+			} catch (closeErr) {
+				if (!closeFailureLogged) {
+					closeFailureLogged = true;
+					harperLogger.warn('Error releasing database handles on job worker exit; retrying:', closeErr);
+				}
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			}
 		}
 		// On Bun 1.3.13, calling process.exit() in a worker thread with lmdb-js loaded
 		// while sibling workers are running causes a NAPI fatal error crash. Unref

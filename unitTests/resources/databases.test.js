@@ -519,7 +519,12 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 });
 
 describe('audit cleanup retirement on teardown', () => {
-	const { readMetaDb, databases, quiesceTableDerivedIndexes } = require('#src/resources/databases');
+	const {
+		readMetaDb,
+		databases,
+		quiesceTableDerivedIndexes,
+		quarantineTableAfterSchemaRescanFailure,
+	} = require('#src/resources/databases');
 	const { mkdtempSync, rmSync } = require('node:fs');
 	const { tmpdir } = require('node:os');
 	const { open } = require('lmdb');
@@ -752,6 +757,28 @@ describe('audit cleanup retirement on teardown', () => {
 
 		assert.strictEqual(closeAttempts, 1);
 		assert.strictEqual(Probe.derivedIndexRuntime, undefined);
+	});
+
+	it('removes a table when schema verification cannot establish its derived-index generation', async function () {
+		const databaseName = 'derivedindexschemaquarantine';
+		const tableName = 'DerivedIndexSchemaQuarantineProbe';
+		const Probe = table({
+			table: tableName,
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Probe.schemaChangeOperation;
+		let closeAttempts = 0;
+		Probe.derivedIndexRuntime = {
+			async close() {
+				closeAttempts++;
+			},
+		};
+
+		await quarantineTableAfterSchemaRescanFailure(databaseName, tableName);
+
+		assert.strictEqual(closeAttempts, 1);
+		assert.strictEqual(databases[databaseName][tableName], undefined);
 	});
 
 	it('quiesces a replacement derived-index handle installed while a table drop waits', async function () {

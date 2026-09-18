@@ -6,7 +6,8 @@ const hdbTerms = require('../../utility/hdbTerms.ts');
 const cleanLmdbMap =
 	require('../../utility/lmdb/cleanLMDBMap.ts').default || require('../../utility/lmdb/cleanLMDBMap.ts');
 const userSchema = require('../../security/user.ts');
-const { validateEvent } = require('../threads/itc.js');
+const { validateEvent, sendItcEvent } = require('../threads/itc.js');
+const ITCEventObject = require('./utility/ITCEventObject.js');
 const harperBridge =
 	require('../../dataLayer/harperBridge/harperBridge.ts').default ||
 	require('../../dataLayer/harperBridge/harperBridge.ts');
@@ -19,7 +20,7 @@ const {
 	finishDatabaseDrop,
 	cancelDatabaseDrop,
 	reloadBranchAt,
-	quiesceTableDerivedIndexes,
+	quarantineTableAfterSchemaRescanFailure,
 } = require('../../resources/databases.ts');
 const { PREPARE_DATABASE_DROP_OPERATION, CANCEL_DATABASE_DROP_OPERATION } = require('../../utility/signalling.ts');
 
@@ -48,6 +49,31 @@ const serverItcHandlers = {
  */
 const schemaListeners = [];
 async function schemaHandler(event) {
+	let failure;
+	try {
+		await handleSchemaEvent(event);
+	} catch (error) {
+		failure = error;
+	} finally {
+		if (isMainThread && event.message?.relaySchemaChangeFromMain) {
+			const message = { ...event.message };
+			delete message.relaySchemaChangeFromMain;
+			try {
+				await sendItcEvent(new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message), {
+					includeJobWorkers: true,
+					preserveOriginator: true,
+				});
+			} catch (relayError) {
+				failure = failure
+					? new AggregateError([failure, relayError], 'Local and peer schema-change handling failed')
+					: relayError;
+			}
+		}
+	}
+	if (failure) throw failure;
+}
+
+async function handleSchemaEvent(event) {
 	const validate = validateEvent(event);
 	if (validate) {
 		hdbLogger.error(validate);
@@ -64,7 +90,7 @@ async function schemaHandler(event) {
 	if (event.message?.operation === CANCEL_DATABASE_DROP_OPERATION && event.message.schema) {
 		if (typeof event.message.dropAttemptId !== 'string' || !event.message.dropAttemptId)
 			throw new Error('Database drop cancellation is missing its attempt id');
-		cancelDatabaseDrop(event.message.schema, event.message.originator, event.message.dropAttemptId);
+		await cancelDatabaseDrop(event.message.schema, event.message.originator, event.message.dropAttemptId);
 		return;
 	}
 	if (
@@ -126,7 +152,7 @@ async function syncSchemaMetadata(msg) {
 		let failure = error;
 		if (!msg.branchPath && msg.database && msg.table) {
 			try {
-				await quiesceTableDerivedIndexes(msg.database, msg.table, 'failed schema rescan');
+				await quarantineTableAfterSchemaRescanFailure(msg.database, msg.table);
 			} catch (closeError) {
 				failure = new AggregateError(
 					[error, closeError],

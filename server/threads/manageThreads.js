@@ -92,6 +92,7 @@ let getRunningIsolatedApplications;
 let awaitProcessGroupTermination;
 // Worker-side backstop that force-exits if the graceful shutdown sequence doesn't finish in time.
 let selfExitTimer;
+let workerDatabaseClosePending = false;
 // An extended self-exit deadline requested by a drain (absolute epoch ms), honored regardless of whether
 // it is recorded before or after the SHUTDOWN handler arms the timer (the two race across listeners).
 let selfExitDrainDeadline = 0;
@@ -114,6 +115,7 @@ function armSelfExit(delay) {
 	if (selfExitTimer) clearTimeout(selfExitTimer);
 	selfExitTimer = setTimeout(() => {
 		harperLogger.warn('Thread did not voluntarily terminate', threadId);
+		if (workerDatabaseClosePending) return;
 		// Note that if this occurs, you may want to use this to debug what is currently running:
 		// require('why-is-node-running')();
 		realExit(0);
@@ -491,7 +493,15 @@ if (!parentPort) {
 		worker?.extendTerminateDeadline?.(message.deadlineMs);
 	});
 	onMessageByType(WORKER_DATABASE_CLOSE_STATUS, (message, worker) => {
-		if (worker) worker.databaseCloseFailed = message.failed === true;
+		if (!worker) return;
+		worker.databaseCloseFailed = message.failed === true;
+		if (worker.databaseCloseSafetyTimer) clearTimeout(worker.databaseCloseSafetyTimer);
+		worker.databaseCloseSafetyTimer = undefined;
+		if (worker.databaseCloseFailed)
+			worker.databaseCloseSafetyTimer = setTimeout(
+				() => forceTerminateWorker(worker),
+				threadTerminationTimeout * 2
+			).unref();
 	});
 }
 // postMessage type listeners that are registered in other ways or can be registered later
@@ -636,6 +646,7 @@ function startWorker(path, options = {}) {
 		harperLogger.error(`Worker index ${options.workerIndex} error:`, error);
 	});
 	worker.on('exit', (_code) => {
+		if (worker.databaseCloseSafetyTimer) clearTimeout(worker.databaseCloseSafetyTimer);
 		workers.splice(workers.indexOf(worker), 1);
 		if (
 			!processShuttingDown &&
@@ -1516,6 +1527,7 @@ if (parentPort && workerData?.addPorts) {
 }
 
 function reportWorkerDatabaseCloseStatus(failed) {
+	workerDatabaseClosePending = failed === true;
 	parentPort?.postMessage({ type: WORKER_DATABASE_CLOSE_STATUS, failed });
 }
 module.exports.getThreadInfo = getThreadInfo;

@@ -173,7 +173,7 @@ describe('RocksDB handle release', function () {
 		resetDatabases();
 		assert.strictEqual(getDatabases()[databaseName], undefined, 'catalog rescans must not reopen a prepared drop');
 
-		cancelDatabaseDrop(databaseName, originator);
+		await cancelDatabaseDrop(databaseName, originator);
 		assert.ok(getDatabases()[databaseName]);
 	});
 
@@ -194,7 +194,7 @@ describe('RocksDB handle release', function () {
 			);
 		} finally {
 			rmSync(legacyDatabasePath, { recursive: true, force: true });
-			cancelDatabaseDrop(databaseName, originator);
+			await cancelDatabaseDrop(databaseName, originator);
 		}
 	});
 
@@ -221,7 +221,7 @@ describe('RocksDB handle release', function () {
 			);
 		} finally {
 			rmSync(configuredRoot, { recursive: true, force: true });
-			cancelDatabaseDrop(databaseName, originator);
+			await cancelDatabaseDrop(databaseName, originator);
 			env.setProperty(terms.CONFIG_PARAMS.DATABASES, previousConfig);
 		}
 	});
@@ -237,7 +237,7 @@ describe('RocksDB handle release', function () {
 		resetDatabases();
 
 		assert.ok(getDatabases()[databaseName], 'schema gossip must not evict the coordinator before dropDatabase runs');
-		cancelDatabaseDrop(databaseName);
+		await cancelDatabaseDrop(databaseName);
 	});
 
 	it('keeps a configured-path coordinator database loaded while its drop barrier is pending', async function () {
@@ -262,14 +262,14 @@ describe('RocksDB handle release', function () {
 				getDatabases()[databaseName],
 				'schema gossip must not evict a configured-path coordinator before dropDatabase runs'
 			);
-			cancelDatabaseDrop(databaseName);
+			await cancelDatabaseDrop(databaseName);
 		} finally {
-			cancelDatabaseDrop(databaseName);
+			await cancelDatabaseDrop(databaseName);
 			env.setProperty(terms.CONFIG_PARAMS.DATABASES, previousConfig);
 		}
 	});
 
-	it('does not cold-open a coordinator database after destructive drop begins', async function () {
+	it('keeps the coordinator loaded until quiescence succeeds, then does not reopen it', async function () {
 		this.timeout(30000);
 		const databaseName = 'close-drop-destructive-rescan';
 		const Table = table({
@@ -286,10 +286,9 @@ describe('RocksDB handle release', function () {
 		const dropping = dropDatabase(databaseName);
 		await new Promise((resolve) => setImmediate(resolve));
 
-		assert.strictEqual(
+		assert.ok(
 			resetDatabases()[databaseName],
-			undefined,
-			'a rescan must not reopen the path once destructive work has begun'
+			'a rescan must keep the coordinator graph reachable while quiescence can still fail'
 		);
 		release();
 		await dropping;
@@ -315,8 +314,9 @@ describe('RocksDB handle release', function () {
 		const preparing = prepareDatabaseForDrop(databaseName, originator);
 		await new Promise((resolve) => setImmediate(resolve));
 
-		cancelDatabaseDrop(databaseName, originator);
+		const cancellation = cancelDatabaseDrop(databaseName, originator);
 		release();
+		await cancellation;
 		await assert.rejects(preparing, /canceled before/);
 
 		assert.ok(getDatabases()[databaseName], 'cancellation must win over an in-flight prepare');
@@ -344,21 +344,21 @@ describe('RocksDB handle release', function () {
 		const firstAttempt = prepareDatabaseForDrop(databaseName, originator, 'first-attempt');
 		await new Promise((resolve) => setImmediate(resolve));
 
-		cancelDatabaseDrop(databaseName, originator, 'first-attempt');
+		const cancellation = cancelDatabaseDrop(databaseName, originator, 'first-attempt');
+		releaseFirst();
+		await cancellation;
+		await assert.rejects(firstAttempt, /canceled before/);
 		Table = getDatabases()[databaseName].pkg;
 		Table.derivedIndexRuntime = { close: async () => {} };
 		await prepareDatabaseForDrop(databaseName, originator, 'second-attempt');
 		assert.strictEqual(getDatabases()[databaseName], undefined);
-
-		releaseFirst();
-		await assert.rejects(firstAttempt, /canceled before/);
 		assert.strictEqual(
 			getDatabases()[databaseName],
 			undefined,
 			'a stale preparation must not clear or rescan through the successor attempt'
 		);
 		assert.throws(() => database({ database: databaseName }), /being dropped/);
-		cancelDatabaseDrop(databaseName, originator, 'second-attempt');
+		await cancelDatabaseDrop(databaseName, originator, 'second-attempt');
 		assert.ok(getDatabases()[databaseName]);
 	});
 
@@ -385,7 +385,7 @@ describe('RocksDB handle release', function () {
 		await preparing;
 
 		assert.strictEqual(refCountFor(rootStore.path), 0, 'PREPARE must close the table graph captured before the rescan');
-		cancelDatabaseDrop(databaseName, originator);
+		await cancelDatabaseDrop(databaseName, originator);
 	});
 
 	it('closes a captured tableless root when a rescan evicts it during preparation', async function () {
@@ -404,7 +404,7 @@ describe('RocksDB handle release', function () {
 			0,
 			'PREPARE must close the tableless root captured before the rescan'
 		);
-		cancelDatabaseDrop(databaseName, originator);
+		await cancelDatabaseDrop(databaseName, originator);
 	});
 
 	it('rejects concurrent drop coordinators without replacing the active marker', async function () {
@@ -418,13 +418,13 @@ describe('RocksDB handle release', function () {
 		beginDatabaseDrop(databaseName);
 		assert.throws(() => beginDatabaseDrop(databaseName), /already being dropped/);
 		await assert.rejects(prepareDatabaseForDrop(databaseName, competingOriginator), /another coordinator/);
-		cancelDatabaseDrop(databaseName, competingOriginator);
+		await cancelDatabaseDrop(databaseName, competingOriginator);
 		assert.throws(
 			() => database({ database: databaseName }),
 			/being dropped/,
 			'a competing coordinator must not clear or replace the active marker'
 		);
-		cancelDatabaseDrop(databaseName);
+		await cancelDatabaseDrop(databaseName);
 	});
 
 	it('reopens a prepared database when its drop coordinator exits', async function () {
@@ -437,7 +437,7 @@ describe('RocksDB handle release', function () {
 
 		await prepareDatabaseForDrop(databaseName, originator);
 		assert.strictEqual(getDatabases()[databaseName], undefined);
-		cancelDatabaseDropsFromThread(originator);
+		await cancelDatabaseDropsFromThread(originator);
 
 		assert.ok(getDatabases()[databaseName], 'a dead coordinator must not leave the database name fenced forever');
 	});
@@ -457,7 +457,7 @@ describe('RocksDB handle release', function () {
 
 		await prepareDatabaseForDrop(firstName, originator, 'first-attempt');
 		await prepareDatabaseForDrop(secondName, originator, 'second-attempt');
-		cancelDatabaseDropsFromThread(originator);
+		await cancelDatabaseDropsFromThread(originator);
 
 		assert.ok(getDatabases()[firstName]);
 		assert.ok(getDatabases()[secondName]);
@@ -503,7 +503,7 @@ describe('RocksDB handle release', function () {
 		await prepareDatabaseForDrop(databaseName);
 		assert.strictEqual(closeAttempts, 2, 'the next preparation must retry the exact handle that failed to close');
 		assert.strictEqual(refCountFor(rootStore.path), 0, 'the retried close must release the stranded native handle');
-		cancelDatabaseDrop(databaseName);
+		await cancelDatabaseDrop(databaseName);
 	});
 
 	it('retries a failed handle close even while the database is unloaded', async function () {

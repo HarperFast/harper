@@ -97,8 +97,6 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 	assertDerivedIndexSupport(Table, fullTextDefinitions);
 
 	const registered = existing ?? runtimeFor(auditStore);
-	// A redefinition installs a new table view before the old runner finishes quiescing. Its release
-	// must therefore remove only its own view, never the replacement now serving the same table id.
 	const registrations: Registration[] = [];
 	const install = (register: Registration['register']) => {
 		registrations.push({ register, release: register() });

@@ -9,7 +9,7 @@ const FIXTURE = path.join(__dirname, 'signalling-main-first-fixture.cjs');
 describe('main-first schema signalling', function () {
 	this.timeout(30000);
 
-	it('still notifies peers when the local catalog rescan fails', async function () {
+	async function expectPeerNotification(options) {
 		let worker;
 		try {
 			const ready = new Promise((resolve, reject) => {
@@ -38,7 +38,7 @@ describe('main-first schema signalling', function () {
 					database: 'missing-main-first',
 					table: 'missing-table',
 				},
-				{ mainFirst: true }
+				options
 			);
 			await received;
 		} finally {
@@ -47,5 +47,13 @@ describe('main-first schema signalling', function () {
 				await worker.terminate();
 			}
 		}
+	}
+
+	it('still notifies peers when the local catalog rescan fails', async function () {
+		await expectPeerNotification({ mainFirst: true });
+	});
+
+	it('relays a destructive terminal event through main', async function () {
+		await expectPeerNotification({ relayFromMain: true });
 	});
 });

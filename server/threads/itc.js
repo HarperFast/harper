@@ -50,7 +50,7 @@ function sendItcEvent(event, options = undefined) {
 	// Always stamp originator so handlers can send direct responses back.
 	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
 	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
-	if (event.message) event.message.originator = threadId;
+	if (event.message && !options?.preserveOriginator) event.message.originator = threadId;
 	return broadcastWithAcknowledgement(event, undefined, options);
 }
 

@@ -209,14 +209,12 @@ export class ResourceBridge extends BridgeMethods {
 			await dropDatabase(databaseName);
 			finishDatabaseDrop(databaseName, threadId, attemptId);
 			await signalling.signalSchemaChange(dropMessage(OPERATIONS_ENUM.DROP_SCHEMA), {
-				includeJobWorkers: true,
-				mainFirst: true,
-				rejectOnError: true,
+				relayFromMain: true,
 			});
 		} catch (error) {
 			const cancellationErrors: unknown[] = [];
 			try {
-				cancelDatabaseDrop(databaseName, threadId, attemptId);
+				await cancelDatabaseDrop(databaseName, threadId, attemptId);
 			} catch (cancelError) {
 				cancellationErrors.push(cancelError);
 			}

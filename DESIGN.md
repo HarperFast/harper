@@ -1859,14 +1859,13 @@ Three non-obvious mechanics keep that safe:
   itself a job, so before any `restore_backup` there is always at least one exited job worker that
   touched the database. Without cleanup those leaked handles keep `registryStatus()` non-zero and
   would fail the closure check even when no component holds the database. `jobProcess` therefore
-  calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, and ordinary pool
-  workers call the same teardown after servers and application scopes close. It closes every loaded
+  retries `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, and ordinary pool
+  workers run the same retrying teardown after servers and application scopes close. It closes every loaded
   user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
-  exited worker leaves no residual handle to be mistaken for a live holder. Pool-worker shutdown
-  retries a rejected close until the existing termination backstop fires. If the failure persists,
-  the main thread exits Harper for a clean supervisor restart rather than force-terminating the worker
-  and leaking process-global state. It never reports a clean exit while a derived writer or RocksDB
-  reference is still retained.
+  exited worker leaves no residual handle to be mistaken for a live holder. Each worker reports the
+  close as pending before it begins, so a rejection or a close that never settles reaches the same
+  termination backstop. If the close does not finish, the main thread exits Harper for a clean
+  supervisor restart rather than force-terminating the worker and leaking process-global state.
 - **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
   A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
   a "successful" restore (or vice versa). `dropDatabase` therefore _acquires_ the restore lock
@@ -2734,27 +2733,29 @@ A database drop uses a stricter cross-worker barrier than ordinary schema broadc
 worker first marks the database as dropping. A worker coordinator then fences the main thread before
 snapshotting the remaining peers; main owns production worker creation, so a worker started after
 that acknowledgement inherits the active marker in `workerData`, while workers already running join
-the second barrier snapshot. The same ordering clears the main marker before cancellation or finish
-is broadcast, so a worker cannot inherit a marker after the clearing snapshot. Every peer then
-quiesces all derived-index installations associated with its audit store, closes its handles, and
+the second barrier snapshot. Every peer then quiesces all derived-index installations associated
+with its audit store, closes its handles, and
 acknowledges success. A handle-close failure produces a negative acknowledgement rather than being
 logged and treated as quiescent. A negative acknowledgement, recipient exit before acknowledgement,
 or timeout rejects the drop before destructive storage work. While marked, scans and on-demand lookup
 cannot reopen a peer's database; the coordinator keeps its already-open database loaded until
-`dropDatabase()` starts. Once `dropDatabase()` captures that table graph, the marker enters its
-destructive phase and even the coordinator's catalog scans skip the path; the captured handles remain
-usable for teardown, while a concurrent rescan cannot cold-open the directory between environment
-unregistration and native destruction. Failure broadcasts cancellation and reloads the database; a
-peer whose in-flight preparation finishes after that cancellation detects the changed marker and
-reloads again.
+derived-index quiescence succeeds. The marker enters its destructive phase immediately before storage
+teardown, and coordinator catalog scans then skip the path; the captured handles remain usable while
+a concurrent rescan cannot cold-open the directory between environment unregistration and native
+destruction. Failure revokes the attempt, waits for any in-flight
+preparation to stop quiescing, then reloads the database. This prevents a stale preparation from
+closing a runtime created by cancellation.
 Cancellation and finish messages clear only the marker owned by their coordinator and attempt token,
 so a late message cannot clear a newer drop, including a retry from the same coordinator. The token
 also fences an older preparation that resumes after cancellation: it cannot close storage or rescan
 through its successor's marker. An active marker is never replaced by a different attempt; another
 local attempt or peer preparation receives 409. Simultaneous coordinators can therefore both fail and
-retry, but cannot close or cancel each other's prepared state. Successful deletion sends the ordinary
-schema event with the same token, which clears the matching marker. The destructive barrier includes
-job workers even though ordinary schema gossip excludes them. A peer also records the coordinating
+retry, but cannot close or cancel each other's prepared state. Successful deletion sends the schema
+event with the same token through main. Main clears its marker before relaying the event to its current
+worker set. Worker construction and registration are synchronous on main, so a worker either joins
+that relay or starts after the marker is gone; a worker cannot inherit the marker and miss the terminal
+recipient snapshot. The destructive barrier includes job workers even though ordinary schema gossip
+excludes them. A peer also records the coordinating
 thread and cancels every marker it owns if that thread exits before finish or cancellation arrives.
 That exit listener is registered beside the marker registry, before inherited markers are admitted;
 an inherited marker whose coordinator is already known dead is discarded during module load. A

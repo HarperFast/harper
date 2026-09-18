@@ -447,9 +447,7 @@ function openRocksDatabase(path: string, options: RocksDatabaseOptions & { dupSo
 const lmdbDatabaseEnvs = new Map<string, LMDBRootDatabase>();
 const rocksdbDatabaseEnvs = new Map<string, RocksRootDatabase>();
 
-// A quarantined table can be loaded synchronously, without attaching derived indexes, only while a
-// local schema declaration repairs it. The declaration then runs through the ordinary locked update
-// path and attaches a fresh runtime before yielding back to the event loop.
+// Allows a local declaration to repair an otherwise unloadable full-text definition.
 const fullTextActivationRepairs = new Set<string>();
 
 function fullTextActivationRepairKey(path: string, tableName: string): string {
@@ -654,8 +652,13 @@ function clearInterruptedDropEntries(storePath: string, tableName: string) {
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
 type DatabaseDropMarker = { originator: number; attemptId: string; destructive?: boolean };
 const databasesBeingDropped = new Map<string, DatabaseDropMarker>();
+const databaseDropPreparations = new Map<string, Promise<boolean>>();
 const pendingDatabaseStoreCloses = new Map<string, Map<any, string>>();
-manageThreads.onThreadExit(cancelDatabaseDropsFromThread);
+manageThreads.onThreadExit((originator) => {
+	void cancelDatabaseDropsFromThread(originator).catch((error) =>
+		logger.error(`Could not cancel database drops owned by exited thread ${originator}`, error)
+	);
+});
 if (Array.isArray(workerData?.databaseDropMarkers))
 	for (const entry of workerData.databaseDropMarkers) {
 		if (!Array.isArray(entry)) continue;
@@ -697,7 +700,7 @@ function clearDatabaseDropMarker(databaseName: string, originator?: number, atte
 	return deleted;
 }
 
-function releaseQuarantinedTable(databaseName: string, tableName: string, Table: any): void {
+function releaseQuarantinedTable(databaseName: string, tableName: string, Table: any): Promise<void> {
 	const stores = [
 		...Object.entries(Table.indices || {}).map(([indexName, store]) => [store, `index ${tableName}.${indexName}`]),
 		[Table.primaryStore, `table ${tableName}`],
@@ -724,9 +727,9 @@ function releaseQuarantinedTable(databaseName: string, tableName: string, Table:
 	};
 	if (!runtime) {
 		closeStores();
-		return;
+		return Promise.resolve();
 	}
-	void Promise.resolve()
+	return Promise.resolve()
 		.then(() => runtime.close())
 		.then(closeStores, (error) => {
 			logger.warn(`Error quiescing derived indexes while quarantining ${databaseName}.${tableName}:`, error);
@@ -2426,6 +2429,18 @@ export async function quiesceTableDerivedIndexes(
 	await quiesceDerivedIndexes(table, operation, { includeAuditStoreInstallations: false });
 }
 
+export async function quarantineTableAfterSchemaRescanFailure(
+	databaseName: string,
+	tableName: string
+): Promise<void> {
+	const dbTables = databases[databaseName];
+	const Table = dbTables?.[tableName];
+	if (!Table?.derivedIndexRuntime) return;
+	if (dbTables[tableName] === Table) delete dbTables[tableName];
+	if (databaseName === 'data' && tables[tableName] === Table) delete tables[tableName];
+	await releaseQuarantinedTable(databaseName, tableName, Table);
+}
+
 /**
  * Delete the database
  * @param databaseName
@@ -2434,7 +2449,6 @@ export async function dropDatabase(databaseName) {
 	if (!databases[databaseName]) throw new Error('Database does not exist');
 	const dbTables = databases[databaseName];
 	const dropMarker = databasesBeingDropped.get(databaseName);
-	if (dropMarker?.originator === threadId) dropMarker.destructive = true;
 	let rootStore;
 
 	// Hold the per-database restore lock across the entire drop so its file deletion can never
@@ -2453,6 +2467,7 @@ export async function dropDatabase(databaseName) {
 		// A database drop bypasses each Table's dropTable() path, so retire every derived-index
 		// registration here before its source stores or native files can be closed and removed.
 		await quiesceDatabaseDerivedIndexes(databaseName, dbTables, 'database drop');
+		if (dropMarker?.originator === threadId) dropMarker.destructive = true;
 
 		for (const tableName in dbTables) {
 			const table = dbTables[tableName];
@@ -2627,13 +2642,17 @@ export async function prepareDatabaseForDrop(
 		throw error;
 	}
 	setDatabaseDropMarker(databaseName, marker);
+	const preparation = closeDatabaseForRestore(databaseName, marker);
+	databaseDropPreparations.set(databaseName, preparation);
 	try {
-		await closeDatabaseForRestore(databaseName, marker);
+		await preparation;
 		if (!databaseDropMarkerMatches(databasesBeingDropped.get(databaseName), originator, attemptId))
 			throw new Error(`Database drop preparation for '${databaseName}' was canceled before it completed`);
 	} catch (error) {
 		if (clearDatabaseDropMarker(databaseName, originator, attemptId)) resetDatabases();
 		throw error;
+	} finally {
+		if (databaseDropPreparations.get(databaseName) === preparation) databaseDropPreparations.delete(databaseName);
 	}
 }
 
@@ -2662,18 +2681,34 @@ export function markDatabaseDropDestructive(databaseName: string, originator: nu
 	marker.destructive = true;
 }
 
-export function cancelDatabaseDrop(databaseName: string, originator?: number, attemptId?: string): void {
-	if (!clearDatabaseDropMarker(databaseName, originator, attemptId)) return;
+export async function cancelDatabaseDrop(
+	databaseName: string,
+	originator?: number,
+	attemptId?: string
+): Promise<void> {
+	const marker = databasesBeingDropped.get(databaseName);
+	if (!databaseDropMarkerMatches(marker, originator, attemptId)) return;
+	const preparation = databaseDropPreparations.get(databaseName);
+	const needsReload = marker.originator !== threadId || marker.destructive || Boolean(preparation);
+	clearDatabaseDropMarker(databaseName, originator, attemptId);
+	if (!needsReload) return;
+	if (preparation)
+		try {
+			await preparation;
+		} catch {}
 	resetDatabases();
 }
 
-export function cancelDatabaseDropsFromThread(originator: number): void {
+export async function cancelDatabaseDropsFromThread(originator: number): Promise<void> {
+	const preparations: Promise<boolean>[] = [];
 	let cleared = false;
 	for (const [databaseName, marker] of [...databasesBeingDropped])
-		if (marker.originator === originator)
-			cleared = clearDatabaseDropMarker(databaseName, originator, marker.attemptId) || cleared;
-	// Clear every marker before attempting the rescan. A single reload failure must not strand the
-	// remaining databases behind a dead coordinator's marker; later schema activity can retry reload.
+		if (marker.originator === originator && clearDatabaseDropMarker(databaseName, originator, marker.attemptId)) {
+			cleared = true;
+			const preparation = databaseDropPreparations.get(databaseName);
+			if (preparation) preparations.push(preparation);
+		}
+	if (preparations.length) await Promise.allSettled(preparations);
 	if (cleared) resetDatabases();
 }
 
