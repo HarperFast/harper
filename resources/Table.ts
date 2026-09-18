@@ -4935,10 +4935,17 @@ export function makeTable(options) {
 			if (sort) {
 				// there might be some situations where we don't need to transform to entries for sorting, not sure
 				entries = transformToEntries(entries, select, context, readTxn, null);
-				let ordered;
+				// Sort keys are resolved as entries are collected, so comparison never dereferences a record: a
+				// cached entry holds its record only weakly, and a re-read per comparison is what this avoids.
+				const clauses: Sort[] = [];
+				for (let order = sort; order; order = order.next) clauses.push(order);
+				const clauseCount = clauses.length;
 				// if we are doing post-ordering, we need to get records first, then sort them
 				results.iterate = function (options: { async: boolean }) {
-					let sortedArrayIterator: IterableIterator<any>;
+					let ordered: any[];
+					let orderedKeys: any[][];
+					let sortedPositions: number[];
+					let sortedIndex: number;
 					const dbIterator =
 						options?.async && entries[Symbol.asyncIterator]
 							? entries[Symbol.asyncIterator]()
@@ -4948,25 +4955,33 @@ export function makeTable(options) {
 					let enqueuedEntryForNextGroup: any;
 					let lastGroupingValue: any;
 					let firstEntry = true;
-					function createComparator(order: Sort) {
-						const nextComparator = order.next && createComparator(order.next);
-						const descending = order.descending;
-						return (entryA, entryB) => {
-							const a = getAttributeValue(entryA, order.attribute, context, order);
-							const b = getAttributeValue(entryB, order.attribute, context, order);
-							const diff = descending
-								? compareKeys(convertToComparableKeys(b), convertToComparableKeys(a))
-								: compareKeys(convertToComparableKeys(a), convertToComparableKeys(b));
-							if (diff === 0) return nextComparator?.(entryA, entryB) || 0;
-							return diff;
-						};
+					function collect(entry) {
+						ordered.push(entry);
+						for (let i = 0; i < clauseCount; i++) {
+							const clause = clauses[i];
+							orderedKeys[i].push(convertToComparableKeys(getAttributeValue(entry, clause.attribute, context, clause)));
+						}
 					}
-					const comparator = createComparator(sort);
+					function comparePositions(positionA: number, positionB: number): number {
+						for (let i = 0; i < clauseCount; i++) {
+							const keys = orderedKeys[i];
+							const diff = clauses[i].descending
+								? compareKeys(keys[positionB], keys[positionA])
+								: compareKeys(keys[positionA], keys[positionB]);
+							if (diff !== 0) return diff;
+						}
+						return 0;
+					}
+					function nextSorted(): IteratorResult<any> {
+						if (sortedIndex < sortedPositions.length)
+							return { done: false, value: ordered[sortedPositions[sortedIndex++]] };
+						return { done: true, value: undefined };
+					}
 					return {
 						async next() {
 							let iteration: IteratorResult<any>;
-							if (sortedArrayIterator) {
-								iteration = sortedArrayIterator.next();
+							if (sortedPositions) {
+								iteration = nextSorted();
 								if (iteration.done) {
 									if (dbDone) {
 										if (results.onDone) results.onDone();
@@ -4978,7 +4993,9 @@ export function makeTable(options) {
 									};
 							}
 							ordered = [];
-							if (enqueuedEntryForNextGroup) ordered.push(enqueuedEntryForNextGroup);
+							orderedKeys = [];
+							for (let i = 0; i < clauseCount; i++) orderedKeys.push([]);
+							if (enqueuedEntryForNextGroup) collect(enqueuedEntryForNextGroup);
 							// need to load all the entries into ordered
 							do {
 								iteration = await dbIterator.next();
@@ -5009,17 +5026,17 @@ export function makeTable(options) {
 											break;
 										}
 									}
-									// we store the value we will sort on, for fast sorting, and the entry so the records can be GC'ed if necessary
-									// before the sorting is completed
-									ordered.push(entry);
+									collect(entry);
 								}
 							} while (true);
 							if ((sort as any).isGrouped) {
 								// TODO: Return grouped results
 							}
-							ordered.sort(comparator);
-							sortedArrayIterator = ordered[Symbol.iterator]();
-							iteration = sortedArrayIterator.next();
+							sortedPositions = [];
+							for (let i = 0; i < ordered.length; i++) sortedPositions.push(i);
+							sortedPositions.sort(comparePositions);
+							sortedIndex = 0;
+							iteration = nextSorted();
 							if (!iteration.done)
 								return {
 									value: await transformToRecord.call(this, iteration.value),

@@ -665,6 +665,20 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 
+	// Each engine keeps its own expiration; LMDBTransaction overrides this with its own.
+	renewIdleTimeout(): void {
+		this.timeout = Math.max(txnExpiration, this.timeoutBudget ?? 0);
+	}
+
+	// The links after this one wait for its native commit before their own commit() is entered; each
+	// hop starts with a full idle window and a stalled native commit is still bounded by one.
+	renewChainForNativeCommit(): void {
+		for (let txn: DatabaseTransaction = this; txn; txn = txn.next) {
+			if (txn.timedOut || txn.open === TRANSACTION_STATE.CLOSED) continue;
+			txn.renewIdleTimeout();
+		}
+	}
+
 	getReadTxn(disableSnapshot?: boolean): ReadTransaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		this.renewReadTimeout();
@@ -1319,6 +1333,7 @@ export class DatabaseTransaction implements Transaction {
 				// the local is empty: a truthy one is what the loop staged into, and the retained-handle
 				// and replay branches below deliberately commit a handle other than this.transaction.
 				if (!transaction) transaction = this.transaction;
+				if (!options.transaction && this.writes.some((write) => write)) this.renewChainForNativeCommit();
 				this.open = TRANSACTION_STATE.CLOSED;
 				// RocksTransaction.commit() resolves with RETRY_NOW_VALUE (a number) under
 				// coordinatedRetry, or void on a normal commit/abort.
