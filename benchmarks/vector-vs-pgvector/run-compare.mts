@@ -23,6 +23,7 @@ import { sampleResources, diffResources, pinProcesses, ClockProbe, parseCpuList,
 
 const exec = promisify(execFile);
 const REPO_ROOT = join(import.meta.dirname, '..', '..');
+const HARPER_BIN = join(REPO_ROOT, 'dist', 'bin', 'harper.js');
 const COMPOSE = ['compose', '-f', join(import.meta.dirname, 'docker-compose.yml')];
 const PG_APP = join(import.meta.dirname, 'pgvector-app', 'server.mjs');
 
@@ -45,6 +46,10 @@ const { values } = parseArgs({
 		// The native plane is maintained post-commit, so a query issued straight after the load can
 		// hit a plane that is still catching up. Wait before measuring.
 		settleMs: { type: 'string', default: '300000' },
+		// When set, sweep CLIENT CONCURRENCY at a single ef instead of sweeping ef. Finds each
+		// engine's own saturation point: a target that is not CPU-bound at the chosen concurrency
+		// reports a floor, not a ceiling, and comparing floors to ceilings is not a comparison.
+		concurrencies: { type: 'string' },
 	},
 });
 const RECORDS = Number(values.records);
@@ -104,7 +109,7 @@ async function withHarper<T>(body: (url: string, targets: any) => Promise<T>): P
 		`\n=== harper: starting (threads=${THREADS}, uws=${values.uws}, plane=${values.jsPlane ? 'js' : 'native'}) ===`
 	);
 	await setupHarperWithFixture(ctx, join(import.meta.dirname, 'harper-app'), {
-		harperBinPath: join(REPO_ROOT, 'dist', 'bin', 'harper.js'),
+		harperBinPath: HARPER_BIN,
 		config: {
 			threads: { count: THREADS },
 			analytics: { aggregatePeriod: -1 },
@@ -120,8 +125,16 @@ async function withHarper<T>(body: (url: string, targets: any) => Promise<T>): P
 	});
 	try {
 		await waitFor(`${ctx.harper.httpURL}/items/`, 60_000);
-		if (values.serverCpus) await pinProcesses('dist/bin/harper.js', values.serverCpus);
-		return await body(ctx.harper.httpURL, { processes: { harper: 'dist/bin/harper.js' }, cgroups: {} });
+		if (values.serverCpus) {
+			// Match on the ABSOLUTE binary path, not 'dist/bin/harper.js'. This box runs other
+			// agents' worktrees, whose Harper command lines contain that substring too — so the
+			// loose pattern summed their CPU into ours (readings above the pinned core budget gave
+			// it away) and, worse, would have pinned their server onto our cpuset.
+			const pinned = await pinProcesses(HARPER_BIN, values.serverCpus);
+			if (pinned === 0) throw new Error(`failed to pin any Harper process matching ${HARPER_BIN}`);
+			console.log(`  pinned ${pinned} Harper process(es) to cpus ${values.serverCpus}`);
+		}
+		return await body(ctx.harper.httpURL, { processes: { harper: HARPER_BIN }, cgroups: {} });
 	} finally {
 		await teardownHarper(ctx);
 		if (values.jsPlane) writeFileSync(active, savedNative);
@@ -269,7 +282,10 @@ async function startPgApp(efSearch: number): Promise<void> {
 		},
 	});
 	await waitFor('http://127.0.0.1:9941/health', 60_000);
-	if (values.serverCpus) await pinProcesses('pgvector-app/server.mjs', values.serverCpus);
+	if (values.serverCpus) {
+		const pinned = await pinProcesses(PG_APP, values.serverCpus);
+		if (pinned === 0) throw new Error(`failed to pin any pgvector-app process matching ${PG_APP}`);
+	}
 }
 
 /**
@@ -434,19 +450,24 @@ async function sweep(
 ): Promise<SweepPoint[]> {
 	const clockCpus = values.serverCpus ? parseCpuList(values.serverCpus) : onlineCpus();
 	const points: SweepPoint[] = [];
-	for (const ef of EFS) {
+	// Either sweep ef at a fixed concurrency (the default), or sweep concurrency at a fixed ef.
+	const concurrencySweep = values.concurrencies ? (values.concurrencies as string).split(',').map(Number) : null;
+	const axis = concurrencySweep ?? EFS;
+	for (const value of axis) {
+		const ef = concurrencySweep ? EFS[0] : value;
+		const conc = concurrencySweep ? value : CONCURRENCY;
 		if (beforeEf) await beforeEf(ef);
 		const send = makeSender(ef);
 		await runQueries(send, queries.slice(0, 50), K, 8, 1); // warm caches at this ef
 		const clock = new ClockProbe(clockCpus);
 		const before = await sampleResources(resourceTargets);
 		clock.start();
-		const result = await runQueries(send, queries, K, CONCURRENCY, REPEATS);
+		const result = await runQueries(send, queries, K, conc, REPEATS);
 		const clockGHz = clock.stop();
 		const delta = diffResources(before, await sampleResources(resourceTargets));
 		const recall = result.ids.reduce((sum, got, i) => sum + recallAt(got, truth[i]), 0) / queries.length;
 		const point = {
-			ef,
+			ef: concurrencySweep ? conc : ef,
 			qps: result.throughput,
 			recall,
 			p50: percentile(result.latencies, 50),
@@ -457,7 +478,7 @@ async function sweep(
 		};
 		points.push(point);
 		console.log(
-			`  ef ${String(ef).padStart(4)}  ${point.qps.toFixed(0).padStart(7)} q/s  recall@${K} ${(recall * 100).toFixed(2)}%  ` +
+			`  ${concurrencySweep ? 'conc' : 'ef  '} ${String(concurrencySweep ? conc : ef).padStart(4)}  ${point.qps.toFixed(0).padStart(7)} q/s  recall@${K} ${(recall * 100).toFixed(2)}%  ` +
 				`p50 ${point.p50.toFixed(2)}ms  p99 ${point.p99.toFixed(2)}ms  ${point.cpuSeconds.toFixed(1)} cpu-s @ ${clockGHz.toFixed(2)}GHz` +
 				(result.errors ? `  ERRORS ${result.errors}` : '')
 		);
@@ -547,7 +568,7 @@ async function main(): Promise<void> {
 		console.log(`  [pgvector] load ${load.toFixed(1)}s + index build ${index.toFixed(1)}s`);
 		await startPgApp(EFS[0]);
 		const resourceTargets = {
-			processes: { fastify: 'pgvector-app/server.mjs' },
+			processes: { fastify: PG_APP },
 			cgroups: {} as Record<string, string>,
 		};
 		const { stdout } = await exec('docker', [...COMPOSE, 'ps', '-q', 'postgres']);
