@@ -4,15 +4,17 @@ import * as hdbTerms from './hdbTerms.ts';
 import hdbLogger from '../utility/logging/harper_logger.ts';
 import ITCEventObject from '../server/itc/utility/ITCEventObject.js';
 import { isMainThread, threadId } from 'node:worker_threads';
+import { DATABASE_QUIESCENCE_TIMEOUT_MS } from './databaseLifecycle.ts';
 let serverItcHandlers;
 import { sendItcEvent } from '../server/threads/itc.js';
 
 export const PREPARE_DATABASE_DROP_OPERATION = 'prepare-database-drop';
 export const CANCEL_DATABASE_DROP_OPERATION = 'cancel-database-drop';
-export const DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS = 10 * 60_000;
+export const DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS = DATABASE_QUIESCENCE_TIMEOUT_MS;
 
 // Await both local handling and peer propagation so the caller cannot outrun its own schema cache.
 type SchemaSignalOptions = {
+	acceptWorkerDatabaseClose?: boolean;
 	excludeThreadId?: number;
 	includeJobWorkers?: boolean;
 	mainFirst?: boolean;
@@ -21,6 +23,14 @@ type SchemaSignalOptions = {
 	relayFromMain?: boolean;
 	acknowledgementTimeoutMs?: number;
 };
+
+export function aggregateSchemaChangeErrors(errors: unknown[], message: string): AggregateError {
+	const failure: any = new AggregateError(errors, message);
+	const statusCode = (errors[0] as any)?.statusCode;
+	if (statusCode !== undefined && errors.every((error) => (error as any)?.statusCode === statusCode))
+		failure.statusCode = statusCode;
+	return failure;
+}
 
 export async function signalSchemaChange(message: any, options?: SchemaSignalOptions) {
 	try {
@@ -49,7 +59,7 @@ export async function signalSchemaChange(message: any, options?: SchemaSignalOpt
 				await signalSchemaChangeToPeers(message, options);
 			} catch (peerError) {
 				if (localFailed)
-					throw new AggregateError([localError, peerError], 'Local and peer schema-change handling failed');
+					throw aggregateSchemaChangeErrors([localError, peerError], 'Local and peer schema-change handling failed');
 				throw peerError;
 			}
 			if (localFailed) throw localError;
@@ -75,7 +85,8 @@ export async function signalSchemaChangeToPeers(message: any, options?: SchemaSi
 		try {
 			await sendItcEvent(peerEvent, { ...options, excludeThreadId: 0 });
 		} catch (peerError) {
-			if (mainError) throw new AggregateError([mainError, peerError], 'Main and peer schema-change handling failed');
+			if (mainError)
+				throw aggregateSchemaChangeErrors([mainError, peerError], 'Main and peer schema-change handling failed');
 			throw peerError;
 		}
 		if (mainError) throw mainError;

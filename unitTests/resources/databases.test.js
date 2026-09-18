@@ -552,6 +552,7 @@ describe('audit cleanup retirement on teardown', () => {
 	const {
 		readMetaDb,
 		databases,
+		closeDatabaseForRestore,
 		quiesceTableDerivedIndexes,
 		quarantineTableAfterSchemaRescanFailure,
 	} = require('#src/resources/databases');
@@ -809,6 +810,30 @@ describe('audit cleanup retirement on teardown', () => {
 
 		assert.strictEqual(closeAttempts, 1);
 		assert.strictEqual(databases[databaseName][tableName], undefined);
+	});
+
+	it('retains a rejected asynchronous quarantine close for retry', async function () {
+		const databaseName = 'derivedindexschemaquarantineasyncretry';
+		const tableName = 'DerivedIndexSchemaQuarantineAsyncRetryProbe';
+		const Probe = table({
+			table: tableName,
+			database: databaseName,
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Probe.schemaChangeOperation;
+		Probe.derivedIndexRuntime = { close: async () => {} };
+		const close = Probe.primaryStore.close.bind(Probe.primaryStore);
+		let closeAttempts = 0;
+		Probe.primaryStore.close = () => {
+			if (++closeAttempts === 1) return Promise.reject(new Error('test async quarantine close failure'));
+			return close();
+		};
+
+		await quarantineTableAfterSchemaRescanFailure(databaseName, tableName);
+		assert.strictEqual(databases[databaseName][tableName], undefined);
+		await closeDatabaseForRestore(databaseName);
+
+		assert.strictEqual(closeAttempts, 2, 'database teardown must retry the quarantined store handle');
 	});
 
 	it('quiesces a replacement derived-index handle installed while a table drop waits', async function () {

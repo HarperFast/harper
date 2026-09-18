@@ -7,6 +7,7 @@ const cleanLmdbMap =
 	require('../../utility/lmdb/cleanLMDBMap.ts').default || require('../../utility/lmdb/cleanLMDBMap.ts');
 const userSchema = require('../../security/user.ts');
 const { validateEvent, sendItcEvent } = require('../threads/itc.js');
+const { workerDatabaseShutdownHasStarted, waitForWorkerDatabasesToClose } = require('../threads/manageThreads.js');
 const ITCEventObject = require('./utility/ITCEventObject.js');
 const harperBridge =
 	require('../../dataLayer/harperBridge/harperBridge.ts').default ||
@@ -48,29 +49,51 @@ const serverItcHandlers = {
  * @returns {Promise<void>}
  */
 const schemaListeners = [];
+let schemaEventsInFlight = 0;
+let schemaEventsSettled = Promise.resolve();
+let settleSchemaEvents;
 async function schemaHandler(event) {
-	let failure;
+	if (workerDatabaseShutdownHasStarted()) {
+		await waitForWorkerDatabasesToClose();
+		return;
+	}
+	if (schemaEventsInFlight++ === 0)
+		schemaEventsSettled = new Promise((resolve) => {
+			settleSchemaEvents = resolve;
+		});
 	try {
-		await handleSchemaEvent(event);
-	} catch (error) {
-		failure = error;
-	} finally {
-		if (isMainThread && event.message?.relaySchemaChangeFromMain) {
-			const message = { ...event.message };
-			delete message.relaySchemaChangeFromMain;
-			try {
-				await sendItcEvent(new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message), {
-					includeJobWorkers: true,
-					preserveOriginator: true,
-				});
-			} catch (relayError) {
-				failure = failure
-					? new AggregateError([failure, relayError], 'Local and peer schema-change handling failed')
-					: relayError;
+		let failure;
+		try {
+			await handleSchemaEvent(event);
+		} catch (error) {
+			failure = error;
+		} finally {
+			if (isMainThread && event.message?.relaySchemaChangeFromMain) {
+				const message = { ...event.message };
+				delete message.relaySchemaChangeFromMain;
+				try {
+					await sendItcEvent(new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message), {
+						includeJobWorkers: true,
+						preserveOriginator: true,
+					});
+				} catch (relayError) {
+					failure = failure
+						? new AggregateError([failure, relayError], 'Local and peer schema-change handling failed')
+						: relayError;
+				}
 			}
 		}
+		if (failure) throw failure;
+	} finally {
+		if (--schemaEventsInFlight === 0) {
+			settleSchemaEvents();
+			settleSchemaEvents = undefined;
+		}
 	}
-	if (failure) throw failure;
+}
+
+function waitForSchemaEventsToSettle() {
+	return schemaEventsSettled;
 }
 
 async function handleSchemaEvent(event) {
@@ -79,7 +102,6 @@ async function handleSchemaEvent(event) {
 		hdbLogger.error(validate);
 		return;
 	}
-
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
 	if (event.message?.operation === PREPARE_DATABASE_DROP_OPERATION && event.message.schema) {
 		if (typeof event.message.dropAttemptId !== 'string' || !event.message.dropAttemptId)
@@ -90,7 +112,12 @@ async function handleSchemaEvent(event) {
 	if (event.message?.operation === CANCEL_DATABASE_DROP_OPERATION && event.message.schema) {
 		if (typeof event.message.dropAttemptId !== 'string' || !event.message.dropAttemptId)
 			throw new Error('Database drop cancellation is missing its attempt id');
-		await cancelDatabaseDrop(event.message.schema, event.message.originator, event.message.dropAttemptId);
+		await cancelDatabaseDrop(
+			event.message.schema,
+			event.message.originator,
+			event.message.dropAttemptId,
+			event.message.preserveInterruptedDrop === true
+		);
 		return;
 	}
 	if (
@@ -377,3 +404,4 @@ module.exports = serverItcHandlers;
 module.exports.userHandler = userHandler;
 module.exports.schemaHandler = schemaHandler;
 module.exports.resourceHandler = resourceHandler;
+module.exports.waitForSchemaEventsToSettle = waitForSchemaEventsToSettle;

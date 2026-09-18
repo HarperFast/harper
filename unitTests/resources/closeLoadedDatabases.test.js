@@ -12,6 +12,7 @@ const { setupTestDBPath } = require('../testUtils');
 const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
+const { threadId } = require('node:worker_threads');
 const {
 	table,
 	database,
@@ -22,6 +23,7 @@ const {
 	closeLoadedDatabases,
 	prepareDatabaseForDrop,
 	beginDatabaseDrop,
+	markDatabaseDropLocalSchemaClosed,
 	dropDatabase,
 	finishDatabaseDrop,
 	cancelDatabaseDrop,
@@ -156,6 +158,128 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
+	it('closeLoadedDatabases quiesces and closes non-RocksDB databases', async function () {
+		const databaseName = 'closerelease-non-rocks-derived';
+		let releaseClose;
+		const rootStore = {
+			path: join(testRoot, databaseName),
+			status: 'open',
+			dbisDb: {
+				status: 'closed',
+				close: () => {
+					throw new Error('an already-closed store must not be closed again');
+				},
+			},
+			close: () =>
+				new Promise((resolve) => {
+					releaseClose = () => {
+						rootStore.status = 'closed';
+						resolve();
+					};
+				}),
+		};
+		const fakeTable = {
+			primaryStore: { rootStore },
+			derivedIndexRuntime: { close: async () => {} },
+		};
+		getDatabases()[databaseName] = { pkg: fakeTable };
+		try {
+			let settled = false;
+			const closing = closeLoadedDatabases().then(() => (settled = true));
+			await new Promise(setImmediate);
+			assert.strictEqual(settled, false);
+			releaseClose();
+			await closing;
+			assert.strictEqual(fakeTable.derivedIndexRuntime, undefined);
+			assert.strictEqual(rootStore.status, 'closed');
+			assert.strictEqual(getDatabases()[databaseName], undefined);
+		} finally {
+			delete getDatabases()[databaseName];
+		}
+	});
+
+	it('closeLoadedDatabases reports a non-RocksDB derived-index shutdown failure', async function () {
+		const databaseName = 'closerelease-non-rocks-derived-failure';
+		const fakeTable = {
+			primaryStore: { rootStore: {} },
+			derivedIndexRuntime: {
+				close: async () => {
+					throw new Error('derived shutdown failed');
+				},
+			},
+		};
+		getDatabases()[databaseName] = { pkg: fakeTable };
+		try {
+			await assert.rejects(closeLoadedDatabases(), (error) => {
+				assert.match(error.message, /Failed to close all loaded databases/);
+				assert.match(error.errors[0].message, /Failed to close database/);
+				assert.match(error.errors[0].cause.message, /derived shutdown failed/);
+				return true;
+			});
+		} finally {
+			delete getDatabases()[databaseName];
+		}
+	});
+
+	it('tracks a rejected asynchronous close for a synchronous caller and retries it', async function () {
+		const databaseName = 'closerelease-async-retry';
+		let closeAttempts = 0;
+		const rootStore = {
+			path: join(testRoot, databaseName),
+			status: 'open',
+			dbisDb: { status: 'closed' },
+			close: () => {
+				if (++closeAttempts === 1) return Promise.reject(new Error('test async close failure'));
+				rootStore.status = 'closed';
+				return Promise.resolve();
+			},
+		};
+		getDatabases()[databaseName] = { pkg: { primaryStore: { rootStore } } };
+
+		assert.strictEqual(closeDatabase(databaseName, true), true);
+		await new Promise(setImmediate);
+		assert.strictEqual(closeDatabase(databaseName, true), true);
+		await new Promise(setImmediate);
+
+		assert.strictEqual(closeAttempts, 2);
+		assert.strictEqual(rootStore.status, 'closed');
+	});
+
+	it('does not report an unloaded asynchronous close as complete before it settles', async function () {
+		const databaseName = 'closerelease-async-unloaded-retry';
+		let closeAttempts = 0;
+		let rejectRetry;
+		const rootStore = {
+			path: join(testRoot, databaseName),
+			status: 'open',
+			dbisDb: { status: 'closed' },
+			close: () => {
+				closeAttempts++;
+				if (closeAttempts === 1) return Promise.reject(new Error('initial async close failure'));
+				if (closeAttempts === 2)
+					return new Promise((resolve, reject) => {
+						rejectRetry = reject;
+					});
+				rootStore.status = 'closed';
+				return Promise.resolve();
+			},
+		};
+		getDatabases()[databaseName] = { pkg: { primaryStore: { rootStore } } };
+
+		await assert.rejects(closeDatabaseForRestore(databaseName), /initial async close failure/);
+		let settled = false;
+		const retry = closeLoadedDatabases().finally(() => (settled = true));
+		await new Promise(setImmediate);
+		assert.strictEqual(settled, false, 'worker teardown must wait for the retried native close');
+		rejectRetry(new Error('retried async close failure'));
+		await assert.rejects(retry, /Failed to close all loaded databases/);
+		assert.strictEqual(closeAttempts, 2);
+
+		await closeLoadedDatabases();
+		assert.strictEqual(closeAttempts, 3);
+		assert.strictEqual(rootStore.status, 'closed');
+	});
+
 	it('keeps a peer database closed between drop preparation and cancellation', async function () {
 		this.timeout(30000);
 		const databaseName = 'close-drop-prepare';
@@ -174,6 +298,28 @@ describe('RocksDB handle release', function () {
 		assert.strictEqual(getDatabases()[databaseName], undefined, 'catalog rescans must not reopen a prepared drop');
 
 		await cancelDatabaseDrop(databaseName, originator);
+		assert.ok(getDatabases()[databaseName]);
+	});
+
+	it('does not reload a peer when cancellation preserves an interrupted destructive drop', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-destructive-cancel';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		await getDatabases()[databaseName].pkg.schemaChangeOperation;
+		const originator = 885_000 + Math.floor(Math.random() * 5_000);
+		const attemptId = 'destructive-attempt';
+
+		await prepareDatabaseForDrop(databaseName, originator, attemptId);
+		assert.strictEqual(getDatabases()[databaseName], undefined);
+		assert.strictEqual(await cancelDatabaseDrop(databaseName, originator, attemptId, true), true);
+		assert.strictEqual(
+			getDatabases()[databaseName],
+			undefined,
+			'a peer must not rescan and complete a destructive drop while reporting cancellation'
+		);
+
+		resetDatabases();
 		assert.ok(getDatabases()[databaseName]);
 	});
 
@@ -238,6 +384,27 @@ describe('RocksDB handle release', function () {
 
 		assert.ok(getDatabases()[databaseName], 'schema gossip must not evict the coordinator before dropDatabase runs');
 		await cancelDatabaseDrop(databaseName);
+	});
+
+	it('does not let a coordinator rescan reopen a table after its live schema is removed', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-local-schema-closed-rescan';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		await getDatabases()[databaseName].pkg.schemaChangeOperation;
+		const attemptId = beginDatabaseDrop(databaseName);
+
+		markDatabaseDropLocalSchemaClosed(databaseName, threadId, attemptId);
+		delete getDatabases()[databaseName].pkg;
+		resetDatabases();
+
+		assert.strictEqual(
+			getDatabases()[databaseName]?.pkg,
+			undefined,
+			'a rescan must not install a replacement table or native writer during the source-commit drain'
+		);
+		await cancelDatabaseDrop(databaseName, threadId, attemptId);
+		assert.ok(getDatabases()[databaseName]?.pkg, 'reversible cancellation must reload the removed live schema');
 	});
 
 	it('keeps a configured-path coordinator database loaded while its drop barrier is pending', async function () {

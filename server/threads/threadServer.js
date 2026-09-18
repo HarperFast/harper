@@ -109,6 +109,7 @@ exports.closeServers = closeServers;
 
 async function closeWorkerDatabases() {
 	reportWorkerDatabaseCloseStatus(true);
+	await require('../itc/serverHandlers.js').waitForSchemaEventsToSettle();
 	let failureLogged = false;
 	for (;;) {
 		try {

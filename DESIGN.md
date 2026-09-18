@@ -808,8 +808,22 @@ transaction has modified. `dropDatabase()` and the legacy arm of `Table.dropTabl
 environment touch remaining in a resumed pass — cursor advance, cursor release, marker write, re-arm —
 re-checks `rootStore.status`, plus the fact that their production callers reach them only for RocksDB
 stores, whose pass is one synchronous `purgeLogs()` call with nothing suspended mid-removal.
+The asynchronous `closeDatabaseForRestore()` path is also the terminal worker-close path. It awaits
+the retirement barrier and every promise returned while closing table, metadata, and root stores;
+the pending-close retry pass uses that same awaited path, so an unloaded database cannot be reported
+closed while a previous asynchronous handle close is still settling. Only then may teardown publish
+the worker-wide close watermark. An already-closed child store is an
+idempotent success, which matters for LMDB because closing an environment can close DBIs that are
+still reachable from Harper's table graph. A synchronous legacy caller cannot await a promise-returning
+close, but it still attaches a rejection handler and retains the store in the pending-close registry so
+the next close attempt retries it rather than losing the failure or emitting an unhandled rejection.
 `resetDatabases()` closes LMDB roots with no retirement call at all, so that re-check is a routine
 path rather than a defensive one.
+
+Worker shutdown uses the same ten-minute database-quiescence budget as destructive schema barriers.
+The ordinary short thread backstop may request termination while native handles are still closing,
+but it cannot terminate that worker; completion immediately restores the ordinary backstop, while an
+expired database-close deadline exits the process rather than stranding process-global RocksDB handles.
 
 The last-removed marker is retained until it commits. A rejected write is logged and carried to the
 next pass rather than dropped: a pass that deletes nothing never reaches the write again, so one
@@ -2736,8 +2750,19 @@ that acknowledgement inherits the active marker in `workerData`, while workers a
 the second barrier snapshot. Every peer then quiesces all derived-index installations associated
 with its audit store, closes its handles, and
 acknowledges success. A handle-close failure produces a negative acknowledgement rather than being
-logged and treated as quiescent. A negative acknowledgement, recipient exit before acknowledgement,
-or timeout rejects the drop before destructive storage work. These destructive barrier acknowledgements
+logged and treated as quiescent. A negative acknowledgement, timeout, or recipient exit before either
+acknowledgement or confirmed database-handle closure rejects the drop before destructive storage work.
+An exiting job or pool worker whose teardown already reported user-database process-global handles
+released and derived-index runtimes quiesced satisfies the barrier even if it exits before processing
+the message: it no longer has state that must be quiesced. The worker publishes that terminal close
+status directly to main and every sibling port. A close confirmation immediately settles any
+destructive acknowledgement already waiting on that port, and worker creation carries the latest
+confirmation into each inherited peer port, so a coordinator that starts after publication reaches
+the same decision. Terminal shutdown first stops admitting schema events, waits for any handler that
+was already running, then closes storage and publishes confirmation; no handler can reopen storage
+after the confirmation. Worker teardown closes non-RocksDB storage handles as well as their derived-index
+runtimes, so its worker-wide confirmation is valid for a destructive barrier against any loaded database.
+These destructive barrier acknowledgements
 use a bounded ten-minute window rather than schema gossip's 30-second default, because quiescing a large
 native writer can legitimately take longer than an ordinary cache rescan. Cancellation attempts the main
 thread and peer legs even when either leg rejects, then reports their errors together, so a failed main
@@ -2746,9 +2771,15 @@ cannot reopen a peer's database; the coordinator keeps its already-open database
 derived-index quiescence succeeds. The marker enters its destructive phase immediately before storage
 teardown, and coordinator catalog scans then skip the path; the captured handles remain usable while
 a concurrent rescan cannot cold-open the directory between environment unregistration and native
-destruction. Failure revokes the attempt, waits for any in-flight
-preparation to stop quiescing, then reloads the database. This prevents a stale preparation from
-closing a runtime created by cancellation.
+destruction. A peer cancellation revokes the attempt, waits for any in-flight preparation to stop
+quiescing, then reloads the database while the drop remains reversible. This prevents a stale preparation
+from closing a runtime created by cancellation. Once the coordinator has marked the attempt destructive,
+the cancellation message instead clears peer markers without rescanning; otherwise a peer could complete
+the tombstoned drop while the coordinator reports its destructive failure. The coordinator likewise
+reloads only when cancellation overtakes its own preparation. A failed destructive table or database
+drop therefore stays absent from memory with its durable tombstone intact until ordinary interrupted-drop
+recovery runs. Reloading as part of cancellation could erase that recovery evidence before the caller
+observes the failure.
 Cancellation and finish messages clear only the marker owned by their coordinator and attempt token,
 so a late message cannot clear a newer drop, including a retry from the same coordinator. The token
 also fences an older preparation that resumes after cancellation: it cannot close storage or rescan
@@ -2774,8 +2805,9 @@ quiescence before closing their RocksDB handles; teardown waits for every branch
 it reports any failure. Receipt of worker shutdown marks process-global handle release pending before
 component drains begin; a process exit remains the final safety boundary if any later teardown stage
 cannot complete. Strict acknowledgements preserve a peer's 409 only for an actual reported conflict;
-timeouts, exits, and internal close failures remain server errors instead of being flattened into a
-retryable client conflict.
+when both the main and peer legs report the same status, their aggregate preserves it. Timeouts,
+unconfirmed exits, mixed failures, and internal close failures remain server errors instead of being
+flattened into a retryable client conflict.
 For RocksDB, `RocksDatabase.destroy()` is the final native backstop: rocksdb-js claims the shared
 descriptor, closes its attached resources, and throws if any descriptor reference remains; it calls
 RocksDB's destructive API only after that reference check succeeds. Harper therefore does not add a
@@ -2783,7 +2815,11 @@ second registry-polling protocol to database drop.
 
 Table drop reuses this database-level quiescence barrier rather than maintaining a second table-marker
 protocol. Every peer temporarily closes the database, which releases worker 0's native full-text writer;
-the coordinator then marks the barrier destructive and drops only the target table. The ordinary
+the coordinator removes the target from its live schema, stops admitting source-fill writes, and drains
+ones already admitted before it writes the durable tombstone or marks the barrier destructive. Until the
+destructive marker is published, cancellation reloads a coordinator whose live table was removed; after
+it, cancellation leaves the tombstone for interrupted-drop recovery. A peer can therefore never complete
+the coordinator's tombstone while a coordinator-side source transaction can still commit. The ordinary
 `drop_table` schema event carries the attempt token, clears the matching marker, and reloads the remaining
 tables. This deliberately trades a brief database-wide DDL pause for one attempt-fenced worker-start path
 and one cancellation protocol. Direct `Table.dropTable()` calls take the same path as the operations API,

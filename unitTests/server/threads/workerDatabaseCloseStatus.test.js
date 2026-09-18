@@ -2,8 +2,9 @@
 
 const assert = require('node:assert');
 const path = require('node:path');
-const { startWorker, setTerminateTimeout } = require('#js/server/threads/manageThreads');
+const { startWorker, setTerminateTimeout, stopWorker } = require('#js/server/threads/manageThreads');
 const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
+const { DATABASE_QUIESCENCE_TIMEOUT_MS } = require('#src/utility/databaseLifecycle');
 const { waitFor } = require('../../waitFor');
 
 const FIXTURE = path.join(__dirname, 'fixtures/shutdownDatabaseStatusWorker.cjs');
@@ -32,20 +33,96 @@ describe('worker database-close safety status', function () {
 		const worker = startStatusWorker(messages);
 		try {
 			await waitFor(() => messages.some((message) => message.type === 'fixture-ready'));
+			const shutdownStartedAt = Date.now();
 			worker.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: 0 });
-			await waitFor(() => worker.databaseCloseFailed === true, {
+			await waitFor(() => worker.databaseClosePending === true, {
 				timeout: 5_000,
 				message: `shutdown did not report database handles pending; messages=${JSON.stringify(messages)}`,
 			});
-			assert.strictEqual(worker.databaseCloseFailed, true);
+			assert.strictEqual(worker.databaseClosePending, true);
+			assert.ok(
+				worker.databaseCloseSafetyDeadline >= shutdownStartedAt + DATABASE_QUIESCENCE_TIMEOUT_MS,
+				`database-close deadline was shorter than the quiescence budget: ${worker.databaseCloseSafetyDeadline}`
+			);
 		} finally {
 			worker.wasShutdown = true;
 			await worker.terminate();
 		}
 	});
 
+	it('records when a worker has finished closing its database handles', async function () {
+		const messages = [];
+		const worker = startStatusWorker(messages);
+		try {
+			await waitFor(() => messages.some((message) => message.type === 'fixture-ready'));
+			worker.postMessage({ type: 'fixture-confirm-database-close' });
+			await waitFor(() => messages.some((message) => message.type === 'fixture-database-close-confirmed'));
+			assert.strictEqual(messages.find((message) => message.type === 'fixture-database-close-confirmed').closed, true);
+			await waitFor(() => worker.databaseCloseConfirmed === true, {
+				message: `database close not recorded; pending=${worker.databaseClosePending}; messages=${JSON.stringify(messages)}`,
+			});
+			assert.strictEqual(worker.databaseClosePending, false);
+		} finally {
+			worker.wasShutdown = true;
+			await worker.terminate();
+		}
+	});
+
+	it('defers an expired ordinary shutdown backstop until database close is confirmed', async function () {
+		setTerminateTimeout(50);
+		const messages = [];
+		const worker = startStatusWorker(messages);
+		let exited = false;
+		worker.once('exit', () => {
+			exited = true;
+		});
+		try {
+			await waitFor(() => messages.some((message) => message.type === 'fixture-ready'));
+			const stopping = stopWorker(worker);
+			await waitFor(() => worker.databaseClosePending === true);
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			assert.strictEqual(exited, false, 'the ordinary thread timeout terminated a worker with open handles');
+
+			worker.postMessage({ type: 'fixture-confirm-database-close' });
+			await stopping;
+			assert.strictEqual(exited, true);
+		} finally {
+			if (!exited) {
+				worker.wasShutdown = true;
+				await worker.terminate();
+			}
+		}
+	});
+
+	it('does not force-terminate a blocked worker that cannot report database-close pending', async function () {
+		setTerminateTimeout(50);
+		const messages = [];
+		const worker = startStatusWorker(messages);
+		let exited = false;
+		let stopping;
+		worker.once('exit', () => {
+			exited = true;
+		});
+		try {
+			await waitFor(() => messages.some((message) => message.type === 'fixture-ready'));
+			worker.postMessage({ type: 'fixture-block' });
+			await waitFor(() => messages.some((message) => message.type === 'fixture-blocking'));
+			stopping = stopWorker(worker);
+			assert.strictEqual(worker.databaseClosePending, true, 'main must mark handle closure pending before SHUTDOWN');
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			assert.strictEqual(exited, false, 'the ordinary timeout terminated a worker that could still own handles');
+			assert.ok(worker.databaseCloseSafetyDeadline >= worker.databaseCloseStartedAt + DATABASE_QUIESCENCE_TIMEOUT_MS);
+		} finally {
+			if (!exited) {
+				worker.wasShutdown = true;
+				await worker.terminate();
+			}
+			await stopping;
+		}
+	});
+
 	for (const extensionOrder of ['before', 'after']) {
-		it(`extends the database-close safety timer when a drain is reported ${extensionOrder} shutdown`, async function () {
+		it(`does not shorten the database-close deadline when a drain is reported ${extensionOrder} shutdown`, async function () {
 			setTerminateTimeout(500);
 			const messages = [];
 			const worker = startStatusWorker(messages);
@@ -58,16 +135,16 @@ describe('worker database-close safety status', function () {
 				}
 
 				worker.postMessage({ type: ITC_EVENT_TYPES.SHUTDOWN, restartNumber: 0 });
-				await waitFor(() => worker.databaseCloseFailed === true);
+				await waitFor(() => worker.databaseClosePending === true);
 
 				if (extensionOrder === 'after') {
 					worker.postMessage({ type: 'fixture-extend-shutdown-deadline', deadlineMs });
 					await waitFor(() => messages.some((message) => message.type === 'fixture-deadline-extended'));
 				}
 
-				await waitFor(() => worker.databaseCloseSafetyTimer?._idleTimeout > 4_000, {
+				await waitFor(() => worker.databaseCloseSafetyDeadline >= deadlineMs, {
 					timeout: 2_000,
-					message: `database-close timer did not honor the drain extension; timeout=${worker.databaseCloseSafetyTimer?._idleTimeout}`,
+					message: `database-close deadline did not honor the drain extension; deadline=${worker.databaseCloseSafetyDeadline}`,
 				});
 			} finally {
 				worker.wasShutdown = true;

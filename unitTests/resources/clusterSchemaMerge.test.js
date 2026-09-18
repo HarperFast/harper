@@ -717,6 +717,54 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 	});
 
+	rocksOnly('does not let a non-explicit local call erase a newer durable declaration or generation', async () => {
+		const Local = table({
+			table: 'LocalKeepNewerDurableFullText',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		let primaryKey = 'LocalKeepNewerDurableFullText/id';
+		let primary = Local.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'LocalKeepNewerDurableFullText/';
+			primary = Local.dbisDB.getSync(primaryKey);
+		}
+		const newerIndex = { ...Local.fullTextIndexes[0], name: 'titles' };
+		const written = Local.dbisDB.put(primaryKey, {
+			...primary,
+			fullTextIndexes: [Local.fullTextIndexes[0], newerIndex],
+			// Simulate a concurrent declaration whose generation repair this stale caller observes.
+			fullTextIndexGenerations: { search: primary.fullTextIndexGenerations.search },
+		});
+		if (written?.then) await written;
+
+		table({
+			table: 'LocalKeepNewerDurableFullText',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: Local.attributes.map((attribute) => ({ ...attribute })),
+		});
+		await catalogFlushed(Local);
+		const durable = Local.dbisDB.getSync(primaryKey);
+		assert.deepStrictEqual(
+			durable.fullTextIndexes.map(({ name }) => name),
+			['search', 'titles']
+		);
+		assert.strictEqual(typeof durable.fullTextIndexGenerations.titles, 'string');
+		assert.deepStrictEqual(
+			Local.fullTextIndexes.map(({ name }) => name),
+			['search', 'titles']
+		);
+	});
+
 	rocksOnly('does not resurrect a durably cleared declaration from stale live state', async () => {
 		const Local = table({
 			table: 'ClusterKeepDurableFullTextRemoval',

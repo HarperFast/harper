@@ -650,7 +650,7 @@ function clearInterruptedDropEntries(storePath: string, tableName: string) {
 	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
 }
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
-type DatabaseDropMarker = { originator: number; attemptId: string; destructive?: boolean };
+type DatabaseDropMarker = { originator: number; attemptId: string; localSchemaClosed?: boolean; destructive?: boolean };
 const databasesBeingDropped = new Map<string, DatabaseDropMarker>();
 const databaseDropPreparations = new Map<string, Promise<boolean>>();
 const pendingDatabaseStoreCloses = new Map<string, Map<any, string>>();
@@ -688,6 +688,10 @@ function databaseDropMarkerMatches(
 	);
 }
 
+function databaseDropBlocksScan(marker: DatabaseDropMarker | undefined): boolean {
+	return Boolean(marker && (marker.originator !== threadId || marker.localSchemaClosed || marker.destructive));
+}
+
 function setDatabaseDropMarker(databaseName: string, marker: DatabaseDropMarker): void {
 	databasesBeingDropped.set(databaseName, marker);
 	manageThreads.markDatabaseDropForWorkerStarts(databaseName, marker.originator, marker.attemptId);
@@ -712,11 +716,11 @@ function releaseQuarantinedTable(databaseName: string, tableName: string, Table:
 	const runtime = Table.derivedIndexRuntime;
 	Table.derivedIndexRuntime = undefined;
 	Table.cleanup?.();
-	const closeStores = () => {
+	const closeStores = async () => {
 		for (const [store, description] of stores) {
 			if (!store) continue;
 			try {
-				store.close?.();
+				await store.close?.();
 				pendingCloses.delete(store);
 			} catch (error) {
 				logger.warn(`Error closing ${description} while quarantining ${databaseName}.${tableName}:`, error);
@@ -725,10 +729,7 @@ function releaseQuarantinedTable(databaseName: string, tableName: string, Table:
 		if (pendingCloses.size === 0 && pendingDatabaseStoreCloses.get(databaseName) === pendingCloses)
 			pendingDatabaseStoreCloses.delete(databaseName);
 	};
-	if (!runtime) {
-		closeStores();
-		return Promise.resolve();
-	}
+	if (!runtime) return closeStores();
 	return Promise.resolve()
 		.then(() => runtime.close())
 		.then(closeStores, (error) => {
@@ -793,7 +794,7 @@ export function getDatabases(): Databases {
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
 			const dropMarker = databasesBeingDropped.get(dbName);
-			if (dropMarker && (dropMarker.originator !== threadId || dropMarker.destructive)) continue;
+			if (databaseDropBlocksScan(dropMarker)) continue;
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (blockedByRestore.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
@@ -830,7 +831,7 @@ export function getDatabases(): Databases {
 	if (existsSync(baseSchemaPath)) {
 		for (const schemaEntry of readdirSync(baseSchemaPath, { withFileTypes: true })) {
 			const dropMarker = databasesBeingDropped.get(schemaEntry.name);
-			if (dropMarker && (dropMarker.originator !== threadId || dropMarker.destructive)) continue;
+			if (databaseDropBlocksScan(dropMarker)) continue;
 			if (!schemaEntry.isFile()) {
 				const schemaPath = join(baseSchemaPath, schemaEntry.name);
 				const schemaAuditPath = join(getTransactionAuditStoreBasePath(), schemaEntry.name);
@@ -853,7 +854,7 @@ export function getDatabases(): Databases {
 	if (schemaConfigs) {
 		for (const dbName in schemaConfigs) {
 			const dropMarker = databasesBeingDropped.get(dbName);
-			if (dropMarker && (dropMarker.originator !== threadId || dropMarker.destructive)) continue;
+			if (databaseDropBlocksScan(dropMarker)) continue;
 			const schemaConfig = schemaConfigs[dbName];
 			const databasePath = schemaConfig.path;
 			if (databasePath && existsSync(databasePath)) {
@@ -2546,7 +2547,8 @@ function closeDatabaseTables(
 	databaseName: string,
 	dbTables: Tables | undefined,
 	definedRoot: RootDatabaseKind | undefined,
-	failOnCloseError: boolean
+	failOnCloseError: boolean,
+	closeWork?: { operations: Promise<void>[]; errors: unknown[] }
 ): boolean {
 	let pendingCloses = pendingDatabaseStoreCloses.get(databaseName);
 	const hadPendingCloses = Boolean(pendingCloses?.size);
@@ -2555,16 +2557,39 @@ function closeDatabaseTables(
 	const rootStores = new Set<any>();
 	const closeErrors: unknown[] = [];
 	const attemptedStores = new Set<any>();
+	const closeSettled = (store: any) => {
+		pendingCloses.delete(store);
+		if (pendingCloses.size === 0 && pendingDatabaseStoreCloses.get(databaseName) === pendingCloses)
+			pendingDatabaseStoreCloses.delete(databaseName);
+	};
 	const closeStore = (store: any, description: string) => {
 		if (!store || attemptedStores.has(store)) return;
 		attemptedStores.add(store);
+		if (store.status === 'closed') {
+			closeSettled(store);
+			return;
+		}
 		try {
-			store.close?.();
-			pendingCloses.delete(store);
+			const closeOperation = store.close?.();
+			if (typeof closeOperation?.then === 'function') {
+				pendingCloses.set(store, description);
+				const trackedClose = Promise.resolve(closeOperation).then(
+					() => {
+						closeSettled(store);
+					},
+					(error) => {
+						logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
+						closeWork?.errors.push(error);
+					}
+				);
+				if (closeWork) closeWork.operations.push(trackedClose);
+				else void trackedClose;
+			} else closeSettled(store);
 		} catch (error) {
 			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
 			pendingCloses.set(store, description);
 			closeErrors.push(error);
+			closeWork?.errors.push(error);
 		}
 	};
 	for (const [store, description] of pendingCloses) closeStore(store, description);
@@ -2578,8 +2603,8 @@ function closeDatabaseTables(
 	// it so its handles are released too (the Set dedupes it against the per-table root stores above)
 	if (definedRoot) rootStores.add(definedRoot);
 	// before any table store closes, so no further pass is admitted. This is synchronous, so it cannot
-	// await the drain barrier stopAuditCleanup() returns; what covers it is the in-pass status checks,
-	// plus the fact that its production callers reach it only for RocksDB databases, whose pass is one
+	// await the drain barrier stopAuditCleanup() returns. Async callers that can reach LMDB drain it
+	// before entering; the remaining synchronous production callers use RocksDB, whose pass is one
 	// synchronous purgeLogs() call with nothing suspended mid-removal.
 	for (const rootStore of rootStores) rootStore.auditStore?.stopAuditCleanup?.();
 	for (const tableName in dbTables ?? {}) {
@@ -2608,7 +2633,7 @@ function closeDatabaseTables(
 		delete tables[DEFINED_TABLES];
 	}
 	delete databases[databaseName];
-	if (failOnCloseError) {
+	if (failOnCloseError && !closeWork) {
 		if (closeErrors.length === 1) throw closeErrors[0];
 		if (closeErrors.length) throw new AggregateError(closeErrors, `Failed to close database '${databaseName}'`);
 	}
@@ -2617,15 +2642,40 @@ function closeDatabaseTables(
 
 export async function closeDatabaseForRestore(databaseName: string, dropMarker?: DatabaseDropMarker): Promise<boolean> {
 	const dbTables = databases[databaseName];
-	if (!dbTables) return closeDatabase(databaseName, true);
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	const closeWork = { operations: [], errors: [] } as { operations: Promise<void>[]; errors: unknown[] };
+	if (!dbTables) {
+		const closed = closeDatabaseTables(databaseName, undefined, definedRoot, true, closeWork);
+		await Promise.all(closeWork.operations);
+		if (closeWork.errors.length === 1) throw closeWork.errors[0];
+		if (closeWork.errors.length)
+			throw new AggregateError(closeWork.errors, `Failed to close database '${databaseName}'`);
+		return closed;
+	}
+	const assertCurrentDropPreparation = () => {
+		if (
+			dropMarker &&
+			!databaseDropMarkerMatches(databasesBeingDropped.get(databaseName), dropMarker.originator, dropMarker.attemptId)
+		)
+			throw new Error(`Database drop preparation for '${databaseName}' was canceled before storage close`);
+	};
+	assertCurrentDropPreparation();
 	await quiesceDatabaseDerivedIndexes(databaseName, dbTables, 'database restore');
-	if (
-		dropMarker &&
-		!databaseDropMarkerMatches(databasesBeingDropped.get(databaseName), dropMarker.originator, dropMarker.attemptId)
-	)
-		throw new Error(`Database drop preparation for '${databaseName}' was canceled before storage close`);
-	return closeDatabaseTables(databaseName, dbTables, definedRoot, true);
+	assertCurrentDropPreparation();
+	const rootStores = new Set<any>();
+	if (definedRoot) rootStores.add(definedRoot);
+	for (const table of Object.values(dbTables) as any[]) {
+		if (table?.primaryStore?.rootStore) rootStores.add(table.primaryStore.rootStore);
+	}
+	await Promise.all([...rootStores].map((rootStore) => rootStore.auditStore?.stopAuditCleanup?.()));
+	assertCurrentDropPreparation();
+	const closed = closeDatabaseTables(databaseName, dbTables, definedRoot, true, closeWork);
+	await Promise.all(closeWork.operations);
+	const pendingCloses = pendingDatabaseStoreCloses.get(databaseName);
+	if (pendingCloses?.size === 0) pendingDatabaseStoreCloses.delete(databaseName);
+	if (closeWork.errors.length === 1) throw closeWork.errors[0];
+	if (closeWork.errors.length) throw new AggregateError(closeWork.errors, `Failed to close database '${databaseName}'`);
+	return closed;
 }
 
 export async function prepareDatabaseForDrop(
@@ -2685,18 +2735,34 @@ export function markDatabaseDropDestructive(databaseName: string, originator: nu
 	marker.destructive = true;
 }
 
-export async function cancelDatabaseDrop(databaseName: string, originator?: number, attemptId?: string): Promise<void> {
+export function markDatabaseDropLocalSchemaClosed(databaseName: string, originator: number, attemptId: string): void {
 	const marker = databasesBeingDropped.get(databaseName);
-	if (!databaseDropMarkerMatches(marker, originator, attemptId)) return;
+	if (!databaseDropMarkerMatches(marker, originator, attemptId))
+		throw new Error(`Database quiescence for '${databaseName}' is no longer owned by this operation`);
+	marker.localSchemaClosed = true;
+}
+
+export async function cancelDatabaseDrop(
+	databaseName: string,
+	originator?: number,
+	attemptId?: string,
+	preserveInterruptedDrop = false
+): Promise<boolean> {
+	const marker = databasesBeingDropped.get(databaseName);
+	if (!databaseDropMarkerMatches(marker, originator, attemptId)) return false;
 	const preparation = databaseDropPreparations.get(databaseName);
-	const needsReload = marker.originator !== threadId || marker.destructive || Boolean(preparation);
+	const destructive = Boolean(marker.destructive || preserveInterruptedDrop);
+	const needsReload =
+		!destructive &&
+		(marker.originator !== threadId || Boolean(preparation) || (marker.localSchemaClosed && !marker.destructive));
 	clearDatabaseDropMarker(databaseName, originator, attemptId);
-	if (!needsReload) return;
+	if (!needsReload) return destructive;
 	if (preparation)
 		try {
 			await preparation;
 		} catch {}
 	resetDatabases();
+	return destructive;
 }
 
 export async function cancelDatabaseDropsFromThread(originator: number): Promise<void> {
@@ -2713,7 +2779,7 @@ export async function cancelDatabaseDropsFromThread(originator: number): Promise
 }
 
 /**
- * Close every RocksDB (user) database this thread has open, releasing its native handles.
+ * Close every user database this thread has open, releasing its storage and derived-index handles.
  *
  * rocksdb-js's registry is process-global across worker threads, and a thread that exits WITHOUT
  * closing leaks its handles (the process-global refCount never drops), while the only alternative,
@@ -2741,30 +2807,16 @@ export async function closeLoadedDatabases(): Promise<void> {
 	for (const databaseName of Object.keys(databases)) {
 		const dbTables = databases[databaseName];
 		if (!dbTables) continue;
-		let isRocks = false;
-		for (const tableName in dbTables) {
-			if (dbTables[tableName]?.primaryStore?.rootStore instanceof RocksDatabase) {
-				isRocks = true;
-				break;
-			}
-		}
-		// a tableless database exposes no table root store, so also check the defined-database
-		// entry — otherwise its open root store would leak on worker exit
-		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) {
-			isRocks = true;
-		}
-		if (isRocks) {
-			try {
-				await closeDatabaseForRestore(databaseName);
-			} catch (error) {
-				closeErrors.push(new Error(`Failed to close database '${databaseName}'`, { cause: error }));
-			}
+		try {
+			await closeDatabaseForRestore(databaseName);
+		} catch (error) {
+			closeErrors.push(new Error(`Failed to close database '${databaseName}'`, { cause: error }));
 		}
 	}
 	for (const databaseName of [...pendingDatabaseStoreCloses.keys()]) {
 		if (databases[databaseName]) continue;
 		try {
-			closeDatabase(databaseName, true);
+			await closeDatabaseForRestore(databaseName);
 		} catch (error) {
 			closeErrors.push(new Error(`Failed to retry database handle close for '${databaseName}'`, { cause: error }));
 		}
@@ -3632,6 +3684,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					databaseName,
 					tableName
 				);
+				if (!fullTextIndexesExplicit) fullTextIndexes = durableFullTextIndexes;
 				fullTextIndexGenerationMap = fullTextIndexGenerations(
 					durableFullTextIndexes,
 					attributeDescriptor.fullTextIndexGenerations,
@@ -3935,7 +3988,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					databaseName,
 					tableName
 				);
-				if (origin === 'cluster')
+				if (!fullTextIndexesExplicit) fullTextIndexes = durableDefinitions;
+				else if (origin === 'cluster')
 					fullTextIndexes = mergeAdditiveFullTextDefinitions(durableDefinitions, fullTextIndexes ?? []);
 				fullTextIndexGenerationMap = fullTextIndexGenerations(
 					durableDefinitions,
@@ -3965,7 +4019,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					databaseName,
 					tableName
 				);
-				if (origin === 'cluster')
+				if (!fullTextIndexesExplicit) fullTextIndexes = currentFullTextIndexes;
+				else if (origin === 'cluster')
 					fullTextIndexes = mergeAdditiveFullTextDefinitions(currentFullTextIndexes, fullTextIndexes ?? []);
 				fullTextIndexGenerationMap = fullTextIndexGenerations(
 					currentFullTextIndexes,

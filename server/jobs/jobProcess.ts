@@ -92,8 +92,9 @@ const JOB_ID = JOB_NAME.substring(4);
 			harperLogger.error('Error updating job record on job worker exit:', updateErr);
 		}
 		// Keep this worker alive until every process-global RocksDB handle is released. Main exits
-		// Harper if cleanup cannot complete within the ordinary worker-termination safety window.
+		// Harper if cleanup cannot complete within the database-quiescence safety window.
 		reportWorkerDatabaseCloseStatus(true);
+		await require('../itc/serverHandlers.js').waitForSchemaEventsToSettle();
 		let closeFailureLogged = false;
 		for (;;) {
 			try {

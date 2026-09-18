@@ -196,6 +196,103 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		await assert.rejects(broadcast, /exited before acknowledging/);
 	});
 
+	it('accepts a live worker after its database handles are confirmed closed', async function () {
+		const worker = await startFixtureWorker('silent', 'job');
+		started.push(worker);
+		const messages = [];
+		worker.on('message', (message) => messages.push(message));
+		worker.postMessage({ type: 'confirm-database-close' });
+		await waitFor(() => messages.some((message) => message.type === 'database-close-confirmed'));
+		await waitFor(() => worker.databaseCloseConfirmed === true);
+		await broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 2000, {
+			acceptWorkerDatabaseClose: true,
+			includeJobWorkers: true,
+			rejectOnError: true,
+		});
+	});
+
+	it('accepts an exit after the coordinator has recorded database closure', async function () {
+		const worker = await startFixtureWorker('silent', 'job');
+		started.push(worker);
+		const barrier = broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 2000, {
+			acceptWorkerDatabaseClose: true,
+			includeJobWorkers: true,
+			rejectOnError: true,
+		});
+		worker.databaseCloseConfirmed = true;
+		worker.wasShutdown = true;
+		await worker.terminate();
+		await barrier;
+	});
+
+	it('does not acknowledge a destructive barrier until database closure finishes', async function () {
+		const messages = [];
+		const worker = await startFixtureWorker('schema-shutdown', 'job');
+		started.push(worker);
+		worker.on('message', (message) => messages.push(message));
+		worker.postMessage({ type: 'begin-database-close' });
+		await waitFor(() => messages.some((message) => message.type === 'database-close-started'));
+
+		let settled = false;
+		const barrier = broadcastWithAcknowledgement(
+			{ type: 'schema', message: { operation: 'test-close-barrier', originator: 123 } },
+			2000,
+			{
+				acceptWorkerDatabaseClose: true,
+				includeJobWorkers: true,
+				rejectOnError: true,
+			}
+		).then(() => {
+			settled = true;
+		});
+		await waitFor(() => messages.some((message) => message.type === 'schema-received-during-close'));
+		assert.strictEqual(settled, false);
+
+		worker.postMessage({ type: 'finish-database-close' });
+		await barrier;
+		assert.strictEqual(settled, true);
+	});
+
+	it('settles an active worker-coordinated barrier when a peer confirms database closure', async function () {
+		const coordinatorMessages = [];
+		const peerMessages = [];
+		const coordinator = await startFixtureWorker('acknowledge');
+		const peer = await startFixtureWorker('silent', 'job');
+		started.push(coordinator, peer);
+		coordinator.on('message', (message) => coordinatorMessages.push(message));
+		peer.on('message', (message) => peerMessages.push(message));
+		const peerThreadId = peer.threadId;
+
+		coordinator.postMessage({ type: 'send-strict-probe', timeout: 2000 });
+		peer.postMessage({ type: 'confirm-database-close' });
+		await waitFor(() => peerMessages.some((message) => message.type === 'database-close-confirmed'));
+		await waitFor(() =>
+			coordinatorMessages.some(
+				(message) => message.type === 'peer-database-close-confirmed' && message.threadId === peerThreadId
+			)
+		);
+		await waitFor(() => coordinatorMessages.some((message) => message.type === 'strict-probe-settled'));
+		assert.strictEqual(coordinatorMessages.find((message) => message.type === 'strict-probe-settled').rejected, false);
+	});
+
+	it('gives a newly started coordinator the close status of an existing peer', async function () {
+		const peerMessages = [];
+		const peer = await startFixtureWorker('silent', 'job');
+		started.push(peer);
+		peer.on('message', (message) => peerMessages.push(message));
+		peer.postMessage({ type: 'confirm-database-close' });
+		await waitFor(() => peerMessages.some((message) => message.type === 'database-close-confirmed'));
+		await waitFor(() => peer.databaseCloseConfirmed === true);
+
+		const coordinatorMessages = [];
+		const coordinator = await startFixtureWorker('acknowledge');
+		started.push(coordinator);
+		coordinator.on('message', (message) => coordinatorMessages.push(message));
+		coordinator.postMessage({ type: 'send-strict-probe', timeout: 2000 });
+		await waitFor(() => coordinatorMessages.some((message) => message.type === 'strict-probe-settled'));
+		assert.strictEqual(coordinatorMessages.find((message) => message.type === 'strict-probe-settled').rejected, false);
+	});
+
 	it('includes job workers only when a destructive barrier requests them', async function () {
 		const worker = await startFixtureWorker('reject', 'job');
 		started.push(worker);

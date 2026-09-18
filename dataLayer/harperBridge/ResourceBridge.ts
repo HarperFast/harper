@@ -202,6 +202,7 @@ export class ResourceBridge extends BridgeMethods {
 			Object.assign(new SchemaEventMsg(process.pid, operation, databaseName), { dropAttemptId: attemptId });
 		try {
 			await signalling.signalSchemaChangeToPeers(dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION), {
+				acceptWorkerDatabaseClose: true,
 				acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
 				includeJobWorkers: true,
 				mainFirst: true,
@@ -214,26 +215,32 @@ export class ResourceBridge extends BridgeMethods {
 			});
 		} catch (error) {
 			const cancellationErrors: unknown[] = [];
+			let preserveInterruptedDrop = false;
 			try {
-				await cancelDatabaseDrop(databaseName, threadId, attemptId);
+				preserveInterruptedDrop = await cancelDatabaseDrop(databaseName, threadId, attemptId);
 			} catch (cancelError) {
 				cancellationErrors.push(cancelError);
 			}
 			try {
-				await signalling.signalSchemaChangeToPeers(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), {
-					acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
-					includeJobWorkers: true,
-					mainFirst: true,
-					rejectOnError: true,
-				});
+				await signalling.signalSchemaChangeToPeers(
+					Object.assign(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), { preserveInterruptedDrop }),
+					{
+						acceptWorkerDatabaseClose: true,
+						acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
+						includeJobWorkers: true,
+						mainFirst: true,
+						rejectOnError: true,
+					}
+				);
 			} catch (cancelError) {
 				cancellationErrors.push(cancelError);
 			}
-			if (cancellationErrors.length)
-				throw new AggregateError(
+			if (cancellationErrors.length) {
+				throw signalling.aggregateSchemaChangeErrors(
 					[error, ...cancellationErrors],
 					`Database drop '${databaseName}' failed to cancel cleanly`
 				);
+			}
 			throw error;
 		}
 	}

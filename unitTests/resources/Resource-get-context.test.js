@@ -330,9 +330,9 @@ describe('dropTable waits for in-flight source-populated cache writes (harper#13
 	});
 
 	// Not covered by an automated test here: dropTable()'s drain is bounded by LOCK_TIMEOUT
-	// (10s) and FAILS the drop (throws, leaving the durable tombstone for completeInterruptedDrop
-	// to retry) rather than proceeding to drop column families out from under a write that may
-	// still be staged - see the comment above the drain in dropTable(). Exercising the real
+	// (10s) and FAILS the drop before publishing a tombstone rather than proceeding to drop column
+	// families out from under a write that may still be staged. Cancellation reloads the live table;
+	// the old Table instance stays fenced and aborts that source write if it later resumes. Exercising the real
 	// 10-second timeout here would make this suite slow, and sinon fake timers over the
 	// transaction/commit machinery this exercises reliably hung the test run rather than
 	// advancing it. Verified manually with a standalone script instead (a source that never
