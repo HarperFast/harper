@@ -310,6 +310,20 @@ function forceTerminateWorker(worker) {
 		worker.terminate();
 	}
 }
+
+function workerShutdownBackstopDelay(deadlineMs) {
+	if (deadlineMs === undefined) return threadTerminationTimeout * 2;
+	const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
+	return boundedTerminateDelay(deadlineMs, Date.now(), threadTerminationTimeout * 2, getShutdownDrainCeilingMs());
+}
+
+function armWorkerDatabaseCloseSafety(worker) {
+	if (worker.databaseCloseSafetyTimer) clearTimeout(worker.databaseCloseSafetyTimer);
+	worker.databaseCloseSafetyTimer = setTimeout(
+		() => forceTerminateWorker(worker),
+		workerShutdownBackstopDelay(worker.shutdownDrainDeadline)
+	).unref();
+}
 /**
  * Stop one worker for good: shut it down, honour the drain extension it may ask for, force it after
  * the same backstop the rolling restart uses (FORCE_EXIT on Bun, where terminate() segfaults), and
@@ -325,10 +339,7 @@ function stopWorker(worker) {
 		let timeout = armTerminate(threadTerminationTimeout * 2);
 		worker.extendTerminateDeadline = (deadlineMs) => {
 			clearTimeout(timeout);
-			const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
-			timeout = armTerminate(
-				boundedTerminateDelay(deadlineMs, Date.now(), threadTerminationTimeout * 2, getShutdownDrainCeilingMs())
-			);
+			timeout = armTerminate(workerShutdownBackstopDelay(deadlineMs));
 		};
 		worker.on('exit', () => {
 			clearTimeout(timeout);
@@ -490,18 +501,17 @@ if (!parentPort) {
 		worker.postMessage({ type: PROCESS_GROUP_TERMINATION_CONFIRMED, requestId: message.requestId });
 	});
 	onMessageByType(EXTEND_SHUTDOWN_DEADLINE, (message, worker) => {
-		worker?.extendTerminateDeadline?.(message.deadlineMs);
+		if (!worker) return;
+		worker.shutdownDrainDeadline = message.deadlineMs;
+		worker.extendTerminateDeadline?.(message.deadlineMs);
+		if (worker.databaseCloseFailed) armWorkerDatabaseCloseSafety(worker);
 	});
 	onMessageByType(WORKER_DATABASE_CLOSE_STATUS, (message, worker) => {
 		if (!worker) return;
 		worker.databaseCloseFailed = message.failed === true;
 		if (worker.databaseCloseSafetyTimer) clearTimeout(worker.databaseCloseSafetyTimer);
 		worker.databaseCloseSafetyTimer = undefined;
-		if (worker.databaseCloseFailed)
-			worker.databaseCloseSafetyTimer = setTimeout(
-				() => forceTerminateWorker(worker),
-				threadTerminationTimeout * 2
-			).unref();
+		if (worker.databaseCloseFailed) armWorkerDatabaseCloseSafety(worker);
 	});
 }
 // postMessage type listeners that are registered in other ways or can be registered later
@@ -903,13 +913,7 @@ async function restartWorkers(
 					// Clamp the worker-requested deadline to the configured ceiling (and to a finite value) so a
 					// buggy/rogue message can't defer the force-kill unboundedly; a shrink (drain-done reset)
 					// passes through untouched. See boundedTerminateDelay for the arithmetic + its unit tests.
-					const { boundedTerminateDelay, getShutdownDrainCeilingMs } = require('../../components/shutdownDrain.ts');
-					const delay = boundedTerminateDelay(
-						deadlineMs,
-						Date.now(),
-						threadTerminationTimeout * 2,
-						getShutdownDrainCeilingMs()
-					);
+					const delay = workerShutdownBackstopDelay(deadlineMs);
 					timeout = armTerminate(delay);
 					// The worker is telling us it has work still moving and how long it may take, so pass that
 					// on: a caller waiting on the restart must not treat a live drain as a stalled one.
