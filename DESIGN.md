@@ -2705,12 +2705,16 @@ both references are released with the table installation. Without the provisiona
 reused native index could retain a document evicted while no runner was registered.
 Full-text readiness is generation-scoped while the writer lock remains target-scoped. The lock key
 deliberately excludes the generation: old and replacement schemas must serialize on the same native
-directory. After acquiring that lock and before inspection, reset, open, normal delivery, or each
-rebuild chunk, the runner rereads the durable catalog generation. A stale registration retires
-itself without touching the replacement generation's readiness. A catalog read failure releases the
-lock and retries rather than assuming authority. A replacement generation therefore cannot inherit
-`ready` from the generation it supersedes, and an overlapping old worker cannot reset or write the
-replacement's native directory. Before a runner exists, its local
+directory. The generation captured from the durable descriptor at activation is compared with the
+currently loaded table definition before inspection, reset, open, normal delivery, or each rebuild
+chunk. Schema rescan updates that table definition before rotating its installation, so the old
+registration stops admitting work without adding synchronous catalog reads to every drain chunk.
+The replacement waits for that shutdown and then acquires the same target lock; at most, the old
+generation finishes the chunk already in progress when the catalog change is published. A stale
+registration retires without touching the replacement generation's readiness, and a transient
+shutdown failure retains the lock and retries with backoff. A replacement generation therefore
+cannot inherit `ready` from the generation it supersedes, and an overlapping old worker cannot reset
+or write the replacement's native directory. Before a runner exists, its local
 installation masks shared readiness as `unknown`; native activation failure changes that local state
 to `unavailable` and prevents reuse, so a later schema load retries activation without poisoning a
 healthy peer. A table drop clears its installation only after shutdown proves quiescence; a rejected
@@ -2724,15 +2728,17 @@ purging files.
 A database drop uses a stricter cross-worker barrier than ordinary schema broadcasts. The initiating
 worker first marks the database as dropping, then every live peer marks it likewise, quiesces all
 derived-index installations associated with its audit store, closes its handles, and acknowledges
-success. A negative acknowledgement or timeout rejects the drop before destructive storage work.
+success. A handle-close failure produces a negative acknowledgement rather than being logged and
+treated as quiescent. A negative acknowledgement or timeout rejects the drop before destructive storage work.
 While marked, scans and on-demand lookup cannot reopen the database. Failure broadcasts cancellation
 and reloads the database; successful deletion sends the ordinary schema event, which clears the
 marker. The destructive barrier includes job workers even though ordinary schema gossip excludes
 them. A peer also records the coordinating thread and cancels its marker if that thread exits before
-finish or cancellation arrives, so an interrupted drop does not fence the database name until the
-process restarts. Branch shutdown and job-worker teardown await the same derived-index quiescence
-before closing their RocksDB handles. A process exit remains the final safety boundary if orderly
-teardown itself cannot complete.
+finish or cancellation arrives. A preparation delivered after the exit notification is rejected
+before it can install a marker, closing the opposite ordering of the same race. An interrupted drop
+therefore does not fence the database name until the process restarts. Branch shutdown and job-worker
+teardown await the same derived-index quiescence before closing their RocksDB handles. A process exit
+remains the final safety boundary if orderly teardown itself cannot complete.
 
 An `@fullText` index creates no RocksDB column family. Its native directory is rooted inside the
 database directory and selected by the lifecycle's hash of `<table>/<index>`. RocksDB remains the

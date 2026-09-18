@@ -598,6 +598,7 @@ class DerivedIndexRunner {
 	#lastCaughtUpAt?: number;
 	#lagTimer?: NodeJS.Timeout;
 	#lockRetryTimer?: NodeJS.Timeout;
+	#heldReleaseRetryTimer?: NodeJS.Timeout;
 	#lagBudget: number;
 	#scheduled = false;
 	#skipNextNotify = false;
@@ -2127,7 +2128,7 @@ class DerivedIndexRunner {
 	#continueIfCurrent(): boolean {
 		try {
 			if (this.#registration.isCurrent?.() !== false) return true;
-			void this.stop();
+			this.#retireStaleGeneration();
 		} catch (error) {
 			logger.warn?.(`Derived index '${this.id}' could not verify its durable generation; retrying`, error);
 			this.#lockBackoff = true;
@@ -2135,6 +2136,19 @@ class DerivedIndexRunner {
 			this.#armLockRetry(this.#options.rebuildBackoffMilliseconds);
 		}
 		return false;
+	}
+
+	#retireStaleGeneration() {
+		const release = this.#heldLock ? this.retryRelease() : this.stop();
+		release.catch((error) => {
+			logger.warn?.(`Derived index '${this.id}' could not retire its stale generation; retrying`, error);
+			if (this.#heldReleaseRetryTimer) return;
+			this.#heldReleaseRetryTimer = setTimeout(() => {
+				this.#heldReleaseRetryTimer = undefined;
+				this.#retireStaleGeneration();
+			}, this.#options.rebuildBackoffMilliseconds);
+			this.#heldReleaseRetryTimer.unref?.();
+		});
 	}
 
 	#release() {

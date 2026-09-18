@@ -70,7 +70,6 @@ function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
 	return registered;
 }
 
-/** Register every schema-derived index of a table with its database's shared runtime. */
 export function attachDerivedIndexes(Table: any): Installed | undefined {
 	const hnswAttributes = Table.attributes.filter(
 		(attribute: Attribute) => Table.indices[attribute.name]?.customIndex?.postCommit
@@ -336,7 +335,7 @@ async function registerFullText(
 		registered.runtime.register({
 			backend,
 			readinessId: fullTextDerivedIndexReadinessId(Table, definition),
-			isCurrent: () => persistedFullTextIndexGeneration(Table, definition.name) === generation,
+			isCurrent: () => currentFullTextIndexGeneration(Table, definition.name) === generation,
 			projections: new Map([
 				[
 					Table.tableId,
@@ -378,14 +377,11 @@ function fullTextIndexGeneration(Table: any, definition: FullTextDefinition): st
 	);
 }
 
-function persistedFullTextIndexGeneration(Table: any, indexName: string): string | undefined {
-	const descriptor =
-		Table.dbisDB.getSync(`${Table.tableName}/${Table.primaryKey}`) ?? Table.dbisDB.getSync(`${Table.tableName}/`);
-	const definition = descriptor?.fullTextIndexes?.find((candidate: FullTextDefinition) => candidate.name === indexName);
+function currentFullTextIndexGeneration(Table: any, indexName: string): string | undefined {
+	const definition = Table.fullTextIndexes?.find((candidate: FullTextDefinition) => candidate.name === indexName);
 	if (!definition) return;
 	return (
-		descriptor.fullTextIndexGenerations?.[indexName] ??
-		`legacy:${JSON.stringify(fullTextStorageDefinition(definition))}`
+		Table.fullTextIndexGenerations?.[indexName] ?? `legacy:${JSON.stringify(fullTextStorageDefinition(definition))}`
 	);
 }
 

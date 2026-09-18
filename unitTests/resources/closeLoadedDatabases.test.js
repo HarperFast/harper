@@ -164,6 +164,40 @@ describe('RocksDB handle release', function () {
 		assert.ok(getDatabases()[databaseName], 'a dead coordinator must not leave the database name fenced forever');
 	});
 
+	it('rejects a late drop preparation from an exited coordinator', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-late-originator';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		await getDatabases()[databaseName].pkg.schemaChangeOperation;
+		const originator = 910_000 + Math.floor(Math.random() * 10_000);
+		const { notifyThreadExit } = require('#js/server/threads/manageThreads');
+
+		notifyThreadExit(originator);
+		await assert.rejects(prepareDatabaseForDrop(databaseName, originator), /coordinator has exited/);
+
+		assert.ok(getDatabases()[databaseName], 'a late prepare must not install a permanent drop marker');
+	});
+
+	it('rejects drop preparation when a database handle cannot close', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-handle-failure';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const Table = getDatabases()[databaseName].pkg;
+		await Table.schemaChangeOperation;
+		const close = Table.primaryStore.close.bind(Table.primaryStore);
+		let closeAttempts = 0;
+		Table.primaryStore.close = () => {
+			if (++closeAttempts === 1) throw new Error('test handle close failure');
+			return close();
+		};
+
+		await assert.rejects(prepareDatabaseForDrop(databaseName), /test handle close failure/);
+
+		assert.ok(getDatabases()[databaseName], 'a rejected prepare must reload the database for continued use');
+	});
+
 	it('closeLoadedDatabases releases a branch database (invisible to the databases map it walks)', async function () {
 		this.timeout(30000);
 		const rootStore = openRocksDb('closerelease4');

@@ -2386,15 +2386,17 @@ export async function dropDatabase(databaseName) {
  * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
  * progress, per the restore marker checks in the scan).
  */
-export function closeDatabase(databaseName: string): boolean {
+export function closeDatabase(databaseName: string, failOnCloseError = false): boolean {
 	const dbTables = databases[databaseName];
 	if (!dbTables) return false;
 	const rootStores = new Set<any>();
+	const closeErrors: unknown[] = [];
 	const closeStore = (store: any, description: string) => {
 		try {
 			store?.close?.();
 		} catch (error) {
 			logger.warn(`Error closing ${description} while closing database ${databaseName}:`, error);
+			closeErrors.push(error);
 		}
 	};
 	for (const tableName in dbTables) {
@@ -2436,6 +2438,10 @@ export function closeDatabase(databaseName: string): boolean {
 		delete tables[DEFINED_TABLES];
 	}
 	delete databases[databaseName];
+	if (failOnCloseError) {
+		if (closeErrors.length === 1) throw closeErrors[0];
+		if (closeErrors.length) throw new AggregateError(closeErrors, `Failed to close database '${databaseName}'`);
+	}
 	return true;
 }
 
@@ -2443,15 +2449,18 @@ export async function closeDatabaseForRestore(databaseName: string): Promise<boo
 	const dbTables = databases[databaseName];
 	if (!dbTables) return false;
 	await quiesceDatabaseDerivedIndexes(databaseName, dbTables, 'database restore');
-	return closeDatabase(databaseName);
+	return closeDatabase(databaseName, true);
 }
 
 export async function prepareDatabaseForDrop(databaseName: string, originator = threadId): Promise<void> {
+	if (originator !== threadId && manageThreads.hasThreadExited(originator))
+		throw new Error(`Cannot prepare database '${databaseName}' for a drop whose coordinator has exited`);
 	databasesBeingDropped.set(databaseName, originator);
 	try {
 		await closeDatabaseForRestore(databaseName);
 	} catch (error) {
 		databasesBeingDropped.delete(databaseName);
+		resetDatabases();
 		throw error;
 	}
 }

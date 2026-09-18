@@ -498,7 +498,7 @@ describe('@fullText derived-index activation', () => {
 		assert.strictEqual(binding.opens.length, openCount);
 	});
 
-	it('retires a writer when the durable catalog advances to another generation', async () => {
+	it('retires a writer when the loaded catalog advances to another generation', async () => {
 		const database = `fulltext-generation-fence-${Date.now()}`;
 		Product = table({
 			database,
@@ -521,6 +521,7 @@ describe('@fullText derived-index activation', () => {
 			fullTextIndexGenerations: { ...primaryEntry.value.fullTextIndexGenerations, search: 'new-generation' },
 		});
 		await Product.dbisDB.committed;
+		Product.fullTextIndexGenerations = { ...Product.fullTextIndexGenerations, search: 'new-generation' };
 
 		await Product.put('shoe-2', { title: 'Road shoe' });
 

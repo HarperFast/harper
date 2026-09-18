@@ -181,6 +181,33 @@ describe('DerivedIndexRuntime', () => {
 		await runtime.stop();
 	});
 
+	it('retries a failed shutdown while retiring a stale generation', async () => {
+		const store = new FakeLogStore(new Map());
+		const backend = new FakeBackend('generation-revocation-retry', cursor(10));
+		let current = true;
+		let shutdowns = 0;
+		backend.shutdown = () => {
+			if (++shutdowns === 1) throw new Error('transient shutdown failure');
+		};
+		const { runtime } = runtimeFor(store, new Map(), {
+			idleGraceMilliseconds: 10_000,
+			rebuildBackoffMilliseconds: 1,
+		});
+		runtime.register({
+			...registration(backend),
+			readinessId: 'generation-revocation-retry:g1',
+			isCurrent: () => current,
+		});
+		await waitFor(() => store.locks.size === 1);
+
+		current = false;
+		store.rootStore.emit('committed');
+
+		await waitFor(() => store.locks.size === 0);
+		assert.strictEqual(shutdowns, 2);
+		await runtime.stop();
+	});
+
 	it('delivers authoritative projected state once per record and advances through unrelated transactions', async () => {
 		const store = new FakeLogStore(
 			new Map([
