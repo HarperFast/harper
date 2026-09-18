@@ -13,6 +13,9 @@ const {
 } = require('#src/resources/derivedIndexes');
 const { FullTextNativeTestBinding } = require('./fullTextNativeTestBinding');
 
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const rocksOnly = isLMDB ? it.skip : it;
+
 function definition(field, weight = 1, name = 'search') {
 	return {
 		name,
@@ -50,7 +53,7 @@ describe('@fullText derived-index activation', () => {
 		setFullTextNativeBindingForTests(undefined);
 	});
 
-	it('registers multiple native indexes with one shared derived runtime', async () => {
+	rocksOnly('registers multiple native indexes with one shared derived runtime', async () => {
 		Product = table({
 			database: `fulltext-activation-${Date.now()}`,
 			table: 'Product',
@@ -152,6 +155,7 @@ describe('@fullText derived-index activation', () => {
 			() => assertFullTextActivationSupported({}, 'catalog', 'Product', attributes, [fullText]),
 			/LMDB storage engine/
 		);
+		if (isLMDB) return;
 
 		const Root = table({
 			database: `fulltext-activation-root-${Date.now()}`,
@@ -179,7 +183,7 @@ describe('@fullText derived-index activation', () => {
 		);
 	});
 
-	it('reports unavailable and retries when native activation initially fails', async () => {
+	rocksOnly('reports unavailable and retries when native activation initially fails', async () => {
 		const database = `fulltext-activation-failure-${Date.now()}`;
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -211,7 +215,7 @@ describe('@fullText derived-index activation', () => {
 		assert(binding.opens.some((options) => options.indexId === fullTextDerivedIndexId(Product, 'search')));
 	});
 
-	it('retries failed shutdown before a same-definition activation can replace it', async () => {
+	rocksOnly('retries failed shutdown before a same-definition activation can replace it', async () => {
 		const database = `fulltext-drop-shutdown-${Date.now()}`;
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -244,7 +248,7 @@ describe('@fullText derived-index activation', () => {
 		assert(binding.closeAttempts > 1, 'replacement activation must re-prove predecessor quiescence');
 	});
 
-	it('reactivates indexes already quiesced when another index blocks restore', async () => {
+	rocksOnly('reactivates indexes already quiesced when another index blocks restore', async () => {
 		const database = `fulltext-restore-shutdown-${Date.now()}`;
 		const tableDefinition = (tableName, field) => ({
 			database,
@@ -276,7 +280,7 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 	});
 
-	it('reactivates siblings when one derived index cannot quiesce', async () => {
+	rocksOnly('reactivates siblings when one derived index cannot quiesce', async () => {
 		const database = `fulltext-partial-shutdown-${Date.now()}`;
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -319,7 +323,7 @@ describe('@fullText derived-index activation', () => {
 		Product = undefined;
 	});
 
-	it('retains the quiescence handle after removing the final derived index', async () => {
+	rocksOnly('retains the quiescence handle after removing the final derived index', async () => {
 		const database = `fulltext-remove-drain-${Date.now()}`;
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -348,7 +352,7 @@ describe('@fullText derived-index activation', () => {
 		Product = undefined;
 	});
 
-	it('rotates the native generation when a full-text declaration is removed and re-added', async () => {
+	rocksOnly('rotates the native generation when a full-text declaration is removed and re-added', async () => {
 		const database = `fulltext-activation-generation-${Date.now()}`;
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -391,7 +395,7 @@ describe('@fullText derived-index activation', () => {
 		assert.strictEqual(binding.states.get(`${latest.path}\0${latest.indexId}\0${latest.generation}`).documents.size, 0);
 	});
 
-	it('rotates the native generation when the full-text definition changes', async () => {
+	rocksOnly('rotates the native generation when the full-text definition changes', async () => {
 		const database = `fulltext-activation-definition-${Date.now()}`;
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -436,7 +440,7 @@ describe('@fullText derived-index activation', () => {
 		assert.deepStrictEqual(latest.fields, [{ name: 'title', weight: 2 }]);
 	});
 
-	it('reuses the durable native generation after a database reload', async () => {
+	rocksOnly('reuses the durable native generation after a database reload', async () => {
 		const database = `fulltext-activation-reload-${Date.now()}`;
 		Product = table({
 			database,
@@ -475,7 +479,7 @@ describe('@fullText derived-index activation', () => {
 		assert.strictEqual(latest.generation, firstOpen.generation);
 	});
 
-	it('keeps an unchanged full-text runtime attached across a catalog rescan', async () => {
+	rocksOnly('keeps an unchanged full-text runtime attached across a catalog rescan', async () => {
 		const database = `fulltext-activation-rescan-${Date.now()}`;
 		Product = table({
 			database,
@@ -498,7 +502,7 @@ describe('@fullText derived-index activation', () => {
 		assert.strictEqual(binding.opens.length, openCount);
 	});
 
-	it('retires a writer when the loaded catalog advances to another generation', async () => {
+	rocksOnly('retires a writer when the loaded catalog advances to another generation', async () => {
 		const database = `fulltext-generation-fence-${Date.now()}`;
 		Product = table({
 			database,
@@ -533,7 +537,7 @@ describe('@fullText derived-index activation', () => {
 		assert.strictEqual(state.documents.has('shoe-2'), false);
 	});
 
-	it('preserves the native generation when only query behavior changes', async () => {
+	rocksOnly('preserves the native generation when only query behavior changes', async () => {
 		const database = `fulltext-activation-query-options-${Date.now()}`;
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
@@ -578,7 +582,7 @@ describe('@fullText derived-index activation', () => {
 		assert.deepStrictEqual(fullText.highlighting, { maxFragments: 2, fragmentLength: 80 });
 	});
 
-	it('quarantines only a persisted table whose full-text recovery contract is invalid', async () => {
+	rocksOnly('quarantines only a persisted table whose full-text recovery contract is invalid', async () => {
 		const database = `fulltext-activation-quarantine-${Date.now()}`;
 		const Invalid = table({
 			database,
@@ -638,7 +642,7 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 	});
 
-	it('retries a quarantined table runtime when restore quiesces hidden installations', async () => {
+	rocksOnly('retries a quarantined table runtime when restore quiesces hidden installations', async () => {
 		const database = `fulltext-quarantine-restore-${Date.now()}`;
 		Product = table({
 			database,
@@ -675,7 +679,7 @@ describe('@fullText derived-index activation', () => {
 		Other = undefined;
 	});
 
-	it('does not register an index after its table closes during native setup', async () => {
+	rocksOnly('does not register an index after its table closes during native setup', async () => {
 		let releaseRuntimeInfo;
 		const runtimeInfo = new Promise((resolve) => (releaseRuntimeInfo = resolve));
 		binding.runtimeInfo = () => runtimeInfo;

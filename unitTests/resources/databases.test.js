@@ -8,6 +8,8 @@ const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { beginRestore, completeRestore, RESTORE_META_DIR } = require('#src/dataLayer/restoreMarker');
 
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+
 describe('flushDatabases', () => {
 	before(async function () {
 		setupTestDBPath();
@@ -703,6 +705,7 @@ describe('audit cleanup retirement on teardown', () => {
 	});
 
 	it('reactivates a quiesced derived index when another table prevents the database drop', async function () {
+		if (isLMDB) this.skip();
 		const Reactivated = table({
 			table: 'Reactivated',
 			database: 'derivedindexpartialdrop',

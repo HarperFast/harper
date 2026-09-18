@@ -7,6 +7,9 @@ const { forComponent } = require('#src/utility/logging/harper_logger');
 const env = require('#src/utility/environment/environmentManager');
 const terms = require('#src/utility/hdbTerms');
 
+const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
+const rocksOnly = isLMDB ? it.skip : it;
+
 // Covers the additive-only invariant documented in DESIGN.md: a definition carrying origin 'cluster'
 // is a snapshot of a peer's eventually-consistent view, so it may add but never remove or redefine.
 describe('cluster-origin schema definitions are additive-only', () => {
@@ -422,7 +425,7 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 	});
 
-	it('accepts and persists a peer-new full-text index without creating an attribute', async () => {
+	rocksOnly('accepts and persists a peer-new full-text index without creating an attribute', async () => {
 		const Local = table({
 			table: 'ClusterMergeFullTextAdd',
 			database: 'test',
@@ -460,7 +463,7 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 	});
 
-	it('merges peer declarations per name and keeps conflicting local definitions', async () => {
+	rocksOnly('merges peer declarations per name and keeps conflicting local definitions', async () => {
 		const storageLogger = forComponent('storage');
 		const originalWarn = storageLogger.warn;
 		const warnings = [];
@@ -560,7 +563,7 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert.strictEqual(Local.dbisDB.getSync(sourceKey).type, 'Int');
 	});
 
-	it('keeps valid durable declarations and does not revive invalid siblings during peer merge', async () => {
+	rocksOnly('keeps valid durable declarations and does not revive invalid siblings during peer merge', async () => {
 		let Local = table({
 			table: 'ClusterMergeInvalidDurableSibling',
 			database: 'test',
@@ -630,7 +633,7 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert.strictEqual(primary.fullTextIndexes, undefined);
 	});
 
-	it('uses the resolved audit default when a peer snapshot first materializes a table', async () => {
+	rocksOnly('uses the resolved audit default when a peer snapshot first materializes a table', async () => {
 		const previousAuditDefault = env.get(terms.CONFIG_PARAMS.LOGGING_AUDITLOG);
 		env.setProperty(terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 		try {
@@ -655,7 +658,7 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		}
 	});
 
-	it('drops duplicate names from a first peer snapshot', async () => {
+	rocksOnly('drops duplicate names from a first peer snapshot', async () => {
 		const Created = table({
 			table: 'ClusterCreateDuplicateFullText',
 			database: 'test',
@@ -678,7 +681,7 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 	});
 
-	it('does not let a non-explicit peer call erase a newer durable declaration list', async () => {
+	rocksOnly('does not let a non-explicit peer call erase a newer durable declaration list', async () => {
 		const Local = table({
 			table: 'ClusterKeepNewerDurableFullText',
 			database: 'test',
@@ -714,7 +717,7 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 	});
 
-	it('does not resurrect a durably cleared declaration from stale live state', async () => {
+	rocksOnly('does not resurrect a durably cleared declaration from stale live state', async () => {
 		const Local = table({
 			table: 'ClusterKeepDurableFullTextRemoval',
 			database: 'test',
@@ -756,7 +759,7 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		);
 	});
 
-	it('merges an explicit peer list against disk even when it matches stale live state', async () => {
+	rocksOnly('merges an explicit peer list against disk even when it matches stale live state', async () => {
 		const Local = table({
 			table: 'ClusterMergeStaleExplicitFullText',
 			database: 'test',
