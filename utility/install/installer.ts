@@ -295,9 +295,6 @@ async function installPrompts(promptOverride) {
 	if (displayCmdEnvVar(promptOverride[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME], INSTALL_PROMPTS.NODE_HOSTNAME)) {
 		promptOverride[hdbTerms.INSTALL_PROMPTS.NODE_HOSTNAME] = await prompts.input({
 			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.NODE_HOSTNAME),
-			// @inquirer/input's `default` is typed `string | undefined`; null and undefined resolve
-			// identically at runtime (`String(config.default ?? '')`), same as inquirer@8's own
-			// `this.opt.default == null ? '' : this.opt.default` — this only satisfies the type.
 			default: DEFAULT_NODE_HOSTNAME ?? undefined,
 			theme,
 			// node.hostname is OPTIONAL — an unset value is valid and preferred when the operator
