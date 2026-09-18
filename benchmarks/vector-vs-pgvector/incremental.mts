@@ -45,7 +45,22 @@ function pgSql(sql: string, stdinAfter?: string): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(
 			'docker',
-			[...COMPOSE, 'exec', '-T', 'postgres', 'psql', '-p', '5434', '-U', 'vec', '-d', 'vec', '-v', 'ON_ERROR_STOP=1', '-q'],
+			[
+				...COMPOSE,
+				'exec',
+				'-T',
+				'postgres',
+				'psql',
+				'-p',
+				'5434',
+				'-U',
+				'vec',
+				'-d',
+				'vec',
+				'-v',
+				'ON_ERROR_STOP=1',
+				'-q',
+			],
 			{ stdio: ['pipe', 'pipe', 'pipe'] }
 		);
 		let out = '';
@@ -73,10 +88,20 @@ async function waitFor(url: string, deadlineMs: number): Promise<void> {
 	throw new Error(`timed out waiting for ${url}`);
 }
 
-/** Search for a vector that is itself in the corpus; it should come back as its own top hit. */
+/**
+ * Search for a vector that is itself in the corpus; it should come back as its own top hit.
+ *
+ * A failed search counts as not-yet-visible rather than propagating: since harper#2658 a native
+ * index that is too far behind rejects the query outright, and for this measurement that is
+ * exactly the same observable fact as "the write is not queryable yet".
+ */
 async function findsItself(search: (v: Float32Array) => Promise<(number | string)[]>, v: Float32Array, id: number) {
-	const got = await search(v);
-	return got.length > 0 && Number(got[0]) === id;
+	try {
+		const got = await search(v);
+		return got.length > 0 && Number(got[0]) === id;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -157,6 +182,10 @@ async function concurrentPhase(
 	};
 }
 
+let writeRejections = 0;
+let writeBlockedMs = 0;
+let lastRejection = '';
+
 async function main(): Promise<void> {
 	const { dims, vectors } = readFvecs(join(DATA_DIR, 'sift_base.fvecs'), BASE + ADDED + PROBES);
 	const { vectors: queryVectors } = readFvecs(join(DATA_DIR, 'sift_query.fvecs'), 200);
@@ -171,7 +200,19 @@ async function main(): Promise<void> {
 		const end = Date.now() + 120_000;
 		while (Date.now() < end) {
 			try {
-				await exec('docker', [...COMPOSE, 'exec', '-T', 'postgres', 'pg_isready', '-h', '127.0.0.1', '-p', '5434', '-U', 'vec']);
+				await exec('docker', [
+					...COMPOSE,
+					'exec',
+					'-T',
+					'postgres',
+					'pg_isready',
+					'-h',
+					'127.0.0.1',
+					'-p',
+					'5434',
+					'-U',
+					'vec',
+				]);
 				break;
 			} catch {
 				await delay(500);
@@ -187,7 +228,9 @@ async function main(): Promise<void> {
 		await pgSql(
 			`SET maintenance_work_mem='2GB';\nCREATE INDEX ON items USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=200);\n`
 		);
-		console.log(`  bulk index built in ${((Date.now() - ixStart) / 1000).toFixed(1)}s — index is now LIVE for the phases below`);
+		console.log(
+			`  bulk index built in ${((Date.now() - ixStart) / 1000).toFixed(1)}s — index is now LIVE for the phases below`
+		);
 
 		const app = spawn(process.execPath, [PG_APP], {
 			stdio: ['ignore', 'inherit', 'inherit'],
@@ -214,7 +257,9 @@ async function main(): Promise<void> {
 		};
 
 		const lag = await visibilityLag(insert, search, probeSet, BASE + ADDED, PROBES);
-		console.log(`  visibility lag: median ${lag.median.toFixed(1)}ms, max ${lag.max.toFixed(1)}ms, never-found ${lag.timedOut}`);
+		console.log(
+			`  visibility lag: median ${lag.median.toFixed(1)}ms, max ${lag.max.toFixed(1)}ms, never-found ${lag.timedOut}`
+		);
 		const conc = await concurrentPhase(insert, search, addSet, BASE, ADDED, queryVectors);
 		console.log(
 			`  under load: ${conc.insertRate.toFixed(0)} inserts/s while serving ${conc.queryRate.toFixed(0)} queries/s ` +
@@ -235,14 +280,31 @@ async function main(): Promise<void> {
 	try {
 		const url = ctx.harper.httpURL;
 		await waitFor(`${url}/items/`, 60_000);
+		// Writes can be refused while the derived index catches up (harper#2658 bounds index lag
+		// by applying backpressure to writers, not just readers). That refusal is a real property
+		// of ingesting into a live index, so retry it and account for it rather than failing: the
+		// interesting numbers are how often it happens and how long a writer is held off.
 		const insert = async (id: number, v: Float32Array) => {
-			const r = await fetch(`${url}/items/${id}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ embedding: Array.from(v) }),
-			});
-			await r.body?.cancel();
-			if (!r.ok) throw new Error(`insert ${r.status}`);
+			const t0 = performance.now();
+			for (let attempt = 0; ; attempt++) {
+				const r = await fetch(`${url}/items/${id}`, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ embedding: Array.from(v) }),
+				});
+				if (r.ok) {
+					await r.body?.cancel();
+					if (attempt > 0) {
+						writeRejections++;
+						writeBlockedMs += performance.now() - t0;
+					}
+					return;
+				}
+				const body = (await r.text()).slice(0, 160);
+				if (r.status !== 503 || attempt >= 600) throw new Error(`insert ${r.status}: ${body}`);
+				lastRejection = body;
+				await delay(100);
+			}
 		};
 		const search = async (v: Float32Array) => {
 			const r = await fetch(`${url}/items/`, {
@@ -285,11 +347,17 @@ async function main(): Promise<void> {
 		console.log('  plane settled — index is LIVE for the phases below');
 
 		const lag = await visibilityLag(insert, search, probeSet, BASE + ADDED, PROBES);
-		console.log(`  visibility lag: median ${lag.median.toFixed(1)}ms, max ${lag.max.toFixed(1)}ms, never-found ${lag.timedOut}`);
+		console.log(
+			`  visibility lag: median ${lag.median.toFixed(1)}ms, max ${lag.max.toFixed(1)}ms, never-found ${lag.timedOut}`
+		);
 		const conc = await concurrentPhase(insert, search, addSet, BASE, ADDED, queryVectors);
 		console.log(
 			`  under load: ${conc.insertRate.toFixed(0)} inserts/s while serving ${conc.queryRate.toFixed(0)} queries/s ` +
 				`(${conc.elapsed.toFixed(1)}s, ${conc.queryErrors} query errors)`
+		);
+		console.log(
+			`  write backpressure: ${writeRejections} writes held off, ${(writeBlockedMs / 1000).toFixed(1)}s total blocked` +
+				(lastRejection ? `\n    last refusal: ${lastRejection}` : '')
 		);
 	} finally {
 		await teardownHarper(ctx);
