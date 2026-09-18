@@ -40,10 +40,6 @@ export type DerivedNativeIndexHost = {
 // chunks a delivery by records and estimated bytes; this caps how many chunks may wait.
 const QUEUE_CAPACITY_BYTES = 64 * 1024 * 1024;
 const APPLY_SLICE_MILLIS = 5;
-// A barrier pauses application while the plane persists, so interrupting a catch-up for one is worth
-// it only while that cost stays a small share of the catch-up; idling this multiple of the last
-// interrupting barrier's own duration holds it under a quarter, and the cap below bounds the idle a
-// pathologically slow plane would otherwise earn.
 const BARRIER_IDLE_MULTIPLE = 3;
 const BARRIER_IDLE_CEILING_MILLISECONDS = 7_500;
 // Writes to an index this far behind fail with a retryable 503 (see the runtime's lag policy).
