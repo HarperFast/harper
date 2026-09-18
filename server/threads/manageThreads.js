@@ -239,9 +239,9 @@ function isApplicationPrimaryWorker(applicationName) {
 	return getWorkerIndex() === 0;
 }
 /**
- * Stores that exist only on this thread: the branch stores an isolated application opened in its
- * dedicated worker. Registered by openBranchDatabase, so the ownership predicates below can tell them
- * from the shared stores every thread has open.
+ * Branch stores opened on this thread. A shared application opens its branch in every pool worker;
+ * an isolated application opens it only in its dedicated worker. Registered by openBranchDatabase so
+ * ownership predicates can distinguish either case from the process-wide database graph.
  */
 const branchStorePaths = new Set();
 function markBranchStorePath(path, isBranch = true) {
@@ -263,6 +263,7 @@ function ownsStoreExpiration(storePath) {
 	return getWorkerIndex() === 0;
 }
 function ownsDerivedIndexWriters(storePath) {
+	// Shared branches follow their pool's worker 0; isolated branches have only the dedicated worker.
 	if (branchStorePaths.has(storePath)) return workerData?.isolatedApplication !== undefined || getWorkerIndex() === 0;
 	return workerData?.isolatedApplication === undefined && getWorkerIndex() === 0;
 }

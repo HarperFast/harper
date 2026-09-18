@@ -371,6 +371,26 @@ describe('RocksDB handle release', function () {
 		cancelDatabaseDrop(databaseName);
 	});
 
+	it('retries a failed handle close even while the database is unloaded', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-unloaded-handle-retry';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const Table = getDatabases()[databaseName].pkg;
+		await Table.schemaChangeOperation;
+		const close = Table.primaryStore.close.bind(Table.primaryStore);
+		let closeAttempts = 0;
+		Table.primaryStore.close = () => {
+			if (++closeAttempts === 1) throw new Error('test unloaded handle close failure');
+			return close();
+		};
+
+		await assert.rejects(closeDatabaseForRestore(databaseName), /test unloaded handle close failure/);
+		assert.strictEqual(await closeDatabaseForRestore(databaseName), true);
+		assert.strictEqual(closeAttempts, 2, 'the unloaded path must retry the exact stranded handle');
+		assert.strictEqual(refCountFor(rootStore.path), 0);
+	});
+
 	it('closeLoadedDatabases releases a branch database (invisible to the databases map it walks)', async function () {
 		this.timeout(30000);
 		const rootStore = openRocksDb('closerelease4');

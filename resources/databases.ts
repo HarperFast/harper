@@ -2492,7 +2492,7 @@ export function closeDatabase(databaseName: string, failOnCloseError = false): b
 
 export async function closeDatabaseForRestore(databaseName: string, dropOriginator?: number): Promise<boolean> {
 	const dbTables = databases[databaseName];
-	if (!dbTables) return false;
+	if (!dbTables) return closeDatabase(databaseName, true);
 	await quiesceDatabaseDerivedIndexes(databaseName, dbTables, 'database restore');
 	if (dropOriginator !== undefined && databasesBeingDropped.get(databaseName) !== dropOriginator)
 		throw new Error(`Database drop preparation for '${databaseName}' was canceled before storage close`);
