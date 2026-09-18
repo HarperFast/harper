@@ -32,7 +32,7 @@ class ControlledIndex {
 	}
 
 	flushDerived() {
-		const barrier = { appliedAtStart: this.applied.length };
+		const barrier = { appliedAtStart: this.applied.length, startedAt: Date.now() };
 		barrier.settled = new Promise((settle, fail) => Object.assign(barrier, { settle, fail }));
 		this.barriers.push(barrier);
 		return barrier.settled;
@@ -139,6 +139,26 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 		backend.flush('threshold');
 		const barrier = await waitFor(() => index.barriers[0], 5000);
 		assert.equal(barrier.appliedAtStart, 50, 'the barrier waits for one batch, not for the queue to drain');
+	});
+
+	it('idles after an expensive barrier instead of spending the catch-up inside barriers', async () => {
+		const barrierMillis = 60;
+		deliver(40);
+		backend.flush('threshold');
+		const first = await waitFor(() => index.barriers[0], 5000);
+		await new Promise((resolve) => setTimeout(resolve, barrierMillis));
+		first.settle();
+		const settledAt = Date.now();
+		// Application resumes immediately; the next request may not interrupt it until the idle the
+		// last barrier earned has passed, so the drain is never spent mostly inside barriers.
+		await waitFor(() => index.applied.length > first.appliedAtStart, 5000);
+		backend.flush('age');
+		const second = await waitFor(() => index.barriers[1], 5000);
+		assert(
+			second.startedAt - settledAt >= 3 * barrierMillis,
+			`second barrier interrupted after only ${second.startedAt - settledAt} ms`
+		);
+		second.settle();
 	});
 
 	it('does not interrupt an apply slice for a chunk with no cursor to advance', async () => {

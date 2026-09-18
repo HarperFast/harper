@@ -3056,7 +3056,11 @@ to `HnswDerivedIndexBackend`:
   would leave a catch-up — which never empties the queue — with no barrier at all, so the runtime's
   `flushAfterMutations` / `flushAfterBytes` / `maxFlushAgeMilliseconds` cadence would be inert for
   its whole duration. A rebuild scan chunk carries no `through` and so never interrupts a slice;
-  its barrier is the drain one, which the runtime's per-chunk `setImmediate` keeps reaching.
+  its barrier is the drain one, which the runtime's per-chunk `setImmediate` keeps reaching. An
+  interrupting barrier then idles for three times its own duration before another may interrupt:
+  application is paused for a barrier, and the runtime re-requests on a 1 s age timer, so on a plane
+  whose `flushAsync()` costs seconds — measured at 2–6.5 s on the Windows CI runner — honouring every
+  request would spend the whole catch-up inside barriers. The drain barrier is never delayed.
   Application pauses while a barrier is in flight so the barrier publishes exactly the mappings it
   covers. That order is the crash contract: a crash before the barrier leaves pending mappings that
   replay re-derives; after it, a cursor that replays idempotently; never a published mapping to a

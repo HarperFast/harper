@@ -40,6 +40,10 @@ export type DerivedNativeIndexHost = {
 // chunks a delivery by records and estimated bytes; this caps how many chunks may wait.
 const QUEUE_CAPACITY_BYTES = 64 * 1024 * 1024;
 const APPLY_SLICE_MILLIS = 5;
+// A barrier pauses application for as long as the plane takes to persist, so interrupting a
+// catch-up for one is only worth it while that cost stays a small share of the catch-up. Idling
+// this multiple of the last interrupting barrier's own duration holds it under a quarter.
+const BARRIER_IDLE_MULTIPLE = 3;
 // Writes to an index this far behind fail with a retryable 503 (see the runtime's lag policy).
 const DEFAULT_MAX_LAG_MILLISECONDS = 30_000;
 
@@ -78,6 +82,7 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 	#appliedEpoch?: bigint;
 	#flushRequested = false;
 	#flushing?: Promise<void>;
+	#interruptBarrierAfter = 0;
 	#resetting?: Promise<void>;
 	#unindexable = 0;
 
@@ -201,12 +206,12 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 				this.#appliedCursor = batch.through;
 				advancedCursor = true;
 				// A catch-up never reaches the drain that would otherwise run the barrier.
-				if (this.#flushRequested) break;
+				if (this.#mayInterruptForBarrier()) break;
 			}
 		}
 		if (this.#queue.length > 0) {
 			if (wasFull && this.#queuedBytes < QUEUE_CAPACITY_BYTES) this.#wake?.('changed');
-			if (this.#flushRequested && this.#position === 0 && advancedCursor) this.#runFlush();
+			if (this.#position === 0 && advancedCursor && this.#mayInterruptForBarrier()) this.#runFlush(true);
 			else this.#schedule();
 			return;
 		}
@@ -233,18 +238,19 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		}
 	}
 
-	#runFlush() {
+	#mayInterruptForBarrier(): boolean {
+		return this.#flushRequested && performance.now() >= this.#interruptBarrierAfter;
+	}
+
+	#runFlush(interrupting = false) {
 		if (this.#flushing) return;
 		this.#flushRequested = false;
+		const started = performance.now();
 		const cursor = this.#appliedCursor;
 		const epoch = this.#appliedEpoch;
 		const host = this.#host!;
-		const barrierStarted = performance.now();
 		this.#flushing = (async () => {
 			await this.#index.flushDerived();
-			logger.warn?.(
-				`[BARRIER] ${this.id} took ${Math.round(performance.now() - barrierStarted)}ms queue=${this.#queue.length} cursor=${JSON.stringify(cursor)} priorCoverage=${JSON.stringify(this.getDurableCursor()?.coverage)}`
-			);
 			if (epoch !== undefined && !host.isOwnerEpoch(epoch)) return;
 			if (cursor) {
 				const coverage = this.getDurableCursor()?.coverage;
@@ -254,6 +260,8 @@ export class HnswDerivedIndexBackend implements DerivedIndexBackend {
 		this.#flushing.then(
 			() => {
 				this.#flushing = undefined;
+				if (interrupting)
+					this.#interruptBarrierAfter = performance.now() + BARRIER_IDLE_MULTIPLE * (performance.now() - started);
 				this.#wake?.('changed');
 				if (this.#queue.length > 0) this.#schedule();
 				else if (this.#flushRequested) this.#runFlush();
