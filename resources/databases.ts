@@ -3060,6 +3060,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				releaseLock();
 				target.reload(databaseName);
 				if (target.tables(databaseName)?.[tableName]) return declareTable(target, tableDefinition);
+				let hasPersistedFullText = false;
+				for (const { value } of attributesDbi.getRange({ start: dbiName, end: tableName + '0' })) {
+					if (!value?.fullText) continue;
+					hasPersistedFullText = true;
+					break;
+				}
+				if (!hasPersistedFullText) return declareTable(target, tableDefinition);
 
 				// A persisted table whose full-text recovery contract is invalid is intentionally absent
 				// after reload. Admit it for this synchronous repair only, without attaching the invalid
