@@ -37,3 +37,55 @@ services:
       # Match the others: no quantization, so all three compare float32 storage with
       # whatever each engine does internally.
       QDRANT__LOG_LEVEL: WARN
+
+  # Weaviate: Go, HNSW, self-hosted, serves HTTP itself. Vectorizer disabled — we supply the
+  # vectors, so this measures its index rather than an embedding model.
+  weaviate:
+    image: semitechnologies/weaviate:1.38.16
+    network_mode: host
+    volumes:
+      - ${VECTOR_DATA_DIR_WEAVIATE:-./data}/weaviate:/var/lib/weaviate
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      DEFAULT_VECTORIZER_MODULE: none
+      ENABLE_MODULES: ''
+      CLUSTER_HOSTNAME: node1
+      HTTP_PORT: 8080
+
+  # Milvus standalone needs etcd (metadata) and MinIO (object storage) alongside it — unlike
+  # Qdrant and Weaviate it is not a single process, which is itself worth noting when the
+  # comparison is about operational cost of assembling systems.
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    network_mode: host
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: '1000'
+      ETCD_QUOTA_BACKEND_BYTES: '4294967296'
+      ETCD_SNAPSHOT_COUNT: '50000'
+    volumes:
+      - ${VECTOR_DATA_DIR_MILVUS:-./data}/etcd:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+
+  milvus-minio:
+    image: quay.io/minio/minio:latest  # docker hub's minio/minio is access-restricted
+    network_mode: host
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - ${VECTOR_DATA_DIR_MILVUS:-./data}/minio:/minio_data
+    command: minio server /minio_data --address ':9010' --console-address ':9011'
+
+  milvus:
+    image: milvusdb/milvus:v2.5.4
+    network_mode: host
+    depends_on: [milvus-etcd, milvus-minio]
+    environment:
+      ETCD_ENDPOINTS: 127.0.0.1:2379
+      MINIO_ADDRESS: 127.0.0.1:9010
+    volumes:
+      - ${VECTOR_DATA_DIR_MILVUS:-./data}/milvus:/var/lib/milvus
+    command: ['milvus', 'run', 'standalone']

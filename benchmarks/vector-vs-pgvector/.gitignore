@@ -1,0 +1,4 @@
+# Container-owned state: Postgres, Qdrant, Weaviate, Milvus (etcd + MinIO) all write here as
+# their own uid, so these are not readable — let alone committable — as the host user.
+data/
+results/

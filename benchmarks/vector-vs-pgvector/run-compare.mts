@@ -233,7 +233,9 @@ const pgExec = pgSql;
 async function startPgvector(): Promise<void> {
 	console.log('\n=== pgvector: starting postgres ===');
 	await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24 }).catch(() => {});
-	await exec('docker', [...COMPOSE, 'up', '-d'], { maxBuffer: 1 << 24 });
+	// Name the service: a bare `up -d` starts EVERY service in the file, so bringing up the
+	// pgvector stack would also try to pull and launch Milvus's etcd/MinIO.
+	await exec('docker', [...COMPOSE, 'up', '-d', 'postgres'], { maxBuffer: 1 << 24 });
 	const deadline = Date.now() + 120_000;
 	while (Date.now() < deadline) {
 		try {
@@ -439,6 +441,213 @@ function qdrantSender(ef: number) {
 	};
 }
 
+// --------------------------------------------------------------------------- weaviate
+
+const WEAVIATE = 'http://127.0.0.1:8080';
+const WEAVIATE_CLASS = 'Items';
+
+async function weaviateApi(method: string, path: string, body?: unknown): Promise<any> {
+	const res = await fetch(`${WEAVIATE}${path}`, {
+		method,
+		headers: { 'Content-Type': 'application/json' },
+		body: body === undefined ? undefined : JSON.stringify(body),
+	});
+	const text = await res.text();
+	if (!res.ok) throw new Error(`weaviate ${method} ${path} -> ${res.status}: ${text.slice(0, 300)}`);
+	return text ? JSON.parse(text) : undefined;
+}
+
+async function startWeaviate(): Promise<string> {
+	console.log('\n=== weaviate: starting ===');
+	await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24 }).catch(() => {});
+	await exec('docker', [...COMPOSE, 'up', '-d', 'weaviate'], { maxBuffer: 1 << 24 });
+	await waitFor(`${WEAVIATE}/v1/.well-known/ready`, 180_000);
+	const { stdout } = await exec('docker', [...COMPOSE, 'ps', '-q', 'weaviate']);
+	const id = stdout.trim();
+	if (values.serverCpus) await exec('docker', ['update', `--cpuset-cpus=${values.serverCpus}`, id]);
+	return id;
+}
+
+/**
+ * Weaviate's search-time `ef` is CLASS-level config, not a query parameter, so the sweep updates
+ * the schema between points rather than passing ef per query. `ef: -1` would enable its dynamic
+ * autotuning, which would silently choose its own operating point and make a recall-matched
+ * comparison meaningless — so it is always set explicitly.
+ */
+async function setWeaviateEf(ef: number): Promise<void> {
+	// Read-modify-write the WHOLE class definition. A partial PUT is rejected twice over:
+	// omitting vectorIndexConfig fields reads as changing efConstruction (immutable), and
+	// omitting `properties` reads as changing properties (also rejected). Only the full
+	// document round-tripped with one field changed is accepted.
+	const current = await weaviateApi('GET', `/v1/schema/${WEAVIATE_CLASS}`);
+	current.vectorIndexConfig = { ...current.vectorIndexConfig, ef };
+	await weaviateApi('PUT', `/v1/schema/${WEAVIATE_CLASS}`, current);
+}
+
+async function loadWeaviate(base: Float32Array[], dims: number): Promise<{ load: number; index: number }> {
+	await weaviateApi('DELETE', `/v1/schema/${WEAVIATE_CLASS}`).catch(() => {});
+	await weaviateApi('POST', '/v1/schema', {
+		class: WEAVIATE_CLASS,
+		vectorizer: 'none', // vectors are supplied; this measures the index, not an embedding model
+		properties: [{ name: 'docId', dataType: ['int'] }],
+		vectorIndexType: 'hnsw',
+		vectorIndexConfig: {
+			distance: METRIC === 'cosine' ? 'cosine' : 'l2-squared',
+			efConstruction: 200,
+			maxConnections: 16,
+			ef: EFS[0],
+		},
+	});
+
+	const loadStart = Date.now();
+	const BATCH = 500;
+	for (let start = 0; start < base.length; start += BATCH) {
+		const end = Math.min(start + BATCH, base.length);
+		const objects = [];
+		for (let i = start; i < end; i++) {
+			objects.push({ class: WEAVIATE_CLASS, properties: { docId: i }, vector: Array.from(base[i]) });
+		}
+		const result = await weaviateApi('POST', '/v1/batch/objects', { objects });
+		// Weaviate reports per-object failures inside a 200 response; a silent partial load would
+		// show up later as unexplained missing recall.
+		const failed = (result ?? []).filter((r: any) => r?.result?.errors).length;
+		if (failed) throw new Error(`weaviate batch had ${failed} failed objects at offset ${start}`);
+		if (start % 40000 === 0) console.log(`  loaded ${end} / ${base.length}`);
+	}
+	const load = (Date.now() - loadStart) / 1000;
+
+	// Weaviate indexes synchronously on import, so there is no separate build phase to wait for;
+	// verify the object count rather than assuming.
+	const indexStart = Date.now();
+	const agg = await weaviateApi('POST', '/v1/graphql', {
+		query: `{ Aggregate { ${WEAVIATE_CLASS} { meta { count } } } }`,
+	});
+	const count = agg?.data?.Aggregate?.[WEAVIATE_CLASS]?.[0]?.meta?.count ?? 0;
+	if (count < base.length) throw new Error(`weaviate holds ${count}/${base.length} objects`);
+	console.log(`  [weaviate] ${count} objects present`);
+	return { load, index: (Date.now() - indexStart) / 1000 };
+}
+
+function weaviateSender() {
+	return async (vector: Float32Array, k: number): Promise<(number | string)[]> => {
+		const q = `{ Get { ${WEAVIATE_CLASS}(nearVector: {vector: [${Array.from(vector).join(',')}]}, limit: ${k}) { docId } } }`;
+		const body = await weaviateApi('POST', '/v1/graphql', { query: q });
+		if (body?.errors) throw new Error(`weaviate graphql: ${JSON.stringify(body.errors).slice(0, 200)}`);
+		return (body?.data?.Get?.[WEAVIATE_CLASS] ?? []).map((o: any) => o.docId);
+	};
+}
+
+// --------------------------------------------------------------------------- milvus
+
+const MILVUS = 'http://127.0.0.1:19530';
+const MILVUS_COLLECTION = 'items';
+
+async function milvusApi(path: string, body: unknown): Promise<any> {
+	const res = await fetch(`${MILVUS}${path}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+	const text = await res.text();
+	if (!res.ok) throw new Error(`milvus ${path} -> ${res.status}: ${text.slice(0, 300)}`);
+	const json = text ? JSON.parse(text) : undefined;
+	// Milvus reports logical failures inside a 200 response with a non-zero code.
+	if (json && json.code !== undefined && json.code !== 0 && json.code !== 200) {
+		throw new Error(`milvus ${path} code ${json.code}: ${JSON.stringify(json).slice(0, 250)}`);
+	}
+	return json;
+}
+
+async function startMilvus(): Promise<string> {
+	console.log('\n=== milvus: starting (with etcd + minio) ===');
+	await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24 }).catch(() => {});
+	await exec('docker', [...COMPOSE, 'up', '-d', 'milvus-etcd', 'milvus-minio', 'milvus'], { maxBuffer: 1 << 24 });
+	// Milvus takes appreciably longer than the single-process engines to become healthy.
+	await waitFor('http://127.0.0.1:9091/healthz', 300_000);
+	const { stdout } = await exec('docker', [...COMPOSE, 'ps', '-q', 'milvus']);
+	const id = stdout.trim();
+	if (values.serverCpus) await exec('docker', ['update', `--cpuset-cpus=${values.serverCpus}`, id]);
+	return id;
+}
+
+async function loadMilvus(base: Float32Array[], dims: number): Promise<{ load: number; index: number }> {
+	await milvusApi('/v2/vectordb/collections/drop', { collectionName: MILVUS_COLLECTION }).catch(() => {});
+	await milvusApi('/v2/vectordb/collections/create', {
+		collectionName: MILVUS_COLLECTION,
+		schema: {
+			fields: [
+				{ fieldName: 'id', dataType: 'Int64', isPrimary: true, autoID: false },
+				{ fieldName: 'vector', dataType: 'FloatVector', elementTypeParams: { dim: dims } },
+			],
+		},
+		indexParams: [
+			{
+				fieldName: 'vector',
+				indexName: 'vector_hnsw',
+				metricType: METRIC === 'cosine' ? 'COSINE' : 'L2',
+				indexType: 'HNSW',
+				params: { M: 16, efConstruction: 200 },
+			},
+		],
+	});
+
+	const loadStart = Date.now();
+	const BATCH = 2000;
+	for (let start = 0; start < base.length; start += BATCH) {
+		const end = Math.min(start + BATCH, base.length);
+		const data = [];
+		for (let i = start; i < end; i++) data.push({ id: i, vector: Array.from(base[i]) });
+		await milvusApi('/v2/vectordb/entities/insert', { collectionName: MILVUS_COLLECTION, data });
+		if (start % 40000 === 0) console.log(`  loaded ${end} / ${base.length}`);
+	}
+	const load = (Date.now() - loadStart) / 1000;
+
+	// Milvus builds asynchronously and will happily serve a partially-indexed collection, so
+	// flush, wait for the index to report complete, then load into memory before querying.
+	const indexStart = Date.now();
+	await milvusApi('/v2/vectordb/collections/flush', { collectionName: MILVUS_COLLECTION }).catch(() => {});
+	const deadline = Date.now() + 900_000;
+	let indexed = false;
+	while (Date.now() < deadline) {
+		const d = await milvusApi('/v2/vectordb/indexes/describe', {
+			collectionName: MILVUS_COLLECTION,
+			indexName: 'vector_hnsw',
+		}).catch(() => undefined);
+		const info = d?.data?.[0];
+		if (info && (info.indexState === 'Finished' || info.state === 'Finished')) {
+			indexed = true;
+			break;
+		}
+		await delay(2000);
+	}
+	if (!indexed) throw new Error('milvus index did not reach Finished state');
+	await milvusApi('/v2/vectordb/collections/load', { collectionName: MILVUS_COLLECTION });
+	// A collection that is not fully loaded answers from whatever segments are resident.
+	while (Date.now() < deadline) {
+		const st = await milvusApi('/v2/vectordb/collections/get_load_state', {
+			collectionName: MILVUS_COLLECTION,
+		}).catch(() => undefined);
+		if (st?.data?.loadState === 'LoadStateLoaded') break;
+		await delay(2000);
+	}
+	console.log('  [milvus] index Finished and collection loaded');
+	return { load, index: (Date.now() - indexStart) / 1000 };
+}
+
+function milvusSender(ef: number) {
+	return async (vector: Float32Array, k: number): Promise<(number | string)[]> => {
+		const body = await milvusApi('/v2/vectordb/entities/search', {
+			collectionName: MILVUS_COLLECTION,
+			data: [Array.from(vector)],
+			annsField: 'vector',
+			limit: k,
+			searchParams: { params: { ef } },
+			outputFields: ['id'],
+		});
+		return (body?.data ?? []).map((r: any) => r.id);
+	};
+}
+
 // --------------------------------------------------------------------------- sweep
 
 async function sweep(
@@ -608,6 +817,46 @@ async function main(): Promise<void> {
 		await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24 }).catch(() => {});
 		results.push({
 			target: 'qdrant',
+			loadSeconds: load,
+			indexSeconds: index,
+			memoryMiB: Object.values(mem.memoryBytes ?? {}).reduce((a, b) => a + b, 0) / 1048576,
+			sweep: sweepPoints,
+		});
+	}
+
+	if (targets.includes('weaviate')) {
+		const id = await startWeaviate();
+		const { load, index } = await loadWeaviate(base, dims);
+		console.log(`  [weaviate] load ${load.toFixed(1)}s + index ${index.toFixed(1)}s`);
+		const resourceTargets = {
+			processes: {} as Record<string, string>,
+			cgroups: { weaviate: `/sys/fs/cgroup/system.slice/docker-${id}.scope` },
+		};
+		const mem = await sampleResources(resourceTargets);
+		const sweepPoints = await sweep(() => weaviateSender(), setWeaviateEf, queries, truth, resourceTargets);
+		await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24 }).catch(() => {});
+		results.push({
+			target: 'weaviate',
+			loadSeconds: load,
+			indexSeconds: index,
+			memoryMiB: Object.values(mem.memoryBytes ?? {}).reduce((a, b) => a + b, 0) / 1048576,
+			sweep: sweepPoints,
+		});
+	}
+
+	if (targets.includes('milvus')) {
+		const id = await startMilvus();
+		const { load, index } = await loadMilvus(base, dims);
+		console.log(`  [milvus] load ${load.toFixed(1)}s + index ${index.toFixed(1)}s`);
+		const resourceTargets = {
+			processes: {} as Record<string, string>,
+			cgroups: { milvus: `/sys/fs/cgroup/system.slice/docker-${id}.scope` },
+		};
+		const mem = await sampleResources(resourceTargets);
+		const sweepPoints = await sweep((ef) => milvusSender(ef), undefined, queries, truth, resourceTargets);
+		await exec('docker', [...COMPOSE, 'down', '-v'], { maxBuffer: 1 << 24 }).catch(() => {});
+		results.push({
+			target: 'milvus',
 			loadSeconds: load,
 			indexSeconds: index,
 			memoryMiB: Object.values(mem.memoryBytes ?? {}).reduce((a, b) => a + b, 0) / 1048576,
