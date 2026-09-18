@@ -106,24 +106,31 @@ export function planeStalePathFor(planePath: string): string {
 }
 
 let binding: HnswPlanePackage | null | undefined;
+let bindingLoadError: Error | undefined;
+let bindingWarningLogged = false;
 
-function getHnswPackage(): HnswPlanePackage | null {
-	if (binding !== undefined) return binding;
-	try {
-		binding = require('@harperfast/hnsw') as HnswPlanePackage;
-	} catch (error) {
-		binding = null;
+function getHnswPackage(warn = true): HnswPlanePackage | null {
+	if (binding === undefined) {
+		try {
+			binding = require('@harperfast/hnsw') as HnswPlanePackage;
+		} catch (error) {
+			binding = null;
+			bindingLoadError = error as Error;
+		}
+	}
+	if (binding === null && warn && !bindingWarningLogged) {
+		bindingWarningLogged = true;
 		logger.warn?.(
-			`The @harperfast/hnsw native module is not available (${(error as Error).message}); ` +
+			`The @harperfast/hnsw native module is not available (${bindingLoadError?.message}); ` +
 				'indexes with nativePlane enabled will remain unavailable until the module can load'
 		);
 	}
 	return binding;
 }
 
-/** The native plane constructor, or null when the compiled artifact is unavailable (warns once). */
-export function getPlaneBinding(): HnswPlaneConstructor | null {
-	return getHnswPackage()?.Plane ?? null;
+/** The native plane constructor, or null when the compiled artifact is unavailable (warns once by default). */
+export function getPlaneBinding(warn = true): HnswPlaneConstructor | null {
+	return getHnswPackage(warn)?.Plane ?? null;
 }
 
 /** Make a derived plane unadoptable before it is replaced or removed. */

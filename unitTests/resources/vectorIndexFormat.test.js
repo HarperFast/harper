@@ -44,6 +44,8 @@ describe('HNSW index format migration', () => {
 
 	// Reload the table WITH the index (resetDatabases first so table() re-opens from disk). A rebuild
 	// is detected by table() installing a new indexingOperation promise.
+	// `nativePlane: false` pins the JS graph: indexFormat describes its object store, and these
+	// assertions use per-query euclidean distance, which the native index rejects.
 	function reload(TABLE, indexedOption) {
 		resetDatabases();
 		return table({
@@ -51,7 +53,7 @@ describe('HNSW index format migration', () => {
 			database: DB,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
-				{ name: 'vector', indexed: indexedOption, type: 'Array' },
+				{ name: 'vector', indexed: { nativePlane: false, ...indexedOption }, type: 'Array' },
 			],
 		});
 	}

@@ -57,6 +57,7 @@ describe('HNSW native plane file-primary delivery', function () {
 	this.timeout(30_000);
 	let PlaneTest;
 	const vectors = new Map();
+	const nativeDefaultSwitch = process.env.HNSW_NO_NATIVE_DEFAULT;
 
 	function defineTable() {
 		return table({
@@ -68,7 +69,7 @@ describe('HNSW native plane file-primary delivery', function () {
 				{ name: 'name', indexed: true },
 				{
 					name: 'vector',
-					indexed: { type: 'HNSW', nativePlane: true, efConstruction: 200 },
+					indexed: { type: 'HNSW', efConstruction: 200 },
 					type: 'Array',
 				},
 			],
@@ -125,9 +126,15 @@ describe('HNSW native plane file-primary delivery', function () {
 	}
 
 	before(async () => {
+		delete process.env.HNSW_NO_NATIVE_DEFAULT;
 		setupTestDBPath();
 		setMainIsWorker(true);
 		PlaneTest = defineTable();
+		assert.equal(
+			PlaneTest.attributes.find((attribute) => attribute.name === 'vector').indexed.nativePlane,
+			true,
+			'the eligible audited index must persist the native-plane default'
+		);
 		await PlaneTest.indexingOperation;
 		const firstVector = makeVector(0);
 		vectors.set(0, firstVector);
@@ -149,6 +156,11 @@ describe('HNSW native plane file-primary delivery', function () {
 			{ timeout: 15_000, message: 'post-commit native delivery did not drain' }
 		);
 		await waitForCursors();
+	});
+
+	after(() => {
+		if (nativeDefaultSwitch === undefined) delete process.env.HNSW_NO_NATIVE_DEFAULT;
+		else process.env.HNSW_NO_NATIVE_DEFAULT = nativeDefaultSwitch;
 	});
 
 	it('stores only primary-key mappings and cursors in RocksDB', () => {
@@ -257,6 +269,17 @@ describe('HNSW native plane file-primary delivery', function () {
 		);
 		assert.ok(within.length > 0, 'le threshold query should return nearby records');
 		for (const record of within) assert.ok(record.$distance <= 0.05, `distance ${record.$distance} exceeds threshold`);
+	});
+
+	it('retains the native-plane distance-override restriction under the default', () => {
+		assert.throws(
+			() =>
+				customIndex().search(
+					{ target: vectors.get(42), comparator: 'sort', distance: 'euclidean', ef: EF },
+					{ transaction: undefined }
+				),
+			/only supports its configured cosine distance/
+		);
 	});
 
 	it('surfaces a throwing app filter without disabling the native plane', async () => {

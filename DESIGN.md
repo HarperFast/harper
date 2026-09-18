@@ -2592,6 +2592,16 @@ releasing runner ignores the one notification it caused, and a runner already pa
 does not re-probe the lock on commit wakes. This is a workaround with a tracked revert — the callback
 path is simpler and picks up a dead owner immediately.
 
+Configuration-level database aliases can load several table classes over the same physical audit
+store, index column family and plane file. They must not run that backend more than once. Registration
+therefore hands the backend to the newest class generation: it synchronously retires the predecessor,
+installs the new class's index handle, projection, table id and lag policy, and lets the native lock keep
+the successor idle until the predecessor releases ownership. A normal class cleanup only retires its own
+generation. `dropTable()` is the destructive exception: it fences the immutable table id, retires every
+registered backend for that generation (including settlement chains owned by another alias), and checks
+that the catalog still names that table id before deleting name-keyed storage. A same-name recreation can
+therefore register its new id without being retired by a stale alias.
+
 Transaction timestamps are unique per physical log but **not monotone in physical order**
 (`TransactionLogStore::writeBatch` only advances `latestTimestamp` when the batch's is greater), so
 the runtime never compares timestamps to decide progress or retention. Resume is exact-start: find
@@ -2916,11 +2926,44 @@ flowchart TD
 
 ## Native HNSW plane: a file-primary mmap graph on the derived-index runtime (`resources/indexes/HierarchicalNavigableSmallWorld.ts`, `resources/indexes/hnswDerivedIndex.ts`, `resources/indexes/hnswPlaneBinding.ts`)
 
-`@indexed(type: "HNSW", nativePlane: true)` replaces the RocksDB graph with a memory-mapped
-fixed-slot file owned by the native package `@harperfast/hnsw` (Rust, napi-rs, exact-pinned optional
+For a new locally declared HNSW index, Harper uses the native plane by default when the table's
+primary descriptor already stores `audit: true` (or the same declaration explicitly enables it),
+the native binding loads, RocksDB is in use, and the index has compatible geometry. An explicit
+`nativePlane: false` selects the JS graph. The native plane replaces the RocksDB graph with a
+memory-mapped fixed-slot file owned by `@harperfast/hnsw` (Rust, napi-rs, exact-pinned optional
 dependency; crate at HarperFast/hnsw). The file **is the index**: graph nodes, adjacency, the entry
 point, the id allocator and the freelist exist only there. RocksDB keeps the primary records, the
-`pk ↔ nodeId` mappings and the one durable replay cursor. Ordinary HNSW indexes are untouched.
+`pk ↔ nodeId` mappings and the one durable replay cursor.
+
+The decision belongs to the durable index-creation boundary, not `openIndex()` or the HNSW
+constructor: those are also catalog-reload paths. An existing descriptor is therefore authoritative
+when a later declaration omits `nativePlane`; legacy descriptors with no field stay on the JS graph,
+and legacy string values retain their historical truthiness while an exactly matching declaration
+keeps the stored spelling; a numerically equivalent value produced by the GraphQL numeric-literal
+coercion does the same for a pre-upgrade numeric spelling. Numeric HNSW options are likewise
+normalized and validated only at the declaration boundary: an exact redeclaration retains persisted
+legacy values and their previous runtime coercion, while a different canonical declaration triggers
+a rebuild when that interpretation changes (notably zero-valued `optimizeRouting` strings). A table
+whose primary descriptor already stores `audit: true` qualifies for the default even when that value
+originally came from the global audit setting. In
+contrast, a new table and its omitted-mode index in the same declaration do not qualify unless that
+declaration explicitly enables audit, because audit was not durable at the index-creation boundary.
+A replicated new attribute uses native mode only when the receiving node is independently audited
+and eligible, because the plane is node-local derived state. An ineligible receiver persists its
+fallback as `nativePlane: false` in the local catalog, so installing the binding or changing storage
+later does not switch that index automatically; redeclare it locally with `nativePlane: true` after
+the node becomes eligible. Set
+`HNSW_NO_NATIVE_DEFAULT=1` to keep newly omitted declarations on JS during rollout; it does not
+disable an explicit or already persisted native index. Set it before creating indexes when a
+rollback must remain cheap: an older release sees an omitted declaration against the persisted
+`nativePlane: true` decision as a mode change and rebuilds that index back to JS. In a cluster, keep
+the switch enabled on every node until all nodes run a release with the replicated-attribute fallback.
+
+The default accepts the native implementation's existing operational contract: maintenance is
+post-commit; writes receive retryable 503 responses after derived-index lag exceeds 30 seconds;
+per-query distance overrides are rejected; the default capacity is 16M nodes; and adding the index
+to a populated table keeps searches unavailable for the rebuild, which can take hours at large
+sizes. `nativePlane: false` is the durable per-index opt-out.
 
 Why the whole search loop is native and not just the distance kernel: at 5M nodes / ef 512, ~85% of
 a warm JS visit is object bookkeeping (candidate heap, visited `Set`, property access, GC), the int8
@@ -3017,14 +3060,14 @@ replaced the file cannot take out the replacement. Writer backpressure is the ru
 unique-key load above native insert throughput and then rebuilding at that same throughput cannot
 converge.
 
-### What `nativePlane: true` requires, and what it does not promise
+### What native-plane mode requires, and what it does not promise
 
-| requirement                                                                                                                                                                                     | enforcement                                                                                                                                           |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Explicit `audit: true` on the table — the transaction log is the recovery source, and a vector-index option must not silently widen the audit-readable surface by inheriting the global setting | `ClientError` from `table()` and `attachDerivedIndexes()`; enabling logs once that the audit API retains full record history for the retention window |
-| RocksDB; `M=16`, `efConstruction=200`, `mL=1/ln(16)`, `optimizeRouting=0.5`, int8 cosine (the package's standalone `insert` fixes this geometry)                                                | `ClientError` at index construction — never a silent rebuild under native defaults                                                                    |
-| `@harperfast/hnsw` loads on the platform                                                                                                                                                        | absence is 503, not degraded: there is no JS graph to fall back to                                                                                    |
-| The log retains entries back to the cursor                                                                                                                                                      | a cursor the log cannot resolve rebuilds from records; 503 for the rebuild's duration                                                                 |
+| requirement                                                                                                                                                                                                                                                                                                                                                                                                                                                 | enforcement                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| For the automatic default, a primary descriptor with `audit: true` or an explicit `audit: true` in the same local declaration — the transaction log is the recovery source, and the default must not widen the audit-readable surface by inheriting the global setting. On an existing table whose durable audit field is absent, explicit native mode may pin the effective audit value; a stored `false` wins. A new table still requires explicit audit. | On an existing table, `table()` writes an audit enable before the native index row. A new table publishes its primary row last as the catalog-completeness marker, already carrying explicit audit. Disabling audit writes every non-primary descriptor first, whether native mode is opted out or the index is removed, then writes the primary row last. Catalog reload propagates durable audit to an already-loaded class, and `attachDerivedIndexes()` checks the runtime flag; enabling logs warns once that the audit API retains full record history for the retention window. |
+| RocksDB; `M=16`, `efConstruction=200`, `mL=1/ln(16)`, `optimizeRouting=0.5`, int8 cosine (the package's standalone `insert` fixes this geometry)                                                                                                                                                                                                                                                                                                            | `ClientError` at index construction — never a silent rebuild under native defaults                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `@harperfast/hnsw` loads on the platform                                                                                                                                                                                                                                                                                                                                                                                                                    | absence is 503, not degraded: there is no JS graph to fall back to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| The log retains entries back to the cursor                                                                                                                                                                                                                                                                                                                                                                                                                  | a cursor the log cannot resolve rebuilds from records; 503 for the rebuild's duration                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 Not promised: a single total order across concurrent CRDT/source-resolution arrivals (both delivery
 and replay re-read the authoritative record, so the index converges on what the primary store

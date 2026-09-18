@@ -146,6 +146,34 @@ const PLANE_ATTACH_RETRY_MS = 250;
 // it as an ordinary query failure instead of disabling the (healthy) plane.
 const NOT_A_PLANE_FAILURE = Symbol('notAPlaneFailure');
 
+function numericOption(name: string, value: unknown): number | undefined {
+	if (value === undefined || value === null) return undefined;
+	if ((typeof value !== 'number' && typeof value !== 'string') || (typeof value === 'string' && value.trim() === ''))
+		throw new ClientError(`${name} must be a finite number`);
+	const numericValue = Number(value);
+	if (!Number.isFinite(numericValue)) throw new ClientError(`${name} must be a finite number`);
+	return numericValue;
+}
+
+function normalizeOptimizeRoutingDeclaration(value: unknown): unknown {
+	if (value === true || value === 'true') return 1;
+	if (value === false || value === 'false') return 0;
+	return value;
+}
+
+function nativePlaneMaxNodes(options: any): number {
+	const maxNodes = numericOption('nativePlaneMaxNodes', options?.nativePlaneMaxNodes) ?? PLANE_MAX_NODES;
+	if (!Number.isSafeInteger(maxNodes) || maxNodes < 1 || maxNodes >= PLANE_NO_ID) {
+		throw new ClientError('nativePlaneMaxNodes must be a positive integer below 2^32-1');
+	}
+	return maxNodes;
+}
+
+function nativePlaneDefaultDisabled(): boolean {
+	const value = process.env.HNSW_NO_NATIVE_DEFAULT;
+	return value != null && value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+}
+
 class MinHeap {
 	private data: Candidate[] = [];
 	get size() {
@@ -232,11 +260,138 @@ type Node = {
  */
 export class HierarchicalNavigableSmallWorld {
 	static useObjectStore = true;
+	static numericOptions = new Set([
+		'M',
+		'efConstruction',
+		'efConstructionSearch',
+		'mL',
+		'optimizeRouting',
+		'filterExpansion',
+		'nativePlaneMaxNodes',
+		'maxLagMilliseconds',
+	]);
+	static truthyStructuralOptions = new Set(['nativePlane']);
+	static normalizeOptionValue(name: string, value: unknown): unknown {
+		if (name !== 'optimizeRouting') return value;
+		if (value === true) return 1;
+		if (value === false) return 0;
+		if (
+			typeof value === 'string' &&
+			(value === 'true' || value === 'false' || (value.trim() !== '' && Number(value) === 0))
+		)
+			// Legacy strings are truthy at runtime; keep them structurally distinct from false/0 so #1357 rebuilds.
+			return `legacy:${value}`;
+		return value;
+	}
+	static normalizeDeclarationOptions(options: any, persistedOptions?: any): void {
+		for (const name of HierarchicalNavigableSmallWorld.numericOptions) {
+			if (options[name] === undefined) continue;
+			if (persistedOptions && Object.hasOwn(persistedOptions, name) && Object.is(options[name], persistedOptions[name]))
+				continue;
+			if (
+				name === 'optimizeRouting' &&
+				typeof persistedOptions?.[name] === 'string' &&
+				options[name] !== false &&
+				options[name] !== 'false'
+			) {
+				try {
+					const declared = numericOption(name, normalizeOptimizeRoutingDeclaration(options[name]));
+					const persisted = numericOption(name, normalizeOptimizeRoutingDeclaration(persistedOptions[name]));
+					if (Object.is(declared, persisted)) {
+						options[name] = persistedOptions[name];
+						continue;
+					}
+				} catch {}
+			}
+			if (options[name] === null) {
+				delete options[name];
+				continue;
+			}
+			const value = name === 'optimizeRouting' ? normalizeOptimizeRoutingDeclaration(options[name]) : options[name];
+			options[name] = numericOption(name, value);
+		}
+		if (Object.hasOwn(options, 'nativePlaneMaxNodes')) nativePlaneMaxNodes(options);
+	}
+	static normalizeNativePlaneDeclaration(value: unknown): boolean | undefined {
+		if (value === undefined || value === null) return undefined;
+		if (value === true || value === 'true') return true;
+		if (value === false || value === 'false') return false;
+		throw new ClientError('nativePlane must be true or false');
+	}
+	static validateNativePlaneOptions(rootStore: unknown, options: any) {
+		if (!(rootStore instanceof RocksDatabase)) {
+			throw new ClientError(
+				'nativePlane requires the RocksDB storage engine; set nativePlane: false to use the JS index'
+			);
+		}
+		const nativeM = numericOption('M', options?.M);
+		const nativeEfConstruction = numericOption('efConstruction', options?.efConstruction);
+		const nativeML = numericOption('mL', options?.mL);
+		const nativeOptimizeRouting = numericOption(
+			'optimizeRouting',
+			normalizeOptimizeRoutingDeclaration(options?.optimizeRouting)
+		);
+		if (
+			options?.M === null ||
+			options?.efConstruction === null ||
+			options?.mL === null ||
+			options?.optimizeRouting === null ||
+			(nativeM !== undefined && nativeM !== 16) ||
+			(nativeEfConstruction !== undefined && nativeEfConstruction !== 200) ||
+			(nativeML !== undefined && nativeML !== 1 / Math.log(16)) ||
+			(nativeOptimizeRouting !== undefined && nativeOptimizeRouting !== 0.5)
+		) {
+			throw new ClientError(
+				'nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5; set nativePlane: false to use the JS index'
+			);
+		}
+		const maxNodes = nativePlaneMaxNodes(options);
+		if (options?.quantization === 'none' || options?.distance === 'euclidean' || options?.distance === 'dotProduct') {
+			throw new ClientError(
+				'nativePlane requires an int8-quantized cosine HNSW index; set nativePlane: false to use the JS index'
+			);
+		}
+		return { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes };
+	}
+	static canRunNativePlane(rootStore: unknown, options: any, warnForMissingBinding = true): boolean {
+		nativePlaneMaxNodes(options);
+		if (!(rootStore instanceof RocksDatabase) || getPlaneBinding(warnForMissingBinding) == null) return false;
+		if (
+			options?.M === null ||
+			options?.efConstruction === null ||
+			options?.mL === null ||
+			options?.optimizeRouting === null
+		)
+			return false;
+		const configuredM = numericOption('M', options?.M);
+		const configuredEfConstruction = numericOption('efConstruction', options?.efConstruction);
+		const configuredML = numericOption('mL', options?.mL);
+		const configuredOptimizeRouting = numericOption(
+			'optimizeRouting',
+			normalizeOptimizeRoutingDeclaration(options?.optimizeRouting)
+		);
+		const baseEligible =
+			options?.quantization !== 'none' &&
+			options?.distance !== 'euclidean' &&
+			options?.distance !== 'dotProduct' &&
+			(configuredM === undefined || configuredM === 16) &&
+			(configuredEfConstruction === undefined || configuredEfConstruction === 200) &&
+			(configuredML === undefined || configuredML === 1 / Math.log(16)) &&
+			(configuredOptimizeRouting === undefined || configuredOptimizeRouting === 0.5);
+		if (!baseEligible) return false;
+		return true;
+	}
+	static canDefaultToNativePlane(rootStore: unknown, options: any): boolean {
+		return (
+			!nativePlaneDefaultDisabled() && HierarchicalNavigableSmallWorld.canRunNativePlane(rootStore, options, false)
+		);
+	}
 	// Index options that only affect search, not the stored graph — changing them must not trigger a
 	// reindex (databases.ts persists the new value but skips rebuilding). efConstructionSearch is the
 	// search-time candidate-list size; the build uses efConstruction/M/distance, which are structural.
-	// filterExpansion is the visit-budget multiplier for predicate-aware (filtered) traversal.
-	static searchOnlyOptions = ['efConstructionSearch', 'filterExpansion'];
+	// filterExpansion is the visit-budget multiplier for predicate-aware (filtered) traversal;
+	// maxLagMilliseconds controls delivery admission rather than the graph itself.
+	static searchOnlyOptions = ['efConstructionSearch', 'filterExpansion', 'maxLagMilliseconds'];
 	// Signals to search.ts that this index accepts a per-record predicate in search() and applies it
 	// during traversal (predicate-aware / ACORN-style filtering), so companion conditions and RBAC can
 	// be pushed down instead of post-filtering an under-filled candidate set (#1241).
@@ -300,10 +455,16 @@ export class HierarchicalNavigableSmallWorld {
 			// (we would actually like to use float16 if it were available)
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
+		const configuredM = options?.M;
+		const configuredEfConstruction = options?.efConstruction;
+		const configuredEfConstructionSearch = options?.efConstructionSearch;
+		const configuredML = options?.mL;
+		const configuredOptimizeRouting = options?.optimizeRouting;
+		const configuredFilterExpansion = options?.filterExpansion;
 		this.int8 = options?.quantization !== 'none';
 		// Respect an explicitly-configured ef (efConstruction seeds the search ef too); otherwise auto-scale both.
-		this.efSearchConfigured = options?.efConstructionSearch !== undefined || options?.efConstruction !== undefined;
-		this.efConstructionConfigured = options?.efConstruction !== undefined;
+		this.efSearchConfigured = configuredEfConstructionSearch !== undefined || configuredEfConstruction !== undefined;
+		this.efConstructionConfigured = configuredEfConstruction !== undefined;
 		this.distance =
 			options?.distance === 'euclidean'
 				? euclideanDistance
@@ -312,46 +473,34 @@ export class HierarchicalNavigableSmallWorld {
 					: cosineDistance;
 		if (options) {
 			// allow all the HNSW parameters to be configured/tuned
-			if (options.M !== undefined) {
-				this.M = options.M;
+			if (configuredM !== undefined) {
+				this.M = configuredM;
 				this.mL = 1 / Math.log(this.M); // recalculate
 			}
-			if (options.efConstruction !== undefined)
-				this.efConstruction = this.efConstructionSearch = options.efConstruction;
-			if (options.efConstructionSearch !== undefined) this.efConstructionSearch = options.efConstructionSearch;
-			if (options.mL !== undefined) this.mL = options.mL;
-			if (options.optimizeRouting !== undefined) this.optimizeRouting = options.optimizeRouting;
-			if (options.filterExpansion !== undefined) this.filterExpansion = options.filterExpansion;
+			if (configuredEfConstruction !== undefined)
+				this.efConstruction = this.efConstructionSearch = configuredEfConstruction;
+			if (configuredEfConstructionSearch !== undefined) this.efConstructionSearch = configuredEfConstructionSearch;
+			if (configuredML !== undefined) this.mL = configuredML;
+			if (configuredOptimizeRouting !== undefined) this.optimizeRouting = configuredOptimizeRouting;
+			if (configuredFilterExpansion !== undefined) this.filterExpansion = configuredFilterExpansion;
 		}
 		if (options?.nativePlane) {
-			if (!(indexStore?.rootStore instanceof RocksDatabase)) {
-				throw new ClientError('nativePlane requires the RocksDB storage engine');
-			}
-			const nativeML = 1 / Math.log(16);
-			if (
-				(options.M !== undefined && options.M !== 16) ||
-				(options.efConstruction !== undefined && options.efConstruction !== 200) ||
-				(options.mL !== undefined && options.mL !== nativeML) ||
-				(options.optimizeRouting !== undefined && options.optimizeRouting !== 0.5)
-			) {
-				throw new ClientError('nativePlane requires M=16, efConstruction=200, mL=1/ln(16), and optimizeRouting=0.5');
-			}
-			this.efConstruction = options.efConstruction ?? 200;
-			this.nativePlaneMaxNodes = options.nativePlaneMaxNodes ?? PLANE_MAX_NODES;
-			if (
-				!Number.isSafeInteger(this.nativePlaneMaxNodes) ||
-				this.nativePlaneMaxNodes < 1 ||
-				this.nativePlaneMaxNodes >= PLANE_NO_ID
-			) {
-				throw new ClientError('nativePlaneMaxNodes must be a positive integer below 2^32-1');
-			}
+			const { nativeM, nativeEfConstruction, nativeML, nativeOptimizeRouting, maxNodes } =
+				HierarchicalNavigableSmallWorld.validateNativePlaneOptions(indexStore?.rootStore, options);
+			if (nativeM !== undefined) this.M = nativeM;
+			if (nativeML !== undefined) this.mL = nativeML;
+			if (nativeOptimizeRouting !== undefined) this.optimizeRouting = nativeOptimizeRouting;
+			this.efConstruction = nativeEfConstruction ?? 200;
+			this.nativePlaneMaxNodes = maxNodes;
 			// The plane stores int8 bins and computes asymmetric cosine only, so the flag is a
 			// no-op for float (quantization: "none") and non-cosine indexes; a graph whose derived
 			// layer-0 cap exceeds the plane maximum is refused rather than silently truncated.
 			this.planeEligible =
 				this.int8 && this.distance === cosineDistance && this.planeLayer0Cap() <= PLANE_LAYER0_CAP_MAX;
 			if (!this.planeEligible) {
-				throw new ClientError('nativePlane requires an int8-quantized cosine HNSW index');
+				throw new ClientError(
+					'nativePlane requires an int8-quantized cosine HNSW index; set nativePlane: false to use the JS index'
+				);
 			}
 			this.filePrimary = true;
 			this.postCommit = true;
