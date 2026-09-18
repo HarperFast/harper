@@ -187,7 +187,7 @@ function notifyFromTransactionData(subscriptions, auditLogIterable?, allowYield 
 					let ancestorLevel = 0;
 					do {
 						// we iterate through the key hierarchy, notifying all subscribers for each key,
-						// so for an id like resource/foo/bar, we notify subscribers for resource/foo/bar, resource/foo/, resource/foo, resource/, and resource
+						// so for an id like resource/foo/bar, we notify subscribers for resource/foo/bar, resource/foo/, resource/, and the root (null)
 						// this allows for efficient subscriptions to children ids/topics
 						const keySubscriptions = tableSubscriptions.get(matchingKey);
 						if (keySubscriptions) {
