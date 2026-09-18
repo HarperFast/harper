@@ -40,6 +40,13 @@ const { beginRestore, completeRestore, checkRestoreState } = require('#src/dataL
 const { pinBackup, readBackupPins, unpinBackup } = require('#src/dataLayer/backupRepository');
 const { backups } = require('@harperfast/rocksdb-js');
 const { closeLoadedDatabases } = require('#src/resources/databases');
+const {
+	ARCHIVE_MANIFEST_ENTRY,
+	ARCHIVE_SCHEMA_VERSION,
+	assertArchiveRestorable,
+	parseArchiveManifest,
+} = require('#src/dataLayer/backupArchiveManifest');
+const { readBackupManifest } = require('#src/dataLayer/backupManifest');
 
 const DB_NAME = 'rocksdb-backup-unit-test';
 
@@ -764,6 +771,34 @@ describe('rocksdbBackup', function () {
 		});
 	});
 
+	describe('managed backup provenance', function () {
+		const PROV_DB = `${DB_NAME}-provenance`;
+
+		afterEach(function () {
+			rmSync(join(storageDir, PROV_DB), { recursive: true, force: true });
+			rmSync(backupDirForDatabase(PROV_DB), { recursive: true, force: true });
+			for (const root of getBlobPathsForDatabaseName(PROV_DB)) rmSync(root, { recursive: true, force: true });
+		});
+
+		it('records what produced a managed backup in its completion manifest', async function () {
+			this.timeout(30000);
+			const database = RocksDatabase.open(join(storageDir, PROV_DB));
+			try {
+				database.putSync('rec', { n: 1 });
+			} finally {
+				database.close();
+			}
+			const created = await createBackupOffline(PROV_DB);
+
+			const manifest = await readBackupManifest(backupDirForDatabase(PROV_DB), created.backup_id);
+			assert.strictEqual(manifest.blobs, true);
+			assert.ok(manifest.producer, 'a managed backup should record its producer');
+			assert.strictEqual(manifest.producer.database, PROV_DB);
+			assert.ok(manifest.producer.harper_version);
+			assertArchiveRestorable(manifest.producer);
+		});
+	});
+
 	describe('createBackupStream with blobs', function () {
 		async function extractTarNames(stream) {
 			const names = new Map();
@@ -785,6 +820,118 @@ describe('rocksdbBackup', function () {
 			await done;
 			return names;
 		}
+
+		async function extractTarOrder(stream) {
+			const order = [];
+			const ex = extract();
+			const done = new Promise((resolve, reject) => {
+				ex.on('entry', (header, entryStream, next) => {
+					order.push(header.name);
+					entryStream.resume();
+					entryStream.on('end', next);
+				});
+				ex.on('finish', resolve);
+				ex.on('error', reject);
+			});
+			stream.pipe(ex);
+			await done;
+			return order;
+		}
+
+		it('makes the manifest the first entry of an archive with blobs', async function () {
+			this.timeout(30000);
+			const MANIFEST_DB = `${DB_NAME}-archive-manifest`;
+			const dir = join(storageDir, MANIFEST_DB);
+			const seed = RocksDatabase.open(dir);
+			try {
+				seed.putSync('rec', { blob: 'x' });
+			} finally {
+				seed.close();
+			}
+			writeBlobFile(MANIFEST_DB, join('111', '222', '333'), 'whole-blob');
+
+			const store = RocksDatabase.open(dir);
+			try {
+				const order = await extractTarOrder(createBackupStream(store, MANIFEST_DB, false, false));
+				assert.strictEqual(order[0], ARCHIVE_MANIFEST_ENTRY, 'a reader must identify the archive after a few KB');
+
+				const entries = await extractTarNames(createBackupStream(store, MANIFEST_DB, false, false));
+				const manifest = parseArchiveManifest(entries.get(ARCHIVE_MANIFEST_ENTRY).toString('utf8'));
+				assert.strictEqual(manifest.archive_schema_version, ARCHIVE_SCHEMA_VERSION);
+				assert.strictEqual(manifest.database, MANIFEST_DB);
+				assert.strictEqual(manifest.blobs, true);
+				assert.strictEqual(manifest.blob_root_count, getBlobPathsForDatabaseName(MANIFEST_DB).length);
+				assertArchiveRestorable(manifest);
+				assert.ok(entries.has('README.md'));
+			} finally {
+				store.close();
+				rmSync(dir, { recursive: true, force: true });
+				for (const root of getBlobPathsForDatabaseName(MANIFEST_DB)) rmSync(root, { recursive: true, force: true });
+			}
+		});
+
+		it('stops the engine-only producer when the consumer aborts', async function () {
+			this.timeout(30000);
+			const ABORT_DB = `${DB_NAME}-abort`;
+			const dir = join(storageDir, ABORT_DB);
+			const seed = RocksDatabase.open(dir);
+			try {
+				for (let i = 0; i < 200; i++) seed.putSync(`k${i}`, { payload: 'x'.repeat(2048) });
+			} finally {
+				seed.close();
+			}
+
+			const store = RocksDatabase.open(dir);
+			try {
+				const stream = createBackupStream(store, ABORT_DB, false, true);
+				// what a client disconnecting mid-download does to the response stream
+				stream.destroy(new Error('client went away'));
+				// the producer must not be left waiting on a stream nobody will ever read again
+				await new Promise((resolve, reject) => {
+					const timer = setTimeout(() => reject(new Error('backup producer still pending after abort')), 5000);
+					const settle = () => {
+						clearTimeout(timer);
+						resolve();
+					};
+					stream.on('close', settle);
+					stream.on('error', settle);
+				});
+			} finally {
+				store.close();
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it('makes the manifest the first entry of an engine-only archive too, and says so', async function () {
+			this.timeout(30000);
+			const MANIFEST_DB = `${DB_NAME}-archive-manifest-engine`;
+			const dir = join(storageDir, MANIFEST_DB);
+			const seed = RocksDatabase.open(dir);
+			try {
+				seed.putSync('rec', { n: 1 });
+			} finally {
+				seed.close();
+			}
+
+			const store = RocksDatabase.open(dir);
+			try {
+				const order = await extractTarOrder(createBackupStream(store, MANIFEST_DB, false, true));
+				assert.strictEqual(order[0], ARCHIVE_MANIFEST_ENTRY);
+
+				const entries = await extractTarNames(createBackupStream(store, MANIFEST_DB, false, true));
+				const manifest = parseArchiveManifest(entries.get(ARCHIVE_MANIFEST_ENTRY).toString('utf8'));
+				assert.strictEqual(manifest.blobs, false);
+				assert.strictEqual(manifest.blob_root_count, 0);
+				assert.deepStrictEqual(manifest.requires, ['rocksdb-stream-backup']);
+				assert.ok(
+					![...entries.keys()].some((name) => name.startsWith('blobs/')),
+					'exclude_blobs must still carry no blob entries'
+				);
+			} finally {
+				store.close();
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
 
 		it('packs a PENDING marker for an incomplete blob, keeping the tar valid', async function () {
 			this.timeout(30000);

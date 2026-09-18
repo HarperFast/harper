@@ -360,15 +360,11 @@ export async function blobRootsHaveFiles(blobRoots: string[]): Promise<boolean> 
 /**
  * Refuse an in-place restore of an engine-only backup over a database that still has blobs.
  *
- * Restoring engine files while leaving the live blob roots alone produces a mixed generation:
- * rolled-back records addressing whichever blobs happen to be on disk now. The common outcome is a
- * dangling reference to a blob deleted since the backup point; the worse one is a blob id reissued
- * after the deletions plus a restart (ids are a per-database counter re-seeded from a directory scan
- * — `resources/blob.ts` `getNextFileId`), which resolves a restored record onto unrelated bytes.
- *
- * Purging the roots instead is not the answer — that strips blobs the restored records still
- * reference — so the operator has to choose, and the choice is recorded. A restore into a new
- * database name is unaffected: it has no pre-existing blobs to disagree with.
+ * Restoring engine files while leaving the live blob roots alone leaves rolled-back records
+ * addressing whichever blobs are on disk now: usually a dangling reference, and — once a blob id is
+ * reissued after deletions plus a restart (ids are a per-database counter re-seeded from a directory
+ * scan, `resources/blob.ts` `getNextFileId`) — a record resolving onto unrelated bytes. Purging the
+ * roots instead would strip blobs the restored records still reference, so the operator chooses.
  */
 export async function assertEngineOnlyRestoreAllowed(
 	databaseName: string,
