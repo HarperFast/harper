@@ -595,7 +595,7 @@ export function searchByIndex(
 					.map((entry) => {
 						// if the custom index returns an entry with metadata, merge it with the loaded entry
 						if (typeof entry === 'object' && entry) {
-							const { key, ...otherProps } = entry;
+							const key = entry.key;
 							if (key == null) return SKIP; // primaryKey missing from HNSW node — skip rather than crash
 							const loadedEntry = Table.primaryStore.getEntry(key, {
 								transaction: waiting ? transaction : context && Table._readTxnForContext(context),
@@ -603,7 +603,10 @@ export function searchByIndex(
 							if (!loadedEntry) return SKIP; // record was deleted/expired or not yet visible
 							freezeRecord(loadedEntry?.value);
 							recordRead(loadedEntry);
-							return { ...otherProps, ...loadedEntry };
+							// `entry` is the index's own per-hit object (HNSW builds one from its typed-array
+							// result), so the loaded fields can be merged onto it in place. loadedEntry is the
+							// shared cached Entry and must not be mutated — assign FROM it, never onto it.
+							return Object.assign(entry, loadedEntry);
 						}
 						return entry;
 					})
