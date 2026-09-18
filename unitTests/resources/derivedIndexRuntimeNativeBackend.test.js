@@ -855,7 +855,9 @@ describe('DerivedIndexRuntime for native backends', () => {
 		await unregister();
 		assert.strictEqual(shutdowns, 2);
 		assert.strictEqual(store.locks.size, 0);
-		assert.strictEqual(readDerivedIndexReadiness(store, 'unregister-retry').state, 'unknown');
+		const readiness = readDerivedIndexReadiness(store, 'retry-unregister');
+		assert.strictEqual(readiness.state, 'unknown');
+		assert.strictEqual(readiness.reason, undefined);
 		await runtime.stop();
 	});
 

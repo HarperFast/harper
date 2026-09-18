@@ -12,7 +12,7 @@ const harperBridge =
 	require('../../dataLayer/harperBridge/harperBridge.ts');
 const process = require('process');
 const { isMainThread, threadId, workerData } = require('node:worker_threads');
-const { resetDatabases, closeDatabase, reloadBranchAt } = require('../../resources/databases.ts');
+const { resetDatabases, closeDatabaseForRestore, reloadBranchAt } = require('../../resources/databases.ts');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -50,7 +50,7 @@ async function schemaHandler(event) {
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.RESTORE_BACKUP && event.message.schema) {
-		closeDatabase(event.message.schema);
+		await closeDatabaseForRestore(event.message.schema);
 	}
 	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);

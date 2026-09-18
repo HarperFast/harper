@@ -1831,8 +1831,10 @@ Three non-obvious mechanics keep that safe:
 - **The ITC close broadcast is best-effort, so closure is verified before the purge.** The SCHEMA
   broadcast (`signalSchemaChange`) resolves after remote handlers complete but times out at 30s
   "best-effort", swallows errors, and never reaches job-worker threads at all (their ports are
-  excluded from broadcasts to avoid re-entrant deadlocks). A destructive purge cannot trust it:
-  `restoreBackup` polls rocksdb-js `registryStatus()` (process-global across worker threads) until
+  excluded from broadcasts to avoid re-entrant deadlocks). Each reached handler first awaits every
+  derived-index quiescence handle and only then closes the database stores; a backend that cannot
+  prove shutdown therefore leaves the RocksDB handles open. A destructive purge still cannot trust
+  the broadcast alone: `restoreBackup` polls rocksdb-js `registryStatus()` (process-global across worker threads) until
   the database path has no open instance, and aborts with a 409 — _cleaning up the marker, since
   nothing was destroyed_ — if handles remain.
 - **Online restore is impossible for a database a component holds open — and that failure is
@@ -2702,7 +2704,11 @@ installation masks shared readiness as `unknown`; native activation failure chan
 to `unavailable` and prevents reuse, so a later schema load retries activation without poisoning a
 healthy peer. A table drop clears its installation only after shutdown proves quiescence; a rejected
 shutdown keeps the installation, its predecessor, and the ownership lock reachable so a retry must
-re-prove quiescence before destructive storage work begins.
+re-prove quiescence before destructive storage work begins. Removing the final derived target keeps
+that closing handle on the replacement table until the same proof completes. Online restore uses an
+asynchronous close path that obtains the same proof on every table before it releases RocksDB handles;
+a failed proof leaves those handles open, so the restore's existing closed-database check aborts before
+purging files.
 
 An `@fullText` target creates no RocksDB column family. Its native directory is rooted inside the
 database directory and selected by the lifecycle's hash of `<table>/<target>`. RocksDB remains the

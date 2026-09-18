@@ -2354,6 +2354,20 @@ export function closeDatabase(databaseName: string): boolean {
 	return true;
 }
 
+/** Quiesce post-commit derived indexes before online restore closes and replaces database storage. */
+export async function closeDatabaseForRestore(databaseName: string): Promise<boolean> {
+	const dbTables = databases[databaseName];
+	if (!dbTables) return false;
+	for (const table of Object.values(dbTables) as any[]) {
+		while (table.derivedIndexRuntime) {
+			const runtime = table.derivedIndexRuntime;
+			await runtime.close();
+			if (table.derivedIndexRuntime === runtime) table.derivedIndexRuntime = undefined;
+		}
+	}
+	return closeDatabase(databaseName);
+}
+
 /**
  * Close every RocksDB (user) database this thread has open, releasing its native handles.
  *

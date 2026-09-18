@@ -222,6 +222,65 @@ describe('@fullText derived-index activation', () => {
 		assert(binding.closeAttempts > 1, 'replacement activation must re-prove predecessor quiescence');
 	});
 
+	it('reactivates siblings when one derived index cannot quiesce', async () => {
+		const database = `fulltext-partial-shutdown-${Date.now()}`;
+		const attributes = () => [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+			{ name: 'description', type: 'String' },
+			{ name: 'titleSearch', type: 'FullText', fullText: definition('title') },
+			{ name: 'descriptionSearch', type: 'FullText', fullText: definition('description') },
+		];
+		Product = table({ database, table: 'Product', audit: true, attributes: attributes() });
+		await Product.put('shoe-1', { title: 'Trail shoe', description: 'Waterproof' });
+		await waitFor(
+			() =>
+				fullTextDerivedIndexReadiness(Product, 'titleSearch').state === 'ready' &&
+				fullTextDerivedIndexReadiness(Product, 'descriptionSearch').state === 'ready',
+			30_000
+		);
+		const titleId = fullTextDerivedIndexId(Product, 'titleSearch');
+		const descriptionId = fullTextDerivedIndexId(Product, 'descriptionSearch');
+		const descriptionOpenCount = binding.opens.filter(({ indexId }) => indexId === descriptionId).length;
+		binding.closeErrors.set(titleId, new Error('title writer did not quiesce'));
+
+		await assert.rejects(Product.dropTable(), /title writer did not quiesce|shutdown failed/);
+		binding.closeErrors.delete(titleId);
+		await Product.put('shoe-2', { title: 'Road shoe', description: 'Lightweight' });
+		await waitFor(
+			() =>
+				fullTextDerivedIndexReadiness(Product, 'descriptionSearch').state === 'ready' &&
+				binding.opens.filter(({ indexId }) => indexId === descriptionId).length > descriptionOpenCount,
+			30_000
+		);
+		await Product.dropTable();
+		Product = undefined;
+	});
+
+	it('retains the quiescence handle after removing the final derived index', async () => {
+		const database = `fulltext-remove-drain-${Date.now()}`;
+		const attributes = () => [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'title', type: 'String' },
+			{ name: 'search', type: 'FullText', fullText: definition('title') },
+		];
+		Product = table({ database, table: 'Product', audit: true, attributes: attributes() });
+		await Product.put('shoe-1', { title: 'Trail shoe' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		let releaseClose;
+		binding.closeBarrier = new Promise((resolve) => (releaseClose = resolve));
+
+		Product = table({ database, table: 'Product', audit: true, attributes: attributes().slice(0, 2) });
+		assert(Product.derivedIndexRuntime, 'the closing runtime must remain reachable until it quiesces');
+		let dropSettled = false;
+		const dropped = Product.dropTable().then(() => (dropSettled = true));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(dropSettled, false, 'drop must not close storage before the removed index quiesces');
+		releaseClose();
+		await dropped;
+		Product = undefined;
+	});
+
 	it('rotates the native generation when a full-text declaration is removed and re-added', async () => {
 		const database = `fulltext-activation-generation-${Date.now()}`;
 		const attributes = () => [

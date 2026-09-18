@@ -633,6 +633,7 @@ class DerivedIndexRunner {
 	#readinessBuffer: SharedReadinessBuffer;
 	#sharedViews: SharedViews;
 	#resetting?: Promise<void>;
+	#clearShutdownFailureOnRelease = false;
 	status: DerivedIndexRunnerStatus = { state: 'idle' };
 
 	get id() {
@@ -643,13 +644,11 @@ class DerivedIndexRunner {
 		if (!this.#heldLock) return this.#stopResult ?? Promise.resolve();
 		this.#heldLock = false;
 		this.#releaseFailure = undefined;
+		this.#clearShutdownFailureOnRelease = true;
 		this.#owned = true;
 		this.#release();
 		this.#stopResult = (this.#releasing ?? Promise.resolve()).then(() => {
 			if (this.#releaseFailure) throw this.#releaseFailure;
-			const readiness = this.getReadiness();
-			if (readiness.state === 'unavailable' && readiness.reason === 'shutdown-failed')
-				this.#publishReadiness('unknown');
 			this.#unregisterTables();
 		});
 		this.#stopResult.catch(() => {});
@@ -2144,6 +2143,10 @@ class DerivedIndexRunner {
 		const unlock = () => {
 			this.#releasing = undefined;
 			this.#releasingSince = undefined;
+			if (this.#clearShutdownFailureOnRelease) {
+				this.#clearShutdownFailureOnRelease = false;
+				this.#publishReadiness('unknown');
+			}
 			try {
 				this.#logStore.unlock(this.#lockKey);
 			} catch (error) {

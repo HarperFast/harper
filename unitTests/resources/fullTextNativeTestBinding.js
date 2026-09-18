@@ -6,6 +6,7 @@ class FullTextNativeTestBinding {
 		this.opens = [];
 		this.closeAttempts = 0;
 		this.closeError = undefined;
+		this.closeErrors = new Map();
 		this.closeBarrier = undefined;
 		this.NativeFullTextIndex = class {
 			applyMutationBatch() {}
@@ -58,7 +59,8 @@ class FullTextNativeTestBinding {
 			async close() {
 				binding.closeAttempts++;
 				await binding.closeBarrier;
-				if (binding.closeError) throw binding.closeError;
+				const closeError = binding.closeErrors.get(options.indexId) ?? binding.closeError;
+				if (closeError) throw closeError;
 				return {};
 			},
 		};

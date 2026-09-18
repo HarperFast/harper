@@ -34,6 +34,10 @@ type Registered = {
 	tables: Map<number, { Table: any }>;
 	installations: Map<number, Installed>;
 };
+type Registration = {
+	register(): () => Promise<void>;
+	release(): Promise<void>;
+};
 const runtimes = new WeakMap<object, Registered>();
 const warnedAuditIndexes = new Set<string>();
 let fullTextBindingForTests: NativeFullTextModule | undefined;
@@ -87,16 +91,21 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 			)
 		);
 	}
-	if (hnswAttributes.length === 0 && fullTextAttributes.length === 0) return;
+	if (hnswAttributes.length === 0 && fullTextAttributes.length === 0) return previous;
 	assertDerivedIndexSupport(Table, fullTextAttributes);
 
 	const registered = existing ?? runtimeFor(auditStore);
 	// A redefinition installs a new table view before the old runner finishes quiescing. Its release
 	// must therefore remove only its own view, never the replacement now serving the same table id.
-	const releases: Array<() => Promise<void>> = [];
+	const registrations: Registration[] = [];
+	const install = (register: Registration['register']) => {
+		registrations.push({ register, release: register() });
+	};
 	if (fullTextAttributes.length > 0) {
-		const unregisterTable = registerDerivedIndexTables(auditStore, [Table.tableId]);
-		releases.push(async () => unregisterTable());
+		install(() => {
+			const unregisterTable = registerDerivedIndexTables(auditStore, [Table.tableId]);
+			return async () => unregisterTable();
+		});
 	}
 	const setups: Promise<void>[] = [];
 	let closing = false;
@@ -112,15 +121,38 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 			if (closeComplete) return Promise.resolve();
 			if (closed) return closed;
 			closing = true;
-			closed = Promise.all([previous?.close(), ...setups, ...releases.map((release) => release())])
-				.then(() => {
-					closeComplete = true;
-					if (registered.tables.get(Table.tableId) === installed) registered.tables.delete(Table.tableId);
-					if (registered.installations.get(Table.tableId) === installed) registered.installations.delete(Table.tableId);
-				})
-				.finally(() => {
-					if (!closeComplete) closed = undefined;
-				});
+			closed = (async () => {
+				const failures: unknown[] = [];
+				const preparationResults = await Promise.allSettled([previous?.close(), ...setups]);
+				for (const result of preparationResults) if (result.status === 'rejected') failures.push(result.reason);
+				const releaseResults = await Promise.allSettled(
+					registrations.map(({ release }) => {
+						try {
+							return Promise.resolve(release());
+						} catch (error) {
+							return Promise.reject(error);
+						}
+					})
+				);
+				for (const result of releaseResults) if (result.status === 'rejected') failures.push(result.reason);
+				if (failures.length) {
+					for (let index = 0; index < releaseResults.length; index++) {
+						if (releaseResults[index].status !== 'fulfilled') continue;
+						try {
+							registrations[index].release = registrations[index].register();
+						} catch (error) {
+							failures.push(error);
+						}
+					}
+				}
+				if (failures.length === 1) throw failures[0];
+				if (failures.length) throw new AggregateError(failures, 'derived index registrations failed to shut down');
+				closeComplete = true;
+				if (registered.tables.get(Table.tableId) === installed) registered.tables.delete(Table.tableId);
+				if (registered.installations.get(Table.tableId) === installed) registered.installations.delete(Table.tableId);
+			})().finally(() => {
+				if (!closeComplete) closed = undefined;
+			});
 			closed.catch(() => {});
 			return closed;
 		},
@@ -128,7 +160,7 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 	registered.tables.set(Table.tableId, installed);
 	registered.installations.set(Table.tableId, installed);
 	try {
-		for (const attribute of hnswAttributes) registerHnsw(Table, attribute, registered, releases);
+		for (const attribute of hnswAttributes) registerHnsw(Table, attribute, registered, install);
 		for (const attribute of fullTextAttributes) {
 			const readinessId = fullTextDerivedIndexReadinessId(Table, attribute);
 			readinessOverrides.set(readinessId, { state: 'unknown', ownerEpoch: 0n, rebuildAttempts: 0 });
@@ -136,7 +168,7 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 				try {
 					await previousClose;
 					if (closing) return;
-					await registerFullText(Table, attribute, registered, releases, () => !closing);
+					await registerFullText(Table, attribute, registered, install, () => !closing);
 					if (!closing) readinessOverrides.delete(readinessId);
 				} catch (error) {
 					if (closing) return;
@@ -224,7 +256,7 @@ function registerHnsw(
 	Table: any,
 	attribute: Attribute,
 	registered: Registered,
-	releases: Array<() => Promise<void>>
+	install: (register: Registration['register']) => void
 ): void {
 	const indexStore = Table.indices[attribute.name];
 	const index = indexStore.customIndex as DerivedNativeIndex & { postCommit: true };
@@ -242,7 +274,7 @@ function registerHnsw(
 		readiness: () => registered.runtime.getReadiness(id),
 		requestRebuild: () => registered.runtime.requestRebuild(id),
 	});
-	releases.push(
+	install(() =>
 		registered.runtime.register({
 			backend: new HnswDerivedIndexBackend(id, index),
 			projections: new Map([
@@ -265,7 +297,7 @@ async function registerFullText(
 	Table: any,
 	attribute: Attribute,
 	registered: Registered,
-	releases: Array<() => Promise<void>>,
+	install: (register: Registration['register']) => void,
 	isCurrent: () => boolean
 ): Promise<void> {
 	const definition = attribute.fullText!;
@@ -293,7 +325,7 @@ async function registerFullText(
 		...(fullTextBindingForTests ? { binding: fullTextBindingForTests } : {}),
 	});
 	if (!isCurrent()) return;
-	releases.push(
+	install(() =>
 		registered.runtime.register({
 			backend,
 			readinessId: fullTextDerivedIndexReadinessId(Table, attribute),

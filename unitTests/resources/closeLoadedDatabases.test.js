@@ -17,6 +17,7 @@ const {
 	database,
 	getDatabases,
 	closeDatabase,
+	closeDatabaseForRestore,
 	closeLoadedDatabases,
 	openBranchDatabase,
 	closeBranchDatabases,
@@ -52,6 +53,34 @@ describe('RocksDB handle release', function () {
 		closeDatabase('closerelease1');
 
 		assert.strictEqual(refCountFor(dbPath), 0, 'no native handles should remain after closeDatabase');
+	});
+
+	it('online restore waits for derived indexes to quiesce before closing native handles', async function () {
+		this.timeout(30000);
+		const databaseName = 'closerestore1';
+		const Table = table({
+			table: 'pkg',
+			database: databaseName,
+			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
+		});
+		const rootStore = Table.primaryStore.rootStore;
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		let release;
+		const barrier = new Promise((resolve) => (release = resolve));
+		Table.derivedIndexRuntime = {
+			close: () => barrier,
+		};
+		let settled = false;
+		const closing = closeDatabaseForRestore(databaseName).then((result) => {
+			settled = true;
+			return result;
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(settled, false);
+		assert.ok(refCountFor(rootStore.path) > 0, 'restore must not close storage while the writer can still publish');
+		release();
+		assert.strictEqual(await closing, true);
+		assert.strictEqual(refCountFor(rootStore.path), 0);
 	});
 
 	it('closeLoadedDatabases releases every loaded user database (what a job worker does on exit)', async function () {
