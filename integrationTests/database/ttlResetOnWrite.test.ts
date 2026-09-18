@@ -426,13 +426,10 @@ suite(
 					updateStatus === 200 || updateStatus === 204,
 					`[${label}] update returned ${updateStatus} (expected 200/204)`
 				);
-				// A probe can only report NO-RESET if the update was ACKed while the seed was still
-				// alive: an update that lands after the seed's TTL has fired matches nothing, writes
-				// nothing and resets nothing, which is indistinguishable here from a surface that
-				// doesn't reset. The server applied the seed at-or-after we put it on the wire, so
-				// seedSentAt + TTL_MS is the EARLIEST the seed's clock can fire, and the ACK proves
-				// the update applied before it returned. Checked after the status assertions so a
-				// slow error response is still a real failure, not a retried timing sample.
+				// NO-RESET is only conclusive if the update was ACKed while the seed was still alive;
+				// an update that lands after expiry matches nothing and so resets nothing. The server
+				// applied the seed no earlier than seedSentAt and the update no later than its ACK,
+				// so updateAt < seedSentAt + TTL_MS is the tight bound that proves it.
 				if (updateAt >= seedSentAt + TTL_MS) {
 					inconclusive = true;
 					result.finding = `INCONCLUSIVE — update ACKed ${updateAt - seedSentAt}ms after the seed was sent, at or past its earliest expiry (${TTL_MS}ms); the record may already have been gone`;

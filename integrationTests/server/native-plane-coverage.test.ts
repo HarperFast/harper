@@ -88,11 +88,9 @@ test(
 					assert.match(errors[0].error, /^DerivedIndexLagError/);
 				} else assert(shortWait.body.some(({ id }: { id: number }) => id === records.length - 1));
 			}
-			// One sample of the strict / normal / tolerant response contracts. It is three ef=200
-			// queries over a 20k-node plane, so the catch-up waiter samples it a bounded number of
-			// times instead of once per poll: at the former 100ms cadence the waiter's own load
-			// competed with the durability barrier whose completion it was waiting for, and the
-			// longer catch-up ran the more competing requests it issued.
+			// Three ef=200 queries over a 20k-node plane: a waiter that samples this every tick
+			// competes with the durability barrier it is waiting for, so the catch-up loop below
+			// bounds how many times it runs.
 			async function sampleLagContracts() {
 				const strict = await query(0);
 				if (strict.status === 503) {
@@ -135,21 +133,20 @@ test(
 							lastTuple = tuple;
 							trail.push(`${Date.now() - catchUpStartedAt}ms ${tuple}`);
 						}
+						let strictStatus: number | undefined;
 						if (contractSamples < 5) {
 							contractSamples++;
-							await sampleLagContracts();
+							strictStatus = await sampleLagContracts();
 						}
 						if (before.mappings !== records.length) return false;
-						return (await sampleLagContracts()) === 200;
+						return (strictStatus ?? (await query(0)).status) === 200;
 					},
 					{ timeout: 180_000, interval: 500, message: 'native plane did not certify current coverage' }
 				);
 			} catch (error) {
-				// Mappings publish as one durability unit, so this trail shows whether anything became
-				// externally visible during the wait — not whether the barrier itself was progressing.
 				const samples = trail.length > 40 ? [...trail.slice(0, 20), '…', ...trail.slice(-20)] : trail;
 				throw new Error(
-					`Native catch-up failed after ${Date.now() - catchUpStartedAt}ms; mappings/pending/nativeNodes: ${samples.join(', ')}; last progress: ${JSON.stringify(progress)}`,
+					`Native catch-up failed after ${Date.now() - catchUpStartedAt}ms. Mappings publish as one durability unit, so this is what became externally visible, not the barrier's own progress — mappings/pending/nativeNodes: ${samples.join(', ')}; last progress: ${JSON.stringify(progress)}`,
 					{ cause: error }
 				);
 			}
