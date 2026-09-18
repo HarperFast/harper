@@ -488,7 +488,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 						});
 					}
 					// A prior replay failure can leave this thread's handle registered when its
-					// derived-index writer could not quiesce. Retry that close before reopening.
+					// derived-index writer could not quiesce.
 					if (await closeBranchDatabaseAtPath(branchPath)) retakeBranchIdentity(storeName);
 					releaseBranchIdentity(storeName);
 					branch = openBranchDatabase(branchPath, baseName, storeName, blobRoots);
