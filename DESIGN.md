@@ -2710,12 +2710,15 @@ asynchronous close path that obtains the same proof on every table before it rel
 a failed proof leaves those handles open, so the restore's existing closed-database check aborts before
 purging files.
 
-An `@fullText` target creates no RocksDB column family. Its native directory is rooted inside the
-database directory and selected by the lifecycle's hash of `<table>/<target>`. RocksDB remains the
+An `@fullText` index creates no RocksDB column family. Its native directory is rooted inside the
+database directory and selected by the lifecycle's hash of `<table>/<index>`. RocksDB remains the
 source of truth and its transaction logs remain the recovery stream; RocksDB managed backups do not
-copy Tantivy segments. The source generation combines the persisted table id with a per-target token.
-Dropping and recreating a table, removing and re-adding a target, or changing its native storage
-definition therefore forces replacement even when the table and target names are reused. Query-only
+copy Tantivy segments. Harper keeps an internal per-index token beside `fullTextIndexes` on the
+table's primary catalog descriptor; it is lifecycle metadata, not customer schema. The native source
+generation combines that token with the persisted table id. Dropping and recreating a table,
+removing and re-adding an index, or changing its native storage definition therefore forces
+replacement even when the table and index names are reused. A restart preserves the token and reuses
+compatible Tantivy files before replaying the audit tail. Query-only
 synonym, highlighting, and per-field highlight settings persist without rebuilding Tantivy segments.
 
 Activation requires explicit table auditing and RocksDB. String and string-array sources are
@@ -2731,9 +2734,9 @@ changes readiness and metrics but does not reject authoritative Harper writes. M
 incompatible native state enters the rebuild path without taking the source table offline. A
 persisted table declaration that cannot supply the recovery contract itself—auditing, RocksDB, or a
 supported projection—is quarantined during catalog load because Harper cannot safely preserve replay
-coverage. Quarantine durably condemns the target generation, removes any live class, and leaves other
-tables in the database available. A valid local schema re-declaration loads the table only for the
-synchronous repair, rotates the generation again, and rebuilds before full-text becomes ready.
+coverage. Quarantine keeps that table unloaded and leaves other tables in the database available.
+Because the quarantined table cannot accept writes, a valid local schema re-declaration may preserve
+the same native generation, then reuse-and-replay or rebuild according to the ordinary cursor checks.
 Operational writer, queue, and search limits are Harper-owned constants for this integration slice,
 not schema options; the Fulltext process-wide resource governor must replace them before release
 qualification.

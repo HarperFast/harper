@@ -611,6 +611,7 @@ export function makeTable(options) {
 		cacheControl,
 		isBranch,
 		fullTextIndexes = [],
+		fullTextIndexGenerations = {},
 	} = options;
 	let { expirationMS: expirationMs, evictionMS: evictionMs, audit, trackDeletes } = options;
 	// Set when the TTL exists only on this thread: either application code configured it at runtime, or
@@ -923,6 +924,7 @@ export function makeTable(options) {
 			| undefined;
 		static schemaChangeOperation: Promise<void> | undefined;
 		static fullTextIndexes: FullTextDefinition[] = fullTextIndexes;
+		static fullTextIndexGenerations: { [name: string]: string } = fullTextIndexGenerations;
 		static audit = audit;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
@@ -6905,7 +6907,7 @@ export function makeTable(options) {
 			return history.reverse();
 		}
 		static clear() {
-			if (attributes.some((attribute) => attribute.fullText))
+			if (TableResource.fullTextIndexes.length > 0)
 				throw new ClientError(
 					`Table.clear() is not supported on full-text table '${databaseName}.${tableName}' until whole-table invalidation is crash-safe`,
 					501

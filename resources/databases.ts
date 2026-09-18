@@ -492,6 +492,35 @@ function compilePersistedFullTextDefinitions(
 	);
 }
 
+type FullTextIndexGenerations = Record<string, string>;
+
+function fullTextIndexGenerations(
+	previousDefinitions: readonly FullTextDefinition[],
+	previousGenerations: unknown,
+	nextDefinitions: readonly FullTextDefinition[],
+	createMissing: boolean
+): FullTextIndexGenerations {
+	const previousByName = new Map(previousDefinitions.map((definition) => [definition.name, definition]));
+	const durable =
+		previousGenerations && typeof previousGenerations === 'object'
+			? (previousGenerations as Record<string, unknown>)
+			: Object.create(null);
+	const generations: FullTextIndexGenerations = Object.create(null);
+	for (const definition of nextDefinitions) {
+		const previous = previousByName.get(definition.name);
+		const generation = durable[definition.name];
+		if (
+			previous &&
+			typeof generation === 'string' &&
+			generation.length > 0 &&
+			JSON.stringify(fullTextStorageDefinition(previous)) === JSON.stringify(fullTextStorageDefinition(definition))
+		) {
+			generations[definition.name] = generation;
+		} else if (createMissing) generations[definition.name] = randomBytes(16).toString('hex');
+	}
+	return generations;
+}
+
 // A cluster-origin caller's list can predate a declaration another thread has already committed, so on
 // that path the descriptor — not the caller — decides what the attribute is, in both directions.
 function applyDurableDeclaration(attribute: any, descriptor: any) {
@@ -1194,18 +1223,24 @@ function initStores(
 	}
 
 	const assertCatalogFullTextActivation = (tableName: string, tableDef: any) => {
-		const fullTextAttributes = tableDef.attributes.filter((attribute) => attribute.fullText);
-		if (fullTextAttributes.length === 0) return fullTextAttributes;
 		const primaryAttribute = tableDef.primary || tableDef.attributes.find((attribute) => attribute.isPrimaryKey);
-		if (!primaryAttribute) return fullTextAttributes;
+		if (!primaryAttribute) return [];
+		const definitions = compilePersistedFullTextDefinitions(
+			primaryAttribute,
+			[],
+			tableDef.attributes,
+			databaseName,
+			tableName
+		);
+		if (definitions.length === 0) return definitions;
 		const audit =
 			typeof primaryAttribute.audit === 'boolean' ? primaryAttribute.audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
 		if (audit !== true)
 			throw new ClientError(
 				`Table '${databaseName}.${tableName}' must enable audit logging before using a post-commit derived index`
 			);
-		assertFullTextActivationSupported(rootStore, databaseName, tableName, tableDef.attributes, fullTextAttributes);
-		return fullTextAttributes;
+		assertFullTextActivationSupported(rootStore, databaseName, tableName, tableDef.attributes, definitions);
+		return definitions;
 	};
 	const readPersistedTableDefinition = (wantedTableName: string) => {
 		const current = { attributes: [] } as any;
@@ -1232,13 +1267,10 @@ function initStores(
 
 	for (const [tableName, tableDef] of tablesToLoad) {
 		if (fullTextActivationRepairs.has(fullTextActivationRepairKey(path, tableName))) continue;
-		let fullTextAttributes;
 		try {
-			fullTextAttributes = assertCatalogFullTextActivation(tableName, tableDef);
-			if (fullTextAttributes.length === 0) continue;
+			if (assertCatalogFullTextActivation(tableName, tableDef).length === 0) continue;
 		} catch (error) {
 			let invalidError = error;
-			let generationInvalidated = false;
 			let repairedWhileWaiting = false;
 			if (rootStore instanceof RocksDatabase) {
 				try {
@@ -1254,32 +1286,18 @@ function initStores(
 							repairedWhileWaiting = true;
 						} catch (currentError) {
 							invalidError = currentError;
-							fullTextAttributes = currentTableDef.attributes.filter((attribute) => attribute.fullText);
-							for (const attribute of fullTextAttributes) {
-								const descriptor = (attributesDbi as any).getSync(attribute.key);
-								if (descriptor?.fullText && !String(descriptor.fullTextGeneration ?? '').startsWith('invalid:')) {
-									const fullTextGeneration = `invalid:${randomBytes(16).toString('hex')}`;
-									(attributesDbi as any).putSync(attribute.key, { ...descriptor, fullTextGeneration });
-									attribute.fullTextGeneration = fullTextGeneration;
-									generationInvalidated = true;
-								}
-							}
 						}
 					} finally {
 						releaseUpdateAttributesLock(rootStore);
 					}
-				} catch (invalidationError) {
+				} catch (repairError) {
 					logger.error(
-						`Unable to invalidate the native generation for quarantined table ${databaseName}.${tableName}; a schema repair will still force replacement`,
-						invalidationError
+						`Unable to recheck the full-text recovery contract for ${databaseName}.${tableName}`,
+						repairError
 					);
 				}
 			}
 			if (repairedWhileWaiting) continue;
-			if (generationInvalidated && !destination)
-				signalling.signalSchemaChange(
-					new SchemaEventMsg(process.pid, 'schema-change', databaseName, tableName, undefined)
-				);
 			logger.error(
 				`Skipping table ${databaseName}.${tableName}: its persisted full-text declaration cannot activate`,
 				invalidError
@@ -1462,9 +1480,16 @@ function initStores(
 			databaseName,
 			tableName
 		);
+		const fullTextIndexGenerationMap = fullTextIndexGenerations(
+			fullTextIndexes,
+			primaryAttribute.fullTextIndexGenerations,
+			fullTextIndexes,
+			false
+		);
 		if (table && !recreateForEngineChange) {
 			const fullTextIndexesUpdated = JSON.stringify(table.fullTextIndexes ?? []) !== JSON.stringify(fullTextIndexes);
 			if (fullTextIndexesUpdated) table.fullTextIndexes = fullTextIndexes;
+			table.fullTextIndexGenerations = fullTextIndexGenerationMap;
 			if (attributesUpdated || fullTextIndexesUpdated) {
 				table.schemaVersion++;
 				if (attributesUpdated) table.updatedAttributes();
@@ -1494,6 +1519,7 @@ function initStores(
 					indices,
 					attributes,
 					fullTextIndexes,
+					fullTextIndexGenerations: fullTextIndexGenerationMap,
 					schemaDefined: primaryAttribute.schemaDefined,
 					dbisDB: attributesDbi,
 				})
@@ -2698,7 +2724,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const tables = target.tables(databaseName);
 	logger.trace(`Defining ${tableName} in ${databaseName}`);
 	let Table = tables?.[tableName];
-	const previousFullTextStorageKey = Table && fullTextStorageKey(Table.attributes);
+	const previousFullTextStorageKey = Table && fullTextStorageKey(Table.fullTextIndexes, Table.fullTextIndexGenerations);
 	const previousHasNativeHnsw = Table?.attributes.some(
 		(attribute) => Table.indices[attribute.name]?.customIndex?.postCommit
 	);
@@ -2714,10 +2740,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const schemaDefinedExplicit = tableDefinition.schemaDefined !== undefined;
 	const fullTextIndexesExplicit = tableDefinition.fullTextIndexes !== undefined;
 	if (schemaDefined == undefined) schemaDefined = true;
-	const hasFullText = attributes.some((attribute) => attribute.fullText);
 	if (
-		(attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) ||
-			hasFullText) &&
+		attributes.some((attribute) => attribute.indexed?.type === 'HNSW' && attribute.indexed.nativePlane) &&
 		audit !== true &&
 		// An explicit false must fail here even for an already-audited Table. Nothing clears the
 		// static, so the runtime would stay attached while the descriptor persists audit: false,
@@ -2728,7 +2752,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using a derived index because its transaction log is the recovery source`
 		);
 	}
-	if (hasFullText) assertFullTextActivationSupported(rootStore, databaseName, tableName, attributes);
 	const relationshipDefinitions = schemaRelationshipsDefined ? normalizeRelationships(attributes) : undefined;
 	const internalDbiInit = createOpenDBIObject(false);
 
@@ -2774,10 +2797,24 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		throw new ClientError(
 			`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using @fullText because its transaction log is the derived-index recovery source`
 		);
+	if (fullTextIndexes?.length && (!Table || origin !== 'cluster')) {
+		const auditEnabled =
+			audit === true ||
+			(audit === undefined &&
+				(Table?.audit === true || (origin === 'cluster' && envGet(CONFIG_PARAMS.LOGGING_AUDITLOG) === true)));
+		if (!auditEnabled)
+			throw new ClientError(
+				`Table '${databaseName}.${tableName}' must explicitly enable audit logging before using a derived index because its transaction log is the recovery source`
+			);
+		assertFullTextActivationSupported(rootStore, databaseName, tableName, attributes, fullTextIndexes);
+	}
 	let hasChanges;
 	let refreshRelationshipAttributes = false;
 	let refreshedLiveAttributes = false;
 	let liveSchemaMutated = false;
+	let fullTextIndexGenerationMap: FullTextIndexGenerations = Table
+		? { ...Table.fullTextIndexGenerations }
+		: Object.create(null);
 	let deferredPrimaryRow: any;
 	let deferredFullTextIndexesKey: string | undefined;
 	let unpublishedPrimaryStore: any;
@@ -2787,6 +2824,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	const indicesToRemove = [];
 	const originalLiveAttributes = Table?.attributes.slice();
 	const originalLiveFullTextIndexes = Table?.fullTextIndexes.slice();
+	const originalLiveFullTextIndexGenerations = Table && { ...Table.fullTextIndexGenerations };
 	try {
 		if (Table) {
 			refreshedLiveAttributes = true;
@@ -2898,8 +2936,18 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				if (removesIndexedSource && primaryDescriptor && !tableIsDropping(primaryDescriptor, primaryDescriptorKey)) {
 					exclusiveLock();
 					const updatedPrimaryDescriptor = { ...primaryDescriptor };
-					if (retainedFullTextIndexes.length) updatedPrimaryDescriptor.fullTextIndexes = retainedFullTextIndexes;
-					else delete updatedPrimaryDescriptor.fullTextIndexes;
+					if (retainedFullTextIndexes.length) {
+						updatedPrimaryDescriptor.fullTextIndexes = retainedFullTextIndexes;
+						updatedPrimaryDescriptor.fullTextIndexGenerations = fullTextIndexGenerations(
+							durableFullTextIndexes,
+							primaryDescriptor.fullTextIndexGenerations,
+							retainedFullTextIndexes,
+							false
+						);
+					} else {
+						delete updatedPrimaryDescriptor.fullTextIndexes;
+						delete updatedPrimaryDescriptor.fullTextIndexGenerations;
+					}
 					Table.dbisDB.put(primaryDescriptorKey, updatedPrimaryDescriptor);
 					hasChanges = true;
 				}
@@ -2991,6 +3039,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					}
 					fullTextIndexes = sortFullTextDefinitions(merged);
 				}
+				if (fullTextIndexes.length)
+					assertFullTextActivationSupported(rootStore, databaseName, tableName, attributes, fullTextIndexes);
 			}
 			Table.attributes.splice(0, Table.attributes.length, ...attributes);
 			liveSchemaMutated = true;
@@ -3016,6 +3066,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			// Old readers treat every attribute row as live schema, so relationships stay on the ignored primary descriptor.
 			if (relationshipDefinitions) primaryKeyAttribute.relationships = relationshipDefinitions;
 			if (fullTextIndexes?.length) primaryKeyAttribute.fullTextIndexes = fullTextIndexes;
+			fullTextIndexGenerationMap = fullTextIndexGenerations([], undefined, fullTextIndexes ?? [], true);
+			if (fullTextIndexes?.length) primaryKeyAttribute.fullTextIndexGenerations = fullTextIndexGenerationMap;
 			// can't change compression after the fact (except threshold), so save only when we create the table
 			primaryKeyAttribute.compression = getDefaultCompression();
 			if (trackDeletes) primaryKeyAttribute.trackDeletes = true;
@@ -3074,12 +3126,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				releaseLock();
 				target.reload(databaseName);
 				if (target.tables(databaseName)?.[tableName]) return declareTable(target, tableDefinition);
-				let hasPersistedFullText = false;
-				for (const { value } of attributesDbi.getRange({ start: dbiName, end: tableName + '0' })) {
-					if (!value?.fullText) continue;
-					hasPersistedFullText = true;
-					break;
-				}
+				const hasPersistedFullText = Array.isArray(existingTableMeta.fullTextIndexes)
+					? existingTableMeta.fullTextIndexes.length > 0
+					: existingTableMeta.fullTextIndexes !== undefined;
 				if (!hasPersistedFullText) return declareTable(target, tableDefinition);
 
 				// A persisted table whose full-text recovery contract is invalid is intentionally absent
@@ -3166,6 +3215,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				indices: {},
 				attributes,
 				fullTextIndexes,
+				fullTextIndexGenerations: fullTextIndexGenerationMap,
 				schemaDefined,
 				dbisDB: attributesDbi,
 				description,
@@ -3232,19 +3282,22 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			let dbiKey = tableName + '/' + (attribute.name || '');
 			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
 			let attributeDescriptor = attributesDbi.getSync(dbiKey);
-			if (attribute.fullText) {
-				attribute.fullTextGeneration =
-					!fullTextActivationRepairs.has(fullTextActivationRepairKey(rootStore.path, tableName)) &&
-					attributeDescriptor?.fullText &&
-					JSON.stringify(fullTextStorageDefinition(attributeDescriptor.fullText)) ===
-						JSON.stringify(fullTextStorageDefinition(attribute.fullText)) &&
-					attributeDescriptor?.fullTextGeneration
-						? attributeDescriptor.fullTextGeneration
-						: randomBytes(16).toString('hex');
-			}
 			if (attribute.isPrimaryKey) {
 				if (deferredPrimaryRow) continue;
 				attributeDescriptor = attributeDescriptor || attributesDbi.getSync((dbiKey = tableName + '/')) || {};
+				const durableFullTextIndexes = compilePersistedFullTextDefinitions(
+					attributeDescriptor,
+					Table.fullTextIndexes,
+					Table.attributes,
+					databaseName,
+					tableName
+				);
+				fullTextIndexGenerationMap = fullTextIndexGenerations(
+					durableFullTextIndexes,
+					attributeDescriptor.fullTextIndexGenerations,
+					fullTextIndexes ?? [],
+					true
+				);
 				// Persist schemaDefined when the explicit live value disagrees with disk. Without this,
 				// a stale `false` (from a v4-era write or replicated event) survives every reload: the
 				// in-memory re-assert in the existing-Table branch only fixes the worker that ran @table,
@@ -3255,6 +3308,9 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				const fullTextIndexesChanged =
 					fullTextIndexesExplicit &&
 					JSON.stringify(attributeDescriptor.fullTextIndexes ?? []) !== JSON.stringify(fullTextIndexes ?? []);
+				const fullTextGenerationsChanged =
+					JSON.stringify(attributeDescriptor.fullTextIndexGenerations ?? {}) !==
+					JSON.stringify(fullTextIndexGenerationMap);
 				const primarySettingsChanged =
 					origin !== 'cluster' &&
 					(schemaDefinedMismatch ||
@@ -3265,7 +3321,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
 						attribute.type !== attributeDescriptor.type);
 				// primary key can't change indexing, but settings can change
-				if (fullTextIndexesChanged || primarySettingsChanged) {
+				if (fullTextIndexesChanged || fullTextGenerationsChanged || primarySettingsChanged) {
 					exclusiveLock();
 					const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
 					if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) continue;
@@ -3285,7 +3341,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					}
 					// Source descriptors are persisted later in this loop. Publish a new declaration only
 					// after those writes, so a crash cannot expose it against an older source type.
-					if (fullTextIndexesChanged) deferredFullTextIndexesKey = dbiKey;
+					if (fullTextIndexesChanged || fullTextGenerationsChanged) deferredFullTextIndexesKey = dbiKey;
 					hasChanges = true; // send out notification of the change
 				}
 
@@ -3532,8 +3588,13 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			const currentPrimaryAttribute = attributesDbi.getSync(deferredFullTextIndexesKey);
 			if (currentPrimaryAttribute && !tableIsDropping(currentPrimaryAttribute, deferredFullTextIndexesKey)) {
 				const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
-				if (fullTextIndexes?.length) updatedPrimaryAttribute.fullTextIndexes = fullTextIndexes;
-				else delete updatedPrimaryAttribute.fullTextIndexes;
+				if (fullTextIndexes?.length) {
+					updatedPrimaryAttribute.fullTextIndexes = fullTextIndexes;
+					updatedPrimaryAttribute.fullTextIndexGenerations = fullTextIndexGenerationMap;
+				} else {
+					delete updatedPrimaryAttribute.fullTextIndexes;
+					delete updatedPrimaryAttribute.fullTextIndexGenerations;
+				}
 				attributesDbi.put(deferredFullTextIndexesKey, updatedPrimaryAttribute);
 			}
 		}
@@ -3575,6 +3636,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (liveSchemaMutated && originalLiveAttributes && originalLiveFullTextIndexes) {
 			Table.attributes.splice(0, Table.attributes.length, ...originalLiveAttributes);
 			Table.fullTextIndexes = originalLiveFullTextIndexes;
+			Table.fullTextIndexGenerations = originalLiveFullTextIndexGenerations;
 			Table.updatedAttributes();
 		}
 		throw error;
@@ -3582,6 +3644,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		releaseLock();
 	}
 	Table.fullTextIndexes = fullTextIndexes ?? [];
+	Table.fullTextIndexGenerations = fullTextIndexGenerationMap;
 	if (hasChanges || refreshRelationshipAttributes) Table.schemaVersion++;
 	if (hasChanges || refreshRelationshipAttributes || refreshedLiveAttributes) Table.updatedAttributes();
 	logger.trace(`${tableName} table loading, running index`);
@@ -3609,7 +3672,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		Table.derivedIndexRuntime.canReuse?.() !== false &&
 		!previousHasNativeHnsw &&
 		!Table.attributes.some((attribute) => Table.indices[attribute.name]?.customIndex?.postCommit) &&
-		previousFullTextStorageKey === fullTextStorageKey(Table.attributes);
+		previousFullTextStorageKey === fullTextStorageKey(Table.fullTextIndexes, Table.fullTextIndexGenerations);
 	// Query behavior is read from the live schema and does not require a second writer for the same generation.
 	// HNSW keeps the existing replacement path because its registration also captures computed resolvers.
 	if (!canReuseFullTextRuntime) {

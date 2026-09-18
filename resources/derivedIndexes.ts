@@ -8,7 +8,7 @@ import type { NativeFullTextModule } from './fullTextNativeBinding.ts';
 import { registerDerivedIndexTables } from './derivedIndexRegistry.ts';
 import { DerivedIndexRuntime, readDerivedIndexReadiness } from './derivedIndexRuntime.ts';
 import { HnswDerivedIndexBackend, type DerivedNativeIndex } from './indexes/hnswDerivedIndex.ts';
-import { fullTextStorageDefinition } from './fullTextSchema.ts';
+import { fullTextStorageDefinition, type FullTextDefinition } from './fullTextSchema.ts';
 
 const hnswLogger = loggerWithTag('HNSW');
 const fullTextLogger = loggerWithTag('fulltext-derived-index');
@@ -77,7 +77,7 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 	const hnswAttributes = Table.attributes.filter(
 		(attribute: Attribute) => Table.indices[attribute.name]?.customIndex?.postCommit
 	);
-	const fullTextAttributes = Table.attributes.filter((attribute: Attribute) => attribute.fullText);
+	const fullTextDefinitions = Table.fullTextIndexes as FullTextDefinition[];
 	const auditStore = Table.auditStore as RocksTransactionLogStore;
 	const existing = runtimes.get(auditStore);
 	const previous = existing?.installations.get(Table.tableId);
@@ -91,8 +91,8 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 			)
 		);
 	}
-	if (hnswAttributes.length === 0 && fullTextAttributes.length === 0) return previous;
-	assertDerivedIndexSupport(Table, fullTextAttributes);
+	if (hnswAttributes.length === 0 && fullTextDefinitions.length === 0) return previous;
+	assertDerivedIndexSupport(Table, fullTextDefinitions);
 
 	const registered = existing ?? runtimeFor(auditStore);
 	// A redefinition installs a new table view before the old runner finishes quiescing. Its release
@@ -101,7 +101,7 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 	const install = (register: Registration['register']) => {
 		registrations.push({ register, release: register() });
 	};
-	if (fullTextAttributes.length > 0) {
+	if (fullTextDefinitions.length > 0) {
 		install(() => {
 			const unregisterTable = registerDerivedIndexTables(auditStore, [Table.tableId]);
 			return async () => unregisterTable();
@@ -161,14 +161,14 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 	registered.installations.set(Table.tableId, installed);
 	try {
 		for (const attribute of hnswAttributes) registerHnsw(Table, attribute, registered, install);
-		for (const attribute of fullTextAttributes) {
-			const readinessId = fullTextDerivedIndexReadinessId(Table, attribute);
+		for (const definition of fullTextDefinitions) {
+			const readinessId = fullTextDerivedIndexReadinessId(Table, definition);
 			readinessOverrides.set(readinessId, { state: 'unknown', ownerEpoch: 0n, rebuildAttempts: 0 });
 			const setup = (async () => {
 				try {
 					await previousClose;
 					if (closing) return;
-					await registerFullText(Table, attribute, registered, install, () => !closing);
+					await registerFullText(Table, definition, registered, install, () => !closing);
 					if (!closing) readinessOverrides.delete(readinessId);
 				} catch (error) {
 					if (closing) return;
@@ -180,7 +180,7 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 						rebuildAttempts: 0,
 					});
 					fullTextLogger.error?.(
-						`Could not activate full-text index ${Table.databaseName}.${Table.tableName}.${attribute.name}`,
+						`Could not activate full-text index ${Table.databaseName}.${Table.tableName}.${definition.name}`,
 						error
 					);
 				}
@@ -201,7 +201,7 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 	return installed;
 }
 
-function assertDerivedIndexSupport(Table: any, fullTextAttributes: Attribute[]): void {
+function assertDerivedIndexSupport(Table: any, fullTextDefinitions: FullTextDefinition[]): void {
 	if (Table.audit !== true) {
 		throw new ClientError(
 			`Table '${Table.databaseName}.${Table.tableName}' must enable audit logging before using a post-commit derived index`
@@ -212,7 +212,7 @@ function assertDerivedIndexSupport(Table: any, fullTextAttributes: Attribute[]):
 		Table.databaseName,
 		Table.tableName,
 		Table.attributes,
-		fullTextAttributes
+		fullTextDefinitions
 	);
 }
 
@@ -222,9 +222,9 @@ export function assertFullTextActivationSupported(
 	databaseName: string,
 	tableName: string,
 	attributes: Attribute[],
-	fullTextAttributes = attributes.filter((attribute) => attribute.fullText)
+	fullTextDefinitions: readonly FullTextDefinition[] = []
 ): void {
-	if (fullTextAttributes.length === 0) return;
+	if (fullTextDefinitions.length === 0) return;
 	if (!(rootStore instanceof RocksDatabase)) {
 		throw new ClientError(
 			`Table '${databaseName}.${tableName}' cannot activate @fullText with the LMDB storage engine`,
@@ -234,18 +234,18 @@ export function assertFullTextActivationSupported(
 	const attributesByName = new Map<string, Attribute>(
 		attributes.map((attribute: Attribute) => [attribute.name, attribute])
 	);
-	for (const target of fullTextAttributes) {
-		const blobSource = target.fullText!.fields.find((field) => attributesByName.get(field.name)?.type === 'Blob');
+	for (const definition of fullTextDefinitions) {
+		const blobSource = definition.fields.find((field) => attributesByName.get(field.name)?.type === 'Blob');
 		if (blobSource) {
 			throw new ClientError(
-				`@fullText on '${databaseName}.${tableName}.${target.name}' cannot activate Blob source '${blobSource.name}' until derived-index projection supports asynchronous Blob reads`,
+				`@fullText index '${databaseName}.${tableName}.${definition.name}' cannot activate Blob source '${blobSource.name}' until derived-index projection supports asynchronous Blob reads`,
 				400
 			);
 		}
-		const computedSource = target.fullText!.fields.find((field) => attributesByName.get(field.name)?.computed);
+		const computedSource = definition.fields.find((field) => attributesByName.get(field.name)?.computed);
 		if (computedSource) {
 			throw new ClientError(
-				`@fullText on '${databaseName}.${tableName}.${target.name}' cannot activate computed source '${computedSource.name}' until derived-index projection supports versioned resolvers`,
+				`@fullText index '${databaseName}.${tableName}.${definition.name}' cannot activate computed source '${computedSource.name}' until derived-index projection supports versioned resolvers`,
 				400
 			);
 		}
@@ -295,15 +295,14 @@ function registerHnsw(
 
 async function registerFullText(
 	Table: any,
-	attribute: Attribute,
+	definition: FullTextDefinition,
 	registered: Registered,
 	install: (register: Registration['register']) => void,
 	isCurrent: () => boolean
 ): Promise<void> {
-	const definition = attribute.fullText!;
 	const storageDefinition = fullTextStorageDefinition(definition);
-	const id = fullTextDerivedIndexId(Table, attribute.name);
-	const storeName = `${Table.tableName}/${attribute.name}`;
+	const id = fullTextDerivedIndexId(Table, definition.name);
+	const storeName = `${Table.tableName}/${definition.name}`;
 	const warningKey = `${Table.primaryStore.rootStore.path}:${storeName}`;
 	if (!warnedAuditIndexes.has(warningKey)) {
 		warnedAuditIndexes.add(warningKey);
@@ -315,7 +314,7 @@ async function registerFullText(
 		id,
 		storePath: Table.primaryStore.rootStore.path,
 		storeName,
-		sourceGeneration: `${Table.tableId}:${attribute.fullTextGeneration ?? 'legacy'}`,
+		sourceGeneration: `${Table.tableId}:${fullTextIndexGeneration(Table, definition)}`,
 		fields: storageDefinition.fields,
 		analyzer: storageDefinition.analyzer,
 		stopWords: storageDefinition.stopWords,
@@ -328,7 +327,7 @@ async function registerFullText(
 	install(() =>
 		registered.runtime.register({
 			backend,
-			readinessId: fullTextDerivedIndexReadinessId(Table, attribute),
+			readinessId: fullTextDerivedIndexReadinessId(Table, definition),
 			projections: new Map([
 				[
 					Table.tableId,
@@ -359,19 +358,26 @@ async function registerFullText(
 	);
 }
 
-export function fullTextDerivedIndexId(Table: any, attributeName: string): string {
-	return `fulltext:${Table.tableName}/${attributeName}`;
+export function fullTextDerivedIndexId(Table: any, indexName: string): string {
+	return `fulltext:${Table.tableName}/${indexName}`;
 }
 
-function fullTextDerivedIndexReadinessId(Table: any, attribute: Attribute): string {
-	return `${fullTextDerivedIndexId(Table, attribute.name)}:${Table.tableId}:${attribute.fullTextGeneration ?? 'legacy'}`;
+function fullTextIndexGeneration(Table: any, definition: FullTextDefinition): string {
+	return (
+		Table.fullTextIndexGenerations?.[definition.name] ??
+		`legacy:${JSON.stringify(fullTextStorageDefinition(definition))}`
+	);
+}
+
+function fullTextDerivedIndexReadinessId(Table: any, definition: FullTextDefinition): string {
+	return `${fullTextDerivedIndexId(Table, definition.name)}:${Table.tableId}:${fullTextIndexGeneration(Table, definition)}`;
 }
 
 /** Shared readiness of a full-text index on any worker, registered or not. */
-export function fullTextDerivedIndexReadiness(Table: any, attributeName: string) {
-	const attribute = Table.attributes.find((candidate: Attribute) => candidate.name === attributeName);
-	if (!attribute?.fullText) throw new ClientError(`'${attributeName}' is not a full-text index`, 400);
-	const readinessId = fullTextDerivedIndexReadinessId(Table, attribute);
+export function fullTextDerivedIndexReadiness(Table: any, indexName: string) {
+	const definition = Table.fullTextIndexes.find((candidate: FullTextDefinition) => candidate.name === indexName);
+	if (!definition) throw new ClientError(`'${indexName}' is not a full-text index`, 400);
+	const readinessId = fullTextDerivedIndexReadinessId(Table, definition);
 	return (
 		Table.derivedIndexRuntime?.readinessOverride?.(readinessId) ??
 		readDerivedIndexReadiness(Table.auditStore, readinessId)

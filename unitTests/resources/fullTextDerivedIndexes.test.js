@@ -13,8 +13,9 @@ const {
 } = require('#src/resources/derivedIndexes');
 const { FullTextNativeTestBinding } = require('./fullTextNativeTestBinding');
 
-function definition(field, weight = 1) {
+function definition(field, weight = 1, name = 'search') {
 	return {
+		name,
 		fields: [{ name: field, weight }],
 		analyzer: 'english@1',
 		stopWords: true,
@@ -56,20 +57,23 @@ describe('@fullText derived-index activation', () => {
 				{ name: 'title', type: 'String' },
 				{ name: 'description', type: 'String' },
 				{ name: 'tags', type: 'array', elements: { type: 'String' } },
+			],
+			fullTextIndexes: [
 				{
-					name: 'titleSearch',
-					type: 'FullText',
-					fullText: {
-						...definition('title', 3),
-						fields: [
-							{ name: 'title', weight: 3 },
-							{ name: 'tags', weight: 1 },
-						],
-					},
+					...definition('title', 3, 'titleSearch'),
+					fields: [
+						{ name: 'title', weight: 3 },
+						{ name: 'tags', weight: 1 },
+					],
 				},
-				{ name: 'descriptionSearch', type: 'FullText', fullText: definition('description') },
+				definition('description', 1, 'descriptionSearch'),
 			],
 		});
+		assert.deepStrictEqual(
+			Product.fullTextIndexes.map(({ name }) => name),
+			['descriptionSearch', 'titleSearch']
+		);
+		assert(Product.derivedIndexRuntime, 'full-text declarations must attach the derived-index runtime');
 		await Product.put('shoe-1', {
 			title: 'Trail shoe',
 			description: 'Waterproof catalog entry',
@@ -136,8 +140,11 @@ describe('@fullText derived-index activation', () => {
 	});
 
 	it('rejects unsupported storage and asynchronous Blob projections before registration', () => {
-		const fullText = { name: 'search', type: 'FullText', fullText: definition('manual') };
-		const attributes = [{ name: 'id', type: 'ID', isPrimaryKey: true }, { name: 'manual', type: 'Blob' }, fullText];
+		let fullText = definition('manual');
+		const attributes = [
+			{ name: 'id', type: 'ID', isPrimaryKey: true },
+			{ name: 'manual', type: 'Blob' },
+		];
 		assert.throws(
 			() => assertFullTextActivationSupported({}, 'catalog', 'Product', attributes, [fullText]),
 			/LMDB storage engine/
@@ -155,14 +162,14 @@ describe('@fullText derived-index activation', () => {
 		);
 
 		const computed = { name: 'label', type: 'String', computed: { from: 'title' } };
-		fullText.fullText = definition('label');
+		fullText = definition('label');
 		assert.throws(
 			() =>
 				assertFullTextActivationSupported(
 					Root.primaryStore.rootStore,
 					'catalog',
 					'Product',
-					[{ name: 'id', type: 'ID', isPrimaryKey: true }, computed, fullText],
+					[{ name: 'id', type: 'ID', isPrimaryKey: true }, computed],
 					[fullText]
 				),
 			/versioned resolvers/
@@ -174,7 +181,6 @@ describe('@fullText derived-index activation', () => {
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
 			{ name: 'title', type: 'String' },
-			{ name: 'search', type: 'FullText', fullText: definition('title') },
 		];
 		binding.runtimeInfo = async () => {
 			throw new Error('native module unavailable');
@@ -184,13 +190,20 @@ describe('@fullText derived-index activation', () => {
 			table: 'Product',
 			audit: true,
 			attributes: attributes(),
+			fullTextIndexes: [definition('title')],
 		});
 
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'unavailable', 30_000);
 		assert.strictEqual(fullTextDerivedIndexReadiness(Product, 'search').reason, 'backend-failed');
 
 		delete binding.runtimeInfo;
-		Product = table({ database, table: 'Product', audit: true, attributes: attributes() });
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition('title')],
+		});
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 		assert(binding.opens.some((options) => options.indexId === fullTextDerivedIndexId(Product, 'search')));
 	});
@@ -200,13 +213,13 @@ describe('@fullText derived-index activation', () => {
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
 			{ name: 'title', type: 'String' },
-			{ name: 'search', type: 'FullText', fullText: definition('title') },
 		];
 		Product = table({
 			database,
 			table: 'Product',
 			audit: true,
 			attributes: attributes(),
+			fullTextIndexes: [definition('title')],
 		});
 		await Product.put('shoe-1', { title: 'Trail shoe' });
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
@@ -216,7 +229,13 @@ describe('@fullText derived-index activation', () => {
 		await assert.rejects(Product.dropTable(), /shutdown failed|did not prove quiescence/);
 		assert.strictEqual(Product.derivedIndexRuntime, failedRuntime);
 		binding.closeError = undefined;
-		Product = table({ database, table: 'Product', audit: true, attributes: attributes() });
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition('title')],
+		});
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 		assert.notStrictEqual(Product.derivedIndexRuntime, failedRuntime);
 		assert(binding.closeAttempts > 1, 'replacement activation must re-prove predecessor quiescence');
@@ -228,10 +247,18 @@ describe('@fullText derived-index activation', () => {
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
 			{ name: 'title', type: 'String' },
 			{ name: 'description', type: 'String' },
-			{ name: 'titleSearch', type: 'FullText', fullText: definition('title') },
-			{ name: 'descriptionSearch', type: 'FullText', fullText: definition('description') },
 		];
-		Product = table({ database, table: 'Product', audit: true, attributes: attributes() });
+		const fullTextIndexes = () => [
+			definition('title', 1, 'titleSearch'),
+			definition('description', 1, 'descriptionSearch'),
+		];
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: fullTextIndexes(),
+		});
 		await Product.put('shoe-1', { title: 'Trail shoe', description: 'Waterproof' });
 		await waitFor(
 			() =>
@@ -262,15 +289,20 @@ describe('@fullText derived-index activation', () => {
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
 			{ name: 'title', type: 'String' },
-			{ name: 'search', type: 'FullText', fullText: definition('title') },
 		];
-		Product = table({ database, table: 'Product', audit: true, attributes: attributes() });
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition('title')],
+		});
 		await Product.put('shoe-1', { title: 'Trail shoe' });
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 		let releaseClose;
 		binding.closeBarrier = new Promise((resolve) => (releaseClose = resolve));
 
-		Product = table({ database, table: 'Product', audit: true, attributes: attributes().slice(0, 2) });
+		Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
 		assert(Product.derivedIndexRuntime, 'the closing runtime must remain reachable until it quiesces');
 		let dropSettled = false;
 		const dropped = Product.dropTable().then(() => (dropSettled = true));
@@ -286,9 +318,14 @@ describe('@fullText derived-index activation', () => {
 		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
 			{ name: 'title', type: 'String' },
-			{ name: 'search', type: 'FullText', fullText: definition('title') },
 		];
-		Product = table({ database, table: 'Product', audit: true, attributes: attributes() });
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition('title')],
+		});
 		await Product.put('shoe-1', { title: 'Trail shoe' });
 		const indexId = fullTextDerivedIndexId(Product, 'search');
 		const storePath = Product.primaryStore.rootStore.path;
@@ -296,10 +333,16 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => binding.opens.some(isCurrentIndex), 30_000);
 		const firstGeneration = binding.opens.find(isCurrentIndex).generation;
 
-		Product = table({ database, table: 'Product', audit: true, attributes: attributes().slice(0, 2) });
+		Product = table({ database, table: 'Product', audit: true, attributes: attributes(), fullTextIndexes: [] });
 		await Product.dbisDB.committed;
 		await Product.clear();
-		Product = table({ database, table: 'Product', audit: true, attributes: attributes() });
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition('title')],
+		});
 		await waitFor(() => {
 			const options = binding.opens.findLast(
 				(options) => isCurrentIndex(options) && options.generation !== firstGeneration
@@ -315,12 +358,17 @@ describe('@fullText derived-index activation', () => {
 
 	it('rotates the native generation when the full-text definition changes', async () => {
 		const database = `fulltext-activation-definition-${Date.now()}`;
-		const attributes = (weight) => [
+		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
 			{ name: 'title', type: 'String' },
-			{ name: 'search', type: 'FullText', fullText: definition('title', weight) },
 		];
-		Product = table({ database, table: 'Product', audit: true, attributes: attributes(1) });
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition('title', 1)],
+		});
 		const indexId = fullTextDerivedIndexId(Product, 'search');
 		const storePath = Product.primaryStore.rootStore.path;
 		const isCurrentIndex = (options) => options.indexId === indexId && path.dirname(options.path) === storePath;
@@ -329,7 +377,13 @@ describe('@fullText derived-index activation', () => {
 
 		let releaseClose;
 		binding.closeBarrier = new Promise((resolve) => (releaseClose = resolve));
-		Product = table({ database, table: 'Product', audit: true, attributes: attributes(2) });
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition('title', 2)],
+		});
 		await new Promise((resolve) => setImmediate(resolve));
 		const readinessDuringHandoff = fullTextDerivedIndexReadiness(Product, 'search');
 		const openedReplacementEarly = binding.opens.some(
@@ -347,18 +401,44 @@ describe('@fullText derived-index activation', () => {
 		assert.deepStrictEqual(latest.fields, [{ name: 'title', weight: 2 }]);
 	});
 
+	it('reuses the durable native generation after a database reload', async () => {
+		const database = `fulltext-activation-reload-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('title')],
+		});
+		const indexId = fullTextDerivedIndexId(Product, 'search');
+		await waitFor(() => binding.opens.some(({ indexId: openedId }) => openedId === indexId), 30_000);
+		const firstOpen = binding.opens.find(({ indexId: openedId }) => openedId === indexId);
+		const firstToken = Product.fullTextIndexGenerations.search;
+		assert.strictEqual(typeof firstToken, 'string');
+
+		Product = resetDatabases()[database].Product;
+		await waitFor(() => binding.opens.filter(({ indexId: openedId }) => openedId === indexId).length > 1, 30_000);
+		const latest = binding.opens.findLast(({ indexId: openedId }) => openedId === indexId);
+		assert.strictEqual(Product.fullTextIndexGenerations.search, firstToken);
+		assert.strictEqual(latest.generation, firstOpen.generation);
+	});
+
 	it('preserves the native generation when only query behavior changes', async () => {
 		const database = `fulltext-activation-query-options-${Date.now()}`;
-		const attributes = (queryOptions = {}) => [
+		const attributes = () => [
 			{ name: 'id', type: 'ID', isPrimaryKey: true },
 			{ name: 'title', type: 'String' },
-			{
-				name: 'search',
-				type: 'FullText',
-				fullText: { ...definition('title'), ...queryOptions },
-			},
 		];
-		Product = table({ database, table: 'Product', audit: true, attributes: attributes() });
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition('title')],
+		});
 		const indexId = fullTextDerivedIndexId(Product, 'search');
 		const storePath = Product.primaryStore.rootStore.path;
 		const isCurrentIndex = (options) => options.indexId === indexId && path.dirname(options.path) === storePath;
@@ -371,18 +451,22 @@ describe('@fullText derived-index activation', () => {
 			database,
 			table: 'Product',
 			audit: true,
-			attributes: attributes({
-				fields: [{ name: 'title', weight: 1, highlight: true }],
-				synonyms: [{ source: 'sneaker', replacements: ['shoe'] }],
-				highlighting: { maxFragments: 2, fragmentLength: 80 },
-			}),
+			attributes: attributes(),
+			fullTextIndexes: [
+				{
+					...definition('title'),
+					fields: [{ name: 'title', weight: 1, highlight: true }],
+					synonyms: [{ source: 'sneaker', replacements: ['shoe'] }],
+					highlighting: { maxFragments: 2, fragmentLength: 80 },
+				},
+			],
 		});
 		assert.strictEqual(Product.derivedIndexRuntime, firstRuntime);
 		assert.strictEqual(binding.opens.filter(isCurrentIndex).length, firstOpenCount);
 		const latest = binding.opens.findLast(isCurrentIndex);
 		assert.strictEqual(latest.generation, firstGeneration);
 		assert.deepStrictEqual(latest.fields, [{ name: 'title', weight: 1 }]);
-		const fullText = Product.attributes.find((attribute) => attribute.name === 'search').fullText;
+		const fullText = Product.fullTextIndexes.find((definition) => definition.name === 'search');
 		assert.deepStrictEqual(fullText.synonyms, [{ source: 'sneaker', replacements: ['shoe'] }]);
 		assert.deepStrictEqual(fullText.highlighting, { maxFragments: 2, fragmentLength: 80 });
 	});
@@ -396,8 +480,8 @@ describe('@fullText derived-index activation', () => {
 			attributes: [
 				{ name: 'id', type: 'ID', isPrimaryKey: true },
 				{ name: 'title', type: 'String' },
-				{ name: 'search', type: 'FullText', fullText: definition('title') },
 			],
+			fullTextIndexes: [definition('title')],
 		});
 		table({
 			database,
@@ -408,15 +492,14 @@ describe('@fullText derived-index activation', () => {
 			({ value }) => value.isPrimaryKey
 		);
 		assert(primaryEntry);
-		const firstGeneration = Invalid.dbisDB.getSync('Invalid/search').fullTextGeneration;
+		const firstGeneration = primaryEntry.value.fullTextIndexGenerations.search;
 		Invalid.dbisDB.putSync(primaryEntry.key, { ...primaryEntry.value, audit: false });
 		await Invalid.dbisDB.committed;
 
 		const reloaded = resetDatabases()[database];
 		assert.strictEqual(reloaded.Invalid, undefined);
-		const condemnedGeneration = reloaded.Healthy.dbisDB.getSync('Invalid/search').fullTextGeneration;
-		assert.match(condemnedGeneration, /^invalid:/);
-		assert.notStrictEqual(condemnedGeneration, firstGeneration);
+		const quarantinedGeneration = reloaded.Healthy.dbisDB.getSync(primaryEntry.key).fullTextIndexGenerations.search;
+		assert.strictEqual(quarantinedGeneration, firstGeneration);
 		Product = reloaded.Healthy;
 		await Product.put('healthy-1', {});
 		assert(await Product.get('healthy-1'));
@@ -434,8 +517,8 @@ describe('@fullText derived-index activation', () => {
 				attributes: [
 					{ name: 'id', type: 'ID', isPrimaryKey: true },
 					{ name: 'title', type: 'String' },
-					{ name: 'search', type: 'FullText', fullText: definition('title') },
 				],
+				fullTextIndexes: [definition('title')],
 			});
 		} finally {
 			databaseEventsEmitter.off('updateTable', onUpdate);
@@ -443,9 +526,8 @@ describe('@fullText derived-index activation', () => {
 		assert.strictEqual(repairUpdates.length, 1);
 		assert.strictEqual(repairUpdates[0].audit, true);
 		assert(repairUpdates[0].derivedIndexRuntime);
-		const repairedGeneration = Product.attributes.find((attribute) => attribute.name === 'search').fullTextGeneration;
-		assert.notStrictEqual(repairedGeneration, firstGeneration);
-		assert.notStrictEqual(repairedGeneration, condemnedGeneration);
+		const repairedGeneration = Product.fullTextIndexGenerations.search;
+		assert.strictEqual(repairedGeneration, firstGeneration);
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 	});
 
@@ -460,8 +542,8 @@ describe('@fullText derived-index activation', () => {
 			attributes: [
 				{ name: 'id', type: 'ID', isPrimaryKey: true },
 				{ name: 'title', type: 'String' },
-				{ name: 'search', type: 'FullText', fullText: definition('title') },
 			],
+			fullTextIndexes: [definition('title')],
 		});
 		const runtime = Product.derivedIndexRuntime;
 		await Product.put('shoe-1', { title: 'Trail shoe' });

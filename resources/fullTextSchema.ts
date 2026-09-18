@@ -64,10 +64,14 @@ export function fullTextStorageDefinition(definition: FullTextDefinition): FullT
 }
 
 /** Identity of the native full-text runtimes represented by a table declaration. */
-export function fullTextStorageKey(definitions: readonly FullTextDefinition[]): string {
+export function fullTextStorageKey(
+	definitions: readonly FullTextDefinition[],
+	generations: Readonly<Record<string, string>> = {}
+): string {
 	return JSON.stringify(
 		definitions.map((definition) => ({
 			name: definition.name,
+			generation: generations[definition.name],
 			definition: fullTextStorageDefinition(definition),
 		}))
 	);
