@@ -389,8 +389,9 @@ export class RecordEncoder extends StructonEncoder {
 						// is the LOW BYTE (RESERVE_START_SPACE): a valueStart over 255 wraps, so the record is
 						// written with a prefix neither side agrees on and decodes as garbage. The persisted ref
 						// count is one byte too. Refs are best-effort — a later in-order write drops them outright —
-						// so the tail, the oldest heads, is dropped to stay inside the budget; index 0 is the
-						// addressable audit head and is always kept. (harper#2642)
+						// so over budget the MIDDLE is dropped: the first entry is the addressable audit head when
+						// the record and log clocks diverge, and the last is the identity this write is matched on
+						// by the re-delivery guard, so neither end may go. (harper#2642)
 						auditRefsToEncode = Math.min(
 							additionalAuditRefs.length,
 							Math.floor((MAX_RESERVED_START_SPACE - valueStart - 1) / 12)
@@ -435,7 +436,12 @@ export class RecordEncoder extends StructonEncoder {
 					}
 					if (auditRefsToEncode > 0) {
 						encoded[position++] = auditRefsToEncode;
-						for (let index = 0; index < auditRefsToEncode; index++) {
+						// Written as [0, …tail]: the dropped window is the middle, and it is empty when nothing
+						// had to be dropped.
+						const dropFrom = 1;
+						const dropTo = additionalAuditRefs.length - auditRefsToEncode + 1;
+						for (let index = 0; index < additionalAuditRefs.length; index++) {
+							if (index >= dropFrom && index < dropTo) continue;
 							const ref = additionalAuditRefs[index];
 							dataView.setFloat64(position, ref.version);
 							position += 8;

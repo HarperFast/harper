@@ -3643,10 +3643,35 @@ export function makeTable(options) {
 						// existing timestamp, which means that we received updates out of order, and must resequence the application
 						// of the updates to the record to ensure consistency across the cluster
 						// TODO: can the previous version be older, but even more previous version be newer?
-						// Both are set by the audit block below and read by the walk block after it.
 						let belowAuditFloor = false;
 						let dedupVersionCouldBeRetained: (version: number) => boolean;
 						if (audit) {
+							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
+							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
+							// out-of-order versions, read with read-your-writes consistency, so this skips the duplicate up
+							// front — before the audit-log walk below, which can miss it: the walk stops at the depth cap, or
+							// breaks early on a not-yet-visible audit entry, before reaching txnTime, and the keyed
+							// transaction-log lookup it would otherwise use can lag a back-to-back re-delivery (that lag
+							// silently double-applied the increment — #1137). This covers the re-delivery while the ref is
+							// still on the record; a later in-order write rewrites the record and drops the ref (it survives
+							// only as previousAdditionalAuditRefs on the audit log), so that case falls back to the
+							// best-effort keyed lookup in the capped block below — see #1148. precedesExistingVersion(...)
+							// === 0 is the identity tie: same version AND same node (the local node is id 0, so an undefined
+							// options?.nodeId resolves to the same 0 the ref stored).
+							if (
+								existingEntry.additionalAuditRefs?.some(
+									(ref) =>
+										ref.version === txnLogKey &&
+										precedesExistingVersion(
+											txnTime,
+											{ version: txnTime, localTime: txnLogKey, key: id, nodeId: ref.nodeId },
+											options?.nodeId
+										) === 0
+								)
+							) {
+								write.skipped = true;
+								return; // out-of-order write already folded into this record
+							}
 							// The keyed dedup lookups in this block (the up-front check below, and the depth-cap /
 							// fully-superseded `isReDeliveredDuplicate` checks later) read the per-node transaction log
 							// by version. That log has time-based retention — auditRetention purges whole log files — so a
@@ -3680,32 +3705,6 @@ export function makeTable(options) {
 								}
 								return version >= oldestRetainedAuditTime!;
 							};
-							// A re-delivered out-of-order write (full-copy audit-replay re-delivers writes) must not have
-							// its commutative ops re-folded. additionalAuditRefs is the record's own list of folded
-							// out-of-order versions, read with read-your-writes consistency, so this skips the duplicate up
-							// front — before the audit-log walk below, which can miss it: the walk stops at the depth cap, or
-							// breaks early on a not-yet-visible audit entry, before reaching txnTime, and the keyed
-							// transaction-log lookup it would otherwise use can lag a back-to-back re-delivery (that lag
-							// silently double-applied the increment — #1137). This covers the re-delivery while the ref is
-							// still on the record; a later in-order write rewrites the record and drops the ref (it survives
-							// only as previousAdditionalAuditRefs on the audit log), so that case falls back to the
-							// best-effort keyed lookup in the capped block below — see #1148. precedesExistingVersion(...)
-							// === 0 is the identity tie: same version AND same node (the local node is id 0, so an undefined
-							// options?.nodeId resolves to the same 0 the ref stored).
-							if (
-								existingEntry.additionalAuditRefs?.some(
-									(ref) =>
-										ref.version === txnLogKey &&
-										precedesExistingVersion(
-											txnTime,
-											{ version: txnTime, localTime: txnLogKey, key: id, nodeId: ref.nodeId },
-											options?.nodeId
-										) === 0
-								)
-							) {
-								write.skipped = true;
-								return; // out-of-order write already folded into this record
-							}
 							// Up-front keyed dedup (RocksDB): a re-delivered out-of-order write whose exact
 							// (version, nodeId) is already in the audit log is a duplicate that was already applied — skip
 							// it here instead of paying the O(depth) resequencing walk below only to discard it in the

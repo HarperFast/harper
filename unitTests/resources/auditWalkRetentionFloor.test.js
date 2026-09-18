@@ -270,13 +270,23 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 			await T.put('many', { name: 'newer', count: 0 });
 			raiseAuditFloor(T.auditStore, Date.now());
 
-			const entry = await applyOps(T, 'many', Date.now() - 30 * DAY, 40);
+			const first = Date.now() - 30 * DAY;
+			const entry = await applyOps(T, 'many', first, 40);
 
 			assert.ok(
 				entry.additionalAuditRefs.length < 20,
 				`ref list must stay bounded; got ${entry.additionalAuditRefs?.length}`
 			);
 			assert.deepEqual(await T.get('many'), { id: 'many', name: 'newer', count: 40 });
+			// The bound drops the middle, never the newest: that entry is the only thing standing between a
+			// re-delivery of the last event and a second increment, since the walk no longer runs.
+			const newest = first + 39;
+			assert.ok(
+				entry.additionalAuditRefs.some((ref) => ref.version === newest),
+				`the newest identity must survive the bound; got ${JSON.stringify(entry.additionalAuditRefs)}`
+			);
+			await applyFromOrigin(T, 'many', { count: { __op__: 'add', value: 1 } }, { logKey: newest, version: newest });
+			assert.equal((await T.get('many')).count, 40, 'a re-delivery at the bound must not apply twice');
 		});
 	});
 
