@@ -8,6 +8,7 @@ import {
 	openSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	unlinkSync,
 	writeSync,
 } from 'node:fs';
@@ -39,11 +40,17 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
  *   duration of a restore, and briefly by `dropDatabase` so the two serialize on the same primitive.
  *   Known limitation: the lock is owned by the process, so if the restore job's worker *thread*
  *   dies without the process exiting, the lock stays held (restores 409) until Harper restarts.
- * - `<meta-dir>/<key>.restoring` — the completion marker. Written (and fsynced) after the lock is
- *   acquired and before the destructive restore begins; deleted only after the restore completes
- *   successfully, while still holding the lock. Its *existence* means "a restore started and has
- *   not finished successfully". Its first line records the database directory name so the startup
- *   scan can map a marker back to the database it blocks without decoding the hashed key.
+ * - `<meta-dir>/<key>.restoring` — the completion marker. Published (temp → fsync → rename → parent
+ *   fsync) after the lock is acquired and before the destructive restore begins; deleted only after
+ *   the restore completes successfully, while still holding the lock. Its *existence* means "a
+ *   restore started and has not finished successfully". Its first line records the database
+ *   directory name so the startup scan can map a marker back to the database it blocks without
+ *   decoding the hashed key.
+ *
+ *   The rename is what makes the marker trustworthy: the marker path only ever holds the previous
+ *   content or the complete new content, so a torn write can never replace a valid marker with one
+ *   the scan reads as empty (and therefore honors as no block). An intact marker is also never
+ *   rewritten at all — see `beginRestore`.
  */
 
 // The backtick makes this an illegal database name (schemaRegex rejects `/` and backtick only), so
@@ -51,6 +58,9 @@ import { tryFileLock, fileLockRelease } from '@harperfast/rocksdb-js';
 export const RESTORE_META_DIR = '`restore`';
 export const RESTORE_LOCK_SUFFIX = '.lock';
 export const RESTORING_MARKER_SUFFIX = '.restoring';
+// Deliberately not a `.restoring` suffix: `scanBlockedRestores` selects markers by that suffix, and
+// a half-written temp must never be mistaken for one.
+const MARKER_TEMP_SUFFIX = '.tmp';
 
 /**
  * Directory holding the restore metadata for a database — the reserved `` `restore` `` sibling of
@@ -180,17 +190,29 @@ export function releaseRestoreLock(lock: RestoreLock): void {
 }
 
 /**
- * Acquire the per-database restore lock and write the restoring marker. Call before any
- * destructive step. Returns the lock (with `preexisting` set when a marker was already present, so
- * a failed recovery attempt knows not to clear it). Throws (statusCode 409) if another restore
- * already holds the lock.
+ * Whether a marker on disk still blocks the database it belongs to. `scanBlockedRestores` maps a
+ * marker to a database by its first line, so the line has to be the whole name: a torn write that
+ * left a prefix of it ("ord" for "orders") is non-empty and reads as valid, but blocks a database
+ * that does not exist while the real one loads.
  */
-export function beginRestore(dbPath: string): RestoreLock {
-	const markerPath = restoringMarkerPath(dbPath);
-	const preexisting = existsSync(markerPath);
-	const lock = acquireRestoreLock(dbPath);
+function markerIsIntact(markerPath: string, dbPath: string): boolean {
 	try {
-		const fd = openSync(markerPath, 'w');
+		return readFileSync(markerPath, 'utf8').split('\n', 1)[0] === basename(dbPath);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Publish the restoring marker atomically. The caller must already hold the restore lock, which is
+ * what makes the fixed temp name safe: only one writer per database can exist at a time, so a temp
+ * left by an earlier crash is this database's own debris and is simply overwritten.
+ */
+function publishRestoringMarker(dbPath: string): void {
+	const metaDir = restoreMetaDir(dbPath);
+	const tempPath = join(metaDir, restoreMetaKey(dbPath) + MARKER_TEMP_SUFFIX);
+	try {
+		const fd = openSync(tempPath, 'w');
 		try {
 			// first line is the database directory name so the startup scan can map this marker back to
 			// the database it blocks without reversing the hashed key
@@ -199,9 +221,41 @@ export function beginRestore(dbPath: string): RestoreLock {
 		} finally {
 			closeSync(fd);
 		}
-		// fsync the metadata directory so the marker's directory entry is durable — without this a
-		// power loss can lose the entry, and a half-purged database would load as healthy
-		fsyncDir(restoreMetaDir(dbPath));
+		renameSync(tempPath, restoringMarkerPath(dbPath));
+	} catch (error) {
+		try {
+			unlinkSync(tempPath);
+		} catch {
+			// debris either way; the write failure is the error worth reporting
+		}
+		throw error;
+	}
+	// fsync the metadata directory so the marker's directory entry is durable — without this a
+	// power loss can lose the entry, and a half-purged database would load as healthy
+	fsyncDir(metaDir);
+}
+
+/**
+ * Acquire the per-database restore lock and ensure the restoring marker is in place. Call before any
+ * destructive step. Returns the lock (with `preexisting` set when a marker was already present, so
+ * a failed recovery attempt knows not to clear it). Throws (statusCode 409) if another restore
+ * already holds the lock.
+ *
+ * An intact marker is left exactly as it is. A recovery attempt runs over a directory an earlier
+ * restore may have half-purged, so the marker it finds is the only thing keeping that directory
+ * from loading as healthy; rewriting it buys nothing (the content it would write is the content
+ * already there) and risks everything.
+ */
+export function beginRestore(dbPath: string): RestoreLock {
+	const markerPath = restoringMarkerPath(dbPath);
+	const preexisting = existsSync(markerPath);
+	const lock = acquireRestoreLock(dbPath);
+	try {
+		if (!preexisting || !markerIsIntact(markerPath, dbPath)) publishRestoringMarker(dbPath);
+		// An intact marker is kept, but its durability is not assumed: the publisher that wrote it may
+		// have been interrupted between the rename and this flush, which would leave the directory
+		// entry — the thing the startup scan reads — still only in the page cache.
+		else fsyncDir(restoreMetaDir(dbPath));
 	} catch (error) {
 		fileLockRelease(lock.token);
 		throw error;

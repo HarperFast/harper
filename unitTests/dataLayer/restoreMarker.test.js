@@ -1,7 +1,16 @@
 'use strict';
 
 const assert = require('node:assert');
-const { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } = require('node:fs');
+const {
+	appendFileSync,
+	existsSync,
+	mkdtempSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} = require('node:fs');
 const { basename, dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { tryFileLock, fileLockRelease } = require('@harperfast/rocksdb-js');
@@ -180,6 +189,79 @@ describe('restoreMarker', function () {
 			const lock = beginRestore(dbPath);
 			completeRestore(lock);
 			assert.strictEqual(checkRestoreState(dbPath), 'clear');
+		});
+
+		it('leaves an intact marker byte-identical on a recovery attempt', function () {
+			// The marker a recovery attempt finds is the only thing keeping a possibly half-purged
+			// directory from loading as healthy. Rewriting it opens a window where a crash leaves it
+			// empty — which scanBlockedRestores reads as "no block".
+			abandonRestore(beginRestore(dbPath));
+			appendFileSync(restoringMarkerPath(dbPath), 'written by the interrupted restore\n');
+			const before = readFileSync(restoringMarkerPath(dbPath), 'utf8');
+
+			const rerun = beginRestore(dbPath);
+			try {
+				assert.strictEqual(rerun.preexisting, true);
+				assert.strictEqual(
+					readFileSync(restoringMarkerPath(dbPath), 'utf8'),
+					before,
+					'a recovery attempt must not rewrite the marker that is blocking the database'
+				);
+			} finally {
+				abandonRestore(rerun);
+			}
+			assert.strictEqual(checkRestoreState(dbPath), 'incomplete');
+		});
+
+		it('repairs a marker an interrupted write left empty, so the database stays blocked', function () {
+			// what a torn write under the pre-rename implementation left behind
+			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+			writeFileSync(restoringMarkerPath(dbPath), '');
+			assert.deepStrictEqual(scanBlockedRestores(tempDir), [], 'precondition: an empty marker blocks nothing');
+
+			abandonRestore(beginRestore(dbPath));
+
+			assert.strictEqual(readFileSync(restoringMarkerPath(dbPath), 'utf8').split('\n', 1)[0], basename(dbPath));
+			assert.deepStrictEqual(scanBlockedRestores(tempDir), [[basename(dbPath), 'incomplete']]);
+		});
+
+		it('repairs a marker whose database name was torn mid-write', function () {
+			// Non-empty but truncated. The scan resolves the name it reads back to a *different* metadata
+			// key, so a torn name blocks nothing at all while the real database loads.
+			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+			writeFileSync(restoringMarkerPath(dbPath), `${basename(dbPath).slice(0, 3)}`);
+			assert.deepStrictEqual(scanBlockedRestores(tempDir), [], 'precondition: a torn name blocks nothing');
+
+			abandonRestore(beginRestore(dbPath));
+
+			assert.deepStrictEqual(scanBlockedRestores(tempDir), [[basename(dbPath), 'incomplete']]);
+		});
+
+		it('publishes the marker by rename, leaving no temp file behind', function () {
+			const lock = beginRestore(dbPath);
+			try {
+				assert.deepStrictEqual(
+					readdirSync(restoreMetaDir(dbPath)).sort(),
+					[basename(restoreLockPath(dbPath)), basename(restoringMarkerPath(dbPath))].sort()
+				);
+			} finally {
+				completeRestore(lock);
+			}
+		});
+
+		it('overwrites a temp file a crashed write left behind, and the scan never sees it', function () {
+			const tempPath = restoringMarkerPath(dbPath).replace(/\.restoring$/, '.tmp');
+			mkdirSync(restoreMetaDir(dbPath), { recursive: true });
+			writeFileSync(tempPath, 'someotherdb\npartial write\n');
+			assert.deepStrictEqual(scanBlockedRestores(tempDir), [], 'a temp file must never read as a marker');
+
+			const lock = beginRestore(dbPath);
+			try {
+				assert.deepStrictEqual(scanBlockedRestores(tempDir), [[basename(dbPath), 'in-progress']]);
+				assert.ok(!existsSync(tempPath), 'the temp file is consumed by the rename');
+			} finally {
+				completeRestore(lock);
+			}
 		});
 	});
 
