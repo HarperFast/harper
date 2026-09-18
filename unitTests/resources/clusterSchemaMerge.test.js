@@ -636,4 +636,44 @@ describe('cluster-origin schema definitions are additive-only', () => {
 			['search', 'titles']
 		);
 	});
+
+	it('merges an explicit peer list against disk even when it matches stale live state', async () => {
+		const Local = table({
+			table: 'ClusterMergeStaleExplicitFullText',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [{ name: 'search', fields: [{ name: 'title' }] }],
+		});
+		await catalogFlushed(Local);
+		let primaryKey = 'ClusterMergeStaleExplicitFullText/id';
+		let primary = Local.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'ClusterMergeStaleExplicitFullText/';
+			primary = Local.dbisDB.getSync(primaryKey);
+		}
+		const durableIndexes = [Local.fullTextIndexes[0], { ...Local.fullTextIndexes[0], name: 'titles' }];
+		const written = Local.dbisDB.put(primaryKey, { ...primary, fullTextIndexes: durableIndexes });
+		if (written?.then) await written;
+
+		table({
+			table: 'ClusterMergeStaleExplicitFullText',
+			database: 'test',
+			origin: 'cluster',
+			attributes: Local.attributes.map((attribute) => ({ ...attribute })),
+			fullTextIndexes: Local.fullTextIndexes.map((definition) => ({
+				...definition,
+				fields: definition.fields.map((field) => ({ ...field })),
+			})),
+		});
+		await catalogFlushed(Local);
+		assert.deepStrictEqual(
+			Local.dbisDB.getSync(primaryKey).fullTextIndexes.map(({ name }) => name),
+			['search', 'titles']
+		);
+	});
 });

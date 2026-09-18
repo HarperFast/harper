@@ -135,8 +135,24 @@ describe('@fullText table declaration', () => {
 		`);
 		const Before = getDatabases()[databaseName].FullTextRestart;
 		if (Before.dbisDB.committed) await Before.dbisDB.committed;
+		let primaryKey = 'FullTextRestart/id';
+		let primary = Before.dbisDB.getSync(primaryKey);
+		if (!primary) {
+			primaryKey = 'FullTextRestart/';
+			primary = Before.dbisDB.getSync(primaryKey);
+		}
+		const durableIndexes = [Before.fullTextIndexes[0], { ...Before.fullTextIndexes[0], name: 'titles' }];
+		const written = Before.dbisDB.put(primaryKey, { ...primary, fullTextIndexes: durableIndexes });
+		if (written?.then) await written;
 
-		const rootStore = Before.primaryStore.rootStore;
+		resetDatabases();
+		const Refreshed = getDatabases()[databaseName].FullTextRestart;
+		assert.deepStrictEqual(
+			Refreshed.fullTextIndexes.map(({ name }) => name),
+			['search', 'titles']
+		);
+
+		const rootStore = Refreshed.primaryStore.rootStore;
 		let closing;
 		const originalClose = rootStore.close.bind(rootStore);
 		rootStore.close = (...args) => (closing = originalClose(...args));
@@ -144,10 +160,13 @@ describe('@fullText table declaration', () => {
 		await closing;
 		resetDatabases();
 		const Reopened = getDatabases()[databaseName].FullTextRestart;
-		assert.notStrictEqual(Reopened, Before);
+		assert.notStrictEqual(Reopened, Refreshed);
 		assert.deepStrictEqual(
 			Reopened.fullTextIndexes.map(({ name, fields }) => [name, fields[0].name]),
-			[['search', 'text']]
+			[
+				['search', 'text'],
+				['titles', 'text'],
+			]
 		);
 		assert.strictEqual(
 			Reopened.attributes.some(({ name }) => name === 'search'),
@@ -220,6 +239,51 @@ describe('@fullText table declaration', () => {
 		}
 		assert.strictEqual(descriptor(Table).fullTextIndexes, undefined);
 		assert(Table.dbisDB.getSync('FullTextSourceRemovalOrder/text'));
+	});
+
+	it('persists changed sources before publishing a declaration that uses them', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE === 'lmdb') this.skip();
+		const Table = table({
+			table: 'FullTextSourcePublishOrder',
+			database: 'test',
+			schemaDefined: true,
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'text', type: 'Int' },
+			],
+		});
+		if (Table.dbisDB.committed) await Table.dbisDB.committed;
+		let putOwner = Table.dbisDB;
+		while (putOwner && !Object.hasOwn(putOwner, 'putSync')) putOwner = Object.getPrototypeOf(putOwner);
+		assert(putOwner, 'the catalog handle must expose a synchronous put primitive');
+		const originalPut = putOwner.putSync;
+		putOwner.putSync = function (key, value, ...args) {
+			if (String(key) === 'FullTextSourcePublishOrder/text' && value?.type === 'String')
+				throw new Error('simulated crash before source publication');
+			return originalPut.call(this, key, value, ...args);
+		};
+		try {
+			assert.throws(
+				() =>
+					table({
+						table: 'FullTextSourcePublishOrder',
+						database: 'test',
+						schemaDefined: true,
+						audit: true,
+						attributes: [
+							{ name: 'id', type: 'ID', isPrimaryKey: true },
+							{ name: 'text', type: 'String' },
+						],
+						fullTextIndexes: [{ name: 'search', fields: [{ name: 'text' }] }],
+					}),
+				/simulated crash before source publication/
+			);
+		} finally {
+			putOwner.putSync = originalPut;
+		}
+		assert.strictEqual(descriptor(Table).fullTextIndexes, undefined);
+		assert.strictEqual(Table.dbisDB.getSync('FullTextSourcePublishOrder/text').type, 'Int');
 	});
 
 	it('preserves dynamic record data with the same name as an index', async () => {

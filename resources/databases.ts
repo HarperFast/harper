@@ -1326,10 +1326,21 @@ function initStores(
 			existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
 			attributesUpdated = true;
 		}
+		let fullTextIndexes: FullTextDefinition[] = [];
+		try {
+			fullTextIndexes = compileFullTextDefinitions(primaryAttribute.fullTextIndexes ?? [], attributes);
+		} catch (error) {
+			if (!(error instanceof ClientError)) throw error;
+			logger.warn(
+				`Ignoring invalid persisted full-text declarations for ${databaseName}.${tableName}: ${error.message}`
+			);
+		}
 		if (table && !recreateForEngineChange) {
-			if (attributesUpdated) {
+			const fullTextIndexesUpdated = JSON.stringify(table.fullTextIndexes ?? []) !== JSON.stringify(fullTextIndexes);
+			if (fullTextIndexesUpdated) table.fullTextIndexes = fullTextIndexes;
+			if (attributesUpdated || fullTextIndexesUpdated) {
 				table.schemaVersion++;
-				table.updatedAttributes();
+				if (attributesUpdated) table.updatedAttributes();
 			}
 		} else {
 			table = setTable(
@@ -1355,7 +1366,7 @@ function initStores(
 					databaseName,
 					indices,
 					attributes,
-					fullTextIndexes: primaryAttribute.fullTextIndexes ?? [],
+					fullTextIndexes,
 					schemaDefined: primaryAttribute.schemaDefined,
 					dbisDB: attributesDbi,
 				})
@@ -2616,6 +2627,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	let refreshRelationshipAttributes = false;
 	let refreshedLiveAttributes = false;
 	let deferredPrimaryRow: any;
+	let deferredFullTextIndexesKey: string | undefined;
 	let unpublishedPrimaryStore: any;
 	let published = false;
 	let releaseExclusiveLock: (() => void) | undefined;
@@ -2741,8 +2753,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 			}
 			if (origin === 'cluster') {
 				if (!fullTextIndexesExplicit) fullTextIndexes = Table.fullTextIndexes;
-				else if (JSON.stringify(fullTextIndexes) === JSON.stringify(Table.fullTextIndexes))
-					fullTextIndexes = Table.fullTextIndexes;
 				else {
 					exclusiveLock();
 					const validationAttributes = attributes.map((attribute) => {
@@ -3010,38 +3020,38 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				const fullTextIndexesChanged =
 					fullTextIndexesExplicit &&
 					JSON.stringify(attributeDescriptor.fullTextIndexes ?? []) !== JSON.stringify(fullTextIndexes ?? []);
+				const primarySettingsChanged =
+					origin !== 'cluster' &&
+					(schemaDefinedMismatch ||
+						(audit !== undefined && audit !== Table.audit) ||
+						(sealed !== undefined && sealed !== Table.sealed) ||
+						(replicate !== undefined && replicate !== Table.replicate) ||
+						(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
+						(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
+						attribute.type !== attributeDescriptor.type);
 				// primary key can't change indexing, but settings can change
-				if (
-					fullTextIndexesChanged ||
-					(origin !== 'cluster' &&
-						(schemaDefinedMismatch ||
-							(audit !== undefined && audit !== Table.audit) ||
-							(sealed !== undefined && sealed !== Table.sealed) ||
-							(replicate !== undefined && replicate !== Table.replicate) ||
-							(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
-							(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
-							attribute.type !== attributeDescriptor.type))
-				) {
+				if (fullTextIndexesChanged || primarySettingsChanged) {
 					exclusiveLock();
 					const currentPrimaryAttribute = attributesDbi.getSync(dbiKey);
 					if (!currentPrimaryAttribute || tableIsDropping(currentPrimaryAttribute, dbiKey)) continue;
-					const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
-					if (typeof audit === 'boolean') {
-						if (audit) Table.enableAuditing();
-						updatedPrimaryAttribute.audit = audit;
+					if (primarySettingsChanged) {
+						const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
+						if (typeof audit === 'boolean') {
+							if (audit) Table.enableAuditing();
+							updatedPrimaryAttribute.audit = audit;
+						}
+						if (expiration) updatedPrimaryAttribute.expiration = +expiration;
+						if (eviction) updatedPrimaryAttribute.eviction = +eviction;
+						if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
+						if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
+						if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
+						if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
+						attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 					}
-					if (expiration) updatedPrimaryAttribute.expiration = +expiration;
-					if (eviction) updatedPrimaryAttribute.eviction = +eviction;
-					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
-					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
-					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
-					if (schemaDefinedMismatch) updatedPrimaryAttribute.schemaDefined = schemaDefined;
-					if (fullTextIndexesChanged) {
-						if (fullTextIndexes?.length) updatedPrimaryAttribute.fullTextIndexes = fullTextIndexes;
-						else delete updatedPrimaryAttribute.fullTextIndexes;
-					}
+					// Source descriptors are persisted later in this loop. Publish a new declaration only
+					// after those writes, so a crash cannot expose it against an older source type.
+					if (fullTextIndexesChanged) deferredFullTextIndexesKey = dbiKey;
 					hasChanges = true; // send out notification of the change
-					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 				}
 
 				continue;
@@ -3280,6 +3290,15 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				hasChanges = true;
 				exclusiveLock();
 				attributesDbi.put(dbiKey, attribute);
+			}
+		}
+		if (deferredFullTextIndexesKey) {
+			const currentPrimaryAttribute = attributesDbi.getSync(deferredFullTextIndexesKey);
+			if (currentPrimaryAttribute && !tableIsDropping(currentPrimaryAttribute, deferredFullTextIndexesKey)) {
+				const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
+				if (fullTextIndexes?.length) updatedPrimaryAttribute.fullTextIndexes = fullTextIndexes;
+				else delete updatedPrimaryAttribute.fullTextIndexes;
+				attributesDbi.put(deferredFullTextIndexesKey, updatedPrimaryAttribute);
 			}
 		}
 		// The primary row is what makes a table loadable, so it lands last: a scan on another thread that

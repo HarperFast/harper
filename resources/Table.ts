@@ -1384,7 +1384,10 @@ export function makeTable(options) {
 												hasChanges = true;
 											}
 										}
-										if (hasChanges || event.fullTextIndexes !== undefined) {
+										const fullTextChanged =
+											event.fullTextIndexes !== undefined &&
+											JSON.stringify(event.fullTextIndexes) !== JSON.stringify(this.fullTextIndexes);
+										if (hasChanges || fullTextChanged) {
 											table({
 												table: tableName,
 												database: databaseName,

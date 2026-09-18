@@ -71,7 +71,7 @@ Full-text query authorization requires table read access and read access to ever
 1. Move the canonical full-text declaration collection from `Attribute.fullText` to table metadata.
 2. Parse every table-level `@fullText` directive and reject duplicate names or invalid sources.
 3. Require local schema authors to enable the table's audit transaction log explicitly before persisting a declaration. A peer-created table may accept a declaration only when its resolved local audit setting is enabled. Attachment faults mark the index unavailable without preventing the table from loading.
-4. Persist the complete declaration list on the table's canonical primary descriptor in the same schema transaction as its source descriptors. Persist only when the canonical list changes.
+4. Persist the complete declaration list on the table's canonical primary descriptor. Order source and primary-row writes so a crash cannot expose a declaration against missing or incompatible sources. Persist only when the canonical list changes.
 5. Merge cluster-origin declarations per index name: accept peer-new names; keep local definitions on conflicts and warn; validate under the existing cluster schema lock.
 6. Attach one native backend per declaration from the table-level list, with projections over its source fields.
 7. Delete the `FullText` scalar, pseudo-field resolver, record write guard, storage projection behavior, and attribute-row ordering created for pseudo-fields.
