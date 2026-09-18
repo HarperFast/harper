@@ -394,6 +394,7 @@ suite(
 
 			try {
 				// t=0: seed
+				const seedSentAt = Date.now();
 				const seedStatus = await restPut(id, { tag: 'seed', n: 0 });
 				const seedAt = Date.now();
 				if (seedStatus === 'error') {
@@ -425,6 +426,18 @@ suite(
 					updateStatus === 200 || updateStatus === 204,
 					`[${label}] update returned ${updateStatus} (expected 200/204)`
 				);
+				// A probe can only report NO-RESET if the update was ACKed while the seed was still
+				// alive: an update that lands after the seed's TTL has fired matches nothing, writes
+				// nothing and resets nothing, which is indistinguishable here from a surface that
+				// doesn't reset. The server applied the seed at-or-after we put it on the wire, so
+				// seedSentAt + TTL_MS is the EARLIEST the seed's clock can fire, and the ACK proves
+				// the update applied before it returned. Checked after the status assertions so a
+				// slow error response is still a real failure, not a retried timing sample.
+				if (updateAt >= seedSentAt + TTL_MS) {
+					inconclusive = true;
+					result.finding = `INCONCLUSIVE — update ACKed ${updateAt - seedSentAt}ms after the seed was sent, at or past its earliest expiry (${TTL_MS}ms); the record may already have been gone`;
+					return { result, inconclusive };
+				}
 
 				// Wait until the ORIGINAL expiry has passed, then poll for presence up until just
 				// before the reset-expiry would fire (see pollForPresent/RESET_POLL_INTERVAL_MS).
