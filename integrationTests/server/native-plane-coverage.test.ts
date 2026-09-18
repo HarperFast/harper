@@ -13,7 +13,7 @@ import { waitFor } from '../../unitTests/waitFor.js';
 
 test(
 	'native queries expose bounded coverage and reject expired or strict catch-up lag',
-	{ timeout: 360_000 },
+	{ timeout: 180_000 },
 	async () => {
 		const ctx = createHarperContext('native-plane-coverage');
 		let seed = 42;
@@ -88,69 +88,43 @@ test(
 					assert.match(errors[0].error, /^DerivedIndexLagError/);
 				} else assert(shortWait.body.some(({ id }: { id: number }) => id === records.length - 1));
 			}
-			// Three ef=200 queries over a 20k-node plane: a waiter that samples this every tick
-			// competes with the durability barrier it is waiting for, so the catch-up loop below
-			// bounds how many times it runs.
-			async function sampleLagContracts() {
-				const strict = await query(0);
-				if (strict.status === 503) {
-					assert.equal(strict.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(strict));
-				} else {
-					assert.equal(strict.status, 200, JSON.stringify(strict));
-					assert.match(strict.coverage ?? '', /^current; lag=0; tolerance=0$/);
-					assert(strict.body.some(({ id }) => id === records.length - 1));
-				}
-				const normal = await query();
-				if (normal.status === 503) {
-					assert.equal(normal.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(normal));
-				} else {
-					assert.equal(normal.status, 200, JSON.stringify(normal));
-					assert.match(
-						normal.coverage ?? '',
-						/^(current|bounded); lag=[0-9.e+-]+; tolerance=3000$/,
-						JSON.stringify(normal)
-					);
-				}
-				const tolerant = await query(1_000_000);
-				if (tolerant.status === 200) {
-					assert(Array.isArray(tolerant.body));
-					assert.match(tolerant.coverage ?? '', /^(current|bounded); lag=[0-9.e+-]+; tolerance=1000000$/);
-				} else assert.equal(tolerant.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(tolerant));
-				return strict.status;
-			}
 			let progress: unknown;
-			let lastTuple = '';
-			const trail: string[] = [];
-			const catchUpStartedAt = Date.now();
-			let contractSamples = 0;
 			try {
 				await waitFor(
 					async () => {
 						const before = (await request('/PlaneStatus/')).body;
 						progress = before;
-						const tuple = `${before.mappings}/${before.pending}/${before.nativeNodes}`;
-						if (tuple !== lastTuple) {
-							lastTuple = tuple;
-							trail.push(`${Date.now() - catchUpStartedAt}ms ${tuple}`);
+						const strict = await query(0);
+						if (strict.status === 503) {
+							assert.equal(strict.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(strict));
+						} else {
+							assert.equal(strict.status, 200, JSON.stringify(strict));
+							assert.match(strict.coverage ?? '', /^current; lag=0; tolerance=0$/);
+							assert(strict.body.some(({ id }) => id === records.length - 1));
 						}
-						let strictStatus: number | undefined;
-						if (contractSamples < 5) {
-							contractSamples++;
-							strictStatus = await sampleLagContracts();
+						const normal = await query();
+						if (normal.status === 503) {
+							assert.equal(normal.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(normal));
+						} else {
+							assert.equal(normal.status, 200, JSON.stringify(normal));
+							assert.match(
+								normal.coverage ?? '',
+								/^(current|bounded); lag=[0-9.e+-]+; tolerance=3000$/,
+								JSON.stringify(normal)
+							);
 						}
-						if (before.mappings !== records.length) return false;
-						return (strictStatus ?? (await query(0)).status) === 200;
+						const tolerant = await query(1_000_000);
+						if (tolerant.status === 200) {
+							assert(Array.isArray(tolerant.body));
+							assert.match(tolerant.coverage ?? '', /^(current|bounded); lag=[0-9.e+-]+; tolerance=1000000$/);
+						} else assert.equal(tolerant.body.code, 'DERIVED_INDEX_LAGGING', JSON.stringify(tolerant));
+						return before.mappings === records.length && strict.status === 200;
 					},
-					{ timeout: 180_000, interval: 500, message: 'native plane did not certify current coverage' }
+					{ timeout: 90_000, interval: 100, message: 'native plane did not certify current coverage' }
 				);
 			} catch (error) {
-				const samples = trail.length > 40 ? [...trail.slice(0, 20), '…', ...trail.slice(-20)] : trail;
-				throw new Error(
-					`Native catch-up failed after ${Date.now() - catchUpStartedAt}ms. Mappings publish as one durability unit, so this is what became externally visible, not the barrier's own progress — mappings/pending/nativeNodes: ${samples.join(', ')}; last progress: ${JSON.stringify(progress)}`,
-					{ cause: error }
-				);
+				throw new Error(`Native catch-up failed; last progress: ${JSON.stringify(progress)}`, { cause: error });
 			}
-			console.log(`native plane certified current coverage in ${Date.now() - catchUpStartedAt}ms`);
 			const final = await query(0);
 			assert.equal(final.status, 200, JSON.stringify(final));
 			const ids = final.body.map((record: { id: number }) => record.id);
