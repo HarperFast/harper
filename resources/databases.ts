@@ -1953,6 +1953,16 @@ export function openBranchDatabase(
 	return branch;
 }
 
+/** Retry closing a branch handle left registered after a failed, retryable shutdown. */
+export async function closeBranchDatabaseAtPath(path: string): Promise<boolean> {
+	if (!existsSync(path)) return false;
+	path = realpathSync(path);
+	const branch = openBranches.get(path);
+	if (!branch) return false;
+	await branch.close();
+	return true;
+}
+
 /**
  * Release everything a branch open created. Each table's primary store and each index is its own
  * column family, on top of the internal-dbis and audit families, so closing the root alone leaves
@@ -2296,6 +2306,18 @@ async function quiesceDerivedIndexes(
 async function quiesceDatabaseDerivedIndexes(databaseName: string, dbTables: Tables, operation: string): Promise<void> {
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	await quiesceDerivedIndexes(dbTables, operation, definedRoot?.auditStore);
+}
+
+/** Fail closed when a schema rescan could not establish the table's current derived-index generation. */
+export async function quiesceTableDerivedIndexes(
+	databaseName: string,
+	tableName: string,
+	operation: string
+): Promise<void> {
+	const Table = databases[databaseName]?.[tableName];
+	if (!Table?.derivedIndexRuntime) return;
+	const table = Object.assign(Object.create(null), { [tableName]: Table });
+	await quiesceDerivedIndexes(table, operation);
 }
 
 /**

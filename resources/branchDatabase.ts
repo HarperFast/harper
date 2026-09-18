@@ -12,6 +12,7 @@ import {
 	BRANCH_REMOVING_SUFFIX,
 	BRANCH_ROOT_DIR,
 	type BranchDatabase,
+	closeBranchDatabaseAtPath,
 	database,
 	databases,
 	getDatabases,
@@ -486,6 +487,9 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 							strandedRoots: () => (blobRootsStranded = true),
 						});
 					}
+					// A prior replay failure can leave this thread's handle registered when its
+					// derived-index writer could not quiesce. Retry that close before reopening.
+					if (await closeBranchDatabaseAtPath(branchPath)) retakeBranchIdentity(storeName);
 					releaseBranchIdentity(storeName);
 					branch = openBranchDatabase(branchPath, baseName, storeName, blobRoots);
 					// The branch's column families write with the WAL disabled, so writes since its last
@@ -531,6 +535,7 @@ async function openOrCreate(baseName: string, appName: string, branchPath: strin
 			);
 		}
 		warnAboutUnusedBlobRoots(branchPath, storeName, published.blobRoots);
+		if (await closeBranchDatabaseAtPath(branchPath)) retakeBranchIdentity(storeName);
 		// Released immediately before the open, with no `await` in between, so nothing can slip into the
 		// gap -- and so `openBranchDatabase`'s check stays strict rather than being taught to ignore a
 		// reservation, which would also make it ignore a DIFFERENT branch holding the same name.

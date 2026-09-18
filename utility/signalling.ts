@@ -12,9 +12,9 @@ export const CANCEL_DATABASE_DROP_OPERATION = 'cancel-database-drop';
 // Await BOTH the local handler and the cross-worker broadcast. The local handler is what
 // rebuilds THIS thread's cache; firing it un-awaited let the originating worker return success
 // before its own cache caught up, so the next request it served observed stale state even though
-// the op awaited propagation to the other workers — the originator half of #1497. Both legs
-// resolve without rejecting (each handler has its own try/catch; the broadcast always resolves),
-// so Promise.all is safe here. Callers that don't await keep their prior fire-and-forget behavior.
+// the op awaited propagation to the other workers — the originator half of #1497. Promise.all also
+// lets a strict handler or broadcast failure reach this function's logging boundary. Callers that
+// don't await keep their prior fire-and-forget behavior.
 type SchemaSignalOptions = { includeJobWorkers?: boolean; rejectOnError?: boolean };
 
 export async function signalSchemaChange(message: any, options?: SchemaSignalOptions) {

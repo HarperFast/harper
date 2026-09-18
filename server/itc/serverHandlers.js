@@ -20,6 +20,7 @@ const {
 	cancelDatabaseDrop,
 	cancelDatabaseDropsFromThread,
 	reloadBranchAt,
+	quiesceTableDerivedIndexes,
 } = require('../../resources/databases.ts');
 const { PREPARE_DATABASE_DROP_OPERATION, CANCEL_DATABASE_DROP_OPERATION } = require('../../utility/signalling.ts');
 require('../threads/manageThreads.js').onThreadExit(cancelDatabaseDropsFromThread);
@@ -114,8 +115,20 @@ async function syncSchemaMetadata(msg) {
 		if (msg.table && msg.database)
 			// wait for a write to finish to ensure all writes have been written
 			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
-	} catch (e) {
-		hdbLogger.error(e);
+	} catch (error) {
+		let failure = error;
+		if (!msg.branchPath && msg.database && msg.table) {
+			try {
+				await quiesceTableDerivedIndexes(msg.database, msg.table, 'failed schema rescan');
+			} catch (closeError) {
+				failure = new AggregateError(
+					[error, closeError],
+					`Schema rescan and derived-index shutdown failed for ${msg.database}.${msg.table}`
+				);
+			}
+		}
+		hdbLogger.error(failure);
+		throw failure;
 	}
 }
 

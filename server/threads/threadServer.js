@@ -233,6 +233,10 @@ function startServers() {
 							.then(() => require('../../resources/databases.ts').closeBranchDatabases())
 							.then(() => {
 								realExit(0);
+							})
+							.catch((error) => {
+								harperLogger.warn('Error releasing worker resources during shutdown', error);
+								realExit(0);
 							});
 						// Clean up per-thread UDS socket and metadata files
 						httpComponent.cleanupUdsFiles();

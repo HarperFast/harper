@@ -179,7 +179,12 @@ describe('dropDatabase restore serialization', () => {
 });
 
 describe('openBranchDatabase (scope-private graph, harper#643)', () => {
-	const { openBranchDatabase, closeBranchDatabases, databases } = require('#src/resources/databases');
+	const {
+		openBranchDatabase,
+		closeBranchDatabaseAtPath,
+		closeBranchDatabases,
+		databases,
+	} = require('#src/resources/databases');
 	const { cpSync, mkdtempSync, rmSync } = require('node:fs');
 	const { tmpdir } = require('node:os');
 	const { registryStatus } = require('@harperfast/rocksdb-js');
@@ -327,6 +332,23 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		await branch.close();
 		await assert.doesNotReject(() => branch.close(), 'a second close must not close the store twice');
 		assert.strictEqual(refCountFor(branch.rootStore.path), 0, 'a second close must not double-release');
+	});
+
+	it('retries a failed close by path before a branch is reopened', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		let closeAttempts = 0;
+		branch.tables.BranchSource.derivedIndexRuntime = {
+			close() {
+				closeAttempts++;
+				return closeAttempts === 1 ? Promise.reject(new Error('native writer did not stop')) : Promise.resolve();
+			},
+		};
+
+		await assert.rejects(branch.close(), /native writer did not stop/);
+		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
+		assert.strictEqual(await closeBranchDatabaseAtPath(checkpointDir), true);
+		assert.strictEqual(closeAttempts, 2);
+		assert.doesNotThrow(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'));
 	});
 
 	it('a stale handle closed twice does not tear down a later open of the same directory', async function () {
@@ -482,7 +504,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 });
 
 describe('audit cleanup retirement on teardown', () => {
-	const { readMetaDb, databases } = require('#src/resources/databases');
+	const { readMetaDb, databases, quiesceTableDerivedIndexes } = require('#src/resources/databases');
 	const { mkdtempSync, rmSync } = require('node:fs');
 	const { tmpdir } = require('node:os');
 	const { open } = require('lmdb');
@@ -668,6 +690,32 @@ describe('audit cleanup retirement on teardown', () => {
 		await Probe.dropTable();
 		assert.strictEqual(closeAttempts, 2);
 		assert.strictEqual(databases.derivedindextableretry.DerivedIndexTableRetryProbe, undefined);
+	});
+
+	it('quiesces a table when a schema rescan cannot establish its current generation', async function () {
+		const Probe = table({
+			table: 'DerivedIndexSchemaRescanProbe',
+			database: 'derivedindexschemarescan',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Probe.schemaChangeOperation;
+		await new Promise(setImmediate);
+		let closeAttempts = 0;
+		Probe.derivedIndexRuntime = {
+			close() {
+				closeAttempts++;
+				return Promise.resolve();
+			},
+		};
+
+		await quiesceTableDerivedIndexes(
+			'derivedindexschemarescan',
+			'DerivedIndexSchemaRescanProbe',
+			'failed schema rescan'
+		);
+
+		assert.strictEqual(closeAttempts, 1);
+		assert.strictEqual(Probe.derivedIndexRuntime, undefined);
 	});
 
 	it('quiesces a replacement derived-index handle installed while a table drop waits', async function () {
