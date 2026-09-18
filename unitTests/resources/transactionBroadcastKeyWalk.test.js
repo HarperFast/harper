@@ -80,7 +80,7 @@ describe('transactionBroadcast key-hierarchy walk through Table.subscribe', () =
 		setMainIsWorker(true);
 		KeyWalkTable = table({
 			table: 'BroadcastKeyWalk',
-			database: 'test',
+			database: 'broadcastKeyWalk',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
 			audit: true,
 		});
@@ -99,7 +99,7 @@ describe('transactionBroadcast key-hierarchy walk through Table.subscribe', () =
 				['/shop/womens-clothing', 'plain-key']
 			);
 		} finally {
-			subscription.return?.();
+			subscription.end();
 		}
 	});
 });
