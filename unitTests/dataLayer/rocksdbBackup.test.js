@@ -25,6 +25,7 @@ const {
 	validateRestoreBackup,
 	validateVerifyBackup,
 	verifyBackup,
+	assertBackupStillPresent,
 	verifyBackupOffline,
 	createBackupStream,
 } = require('#src/dataLayer/rocksdbBackup');
@@ -562,6 +563,18 @@ describe('rocksdbBackup', function () {
 				(error) => error.statusCode === 404 && /no backup repository/.test(error.message)
 			);
 		});
+
+		it('a mistyped name does not leave a repository behind that later reads as one', async function () {
+			const typo = `${DB_NAME}-typo`;
+			await assert.rejects(deleteBackupOffline(typo, 1), (error) => error.statusCode === 404);
+			await assert.rejects(purgeBackupsOffline(typo, 0), (error) => error.statusCode === 404);
+			// the 404 must still be there the second time round
+			await assert.rejects(
+				listBackups({ ...SU, database: typo }),
+				(error) => error.statusCode === 404 && /no backup repository/.test(error.message)
+			);
+			assert.ok(!existsSync(backupDirForDatabase(typo)), 'a refused operation must not create a repository');
+		});
 	});
 
 	describe('backup pins', function () {
@@ -630,31 +643,18 @@ describe('rocksdbBackup', function () {
 			assert.ok(![first.backup_id, second.backup_id].some((id) => id === third.backup_id));
 		});
 
-		it('refuses to publish a backup the engine no longer has by the time it finalizes', async function () {
+		it('refuses to publish a backup the engine no longer has', async function () {
 			this.timeout(30000);
-			const database = RocksDatabase.open(join(storageDir, PINNED));
-			try {
-				database.putSync('rec', { n: 1 });
-			} finally {
-				database.close();
-			}
-			// stand in for a purge admitted while the blob snapshot is being written
-			const original = blobBackupModule.snapshotBlobs;
-			blobBackupModule.snapshotBlobs = async (dir) => {
-				for (const backup of await listBackupsInDir(dir)) await backups.delete(dir, backup.backupId);
-			};
-			try {
-				await assert.rejects(
-					createBackupOffline(PINNED),
-					(error) => error.statusCode === 404 && /removed while it was being finalized/.test(error.message)
-				);
-			} finally {
-				blobBackupModule.snapshotBlobs = original;
-			}
-			assert.deepStrictEqual(
-				await listBackupsOffline(PINNED),
-				[],
-				'no backup may be published for missing engine files'
+			const { first } = await seedTwoBackups();
+			const backupDir = backupDirForDatabase(PINNED);
+
+			// what create_backup faces when a purge is admitted between its engine phase and the
+			// management lock it finalizes under: the id it holds no longer exists
+			await assertBackupStillPresent(backupDir, first.backup_id, PINNED);
+			await backups.delete(backupDir, first.backup_id);
+			await assert.rejects(
+				assertBackupStillPresent(backupDir, first.backup_id, PINNED),
+				(error) => error.statusCode === 404 && /removed while it was being finalized/.test(error.message)
 			);
 		});
 
