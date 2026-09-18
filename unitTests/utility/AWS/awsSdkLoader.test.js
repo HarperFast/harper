@@ -80,6 +80,18 @@ describe('Test awsSdkLoader module', () => {
 		}
 	});
 
+	it('propagates a thrown primitive untouched instead of raising a secondary TypeError', () => {
+		const fakeRequire = () => {
+			throw 'boom';
+		};
+		try {
+			requireAwsSdk('@aws-sdk/client-s3', fakeRequire, null);
+			assert.fail('expected requireAwsSdk to throw');
+		} catch (err) {
+			assert.strictEqual(err, 'boom');
+		}
+	});
+
 	it('falls back to a require anchored at the Harper rootPath when the default require cannot find the package', () => {
 		const fakeRequire = () => {
 			throw moduleNotFoundError('@aws-sdk/client-s3', ['/app/utility/AWS/AWSConnector.js']);

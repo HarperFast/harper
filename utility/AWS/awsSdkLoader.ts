@@ -17,8 +17,8 @@ export class MissingAwsSdkError extends ServerError {
 }
 
 function missingModuleName(err: any): string | undefined {
-	if (!err || err.code !== 'MODULE_NOT_FOUND') return undefined;
-	const match = /^Cannot find module '([^']+)'/.exec(String(err.message));
+	if (err?.code !== 'MODULE_NOT_FOUND') return undefined;
+	const match = /^Cannot find module '([^']+)'/.exec(String(err?.message));
 	return match ? match[1] : undefined;
 }
 
