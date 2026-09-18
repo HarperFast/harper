@@ -530,6 +530,56 @@ describe('cluster-origin schema definitions are additive-only', () => {
 		assert.strictEqual(Local.attributes.find(({ name }) => name === 'search').fullText, undefined);
 	});
 
+	it('rejects a peer FullText handle when its durable source became computed', async () => {
+		const Local = table({
+			table: 'ClusterMergeComputedFullTextSource',
+			database: 'test',
+			schemaDefined: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+		});
+		await catalogFlushed(Local);
+		const sourceKey = 'ClusterMergeComputedFullTextSource/title';
+		const written = Local.dbisDB.put(sourceKey, {
+			...Local.dbisDB.getSync(sourceKey),
+			computed: true,
+			computedFromExpression: 'id',
+		});
+		if (written?.then) await written;
+
+		table({
+			table: 'ClusterMergeComputedFullTextSource',
+			database: 'test',
+			schemaDefined: true,
+			origin: 'cluster',
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+				{
+					name: 'search',
+					type: 'FullText',
+					fullText: {
+						fields: [{ name: 'title', weight: 1 }],
+						analyzer: 'english@1',
+						stopWords: true,
+						positions: true,
+						surfaceTerms: true,
+						synonyms: [],
+					},
+				},
+			],
+		});
+
+		assert.strictEqual(
+			Local.attributes.some(({ name }) => name === 'search'),
+			false,
+			'a peer handle over a computed source must be discarded'
+		);
+		assert.strictEqual(Local.dbisDB.getSync('ClusterMergeComputedFullTextSource/search'), undefined);
+	});
+
 	it('persists a hidden-only declaration change without rebuilding an index', async () => {
 		const Hidden = table({
 			table: 'ClusterMergeHidden',

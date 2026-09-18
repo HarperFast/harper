@@ -451,6 +451,8 @@ const PEER_REDEFINABLE_FIELDS = [
 	'elements',
 	'properties',
 	'embed',
+	'computed',
+	'computedFromExpression',
 	'fullText',
 	'hidden',
 ];
@@ -2709,10 +2711,10 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributes = merged;
 			}
 			const hasFullText = attributes.some((attribute) => attribute.fullText || attribute.type === 'FullText');
-			// The target and every source descriptor must be validated in the same schema critical section
-			// that can persist a new handle. Otherwise another LMDB worker can change a source type between
-			// validation and persistence, leaving a durable handle that cannot be loaded.
-			if (hasFullText) exclusiveLock();
+			// Cluster validation overlays durable descriptors, so those reads and any handle persistence must
+			// share one critical section. Local shape changes already acquired above; an unchanged local reload
+			// must not serialize every LMDB worker on an environment-wide write transaction.
+			if (origin === 'cluster' && hasFullText) exclusiveLock();
 			const fullTextValidationAttributes =
 				origin === 'cluster' && hasFullText
 					? attributes.map((attribute) => {

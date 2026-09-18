@@ -124,6 +124,31 @@ describe('@fullText schema declaration', () => {
 		assert.strictEqual(Table.dbisDB.getSync('FullTextPersistence/search').fullText.fields[0].weight, 4);
 	});
 
+	it('does not take the LMDB writer lock for an unchanged declaration', async function () {
+		if (process.env.HARPER_STORAGE_ENGINE !== 'lmdb') this.skip();
+		const declaration = `
+			type FullTextNoopReload @table {
+				id: ID @primaryKey
+				text: String
+				search: FullText @fullText(fields: [{ name: "text" }])
+			}
+		`;
+		await loadGQLSchema(declaration);
+		const rootStore = tables.FullTextNoopReload.primaryStore.rootStore;
+		const originalTransactionSync = rootStore.transactionSync;
+		let transactions = 0;
+		rootStore.transactionSync = function (...args) {
+			transactions++;
+			return originalTransactionSync.apply(this, args);
+		};
+		try {
+			await loadGQLSchema(declaration);
+		} finally {
+			rootStore.transactionSync = originalTransactionSync;
+		}
+		assert.strictEqual(transactions, 0);
+	});
+
 	for (const [name, field, expected] of [
 		['wrong target type', 'search: String @fullText(fields: [{ name: "text" }])', /FullText scalar/],
 		['missing fields', 'search: FullText @fullText', /non-empty "fields"/],

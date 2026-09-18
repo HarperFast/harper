@@ -49,6 +49,7 @@ type SchemaAttribute = {
 	elements?: { type?: string };
 	indexed?: unknown;
 	computed?: unknown;
+	computedFromExpression?: unknown;
 	embed?: unknown;
 	relationship?: unknown;
 	isPrimaryKey?: boolean;
@@ -114,7 +115,7 @@ export function compileFullTextDefinition(
 			throw schemaError(
 				`@fullText source field "${source.name}" must be String or [String]; got "${displayType(attribute)}"`
 			);
-		if (attribute.computed || attribute.relationship)
+		if (attribute.computed || attribute.computedFromExpression || attribute.relationship)
 			throw schemaError(
 				`@fullText source field "${source.name}" must be stored record data and cannot use @computed or @relationship`
 			);
