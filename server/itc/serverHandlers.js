@@ -58,15 +58,20 @@ async function schemaHandler(event) {
 
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
 	if (event.message?.operation === PREPARE_DATABASE_DROP_OPERATION && event.message.schema) {
-		await prepareDatabaseForDrop(event.message.schema, event.message.originator);
+		if (typeof event.message.dropAttemptId !== 'string' || !event.message.dropAttemptId)
+			throw new Error('Database drop preparation is missing its attempt id');
+		await prepareDatabaseForDrop(event.message.schema, event.message.originator, event.message.dropAttemptId);
 		return;
 	}
 	if (event.message?.operation === CANCEL_DATABASE_DROP_OPERATION && event.message.schema) {
-		cancelDatabaseDrop(event.message.schema, event.message.originator);
+		if (typeof event.message.dropAttemptId !== 'string' || !event.message.dropAttemptId)
+			throw new Error('Database drop cancellation is missing its attempt id');
+		cancelDatabaseDrop(event.message.schema, event.message.originator, event.message.dropAttemptId);
 		return;
 	}
 	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA && event.message.schema) {
-		finishDatabaseDrop(event.message.schema, event.message.originator);
+		if (typeof event.message.dropAttemptId === 'string' && event.message.dropAttemptId)
+			finishDatabaseDrop(event.message.schema, event.message.originator, event.message.dropAttemptId);
 	}
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while

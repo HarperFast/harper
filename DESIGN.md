@@ -2738,17 +2738,19 @@ or timeout rejects the drop before destructive storage work. While marked, scans
 cannot reopen a peer's database; the coordinator keeps its already-open database loaded until
 `dropDatabase()` starts. Failure broadcasts cancellation and reloads the database; a peer whose
 in-flight preparation finishes after that cancellation detects the changed marker and reloads again.
-Cancellation and finish messages clear only the marker owned by their originator, so a late message
-cannot clear a newer drop. An active marker is never replaced: another local attempt or a preparation
-from a different coordinator receives 409. Simultaneous coordinators can therefore both fail and
+Cancellation and finish messages clear only the marker owned by their coordinator and attempt token,
+so a late message cannot clear a newer drop, including a retry from the same coordinator. The token
+also fences an older preparation that resumes after cancellation: it cannot close storage or rescan
+through its successor's marker. An active marker is never replaced by a different attempt; another
+local attempt or peer preparation receives 409. Simultaneous coordinators can therefore both fail and
 retry, but cannot close or cancel each other's prepared state. Successful deletion sends the ordinary
-schema event, which clears the matching marker. The destructive barrier includes job workers even
-though ordinary schema gossip excludes them. A peer also records the coordinating thread and cancels
-its marker if that thread exits before finish or cancellation arrives. A preparation delivered after
-the exit notification is rejected before it can install a marker, closing the opposite ordering of
-the same race. Finish and cancellation still reach peers when the coordinator's own catalog rescan
-fails, so a local reload error cannot strand every already-prepared peer. A lost cancellation to a
-still-live peer deliberately remains fail-closed: conflicting
+schema event with the same token, which clears the matching marker. The destructive barrier includes
+job workers even though ordinary schema gossip excludes them. A peer also records the coordinating
+thread and cancels every marker it owns if that thread exits before finish or cancellation arrives. A
+preparation delivered after the exit notification is rejected before it can install a marker, closing
+the opposite ordering of the same race. Finish and cancellation still reach peers when the
+coordinator's own catalog rescan fails, so a local reload error cannot strand every already-prepared
+peer. A lost cancellation to a still-live peer deliberately remains fail-closed: conflicting
 preparations log the holding coordinator and return 409, and that peer may require a worker restart
 to clear the marker. Branch shutdown and job-worker teardown await the same derived-index quiescence
 before closing their RocksDB handles; teardown waits for every branch close to settle before it
@@ -2769,7 +2771,9 @@ table's primary catalog descriptor; it is lifecycle metadata, not customer schem
 generation combines that token with the persisted table id. Dropping and recreating a table,
 removing and re-adding an index, or changing its native storage definition therefore forces
 replacement even when the table and index names are reused. A restart preserves the token and reuses
-compatible Tantivy files before replaying the audit tail. Query-only
+compatible Tantivy files before replaying the audit tail. Schema publication recomputes the token map
+from the primary descriptor after acquiring the catalog lock, preserving a matching token another
+worker already published instead of cascading redundant rebuilds. Query-only
 synonym, highlighting, and per-field highlight settings persist without rebuilding Tantivy segments.
 
 Removing an index or dropping its table quiesces the writer but does not yet delete the native

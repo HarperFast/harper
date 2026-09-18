@@ -297,6 +297,41 @@ describe('RocksDB handle release', function () {
 		);
 	});
 
+	it('does not let a canceled preparation clear a newer attempt from the same coordinator', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-attempt-fence';
+		let Table = table({
+			table: 'pkg',
+			database: databaseName,
+			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
+		});
+		await Table.schemaChangeOperation;
+		if (!(Table.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		let releaseFirst;
+		const firstBarrier = new Promise((resolve) => (releaseFirst = resolve));
+		Table.derivedIndexRuntime = { close: () => firstBarrier };
+		const originator = 923_000 + Math.floor(Math.random() * 2_000);
+		const firstAttempt = prepareDatabaseForDrop(databaseName, originator, 'first-attempt');
+		await new Promise((resolve) => setImmediate(resolve));
+
+		cancelDatabaseDrop(databaseName, originator, 'first-attempt');
+		Table = getDatabases()[databaseName].pkg;
+		Table.derivedIndexRuntime = { close: async () => {} };
+		await prepareDatabaseForDrop(databaseName, originator, 'second-attempt');
+		assert.strictEqual(getDatabases()[databaseName], undefined);
+
+		releaseFirst();
+		await assert.rejects(firstAttempt, /canceled before/);
+		assert.strictEqual(
+			getDatabases()[databaseName],
+			undefined,
+			'a stale preparation must not clear or rescan through the successor attempt'
+		);
+		assert.throws(() => database({ database: databaseName }), /being dropped/);
+		cancelDatabaseDrop(databaseName, originator, 'second-attempt');
+		assert.ok(getDatabases()[databaseName]);
+	});
+
 	it('closes captured peer handles when a rescan evicts the database during quiescence', async function () {
 		this.timeout(30000);
 		const databaseName = 'close-drop-rescan-race';

@@ -40,6 +40,7 @@ import lmdbGetBackup from './lmdbBridge/lmdbMethods/lmdbGetBackup.js';
 import { createBackupStream, resolveSingleRootStore } from '../rocksdbBackup.ts';
 import { DeleteTransactionLogsBeforeResults } from './DeleteTransactionLogsBeforeResults.ts';
 import type { Readable } from 'node:stream';
+import { threadId } from 'node:worker_threads';
 
 const { HDB_ERROR_MSGS } = hdbErrors;
 const DEFAULT_DATABASE = 'data';
@@ -196,24 +197,27 @@ export class ResourceBridge extends BridgeMethods {
 
 	async dropSchema(dropSchemaObj) {
 		const databaseName = dropSchemaObj.schema;
-		beginDatabaseDrop(databaseName);
+		const attemptId = beginDatabaseDrop(databaseName);
+		const dropMessage = (operation: string) =>
+			Object.assign(new SchemaEventMsg(process.pid, operation, databaseName), { dropAttemptId: attemptId });
 		try {
-			await signalling.signalSchemaChangeToPeers(
-				new SchemaEventMsg(process.pid, signalling.PREPARE_DATABASE_DROP_OPERATION, databaseName),
-				{ includeJobWorkers: true, mainFirst: true, rejectOnError: true }
-			);
+			await signalling.signalSchemaChangeToPeers(dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION), {
+				includeJobWorkers: true,
+				mainFirst: true,
+				rejectOnError: true,
+			});
 			await dropDatabase(databaseName);
-			finishDatabaseDrop(databaseName);
-			await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, databaseName), {
+			finishDatabaseDrop(databaseName, threadId, attemptId);
+			await signalling.signalSchemaChange(dropMessage(OPERATIONS_ENUM.DROP_SCHEMA), {
 				includeJobWorkers: true,
 				mainFirst: true,
 			});
 		} catch (error) {
-			cancelDatabaseDrop(databaseName);
-			await signalling.signalSchemaChangeToPeers(
-				new SchemaEventMsg(process.pid, signalling.CANCEL_DATABASE_DROP_OPERATION, databaseName),
-				{ includeJobWorkers: true, mainFirst: true }
-			);
+			cancelDatabaseDrop(databaseName, threadId, attemptId);
+			await signalling.signalSchemaChangeToPeers(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), {
+				includeJobWorkers: true,
+				mainFirst: true,
+			});
 			throw error;
 		}
 	}

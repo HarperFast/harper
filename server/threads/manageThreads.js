@@ -400,11 +400,13 @@ const databaseDropsForWorkerStarts = new Map();
 registerWorkerDataProvider('databaseDropMarkers', () =>
 	databaseDropsForWorkerStarts.size ? [...databaseDropsForWorkerStarts] : undefined
 );
-function markDatabaseDropForWorkerStarts(databaseName, originator) {
-	databaseDropsForWorkerStarts.set(databaseName, originator);
+function markDatabaseDropForWorkerStarts(databaseName, originator, attemptId) {
+	databaseDropsForWorkerStarts.set(databaseName, { originator, attemptId });
 }
-function clearDatabaseDropForWorkerStarts(databaseName, originator) {
-	if (originator !== undefined && databaseDropsForWorkerStarts.get(databaseName) !== originator) return;
+function clearDatabaseDropForWorkerStarts(databaseName, originator, attemptId) {
+	const marker = databaseDropsForWorkerStarts.get(databaseName);
+	if (originator !== undefined && marker?.originator !== originator) return;
+	if (attemptId !== undefined && marker?.attemptId !== attemptId) return;
 	databaseDropsForWorkerStarts.delete(databaseName);
 }
 function collectProvidedWorkerData(options) {

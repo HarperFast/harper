@@ -126,6 +126,7 @@ describe('registerWorkerDataProvider', () => {
 		this.timeout(30000);
 		const databaseName = 'worker-start-drop-test';
 		const originator = 42;
+		const attemptId = 'attempt-42';
 		const workers = [];
 		const startFixture = () =>
 			new Promise((resolve, reject) => {
@@ -141,16 +142,18 @@ describe('registerWorkerDataProvider', () => {
 				});
 				workers.push(worker);
 			});
-		markDatabaseDropForWorkerStarts(databaseName, originator);
+		markDatabaseDropForWorkerStarts(databaseName, originator, attemptId);
 		try {
-			clearDatabaseDropForWorkerStarts(databaseName, originator + 1);
+			clearDatabaseDropForWorkerStarts(databaseName, originator + 1, attemptId);
 			const report = await startFixture();
-			assert.deepEqual(report.databaseDropMarkers, [[databaseName, originator]]);
-			clearDatabaseDropForWorkerStarts(databaseName, originator);
+			assert.deepEqual(report.databaseDropMarkers, [[databaseName, { originator, attemptId }]]);
+			clearDatabaseDropForWorkerStarts(databaseName, originator, 'another-attempt');
+			assert.deepEqual((await startFixture()).databaseDropMarkers, [[databaseName, { originator, attemptId }]]);
+			clearDatabaseDropForWorkerStarts(databaseName, originator, attemptId);
 			const clearedReport = await startFixture();
 			assert.equal(clearedReport.databaseDropMarkers, undefined);
 		} finally {
-			clearDatabaseDropForWorkerStarts(databaseName, originator);
+			clearDatabaseDropForWorkerStarts(databaseName, originator, attemptId);
 			for (const worker of workers) {
 				worker.wasShutdown = true;
 				await worker.terminate();

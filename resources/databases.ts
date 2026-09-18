@@ -638,27 +638,46 @@ function clearInterruptedDropEntries(storePath: string, tableName: string) {
 	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
 }
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
-const databasesBeingDropped = new Map<string, number>();
+type DatabaseDropMarker = { originator: number; attemptId: string };
+const databasesBeingDropped = new Map<string, DatabaseDropMarker>();
 const pendingDatabaseStoreCloses = new Map<string, Map<any, string>>();
 if (Array.isArray(workerData?.databaseDropMarkers))
 	for (const entry of workerData.databaseDropMarkers) {
 		if (!Array.isArray(entry)) continue;
-		const [databaseName, originator] = entry;
-		if (typeof databaseName === 'string' && typeof originator === 'number' && Number.isInteger(originator))
-			databasesBeingDropped.set(databaseName, originator);
+		const [databaseName, inheritedMarker] = entry;
+		const marker =
+			inheritedMarker &&
+			typeof inheritedMarker === 'object' &&
+			Number.isInteger(inheritedMarker.originator) &&
+			typeof inheritedMarker.attemptId === 'string'
+				? (inheritedMarker as DatabaseDropMarker)
+				: undefined;
+		if (typeof databaseName === 'string' && marker) databasesBeingDropped.set(databaseName, marker);
 	}
-for (const [databaseName, originator] of databasesBeingDropped)
-	manageThreads.markDatabaseDropForWorkerStarts(databaseName, originator);
+for (const [databaseName, marker] of databasesBeingDropped)
+	manageThreads.markDatabaseDropForWorkerStarts(databaseName, marker.originator, marker.attemptId);
 
-function setDatabaseDropMarker(databaseName: string, originator: number): void {
-	databasesBeingDropped.set(databaseName, originator);
-	manageThreads.markDatabaseDropForWorkerStarts(databaseName, originator);
+function databaseDropMarkerMatches(
+	marker: DatabaseDropMarker | undefined,
+	originator?: number,
+	attemptId?: string
+): boolean {
+	return Boolean(
+		marker &&
+		(originator === undefined || marker.originator === originator) &&
+		(attemptId === undefined || marker.attemptId === attemptId)
+	);
 }
 
-function clearDatabaseDropMarker(databaseName: string, originator?: number): boolean {
-	if (originator !== undefined && databasesBeingDropped.get(databaseName) !== originator) return false;
+function setDatabaseDropMarker(databaseName: string, marker: DatabaseDropMarker): void {
+	databasesBeingDropped.set(databaseName, marker);
+	manageThreads.markDatabaseDropForWorkerStarts(databaseName, marker.originator, marker.attemptId);
+}
+
+function clearDatabaseDropMarker(databaseName: string, originator?: number, attemptId?: string): boolean {
+	if (!databaseDropMarkerMatches(databasesBeingDropped.get(databaseName), originator, attemptId)) return false;
 	const deleted = databasesBeingDropped.delete(databaseName);
-	manageThreads.clearDatabaseDropForWorkerStarts(databaseName, originator);
+	manageThreads.clearDatabaseDropForWorkerStarts(databaseName, originator, attemptId);
 	return deleted;
 }
 
@@ -754,7 +773,7 @@ export function getDatabases(): Databases {
 			// branch directories are process-local derivatives, never databases in their own right
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
-			if (databasesBeingDropped.has(dbName) && databasesBeingDropped.get(dbName) !== threadId) continue;
+			if (databasesBeingDropped.has(dbName) && databasesBeingDropped.get(dbName)?.originator !== threadId) continue;
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (blockedByRestore.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
@@ -790,7 +809,10 @@ export function getDatabases(): Databases {
 	const baseSchemaPath = getBaseSchemaPath();
 	if (existsSync(baseSchemaPath)) {
 		for (const schemaEntry of readdirSync(baseSchemaPath, { withFileTypes: true })) {
-			if (databasesBeingDropped.has(schemaEntry.name) && databasesBeingDropped.get(schemaEntry.name) !== threadId)
+			if (
+				databasesBeingDropped.has(schemaEntry.name) &&
+				databasesBeingDropped.get(schemaEntry.name)?.originator !== threadId
+			)
 				continue;
 			if (!schemaEntry.isFile()) {
 				const schemaPath = join(baseSchemaPath, schemaEntry.name);
@@ -813,7 +835,7 @@ export function getDatabases(): Databases {
 
 	if (schemaConfigs) {
 		for (const dbName in schemaConfigs) {
-			if (databasesBeingDropped.has(dbName) && databasesBeingDropped.get(dbName) !== threadId) continue;
+			if (databasesBeingDropped.has(dbName) && databasesBeingDropped.get(dbName)?.originator !== threadId) continue;
 			const schemaConfig = schemaConfigs[dbName];
 			const databasePath = schemaConfig.path;
 			if (databasePath && existsSync(databasePath)) {
@@ -2558,66 +2580,73 @@ function closeDatabaseTables(
 	return Boolean(dbTables || hadPendingCloses);
 }
 
-export async function closeDatabaseForRestore(databaseName: string, dropOriginator?: number): Promise<boolean> {
+export async function closeDatabaseForRestore(databaseName: string, dropMarker?: DatabaseDropMarker): Promise<boolean> {
 	const dbTables = databases[databaseName];
 	if (!dbTables) return closeDatabase(databaseName, true);
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	await quiesceDatabaseDerivedIndexes(databaseName, dbTables, 'database restore');
-	if (dropOriginator !== undefined && databasesBeingDropped.get(databaseName) !== dropOriginator)
+	if (
+		dropMarker &&
+		!databaseDropMarkerMatches(databasesBeingDropped.get(databaseName), dropMarker.originator, dropMarker.attemptId)
+	)
 		throw new Error(`Database drop preparation for '${databaseName}' was canceled before storage close`);
 	return closeDatabaseTables(databaseName, dbTables, definedRoot, true);
 }
 
-export async function prepareDatabaseForDrop(databaseName: string, originator = threadId): Promise<void> {
+export async function prepareDatabaseForDrop(
+	databaseName: string,
+	originator = threadId,
+	attemptId = `${originator}:legacy`
+): Promise<void> {
 	if (originator !== threadId && manageThreads.hasThreadExited(originator))
 		throw new Error(`Cannot prepare database '${databaseName}' for a drop whose coordinator has exited`);
-	const activeOriginator = databasesBeingDropped.get(databaseName);
-	if (activeOriginator !== undefined && activeOriginator !== originator) {
+	const marker = { originator, attemptId };
+	const activeMarker = databasesBeingDropped.get(databaseName);
+	if (activeMarker && !databaseDropMarkerMatches(activeMarker, originator, attemptId)) {
 		logger.warn(
-			`Rejecting database drop preparation for '${databaseName}'; coordinator ${activeOriginator} still owns the drop marker`
+			`Rejecting database drop preparation for '${databaseName}'; coordinator ${activeMarker.originator} still owns the drop marker`
 		);
 		const error: any = new Error(`Database '${databaseName}' is already being dropped by another coordinator`);
 		error.statusCode = 409;
 		throw error;
 	}
-	setDatabaseDropMarker(databaseName, originator);
+	setDatabaseDropMarker(databaseName, marker);
 	try {
-		await closeDatabaseForRestore(databaseName, originator);
-		if (databasesBeingDropped.get(databaseName) !== originator)
+		await closeDatabaseForRestore(databaseName, marker);
+		if (!databaseDropMarkerMatches(databasesBeingDropped.get(databaseName), originator, attemptId))
 			throw new Error(`Database drop preparation for '${databaseName}' was canceled before it completed`);
 	} catch (error) {
-		clearDatabaseDropMarker(databaseName, originator);
-		resetDatabases();
+		if (clearDatabaseDropMarker(databaseName, originator, attemptId)) resetDatabases();
 		throw error;
 	}
 }
 
-export function beginDatabaseDrop(databaseName: string): void {
+export function beginDatabaseDrop(databaseName: string): string {
 	if (databasesBeingDropped.has(databaseName)) {
 		logger.warn(
-			`Rejecting database drop for '${databaseName}'; coordinator ${databasesBeingDropped.get(databaseName)} still owns the drop marker`
+			`Rejecting database drop for '${databaseName}'; coordinator ${databasesBeingDropped.get(databaseName)?.originator} still owns the drop marker`
 		);
 		const error: any = new Error(`Database '${databaseName}' is already being dropped`);
 		error.statusCode = 409;
 		throw error;
 	}
-	setDatabaseDropMarker(databaseName, threadId);
+	const attemptId = randomBytes(16).toString('hex');
+	setDatabaseDropMarker(databaseName, { originator: threadId, attemptId });
+	return attemptId;
 }
 
-export function finishDatabaseDrop(databaseName: string, originator?: number): void {
-	if (originator !== undefined && databasesBeingDropped.get(databaseName) !== originator) return;
-	clearDatabaseDropMarker(databaseName, originator);
+export function finishDatabaseDrop(databaseName: string, originator?: number, attemptId?: string): void {
+	clearDatabaseDropMarker(databaseName, originator, attemptId);
 }
 
-export function cancelDatabaseDrop(databaseName: string, originator?: number): void {
-	if (originator !== undefined && databasesBeingDropped.get(databaseName) !== originator) return;
-	if (!clearDatabaseDropMarker(databaseName, originator)) return;
+export function cancelDatabaseDrop(databaseName: string, originator?: number, attemptId?: string): void {
+	if (!clearDatabaseDropMarker(databaseName, originator, attemptId)) return;
 	resetDatabases();
 }
 
 export function cancelDatabaseDropsFromThread(originator: number): void {
-	for (const [databaseName, dropOriginator] of databasesBeingDropped)
-		if (dropOriginator === originator) cancelDatabaseDrop(databaseName, originator);
+	for (const [databaseName, marker] of databasesBeingDropped)
+		if (marker.originator === originator) cancelDatabaseDrop(databaseName, originator, marker.attemptId);
 }
 
 /**
@@ -3835,6 +3864,20 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		if (deferredFullTextIndexesKey) {
 			const currentPrimaryAttribute = attributesDbi.getSync(deferredFullTextIndexesKey);
 			if (currentPrimaryAttribute && !tableIsDropping(currentPrimaryAttribute, deferredFullTextIndexesKey)) {
+				const currentFullTextIndexes = compilePersistedFullTextDefinitions(
+					currentPrimaryAttribute,
+					Table.fullTextIndexes,
+					Table.attributes,
+					databaseName,
+					tableName
+				);
+				if (origin === 'cluster') fullTextIndexes = currentFullTextIndexes;
+				fullTextIndexGenerationMap = fullTextIndexGenerations(
+					currentFullTextIndexes,
+					currentPrimaryAttribute.fullTextIndexGenerations,
+					fullTextIndexes ?? [],
+					true
+				);
 				const updatedPrimaryAttribute = { ...currentPrimaryAttribute };
 				if (fullTextIndexes?.length) {
 					updatedPrimaryAttribute.fullTextIndexes = fullTextIndexes;
