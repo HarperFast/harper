@@ -2746,11 +2746,16 @@ schema event, which clears the matching marker. The destructive barrier includes
 though ordinary schema gossip excludes them. A peer also records the coordinating thread and cancels
 its marker if that thread exits before finish or cancellation arrives. A preparation delivered after
 the exit notification is rejected before it can install a marker, closing the opposite ordering of
-the same race. A lost cancellation to a still-live peer deliberately remains fail-closed: conflicting
+the same race. Finish and cancellation still reach peers when the coordinator's own catalog rescan
+fails, so a local reload error cannot strand every already-prepared peer. A lost cancellation to a
+still-live peer deliberately remains fail-closed: conflicting
 preparations log the holding coordinator and return 409, and that peer may require a worker restart
 to clear the marker. Branch shutdown and job-worker teardown await the same derived-index quiescence
-before closing their RocksDB handles. A process exit remains the final safety boundary if orderly
-teardown itself cannot complete.
+before closing their RocksDB handles; teardown waits for every branch close to settle before it
+reports any failure. A process exit remains the final safety boundary if orderly teardown itself
+cannot complete. Strict acknowledgements preserve a peer's 409 only for an actual reported conflict;
+timeouts, exits, and internal close failures remain server errors instead of being flattened into a
+retryable client conflict.
 For RocksDB, `RocksDatabase.destroy()` is the final native backstop: rocksdb-js claims the shared
 descriptor, closes its attached resources, and throws if any descriptor reference remains; it calls
 RocksDB's destructive API only after that reference check succeeds. Harper therefore does not add a
@@ -2786,6 +2791,8 @@ incompatible native state enters the rebuild path without taking the source tabl
 persisted table declaration that cannot supply the recovery contract itself—auditing, RocksDB, or a
 supported projection—is quarantined during catalog load because Harper cannot safely preserve replay
 coverage. Quarantine keeps that table unloaded and leaves other tables in the database available.
+It first quiesces the table's derived runtime, then closes its primary and secondary RocksDB handles;
+a failed close remains in the database-close retry registry rather than becoming unreachable.
 Because the quarantined table cannot accept writes, a valid local schema re-declaration may preserve
 the same native generation, then reuse-and-replay or rebuild according to the ordinary cursor checks.
 Operational writer, queue, and search limits are Harper-owned constants for this integration slice,

@@ -458,6 +458,59 @@ describe('RocksDB handle release', function () {
 		}
 	});
 
+	it('closeLoadedDatabases waits for every branch close before reporting failures', async function () {
+		this.timeout(30000);
+		const rootStore = openRocksDb('closerelease5');
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		const scratchRoot = mkdtempSync(join(tmpdir(), 'harper.unit-test.branch-close-all-'));
+		const firstCheckpoint = join(scratchRoot, 'first');
+		const secondCheckpoint = join(scratchRoot, 'second');
+		let first;
+		let second;
+		try {
+			await rootStore.createCheckpoint(firstCheckpoint);
+			await rootStore.createCheckpoint(secondCheckpoint);
+			first = openBranchDatabase(firstCheckpoint, 'closerelease5', 'appA__closerelease5');
+			second = openBranchDatabase(secondCheckpoint, 'closerelease5', 'appB__closerelease5');
+			first.tables.pkg.derivedIndexRuntime = {
+				close: () => Promise.reject(new Error('test branch close failure')),
+			};
+			let releaseSecondClose;
+			let markSecondCloseStarted;
+			const secondCloseStarted = new Promise((resolve) => (markSecondCloseStarted = resolve));
+			second.tables.pkg.derivedIndexRuntime = {
+				close: () => {
+					markSecondCloseStarted();
+					return new Promise((resolve) => (releaseSecondClose = resolve));
+				},
+			};
+			let closingSettled = false;
+			const outcome = closeLoadedDatabases()
+				.then(
+					() => ({}),
+					(error) => ({ error })
+				)
+				.finally(() => (closingSettled = true));
+			await secondCloseStarted;
+			await new Promise(setImmediate);
+			assert.strictEqual(closingSettled, false, 'teardown must wait for sibling branch closes after a failure');
+			releaseSecondClose();
+			const { error } = await outcome;
+
+			assert.match(error.message, /Failed to close all loaded databases/);
+			assert.strictEqual(
+				refCountFor(secondCheckpoint),
+				0,
+				'a sibling branch close must settle before teardown returns'
+			);
+		} finally {
+			if (first?.tables.pkg) first.tables.pkg.derivedIndexRuntime = undefined;
+			if (second?.tables.pkg) second.tables.pkg.derivedIndexRuntime = undefined;
+			await closeBranchDatabases();
+			rmSync(scratchRoot, { recursive: true, force: true });
+		}
+	});
+
 	it('closeLoadedDatabases releases a tableless database (root store not reachable via any table)', async function () {
 		this.timeout(30000);
 		// open a database with no tables: its root store is tracked only on the defined-database

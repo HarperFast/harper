@@ -30,8 +30,22 @@ export async function signalSchemaChange(message: any, options?: SchemaSignalOpt
 		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
 		if (options?.mainFirst) {
-			await serverItcHandlers.schema(itcEventSchema);
-			await signalSchemaChangeToPeers(message, options);
+			let localError;
+			let localFailed = false;
+			try {
+				await serverItcHandlers.schema(itcEventSchema);
+			} catch (error) {
+				localFailed = true;
+				localError = error ?? new Error('Local schema-change handler rejected without an error');
+			}
+			try {
+				await signalSchemaChangeToPeers(message, options);
+			} catch (peerError) {
+				if (localFailed)
+					throw new AggregateError([localError, peerError], 'Local and peer schema-change handling failed');
+				throw peerError;
+			}
+			if (localFailed) throw localError;
 		} else {
 			await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema, options)]);
 		}

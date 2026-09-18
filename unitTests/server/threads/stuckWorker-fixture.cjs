@@ -12,6 +12,12 @@ parentPort.on('message', (message) => {
 		parentPort.postMessage({ type: 'ack', id: message.requestId });
 	} else if (message.requestId && process.argv.includes('--reject')) {
 		parentPort.postMessage({ type: 'ack', id: message.requestId, error: { message: 'quiescence failed' } });
+	} else if (message.requestId && process.argv.includes('--conflict')) {
+		parentPort.postMessage({
+			type: 'ack',
+			id: message.requestId,
+			error: { message: 'drop conflict', statusCode: 409 },
+		});
 	}
 });
 // manageThreads unrefs parentPort, so something must keep a non-blocking fixture alive.

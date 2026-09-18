@@ -606,9 +606,11 @@ describe('@fullText derived-index activation', () => {
 		const firstGeneration = primaryEntry.value.fullTextIndexGenerations.search;
 		Invalid.dbisDB.putSync(primaryEntry.key, { ...primaryEntry.value, audit: false });
 		await Invalid.dbisDB.committed;
+		const quarantinedPrimaryStore = Invalid.primaryStore;
 
 		const reloaded = resetDatabases()[database];
 		assert.strictEqual(reloaded.Invalid, undefined);
+		await waitFor(() => quarantinedPrimaryStore.status === 'closed');
 		const quarantinedGeneration = reloaded.Healthy.dbisDB.getSync(primaryEntry.key).fullTextIndexGenerations.search;
 		assert.strictEqual(quarantinedGeneration, firstGeneration);
 		Product = reloaded.Healthy;
@@ -675,6 +677,7 @@ describe('@fullText derived-index activation', () => {
 		binding.closeError = undefined;
 
 		assert.strictEqual(await closeDatabaseForRestore(database), true);
+		assert.strictEqual(Product.primaryStore.status, 'closed');
 		Product = undefined;
 		Other = undefined;
 	});

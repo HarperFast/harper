@@ -265,7 +265,6 @@ function ownsStoreExpiration(storePath) {
 	return getWorkerIndex() === 0;
 }
 function ownsDerivedIndexWriters(storePath) {
-	// Shared branches follow their pool's worker 0; isolated branches have only the dedicated worker.
 	if (branchStorePaths.has(storePath)) return workerData?.isolatedApplication !== undefined || getWorkerIndex() === 0;
 	return workerData?.isolatedApplication === undefined && getWorkerIndex() === 0;
 }
@@ -1101,7 +1100,10 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS,
 			}
 			if (options.rejectOnError && errors.length) {
 				const error = new Error(errors.map((entry) => entry.message || String(entry)).join('; '));
-				error.statusCode = 409;
+				const statusCode = errors[0]?.statusCode;
+				if (Number.isInteger(statusCode) && errors.every((entry) => entry.statusCode === statusCode))
+					error.statusCode = statusCode;
+				error.cause = new AggregateError(errors, 'Worker acknowledgement failures');
 				reject(error);
 				return;
 			}

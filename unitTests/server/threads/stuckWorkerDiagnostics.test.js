@@ -154,7 +154,25 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		started.push(worker);
 		await assert.rejects(
 			broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 2000, { rejectOnError: true }),
-			/quiescence failed/
+			(error) => {
+				assert.match(error.message, /quiescence failed/);
+				assert.strictEqual(error.statusCode, undefined);
+				assert(error.cause instanceof AggregateError);
+				return true;
+			}
+		);
+	});
+
+	it('preserves a peer conflict status on a strict broadcast', async function () {
+		const worker = await startFixtureWorker('conflict');
+		started.push(worker);
+		await assert.rejects(
+			broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 2000, { rejectOnError: true }),
+			(error) => {
+				assert.match(error.message, /drop conflict/);
+				assert.strictEqual(error.statusCode, 409);
+				return true;
+			}
 		);
 	});
 

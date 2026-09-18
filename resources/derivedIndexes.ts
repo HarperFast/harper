@@ -399,7 +399,6 @@ export function fullTextDerivedIndexReadiness(Table: any, indexName: string) {
 	);
 }
 
-/** Test-only binding injection; production always loads `@harperfast/fulltext/native`. */
 export function setFullTextNativeBindingForTests(binding: NativeFullTextModule | undefined): void {
 	fullTextBindingForTests = binding;
 }

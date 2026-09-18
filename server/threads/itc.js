@@ -15,6 +15,7 @@ module.exports = {
 let serverItcHandlers;
 onMessageFromWorkers(async (event, sender) => {
 	let error;
+	let failed = false;
 	try {
 		serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
 		validateEvent(event);
@@ -22,15 +23,23 @@ onMessageFromWorkers(async (event, sender) => {
 			await serverItcHandlers[event.type](event);
 		}
 	} catch (caught) {
-		error = caught;
+		failed = true;
+		error = caught ?? new Error('Worker handler rejected without an error');
 	}
 	if (event.requestId && sender) {
 		sender.postMessage({
 			type: 'ack',
 			id: event.requestId,
-			...(error ? { error: { message: error.message || String(error) } } : {}),
+			...(failed
+				? {
+						error: {
+							message: error.message || String(error),
+							...(Number.isInteger(error.statusCode) ? { statusCode: error.statusCode } : {}),
+						},
+					}
+				: {}),
 		});
-	} else if (error) throw error;
+	} else if (failed) throw error;
 });
 
 /**

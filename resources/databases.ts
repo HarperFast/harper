@@ -639,6 +639,7 @@ function clearInterruptedDropEntries(storePath: string, tableName: string) {
 }
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
 const databasesBeingDropped = new Map<string, number>();
+const pendingDatabaseStoreCloses = new Map<string, Map<any, string>>();
 if (Array.isArray(workerData?.databaseDropMarkers))
 	for (const entry of workerData.databaseDropMarkers) {
 		if (!Array.isArray(entry)) continue;
@@ -659,6 +660,42 @@ function clearDatabaseDropMarker(databaseName: string, originator?: number): boo
 	const deleted = databasesBeingDropped.delete(databaseName);
 	manageThreads.clearDatabaseDropForWorkerStarts(databaseName, originator);
 	return deleted;
+}
+
+function releaseQuarantinedTable(databaseName: string, tableName: string, Table: any): void {
+	const stores = [
+		...Object.entries(Table.indices || {}).map(([indexName, store]) => [store, `index ${tableName}.${indexName}`]),
+		[Table.primaryStore, `table ${tableName}`],
+	] as [any, string][];
+	let pendingCloses = pendingDatabaseStoreCloses.get(databaseName);
+	if (!pendingCloses) pendingDatabaseStoreCloses.set(databaseName, (pendingCloses = new Map()));
+	for (const [store, description] of stores) if (store) pendingCloses.set(store, description);
+
+	const runtime = Table.derivedIndexRuntime;
+	Table.derivedIndexRuntime = undefined;
+	Table.cleanup?.();
+	const closeStores = () => {
+		for (const [store, description] of stores) {
+			if (!store) continue;
+			try {
+				store.close?.();
+				pendingCloses.delete(store);
+			} catch (error) {
+				logger.warn(`Error closing ${description} while quarantining ${databaseName}.${tableName}:`, error);
+			}
+		}
+		if (pendingCloses.size === 0 && pendingDatabaseStoreCloses.get(databaseName) === pendingCloses)
+			pendingDatabaseStoreCloses.delete(databaseName);
+	};
+	if (!runtime) {
+		closeStores();
+		return;
+	}
+	void Promise.resolve()
+		.then(() => runtime.close())
+		.then(closeStores, (error) => {
+			logger.warn(`Error quiescing derived indexes while quarantining ${databaseName}.${tableName}:`, error);
+		});
 }
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
@@ -1352,7 +1389,7 @@ function initStores(
 			);
 			const existingTable = tables[tableName];
 			if (existingTable) {
-				existingTable.cleanup?.();
+				releaseQuarantinedTable(databaseName, tableName, existingTable);
 				delete tables[tableName];
 			}
 			tablesToLoad.delete(tableName);
@@ -1976,7 +2013,6 @@ export function openBranchDatabase(
 	return branch;
 }
 
-/** Retry closing a branch handle left registered after a failed, retryable shutdown. */
 export async function closeBranchDatabaseAtPath(path: string): Promise<boolean> {
 	if (!existsSync(path)) return false;
 	path = realpathSync(path);
@@ -2029,9 +2065,13 @@ function closeBranchHandles(
 	for (const reclamationPath of reclamationPaths) removeStorageReclamation(reclamationPath);
 }
 
-/** Branches are process-local, so this is shutdown, not a data operation. */
 export async function closeBranchDatabases(): Promise<void> {
-	await Promise.all([...openBranches.values()].map((branch) => branch?.close()));
+	const results = await Promise.allSettled([...openBranches.values()].map((branch) => branch?.close()));
+	const failures = results
+		.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+		.map((result) => result.reason);
+	if (failures.length === 1) throw failures[0];
+	if (failures.length) throw new AggregateError(failures, 'Failed to close branch databases');
 }
 
 export function resetDatabases() {
@@ -2440,7 +2480,6 @@ export async function dropDatabase(databaseName) {
  * `resetDatabases()`/`getDatabases()` rescan reloads it (or skips it while a restore is in
  * progress, per the restore marker checks in the scan).
  */
-const pendingDatabaseStoreCloses = new Map<string, Map<any, string>>();
 export function closeDatabase(databaseName: string, failOnCloseError = false): boolean {
 	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
 	return closeDatabaseTables(databaseName, databases[databaseName], definedRoot, failOnCloseError);
@@ -3357,7 +3396,7 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				} catch (error) {
 					const repairTables = target.tables(databaseName);
 					const publishedRepairTable = repairTable ?? repairTables?.[tableName];
-					publishedRepairTable?.cleanup?.();
+					if (publishedRepairTable) releaseQuarantinedTable(databaseName, tableName, publishedRepairTable);
 					if (publishedRepairTable && repairTables?.[tableName] === publishedRepairTable)
 						delete repairTables[tableName];
 					throw error;
