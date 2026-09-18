@@ -135,28 +135,33 @@ schemaHandler.addListener = function (listener) {
  * @returns {Promise<void>}
  */
 async function syncSchemaMetadata(msg) {
+	const databaseName = msg.database ?? msg.schema;
 	try {
 		// A change to a scope-private branch is not a change to any database in the global map, so the
 		// rescan below has nothing to find; a thread holding that branch open reloads it instead.
 		if (msg.branchPath) {
-			// No write barrier here: the symbol-keyed put below has never been one (harper#2522).
 			reloadBranchAt(msg.branchPath);
 			return;
 		}
 		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
 		let databases = resetDatabases();
-		if (msg.table && msg.database)
-			// wait for a write to finish to ensure all writes have been written
-			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
+		const Table = databaseName && msg.table ? databases[databaseName]?.[msg.table] : undefined;
+		if (
+			!Table &&
+			msg.table &&
+			msg.operation !== hdbTerms.OPERATIONS_ENUM.DROP_TABLE &&
+			msg.operation !== hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA
+		)
+			throw new Error(`Schema rescan did not load ${databaseName}.${msg.table}`);
 	} catch (error) {
 		let failure = error;
-		if (!msg.branchPath && msg.database && msg.table) {
+		if (!msg.branchPath && databaseName && msg.table) {
 			try {
-				await quarantineTableAfterSchemaRescanFailure(msg.database, msg.table);
+				await quarantineTableAfterSchemaRescanFailure(databaseName, msg.table);
 			} catch (closeError) {
 				failure = new AggregateError(
 					[error, closeError],
-					`Schema rescan and derived-index shutdown failed for ${msg.database}.${msg.table}`
+					`Schema rescan and derived-index shutdown failed for ${databaseName}.${msg.table}`
 				);
 			}
 		}

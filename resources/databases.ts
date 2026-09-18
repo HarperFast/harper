@@ -2014,7 +2014,11 @@ export function openBranchDatabase(
 		releaseBranchIdentity(storeName);
 		const stranded = rocksdbDatabaseEnvs.get(path);
 		rocksdbDatabaseEnvs.delete(path);
-		closeBranchHandles(path, stranded, openedStores, tables);
+		try {
+			closeBranchHandles(path, stranded, openedStores, tables);
+		} catch (closeError) {
+			throw new AggregateError([error, closeError], `Failed to open and release branch database at ${path}`);
+		}
 		throw error;
 	}
 	let closed = false;
@@ -2036,12 +2040,12 @@ export function openBranchDatabase(
 				await quiesceDerivedIndexes(tables, 'branch shutdown', {
 					additionalAuditStore: (rootStore as any).auditStore,
 				});
+				closeBranchHandles(path, rootStore, openedStores, tables);
 				closed = true;
 				openBranches.delete(path);
 				releaseBranchIdentity(storeName);
 				rocksdbDatabaseEnvs.delete(path);
 				manageThreads.markBranchStorePath(path, false);
-				closeBranchHandles(path, rootStore, openedStores, tables);
 			})().finally(() => {
 				if (!closed) closing = undefined;
 			});
@@ -2077,6 +2081,7 @@ function closeBranchHandles(
 	tables: Tables = {}
 ): void {
 	const reclamationPaths = new Set<string>([path]);
+	const closeErrors: Error[] = [];
 	(rootStore as any)?.auditStore?.stopAuditCleanup?.();
 	const closeStore = (store: any, description: string) => {
 		if (!store || store.status === 'closed') return;
@@ -2084,7 +2089,7 @@ function closeBranchHandles(
 		try {
 			store.close?.();
 		} catch (error) {
-			logger.warn(`Error closing ${description} for branch database at ${path}`, error);
+			closeErrors.push(new Error(`Error closing ${description} for branch database at ${path}`, { cause: error }));
 		}
 	};
 	// the class, before its stores: an expiration timer or a reclamation handler on a closed store
@@ -2100,6 +2105,8 @@ function closeBranchHandles(
 	closeStore((rootStore as any)?.dbisDb, 'attributes store');
 	closeStore((rootStore as any)?.auditStore, 'audit store');
 	closeStore(rootStore, 'root store');
+	if (closeErrors.length === 1) throw closeErrors[0];
+	if (closeErrors.length) throw new AggregateError(closeErrors, `Failed to close branch database at ${path}`);
 	if (rootStore) databasePaths.delete(rootStore as RootDatabase);
 	for (const reclamationPath of reclamationPaths) removeStorageReclamation(reclamationPath);
 }
@@ -2429,10 +2436,7 @@ export async function quiesceTableDerivedIndexes(
 	await quiesceDerivedIndexes(table, operation, { includeAuditStoreInstallations: false });
 }
 
-export async function quarantineTableAfterSchemaRescanFailure(
-	databaseName: string,
-	tableName: string
-): Promise<void> {
+export async function quarantineTableAfterSchemaRescanFailure(databaseName: string, tableName: string): Promise<void> {
 	const dbTables = databases[databaseName];
 	const Table = dbTables?.[tableName];
 	if (!Table?.derivedIndexRuntime) return;
@@ -2681,11 +2685,7 @@ export function markDatabaseDropDestructive(databaseName: string, originator: nu
 	marker.destructive = true;
 }
 
-export async function cancelDatabaseDrop(
-	databaseName: string,
-	originator?: number,
-	attemptId?: string
-): Promise<void> {
+export async function cancelDatabaseDrop(databaseName: string, originator?: number, attemptId?: string): Promise<void> {
 	const marker = databasesBeingDropped.get(databaseName);
 	if (!databaseDropMarkerMatches(marker, originator, attemptId)) return;
 	const preparation = databaseDropPreparations.get(databaseName);

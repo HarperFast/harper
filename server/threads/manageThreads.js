@@ -2039,6 +2039,9 @@ if (isMainThread) {
 } else {
 	onMessageByType(hdbTerms.ITC_EVENT_TYPES.SHUTDOWN, async (message) => {
 		module.exports.restartNumber = message.restartNumber;
+		// From this point until closeLoadedDatabases succeeds, a worker-only exit can strand
+		// process-global RocksDB handles even if shutdown stalls before database cleanup begins.
+		reportWorkerDatabaseCloseStatus(true);
 		parentPort.unref(); // remove this handle
 		armSelfExit(threadTerminationTimeout);
 	});

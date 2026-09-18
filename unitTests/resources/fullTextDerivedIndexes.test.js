@@ -686,6 +686,33 @@ describe('@fullText derived-index activation', () => {
 		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
 	});
 
+	rocksOnly('uses a production schema event to identify a table missing after rescan', async () => {
+		const database = `fulltext-activation-rescan-failure-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('title')],
+		});
+		const { schema: schemaHandler } = require('#js/server/itc/serverHandlers');
+		const ITCEventObject = require('#js/server/itc/utility/ITCEventObject');
+		const { SchemaEventMsg } = require('#js/server/threads/itc');
+		const { ITC_EVENT_TYPES } = require('#src/utility/hdbTerms');
+		await assert.rejects(
+			schemaHandler(
+				new ITCEventObject(
+					ITC_EVENT_TYPES.SCHEMA,
+					new SchemaEventMsg(process.pid, 'schema-change', database, 'Missing')
+				)
+			),
+			new RegExp(`Schema rescan did not load ${database}\\.Missing`)
+		);
+	});
+
 	rocksOnly('retries a quarantined table runtime when restore quiesces hidden installations', async () => {
 		const database = `fulltext-quarantine-restore-${Date.now()}`;
 		Product = table({

@@ -342,6 +342,36 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		assert.strictEqual(refCountFor(branchPath), 0, 'close() must release every column family it opened');
 	});
 
+	it('retains ownership and retries when a native branch handle fails to close', async function () {
+		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
+		const branchPath = branch.rootStore.path;
+		let closeAttempts = 0;
+		branch.openedStores.push({
+			path: branchPath,
+			status: 'open',
+			close() {
+				closeAttempts++;
+				if (closeAttempts === 1) throw new Error('test root close failure');
+				this.status = 'closed';
+			},
+		});
+
+		await assert.rejects(branch.close(), (error) => {
+			assert.match(error.message, /Error closing column family/);
+			assert.match(error.cause.message, /test root close failure/);
+			return true;
+		});
+		assert.throws(
+			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
+			/already open/,
+			'a failed close must retain the branch identity until its native handles are released'
+		);
+
+		await branch.close();
+		assert.strictEqual(closeAttempts, 2);
+		assert.strictEqual(refCountFor(branchPath), 0);
+	});
+
 	it('tolerates a repeated close', async function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 		await branch.close();

@@ -2763,11 +2763,12 @@ preparation delivered after the exit notification is rejected before it can inst
 the opposite ordering of the same race. Peer cancellation is attempted even when the coordinator's
 local reload fails, so a local recovery error cannot strand every already-prepared peer. Finish and
 cancellation likewise still reach peers when the coordinator's own catalog rescan fails. A lost
-cancellation to a still-live peer deliberately remains fail-closed: conflicting
+terminal event to a still-live, unresponsive peer deliberately remains fail-closed: conflicting
 preparations log the holding coordinator and return 409, and that peer may require a worker restart
 to clear the marker. Branch, job-worker, and ordinary pool-worker teardown await the same derived-index
 quiescence before closing their RocksDB handles; teardown waits for every branch close to settle before
-it reports any failure. A process exit remains the final safety boundary if orderly teardown itself
+it reports any failure. Receipt of worker shutdown marks process-global handle release pending before
+component drains begin; a process exit remains the final safety boundary if any later teardown stage
 cannot complete. Strict acknowledgements preserve a peer's 409 only for an actual reported conflict;
 timeouts, exits, and internal close failures remain server errors instead of being flattened into a
 retryable client conflict.
