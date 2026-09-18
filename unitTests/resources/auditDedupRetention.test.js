@@ -83,12 +83,14 @@ describe('Audit dedup retention guard (harper-pro#480)', () => {
 		);
 		// ...and the guard must have resolved the oldest retained entry once.
 		assert(spy.oldestRetainedProbeCount >= 1, 'guard should probe the oldest retained audit entry');
-		// ...while the resequencing walk still ran (it looks up the existing chain by its recent
-		// localTime / previousVersion keys — proving we fell through to the walk, not short-circuited it).
-		assert(spy.getSyncKeys.length >= 1, 'resequencing walk should still look up the existing audit chain');
+		// The walk does not run either: harper#2642 short-circuits it for a version below the database's
+		// audit floor, where it could never reach txnTime anyway. Asserted here because this test is what
+		// pins the pre-retention path — see auditWalkRetentionFloor.test.js for the walk-entry gate itself.
+		assert.equal(spy.getSyncKeys.length, 0, `nothing should look up the audit chain; got ${spy.getSyncKeys}`);
 
-		// Correctness unchanged: a write that predates the record's own initial put is fully superseded by
-		// that newer full put, so the walk correctly drops it — same outcome as without the guard.
+		// Correctness unchanged: a write that predates the record's own initial put contributes nothing —
+		// its plain fields are not order-independent, so below the floor they lose to the newer head, the
+		// same outcome the walk reaches when it finds that newer full put.
 		const record = await Guarded.get(id);
 		assert.equal(record.name, 'newer', 'newer write still wins');
 		assert.equal(record.count, undefined, 'stale pre-creation write is superseded, not folded in');
