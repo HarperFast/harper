@@ -480,18 +480,20 @@ function compileFullTextDeclarations(
 	for (let attributeIndex = 0; attributeIndex < attributes.length; attributeIndex++) {
 		let attribute = attributes[attributeIndex];
 		const validationAttribute = validationAttributes.find(({ name }) => name === attribute.name) ?? attribute;
-		if (!attribute.fullText && !validationAttribute.fullText && attribute.type !== 'FullText') continue;
-		if (validationAttribute !== attribute && validationAttribute.type !== 'FullText') {
+		const attributeFullText = Object.getOwnPropertyDescriptor(attribute, 'fullText')?.value;
+		const validationFullText = Object.getOwnPropertyDescriptor(validationAttribute, 'fullText')?.value;
+		const attributeType = Object.getOwnPropertyDescriptor(attribute, 'type')?.value;
+		if (!attributeFullText && !validationFullText && attributeType !== 'FullText') continue;
+		if (
+			validationAttribute !== attribute &&
+			Object.getOwnPropertyDescriptor(validationAttribute, 'type')?.value !== 'FullText'
+		) {
 			attributes[attributeIndex] = validationAttribute;
 			continue;
 		}
 		if (validationAttribute !== attribute) attributes[attributeIndex] = attribute = validationAttribute;
 		try {
-			attribute.fullText = compileFullTextDefinition(
-				validationAttribute,
-				validationAttribute.fullText,
-				validationAttributes
-			);
+			attribute.fullText = compileFullTextDefinition(validationAttribute, validationFullText, validationAttributes);
 		} catch (error) {
 			if (origin !== 'cluster' || !peerAddedAttributeNames.has(attribute.name) || !(error instanceof ClientError))
 				throw error;
