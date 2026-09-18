@@ -22,6 +22,7 @@ const {
 	closeLoadedDatabases,
 	prepareDatabaseForDrop,
 	cancelDatabaseDrop,
+	cancelDatabaseDropsFromThread,
 	openBranchDatabase,
 	closeBranchDatabases,
 } = require('#src/resources/databases');
@@ -66,6 +67,7 @@ describe('RocksDB handle release', function () {
 			database: databaseName,
 			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
 		});
+		await Table.schemaChangeOperation;
 		const rootStore = Table.primaryStore.rootStore;
 		if (!(rootStore instanceof RocksDatabase)) return this.skip();
 		let release;
@@ -107,6 +109,7 @@ describe('RocksDB handle release', function () {
 			database: databaseName,
 			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
 		});
+		await Table.schemaChangeOperation;
 		const rootStore = Table.primaryStore.rootStore;
 		if (!(rootStore instanceof RocksDatabase)) return this.skip();
 		let release;
@@ -144,6 +147,21 @@ describe('RocksDB handle release', function () {
 
 		cancelDatabaseDrop(databaseName);
 		assert.ok(getDatabases()[databaseName]);
+	});
+
+	it('reopens a prepared database when its drop coordinator exits', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-originator-exit';
+		const rootStore = openRocksDb(databaseName);
+		if (!(rootStore instanceof RocksDatabase)) return this.skip();
+		await getDatabases()[databaseName].pkg.schemaChangeOperation;
+		const originator = 900_000 + Math.floor(Math.random() * 10_000);
+
+		await prepareDatabaseForDrop(databaseName, originator);
+		assert.strictEqual(getDatabases()[databaseName], undefined);
+		cancelDatabaseDropsFromThread(originator);
+
+		assert.ok(getDatabases()[databaseName], 'a dead coordinator must not leave the database name fenced forever');
 	});
 
 	it('closeLoadedDatabases releases a branch database (invisible to the databases map it walks)', async function () {

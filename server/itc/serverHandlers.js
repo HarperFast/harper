@@ -18,9 +18,11 @@ const {
 	prepareDatabaseForDrop,
 	finishDatabaseDrop,
 	cancelDatabaseDrop,
+	cancelDatabaseDropsFromThread,
 	reloadBranchAt,
 } = require('../../resources/databases.ts');
 const { PREPARE_DATABASE_DROP_OPERATION, CANCEL_DATABASE_DROP_OPERATION } = require('../../utility/signalling.ts');
+require('../threads/manageThreads.js').onThreadExit(cancelDatabaseDropsFromThread);
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -55,7 +57,7 @@ async function schemaHandler(event) {
 
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
 	if (event.message?.operation === PREPARE_DATABASE_DROP_OPERATION && event.message.schema) {
-		await prepareDatabaseForDrop(event.message.schema);
+		await prepareDatabaseForDrop(event.message.schema, event.message.originator);
 		return;
 	}
 	if (event.message?.operation === CANCEL_DATABASE_DROP_OPERATION && event.message.schema) {

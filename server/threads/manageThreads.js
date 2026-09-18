@@ -1092,11 +1092,9 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS,
 			resolve();
 		};
 		for (let port of connectedPorts) {
-			// Job workers run a single isolated task and exit; they don't participate in
-			// schema-change gossip. Including them causes a deadlock: the broadcast waits for
-			// the job worker's ACK while the job worker's event loop is busy waiting for the
-			// same broadcast to complete (re-entrant schema change triggered by the job op).
-			if (!isEligibleBroadcastRecipient(port)) continue;
+			// Ordinary schema gossip excludes single-task job workers. Destructive barriers opt
+			// them in because they must prove their database handles and derived writers quiescent.
+			if (!options.includeJobWorkers && !isEligibleBroadcastRecipient(port)) continue;
 			try {
 				let requestId = nextId++;
 				const ackHandler = (error) => {

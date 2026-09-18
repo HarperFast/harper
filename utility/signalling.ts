@@ -15,20 +15,22 @@ export const CANCEL_DATABASE_DROP_OPERATION = 'cancel-database-drop';
 // the op awaited propagation to the other workers — the originator half of #1497. Both legs
 // resolve without rejecting (each handler has its own try/catch; the broadcast always resolves),
 // so Promise.all is safe here. Callers that don't await keep their prior fire-and-forget behavior.
-export async function signalSchemaChange(message: any) {
+type SchemaSignalOptions = { includeJobWorkers?: boolean; rejectOnError?: boolean };
+
+export async function signalSchemaChange(message: any, options?: SchemaSignalOptions) {
 	try {
 		hdbLogger.debug('signalSchemaChange called with message:', message);
 		serverItcHandlers = serverItcHandlers || require('../server/itc/serverHandlers.js');
 		const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
-		await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema)]);
+		await Promise.all([serverItcHandlers.schema(itcEventSchema), sendItcEvent(itcEventSchema, options)]);
 	} catch (err) {
 		hdbLogger.error(err);
 	}
 }
 
-export async function signalSchemaChangeToPeers(message: any, rejectOnError = false) {
+export async function signalSchemaChangeToPeers(message: any, options?: SchemaSignalOptions) {
 	const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
-	await sendItcEvent(itcEventSchema, { rejectOnError });
+	await sendItcEvent(itcEventSchema, options);
 }
 
 /**

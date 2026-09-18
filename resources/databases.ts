@@ -34,7 +34,7 @@ import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg } from '../server/threads/itc.js';
-import { workerData } from 'worker_threads';
+import { threadId, workerData } from 'worker_threads';
 import harperLogger from '../utility/logging/harper_logger.ts';
 const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
@@ -638,7 +638,7 @@ function clearInterruptedDropEntries(storePath: string, tableName: string) {
 	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
 }
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
-const databasesBeingDropped = new Set<string>();
+const databasesBeingDropped = new Map<string, number>();
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
@@ -1247,9 +1247,13 @@ function initStores(
 		tablesToLoad.delete(tableName);
 	}
 
+	const compiledCatalogFullTextDefinitions = new Map<string, FullTextDefinition[]>();
 	const assertCatalogFullTextActivation = (tableName: string, tableDef: any) => {
 		const primaryAttribute = tableDef.primary || tableDef.attributes.find((attribute) => attribute.isPrimaryKey);
-		if (!primaryAttribute) return [];
+		if (!primaryAttribute) {
+			compiledCatalogFullTextDefinitions.set(tableName, []);
+			return [];
+		}
 		const definitions = compilePersistedFullTextDefinitions(
 			primaryAttribute,
 			[],
@@ -1257,6 +1261,7 @@ function initStores(
 			databaseName,
 			tableName
 		);
+		compiledCatalogFullTextDefinitions.set(tableName, definitions);
 		if (definitions.length === 0) return definitions;
 		const audit =
 			typeof primaryAttribute.audit === 'boolean' ? primaryAttribute.audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
@@ -1361,10 +1366,12 @@ function initStores(
 		// if the table has already been defined, use that class, don't create a new one
 		let table = tables[tableName];
 		const previousFullTextStorageKey =
-			table && fullTextStorageKey(table.fullTextIndexes, table.fullTextIndexGenerations);
-		const previousHasNativeHnsw = table?.attributes.some(
-			(attribute) => table.indices[attribute.name]?.customIndex?.postCommit
-		);
+			table?.derivedIndexRuntime && table.fullTextIndexes.length > 0
+				? fullTextStorageKey(table.fullTextIndexes, table.fullTextIndexGenerations)
+				: undefined;
+		const previousHasNativeHnsw =
+			table?.derivedIndexRuntime &&
+			table.attributes.some((attribute) => table.indices[attribute.name]?.customIndex?.postCommit);
 		// unless its store was migrated to a different engine (e.g. LMDB to RocksDB on startup)
 		const recreateForEngineChange =
 			!!table && (table as any).primaryStore?.rootStore instanceof RocksDatabase !== rootStore instanceof RocksDatabase;
@@ -1498,18 +1505,14 @@ function initStores(
 			existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
 			attributesUpdated = true;
 		}
-		const fullTextIndexes = compilePersistedFullTextDefinitions(
-			primaryAttribute,
-			[],
-			attributes,
-			databaseName,
-			tableName
-		);
+		const fullTextIndexes =
+			compiledCatalogFullTextDefinitions.get(tableName) ??
+			compilePersistedFullTextDefinitions(primaryAttribute, [], attributes, databaseName, tableName);
 		const fullTextIndexGenerationMap = fullTextIndexGenerations(
 			fullTextIndexes,
 			primaryAttribute.fullTextIndexGenerations,
 			fullTextIndexes,
-			false
+			true
 		);
 		if (table && !recreateForEngineChange) {
 			const fullTextIndexesUpdated = JSON.stringify(table.fullTextIndexes ?? []) !== JSON.stringify(fullTextIndexes);
@@ -2443,8 +2446,8 @@ export async function closeDatabaseForRestore(databaseName: string): Promise<boo
 	return closeDatabase(databaseName);
 }
 
-export async function prepareDatabaseForDrop(databaseName: string): Promise<void> {
-	databasesBeingDropped.add(databaseName);
+export async function prepareDatabaseForDrop(databaseName: string, originator = threadId): Promise<void> {
+	databasesBeingDropped.set(databaseName, originator);
 	try {
 		await closeDatabaseForRestore(databaseName);
 	} catch (error) {
@@ -2454,7 +2457,7 @@ export async function prepareDatabaseForDrop(databaseName: string): Promise<void
 }
 
 export function beginDatabaseDrop(databaseName: string): void {
-	databasesBeingDropped.add(databaseName);
+	databasesBeingDropped.set(databaseName, threadId);
 }
 
 export function finishDatabaseDrop(databaseName: string): void {
@@ -2464,6 +2467,11 @@ export function finishDatabaseDrop(databaseName: string): void {
 export function cancelDatabaseDrop(databaseName: string): void {
 	if (!databasesBeingDropped.delete(databaseName)) return;
 	resetDatabases();
+}
+
+export function cancelDatabaseDropsFromThread(originator: number): void {
+	for (const [databaseName, dropOriginator] of databasesBeingDropped)
+		if (dropOriginator === originator) cancelDatabaseDrop(databaseName);
 }
 
 /**
@@ -3740,7 +3748,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 		).then(markSettled, markSettled);
 	}
 	const canReuseFullTextRuntime = canReuseDerivedIndexRuntime(Table, previousFullTextStorageKey, previousHasNativeHnsw);
-	// Query behavior is read from the live schema and does not require a second writer for the same generation.
 	if (!canReuseFullTextRuntime) {
 		void Table.derivedIndexRuntime?.close();
 		Table.derivedIndexRuntime = attachDerivedIndexes(Table);

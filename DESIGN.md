@@ -2727,9 +2727,12 @@ derived-index installations associated with its audit store, closes its handles,
 success. A negative acknowledgement or timeout rejects the drop before destructive storage work.
 While marked, scans and on-demand lookup cannot reopen the database. Failure broadcasts cancellation
 and reloads the database; successful deletion sends the ordinary schema event, which clears the
-marker. Branch shutdown and job-worker teardown await the same derived-index quiescence before
-closing their RocksDB handles. A process exit remains the final safety boundary if orderly teardown
-itself cannot complete.
+marker. The destructive barrier includes job workers even though ordinary schema gossip excludes
+them. A peer also records the coordinating thread and cancels its marker if that thread exits before
+finish or cancellation arrives, so an interrupted drop does not fence the database name until the
+process restarts. Branch shutdown and job-worker teardown await the same derived-index quiescence
+before closing their RocksDB handles. A process exit remains the final safety boundary if orderly
+teardown itself cannot complete.
 
 An `@fullText` index creates no RocksDB column family. Its native directory is rooted inside the
 database directory and selected by the lifecycle's hash of `<table>/<index>`. RocksDB remains the

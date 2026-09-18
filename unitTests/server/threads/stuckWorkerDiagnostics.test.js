@@ -15,10 +15,10 @@ const { waitFor } = require('../../waitFor.js');
 
 const FIXTURE = path.join(__dirname, 'stuckWorker-fixture.cjs');
 
-function startFixtureWorker(mode) {
+function startFixtureWorker(mode, name = 'http') {
 	return new Promise((resolve, reject) => {
 		startWorker(FIXTURE, {
-			name: 'http',
+			name,
 			workerIndex: 0,
 			threadCount: 2,
 			autoRestart: false,
@@ -164,6 +164,19 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		await assert.rejects(
 			broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 100, { rejectOnError: true }),
 			/not acknowledged/
+		);
+	});
+
+	it('includes job workers only when a destructive barrier requests them', async function () {
+		const worker = await startFixtureWorker('reject', 'job');
+		started.push(worker);
+		await broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 100, { rejectOnError: true });
+		await assert.rejects(
+			broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 100, {
+				rejectOnError: true,
+				includeJobWorkers: true,
+			}),
+			/quiescence failed/
 		);
 	});
 });
