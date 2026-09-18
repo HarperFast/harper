@@ -3,7 +3,13 @@ const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table } = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
-const { raiseAuditFloor, getAuditFloor } = require('#src/resources/auditStore');
+const {
+	raiseAuditFloor,
+	getAuditFloor,
+	purgeAgedLogs,
+	setAuditRetention,
+	auditRetention,
+} = require('#src/resources/auditStore');
 
 const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const DAY = 86400 * 1000;
@@ -70,10 +76,19 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 		return spy;
 	}
 
+	let originalRetention;
+
 	before(function () {
 		if (isLMDB) return; // RocksDB-only: LMDB's audit store is an exact O(log n) point read with no purge floor
 		setupTestDBPath();
 		setMainIsWorker(true);
+		originalRetention = auditRetention;
+	});
+
+	after(function () {
+		// both arguments: restoring only the retention leaves every audit store opened later in this
+		// mocha process looping on the module-global default cleanup delay
+		if (!isLMDB) setAuditRetention(originalRetention, 10_000);
 	});
 
 	it('does not enter the walk for a write below the audit floor', async function () {
@@ -122,6 +137,28 @@ describe('Out-of-order audit walk retention floor (harper#2642)', () => {
 		assert.ok(
 			spy.getSyncKeys.includes(headKey),
 			`an unknown floor must fall through to the walk; got ${spy.getSyncKeys}`
+		);
+	});
+
+	it('reads the floor a real retention purge records, not only an injected one', async function () {
+		if (isLMDB) return this.skip();
+		const T = tableInOwnDatabase('PurgedFloor');
+		const headKey = await withHead(T, 'purged');
+		// The production path: purgeAgedLogs raises the floor to Date.now() - auditRetention before asking
+		// the native purge to drop anything. Everything above is well inside a 1ms retention.
+		setAuditRetention(1);
+		try {
+			purgeAgedLogs(T.auditStore.rootStore);
+		} finally {
+			setAuditRetention(originalRetention, 10_000);
+		}
+		assert.ok(Number.isFinite(getAuditFloor(T.auditStore)), 'precondition: the purge recorded a floor');
+
+		const spy = await applyAndSpy(T, () => T.put('purged', { name: 'stale' }, { timestamp: Date.now() - 30 * DAY }));
+
+		assert.ok(
+			!spy.getSyncKeys.includes(headKey),
+			`the walk must not run below a purge-recorded floor; got ${spy.getSyncKeys}`
 		);
 	});
 
