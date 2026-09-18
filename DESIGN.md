@@ -2737,7 +2737,11 @@ the second barrier snapshot. Every peer then quiesces all derived-index installa
 with its audit store, closes its handles, and
 acknowledges success. A handle-close failure produces a negative acknowledgement rather than being
 logged and treated as quiescent. A negative acknowledgement, recipient exit before acknowledgement,
-or timeout rejects the drop before destructive storage work. While marked, scans and on-demand lookup
+or timeout rejects the drop before destructive storage work. These destructive barrier acknowledgements
+use a bounded ten-minute window rather than schema gossip's 30-second default, because quiescing a large
+native writer can legitimately take longer than an ordinary cache rescan. Cancellation attempts the main
+thread and peer legs even when either leg rejects, then reports their errors together, so a failed main
+unfence cannot strand otherwise healthy peers. While marked, scans and on-demand lookup
 cannot reopen a peer's database; the coordinator keeps its already-open database loaded until
 derived-index quiescence succeeds. The marker enters its destructive phase immediately before storage
 teardown, and coordinator catalog scans then skip the path; the captured handles remain usable while

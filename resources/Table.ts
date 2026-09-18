@@ -1934,13 +1934,12 @@ export function makeTable(options) {
 				});
 			try {
 				await signalling.signalSchemaChangeToPeers(dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION), {
+					acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
 					includeJobWorkers: true,
 					mainFirst: true,
 					rejectOnError: true,
 				});
-				await TableResource.#dropTablePrepared(() =>
-					markDatabaseDropDestructive(databaseName, threadId, attemptId)
-				);
+				await TableResource.#dropTablePrepared(() => markDatabaseDropDestructive(databaseName, threadId, attemptId));
 				finishDatabaseDrop(databaseName, threadId, attemptId);
 				await signalling.signalSchemaChange(dropMessage(OPERATIONS_ENUM.DROP_TABLE), {
 					relayFromMain: true,
@@ -1954,6 +1953,7 @@ export function makeTable(options) {
 				}
 				try {
 					await signalling.signalSchemaChangeToPeers(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), {
+						acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
 						includeJobWorkers: true,
 						mainFirst: true,
 						rejectOnError: true,

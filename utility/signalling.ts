@@ -9,6 +9,7 @@ import { sendItcEvent } from '../server/threads/itc.js';
 
 export const PREPARE_DATABASE_DROP_OPERATION = 'prepare-database-drop';
 export const CANCEL_DATABASE_DROP_OPERATION = 'cancel-database-drop';
+export const DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS = 10 * 60_000;
 
 // Await both local handling and peer propagation so the caller cannot outrun its own schema cache.
 type SchemaSignalOptions = {
@@ -18,6 +19,7 @@ type SchemaSignalOptions = {
 	onlyThreadId?: number;
 	rejectOnError?: boolean;
 	relayFromMain?: boolean;
+	acknowledgementTimeoutMs?: number;
 };
 
 export async function signalSchemaChange(message: any, options?: SchemaSignalOptions) {
@@ -63,9 +65,20 @@ export async function signalSchemaChange(message: any, options?: SchemaSignalOpt
 export async function signalSchemaChangeToPeers(message: any, options?: SchemaSignalOptions) {
 	if (options?.mainFirst && !isMainThread) {
 		const mainEvent = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, { ...message });
-		await sendItcEvent(mainEvent, { ...options, onlyThreadId: 0 });
+		let mainError;
+		try {
+			await sendItcEvent(mainEvent, { ...options, onlyThreadId: 0 });
+		} catch (error) {
+			mainError = error ?? new Error('Main-thread schema-change handler rejected without an error');
+		}
 		const peerEvent = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, { ...message });
-		await sendItcEvent(peerEvent, { ...options, excludeThreadId: 0 });
+		try {
+			await sendItcEvent(peerEvent, { ...options, excludeThreadId: 0 });
+		} catch (peerError) {
+			if (mainError) throw new AggregateError([mainError, peerError], 'Main and peer schema-change handling failed');
+			throw peerError;
+		}
+		if (mainError) throw mainError;
 		return;
 	}
 	const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);

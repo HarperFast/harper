@@ -202,6 +202,7 @@ export class ResourceBridge extends BridgeMethods {
 			Object.assign(new SchemaEventMsg(process.pid, operation, databaseName), { dropAttemptId: attemptId });
 		try {
 			await signalling.signalSchemaChangeToPeers(dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION), {
+				acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
 				includeJobWorkers: true,
 				mainFirst: true,
 				rejectOnError: true,
@@ -220,6 +221,7 @@ export class ResourceBridge extends BridgeMethods {
 			}
 			try {
 				await signalling.signalSchemaChangeToPeers(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), {
+					acknowledgementTimeoutMs: signalling.DATABASE_DROP_ACKNOWLEDGEMENT_TIMEOUT_MS,
 					includeJobWorkers: true,
 					mainFirst: true,
 					rejectOnError: true,
