@@ -252,9 +252,18 @@ the branch to trip over.
 
 The fix is in the encoder, the layer that owns the prefix: clamp the encoded ref count to what the
 remaining prefix budget can hold, computed from the actual `valueStart` rather than a guessed
-constant, and write that count. Refs are best-effort by contract — a later in-order write drops them
-outright — so the tail (the oldest heads) is dropped; index 0 is the addressable audit head and is
-always kept. Both cardinality paths are pinned by tests.
+constant, and write that count. What it drops is the **middle**. Both ends are load-bearing — index 0
+is the addressable audit head where the record and log clocks diverge, and the last entry is the
+identity a re-delivery of this write is matched on — while the entries between them are older branch
+heads, which the code already treats as best-effort (a later in-order write drops the whole list).
+Both cardinality paths are pinned by tests, including a re-delivery of the newest event at the bound.
+
+**What the bound costs, stated plainly.** Past roughly 19 distinct un-reconciled identities on one
+record, some are no longer representable, so a re-delivery of one of _those_ after its audit entry
+has aged out can apply its commutative op twice. That is a real limit, and it is the one every bound
+has; the alternative is the unbounded list above, which does not merely lose an identity but
+destroys the record. Removing the limit needs a wider or versioned ref encoding, which is a change to
+the on-disk record format and belongs in its own issue, not in a P1 receive-path fix.
 
 ## Compatibility
 

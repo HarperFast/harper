@@ -16,13 +16,9 @@ const isLMDB = process.env.HARPER_STORAGE_ENGINE === 'lmdb';
 const DAY = 86400 * 1000;
 const AUDIT_FLOOR_KEY = Symbol.for('audit-floor');
 
-// harper#2642. The walk is not entered below the audit floor; the one contribution that survives it
-// (commutative ops) still applies and is not applied twice on a re-delivery; the head lookup resolves
-// to a single log.
 describe('Out-of-order audit walk retention floor (harper#2642)', () => {
-	// Every `key` the keyed dedup and the walk look up, plus the `log` each exactStart range was
-	// pinned to. The walk is the only thing in this block that looks up the EXISTING chain's keys,
-	// so the head's key appearing here means the walk ran.
+	// The walk is the only thing in this block that looks up the EXISTING chain's keys, so the head's
+	// key appearing in `getSyncKeys` is what proves it ran.
 	function spyAuditStore(auditStore) {
 		const getSyncKeys = [];
 		const exactStartRanges = [];
