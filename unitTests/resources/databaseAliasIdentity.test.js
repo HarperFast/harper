@@ -141,11 +141,14 @@ describe('shared root-store database identity', function () {
 	});
 
 	afterEach(async () => {
-		await fixture?.close();
-		fixture = undefined;
-		closeAliases(loadedAliases);
-		loadedAliases = [];
-		setupTestDBPath();
+		try {
+			await fixture?.close();
+		} finally {
+			fixture = undefined;
+			closeAliases(loadedAliases);
+			loadedAliases = [];
+			setupTestDBPath();
+		}
 	});
 
 	after(() => setMainIsWorker(false));
