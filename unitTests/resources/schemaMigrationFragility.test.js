@@ -809,8 +809,31 @@ describe('schema relationship catalog on a legacy named primary descriptor', () 
 		assert.ok(getDatabases()[DB].LegacySource);
 	});
 
-	// pre-5.x catalogs keep a table's settings on the primary key's own row, but dropTable() always
-	// tombstones the bare row, so a drop in flight is only visible there
+	it('drops a table whose legacy catalog stores the primary descriptor under its attribute name', async () => {
+		const tableName = 'LegacyDrop';
+		const LegacyDrop = table({
+			table: tableName,
+			database: DB,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'label', type: 'String', indexed: true },
+			],
+		});
+		const dbisDB = LegacyDrop.dbisDB;
+		assert.strictEqual(LegacyDrop.databaseName, LegacyDrop.databasePath);
+		assert.strictEqual(LegacyDrop.primaryKey, 'id');
+		const primary = dbisDB.getSync(`${tableName}/`);
+		dbisDB.putSync(`${tableName}/id`, { ...primary, name: 'id', attribute: 'id', isPrimaryKey: true });
+		dbisDB.removeSync(`${tableName}/`);
+
+		await LegacyDrop.dropTable();
+
+		assert.strictEqual(getDatabases()[DB][tableName], undefined);
+		assert.deepStrictEqual([...dbisDB.getKeys({ start: `${tableName}/`, end: `${tableName}0` })], []);
+	});
+
+	// A migrated catalog can temporarily have both a named primary descriptor and the modern bare
+	// table row; updates must honor a drop tombstone carried by either representation.
 	it('refuses to update a named descriptor while the bare table row carries a drop tombstone', async () => {
 		const original = source.dbisDB.getSync('LegacySource/');
 		await source.dbisDB.put('LegacySource/id', { ...original, attribute: 'id', relationships: [] });

@@ -911,7 +911,13 @@ export function makeTable(options) {
 		static tableName = tableName;
 		static tableId = tableId;
 		static indices = indices;
-		static derivedIndexRuntime: { close(): Promise<void> } | undefined;
+		static derivedIndexRuntime:
+			| {
+					close(dropping?: boolean): Promise<void>;
+					restoreAfterFailedDrop?(): typeof TableResource.derivedIndexRuntime;
+					completeDrop?(dropped?: boolean): void;
+			  }
+			| undefined;
 		static audit = audit;
 		static databasePath = databasePath;
 		static databaseName = databaseName;
@@ -1883,13 +1889,44 @@ export function makeTable(options) {
 
 		static async dropTable() {
 			TableResource.assertSchemaMutable('drop a table');
+			const rootStore = primaryStore.rootStore;
+			if (
+				databaseName === databasePath &&
+				rootStore instanceof RocksDatabase &&
+				(dbisDb as any).put !== (dbisDb as any).putSync
+			)
+				throw new Error(
+					`Cannot drop ${databaseName}.${TableResource.tableName}: the catalog store's put is asynchronous, so the drop tombstone cannot be made durable before the column families are dropped`
+				);
 			// Release post-commit derived-index delivery before any destructive work: the runner's
 			// backend must have quiesced before its stores and native file are destroyed, and a
 			// same-name recreate must not race an owner still applying to the old generation.
 			const derivedIndexRuntime = TableResource.derivedIndexRuntime;
-			TableResource.derivedIndexRuntime = undefined;
-			await derivedIndexRuntime?.close();
-			const rootStore = primaryStore.rootStore;
+			const restoreDerivedIndexesAfterFailedDrop = () => {
+				try {
+					TableResource.derivedIndexRuntime = derivedIndexRuntime?.restoreAfterFailedDrop?.();
+				} catch (restoreError) {
+					TableResource.derivedIndexRuntime = undefined;
+					logger.error?.(
+						`Could not restore derived indexes after failed drop of ${databaseName}.${TableResource.tableName}`,
+						restoreError
+					);
+				}
+			};
+			try {
+				await derivedIndexRuntime?.close(true);
+			} catch (error) {
+				restoreDerivedIndexesAfterFailedDrop();
+				throw error;
+			}
+			const abortStaleDrop = () => {
+				derivedIndexRuntime?.completeDrop?.(false);
+				TableResource.derivedIndexRuntime = undefined;
+				TableResource.cleanup();
+				if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
+			};
+			let dropIdentityConfirmed = databaseName !== databasePath;
+			let primaryCatalogKey = TableResource.tableName + '/';
 			if (databaseName === databasePath) {
 				// Persist a drop tombstone on the primary catalog entry BEFORE any
 				// destructive work. If the process dies or a column family drop fails
@@ -1897,10 +1934,19 @@ export function makeTable(options) {
 				// the next startup (or a same-name create) completes the drop via
 				// completeInterruptedDrop in databases.ts instead of resurrecting
 				// the table.
-				const primaryCatalogKey = TableResource.tableName + '/';
+				let tombstoneWrite: any;
 				const writeTombstone = () => {
-					const primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
-					if (!primaryMeta || primaryMeta.dropping) return;
+					let primaryMeta = (dbisDb as any).getSync(primaryCatalogKey);
+					if (!primaryMeta && primaryKey) {
+						const legacyPrimaryKey = `${TableResource.tableName}/${primaryKey}`;
+						const legacyPrimaryMeta = (dbisDb as any).getSync(legacyPrimaryKey);
+						if (legacyPrimaryMeta?.isPrimaryKey) {
+							primaryCatalogKey = legacyPrimaryKey;
+							primaryMeta = legacyPrimaryMeta;
+						}
+					}
+					if (!primaryMeta || (primaryMeta.tableId != null && primaryMeta.tableId !== tableId)) return false;
+					if (primaryMeta.dropping) return true;
 					primaryMeta.dropping = true;
 					// Stamps this drop's identity so the interrupted-drop retry budget in
 					// databases.ts can be scoped to THIS drop rather than the table name: a
@@ -1910,30 +1956,34 @@ export function makeTable(options) {
 					// the budget by generation instead makes the new drop's tombstone carry
 					// its own fresh key regardless of what any worker last observed.
 					primaryMeta.dropGeneration = randomUUID();
-					return (dbisDb as any).put(primaryCatalogKey, primaryMeta);
+					tombstoneWrite = (dbisDb as any).put(primaryCatalogKey, primaryMeta);
+					return true;
 				};
-				if (rootStore instanceof RocksDatabase) {
-					// withUpdateAttributesLock's locked section cannot be held across an await, so a durable
-					// tombstone depends on put being rebound to putSync for RocksDB primary stores (see
-					// createOpenDBIObject). Check that BEFORE writing anything: a tombstone left behind by a
-					// refused drop would delete the table on the next load.
-					if ((dbisDb as any).put !== (dbisDb as any).putSync)
-						throw new Error(
-							`Cannot drop ${databaseName}.${TableResource.tableName}: the catalog store's put is asynchronous, so the drop tombstone cannot be made durable before the column families are dropped`
+				try {
+					if (rootStore instanceof RocksDatabase) {
+						// withUpdateAttributesLock's locked section cannot be held across an await, so a durable
+						// tombstone depends on put being rebound to putSync for RocksDB primary stores.
+						dropIdentityConfirmed = withUpdateAttributesLock(
+							rootStore,
+							`drop table '${databaseName}.${TableResource.tableName}'`,
+							writeTombstone
 						);
-					withUpdateAttributesLock(
-						rootStore,
-						`drop table '${databaseName}.${TableResource.tableName}'`,
-						writeTombstone
-					);
-				} else {
-					let tombstoneWrite;
-					rootStore.transactionSync(() => {
-						tombstoneWrite = writeTombstone();
-					});
-					if (typeof tombstoneWrite?.then === 'function') await tombstoneWrite;
+					} else {
+						rootStore.transactionSync(() => {
+							dropIdentityConfirmed = writeTombstone();
+						});
+						if (typeof tombstoneWrite?.then === 'function') await tombstoneWrite;
+					}
+				} catch (error) {
+					restoreDerivedIndexesAfterFailedDrop();
+					throw error;
 				}
 			}
+			if (!dropIdentityConfirmed) {
+				abortStaleDrop();
+				return;
+			}
+			TableResource.derivedIndexRuntime = undefined;
 			// A get() against a sourcedFrom table resolves to its caller before the resolved
 			// record's cache write has committed (see getFromSource) - the write lands "in the
 			// background" for latency reasons. Flip this BEFORE removing the table from the
@@ -1946,7 +1996,7 @@ export function makeTable(options) {
 			// family drops below. If a drop fails past this point the table stays
 			// invisible, and the tombstone guarantees the drop completes on the
 			// next startup (or on a same-name create).
-			delete databases[databaseName][tableName];
+			if (databases[databaseName]?.[tableName] === TableResource) delete databases[databaseName][tableName];
 			// The above stops new source-fill writes from starting, but a write from a get()
 			// that already returned to its caller may still be in flight. Dropping the column
 			// families out from under that write is a genuine invariant violation, not just a
@@ -1977,15 +2027,21 @@ export function makeTable(options) {
 				]);
 				clearTimeout(timer);
 				if (result === timedOut) {
+					derivedIndexRuntime?.completeDrop?.();
 					throw new Error(
 						`dropTable() timed out after ${LOCK_TIMEOUT}ms waiting for ${pending.length} in-flight source-populated cache write(s) on ${tableName} to settle; refusing to drop the column families out from under a write that may still be staged. The drop tombstone is durable, so this will be retried on the next load.`
 					);
 				}
 			}
-			for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
-				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
-					deleteBlobsInObject(entry.value);
+			try {
+				for (const entry of primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
+					if (entry.metadataFlags & HAS_BLOBS && entry.value) {
+						deleteBlobsInObject(entry.value);
+					}
 				}
+			} catch (error) {
+				derivedIndexRuntime?.completeDrop?.();
+				throw error;
 			}
 			if (databaseName === databasePath) {
 				// part of a database.
@@ -2003,12 +2059,13 @@ export function makeTable(options) {
 				// same-name create completes the interrupted drop and writes fresh
 				// catalog rows, and clobbering those would orphan the new table.
 				const removeTombstonedCatalog = () => {
-					const currentPrimary = (dbisDb as any).getSync(TableResource.tableName + '/');
-					if (!currentPrimary?.dropping) return false;
+					const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+					if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
+						return false;
 					for (const attribute of attributes) {
 						dbisDb.remove(TableResource.tableName + '/' + attribute.name);
 					}
-					dbisDb.remove(TableResource.tableName + '/');
+					dbisDb.remove(primaryCatalogKey);
 					return true;
 				};
 				if (rootStore instanceof RocksDatabase) {
@@ -2020,51 +2077,88 @@ export function makeTable(options) {
 					// completeInterruptedDrop does), never an awaited drop(), or a
 					// concurrent create's wait would be stuck on a drop that the blocked
 					// event loop can never resolve, burning its full deadline before failing.
-					const removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
-						for (const attribute of attributes) {
-							const index = indices[attribute.name];
-							if (index)
-								try {
-									index.customIndex?.resetDerivedStorage?.();
-									index.dropSync();
-								} catch (error) {
-									ignoreAlreadyDropped(error);
-								}
-						}
-						try {
-							primaryStore.dropSync();
-						} catch (error) {
-							ignoreAlreadyDropped(error);
-						}
-						return removeTombstonedCatalog();
-					});
-					if (removed) await dbisDb.committed;
+					let removed: boolean;
+					try {
+						removed = withUpdateAttributesLock(rootStore, `table '${databaseName}.${tableName}'`, () => {
+							const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+							if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId))
+								return false;
+							for (const attribute of attributes) {
+								const index = indices[attribute.name];
+								if (index)
+									try {
+										index.customIndex?.resetDerivedStorage?.();
+										index.dropSync();
+									} catch (error) {
+										ignoreAlreadyDropped(error);
+									}
+							}
+							try {
+								primaryStore.dropSync();
+							} catch (error) {
+								ignoreAlreadyDropped(error);
+							}
+							return removeTombstonedCatalog();
+						});
+						if (removed) await dbisDb.committed;
+					} catch (error) {
+						derivedIndexRuntime?.completeDrop?.();
+						throw error;
+					}
+					if (!removed) {
+						abortStaleDrop();
+						return;
+					}
 				} else {
 					// LMDB: no shared column-family double-drop, and its engine lock is
 					// transactional rather than this spin lock, so keep the awaited drop
 					// plus the same tombstone-guarded catalog removal.
-					const drops = [];
-					for (const attribute of attributes) {
-						const index = indices[attribute.name];
-						if (index) {
-							index.customIndex?.resetDerivedStorage?.();
-							drops.push(index.drop().catch(ignoreAlreadyDropped));
+					let removed: boolean;
+					try {
+						const currentPrimary = (dbisDb as any).getSync(primaryCatalogKey);
+						if (!currentPrimary?.dropping || (currentPrimary.tableId != null && currentPrimary.tableId !== tableId)) {
+							abortStaleDrop();
+							return;
 						}
+						const drops = [];
+						for (const attribute of attributes) {
+							const index = indices[attribute.name];
+							if (index) {
+								index.customIndex?.resetDerivedStorage?.();
+								drops.push(index.drop().catch(ignoreAlreadyDropped));
+							}
+						}
+						drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
+						await Promise.all(drops);
+						removed = removeTombstonedCatalog();
+						if (removed) await dbisDb.committed;
+					} catch (error) {
+						derivedIndexRuntime?.completeDrop?.();
+						throw error;
 					}
-					drops.push(primaryStore.drop().catch(ignoreAlreadyDropped));
-					await Promise.all(drops);
-					if (removeTombstonedCatalog()) await dbisDb.committed;
+					if (!removed) {
+						abortStaleDrop();
+						throw new Error(
+							`Could not complete drop of ${databaseName}.${tableName}: a replacement table became current while the LMDB stores were being dropped`
+						);
+					}
 				}
 			} else {
 				// legacy table per database. The store to retire is this table's own audit store: nothing
 				// assigns `primaryStore.auditStore` — openAuditStore() assigns `rootStore.auditStore`, and
 				// this is the reference makeTable() was handed. Awaited so a pass suspended mid-removal has
 				// released the primary DBI before it is closed and unlinked.
-				await auditStore?.stopAuditCleanup?.();
-				removeStorageReclamation(primaryStore.path);
-				await primaryStore.close();
-				fs.unlinkSync(primaryStore.path);
+				try {
+					await auditStore?.stopAuditCleanup?.();
+					removeStorageReclamation(primaryStore.path);
+					await primaryStore.close();
+					fs.unlinkSync(primaryStore.path);
+				} catch (error) {
+					derivedIndexRuntime?.completeDrop?.();
+					throw error;
+				}
 			}
+			derivedIndexRuntime?.completeDrop?.();
 			signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName)
 			);

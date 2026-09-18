@@ -5,11 +5,11 @@
  * table() decides whether to rebuild a secondary index by comparing the new attribute's index
  * options against the persisted descriptor's. Previously that comparison used a raw JSON.stringify,
  * which is sensitive to option key order and string-vs-number scalars — so a representation-only
- * difference (e.g. `@indexed(...)` records options in source order as strings, while the operations
- * API can supply them reordered or as numbers) forced a needless full rebuild, 503-ing the attribute
- * for the duration. canonicalizeIndexOptions() sorts keys and coerces numeric-looking string scalars
- * so a semantically-identical index is recognized as unchanged. It is deliberately conservative: it
- * must NEVER mask a genuine change.
+ * difference (e.g. `@indexed(...)` records options in source order and can include quoted numeric
+ * strings, while the operations API can supply them reordered or as numbers) forced a needless full
+ * rebuild, 503-ing the attribute for the duration. canonicalizeIndexOptions() sorts keys and coerces
+ * numeric-looking string scalars so a semantically-identical index is recognized as unchanged. It is
+ * deliberately conservative: it must NEVER mask a genuine change.
  *
  * Two layers of coverage:
  *  - unit: canonicalizeIndexOptions() against the issue's exact test matrix + conservative edges.
@@ -20,6 +20,7 @@ require('../testUtils');
 const assert = require('node:assert');
 const { setupTestDBPath } = require('../testUtils');
 const { table, resetDatabases, canonicalizeIndexOptions } = require('#src/resources/databases');
+const { CUSTOM_INDEXES } = require('#src/resources/indexes/customIndexes');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 
 // Mirror how databases.ts uses the canonicalizer (canonicalIndexKey): structural equality is
@@ -56,6 +57,15 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		assert.equal(sameStructure({ type: 'HNSW' }, { type: 'hnsw' }), false);
 	});
 
+	it('supports registered custom indexes without an option normalizer', () => {
+		CUSTOM_INDEXES.TestIndex = { numericOptions: new Set(['size']) };
+		try {
+			assert.equal(sameStructure({ type: 'TestIndex', size: '0' }, { type: 'TestIndex', size: 0 }), true);
+		} finally {
+			delete CUSTOM_INDEXES.TestIndex;
+		}
+	});
+
 	it('does not over-coerce: only genuinely numeric strings become numbers', () => {
 		// "16abc" is not numeric-looking -> stays a string -> differs from the number 16
 		assert.equal(sameStructure({ M: '16abc' }, { M: 16 }), false);
@@ -63,13 +73,34 @@ describe('canonicalizeIndexOptions structural comparison (#1357)', () => {
 		assert.equal(sameStructure({ x: '' }, { x: 0 }), false);
 		// booleans and numeric-looking strings are distinct (no boolean coercion)
 		assert.equal(sameStructure({ flag: true }, { flag: 'true' }), false);
-		// zero must NOT coerce: string "0" is truthy but number 0 is falsy, and index code branches on
-		// truthiness (e.g. HNSW `if (this.optimizeRouting)` doubles maxConnections) — so these build
-		// structurally different indexes and must remain a genuine change. (cross-model review, #1357)
-		assert.equal(sameStructure({ optimizeRouting: '0' }, { optimizeRouting: 0 }), false);
+		for (const value of ['0', '0.0', '-0', ' 0 ', '0e0'])
+			assert.equal(
+				sameStructure({ type: 'HNSW', optimizeRouting: value }, { type: 'HNSW', optimizeRouting: 0 }),
+				false,
+				`${JSON.stringify(value)} must preserve its legacy truthiness`
+			);
+		assert.equal(
+			sameStructure({ type: 'HNSW', maxLagMilliseconds: '0' }, { type: 'HNSW', maxLagMilliseconds: 0 }),
+			true
+		);
+		assert.equal(sameStructure({ type: 'HNSW', nativePlane: 'true' }, { type: 'HNSW', nativePlane: true }), true);
+		assert.equal(sameStructure({ type: 'HNSW' }, { type: 'HNSW', nativePlane: false }), true);
+		assert.equal(sameStructure({ type: 'HNSW', nativePlane: '0' }, { type: 'HNSW', nativePlane: 0 }), false);
+		assert.equal(sameStructure({ type: 'HNSW', nativePlane: 'false' }, { type: 'HNSW', nativePlane: false }), false);
+		for (const value of [true, 1, '1'])
+			assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: value }, { type: 'HNSW', optimizeRouting: 1 }), true);
+		for (const value of [false, 0])
+			assert.equal(sameStructure({ type: 'HNSW', optimizeRouting: value }, { type: 'HNSW', optimizeRouting: 0 }), true);
+		for (const value of ['true', 'false'])
+			assert.equal(
+				sameStructure(
+					{ type: 'HNSW', optimizeRouting: value },
+					{ type: 'HNSW', optimizeRouting: Number(value === 'true') }
+				),
+				false
+			);
 		assert.equal(canonicalizeIndexOptions('0'), '0');
 		assert.equal(canonicalizeIndexOptions('0.0'), '0.0');
-		// non-zero numeric strings still coerce (both forms are truthy and numerically identical)
 		assert.equal(sameStructure({ optimizeRouting: '0.6' }, { optimizeRouting: 0.6 }), true);
 		// the canonical form of a scalar is the scalar; whitespace-padded numerics still coerce
 		assert.equal(canonicalizeIndexOptions('16'), 16);
@@ -103,6 +134,7 @@ describe('index rebuild gating: representation-only options do not re-trigger a 
 		return table({
 			table: TABLE,
 			database: DB,
+			audit: false,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'vector', indexed: indexedOption, type: 'Array' },
@@ -119,6 +151,7 @@ describe('index rebuild gating: representation-only options do not re-trigger a 
 		let Tbl = table({
 			table: TABLE,
 			database: DB,
+			audit: false,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'vector', type: 'Array' },
@@ -141,6 +174,16 @@ describe('index rebuild gating: representation-only options do not re-trigger a 
 		// String-vs-number scalar: canonical form identical -> NO rebuild.
 		const stringly = reload(TABLE, { type: 'HNSW', M: '16' });
 		assert.equal(stringly.indexingOperation, buildOp, 'string-vs-number index options must NOT re-trigger a backfill');
+
+		// Explicit false is the durable spelling of the legacy JS-mode omission, not a mode change.
+		const optedOut = reload(TABLE, { type: 'HNSW', M: 16, nativePlane: false });
+		assert.equal(optedOut.indexingOperation, buildOp, 'explicit nativePlane false must NOT rebuild a legacy JS index');
+		assert.equal(findDescriptor(optedOut, 'vector').indexed.nativePlane, false);
+
+		// Delivery lag changes write admission, not graph structure.
+		const tunedLag = reload(TABLE, { type: 'HNSW', M: 16, nativePlane: false, maxLagMilliseconds: 60_000 });
+		assert.equal(tunedLag.indexingOperation, buildOp, 'changing maxLagMilliseconds must NOT re-trigger a backfill');
+		assert.equal(findDescriptor(tunedLag, 'vector').indexed.maxLagMilliseconds, 60_000);
 
 		// Genuine option change (M: 16 -> 32) -> rebuild.
 		const changed = reload(TABLE, { type: 'HNSW', M: 32 });

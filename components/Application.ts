@@ -1684,7 +1684,8 @@ async function claimDeploymentDirectory(deploymentDirPath: string, componentName
 				if (retry?.code !== 'EEXIST') throw retry;
 				throw taken(
 					`Deployment id ${basename(deploymentDirPath)} is already claimed by a build that has not named its ` +
-						`component yet`
+						`component yet. If no deploy of any component is in flight, that directory is abandoned and has ` +
+						`to be removed by hand; deploying again without a deployment_id mints a fresh id`
 				);
 			});
 		} else {

@@ -17,7 +17,7 @@ if (parentPort) {
 			{ name: 'name', indexed: true },
 			{
 				name: 'vector',
-				indexed: { type: 'HNSW', nativePlane: true, efConstruction: 200 },
+				indexed: { type: 'HNSW', efConstruction: 200 },
 				type: 'Array',
 			},
 		],

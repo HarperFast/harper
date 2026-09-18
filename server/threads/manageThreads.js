@@ -212,6 +212,9 @@ connectedPorts.sendToThread = function (threadId, message) {
 		throw err;
 	}
 };
+// Direct thread-to-thread send, so a worker can reach a sibling (e.g. the record lock owner worker)
+// without a hop through main. Returns false when no port for the thread is connected.
+module.exports.sendToThread = connectedPorts.sendToThread;
 module.exports.whenThreadsStarted = new Promise((resolve) => {
 	module.exports.threadsHaveStarted = resolve;
 });
