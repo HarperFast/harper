@@ -139,6 +139,48 @@ const registration = (backend) => ({
 });
 
 describe('DerivedIndexRuntime', () => {
+	it('retires a stale durable generation before inspecting or rebuilding its backend', async () => {
+		const store = new FakeLogStore(new Map());
+		const backend = new FakeBackend('generation-fence', cursor(10));
+		let inspections = 0;
+		backend.getDurableCursor = () => {
+			inspections++;
+			return cursor(10);
+		};
+		const { runtime } = runtimeFor(store, new Map());
+
+		runtime.register({ ...registration(backend), readinessId: 'generation-fence:g1', isCurrent: () => false });
+
+		await waitFor(() => store.locks.size === 0);
+		assert.strictEqual(inspections, 0);
+		assert.strictEqual(backend.deliveries.length, 0);
+		await runtime.stop();
+	});
+
+	it('releases ownership when its durable generation changes', async () => {
+		const store = new FakeLogStore(new Map());
+		const backend = new FakeBackend('generation-revocation', cursor(10));
+		let current = true;
+		let shutdowns = 0;
+		backend.shutdown = () => {
+			shutdowns++;
+		};
+		const { runtime } = runtimeFor(store, new Map(), { idleGraceMilliseconds: 10_000 });
+		runtime.register({
+			...registration(backend),
+			readinessId: 'generation-revocation:g1',
+			isCurrent: () => current,
+		});
+		await waitFor(() => store.locks.size === 1);
+
+		current = false;
+		store.rootStore.emit('committed');
+
+		await waitFor(() => store.locks.size === 0);
+		assert.strictEqual(shutdowns, 1);
+		await runtime.stop();
+	});
+
 	it('delivers authoritative projected state once per record and advances through unrelated transactions', async () => {
 		const store = new FakeLogStore(
 			new Map([

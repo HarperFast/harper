@@ -163,6 +163,7 @@ module.exports = {
 	markBranchStorePath,
 	ownsStoreMaintenance,
 	ownsStoreExpiration,
+	ownsDerivedIndexWriters,
 	workersForApplication,
 	stopWorker,
 	encodeRestartScope,
@@ -260,6 +261,10 @@ function ownsStoreMaintenance(storePath) {
 function ownsStoreExpiration(storePath) {
 	if (workerData?.isolatedApplication !== undefined) return branchStorePaths.has(storePath);
 	return getWorkerIndex() === 0;
+}
+function ownsDerivedIndexWriters(storePath) {
+	if (branchStorePaths.has(storePath)) return workerData?.isolatedApplication !== undefined;
+	return workerData?.isolatedApplication === undefined && getWorkerIndex() === 0;
 }
 /**
  * Whether a singleton set up by APPLICATION CODE runs here (a caching table's `sourcedFrom`
@@ -1060,12 +1065,15 @@ let nextId = 1;
 // Backstop so a wedged-but-alive worker (one whose event loop is blocked and never acks, yet
 // whose port hasn't closed) can't hang a mutating admin/DDL op forever. The durable write has
 // already succeeded by the time we broadcast, and the health monitor restarts a truly stuck
-// worker (its port close fires the same ack handlers), so on timeout we proceed best-effort.
+// worker (its port close fires the same ack handlers), so ordinary broadcasts proceed best-effort.
+// Destructive callers can opt into rejection when every live recipient must prove quiescence.
 const DEFAULT_ACK_TIMEOUT_MS = 30000;
-function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS) {
-	return new Promise((resolve) => {
+function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS, options = {}) {
+	return new Promise((resolve, reject) => {
 		let waitingCount = 0;
 		let timer;
+		let timingOut = false;
+		const errors = [];
 		// Tracks the handlers still awaiting an ack for THIS broadcast. Doubles as an
 		// idempotency guard: a port's handler runs at most once whether it's driven by an ack,
 		// the close listener, or the timeout below.
@@ -1074,6 +1082,12 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 			if (timer) {
 				clearTimeout(timer);
 				timer = undefined;
+			}
+			if (options.rejectOnError && errors.length) {
+				const error = new Error(errors.map((entry) => entry.message || String(entry)).join('; '));
+				error.statusCode = 409;
+				reject(error);
+				return;
 			}
 			resolve();
 		};
@@ -1085,10 +1099,11 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 			if (!isEligibleBroadcastRecipient(port)) continue;
 			try {
 				let requestId = nextId++;
-				const ackHandler = () => {
+				const ackHandler = (error) => {
 					if (!pending.delete(ackHandler)) return; // already settled for this port
 					awaitingResponses.delete(requestId);
-					if (--waitingCount === 0) {
+					if (error) errors.push(error);
+					if (--waitingCount === 0 && !timingOut) {
 						finish();
 					}
 					if (port !== parentPort && --port.refCount === 0) {
@@ -1121,20 +1136,24 @@ function broadcastWithAcknowledgement(message, timeout = DEFAULT_ACK_TIMEOUT_MS)
 		if (timeout > 0) {
 			timer = setTimeout(() => {
 				timer = undefined;
+				timingOut = true;
 				const stuck = [];
 				for (let ackHandler of [...pending]) {
 					stuck.push(ackHandler.port);
 					ackHandler(); // same cleanup path as an ack/close; drives waitingCount to 0 and resolves
 				}
+				const detail = `ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms`;
 				harperLogger.warn(
-					`ITC broadcast (type ${message.type}) not acknowledged by worker thread(s) ${stuck.map((port) => port?.threadId).join(', ')} within ${timeout}ms; proceeding best-effort`
+					`${detail}${options.rejectOnError ? '; refusing the operation' : '; proceeding best-effort'}`
 				);
+				if (options.rejectOnError) errors.push(new Error(detail));
 				if (isMainThread) for (let port of stuck) logStuckWorkerDiagnostics(port);
 				else if (parentPort) {
 					// Only main holds the Worker objects (and tids), so a worker-originated timeout is sampled there.
 					const threadIds = stuck.map((port) => port?.threadId).filter((threadId) => threadId > 0);
 					if (threadIds.length > 0) parentPort.postMessage({ type: STUCK_WORKER_REPORT, threadIds });
 				}
+				finish();
 			}, timeout);
 			timer.unref?.();
 		}
@@ -1865,7 +1884,7 @@ function addPort(port, keepRef, isJobWorker) {
 			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaitingResponses.get(message.id);
 				if (completion) {
-					completion();
+					completion(message.error);
 				}
 			} else if (message.type === REMOVE_PORT) {
 				const idx = connectedPorts.findIndex((p) => p.threadId === message.threadId);

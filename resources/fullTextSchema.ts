@@ -52,7 +52,6 @@ export type FullTextStorageDefinition = Pick<
 	fields: Array<Pick<FullTextSource, 'name' | 'weight'>>;
 };
 
-/** The declaration fields that determine native index compatibility rather than query behavior. */
 export function fullTextStorageDefinition(definition: FullTextDefinition): FullTextStorageDefinition {
 	return {
 		fields: definition.fields.map(({ name, weight }) => ({ name, weight })),
@@ -63,7 +62,6 @@ export function fullTextStorageDefinition(definition: FullTextDefinition): FullT
 	};
 }
 
-/** Identity of the native full-text runtimes represented by a table declaration. */
 export function fullTextStorageKey(
 	definitions: readonly FullTextDefinition[],
 	generations: Readonly<Record<string, string>> = {}

@@ -9,6 +9,7 @@ import { registerDerivedIndexTables } from './derivedIndexRegistry.ts';
 import { DerivedIndexRuntime, readDerivedIndexReadiness } from './derivedIndexRuntime.ts';
 import { HnswDerivedIndexBackend, type DerivedNativeIndex } from './indexes/hnswDerivedIndex.ts';
 import { fullTextStorageDefinition, type FullTextDefinition } from './fullTextSchema.ts';
+import { ownsDerivedIndexWriters } from '../server/threads/manageThreads.js';
 
 const hnswLogger = loggerWithTag('HNSW');
 const fullTextLogger = loggerWithTag('fulltext-derived-index');
@@ -69,10 +70,7 @@ function runtimeFor(auditStore: RocksTransactionLogStore): Registered {
 	return registered;
 }
 
-/**
- * Register every schema-derived index of a table with its database's shared runtime. Registration
- * runs on every worker; the runtime elects one owner for each physical index.
- */
+/** Register every schema-derived index of a table with its database's shared runtime. */
 export function attachDerivedIndexes(Table: any): Installed | undefined {
 	const hnswAttributes = Table.attributes.filter(
 		(attribute: Attribute) => Table.indices[attribute.name]?.customIndex?.postCommit
@@ -165,7 +163,7 @@ export function attachDerivedIndexes(Table: any): Installed | undefined {
 	registered.installations.set(Table.tableId, installed);
 	try {
 		for (const attribute of hnswAttributes) registerHnsw(Table, attribute, registered, install);
-		for (const definition of fullTextDefinitions) {
+		for (const definition of ownsDerivedIndexWriters(Table.primaryStore.rootStore.path) ? fullTextDefinitions : []) {
 			const readinessId = fullTextDerivedIndexReadinessId(Table, definition);
 			readinessOverrides.set(readinessId, { state: 'unknown', ownerEpoch: 0n, rebuildAttempts: 0 });
 			const setup = (async () => {
@@ -226,7 +224,6 @@ function assertDerivedIndexSupport(Table: any, fullTextDefinitions: FullTextDefi
 	);
 }
 
-/** Validate storage/projection capabilities before a schema declaration mutates the live table. */
 export function assertFullTextActivationSupported(
 	rootStore: unknown,
 	databaseName: string,
@@ -312,6 +309,7 @@ async function registerFullText(
 ): Promise<void> {
 	const storageDefinition = fullTextStorageDefinition(definition);
 	const id = fullTextDerivedIndexId(Table, definition.name);
+	const generation = fullTextIndexGeneration(Table, definition);
 	const storeName = `${Table.tableName}/${definition.name}`;
 	const warningKey = `${Table.primaryStore.rootStore.path}:${storeName}`;
 	if (!warnedAuditIndexes.has(warningKey)) {
@@ -324,7 +322,7 @@ async function registerFullText(
 		id,
 		storePath: Table.primaryStore.rootStore.path,
 		storeName,
-		sourceGeneration: `${Table.tableId}:${fullTextIndexGeneration(Table, definition)}`,
+		sourceGeneration: `${Table.tableId}:${generation}`,
 		fields: storageDefinition.fields,
 		analyzer: storageDefinition.analyzer,
 		stopWords: storageDefinition.stopWords,
@@ -338,6 +336,7 @@ async function registerFullText(
 		registered.runtime.register({
 			backend,
 			readinessId: fullTextDerivedIndexReadinessId(Table, definition),
+			isCurrent: () => persistedFullTextIndexGeneration(Table, definition.name) === generation,
 			projections: new Map([
 				[
 					Table.tableId,
@@ -379,11 +378,21 @@ function fullTextIndexGeneration(Table: any, definition: FullTextDefinition): st
 	);
 }
 
+function persistedFullTextIndexGeneration(Table: any, indexName: string): string | undefined {
+	const descriptor =
+		Table.dbisDB.getSync(`${Table.tableName}/${Table.primaryKey}`) ?? Table.dbisDB.getSync(`${Table.tableName}/`);
+	const definition = descriptor?.fullTextIndexes?.find((candidate: FullTextDefinition) => candidate.name === indexName);
+	if (!definition) return;
+	return (
+		descriptor.fullTextIndexGenerations?.[indexName] ??
+		`legacy:${JSON.stringify(fullTextStorageDefinition(definition))}`
+	);
+}
+
 function fullTextDerivedIndexReadinessId(Table: any, definition: FullTextDefinition): string {
 	return `${fullTextDerivedIndexId(Table, definition.name)}:${Table.tableId}:${fullTextIndexGeneration(Table, definition)}`;
 }
 
-/** Shared readiness of a full-text index on any worker, registered or not. */
 export function fullTextDerivedIndexReadiness(Table: any, indexName: string) {
 	const definition = Table.fullTextIndexes.find((candidate: FullTextDefinition) => candidate.name === indexName);
 	if (!definition) throw new ClientError(`'${indexName}' is not a full-text index`, 400);

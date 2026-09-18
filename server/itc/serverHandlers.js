@@ -12,7 +12,15 @@ const harperBridge =
 	require('../../dataLayer/harperBridge/harperBridge.ts');
 const process = require('process');
 const { isMainThread, threadId, workerData } = require('node:worker_threads');
-const { resetDatabases, closeDatabaseForRestore, reloadBranchAt } = require('../../resources/databases.ts');
+const {
+	resetDatabases,
+	closeDatabaseForRestore,
+	prepareDatabaseForDrop,
+	finishDatabaseDrop,
+	cancelDatabaseDrop,
+	reloadBranchAt,
+} = require('../../resources/databases.ts');
+const { PREPARE_DATABASE_DROP_OPERATION, CANCEL_DATABASE_DROP_OPERATION } = require('../../utility/signalling.ts');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -46,6 +54,17 @@ async function schemaHandler(event) {
 	}
 
 	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
+	if (event.message?.operation === PREPARE_DATABASE_DROP_OPERATION && event.message.schema) {
+		await prepareDatabaseForDrop(event.message.schema);
+		return;
+	}
+	if (event.message?.operation === CANCEL_DATABASE_DROP_OPERATION && event.message.schema) {
+		cancelDatabaseDrop(event.message.schema);
+		return;
+	}
+	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA && event.message.schema) {
+		finishDatabaseDrop(event.message.schema);
+	}
 	// restore_backup: this thread must release its store handles so the restore can purge and
 	// rewrite the database directory. The rescan below (resetDatabases) skips reloading it while
 	// the restoring marker is present, and reloads it on the completion signal (marker gone).

@@ -4,6 +4,7 @@ class FullTextNativeTestBinding {
 	constructor() {
 		this.states = new Map();
 		this.opens = [];
+		this.resets = [];
 		this.closeAttempts = 0;
 		this.closeError = undefined;
 		this.closeErrors = new Map();
@@ -67,6 +68,7 @@ class FullTextNativeTestBinding {
 	}
 
 	async resetNativeFullTextIndex(options) {
+		this.resets.push(options);
 		const prefix = `${options.path}\0${options.indexId}\0`;
 		let removed = false;
 		for (const stateKey of this.states.keys()) {

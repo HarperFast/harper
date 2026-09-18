@@ -148,4 +148,22 @@ describe('stuck worker diagnostics on ITC ack timeout', function () {
 		assert.equal(logLine('not acknowledged'), undefined);
 		assert.equal(logLine('Worker thread'), undefined);
 	});
+
+	it('rejects a strict broadcast when a worker reports failure', async function () {
+		const worker = await startFixtureWorker('reject');
+		started.push(worker);
+		await assert.rejects(
+			broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 2000, { rejectOnError: true }),
+			/quiescence failed/
+		);
+	});
+
+	it('rejects a strict broadcast when a worker does not acknowledge', async function () {
+		const worker = await startFixtureWorker('block');
+		started.push(worker);
+		await assert.rejects(
+			broadcastWithAcknowledgement({ type: 'diagnostic-probe' }, 100, { rejectOnError: true }),
+			/not acknowledged/
+		);
+	});
 });

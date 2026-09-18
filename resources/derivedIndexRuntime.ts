@@ -172,6 +172,8 @@ export type DerivedIndexRegistration = {
 	backend: DerivedIndexBackend;
 	/** Shared readiness identity; defaults to the stable backend/ownership id. */
 	readinessId?: string;
+	/** False permanently retires a registration whose durable schema generation is no longer current. */
+	isCurrent?: () => boolean;
 	projections: ReadonlyMap<number, (record: unknown) => unknown>;
 	options?: DerivedIndexRunnerOptions;
 };
@@ -992,6 +994,7 @@ class DerivedIndexRunner {
 		this.#unreadSince = this.#options.now();
 		this.#reachedEndOfLog = false;
 		try {
+			if (!this.#continueIfCurrent()) return;
 			if (!reviving) this.#ownerEpoch = this.#mintEpoch();
 			this.status = { state: 'running', ownerEpoch: this.#ownerEpoch };
 			const condemned = this.#readCondemnation();
@@ -1171,6 +1174,7 @@ class DerivedIndexRunner {
 
 	#drain() {
 		if (!this.#owned || this.#stopped || this.#rebuilding) return;
+		if (!this.#continueIfCurrent()) return;
 		if (this.#canRebuild() && this.#takeSharedRebuildRequest()) {
 			if (this.#rebuildTimer) {
 				clearTimeout(this.#rebuildTimer);
@@ -1857,6 +1861,7 @@ class DerivedIndexRunner {
 
 	#startRebuild() {
 		if (!this.#owned || this.#rebuilding || this.#stopped) return;
+		if (!this.#continueIfCurrent()) return;
 		this.#rebuildRequested = false;
 		this.#takeSharedRebuildRequest();
 		this.#rebuilding = true;
@@ -1917,7 +1922,7 @@ class DerivedIndexRunner {
 	async #runRebuild(generation: number) {
 		const backend = this.#registration.backend;
 		await this.#quiesce(this.#ownerEpoch!);
-		if (!this.#live(generation)) return;
+		if (!this.#live(generation) || !this.#continueIfCurrent()) return;
 		this.#ownerEpoch = this.#mintEpoch();
 		this.status = { state: 'rebuilding', ownerEpoch: this.#ownerEpoch };
 		this.#publishReadiness('rebuilding');
@@ -1988,7 +1993,7 @@ class DerivedIndexRunner {
 
 	async #deliverRebuildChunk(chunk: Chunk, generation: number) {
 		while (true) {
-			if (!this.#live(generation)) return;
+			if (!this.#live(generation) || !this.#continueIfCurrent()) return;
 			const result = this.#deliver(chunk.batch);
 			if (result === undefined) {
 				if (this.#live(generation)) throw new Error('rebuild delivery was rejected');
@@ -2117,6 +2122,19 @@ class DerivedIndexRunner {
 		Atomics.store(words, READINESS_REASON, READINESS_REASONS.indexOf(reason));
 		Atomics.store(words, READINESS_ATTEMPTS, state === 'ready' ? 0 : this.#rebuildAttempts);
 		Atomics.store(words, READINESS_STATE, READINESS_STATES.indexOf(state));
+	}
+
+	#continueIfCurrent(): boolean {
+		try {
+			if (this.#registration.isCurrent?.() !== false) return true;
+			void this.stop();
+		} catch (error) {
+			logger.warn?.(`Derived index '${this.id}' could not verify its durable generation; retrying`, error);
+			this.#lockBackoff = true;
+			this.#release();
+			this.#armLockRetry(this.#options.rebuildBackoffMilliseconds);
+		}
+		return false;
 	}
 
 	#release() {

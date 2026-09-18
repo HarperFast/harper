@@ -14,28 +14,35 @@ module.exports = {
 };
 let serverItcHandlers;
 onMessageFromWorkers(async (event, sender) => {
-	serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
-	validateEvent(event);
-	if (serverItcHandlers[event.type]) {
-		await serverItcHandlers[event.type](event);
+	let error;
+	try {
+		serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
+		validateEvent(event);
+		if (serverItcHandlers[event.type]) {
+			await serverItcHandlers[event.type](event);
+		}
+	} catch (caught) {
+		error = caught;
 	}
-	if (event.requestId && sender)
+	if (event.requestId && sender) {
 		sender.postMessage({
 			type: 'ack',
 			id: event.requestId,
+			...(error ? { error: { message: error.message || String(error) } } : {}),
 		});
+	} else if (error) throw error;
 });
 
 /**
  * Emits an ITC event to the ITC server.
  * @param event
  */
-function sendItcEvent(event) {
+function sendItcEvent(event, options = undefined) {
 	// Always stamp originator so handlers can send direct responses back.
 	// The main thread's threadId is 0 (worker_threads convention); parentPort.threadId
 	// is set to 0 in workers, so sendToThread(0, ...) routes back to main.
 	if (event.message) event.message.originator = threadId;
-	return broadcastWithAcknowledgement(event);
+	return broadcastWithAcknowledgement(event, undefined, options);
 }
 
 /**

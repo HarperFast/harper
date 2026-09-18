@@ -2575,9 +2575,13 @@ anyway.
 
 ### Ownership and wake-up
 
-Each worker holds one `DerivedIndexRuntime` per RocksDB root store, with the same schema-derived
-registrations on every worker; the drain is lock-elected, registration is not. The runtime listens
-to the root store's `committed` event and coalesces wakes through `setImmediate`. The winner keeps a
+Each worker holds one `DerivedIndexRuntime` per RocksDB root store. HNSW keeps its existing model:
+every worker registers the schema-derived backend and the drain is lock-elected. Native full text
+uses designated registration instead: worker 0 owns shared-database writers, and the dedicated
+application worker that opened a private branch owns that branch's writers. Job workers and other
+pool workers install only the table-level readiness observer. They never open Tantivy writers.
+The runtime listens to the root store's `committed` event and coalesces wakes through `setImmediate`.
+The winner keeps a
 reusable aggregate iterator (`RocksTransactionLogStore.getRange` with `startByLog`, `exactStart`,
 `resumeAfterExactStart`, `includeLogName`) and drains for bounded count, bytes and wall time per
 turn. Ownership is sticky: the lock is not one record writers take, so holding it across turns
@@ -2686,20 +2690,27 @@ cursor is backend-owned and validation is Harper's.
 ### Schema activation
 
 `resources/derivedIndexes.ts` is the single schema-to-runtime registry for both HNSW and full text.
-Every worker registers the same stable logical backend ids against its database audit store; the
-runtime's existing lock elects the only writer. A table redefinition marks its previous installation
-closing before installing replacements, while asynchronous shutdown remains fenced behind the same
-backend lock. This also prevents a catalog rescan from leaving duplicate writers when the prior
-`Table` class is no longer reachable.
+HNSW registrations continue to run on every worker and use the runtime lock for election. Full-text
+registrations run only on the designated database or branch writer described above. The remaining
+workers still install the table registration and read generation-scoped readiness from shared
+memory, so cache eviction auditing and query availability do not depend on owning a writer. A table
+redefinition marks its previous installation closing before installing replacements, while
+asynchronous shutdown remains fenced behind the same backend lock. This also prevents a catalog
+rescan from leaving duplicate writers when the prior `Table` class is no longer reachable.
 
 Full-text activation reserves the table in `derivedIndexRegistry` before awaiting the native
 binding. That provisional registration makes cache eviction write its local-only audit marker even
 during startup or a failed native setup; the runner adds its own reference after activation, and
 both references are released with the table installation. Without the provisional reference, a
 reused native index could retain a document evicted while no runner was registered.
-Full-text readiness is generation-scoped while the elected-writer lock remains target-scoped. A
-replacement generation therefore cannot inherit `ready` from the generation it supersedes, but the
-two generations still cannot own writers concurrently. Before a runner exists, its local
+Full-text readiness is generation-scoped while the writer lock remains target-scoped. The lock key
+deliberately excludes the generation: old and replacement schemas must serialize on the same native
+directory. After acquiring that lock and before inspection, reset, open, normal delivery, or each
+rebuild chunk, the runner rereads the durable catalog generation. A stale registration retires
+itself without touching the replacement generation's readiness. A catalog read failure releases the
+lock and retries rather than assuming authority. A replacement generation therefore cannot inherit
+`ready` from the generation it supersedes, and an overlapping old worker cannot reset or write the
+replacement's native directory. Before a runner exists, its local
 installation masks shared readiness as `unknown`; native activation failure changes that local state
 to `unavailable` and prevents reuse, so a later schema load retries activation without poisoning a
 healthy peer. A table drop clears its installation only after shutdown proves quiescence; a rejected
@@ -2709,6 +2720,16 @@ that closing handle on the replacement table until the same proof completes. Onl
 asynchronous close path that obtains the same proof on every table before it releases RocksDB handles;
 a failed proof leaves those handles open, so the restore's existing closed-database check aborts before
 purging files.
+
+A database drop uses a stricter cross-worker barrier than ordinary schema broadcasts. The initiating
+worker first marks the database as dropping, then every live peer marks it likewise, quiesces all
+derived-index installations associated with its audit store, closes its handles, and acknowledges
+success. A negative acknowledgement or timeout rejects the drop before destructive storage work.
+While marked, scans and on-demand lookup cannot reopen the database. Failure broadcasts cancellation
+and reloads the database; successful deletion sends the ordinary schema event, which clears the
+marker. Branch shutdown and job-worker teardown await the same derived-index quiescence before
+closing their RocksDB handles. A process exit remains the final safety boundary if orderly teardown
+itself cannot complete.
 
 An `@fullText` index creates no RocksDB column family. Its native directory is rooted inside the
 database directory and selected by the lifecycle's hash of `<table>/<index>`. RocksDB remains the
@@ -3014,10 +3035,9 @@ estimated source bytes are a scheduling bound and allow one oversized batch when
 empty, matching HNSW and preventing one large record from permanently stalling the index. Exact
 wire limits belong to Fulltext.
 
-When schema registration is added, it must build the runtime projection from the same declared field
-list passed to Fulltext when the native schema is opened. Unknown projection fields are an integration
-error that the registration path must fail rather than silently drop. This slice does not register
-schemas.
+Schema registration builds the runtime projection from the same declared field list passed to
+Fulltext when the native schema is opened. Unknown projection fields are an integration error that
+the registration path fails rather than silently dropping.
 
 In one serialized drain, Harper passes one logical mutation batch to `applyMutationBatch()`. The
 wrapper owns FTMB encoding, frame partitioning, exact `maxBatchBytes` enforcement, native frame

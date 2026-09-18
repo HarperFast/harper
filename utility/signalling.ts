@@ -6,6 +6,9 @@ import ITCEventObject from '../server/itc/utility/ITCEventObject.js';
 let serverItcHandlers;
 import { sendItcEvent } from '../server/threads/itc.js';
 
+export const PREPARE_DATABASE_DROP_OPERATION = 'prepare-database-drop';
+export const CANCEL_DATABASE_DROP_OPERATION = 'cancel-database-drop';
+
 // Await BOTH the local handler and the cross-worker broadcast. The local handler is what
 // rebuilds THIS thread's cache; firing it un-awaited let the originating worker return success
 // before its own cache caught up, so the next request it served observed stale state even though
@@ -21,6 +24,11 @@ export async function signalSchemaChange(message: any) {
 	} catch (err) {
 		hdbLogger.error(err);
 	}
+}
+
+export async function signalSchemaChangeToPeers(message: any, rejectOnError = false) {
+	const itcEventSchema = new ITCEventObject(hdbTerms.ITC_EVENT_TYPES.SCHEMA, message);
+	await sendItcEvent(itcEventSchema, { rejectOnError });
 }
 
 /**

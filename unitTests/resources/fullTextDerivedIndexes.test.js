@@ -498,6 +498,40 @@ describe('@fullText derived-index activation', () => {
 		assert.strictEqual(binding.opens.length, openCount);
 	});
 
+	it('retires a writer when the durable catalog advances to another generation', async () => {
+		const database = `fulltext-generation-fence-${Date.now()}`;
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: [
+				{ name: 'id', type: 'ID', isPrimaryKey: true },
+				{ name: 'title', type: 'String' },
+			],
+			fullTextIndexes: [definition('title')],
+		});
+		await Product.put('shoe-1', { title: 'Trail shoe' });
+		await waitFor(() => fullTextDerivedIndexReadiness(Product, 'search').state === 'ready', 30_000);
+		const resetCount = binding.resets.length;
+		const primaryEntry = [...Product.dbisDB.getRange({ start: 'Product/', end: 'Product0' })].find(
+			({ value }) => value.isPrimaryKey
+		);
+		Product.dbisDB.putSync(primaryEntry.key, {
+			...primaryEntry.value,
+			fullTextIndexGenerations: { ...primaryEntry.value.fullTextIndexGenerations, search: 'new-generation' },
+		});
+		await Product.dbisDB.committed;
+
+		await Product.put('shoe-2', { title: 'Road shoe' });
+
+		await waitFor(() => binding.closeAttempts > 0, 30_000);
+		assert.strictEqual(binding.resets.length, resetCount, 'a stale writer must not reset the newer generation');
+		const state = binding.states.get(
+			`${binding.opens[0].path}\0${binding.opens[0].indexId}\0${binding.opens[0].generation}`
+		);
+		assert.strictEqual(state.documents.has('shoe-2'), false);
+	});
+
 	it('preserves the native generation when only query behavior changes', async () => {
 		const database = `fulltext-activation-query-options-${Date.now()}`;
 		const attributes = () => [

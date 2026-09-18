@@ -1,6 +1,15 @@
 import searchValidator from '../../validation/searchValidator.ts';
 import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.ts';
-import { table, getDatabases, database, dropDatabase, type Table } from '../../resources/databases.ts';
+import {
+	table,
+	getDatabases,
+	database,
+	dropDatabase,
+	beginDatabaseDrop,
+	finishDatabaseDrop,
+	cancelDatabaseDrop,
+	type Table,
+} from '../../resources/databases.ts';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
 import SearchObject from '../SearchObject.ts';
 import {
@@ -186,8 +195,23 @@ export class ResourceBridge extends BridgeMethods {
 	}
 
 	async dropSchema(dropSchemaObj) {
-		await dropDatabase(dropSchemaObj.schema);
-		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema));
+		const databaseName = dropSchemaObj.schema;
+		beginDatabaseDrop(databaseName);
+		try {
+			await signalling.signalSchemaChangeToPeers(
+				new SchemaEventMsg(process.pid, signalling.PREPARE_DATABASE_DROP_OPERATION, databaseName),
+				true
+			);
+			await dropDatabase(databaseName);
+			finishDatabaseDrop(databaseName);
+			await signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, databaseName));
+		} catch (error) {
+			cancelDatabaseDrop(databaseName);
+			await signalling.signalSchemaChangeToPeers(
+				new SchemaEventMsg(process.pid, signalling.CANCEL_DATABASE_DROP_OPERATION, databaseName)
+			);
+			throw error;
+		}
 	}
 
 	async updateRecords(updateObj) {

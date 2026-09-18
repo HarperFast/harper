@@ -529,13 +529,13 @@ function fullTextIndexGenerations(
 	for (const definition of nextDefinitions) {
 		const previous = previousByName.get(definition.name);
 		const generation = durable[definition.name];
-		if (
+		const storageUnchanged =
 			previous &&
-			typeof generation === 'string' &&
-			generation.length > 0 &&
-			JSON.stringify(fullTextStorageDefinition(previous)) === JSON.stringify(fullTextStorageDefinition(definition))
-		) {
-			generations[definition.name] = generation;
+			JSON.stringify(fullTextStorageDefinition(previous)) === JSON.stringify(fullTextStorageDefinition(definition));
+		if (storageUnchanged) {
+			if (typeof generation === 'string' && generation.length > 0) generations[definition.name] = generation;
+			else if (createMissing)
+				generations[definition.name] = `legacy:${JSON.stringify(fullTextStorageDefinition(definition))}`;
 		} else if (createMissing) generations[definition.name] = randomBytes(16).toString('hex');
 	}
 	return generations;
@@ -638,6 +638,7 @@ function clearInterruptedDropEntries(storePath: string, tableName: string) {
 	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
 }
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
+const databasesBeingDropped = new Set<string>();
 
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
@@ -695,6 +696,7 @@ export function getDatabases(): Databases {
 			// branch directories are process-local derivatives, never databases in their own right
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
+			if (databasesBeingDropped.has(dbName)) continue;
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (blockedByRestore.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
@@ -758,6 +760,7 @@ export function getDatabases(): Databases {
 				const blockedByRestore = databasesBlockedByRestore(databasePath);
 				for (const databaseEntry of entries) {
 					if (databaseEntry.name.endsWith(MIGRATING_DIR_SUFFIX)) continue; // migration staging dir
+					if (databasesBeingDropped.has(dbName)) continue;
 					if (databaseEntry.name === RESTORE_META_DIR) continue; // reserved restore-metadata dir
 					if (databaseEntry.name === BRANCH_ROOT_DIR) continue; // reserved branch root
 					if (blockedByRestore.has(basename(databaseEntry.name, '.mdb'))) continue;
@@ -1283,6 +1286,7 @@ function initStores(
 
 	for (const [tableName, tableDef] of tablesToLoad) {
 		if (fullTextActivationRepairs.has(fullTextActivationRepairKey(path, tableName))) continue;
+		if (!tableDef.primary?.fullTextIndexes?.length) continue;
 		try {
 			if (assertCatalogFullTextActivation(tableName, tableDef).length === 0) continue;
 		} catch (error) {
@@ -1632,7 +1636,7 @@ export interface BranchDatabase {
 	 * a relationship whose target the application also branched against that branch.
 	 */
 	relatedBranches?: Map<string, BranchDatabase>;
-	close(): void;
+	close(): Promise<void>;
 }
 
 /** `undefined` marks a path reserved by an open still in flight, which owns it just as firmly. */
@@ -1912,6 +1916,7 @@ export function openBranchDatabase(
 		throw error;
 	}
 	let closed = false;
+	let closing: Promise<void> | undefined;
 	const branch: BranchDatabase = {
 		tables,
 		rootStore,
@@ -1923,13 +1928,20 @@ export function openBranchDatabase(
 		close() {
 			// guard on the handle, not on the registrations: those are keyed by path, and a closed
 			// branch frees its path, so a stale handle would otherwise tear down its successor
-			if (closed) return;
-			closed = true;
-			openBranches.delete(path);
-			releaseBranchIdentity(storeName);
-			rocksdbDatabaseEnvs.delete(path);
-			manageThreads.markBranchStorePath(path, false);
-			closeBranchHandles(path, rootStore, openedStores, tables);
+			if (closed) return Promise.resolve();
+			if (closing) return closing;
+			closing = (async () => {
+				await quiesceDerivedIndexes(tables, 'branch shutdown', (rootStore as any).auditStore);
+				closed = true;
+				openBranches.delete(path);
+				releaseBranchIdentity(storeName);
+				rocksdbDatabaseEnvs.delete(path);
+				manageThreads.markBranchStorePath(path, false);
+				closeBranchHandles(path, rootStore, openedStores, tables);
+			})().finally(() => {
+				if (!closed) closing = undefined;
+			});
+			return closing;
 		},
 	};
 	openBranches.set(path, branch);
@@ -1980,8 +1992,8 @@ function closeBranchHandles(
 }
 
 /** Branches are process-local, so this is shutdown, not a data operation. */
-export function closeBranchDatabases(): void {
-	for (const branch of [...openBranches.values()]) branch?.close();
+export async function closeBranchDatabases(): Promise<void> {
+	await Promise.all([...openBranches.values()].map((branch) => branch?.close()));
 }
 
 export function resetDatabases() {
@@ -2115,6 +2127,11 @@ export function resolveDatabasePath(databaseName: string): string {
  */
 export function database({ database: databaseName, table: tableName }) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
+	if (databasesBeingDropped.has(databaseName)) {
+		const error: any = new Error(`Database '${databaseName}' is being dropped`);
+		error.statusCode = 409;
+		throw error;
+	}
 	getDatabases();
 	ensureDB(databaseName);
 	const definedDatabase = definedDatabases.get(databaseName);
@@ -2213,10 +2230,15 @@ function lockDatabaseForDrop(dbPath: string, databaseName: string, held: Restore
 	held.push(lock);
 }
 
-async function quiesceDatabaseDerivedIndexes(databaseName: string, dbTables: Tables, operation: string): Promise<void> {
+async function quiesceDerivedIndexes(
+	dbTables: Tables,
+	operation: string,
+	additionalAuditStore?: RocksTransactionLogStore
+): Promise<void> {
 	while (true) {
 		const derivedIndexTables = new Map<any, any[]>();
 		const auditStores = new Set<RocksTransactionLogStore>();
+		if (additionalAuditStore) auditStores.add(additionalAuditStore);
 		for (const table of Object.values(dbTables) as any[]) {
 			if (table.auditStore) auditStores.add(table.auditStore);
 			const runtime = table.derivedIndexRuntime;
@@ -2225,8 +2247,6 @@ async function quiesceDatabaseDerivedIndexes(databaseName: string, dbTables: Tab
 			if (runtimeTables) runtimeTables.push(table);
 			else derivedIndexTables.set(runtime, [table]);
 		}
-		const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
-		if (definedRoot?.auditStore) auditStores.add(definedRoot.auditStore);
 		for (const auditStore of auditStores)
 			for (const runtime of getDerivedIndexInstallations(auditStore))
 				if (!derivedIndexTables.has(runtime)) derivedIndexTables.set(runtime, []);
@@ -2266,6 +2286,11 @@ async function quiesceDatabaseDerivedIndexes(databaseName: string, dbTables: Tab
 			for (const table of runtimeTables)
 				if (table.derivedIndexRuntime === runtime) table.derivedIndexRuntime = undefined;
 	}
+}
+
+async function quiesceDatabaseDerivedIndexes(databaseName: string, dbTables: Tables, operation: string): Promise<void> {
+	const definedRoot = (definedDatabases?.get(databaseName) as any)?.rootStore;
+	await quiesceDerivedIndexes(dbTables, operation, definedRoot?.auditStore);
 }
 
 /**
@@ -2329,7 +2354,8 @@ export async function dropDatabase(databaseName) {
 				}
 			}
 		} else {
-			rootStore = database({ database: databaseName, table: null });
+			rootStore = (definedDatabases?.get(databaseName) as any)?.rootStore;
+			if (!rootStore) throw new Error(`Database '${databaseName}' has no open root store`);
 			// a tableless database resolves its root store here rather than in the loop above, so take
 			// the drop lock now (still before any destructive step)
 			if (rootStore instanceof RocksDatabase) lockDatabaseForDrop(rootStore.path, databaseName, restoreLocks);
@@ -2417,6 +2443,29 @@ export async function closeDatabaseForRestore(databaseName: string): Promise<boo
 	return closeDatabase(databaseName);
 }
 
+export async function prepareDatabaseForDrop(databaseName: string): Promise<void> {
+	databasesBeingDropped.add(databaseName);
+	try {
+		await closeDatabaseForRestore(databaseName);
+	} catch (error) {
+		databasesBeingDropped.delete(databaseName);
+		throw error;
+	}
+}
+
+export function beginDatabaseDrop(databaseName: string): void {
+	databasesBeingDropped.add(databaseName);
+}
+
+export function finishDatabaseDrop(databaseName: string): void {
+	databasesBeingDropped.delete(databaseName);
+}
+
+export function cancelDatabaseDrop(databaseName: string): void {
+	if (!databasesBeingDropped.delete(databaseName)) return;
+	resetDatabases();
+}
+
 /**
  * Close every RocksDB (user) database this thread has open, releasing its native handles.
  *
@@ -2433,8 +2482,8 @@ export async function closeDatabaseForRestore(databaseName: string): Promise<boo
  * Branches are invisible to the loop below but hold handles from the same registry, so this — the
  * thread's one teardown entry point — closes them too.
  */
-export function closeLoadedDatabases(): void {
-	closeBranchDatabases();
+export async function closeLoadedDatabases(): Promise<void> {
+	await closeBranchDatabases();
 	// snapshot the names first: closeDatabase() deletes from `databases` as it goes
 	for (const databaseName of Object.keys(databases)) {
 		const dbTables = databases[databaseName];
@@ -2451,7 +2500,7 @@ export function closeLoadedDatabases(): void {
 		if (!isRocks && (definedDatabases?.get(databaseName) as any)?.rootStore instanceof RocksDatabase) {
 			isRocks = true;
 		}
-		if (isRocks) closeDatabase(databaseName);
+		if (isRocks) await closeDatabaseForRestore(databaseName);
 	}
 }
 // HNSW_NO_AUTOVERSION kill-switch: when set, a NEW index initializes as legacy rather than
@@ -3692,7 +3741,6 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 	}
 	const canReuseFullTextRuntime = canReuseDerivedIndexRuntime(Table, previousFullTextStorageKey, previousHasNativeHnsw);
 	// Query behavior is read from the live schema and does not require a second writer for the same generation.
-	// HNSW keeps the existing replacement path because its registration also captures computed resolvers.
 	if (!canReuseFullTextRuntime) {
 		void Table.derivedIndexRuntime?.close();
 		Table.derivedIndexRuntime = attachDerivedIndexes(Table);

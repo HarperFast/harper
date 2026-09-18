@@ -205,8 +205,8 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		await BranchSource.primaryStore.rootStore.createCheckpoint(checkpointDir);
 	});
 
-	afterEach(function () {
-		closeBranchDatabases();
+	afterEach(async function () {
+		await closeBranchDatabases();
 	});
 
 	after(function () {
@@ -250,9 +250,9 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		assert.throws(() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'), /already open/);
 	});
 
-	it('closes what nothing else can: the store is gone from the env map after close', function () {
+	it('closes what nothing else can: the store is gone from the env map after close', async function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
-		branch.close();
+		await branch.close();
 
 		assert.doesNotThrow(
 			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
@@ -290,7 +290,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		);
 	});
 
-	it('refuses an on-demand database() open of a directory a branch owns', function () {
+	it('refuses an on-demand database() open of a directory a branch owns', async function () {
 		const { database } = require('#src/resources/databases');
 		// database() resolves an unconfigured name against the same root the base database sits in
 		const probeDir = join(dirname(databases.branchbase.BranchSource.primaryStore.rootStore.path), 'branchdbprobe');
@@ -305,34 +305,34 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 			assert.throws(() => database({ database: 'branchdbprobe' }), /scope-private branch/);
 			assert.strictEqual(branch.rootStore.status, 'open', 'the branch store must survive the refused open');
 		} finally {
-			branch?.close();
+			await branch?.close();
 			rmSync(probeDir, { recursive: true, force: true });
 		}
 	});
 
-	it('releases every native handle it opened, not just the root', function () {
+	it('releases every native handle it opened, not just the root', async function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 		const branchPath = branch.rootStore.path;
 		assert.ok(refCountFor(branchPath) > 0, 'the branch should hold native handles while open');
 
-		branch.close();
+		await branch.close();
 
 		assert.strictEqual(refCountFor(branchPath), 0, 'close() must release every column family it opened');
 	});
 
-	it('tolerates a repeated close', function () {
+	it('tolerates a repeated close', async function () {
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
-		branch.close();
-		assert.doesNotThrow(() => branch.close(), 'a second close must not close the store twice');
+		await branch.close();
+		await assert.doesNotReject(() => branch.close(), 'a second close must not close the store twice');
 		assert.strictEqual(refCountFor(branch.rootStore.path), 0, 'a second close must not double-release');
 	});
 
-	it('a stale handle closed twice does not tear down a later open of the same directory', function () {
+	it('a stale handle closed twice does not tear down a later open of the same directory', async function () {
 		const stale = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
-		stale.close();
+		await stale.close();
 		const live = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 
-		stale.close();
+		await stale.close();
 
 		assert.throws(
 			() => openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase'),
@@ -342,13 +342,13 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 		assert.ok(refCountFor(live.rootStore.path) > 0, 'the live branch must still hold its handles');
 	});
 
-	it('drops the memoized blob roots pinning the store', function () {
+	it('drops the memoized blob roots pinning the store', async function () {
 		const { databasePaths, getRootBlobPathsForDB } = require('#src/resources/blob');
 		const branch = openBranchDatabase(checkpointDir, 'branchbase', 'appA__branchbase');
 		getRootBlobPathsForDB(branch.rootStore);
 		assert.ok(databasePaths.has(branch.rootStore), 'resolving blob roots memoizes them against the store');
 
-		branch.close();
+		await branch.close();
 
 		assert.ok(!databasePaths.has(branch.rootStore), 'close() must drop the memoized blob roots');
 	});
@@ -381,7 +381,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 				'adoption would overwrite the store identity the branch blob roots resolve from'
 			);
 		} finally {
-			branch?.close();
+			await branch?.close();
 			rmSync(probeDir, { recursive: true, force: true });
 		}
 	});
@@ -399,7 +399,7 @@ describe('openBranchDatabase (scope-private graph, harper#643)', () => {
 			await runReclamationHandlers();
 			assert.ok(queried.includes(branchPath), 'opening a branch registers a reclamation handler for its path');
 
-			branch.close();
+			await branch.close();
 			queried.length = 0;
 			await runReclamationHandlers();
 
