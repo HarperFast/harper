@@ -32,7 +32,7 @@ class ControlledIndex {
 	}
 
 	flushDerived() {
-		const barrier = { appliedAtStart: this.applied.length, startedAt: Date.now() };
+		const barrier = { appliedAtStart: this.applied.length, startedAt: performance.now() };
 		barrier.settled = new Promise((settle, fail) => Object.assign(barrier, { settle, fail }));
 		this.barriers.push(barrier);
 		return barrier.settled;
@@ -72,7 +72,6 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 	};
 
 	beforeEach(() => start());
-	// Every case leaves batches queued; without this their busy-spin application runs into the next.
 	// Not awaited: a case that leaves a barrier unsettled would never resolve the shutdown.
 	afterEach(() => void backend.shutdown(OWNER_EPOCH).catch(() => {}));
 
@@ -151,18 +150,14 @@ describe('HnswDerivedIndexBackend durability barriers', () => {
 		const first = await waitFor(() => index.barriers[0], 5000);
 		await new Promise((resolve) => setTimeout(resolve, barrierMillis));
 		first.settle();
-		const settledAt = Date.now();
+		const settledAt = performance.now();
 		const cost = settledAt - first.startedAt;
-		// Application resumes immediately; the next request may not interrupt it until the idle the
-		// last barrier earned has passed, so the drain is never spent mostly inside barriers.
 		await waitFor(() => index.applied.length > first.appliedAtStart, 5000);
 		backend.flush('age');
 		const second = await waitFor(() => index.barriers[1], 5000);
-		// The backend times the barrier from before the mock records `startedAt`, so its own measure of
-		// the cost is at least this one; comparing against this one cannot overstate the idle owed.
 		assert(
 			second.startedAt - settledAt >= 3 * cost,
-			`second barrier interrupted ${second.startedAt - settledAt} ms after a ${cost} ms barrier`
+			`second barrier interrupted ${Math.round(second.startedAt - settledAt)} ms after a ${Math.round(cost)} ms barrier`
 		);
 		second.settle();
 	});
