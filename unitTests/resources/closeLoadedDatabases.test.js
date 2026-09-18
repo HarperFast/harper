@@ -297,6 +297,32 @@ describe('RocksDB handle release', function () {
 		);
 	});
 
+	it('closes captured peer handles when a rescan evicts the database during quiescence', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-rescan-race';
+		const Table = table({
+			table: 'pkg',
+			database: databaseName,
+			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
+		});
+		await Table.schemaChangeOperation;
+		if (!(Table.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		const rootStore = Table.primaryStore.rootStore;
+		let release;
+		const barrier = new Promise((resolve) => (release = resolve));
+		Table.derivedIndexRuntime = { close: () => barrier };
+		const originator = 925_000 + Math.floor(Math.random() * 10_000);
+		const preparing = prepareDatabaseForDrop(databaseName, originator);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		assert.strictEqual(resetDatabases()[databaseName], undefined, 'the peer rescan should evict the marked database');
+		release();
+		await preparing;
+
+		assert.strictEqual(refCountFor(rootStore.path), 0, 'PREPARE must close the table graph captured before the rescan');
+		cancelDatabaseDrop(databaseName, originator);
+	});
+
 	it('rejects concurrent drop coordinators without replacing the active marker', async function () {
 		this.timeout(30000);
 		const databaseName = 'close-drop-concurrent-coordinator';

@@ -2421,7 +2421,10 @@ export async function dropDatabase(databaseName) {
  */
 const pendingDatabaseStoreCloses = new Map<string, Map<any, string>>();
 export function closeDatabase(databaseName: string, failOnCloseError = false): boolean {
-	const dbTables = databases[databaseName];
+	return closeDatabaseTables(databaseName, databases[databaseName], failOnCloseError);
+}
+
+function closeDatabaseTables(databaseName: string, dbTables: Tables | undefined, failOnCloseError: boolean): boolean {
 	let pendingCloses = pendingDatabaseStoreCloses.get(databaseName);
 	const hadPendingCloses = Boolean(pendingCloses?.size);
 	if (!dbTables && !hadPendingCloses) return false;
@@ -2496,7 +2499,7 @@ export async function closeDatabaseForRestore(databaseName: string, dropOriginat
 	await quiesceDatabaseDerivedIndexes(databaseName, dbTables, 'database restore');
 	if (dropOriginator !== undefined && databasesBeingDropped.get(databaseName) !== dropOriginator)
 		throw new Error(`Database drop preparation for '${databaseName}' was canceled before storage close`);
-	return closeDatabase(databaseName, true);
+	return closeDatabaseTables(databaseName, dbTables, true);
 }
 
 export async function prepareDatabaseForDrop(databaseName: string, originator = threadId): Promise<void> {
