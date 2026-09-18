@@ -67,7 +67,11 @@ async function schemaHandler(event) {
 		cancelDatabaseDrop(event.message.schema, event.message.originator, event.message.dropAttemptId);
 		return;
 	}
-	if (event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA && event.message.schema) {
+	if (
+		(event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_SCHEMA ||
+			event.message?.operation === hdbTerms.OPERATIONS_ENUM.DROP_TABLE) &&
+		event.message.schema
+	) {
 		if (typeof event.message.dropAttemptId === 'string' && event.message.dropAttemptId)
 			finishDatabaseDrop(event.message.schema, event.message.originator, event.message.dropAttemptId);
 	}

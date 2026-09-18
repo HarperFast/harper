@@ -51,6 +51,7 @@ export async function signalSchemaChange(message: any, options?: SchemaSignalOpt
 		}
 	} catch (err) {
 		hdbLogger.error(err);
+		if (options?.rejectOnError) throw err;
 	}
 }
 

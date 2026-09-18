@@ -442,6 +442,31 @@ describe('RocksDB handle release', function () {
 		assert.ok(getDatabases()[databaseName], 'a dead coordinator must not leave the database name fenced forever');
 	});
 
+	it('clears every database marker owned by an exited coordinator before reloading', async function () {
+		this.timeout(30000);
+		const firstName = 'close-drop-originator-exit-first';
+		const secondName = 'close-drop-originator-exit-second';
+		const firstRoot = openRocksDb(firstName);
+		const secondRoot = openRocksDb(secondName);
+		if (!(firstRoot instanceof RocksDatabase) || !(secondRoot instanceof RocksDatabase)) return this.skip();
+		await Promise.all([
+			getDatabases()[firstName].pkg.schemaChangeOperation,
+			getDatabases()[secondName].pkg.schemaChangeOperation,
+		]);
+		const originator = 910_000 + Math.floor(Math.random() * 10_000);
+
+		await prepareDatabaseForDrop(firstName, originator, 'first-attempt');
+		await prepareDatabaseForDrop(secondName, originator, 'second-attempt');
+		cancelDatabaseDropsFromThread(originator);
+
+		assert.ok(getDatabases()[firstName]);
+		assert.ok(getDatabases()[secondName]);
+		const firstAttempt = beginDatabaseDrop(firstName);
+		const secondAttempt = beginDatabaseDrop(secondName);
+		finishDatabaseDrop(firstName, undefined, firstAttempt);
+		finishDatabaseDrop(secondName, undefined, secondAttempt);
+	});
+
 	it('rejects a late drop preparation from an exited coordinator', async function () {
 		this.timeout(30000);
 		const databaseName = 'close-drop-late-originator';

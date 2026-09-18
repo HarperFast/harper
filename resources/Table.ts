@@ -15,6 +15,7 @@ import { type Database } from 'lmdb';
 import { Script } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { threadId } from 'node:worker_threads';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.ts';
 import { getThisNodeId, exportIdMapping, getNodeNameForId } from './nodeIdMapping.ts';
 import lodash from 'lodash';
@@ -70,7 +71,14 @@ import {
 } from '../utility/errors/hdbError.ts';
 import * as signalling from '../utility/signalling.ts';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
-import { databases, table } from './databases.ts';
+import {
+	databases,
+	table,
+	beginDatabaseDrop,
+	finishDatabaseDrop,
+	markDatabaseDropDestructive,
+	cancelDatabaseDrop,
+} from './databases.ts';
 import { notifyReplicatedApplyFailure } from './replicatedApplyFailure.ts';
 import {
 	searchByIndex,
@@ -1916,6 +1924,54 @@ export function makeTable(options) {
 
 		static async dropTable() {
 			TableResource.assertSchemaMutable('drop a table');
+			// Table destruction uses the database-level quiescence barrier. DDL is rare, and closing the
+			// database on peers reuses the worker-start fence while guaranteeing the designated native
+			// derived-index writer has released this table before its source column families are dropped.
+			const attemptId = beginDatabaseDrop(databaseName);
+			const dropMessage = (operation: string) =>
+				Object.assign(new SchemaEventMsg(process.pid, operation, databaseName, tableName), {
+					dropAttemptId: attemptId,
+				});
+			try {
+				await signalling.signalSchemaChangeToPeers(dropMessage(signalling.PREPARE_DATABASE_DROP_OPERATION), {
+					includeJobWorkers: true,
+					mainFirst: true,
+					rejectOnError: true,
+				});
+				markDatabaseDropDestructive(databaseName, threadId, attemptId);
+				await TableResource.#dropTablePrepared();
+				finishDatabaseDrop(databaseName, threadId, attemptId);
+				await signalling.signalSchemaChange(dropMessage(OPERATIONS_ENUM.DROP_TABLE), {
+					includeJobWorkers: true,
+					mainFirst: true,
+					rejectOnError: true,
+				});
+			} catch (error) {
+				const cancellationErrors: unknown[] = [];
+				try {
+					cancelDatabaseDrop(databaseName, threadId, attemptId);
+				} catch (cancelError) {
+					cancellationErrors.push(cancelError);
+				}
+				try {
+					await signalling.signalSchemaChangeToPeers(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), {
+						includeJobWorkers: true,
+						mainFirst: true,
+						rejectOnError: true,
+					});
+				} catch (cancelError) {
+					cancellationErrors.push(cancelError);
+				}
+				if (cancellationErrors.length)
+					throw new AggregateError(
+						[error, ...cancellationErrors],
+						`Table drop '${databaseName}.${tableName}' failed to cancel cleanly`
+					);
+				throw error;
+			}
+		}
+
+		static async #dropTablePrepared() {
 			// Release post-commit derived-index delivery before any destructive work: the runner's
 			// backend must have quiesced before its stores and native file are destroyed, and a
 			// same-name recreate must not race an owner still applying to the old generation.
@@ -2035,9 +2091,8 @@ export function makeTable(options) {
 				// family that poisons same-name recreates, so a genuine drop failure
 				// must surface and leave the tombstoned catalog rows for the reconcile.
 				//
-				// A drop is broadcast to every worker thread, and each holds its own
-				// handle to the same underlying column family, so a concurrent worker
-				// (or completeInterruptedDrop) may already have dropped it - surfaced
+				// Older workers and interrupted-drop recovery may already have dropped the same
+				// underlying column family before this coordinated drop reached its barrier - surfaced
 				// as "Column family already dropped!". That is the intended end state,
 				// not a failure, so tolerate it. The catalog rows are removed only if
 				// this drop's tombstone is still the live primary row: a concurrent
@@ -2106,9 +2161,6 @@ export function makeTable(options) {
 				await primaryStore.close();
 				fs.unlinkSync(primaryStore.path);
 			}
-			signalling.signalSchemaChange(
-				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName)
-			);
 		}
 		// #section: read-path
 		/**

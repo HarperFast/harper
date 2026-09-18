@@ -77,6 +77,7 @@ const FORCE_EXIT = 'force-exit';
 // Worker -> main request to push out the force-terminate backstop while the worker gracefully drains
 // in-flight work (e.g. replication blob sends) before shutdown. Carries an absolute epoch deadline.
 const EXTEND_SHUTDOWN_DEADLINE = 'extend-shutdown-deadline';
+const WORKER_DATABASE_CLOSE_STATUS = 'worker-database-close-status';
 const REGISTER_PROCESS_GROUP = 'register-process-group';
 const UNREGISTER_PROCESS_GROUP = 'unregister-process-group';
 // Worker -> main: ask whether a dead owner thread's tracked process groups have been confirmed
@@ -179,6 +180,7 @@ module.exports = {
 	setTerminateTimeout,
 	extendShutdownDeadline,
 	restoreShutdownDeadline,
+	reportWorkerDatabaseCloseStatus,
 	beginProcessShutdown,
 	registerWorkerDataProvider,
 	markDatabaseDropForWorkerStarts,
@@ -289,6 +291,23 @@ function applicationWorkerIndex() {
 function workersForApplication(application) {
 	return workers.filter((worker) => worker.application === application);
 }
+
+function forceTerminateWorker(worker) {
+	if (worker.databaseCloseFailed) {
+		harperLogger.fatal(
+			`Worker ${worker.threadId} could not release process-global database handles; exiting Harper instead of force-terminating the worker`
+		);
+		realExit(1);
+	}
+	harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
+	if (isBun) {
+		try {
+			worker.postMessage({ type: FORCE_EXIT });
+		} catch {}
+	} else {
+		worker.terminate();
+	}
+}
 /**
  * Stop one worker for good: shut it down, honour the drain extension it may ask for, force it after
  * the same backstop the rolling restart uses (FORCE_EXIT on Bun, where terminate() segfaults), and
@@ -299,14 +318,7 @@ function stopWorker(worker) {
 	return new Promise((resolve) => {
 		const armTerminate = (delay) =>
 			setTimeout(() => {
-				harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
-				if (isBun) {
-					try {
-						worker.postMessage({ type: FORCE_EXIT });
-					} catch {}
-				} else {
-					worker.terminate();
-				}
+				forceTerminateWorker(worker);
 			}, delay).unref();
 		let timeout = armTerminate(threadTerminationTimeout * 2);
 		worker.extendTerminateDeadline = (deadlineMs) => {
@@ -477,6 +489,9 @@ if (!parentPort) {
 	});
 	onMessageByType(EXTEND_SHUTDOWN_DEADLINE, (message, worker) => {
 		worker?.extendTerminateDeadline?.(message.deadlineMs);
+	});
+	onMessageByType(WORKER_DATABASE_CLOSE_STATUS, (message, worker) => {
+		if (worker) worker.databaseCloseFailed = message.failed === true;
 	});
 }
 // postMessage type listeners that are registered in other ways or can be registered later
@@ -864,15 +879,7 @@ async function restartWorkers(
 				// in case the exit inside the thread doesn't timeout, force it from the outside
 				const armTerminate = (delay) =>
 					setTimeout(() => {
-						harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
-						if (isBun) {
-							// worker.terminate() triggers a NAPI segfault in Bun; ask the worker to self-exit instead
-							try {
-								worker.postMessage({ type: FORCE_EXIT });
-							} catch {}
-						} else {
-							worker.terminate();
-						}
+						forceTerminateWorker(worker);
 					}, delay).unref();
 				let timeout = armTerminate(threadTerminationTimeout * 2);
 				// The worker can push this backstop out while it gracefully drains in-flight work (e.g. a
@@ -1506,6 +1513,10 @@ if (parentPort && workerData?.addPorts) {
 			};
 	awaitProcessGroupTermination = (ownerThreadId) =>
 		pendingProcessGroupTerminations.get(ownerThreadId) ?? Promise.resolve();
+}
+
+function reportWorkerDatabaseCloseStatus(failed) {
+	parentPort?.postMessage({ type: WORKER_DATABASE_CLOSE_STATUS, failed });
 }
 module.exports.getThreadInfo = getThreadInfo;
 module.exports.getRunningIsolatedApplications = getRunningIsolatedApplications;

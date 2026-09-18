@@ -1859,9 +1859,14 @@ Three non-obvious mechanics keep that safe:
   itself a job, so before any `restore_backup` there is always at least one exited job worker that
   touched the database. Without cleanup those leaked handles keep `registryStatus()` non-zero and
   would fail the closure check even when no component holds the database. `jobProcess` therefore
-  calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, closing every loaded
+  calls `closeLoadedDatabases()` (`resources/databases.ts`) in its `finally`, and ordinary pool
+  workers call the same teardown after servers and application scopes close. It closes every loaded
   user database on that thread (the non-enumerable `system` DB is intentionally skipped), so an
-  exited job worker leaves no residual handle to be mistaken for a live holder.
+  exited worker leaves no residual handle to be mistaken for a live holder. Pool-worker shutdown
+  retries a rejected close until the existing termination backstop fires. If the failure persists,
+  the main thread exits Harper for a clean supervisor restart rather than force-terminating the worker
+  and leaking process-global state. It never reports a clean exit while a derived writer or RocksDB
+  reference is still retained.
 - **`dropDatabase` and `restore_backup` serialize on the same lock, not a check-then-act probe.**
   A drop's `destroy()` interleaving with a restore's purge-and-copy on the same directory would gut
   a "successful" restore (or vice versa). `dropDatabase` therefore _acquires_ the restore lock
@@ -2759,9 +2764,9 @@ local reload fails, so a local recovery error cannot strand every already-prepar
 cancellation likewise still reach peers when the coordinator's own catalog rescan fails. A lost
 cancellation to a still-live peer deliberately remains fail-closed: conflicting
 preparations log the holding coordinator and return 409, and that peer may require a worker restart
-to clear the marker. Branch shutdown and job-worker teardown await the same derived-index quiescence
-before closing their RocksDB handles; teardown waits for every branch close to settle before it
-reports any failure. A process exit remains the final safety boundary if orderly teardown itself
+to clear the marker. Branch, job-worker, and ordinary pool-worker teardown await the same derived-index
+quiescence before closing their RocksDB handles; teardown waits for every branch close to settle before
+it reports any failure. A process exit remains the final safety boundary if orderly teardown itself
 cannot complete. Strict acknowledgements preserve a peer's 409 only for an actual reported conflict;
 timeouts, exits, and internal close failures remain server errors instead of being flattened into a
 retryable client conflict.
@@ -2769,6 +2774,14 @@ For RocksDB, `RocksDatabase.destroy()` is the final native backstop: rocksdb-js 
 descriptor, closes its attached resources, and throws if any descriptor reference remains; it calls
 RocksDB's destructive API only after that reference check succeeds. Harper therefore does not add a
 second registry-polling protocol to database drop.
+
+Table drop reuses this database-level quiescence barrier rather than maintaining a second table-marker
+protocol. Every peer temporarily closes the database, which releases worker 0's native full-text writer;
+the coordinator then marks the barrier destructive and drops only the target table. The ordinary
+`drop_table` schema event carries the attempt token, clears the matching marker, and reloads the remaining
+tables. This deliberately trades a brief database-wide DDL pause for one attempt-fenced worker-start path
+and one cancellation protocol. Direct `Table.dropTable()` calls take the same path as the operations API,
+so component code cannot bypass native-writer quiescence.
 
 An `@fullText` index creates no RocksDB column family. Its native directory is rooted inside the
 database directory and selected by the lifecycle's hash of `<table>/<index>`. RocksDB remains the

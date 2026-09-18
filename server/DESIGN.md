@@ -88,6 +88,12 @@ Once set, this terminal state prevents every worker replacement path and makes n
 calls fail with `ERR_HARPER_PROCESS_SHUTTING_DOWN`; scoped worker-type restarts do not set it.
 `shutdownWorkersNow()` remains an immediate teardown: its worker shutdown messages are best-effort,
 and it force-terminates the remaining worker set rather than waiting for application drain hooks.
+An ordinary worker shutdown, by contrast, closes every loaded user database after application scopes
+settle. This releases native derived-index writers and rocksdb-js's process-global handle references.
+A transient close failure is retried until it succeeds or the existing external termination backstop
+fires. If native handles are still retained at that backstop, Harper exits for a clean supervisor
+restart instead of force-terminating only the worker and leaking process-global state. The worker
+does not convert an unproved native shutdown into a clean exit.
 
 A rolling restart serves the _old_ code until each worker is replaced, and where the OS grants
 `SO_REUSEPORT` the not-yet-replaced workers keep accepting connections for the whole restart — so a

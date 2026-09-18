@@ -211,6 +211,7 @@ export class ResourceBridge extends BridgeMethods {
 			await signalling.signalSchemaChange(dropMessage(OPERATIONS_ENUM.DROP_SCHEMA), {
 				includeJobWorkers: true,
 				mainFirst: true,
+				rejectOnError: true,
 			});
 		} catch (error) {
 			const cancellationErrors: unknown[] = [];
@@ -223,6 +224,7 @@ export class ResourceBridge extends BridgeMethods {
 				await signalling.signalSchemaChangeToPeers(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), {
 					includeJobWorkers: true,
 					mainFirst: true,
+					rejectOnError: true,
 				});
 			} catch (cancelError) {
 				cancellationErrors.push(cancelError);

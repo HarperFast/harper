@@ -1937,9 +1937,8 @@ function branchDirectoryExistsFor(storeName: string): boolean {
  * base's.
  *
  * The caller owns the returned handle; the only thing that closes it on the caller's behalf is
- * `closeBranchDatabases`, run by an exiting job worker (via `closeLoadedDatabases`) and by an HTTP
- * worker's shutdown path, so a branch left open on an exiting worker does not linger in the
- * process-global RocksDB registry.
+ * `closeBranchDatabases`, reached through `closeLoadedDatabases` by job and pool-worker teardown, so
+ * a branch left open on an exiting worker does not linger in the process-global RocksDB registry.
  *
  * Schema changes reach a branch only through its own bound factory (`scopedTableFactory`): a
  * declaration re-asserted against the branch's store. A branch's Table classes carry the base's
@@ -2656,14 +2655,26 @@ export function finishDatabaseDrop(databaseName: string, originator?: number, at
 	clearDatabaseDropMarker(databaseName, originator, attemptId);
 }
 
+export function markDatabaseDropDestructive(databaseName: string, originator: number, attemptId: string): void {
+	const marker = databasesBeingDropped.get(databaseName);
+	if (!databaseDropMarkerMatches(marker, originator, attemptId))
+		throw new Error(`Database quiescence for '${databaseName}' is no longer owned by this operation`);
+	marker.destructive = true;
+}
+
 export function cancelDatabaseDrop(databaseName: string, originator?: number, attemptId?: string): void {
 	if (!clearDatabaseDropMarker(databaseName, originator, attemptId)) return;
 	resetDatabases();
 }
 
 export function cancelDatabaseDropsFromThread(originator: number): void {
-	for (const [databaseName, marker] of databasesBeingDropped)
-		if (marker.originator === originator) cancelDatabaseDrop(databaseName, originator, marker.attemptId);
+	let cleared = false;
+	for (const [databaseName, marker] of [...databasesBeingDropped])
+		if (marker.originator === originator)
+			cleared = clearDatabaseDropMarker(databaseName, originator, marker.attemptId) || cleared;
+	// Clear every marker before attempting the rescan. A single reload failure must not strand the
+	// remaining databases behind a dead coordinator's marker; later schema activity can retry reload.
+	if (cleared) resetDatabases();
 }
 
 /**

@@ -3,7 +3,15 @@ const assert = require('assert');
 const { setupTestDBPath } = require('../testUtils');
 const { existsSync, mkdirSync, writeFileSync } = require('node:fs');
 const { dirname, join } = require('node:path');
-const { table, flushDatabases, dropDatabase, getDatabases, resetDatabases } = require('#src/resources/databases');
+const {
+	table,
+	flushDatabases,
+	dropDatabase,
+	getDatabases,
+	resetDatabases,
+	beginDatabaseDrop,
+	finishDatabaseDrop,
+} = require('#src/resources/databases');
 const { setMainIsWorker } = require('#js/server/threads/manageThreads');
 const { RocksDatabase } = require('@harperfast/rocksdb-js');
 const { beginRestore, completeRestore, RESTORE_META_DIR } = require('#src/dataLayer/restoreMarker');
@@ -697,6 +705,27 @@ describe('audit cleanup retirement on teardown', () => {
 		await Probe.dropTable();
 		assert.strictEqual(closeAttempts, 2);
 		assert.strictEqual(databases.derivedindextableretry.DerivedIndexTableRetryProbe, undefined);
+	});
+
+	it('reopens sibling tables after a coordinated table drop', async function () {
+		const Removed = table({
+			table: 'Removed',
+			database: 'coordinatedtabledrop',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		const Kept = table({
+			table: 'Kept',
+			database: 'coordinatedtabledrop',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		await Promise.all([Removed.schemaChangeOperation, Kept.schemaChangeOperation]);
+
+		await Removed.dropTable();
+
+		assert.strictEqual(databases.coordinatedtabledrop.Removed, undefined);
+		assert.ok(databases.coordinatedtabledrop.Kept, 'the terminal signal must clear the barrier and reload siblings');
+		const attemptId = beginDatabaseDrop('coordinatedtabledrop');
+		finishDatabaseDrop('coordinatedtabledrop', undefined, attemptId);
 	});
 
 	it('quiesces a table when a schema rescan cannot establish its current generation', async function () {
