@@ -2244,9 +2244,11 @@ fresh store with simple puts, so it validates clean in isolation and only mislea
 Node ids are the sound source. They are allocated monotonically from a `getUserSharedBuffer` counter,
 so the counter (or one reverse seek to the largest id) gives the node count in O(1), unaffected by
 how many times a node has been rewritten. Deletes leave it reading high until a rebuild, which only
-makes ef slightly generous.
+makes ef slightly generous. A file-primary (`nativePlane`) index keeps no node-id keys in its store
+at all — the plane slot carries the primary key — so its count is the plane's id high-water, which
+reads the same way (allocation high-water, generous after deletes until a rebuild).
 
-Note the unit: the index store holds two keys per record — the graph node and the primary-key
+Note the unit: the JS index store holds two keys per record — the graph node and the primary-key
 mapping — so a key count is twice the node count. `AUTO_EF_REF` is expressed in nodes for that
 reason, and any change between the two units has to move it to keep the resolved ef the same.
 
@@ -2932,8 +2934,9 @@ the native binding loads, RocksDB is in use, and the index has compatible geomet
 `nativePlane: false` selects the JS graph. The native plane replaces the RocksDB graph with a
 memory-mapped fixed-slot file owned by `@harperfast/hnsw` (Rust, napi-rs, exact-pinned optional
 dependency; crate at HarperFast/hnsw). The file **is the index**: graph nodes, adjacency, the entry
-point, the id allocator and the freelist exist only there. RocksDB keeps the primary records, the
-`pk ↔ nodeId` mappings and the one durable replay cursor.
+point, the id allocator, the freelist and each node's primary key exist only there. RocksDB keeps
+the primary records, the `pk → nodeId` mapping (which node a key owns, for replacement and replay)
+and the one durable replay cursor.
 
 The decision belongs to the durable index-creation boundary, not `openIndex()` or the HNSW
 constructor: those are also catalog-reload paths. An existing descriptor is therefore authoritative
@@ -2981,9 +2984,14 @@ unavailable until the value is raised and the index rebuilt). Header page: magic
 (derived from M/optimizeRouting at creation), entry point, atomic `id_high_water`, tag-guarded
 freelist head, a transaction watermark advanced only after an `msync` barrier, and a clean-shutdown
 flag. Layer-0 slot: seqlock word, flags + level, `scale`/`invMag`, degree, int8 vector padded to a
-4-byte boundary, `u32` neighbour ids — 1,344 B at 768-d with cap 128. Upper layers (~6% of nodes)
-live in a fixed-entry region in the same file (format v2), per-entry seqlocked. Per-edge cached
-distances are dropped: recomputing costs ~50 ns natively, storing costs 8 B and ~40% of a node.
+4-byte boundary, `u32` neighbour ids, then the record's msgpack-encoded primary key (format v8;
+`nativePlaneKeyCap` inline bytes, default 40; a longer key spills to an overflow arena after the
+upper region, reserved at max(128, 4 × keyCap) bytes per node — a table whose keys are mostly
+longer than 40 encoded bytes should raise `nativePlaneKeyCap` rather than live in the arena) — 1,344 B at 768-d with cap 128, 704 B at 128-d, the key fitting the cache-line padding.
+Upper layers (~6% of nodes) live in a fixed-entry region in the same file, per-entry seqlocked.
+Per-edge cached distances are dropped: recomputing costs ~50 ns natively, storing costs 8 B and
+~40% of a node. Searches and predicate batches return each hit's key with it, so no lookup by node
+id remains on the query path.
 
 Degree cap is **128** for int8 (Kris, 2026-08-31, after measurement): cap 64 saved only 23.5% of
 the slot (the 768 B vector dominates) and lost 2.2 pts recall at 1M. It is a header field, so
@@ -3021,8 +3029,8 @@ allow-lists and companion-condition candidate sets (zero callbacks), and a pipel
 while verdicts are in flight, bounded by the same `filterExpansion` visit budget as the JS path.
 Traversal never blocks on the event loop. A plane-backed `customIndex.search()` returns a
 promise-backed, async-only iterable (`resources/search.ts` wraps it); a synchronous consumer throws.
-Auto-ef reads the node count from `id_high_water` minus the freelist, which fixes the lifetime
-high-water inflation of the RocksDB graph (harper#2182). Every vector reaching the plane — a
+Auto-ef reads the node count from the plane's `id_high_water` (freed ids are reused, so it stays
+close to the live count; deletes leave it generous until a rebuild, as with the RocksDB graph). Every vector reaching the plane — a
 committed projection or a query target — passes one invariant (`assertPlaneVector`): array-like of
 positive length, every component a finite f32, a magnitude representable in f32, and the plane's
 `dims` once known. What fails it is the client's 400, never a plane failure; a query the plane
@@ -3038,7 +3046,10 @@ to `HnswDerivedIndexBackend`:
   in 5 ms `setImmediate` slices. Each `records` entry (last-write-wins per key) becomes one
   `applyDerivedValue(pk, vector | undefined, version)`: the stored mapping's signature short-circuits
   an unchanged vector, an older observation is discarded, otherwise the old node is removed and the
-  new vector inserted with the mapping written **pending**, hidden from search.
+  new vector inserted — with the primary key in its slot, so it is searchable at once — and the
+  `pk -> node` mapping written **pending**. The store holds no `node -> pk` entries: hits and
+  predicate candidates carry their keys out of the plane, and a query deduplicates by key for the
+  crash case where a replayed record's earlier node survives without a published mapping.
 - `flush()` runs when the queue is empty: `plane.flushAsync()`, then pending mappings are published,
   then the batch's `through` vector is written as the cursor under `Symbol.for('derived-index-cursor')`.
   Application pauses while a barrier is in flight so the barrier publishes exactly the mappings it
