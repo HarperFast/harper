@@ -18,12 +18,10 @@ const {
 	prepareDatabaseForDrop,
 	finishDatabaseDrop,
 	cancelDatabaseDrop,
-	cancelDatabaseDropsFromThread,
 	reloadBranchAt,
 	quiesceTableDerivedIndexes,
 } = require('../../resources/databases.ts');
 const { PREPARE_DATABASE_DROP_OPERATION, CANCEL_DATABASE_DROP_OPERATION } = require('../../utility/signalling.ts');
-require('../threads/manageThreads.js').onThreadExit(cancelDatabaseDropsFromThread);
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.

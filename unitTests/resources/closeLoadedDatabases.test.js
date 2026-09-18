@@ -22,6 +22,8 @@ const {
 	closeLoadedDatabases,
 	prepareDatabaseForDrop,
 	beginDatabaseDrop,
+	dropDatabase,
+	finishDatabaseDrop,
 	cancelDatabaseDrop,
 	cancelDatabaseDropsFromThread,
 	openBranchDatabase,
@@ -265,6 +267,34 @@ describe('RocksDB handle release', function () {
 			cancelDatabaseDrop(databaseName);
 			env.setProperty(terms.CONFIG_PARAMS.DATABASES, previousConfig);
 		}
+	});
+
+	it('does not cold-open a coordinator database after destructive drop begins', async function () {
+		this.timeout(30000);
+		const databaseName = 'close-drop-destructive-rescan';
+		const Table = table({
+			table: 'pkg',
+			database: databaseName,
+			attributes: [{ attribute: 'id', isPrimaryKey: true }, { attribute: 'name' }],
+		});
+		await Table.schemaChangeOperation;
+		if (!(Table.primaryStore.rootStore instanceof RocksDatabase)) return this.skip();
+		let release;
+		const barrier = new Promise((resolve) => (release = resolve));
+		Table.derivedIndexRuntime = { close: () => barrier };
+		const attemptId = beginDatabaseDrop(databaseName);
+		const dropping = dropDatabase(databaseName);
+		await new Promise((resolve) => setImmediate(resolve));
+
+		assert.strictEqual(
+			resetDatabases()[databaseName],
+			undefined,
+			'a rescan must not reopen the path once destructive work has begun'
+		);
+		release();
+		await dropping;
+		finishDatabaseDrop(databaseName, undefined, attemptId);
+		assert.strictEqual(getDatabases()[databaseName], undefined);
 	});
 
 	it('reopens a peer when cancellation overtakes drop preparation', async function () {

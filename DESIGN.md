@@ -2736,8 +2736,12 @@ acknowledges success. A handle-close failure produces a negative acknowledgement
 logged and treated as quiescent. A negative acknowledgement, recipient exit before acknowledgement,
 or timeout rejects the drop before destructive storage work. While marked, scans and on-demand lookup
 cannot reopen a peer's database; the coordinator keeps its already-open database loaded until
-`dropDatabase()` starts. Failure broadcasts cancellation and reloads the database; a peer whose
-in-flight preparation finishes after that cancellation detects the changed marker and reloads again.
+`dropDatabase()` starts. Once `dropDatabase()` captures that table graph, the marker enters its
+destructive phase and even the coordinator's catalog scans skip the path; the captured handles remain
+usable for teardown, while a concurrent rescan cannot cold-open the directory between environment
+unregistration and native destruction. Failure broadcasts cancellation and reloads the database; a
+peer whose in-flight preparation finishes after that cancellation detects the changed marker and
+reloads again.
 Cancellation and finish messages clear only the marker owned by their coordinator and attempt token,
 so a late message cannot clear a newer drop, including a retry from the same coordinator. The token
 also fences an older preparation that resumes after cancellation: it cannot close storage or rescan
@@ -2746,11 +2750,14 @@ local attempt or peer preparation receives 409. Simultaneous coordinators can th
 retry, but cannot close or cancel each other's prepared state. Successful deletion sends the ordinary
 schema event with the same token, which clears the matching marker. The destructive barrier includes
 job workers even though ordinary schema gossip excludes them. A peer also records the coordinating
-thread and cancels every marker it owns if that thread exits before finish or cancellation arrives. A
+thread and cancels every marker it owns if that thread exits before finish or cancellation arrives.
+That exit listener is registered beside the marker registry, before inherited markers are admitted;
+an inherited marker whose coordinator is already known dead is discarded during module load. A
 preparation delivered after the exit notification is rejected before it can install a marker, closing
-the opposite ordering of the same race. Finish and cancellation still reach peers when the
-coordinator's own catalog rescan fails, so a local reload error cannot strand every already-prepared
-peer. A lost cancellation to a still-live peer deliberately remains fail-closed: conflicting
+the opposite ordering of the same race. Peer cancellation is attempted even when the coordinator's
+local reload fails, so a local recovery error cannot strand every already-prepared peer. Finish and
+cancellation likewise still reach peers when the coordinator's own catalog rescan fails. A lost
+cancellation to a still-live peer deliberately remains fail-closed: conflicting
 preparations log the holding coordinator and return 409, and that peer may require a worker restart
 to clear the marker. Branch shutdown and job-worker teardown await the same derived-index quiescence
 before closing their RocksDB handles; teardown waits for every branch close to settle before it
@@ -2775,6 +2782,9 @@ compatible Tantivy files before replaying the audit tail. Schema publication rec
 from the primary descriptor after acquiring the catalog lock, preserving a matching token another
 worker already published instead of cascading redundant rebuilds. Query-only
 synonym, highlighting, and per-field highlight settings persist without rebuilding Tantivy segments.
+For a table without a declared primary key, the bare `<table>/` catalog row is the same declaration
+carrier: definition changes, removals, and generation rotations are persisted there before the live
+runtime is replaced, so a reset cannot resurrect the prior index.
 
 Removing an index or dropping its table quiesces the writer but does not yet delete the native
 directory. Reusing the same index path resets incompatible state and reclaims it. Permanent removal

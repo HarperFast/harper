@@ -582,6 +582,48 @@ describe('@fullText derived-index activation', () => {
 		assert.deepStrictEqual(fullText.highlighting, { maxFragments: 2, fragmentLength: 80 });
 	});
 
+	rocksOnly('persists full-text changes on a table without a declared primary key', async () => {
+		const database = `fulltext-no-primary-${Date.now()}`;
+		const attributes = () => [{ name: 'title', type: 'String' }];
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition('title')],
+		});
+		const firstGeneration = Product.fullTextIndexGenerations.search;
+
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [definition('title', 2)],
+		});
+		const changedDescriptor = Product.dbisDB.getSync('Product/');
+		assert.strictEqual(changedDescriptor.fullTextIndexes[0].fields[0].weight, 2);
+		assert.notStrictEqual(changedDescriptor.fullTextIndexGenerations.search, firstGeneration);
+
+		Product = resetDatabases()[database].Product;
+		assert.strictEqual(Product.fullTextIndexes[0].fields[0].weight, 2);
+		assert.strictEqual(Product.fullTextIndexGenerations.search, changedDescriptor.fullTextIndexGenerations.search);
+
+		Product = table({
+			database,
+			table: 'Product',
+			audit: true,
+			attributes: attributes(),
+			fullTextIndexes: [],
+		});
+		const removedDescriptor = Product.dbisDB.getSync('Product/');
+		assert.strictEqual(removedDescriptor.fullTextIndexes, undefined);
+		assert.strictEqual(removedDescriptor.fullTextIndexGenerations, undefined);
+
+		Product = resetDatabases()[database].Product;
+		assert.deepStrictEqual(Product.fullTextIndexes, []);
+	});
+
 	rocksOnly('quarantines only a persisted table whose full-text recovery contract is invalid', async () => {
 		const database = `fulltext-activation-quarantine-${Date.now()}`;
 		const Invalid = table({

@@ -213,11 +213,25 @@ export class ResourceBridge extends BridgeMethods {
 				mainFirst: true,
 			});
 		} catch (error) {
-			cancelDatabaseDrop(databaseName, threadId, attemptId);
-			await signalling.signalSchemaChangeToPeers(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), {
-				includeJobWorkers: true,
-				mainFirst: true,
-			});
+			const cancellationErrors: unknown[] = [];
+			try {
+				cancelDatabaseDrop(databaseName, threadId, attemptId);
+			} catch (cancelError) {
+				cancellationErrors.push(cancelError);
+			}
+			try {
+				await signalling.signalSchemaChangeToPeers(dropMessage(signalling.CANCEL_DATABASE_DROP_OPERATION), {
+					includeJobWorkers: true,
+					mainFirst: true,
+				});
+			} catch (cancelError) {
+				cancellationErrors.push(cancelError);
+			}
+			if (cancellationErrors.length)
+				throw new AggregateError(
+					[error, ...cancellationErrors],
+					`Database drop '${databaseName}' failed to cancel cleanly`
+				);
 			throw error;
 		}
 	}

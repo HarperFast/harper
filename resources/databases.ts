@@ -497,6 +497,20 @@ function compilePersistedFullTextDefinitions(
 	);
 }
 
+function mergeAdditiveFullTextDefinitions(
+	durable: readonly FullTextDefinition[],
+	incoming: readonly FullTextDefinition[]
+): FullTextDefinition[] {
+	const merged = [...durable];
+	const names = new Set(durable.map((definition) => definition.name));
+	for (const definition of incoming) {
+		if (names.has(definition.name)) continue;
+		names.add(definition.name);
+		merged.push(definition);
+	}
+	return sortFullTextDefinitions(merged);
+}
+
 function decodePersistedAttribute(key: unknown, persistedValue: any, defaultTable?: string) {
 	const value = persistedValue as any;
 	let [tableName, attributeName] = key.toString().split('/');
@@ -638,9 +652,10 @@ function clearInterruptedDropEntries(storePath: string, tableName: string) {
 	interruptedDropAttempts.delete(interruptedDropTableKey(storePath, tableName));
 }
 let loadedDatabases; // indicates if we have loaded databases from the file system yet
-type DatabaseDropMarker = { originator: number; attemptId: string };
+type DatabaseDropMarker = { originator: number; attemptId: string; destructive?: boolean };
 const databasesBeingDropped = new Map<string, DatabaseDropMarker>();
 const pendingDatabaseStoreCloses = new Map<string, Map<any, string>>();
+manageThreads.onThreadExit(cancelDatabaseDropsFromThread);
 if (Array.isArray(workerData?.databaseDropMarkers))
 	for (const entry of workerData.databaseDropMarkers) {
 		if (!Array.isArray(entry)) continue;
@@ -652,7 +667,8 @@ if (Array.isArray(workerData?.databaseDropMarkers))
 			typeof inheritedMarker.attemptId === 'string'
 				? (inheritedMarker as DatabaseDropMarker)
 				: undefined;
-		if (typeof databaseName === 'string' && marker) databasesBeingDropped.set(databaseName, marker);
+		if (typeof databaseName === 'string' && marker && !manageThreads.hasThreadExited(marker.originator))
+			databasesBeingDropped.set(databaseName, marker);
 	}
 for (const [databaseName, marker] of databasesBeingDropped)
 	manageThreads.markDatabaseDropForWorkerStarts(databaseName, marker.originator, marker.attemptId);
@@ -773,7 +789,8 @@ export function getDatabases(): Databases {
 			// branch directories are process-local derivatives, never databases in their own right
 			if (databaseEntry.name === BRANCH_ROOT_DIR) continue;
 			const dbName = basename(databaseEntry.name, '.mdb');
-			if (databasesBeingDropped.has(dbName) && databasesBeingDropped.get(dbName)?.originator !== threadId) continue;
+			const dropMarker = databasesBeingDropped.get(dbName);
+			if (dropMarker && (dropMarker.originator !== threadId || dropMarker.destructive)) continue;
 			const dbPath = join(databasePath, databaseEntry.name);
 			if (blockedByRestore.has(dbName)) continue;
 			if (isOpenBranchPath(dbPath)) continue;
@@ -809,11 +826,8 @@ export function getDatabases(): Databases {
 	const baseSchemaPath = getBaseSchemaPath();
 	if (existsSync(baseSchemaPath)) {
 		for (const schemaEntry of readdirSync(baseSchemaPath, { withFileTypes: true })) {
-			if (
-				databasesBeingDropped.has(schemaEntry.name) &&
-				databasesBeingDropped.get(schemaEntry.name)?.originator !== threadId
-			)
-				continue;
+			const dropMarker = databasesBeingDropped.get(schemaEntry.name);
+			if (dropMarker && (dropMarker.originator !== threadId || dropMarker.destructive)) continue;
 			if (!schemaEntry.isFile()) {
 				const schemaPath = join(baseSchemaPath, schemaEntry.name);
 				const schemaAuditPath = join(getTransactionAuditStoreBasePath(), schemaEntry.name);
@@ -835,7 +849,8 @@ export function getDatabases(): Databases {
 
 	if (schemaConfigs) {
 		for (const dbName in schemaConfigs) {
-			if (databasesBeingDropped.has(dbName) && databasesBeingDropped.get(dbName)?.originator !== threadId) continue;
+			const dropMarker = databasesBeingDropped.get(dbName);
+			if (dropMarker && (dropMarker.originator !== threadId || dropMarker.destructive)) continue;
 			const schemaConfig = schemaConfigs[dbName];
 			const databasePath = schemaConfig.path;
 			if (databasePath && existsSync(databasePath)) {
@@ -2419,6 +2434,8 @@ export async function quiesceTableDerivedIndexes(
 export async function dropDatabase(databaseName) {
 	if (!databases[databaseName]) throw new Error('Database does not exist');
 	const dbTables = databases[databaseName];
+	const dropMarker = databasesBeingDropped.get(databaseName);
+	if (dropMarker?.originator === threadId) dropMarker.destructive = true;
 	let rootStore;
 
 	// Hold the per-database restore lock across the entire drop so its file deletion can never
@@ -3861,6 +3878,37 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 				attributesDbi.put(dbiKey, attribute);
 			}
 		}
+		if (!deferredPrimaryRow && !Table.primaryKey) {
+			const descriptorKey = primaryDescriptorKey();
+			const descriptor = attributesDbi.getSync(descriptorKey);
+			if (descriptor && !tableIsDropping(descriptor, descriptorKey)) {
+				const durableDefinitions = compilePersistedFullTextDefinitions(
+					descriptor,
+					Table.fullTextIndexes,
+					Table.attributes,
+					databaseName,
+					tableName
+				);
+				if (origin === 'cluster')
+					fullTextIndexes = mergeAdditiveFullTextDefinitions(durableDefinitions, fullTextIndexes ?? []);
+				fullTextIndexGenerationMap = fullTextIndexGenerations(
+					durableDefinitions,
+					descriptor.fullTextIndexGenerations,
+					fullTextIndexes ?? [],
+					true
+				);
+				const definitionsChanged =
+					fullTextIndexesExplicit &&
+					JSON.stringify(descriptor.fullTextIndexes ?? []) !== JSON.stringify(fullTextIndexes ?? []);
+				const generationsChanged =
+					JSON.stringify(descriptor.fullTextIndexGenerations ?? {}) !== JSON.stringify(fullTextIndexGenerationMap);
+				if (definitionsChanged || generationsChanged) {
+					exclusiveLock();
+					deferredFullTextIndexesKey = descriptorKey;
+					hasChanges = true;
+				}
+			}
+		}
 		if (deferredFullTextIndexesKey) {
 			const currentPrimaryAttribute = attributesDbi.getSync(deferredFullTextIndexesKey);
 			if (currentPrimaryAttribute && !tableIsDropping(currentPrimaryAttribute, deferredFullTextIndexesKey)) {
@@ -3871,7 +3919,8 @@ function declareTable<TableResourceType>(target: TableTarget, tableDefinition: T
 					databaseName,
 					tableName
 				);
-				if (origin === 'cluster') fullTextIndexes = currentFullTextIndexes;
+				if (origin === 'cluster')
+					fullTextIndexes = mergeAdditiveFullTextDefinitions(currentFullTextIndexes, fullTextIndexes ?? []);
 				fullTextIndexGenerationMap = fullTextIndexGenerations(
 					currentFullTextIndexes,
 					currentPrimaryAttribute.fullTextIndexGenerations,
