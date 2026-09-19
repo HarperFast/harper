@@ -290,6 +290,93 @@ describe('DerivedIndexRuntime with an audited RocksDB table', () => {
 			runtime = undefined;
 		}
 	});
+
+	it('produces the same full-text documents through replay and a fresh rebuild', async () => {
+		const Product = table({
+			database: 'fulltext-derived-index-replay-rebuild-parity',
+			table: 'Product',
+			audit: true,
+			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'title' }],
+		});
+		await Product.put('p1', { title: 'first' });
+		await Product.put('p2', { title: 'remove me' });
+		const binding = new FakeNativeFullTextModule();
+		const lifecycleOptions = {
+			storePath: path.join(testPath, 'fulltext-indexes'),
+			storeName: 'fulltext-derived-index-replay-rebuild-parity.Product.title',
+			indexId: 'replay-rebuild-parity-products',
+			sourceGeneration: 'product-table-generation',
+			fields: [{ name: 'title' }],
+			analyzer: 'english@1',
+			limits: {
+				indexingThreads: 1,
+				searchThreads: 1,
+				writerMemoryBytes: 32 * 1024 * 1024,
+				maxQueuedCommands: 16,
+				maxQueuedBytes: 64 * 1024 * 1024,
+				maxBatchBytes: 8 * 1024 * 1024,
+			},
+			binding,
+		};
+		runtime = new DerivedIndexRuntime(
+			Product.auditStore,
+			(_tableId, recordId) => {
+				const entry = Product.primaryStore.getEntry(recordId);
+				return entry?.value ? { version: entry.version, value: entry.value } : undefined;
+			},
+			{
+				scanRecords: () =>
+					Product.primaryStore.getRange({ versions: true }).map((entry) => ({
+						recordId: entry.key,
+						version: entry.version,
+						value: entry.value,
+					})),
+			}
+		);
+		let backend = await createNativeFullTextDerivedIndexBackend({
+			id: 'replay-rebuild-parity-products',
+			...lifecycleOptions,
+		});
+		let unregister = runtime.register({
+			backend,
+			projections: new Map([[Product.tableId, (record) => (record.title ? { title: record.title } : undefined)]]),
+			options: { flushAfterMutations: 1, maxFlushAgeMilliseconds: 10, rebuildBackoffMilliseconds: 1 },
+		});
+		try {
+			await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 10_000 });
+			await Product.patch('p1', { title: 'updated' });
+			await Product.delete('p2');
+			await Product.put('p3', { title: 'added' });
+			await waitFor(
+				() => {
+					const documents = binding.states.get(binding.opens.at(-1).generation)?.documents;
+					return documents?.size === 2 && [...documents.values()].some((document) => document.fields.title === 'added');
+				},
+				{ timeout: 10_000 }
+			);
+			const replayDocuments = normalizedDocuments(binding.states.get(binding.opens.at(-1).generation).documents);
+
+			await unregister();
+			unregister = undefined;
+			binding.inspectError = 'E_SCHEMA_MISMATCH';
+			backend = await createNativeFullTextDerivedIndexBackend({
+				id: 'replay-rebuild-parity-products',
+				...lifecycleOptions,
+			});
+			unregister = runtime.register({
+				backend,
+				projections: new Map([[Product.tableId, (record) => (record.title ? { title: record.title } : undefined)]]),
+				options: { flushAfterMutations: 1, maxFlushAgeMilliseconds: 10, rebuildBackoffMilliseconds: 1 },
+			});
+			await waitFor(() => runtime.getReadiness(backend.id).state === 'ready', { timeout: 10_000 });
+			const rebuiltDocuments = normalizedDocuments(binding.states.get(binding.opens.at(-1).generation).documents);
+			assert.deepStrictEqual(rebuiltDocuments, replayDocuments);
+		} finally {
+			if (unregister) await unregister();
+			await runtime.stop();
+			runtime = undefined;
+		}
+	});
 });
 
 class FakeNativeFullTextModule {
@@ -379,4 +466,10 @@ function mutationsFor(backend, recordId) {
 			transaction.mutations.filter((mutation) => mutation.recordId === recordId)
 		)
 	);
+}
+
+function normalizedDocuments(documents) {
+	return [...documents.values()]
+		.map((document) => ({ id: document.id, fields: { ...document.fields } }))
+		.sort((left, right) => left.id.localeCompare(right.id));
 }

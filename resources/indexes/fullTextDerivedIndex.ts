@@ -9,7 +9,7 @@ import type {
 	DerivedIndexFlushReason,
 	DerivedIndexPositions,
 } from '../derivedIndexRuntime.ts';
-import { writeKeyId } from '../DatabaseTransaction.ts';
+import { toBufferKey } from 'ordered-binary';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const logger = loggerWithTag('fulltext-derived-index');
@@ -19,8 +19,11 @@ export const HARPER_FULLTEXT_DEFAULT_MAX_QUEUED_BYTES = 64 * 1024 * 1024;
 export const HARPER_FULLTEXT_MAX_CURSOR_PAYLOAD_BYTES = 64 * 1024;
 const DEFAULT_OPEN_ATTEMPTS = 3;
 const DEFAULT_OPEN_RETRY_MILLISECONDS = 10;
+const DEFAULT_MAX_OPEN_RETRY_MILLISECONDS = 5_000;
+const DEFAULT_CLOSE_TIMEOUT_MILLISECONDS = 35_000;
 const DEFAULT_MAX_APPLY_SLICE_RECORDS = 256;
 const APPLY_SLICE_MILLISECONDS = 5;
+const UNKNOWN_BATCH_BYTES_PER_RECORD = 1_024;
 const MAX_CONSECUTIVE_WRITER_FAILURES = 2;
 
 export interface FullTextDerivedIndexEngine {
@@ -29,6 +32,7 @@ export interface FullTextDerivedIndexEngine {
 		batch: FullTextMutationBatch,
 		options: { assumeDistinctIds: true; rejectedUpsert: 'delete' }
 	): Promise<{
+		/** Counts every logical mutation handled, including rejected upserts replaced by deletes. */
 		processed: number;
 		rejected: Array<{ operation: 'upsert'; index: number; code: 'E_INVALID_ARGUMENT' | 'E_BATCH_TOO_LARGE' }>;
 		encodedBytes: number;
@@ -64,6 +68,8 @@ export type FullTextDerivedIndexBackendOptions = {
 	maxApplySliceRecords?: number;
 	openAttempts?: number;
 	openRetryMilliseconds?: number;
+	maxOpenRetryMilliseconds?: number;
+	closeTimeoutMilliseconds?: number;
 };
 
 type ApplyCommand = {
@@ -102,6 +108,7 @@ export class FullTextDerivedIndexError extends Error {
 }
 
 class FullTextDerivedIndexProtocolError extends FullTextDerivedIndexError {}
+class FullTextDerivedIndexConfigurationError extends FullTextDerivedIndexError {}
 
 export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	readonly id: string;
@@ -112,6 +119,8 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#maxApplySliceRecords: number;
 	#openAttempts: number;
 	#openRetryMilliseconds: number;
+	#maxOpenRetryMilliseconds: number;
+	#closeTimeoutMilliseconds: number;
 	#host?: DerivedIndexBackendHost;
 	#wake?: (change?: DerivedIndexBackendStateChange) => void;
 	#engine?: FullTextDerivedIndexEngine;
@@ -139,6 +148,9 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	#invalidEstimateWarned = false;
 	#consecutiveWriterFailures = 0;
 	#openRetryTimer?: NodeJS.Timeout;
+	#openRetryDelayMilliseconds: number;
+	#lockBusyWarned = false;
+	#terminalFailure?: FullTextDerivedIndexConfigurationError;
 	// A failed deliver() result and its delayed state callback report the same backend fault.
 	#failedDeliveryObserved = false;
 
@@ -174,6 +186,18 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			options.openRetryMilliseconds ?? DEFAULT_OPEN_RETRY_MILLISECONDS,
 			'openRetryMilliseconds'
 		);
+		this.#maxOpenRetryMilliseconds = Math.max(
+			Math.max(1, this.#openRetryMilliseconds),
+			positiveInteger(
+				options.maxOpenRetryMilliseconds ?? DEFAULT_MAX_OPEN_RETRY_MILLISECONDS,
+				'maxOpenRetryMilliseconds'
+			)
+		);
+		this.#closeTimeoutMilliseconds = positiveInteger(
+			options.closeTimeoutMilliseconds ?? DEFAULT_CLOSE_TIMEOUT_MILLISECONDS,
+			'closeTimeoutMilliseconds'
+		);
+		this.#openRetryDelayMilliseconds = Math.max(1, this.#openRetryMilliseconds);
 		this.#durableCursor = this.#inspectDurableCursor();
 	}
 
@@ -232,8 +256,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 			return DERIVED_INDEX_FAILED;
 		}
 		let bytes = batch.bytes;
-		if (bytes === 0 && batch.records.length === 0) bytes = 1;
-		else if (!Number.isSafeInteger(bytes) || bytes <= 0) {
+		if (bytes === 0)
+			bytes =
+				batch.records.length === 0
+					? 1
+					: Math.min(this.#maxQueuedBytes, Math.max(1, batch.records.length * UNKNOWN_BATCH_BYTES_PER_RECORD));
+		else if (!Number.isSafeInteger(bytes) || bytes < 0) {
 			bytes = this.#maxQueuedBytes;
 			if (!this.#invalidEstimateWarned) {
 				this.#invalidEstimateWarned = true;
@@ -289,6 +317,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		)
 			throw new FullTextDerivedIndexError('Full-text derived index backend is not quiescent at reset');
 		this.#assertSharedEpoch(ownerEpoch);
+		if (this.#terminalFailure)
+			throw new FullTextDerivedIndexError(
+				'Full-text derived index configuration must change before rebuild can succeed',
+				this.#terminalFailure
+			);
 		this.#shutdown = undefined;
 		this.#failed = false;
 		await this.#lifecycle.reset();
@@ -296,6 +329,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		this.#assertSharedEpoch(ownerEpoch);
 		this.#activeEpoch = ownerEpoch;
 		this.#resetQueueState();
+		this.#terminalFailure = undefined;
 		this.#unindexableRecords = 0;
 		this.#unindexableWarned = false;
 	}
@@ -388,6 +422,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 				new FullTextDerivedIndexError('Full-text cursor changed between inspection and writer open')
 			);
 			this.#durableCursor = actual;
+			this.#consecutiveWriterFailures = 0;
 			this.#discardCommands();
 			this.#rewindAcceptedWork();
 			this.#notify('accepted-work-lost');
@@ -478,11 +513,16 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (this.#lastAppliedSequence < command.horizon)
 			throw new FullTextDerivedIndexError('Full-text publication barrier passed unapplied work');
 		const cursor = withDurableCoverage(command.cursor ?? this.#durableCursor, this.#durableCursor);
-		const payload = encodeFullTextCursorPayload(cursor, this.#maxCursorPayloadBytes);
 		try {
+			const payload = encodeFullTextCursorPayload(cursor, this.#maxCursorPayloadBytes);
 			await this.#engine!.publish(payload);
 		} catch (error) {
-			await this.#loseAcceptedWork(command.epoch, error);
+			const terminal = error instanceof FullTextDerivedIndexConfigurationError;
+			await this.#loseAcceptedWork(command.epoch, error, !terminal);
+			if (terminal) {
+				this.#terminalFailure = error;
+				this.#failAndNotify(error);
+			}
 			return false;
 		}
 		this.#assertCommandEpoch(command.epoch);
@@ -559,7 +599,11 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		engine: FullTextDerivedIndexEngine,
 		options: { mode: 'require-clean' | 'rollback' }
 	): Promise<void> {
-		const result = await engine.close(options);
+		const result = await withTimeout(
+			engine.close(options),
+			this.#closeTimeoutMilliseconds,
+			() => new FullTextDerivedIndexError('Full-text native writer close timed out')
+		);
 		if (result.cleanupError)
 			logWarning(`Full-text derived index '${this.id}' closed with a native cleanup error`, result.cleanupError);
 	}
@@ -569,16 +613,18 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		for (let attempt = 1; attempt <= this.#openAttempts; attempt++) {
 			this.#assertSharedEpoch(ownerEpoch);
 			try {
-				return await this.#lifecycle.open();
+				const engine = await this.#lifecycle.open();
+				this.#resetOpenRetryBackoff();
+				return engine;
 			} catch (error) {
 				lastError = error;
-				if (attempt < this.#openAttempts && this.#openRetryMilliseconds > 0) {
-					await delay(this.#openRetryMilliseconds);
-					continue;
-				}
 				if (nativeErrorCode(error) === 'E_LOCK_BUSY') {
 					this.#scheduleOpenRetry(ownerEpoch);
 					return;
+				}
+				if (attempt < this.#openAttempts && this.#openRetryMilliseconds > 0) {
+					await delay(this.#openRetryMilliseconds);
+					continue;
 				}
 			}
 		}
@@ -587,13 +633,16 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 
 	#scheduleOpenRetry(ownerEpoch: bigint): void {
 		if (this.#openRetryTimer || this.#shutdown || this.#failed) return;
-		this.#openRetryTimer = setTimeout(
-			() => {
-				this.#openRetryTimer = undefined;
-				if (this.#activeEpoch === ownerEpoch && this.#host?.isOwnerEpoch(ownerEpoch)) this.#scheduleDrain();
-			},
-			Math.max(1, this.#openRetryMilliseconds)
-		);
+		const retryDelay = this.#openRetryDelayMilliseconds;
+		this.#openRetryDelayMilliseconds = Math.min(this.#maxOpenRetryMilliseconds, retryDelay * 2);
+		if (retryDelay >= this.#maxOpenRetryMilliseconds && !this.#lockBusyWarned) {
+			this.#lockBusyWarned = true;
+			logWarning(`Full-text derived index '${this.id}' is waiting for its native writer lock`);
+		}
+		this.#openRetryTimer = setTimeout(() => {
+			this.#openRetryTimer = undefined;
+			if (this.#activeEpoch === ownerEpoch && this.#host?.isOwnerEpoch(ownerEpoch)) this.#scheduleDrain();
+		}, retryDelay);
 		this.#openRetryTimer.unref?.();
 	}
 
@@ -601,6 +650,12 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 		if (!this.#openRetryTimer) return;
 		clearTimeout(this.#openRetryTimer);
 		this.#openRetryTimer = undefined;
+	}
+
+	#resetOpenRetryBackoff(): void {
+		this.#clearOpenRetry();
+		this.#openRetryDelayMilliseconds = Math.max(1, this.#openRetryMilliseconds);
+		this.#lockBusyWarned = false;
 	}
 
 	#discardCommands(): void {
@@ -621,7 +676,7 @@ export class FullTextDerivedIndexBackend implements DerivedIndexBackend {
 	}
 
 	#resetQueueState(): void {
-		this.#clearOpenRetry();
+		this.#resetOpenRetryBackoff();
 		this.#commands = [];
 		this.#retainedBatches = 0;
 		this.#retainedBytes = 0;
@@ -718,12 +773,11 @@ function toFullTextMutationSlice(
 	for (; index < limit; index++) {
 		const record = records[index];
 		if (typeof record.recordId === 'symbol') continue;
-		const recordKey = writeKeyId(record.recordId);
-		if (typeof recordKey !== 'string') continue;
-		const id = `${record.tableId}.${Buffer.from(recordKey, 'latin1').toString('base64url')}`;
-		if (record.state.kind === 'record') upserts.push({ id, fields: fullTextFields(record.state.projection) });
+		const id = `${record.tableId}.${toBufferKey(record.recordId).toString('base64url')}`;
+		if (record.state.kind === 'record' && record.state.projection != null)
+			upserts.push({ id, fields: fullTextFields(record.state.projection) });
 		else deletes.push(id);
-		if (index > start && performance.now() >= deadline) {
+		if ((index - start + 1) % 16 === 0 && performance.now() >= deadline) {
 			index++;
 			break;
 		}
@@ -741,13 +795,27 @@ function logError(message: string, error?: unknown): void {
 
 function log(level: 'warn' | 'error', message: string, error?: unknown): void {
 	const code = nativeErrorCode(error);
+	const detail = error instanceof FullTextDerivedIndexError ? error.message : code;
 	const name = error instanceof Error ? error.name : undefined;
-	logger[level]?.(`${message}${code || name ? ` (${code ?? name})` : ''}`);
+	logger[level]?.(
+		`${message}${detail || name ? ` (${detail ?? name}${code && detail !== code ? `; ${code}` : ''})` : ''}`
+	);
 }
 
 function nativeErrorCode(error: unknown): string | undefined {
-	if (!error || typeof error !== 'object' || !('code' in error)) return;
-	return typeof error.code === 'string' ? error.code : undefined;
+	return findNativeErrorCode(error, new Set());
+	function findNativeErrorCode(value: unknown, seen: Set<object>): string | undefined {
+		if (!value || typeof value !== 'object' || seen.has(value)) return;
+		seen.add(value);
+		if ('code' in value && typeof value.code === 'string') return value.code;
+		if (value instanceof AggregateError) {
+			for (const nested of value.errors) {
+				const code = findNativeErrorCode(nested, seen);
+				if (code) return code;
+			}
+		}
+		if ('cause' in value) return findNativeErrorCode(value.cause, seen);
+	}
 }
 
 export function encodeFullTextCursorPayload(
@@ -768,7 +836,9 @@ export function encodeFullTextCursorPayload(
 			: null,
 	});
 	if (Buffer.byteLength(payload) > maxBytes)
-		throw new FullTextDerivedIndexError('Full-text cursor payload is too large');
+		throw new FullTextDerivedIndexConfigurationError(
+			`Full-text cursor payload exceeds the configured ${maxBytes}-byte limit`
+		);
 	return payload;
 }
 
@@ -806,9 +876,7 @@ export function decodeFullTextCursorPayload(
 function fullTextFields(projection: unknown): Record<string, string | string[]> {
 	const fields: Record<string, string | string[]> = Object.create(null);
 	if (!projection || typeof projection !== 'object' || Array.isArray(projection)) return fields;
-	for (const name in projection) {
-		if (!Object.hasOwn(projection, name)) continue;
-		const value = projection[name];
+	for (const [name, value] of Object.entries(projection)) {
 		if (typeof value === 'string') fields[name] = value;
 		else if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) fields[name] = value;
 	}
@@ -918,4 +986,14 @@ function delay(milliseconds: number): Promise<void> {
 		const timer = setTimeout(resolve, milliseconds);
 		timer.unref?.();
 	});
+}
+
+function withTimeout<T>(promise: Promise<T>, milliseconds: number, timeoutError: () => Error): Promise<T> {
+	let timer: NodeJS.Timeout;
+	return Promise.race([
+		promise,
+		new Promise<never>((_resolve, reject) => {
+			timer = setTimeout(() => reject(timeoutError()), milliseconds);
+		}),
+	]).finally(() => clearTimeout(timer));
 }

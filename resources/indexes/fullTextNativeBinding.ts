@@ -2,6 +2,7 @@ import type { FullTextDerivedIndexEngine } from './fullTextDerivedIndex.ts';
 import { loggerWithTag } from '../../utility/logging/logger.ts';
 
 const FULLTEXT_LIFECYCLE_API_VERSION = 1;
+const FULLTEXT_MUTATION_BATCH_API_VERSION = 3;
 const logger = loggerWithTag('fulltext-derived-index');
 
 export interface NativeFullTextIndexConfiguration {
@@ -124,7 +125,7 @@ export async function validateFullTextNativeBinding(module: unknown): Promise<Na
 		typeof info.tantivyVersion !== 'string' ||
 		!Number.isSafeInteger(info.nativeAbiVersion) ||
 		info.lifecycleApiVersion !== FULLTEXT_LIFECYCLE_API_VERSION ||
-		info.mutationBatchApiVersion !== 3 ||
+		info.mutationBatchApiVersion !== FULLTEXT_MUTATION_BATCH_API_VERSION ||
 		!Array.isArray(info.storageBackends) ||
 		!info.storageBackends.includes('native') ||
 		!info.limits ||

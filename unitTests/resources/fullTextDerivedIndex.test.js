@@ -1,5 +1,9 @@
 require('../testUtils');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const { setupTestDBPath } = require('../testUtils');
 const { writeKeyId } = require('#src/resources/DatabaseTransaction');
 const {
 	FullTextDerivedIndexBackend,
@@ -90,6 +94,9 @@ function makeBackend(lifecycleValue, options = {}) {
 		maxApplySliceRecords: options.maxApplySliceRecords,
 		openAttempts: options.openAttempts ?? 1,
 		openRetryMilliseconds: options.openRetryMilliseconds ?? 0,
+		maxOpenRetryMilliseconds: options.maxOpenRetryMilliseconds,
+		closeTimeoutMilliseconds: options.closeTimeoutMilliseconds,
+		maxCursorPayloadBytes: options.maxCursorPayloadBytes,
 	});
 	backend.attach({
 		isOwnerEpoch: (candidate) => candidate === epoch,
@@ -108,6 +115,23 @@ function batch(ownerEpoch, records, through, bytes = 32) {
 
 function nativeError(code, message) {
 	return Object.assign(new Error(message), { code });
+}
+
+async function runRestartChild(directory, phase) {
+	const child = spawn(process.execPath, [path.join(__dirname, 'fullTextDerivedIndex-restart.js'), directory, phase], {
+		stdio: ['ignore', 'ignore', 'pipe'],
+	});
+	let stderr = '';
+	child.stderr.on('data', (chunk) => (stderr += chunk));
+	const timer = setTimeout(() => child.kill('SIGTERM'), 30_000);
+	try {
+		return await new Promise((resolve, reject) => {
+			child.once('error', reject);
+			child.once('exit', (code, signal) => resolve({ code, signal, stderr }));
+		});
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 describe('FullTextDerivedIndexBackend', () => {
@@ -279,6 +303,29 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('backs off persistent native writer lock contention', async () => {
+		const engine = new FakeEngine();
+		const attempts = [];
+		const source = lifecycle({ state: 'missing' });
+		source.open = async function () {
+			this.openCalls++;
+			attempts.push(Date.now());
+			if (this.openCalls <= 4) throw nativeError('E_LOCK_BUSY', 'busy');
+			return engine;
+		};
+		const { backend } = makeBackend(source, {
+			openAttempts: 1,
+			openRetryMilliseconds: 5,
+			maxOpenRetryMilliseconds: 20,
+		});
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		assert(attempts[2] - attempts[1] >= 8, 'the second retry should wait about 10 ms');
+		assert(attempts[3] - attempts[2] >= 16, 'later retries should reach the 20 ms ceiling');
+		await backend.shutdown(1n);
+	});
+
 	it('cancels a deferred lock retry during shutdown', async () => {
 		const source = lifecycle({ state: 'missing' });
 		source.open = async function () {
@@ -411,6 +458,28 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('uses a per-record estimate when rebuild batches have no byte sizes', async () => {
+		let releaseApply;
+		const engine = new FakeEngine();
+		engine.applyWait = new Promise((resolve) => (releaseApply = resolve));
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
+			maxQueuedBatches: 4,
+			maxQueuedBytes: 4 * 1024,
+		});
+		const value = batch(
+			1n,
+			['a', 'b'].map((id) => mutation(id, { kind: 'record', version: 1, projection: { title: id } })),
+			undefined,
+			0
+		);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_ACCEPTED);
+		assert.strictEqual(backend.deliver(value), DERIVED_INDEX_DEFERRED);
+		await waitFor(() => engine.applied.length === 1);
+		releaseApply();
+		await backend.shutdown(1n);
+	});
+
 	it('accepts one oversized byte estimate as a soft queue cap', async () => {
 		let releaseApply;
 		const engine = new FakeEngine();
@@ -510,6 +579,28 @@ describe('FullTextDerivedIndexBackend', () => {
 		await backend.shutdown(1n);
 	});
 
+	it('treats adopted durable progress as recovery between writer failures', async () => {
+		const first = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
+		first.applyError = new Error('first writer failure');
+		const advanced = new FakeEngine(encodeFullTextCursorPayload(cursor(15)));
+		const third = new FakeEngine(encodeFullTextCursorPayload(cursor(15)));
+		third.applyError = new Error('later writer failure');
+		const { backend } = makeBackend(
+			lifecycle({ state: 'checkpointed', committedPayload: first.committedPayload }, [first, advanced, third])
+		);
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		const value = batch(1n, [mutation('a', { kind: 'record', version: 1, projection: { title: 'a' } })], cursor(20));
+		backend.deliver(value);
+		await waitFor(() => changes.filter((change) => change === 'accepted-work-lost').length === 1);
+		backend.deliver(value);
+		await waitFor(() => changes.filter((change) => change === 'accepted-work-lost').length === 2);
+		backend.deliver(value);
+		await waitFor(() => changes.filter((change) => change === 'accepted-work-lost').length === 3);
+		assert.strictEqual(changes.includes('failed'), false);
+		await backend.shutdown(1n);
+	});
+
 	it('rolls back once and reports accepted work loss after apply failure', async () => {
 		const engine = new FakeEngine(encodeFullTextCursorPayload(cursor(10)));
 		engine.applyError = new Error('disk failure');
@@ -599,6 +690,46 @@ describe('FullTextDerivedIndexBackend', () => {
 		engine.closeError = undefined;
 		await backend.shutdown(1n);
 		assert.strictEqual(engine.closes.length, 3);
+	});
+
+	it('bounds native close and fails closed when quiescence cannot be proven', async () => {
+		const engine = new FakeEngine();
+		const { backend } = makeBackend(lifecycle({ state: 'missing' }, [engine]), {
+			closeTimeoutMilliseconds: 10,
+		});
+		backend.deliver(batch(1n, [], cursor(20)));
+		backend.flush();
+		await waitFor(() => engine.publications.length === 1);
+		engine.closeWait = new Promise(() => {});
+		await assert.rejects(backend.shutdown(1n), /did not prove quiescence/);
+		assert.strictEqual(engine.closes.length, 1);
+	});
+
+	it('does not rescan for a cursor payload that cannot fit the native checkpoint', async () => {
+		const engine = new FakeEngine();
+		const source = lifecycle({ state: 'missing' }, [engine]);
+		const { backend, setEpoch } = makeBackend(source, { maxCursorPayloadBytes: 48 });
+		const changes = [];
+		backend.onStateChange((change) => changes.push(change));
+		backend.deliver(
+			batch(
+				1n,
+				[],
+				cursorForLogs([
+					['a', 10],
+					['b', 20],
+					['c', 30],
+				])
+			)
+		);
+		backend.flush();
+		await waitFor(() => changes.includes('failed'));
+		assert.strictEqual(engine.publications.length, 0);
+		assert.deepStrictEqual(engine.closes, [{ mode: 'rollback' }]);
+		await backend.shutdown(1n);
+		setEpoch(2n);
+		await assert.rejects(backend.reset(2n), /configuration must change/);
+		assert.strictEqual(source.resetCalls, 0);
 	});
 
 	it('releases a writer when close reports a non-fatal cleanup error', async () => {
@@ -776,5 +907,38 @@ describe('FullTextDerivedIndexBackend', () => {
 			])
 		);
 		assert.deepStrictEqual({ ...converted.upserts[0].fields }, { title: 'shoe', tags: ['red', 'sale'] });
+	});
+
+	it('deletes the prior document when a projector omits the current record', () => {
+		const converted = toFullTextMutationBatch(
+			batch(1n, [mutation('a', { kind: 'record', version: 2, projection: undefined })])
+		);
+		assert.deepStrictEqual(converted.upserts, []);
+		assert.strictEqual(converted.deletes.length, 1);
+	});
+
+	it('reuses a published native cursor and replays later work after a process crash', async () => {
+		const directory = path.join(setupTestDBPath(), 'fulltext-derived-index-restart');
+		fs.rmSync(directory, { recursive: true, force: true });
+		try {
+			const crashed = await runRestartChild(directory, 'seed');
+			assert.strictEqual(
+				crashed.signal,
+				'SIGKILL',
+				`the seed process should crash after publishing its cursor (exit ${crashed.code}): ${crashed.stderr}`
+			);
+			const resumed = await runRestartChild(directory, 'resume');
+			assert.strictEqual(resumed.code, 0, `the restarted process should replay successfully: ${resumed.stderr}`);
+			const state = JSON.parse(fs.readFileSync(path.join(directory, 'native-state.json'), 'utf8'));
+			assert.strictEqual(decodeFullTextCursorPayload(state.committedPayload).logs.local, 20);
+			assert.deepStrictEqual(
+				Object.values(state.documents)
+					.map((document) => document.fields.title)
+					.sort(),
+				['a', 'b']
+			);
+		} finally {
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });

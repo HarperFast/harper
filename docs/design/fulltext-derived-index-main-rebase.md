@@ -1,5 +1,18 @@
 # Full-text derived-index integration on current main
 
+Status: draft — backend adapter and focused tests verified against current `main`; dependency pinning,
+activation, query integration, and packaged native CI remain open · Owner: Kyle · Last verified:
+2026-09-19
+
+## TL;DR
+
+- Harper owns replay, ownership, readiness, rebuild, and schema/table lifecycle.
+- Fulltext owns Tantivy files, mutation encoding, its exclusive writer, publication, reset, and reclamation.
+- This slice adds an inert backend adapter without changing the shared runtime, HNSW, tables, or databases.
+- Native files are reused after restart; missing or incompatible files rebuild from Harper records before
+  full-text queries become available.
+- Activation waits for an exact Fulltext package pin and cross-platform native-load CI.
+
 ## Intent
 
 Replace the conflicted full-text backend stack with a current-`main` implementation that uses
@@ -25,7 +38,8 @@ Schema declaration and runtime activation remain stacked follow-ups. It depends 
 - The HNSW package owns its mmap file and durability primitives but contains no Harper transaction-log,
   schema, replication, or table-lifecycle code. Harper's HNSW adapter supplies those policies.
 - Fulltext `main` provides native inspection, reset, lazy writer open, apply, publish, and rollback
-  close. Fulltext PR #37 adds exact logical mutation-batch partitioning, replacement deletes for
+  close. [Add exact native mutation batch partitioning #37](https://github.com/HarperFast/fulltext/pull/37)
+  adds exact logical mutation-batch partitioning, replacement deletes for
   rejected upserts, retired-directory reclamation, and the API version Harper's adapter expects.
 - The conflicted backend branch changes the shared runtime, table/database lifecycle, and HNSW
   adapter. Applying those files over current `main` would remove newer HNSW behavior.
@@ -40,7 +54,8 @@ native state made durable by the same publication barrier.
 
 ### Backend PR
 
-Rebuild #2569 from current `main` rather than resolving its conflicts commit by commit.
+Rebuild [Add a full-text derived-index backend #2569](https://github.com/HarperFast/harper/pull/2569)
+from current `main` rather than resolving its conflicts commit by commit.
 
 The backend PR will:
 
@@ -65,13 +80,17 @@ The backend PR will:
 6. Use the runtime's existing rebuild and condemnation protocol. Fulltext owns reset, invalid native
    generation classification, and retired-directory cleanup.
 7. Leave `derivedIndexRuntime.ts`, table/database lifecycle, and HNSW unchanged. The adapter derives
-   its stable document key from `writeKeyId(record.recordId)` and `tableId`, rejects symbol identities,
-   and pays that encoding only on the full-text path. No activation or query policy belongs here.
-8. Treat `E_LOCK_BUSY` as retryable ownership contention, never as a reason to reset. Every deferred
-   retry has a timer-backed wake. Per-record encoding failures, including invalid surrogate input, are
+   its stable document key from `tableId` and the record id's ordered-binary storage-key bytes, rejects
+   symbol identities, and pays that encoding only on the full-text path. No activation or query policy
+   belongs here.
+8. Treat `E_LOCK_BUSY` as retryable ownership contention, never as a reason to reset. Retries use
+   exponential backoff to a five-second ceiling and emit one content-free warning when contention
+   persists. Per-record encoding failures, including oversized fields and invalid field shapes, are
    returned by Fulltext's logical-batch API as rejected upserts, replaced by deletes, counted, and
-   warned once without record values. Native paths and error messages are not logged.
-9. `shutdown(epoch)` drops queued work, epoch-fences publication, and settles the writer. It may reject
+   warned once without record values. Native paths and native error messages are not logged;
+   adapter-authored messages and stable native error codes are.
+9. `shutdown(epoch)` queues a final barrier, drains accepted work, epoch-fences publication, and then
+   settles the writer. Native close is bounded at the adapter boundary. Shutdown may reject
    only when quiescence cannot be proven; the runtime then deliberately holds the runner lock rather
    than allowing two native writers. Native close needs a bounded failure result so this state is
    observable instead of hanging worker shutdown indefinitely.
@@ -118,10 +137,10 @@ runtime hooks and make it difficult to prove that current HNSW behavior survived
 
 ### Do less: derive the document key in the adapter and change nothing shared
 
-Chosen for this backend slice. `writeKeyId` is already exported, and the duplicate encode occurs only
-for records headed to full-text. This avoids adding an allocation to every HNSW mutation and keeps the
-PR inert until activation. Symbol identities are skipped explicitly so replay and rebuild produce the
-same document set.
+Chosen for this backend slice. The adapter uses the same ordered-binary encoder as Harper's stores,
+and the encode occurs only for records headed to full-text. This avoids adding an allocation to every
+HNSW mutation and keeps the PR inert until activation. Symbol identities are skipped explicitly so
+replay and rebuild produce the same document set.
 
 ### Performance boundary: hand the whole runtime batch to Fulltext
 
@@ -152,39 +171,46 @@ than hidden inside a conflict resolution.
 
 ## Verification
 
-- Backend unit tests cover inspection, lazy open, bounded and time-sliced queueing, epoch fencing,
-  apply/publish
-  ordering, cursor round trips including coverage, rollback and replay, reset, corruption/missing-file
-  rebuild classification, rejected upserts, unindexable records, shutdown, and cleanup failure.
-- Existing derived-index runtime and HNSW suites run unchanged.
-- A real-runtime test constructs batches through `DerivedIndexRuntime`, proving named access to the
-  non-enumerable records, and compares replay output with rebuild output, including symbol entries.
-- The real Fulltext package is exercised in a cross-repository test after #37 is green; fake bindings
-  remain for deterministic failure-path tests.
-- End-to-end route for the backend slice: audited RocksDB records feed the real runtime and native
-  wrapper, restart reuses the native directory and replays after its cursor, and deleting the directory
-  forces a local rebuild before readiness.
-- Before restacking activation, run HNSW and full-text together on the same audited table/root and
-  verify independent ownership, progress, backpressure, replacement, shutdown, rebuild, and drop.
+- **Observed:** `npm run build`, the 64 focused backend/lifecycle/audited-RocksDB tests, and the complete
+  derived-index/HNSW resource shard (363 passing, 8 pending) pass in this worktree.
+- **Verified by tests:** the real `DerivedIndexRuntime` produces the same fake-native document set by
+  transaction-log replay and authoritative rebuild. Separate converter tests cover Harper-internal
+  symbol identities.
+- **Verified by source diff:** the shared runtime, HNSW, table, and database production files are
+  unchanged.
+- **Observed locally:** the adapter opened, applied, and published against the native module built from
+  [Add exact native mutation batch partitioning #37](https://github.com/HarperFast/fulltext/pull/37).
+  The lifecycle then reopened the native engine, searched the indexed document, reset the index, and
+  reclaimed its retired directory. This smoke is not yet a packaged dependency or CI gate.
+- **Untested:** a packaged native module across Linux, macOS, and Windows; HNSW and full-text active on
+  the same audited table/root; actual-native deletion and rebuild after restart.
 
 ## Known prerequisites
 
-- Fulltext #37 must resolve its Windows Node 24 failure and merge before Harper can pin and exercise
+- [Add exact native mutation batch partitioning #37](https://github.com/HarperFast/fulltext/pull/37)
+  must resolve its Windows Node 24 failure and merge before Harper can pin and exercise
   the required native API in CI.
 - Before this stack becomes mergeable, Harper must exact-pin the published wrapper, document it in
   `dependencies.md`, load it on Linux, macOS, and Windows CI, and verify the expected lifecycle and
   mutation-batch API versions. If a supported platform has no prebuild, activation fails clearly rather
   than silently omitting the index.
-- The existing #2569 branch remains the recovery reference until the reconstructed branch passes its
+- The existing [Add a full-text derived-index backend #2569](https://github.com/HarperFast/harper/pull/2569)
+  branch remains the recovery reference until the reconstructed branch passes its
   focused and full gates.
 
-## Planning-review resolution
+## Open items
 
-The first planning review found the option set too focused on merge mechanics. The revised design
-adopts its missing alternatives and constraints: no shared runtime change, adapter-owned apply slices,
-deferred coverage publication, explicit native-package gates, named access to non-enumerable runtime
-batches, lock-contention wakeups, sanitized errors, and replay/rebuild parity. Its suggestion that
-`shutdown()` always resolve is not adopted: current `DerivedIndexRuntime` deliberately holds the lock
-when a backend cannot prove quiescence, preventing a successor writer from overlapping an unresolved
-predecessor. The adapter instead requires a bounded close result and rejects only when that safety proof
-fails.
+- Merge and publish
+  [Add exact native mutation batch partitioning #37](https://github.com/HarperFast/fulltext/pull/37),
+  then exact-pin it in Harper.
+- Add `dependencies.md` rationale and Linux, macOS, and Windows native-load CI.
+- Add activation, schema, and query coverage in separate reviewable slices.
+- Run the HNSW/full-text coexistence matrix before activation merges.
+
+## Sources
+
+- [Derived-index protocol #2489](https://github.com/HarperFast/harper/issues/2489)
+- [Add a full-text derived-index backend #2569](https://github.com/HarperFast/harper/pull/2569)
+- [Add exact native mutation batch partitioning #37](https://github.com/HarperFast/fulltext/pull/37)
+- `DESIGN.md`, `resources/DESIGN.md`, `resources/derivedIndexRuntime.ts`, and
+  `resources/indexes/hnswDerivedIndex.ts` in this checkout
