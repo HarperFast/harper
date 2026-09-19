@@ -944,8 +944,8 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	// first never touch the table. On the first cycle after boot we seed it once from the table
 	// via a bounded reverse scan (see findLastAggregationTime). Caching the seeded value keeps
 	// the next cycle O(1) even when this run early-returns below as "too recent"; a bound-hit
-	// (no match) leaves it undefined so we don't early-return, proceed to aggregate, and set both
-	// markers at the end of the cycle instead (#1538).
+	// (no match) leaves it undefined so we don't early-return, proceed to aggregate, and stamp the
+	// cadence marker at the end of the cycle instead (#1538).
 	let lastForPeriod = lastAggregationTime;
 	if (lastForPeriod === undefined) {
 		lastForPeriod = findLastAggregationTime(analyticsTable.primaryStore, localNodeId);
